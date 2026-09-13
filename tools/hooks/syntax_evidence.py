@@ -13,11 +13,10 @@ conductor. The validator reads it read-only and fail-closes when it is missing/i
 
 Mirrors `tools/hooks/lint_evidence.py` (see its docstring for the full non-forgeability
 rationale). Like the lint certificate, this one is written DURING the in-process
-`generate.gate` substep (its syntax check), so the write-attribution check
-(`orchestration_runtime._validate_actual_write_paths`) explicitly EXEMPTS the EXACT
-`<pipeline_root>/syntax_evidence/<source_id>.json` certificate, scoped to
-step==generate ∧ substep==gate. The exemption is the exact file, NOT the whole
-`syntax_evidence/` directory; the sandboxed `generate.generate` leaf is never exempted.
+`generate.gate` substep (its syntax check) by the conductor's own process, and the sandboxed
+`generate.generate` leaf can neither reach the pipeline root nor write anything at all since
+Z4 (issue #171). The write-attribution exemption that used to carry half this argument went
+with the terminal FS-diff in PR-2 of that issue.
 
 Stage schema: each entry of `stages` records one compiler adapter run —
 `{compiler, status: "pass"|"fail"|"skipped", compiler_version?, command_id?, command_log_ref?, reason?}`.

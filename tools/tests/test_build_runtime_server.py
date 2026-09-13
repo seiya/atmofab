@@ -405,101 +405,6 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         self.assertTrue(result["ok"], msg=result.get("stderr"))
 
 
-class OrchestrationGateFailClosedTests(unittest.TestCase):
-    """The capability gate under the workflow.
-
-    A leaf holds the committed `mcp__build-runtime` permission, so before this the only
-    thing standing between it and an unattributed build/run was one optional argument:
-    dropping `orchestration_id` skipped the capability, the role/phase check, and the
-    audit record. Under the workflow the omission is refused; standalone use (no
-    workflow environment) keeps working, because there is no orchestration to attribute
-    a call to."""
-
-    GATED_TOOLS = (
-        "compile_project",
-        "run_program",
-        "run_quality_checks",
-        "run_linter",
-        "run_syntax_check",
-    )
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def setUp(self) -> None:
-        patcher = mock.patch.dict(os.environ, {}, clear=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        for name in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID"):
-            os.environ.pop(name, None)
-        self.project_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
-
-    def _args(self, tool: str) -> dict:
-        args: dict = {"project_dir": str(self.project_dir)}
-        if tool == "run_program":
-            args["command"] = ["true"]
-        return args
-
-    def _call(self, tool: str, args: dict) -> dict:
-        return getattr(self.mod, f"tool_{tool}")(args)
-
-    def test_workflow_mode_refuses_gated_tool_without_orchestration_id(self) -> None:
-        for tool in self.GATED_TOOLS:
-            with self.subTest(tool=tool):
-                os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
-                with self.assertRaises(ValueError) as ctx:
-                    self._call(tool, self._args(tool))
-                # Both halves are diagnosable: what is missing, and why it is required.
-                self.assertIn("orchestration_id", str(ctx.exception))
-                self.assertIn("ATMOFAB_WORKFLOW_MODE", str(ctx.exception))
-
-    def test_orchestration_id_env_alone_also_refuses(self) -> None:
-        # Either signal suffices: the conductor sets ATMOFAB_ORCHESTRATION_ID per child
-        # on top of the run-wide ATMOFAB_WORKFLOW_MODE.
-        os.environ["ATMOFAB_ORCHESTRATION_ID"] = "orch_x"
-        with self.assertRaises(ValueError) as ctx:
-            self._call("run_linter", self._args("run_linter"))
-        self.assertIn("ATMOFAB_ORCHESTRATION_ID", str(ctx.exception))
-
-    def test_workflow_mode_off_is_not_workflow_mode(self) -> None:
-        # `0` is the explicit non-workflow spelling (`tools/hooks/cli.py` uses it too)
-        # and must not be read as merely "set". Every OTHER value counts as workflow
-        # mode: the hook layer's allowlist (`{"1","true","yes"}`) is the fail-open
-        # direction for a check whose job is to refuse.
-        os.environ["ATMOFAB_WORKFLOW_MODE"] = "0"
-        result = self._call("run_syntax_check", self._args("run_syntax_check"))
-        self.assertTrue(result["skipped"])
-
-    def test_standalone_mode_allows_gated_tool_without_orchestration_id(self) -> None:
-        result = self._call("run_syntax_check", self._args("run_syntax_check"))
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["skipped"])
-
-    def test_detect_build_system_is_refused_under_the_workflow(self) -> None:
-        # It holds no capability by design (no substep is granted it), but it reports
-        # which marker files exist in any directory it is pointed at and the resolved
-        # path of that directory — a read outside the manifest boundary, with no command
-        # log to attribute it. Refused under the workflow, usable standalone.
-        os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
-        with self.assertRaises(ValueError) as ctx:
-            self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
-        self.assertIn("not available under the workflow", str(ctx.exception))
-        os.environ.pop("ATMOFAB_WORKFLOW_MODE")
-        result = self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
-        self.assertEqual(result["recommended_build_system"], "make")
-
-    def test_refusal_precedes_loading_the_orchestration_runtime(self) -> None:
-        # The refusal cannot be defeated by pointing the call at a directory with no
-        # orchestration workspace: it never reaches a filesystem lookup.
-        os.environ["ATMOFAB_WORKFLOW_MODE"] = "1"
-        with mock.patch.object(self.mod, "_load_orchestration_runtime") as loader:
-            with self.assertRaises(ValueError):
-                self._call("compile_project", self._args("compile_project"))
-        loader.assert_not_called()
-
-
 class EnvOverrideDenylistTests(unittest.TestCase):
     """Caller-supplied `env` may not redirect what runs.
 
@@ -508,10 +413,13 @@ class EnvOverrideDenylistTests(unittest.TestCase):
     `_run_command` merged the caller's `env` into `os.environ` unfiltered, so
     `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint.
 
-    These cases cover the standalone guardrail. The workflow rule is an allowlist and
-    is covered by OrchestratedEnvAllowlistTests below — a denylist cannot be complete,
-    because every program these tools run reads its own configuration from the
-    environment."""
+    ONE mode since issue #171. There was a second — an allowlist of the six make variables
+    `Validate.execute` declares, applied when the call carried an `orchestration_id` — which
+    existed because the caller might be a LEAF, and which no longer bounds anybody: no leaf
+    reaches this server. So this denylist is now the whole rule, and it is deliberately
+    INCOMPLETE (see `test_the_denylist_is_not_claimed_to_be_complete`): every program these
+    tools run reads its own configuration from the environment, and the list catches a
+    mistake rather than confining a caller."""
 
     UNSAFE = (
         "LD_PRELOAD",
@@ -584,6 +492,97 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                     # Refused, not stripped after the merge: nothing ran.
                     run_command.assert_not_called()
 
+    def test_an_env_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
+        # make imports an environment name as a make VARIABLE, so a value arriving this
+        # way is interpolated into the host-authored recipe exactly as a command-line
+        # assignment would be. `extra_args` has had this rule all along; the env half
+        # had no value check at all, so `CASES='; touch /tmp/x'` was accepted there and
+        # refused one argument over.
+        for value in ("a; touch /tmp/x", "a && id", "$(shell id)", "`id`", "a|b",
+                      "a>b", "a\nb", "'x'"):
+            with self.subTest(value=value):
+                with self._spy_run_command() as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_run_quality_checks(
+                            self._args("run_quality_checks", {"CASES": value}))
+                self.assertIn("reach the make recipe's shell", str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_conductor_env_payload_is_accepted(self) -> None:
+        # The six make variables `Validate.execute` declares. If this payload ever
+        # grows a value the rule refuses, it fails here rather than mid-phase.
+        payload = {
+            "OBJDIR": "/repo/workspace/tmp/a/build",
+            "BINDIR": "/repo/workspace/binary/bin_1/bin",
+            "RUNDIR": "/repo/workspace/tmp/a/run",
+            "BIN": "sw2d_runner",
+            "SPEC": "/repo/spec/x/spec.ir.yaml",
+            "CASES": "c1 l0_v1.2-alpha",
+        }
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_quality_checks(
+                self._args("run_quality_checks", payload))
+        run_command.assert_called_once()
+
+    def test_the_shell_flags_variable_is_refused_through_env_too(self) -> None:
+        """make takes `.SHELLFLAGS` from the ENVIRONMENT, not only from the command line.
+
+        Measured on GNU Make 4.3:
+
+            env '.SHELLFLAGS=-c ./evil.sh' make -f Makefile all
+            OWNED_VIA_ENV      <- ./evil.sh ran; the recipe did not
+            rc=0               <- and make reported the build as succeeding
+
+        It was refused in `extra_args` and accepted here, which is the asymmetry this
+        module's own docstring calls out ("must not be weaker than the env twin", and the
+        reverse). The two halves share ONE normaliser now, so a spelling handled on one
+        side cannot be missed on the other. The value `-c ./evil.sh` carries only a space,
+        deliberately outside `_SHELL_ACTIVE_CHARS`, so the value rule does not catch it."""
+        for key in (".SHELLFLAGS", "SHELLFLAGS", ".shellflags", " .SHELLFLAGS "):
+            with self.subTest(key=key):
+                with self._spy_run_command() as run_command, \
+                        self.assertRaises(ValueError) as ctx:
+                    self.mod.tool_compile_project(
+                        self._args("compile_project", {key: "-c /tmp/evil.sh"}))
+                self.assertIn("redirect execution", str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_two_halves_refuse_exactly_the_same_names(self) -> None:
+        """ONE set, asserted as a set — not sampled.
+
+        The first version of this row iterated six SPELLINGS, all drawn from the set the two
+        halves already shared, so it could not see a set DIFFERENCE by construction: it was
+        green while `_UNSAFE_ASSIGNMENT_NAMES - _UNSAFE_ENV_OVERRIDE_KEYS == {MAKE, SHELL}`
+        and `env MAKE=./evil` ran `./evil` through a recipe calling `$(MAKE)`.
+
+        That difference is the defect class this branch met three times — `.SHELLFLAGS` in
+        argv then in env, then `MAKE` — so what is pinned is the identity, plus a drive of
+        EVERY member through both halves so the identity cannot be satisfied by a set neither
+        validator reads."""
+        self.assertEqual(self.mod._UNSAFE_ASSIGNMENT_NAMES,
+                         self.mod._UNSAFE_ENV_OVERRIDE_KEYS)
+        for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    self.mod._validate_env_overrides({name: "x"}, "compile_project")
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        None, [f"{name}=x"], "compile_project", build_system="cargo")
+
+    def test_the_two_halves_share_one_name_normaliser(self) -> None:
+        # The other half of the same claim: the sets being equal buys nothing if the two
+        # call sites normalise the spelling differently before the lookup. Each of these
+        # reaches a member only through the normaliser.
+        for spelling in (".SHELLFLAGS", "SHELLFLAGS ", " .shellflags", ".MAKEFLAGS",
+                         "ld_preload", " LD_PRELOAD", "MAKE:", "shell?"):
+            with self.subTest(spelling=spelling):
+                with self.assertRaises(ValueError):
+                    self.mod._validate_env_overrides({spelling: "x"}, "compile_project")
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        None, [f"{spelling}=x"], "compile_project",
+                        build_system="cargo")
+
     def test_denylist_is_case_insensitive_and_prefix_exact(self) -> None:
         with self._spy_run_command():
             with self.assertRaises(ValueError):
@@ -595,11 +594,11 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(
             run_command.call_args.kwargs["env"], {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"})
 
-    def test_standalone_denylist_is_not_claimed_to_be_complete(self) -> None:
-        # Names that redirect execution just as effectively and are NOT refused
-        # standalone: make imports any environment name as a make variable, so `FC`
-        # replaces the compiler a certified Makefile invokes. This is what the
-        # orchestrated allowlist exists for; pinned here so the standalone rule is not
+    def test_the_denylist_is_not_claimed_to_be_complete(self) -> None:
+        # Names that redirect execution just as effectively and are NOT refused: make
+        # imports any environment name as a make variable, so `FC` replaces the compiler a
+        # certified Makefile invokes. The orchestrated allowlist used to close this and was
+        # retired with the gate (issue #171); pinned here so the rule that remains is not
         # mistaken for a boundary.
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
@@ -638,316 +637,397 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(run_command.call_args.kwargs["env"]["OMP_NUM_THREADS"], "4")
 
 
-class OrchestratedEnvAllowlistTests(unittest.TestCase):
-    """Under an orchestration the caller's `env` is an allowlist, not a denylist.
+class BuildArgvOverrideTests(unittest.TestCase):
+    """`extra_args` is a list of make variable assignments, and nothing else.
 
-    A denylist over environment names cannot be finished: the loader reads `LD_*`, the
-    gcc driver reads `COMPILER_PATH` to find the front end it execs, and make reads
-    `MAKEFLAGS` as switches and imports every other name as a make variable. Only the
-    keys `Validate.execute` declares are accepted, so a name nobody has thought of is
-    refused by construction."""
+    It replaced an ALLOWLIST that ran only under an orchestration — six variable names,
+    plus a containment rule on the four whose value is a path, plus an outright refusal of
+    `target`. That arm bounded a LEAF's grant, and since Z4 (issue #171) no leaf reaches
+    this server at all, so PR-2 of that issue retired it. What is left applies to every
+    call, which the old standalone arm did not: an element must ASSIGN (so make switches
+    such as `--eval=$(shell ...)` are refused by construction rather than by name), and its
+    value may not carry a character the make recipe's shell acts on.
+
+    These two rules are kept for the SECOND defended class — a defect in a caller this
+    repository writes (`AGENTS.md` §Development premises) — not against a leaf, and the
+    docstring says which because the rule for deleting them later is different."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _check(self, extra_args: list[str]) -> None:
+        self.mod._validate_build_argv_overrides(None, extra_args, "compile_project")
+
+    def test_the_conductor_payload_is_accepted(self) -> None:
+        # Exactly what `_build_inproc` passes. If that payload grows, this fails here
+        # rather than the run failing mid-phase.
+        self._check(["OBJDIR=/repo/workspace/tmp/a/build",
+                     "BINDIR=/repo/workspace/binary/bin_1/bin",
+                     "BIN=sw2d_runner"])
+
+    def test_a_make_switch_is_refused_however_it_is_spelled(self) -> None:
+        for arg in ("--eval=$(shell id)", "-f/tmp/Makefile", "--load-average=8",
+                    "-j", "clean", "--warn-undefined-variables"):
+            with self.subTest(arg=arg):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check([arg])
+                self.assertIn("make variable assignments", str(ctx.exception))
+
+    def test_an_execution_redirecting_name_is_refused_as_an_assignment_too(self) -> None:
+        """The NAME rule, which must not be weaker than the env twin's.
+
+        A make COMMAND-LINE assignment overrides even a hard assignment in the Makefile, so
+        this surface carries more authority than the environment — the canonical document says
+        so. PR-2 deleted the argv-side name allowlist with the leaf's grant and its round-1
+        correction made only the VALUE rule symmetric, so `SHELL=./evil` — the interpreter of
+        every recipe line — was accepted here while `MAKESHELL` was refused one argument over.
+        """
+        for name in sorted(self.mod._UNSAFE_ASSIGNMENT_NAMES) + ["LD_PRELOAD", "DYLD_LIBRARY_PATH"]:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check([f"{name}=/tmp/x"])
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_a_shell_assignment_is_refused_whatever_the_variable_is_called(self) -> None:
+        """`NAME!=command` EXECUTES its value. The operator is the danger, not the name.
+
+        Measured on GNU Make 4.3: `make 'FOO!=touch /tmp/mk2/PWN' all` prints the recipe's
+        own output and creates the file — the build reports success while an arbitrary
+        command has run. No name denylist can reach this, because `FOO` is not on one and
+        never will be.
+
+        Round 4 mistook `!` for part of a NAME spelling and stripped it before the lookup,
+        which turned an arbitrary-execution operator into a comparison that could never
+        match. Under `make` the assignment-SHAPE rule hid it; `cmake` forwards `extra_args`
+        to the native tool after `--`, so a make command line is reachable from more than
+        `build_system=make` and there it was live."""
+        for build_system in ("make", "cmake", "ninja", "cargo", "maven"):
+            for element in ("FOO!=touch /tmp/x", "X!=id", "harmless_name!=whoami",
+                            "SHELL!=id", "A !=id"):
+                with self.subTest(build_system=build_system, element=element):
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod._validate_build_argv_overrides(
+                            None, [element], "compile_project",
+                            build_system=build_system)
+                    self.assertIn("shell assignment", str(ctx.exception))
+
+    def test_the_shell_flags_variable_is_refused_in_both_spellings(self) -> None:
+        # `.SHELLFLAGS` is make's special variable for the arguments `SHELL` is invoked
+        # with; measured, `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The dotted
+        # spelling is the real one and the undotted is what a caller is likely to write, so
+        # the leading dot is normalised off and both are refused.
+        for element in (".SHELLFLAGS=-c id;", "SHELLFLAGS=-c id;", ".shellflags=-c"):
+            with self.subTest(element=element):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, [element], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_dotted_variable_is_not_swallowed(self) -> None:
+        # The dot normalisation must not refuse a legitimate name that happens to start
+        # with one; only the denylisted stems are refused.
+        self.mod._validate_build_argv_overrides(
+            None, [".SOMETHING_ELSE=1"], "compile_project", build_system="cargo")
+
+    def test_the_name_rule_alone_closes_every_spelling_make_honours(self) -> None:
+        """Self-sufficiency, measured against GNU Make 4.3 rather than assumed.
+
+        With a `SHELL` that prints instead of running the recipe, `SHELL=./evil`,
+        `SHELL:=./evil`, `SHELL+=./evil` and ` SHELL=./evil` all execute `./evil` as every
+        recipe line's interpreter; `SHELL?=` does not, because SHELL is already set.
+
+        The predicate is driven DIRECTLY here, not through the validator, because under
+        `make` the assignment-SHAPE rule refuses the flavour spellings first — so driving
+        the validator would report green while the name rule itself still missed them, and
+        the hole would be closed by two rules each covering half of it. That is the shape
+        that has reopened three times on this branch."""
+        for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL::=./evil",
+                         "SHELL+=./evil", " SHELL=./evil",
+                         "SHELL =./evil", "shell=./evil",
+                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk"):
+            with self.subTest(spelling=spelling):
+                self.assertTrue(
+                    self.mod._is_execution_redirecting_assignment(spelling))
+
+    def test_the_name_rule_reaches_a_build_system_with_no_shape_rule(self) -> None:
+        # The other half of the same claim, through the real validator on a build system
+        # where nothing else would catch it.
+        for spelling in ("SHELL:=./evil", "SHELL::=./evil", "SHELL+=./evil",
+                         " SHELL=./evil"):
+            with self.subTest(spelling=spelling):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, [spelling], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_variable_keeps_its_flavour_operators(self) -> None:
+        # The normalisation must not swallow a legitimate name: only the flavour
+        # operators and surrounding space come off, and only from the NAME.
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("OBJDIR:=/repo/obj"))
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("CASES=a b"))
+        self.assertFalse(self.mod._is_execution_redirecting_assignment("all"))
+
+    def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
+        """The assignment SHAPE rule belongs to make, and only to make.
+
+        `_build_command` serves eleven build systems and the rule was applied to all of
+        them, so `cargo build --release` and `mvn -DskipTests` were refused as "not a make
+        variable assignment". Nothing runs through a shell here — this server never passes
+        `shell=True` — so a switch is not dangerous for a build tool that does not read one
+        as an extra makefile. `origin/main`'s standalone arm had no `extra_args` check at
+        all, so this was a capability PR-2 narrowed without saying so."""
+        for build_system, args in (
+            ("cargo", ["--release"]),
+            ("maven", ["-DskipTests"]),
+            ("gradle", ["-Pflag=1"]),
+            ("ninja", ["-v"]),
+        ):
+            with self.subTest(build_system=build_system):
+                self.mod._validate_build_argv_overrides(
+                    None, args, "compile_project", build_system=build_system)
+
+    def test_the_other_two_rules_still_apply_to_every_build_system(self) -> None:
+        # What does NOT depend on the build system: a metacharacter anywhere in the element,
+        # and an assignment to a name that redirects what is executed.
+        for build_system in ("make", "cargo", "maven", "gradle", "ninja", "cmake"):
+            with self.subTest(build_system=build_system, rule="metacharacter"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, ["X=a; id"], "compile_project", build_system=build_system)
+                self.assertIn("carry a character a shell acts on", str(ctx.exception))
+            with self.subTest(build_system=build_system, rule="redirect"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        None, ["SHELL=/tmp/x"], "compile_project",
+                        build_system=build_system)
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_the_handler_resolves_the_build_system_before_it_checks_the_argv(self) -> None:
+        # The order is load-bearing: the rules differ by build system, so validating first
+        # applies make's rule to every caller — which is the defect this row is about.
+        project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, project_dir, ignore_errors=True)
+        with mock.patch.object(
+            self.mod, "_run_command",
+            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
+        ) as run_command:
+            self.mod.tool_compile_project({
+                "project_dir": str(project_dir), "build_system": "cargo",
+                "extra_args": ["--release"],
+            })
+        run_command.assert_called_once()
+
+    def test_the_names_that_are_deliberately_still_accepted(self) -> None:
+        # The recorded residue, pinned so "what is open" cannot drift into prose alone: a name
+        # a Makefile merely READS is not refused, because bounding those means an allowlist and
+        # an allowlist bounds a grant no caller holds any more.
+        self._check(["FC=/usr/bin/gfortran", "CFLAGS=-O2", "OBJDIR=/repo/obj"])
+
+    def test_a_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
+        # The host-authored Makefile interpolates an assignment unquoted into a recipe
+        # line, so a metacharacter in a value is a command rather than a value.
+        for value in ("a; touch /tmp/x", "a && id", "$(shell id)", "`id`", "a|b",
+                      "a\nb", "a>b", "'x'"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check([f"CASES={value}"])
+                self.assertIn("carry a character a shell acts on", str(ctx.exception))
+
+    def test_every_assignment_is_checked_not_just_the_last(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self._check(["OBJDIR=/tmp/obj", "CASES=c1;id", "BIN=runner"])
+        self.assertIn("CASES=c1;id", str(ctx.exception))
+
+    def test_a_space_is_a_value_not_a_metacharacter(self) -> None:
+        # `CASES` is a word LIST by contract, and a checkout path may hold a space, so
+        # the space is deliberately outside the refused set.
+        self._check(["CASES=case_a case_b"])
+
+    def test_the_case_id_grammar_fits_the_value_rule(self) -> None:
+        # Validate.execute joins the IR's case ids into CASES, so every id the Compile
+        # gate accepts must survive this rule. Otherwise a run passes Compile and Build
+        # and fails several phases later on an id no gate objected to.
+        from tools.spec_input_gates import CASE_ID_TOKEN_RE
+        for case_id in ("c1", "l0_v1.2-alpha", "A.b_c-d", "9x"):
+            with self.subTest(case_id=case_id):
+                self.assertTrue(CASE_ID_TOKEN_RE.match(case_id))
+                self._check([f"CASES={case_id}"])
+
+    def test_the_types_are_still_checked(self) -> None:
+        with self.assertRaises(ValueError):
+            self.mod._validate_build_argv_overrides(None, "OBJDIR=x", "compile_project")
+        with self.assertRaises(ValueError):
+            self.mod._validate_build_argv_overrides(7, [], "compile_project")
+
+    def test_a_switch_spelled_as_the_target_is_refused_too(self) -> None:
+        # `_build_command` places the target POSITIONALLY on the same line the
+        # `extra_args` rule guards (`make -jN <target>`), so refusing a switch in one
+        # half and accepting it in the other guards nothing. Until Z4 the orchestrated
+        # arm refused every target and the standalone arm checked neither half.
+        for target in ("--eval=$(shell touch /tmp/x)", "-f/tmp/Makefile",
+                       "--load-average=8", "-j24", "all; id", "$(shell id)",
+                       "a b", "-"):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project")
+                self.assertIn("must be a build goal, not a switch", str(ctx.exception))
+
+    def test_an_assignment_spelled_as_the_target_is_refused_too(self) -> None:
+        """The same rule as `extra_args`, because make cannot tell the two apart.
+
+        `make -jN SHELL=./evil` is an assignment whether the caller put that string in
+        `target` or in `extra_args` — a positional argument containing `=` is never a goal
+        to make. The first version of this class drove eight switch spellings and NONE of
+        them carried an `=`, so when the target rule was widened from a name allowlist to a
+        metacharacter refusal (neither set holds `=`), the whole execution-redirect denylist
+        became reachable one argument over and the suite stayed green.
+        """
+        for target in ("SHELL=./evil", "MAKEFLAGS=-n", "MAKEFILES=/tmp/evil.mk",
+                       "LD_PRELOAD=/tmp/x.so", "PATH=/tmp", "MAKE=/tmp/x"):
+            with self.subTest(target=target, build_system="make"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project", build_system="make")
+                self.assertIn("redirect execution", str(ctx.exception))
+            # And on a build system that does not read a positional assignment at all,
+            # the name rule still applies — it is about what is EXECUTED, not about make.
+            with self.subTest(target=target, build_system="cargo"):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project", build_system="cargo")
+                self.assertIn("redirect execution", str(ctx.exception))
+
+    def test_an_ordinary_assignment_as_a_make_target_is_refused_as_a_misplacement(
+        self,
+    ) -> None:
+        # Not dangerous, but not a goal either: make would silently set the variable and
+        # build the default target, so the caller's build is not the one they asked for.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_build_argv_overrides(
+                "OBJDIR=/repo/obj", [], "compile_project", build_system="make")
+        self.assertIn("not a variable assignment", str(ctx.exception))
+
+    def test_a_real_build_goal_is_still_accepted(self) -> None:
+        # Across the build systems `_build_command` serves, not just make: a gradle task
+        # path, an npm script name and a meson typed target all carry `:`, and a make
+        # pattern goal carries `%`. A first version of this rule spelled an allowlist of
+        # name characters and refused all four — an allowlist over a grammar this server
+        # does not own answers a question it cannot know.
+        for target in ("all", "clean", "sw2d_runner", "build/libcore.a", "lib.so.1",
+                       "x86_64-target", "c++filt", ":app:assembleDebug", "build:prod",
+                       "lib.so:shared_library", "%.o", "install-strip"):
+            with self.subTest(target=target):
+                self.assertEqual(
+                    self.mod._validate_build_argv_overrides(
+                        target, [], "compile_project"),
+                    target,
+                )
+
+
+class BuildArgvOverrideWiringTests(unittest.TestCase):
+    """The argv rules are REACHED by the handler, not merely defined beside it.
+
+    `_validate_env_overrides` has such a witness (`test_denylisted_keys_are_refused_by_
+    every_env_accepting_tool`); its argv twin had only direct-call tests, so deleting the
+    single call site at `tool_compile_project` left the suite green."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = _load_server_module()
 
     def setUp(self) -> None:
-        self.repo_root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.repo_root, ignore_errors=True)
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
 
-    def _check(self, env: dict, tool: str = "run_quality_checks") -> None:
-        self.mod._validate_env_overrides(
-            env, tool, orchestrated=True, repo_root=self.repo_root)
+    def _args(self, **extra) -> dict:
+        args: dict = {"project_dir": str(self.project_dir), "build_system": "make"}
+        args.update(extra)
+        return args
 
-    def _paths(self, **extra: str) -> dict:
-        payload = {
-            "OBJDIR": f"{self.repo_root}/workspace/tmp/a/obj",
-            "BINDIR": f"{self.repo_root}/workspace/binary/bin_1/bin",
-            "RUNDIR": f"{self.repo_root}/workspace/tmp/a/qc_run",
-            "BIN": "sw2d_runner",
-            "SPEC": f"{self.repo_root}/workspace/ir/x/spec.ir.yaml",
-            "CASES": "case_a case_b",
-        }
-        payload.update(extra)
-        return payload
+    def test_the_handler_refuses_a_switch_in_either_half_before_running_anything(
+        self,
+    ) -> None:
+        cases = (
+            ("target", {"target": "--eval=$(shell id)"}, "must be a build goal, not a switch"),
+            ("extra_args", {"extra_args": ["--eval=$(shell id)"]},
+             "make variable assignments"),
+            ("value", {"extra_args": ["CASES=a; id"]},
+             "carry a character a shell acts on"),
+        )
+        for label, payload, message in cases:
+            with self.subTest(half=label):
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ) as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_compile_project(self._args(**payload))
+                self.assertIn(message, str(ctx.exception))
+                run_command.assert_not_called()
 
-    def test_declared_make_variables_are_accepted(self) -> None:
-        self._check(self._paths())
+    def test_the_validated_target_is_the_string_that_runs(self) -> None:
+        with mock.patch.object(
+            self.mod, "_run_command",
+            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
+        ) as run_command:
+            self.mod.tool_compile_project(self._args(target="  sw2d_runner  "))
+        argv = run_command.call_args.kwargs["command"]
+        self.assertIn("sw2d_runner", argv)
+        self.assertNotIn("  sw2d_runner  ", argv)
 
-    def test_everything_else_is_refused(self) -> None:
-        for key in ("FC", "CC", "CFLAGS", "MAKEFLAGS", "LD_PRELOAD", "COMPILER_PATH",
-                    "SOMETHING_NOBODY_LISTED"):
-            with self.subTest(key=key):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({key: "x"})
-                self.assertIn(key, str(ctx.exception))
-                # The message tells the caller what IS accepted.
-                self.assertIn("OBJDIR", str(ctx.exception))
 
-    def test_allowlist_is_case_exact(self) -> None:
-        # `objdir` is a different environment variable: accepting it would leave the
-        # make_test re-run on the Makefile's own OBJDIR default instead of failing. The
-        # value is one a folded key would ACCEPT, so only the key rule can refuse it.
-        with self.assertRaises(ValueError) as ctx:
-            self._check({"objdir": "runner"})
-        self.assertIn("accepts only these env overrides", str(ctx.exception))
+class RetiredArgumentTests(unittest.TestCase):
+    """`capability_token` is refused, not ignored.
 
-    def test_the_case_id_grammar_fits_the_CASES_value_rule(self) -> None:
-        # Validate.execute joins the IR's case ids into CASES, so every id the Compile
-        # gate accepts must be a word this rule accepts. Otherwise a run passes Compile
-        # and Build and fails several phases later on an id no gate objected to.
-        from tools.spec_input_gates import CASE_ID_TOKEN_RE
-        for case_id in ("c1", "l0_v1.2-alpha", "A.b_c-d", "9x"):
-            with self.subTest(case_id=case_id):
-                self.assertTrue(CASE_ID_TOKEN_RE.match(case_id))
-                self.assertTrue(self.mod._MAKE_NAME_VALUE_RE.match(case_id))
-        # The Compile grammar is the regex plus a separate `..` exclusion; the ids it
-        # refuses outright are refused here too.
-        for rejected in ("-c1", "a/b", "x y"):
-            with self.subTest(rejected=rejected):
-                self.assertIsNone(CASE_ID_TOKEN_RE.match(rejected))
-                self.assertIsNone(self.mod._MAKE_NAME_VALUE_RE.match(rejected))
+    It named a secret in `capabilities/<agent_run_id>.json` that the orchestration gate
+    compared against the launch record. A caller still sending one is written against a
+    contract this server no longer implements, so serving the call would be serving it as
+    if the check had passed."""
 
-    def test_tools_the_workflow_passes_no_env_to_accept_none(self) -> None:
-        # `run_program` / `run_linter` / `run_syntax_check` are never given a caller env
-        # by the workflow, and a make variable means nothing to a linter, so their
-        # allowlist is empty rather than the six.
-        for tool in ("compile_project", "run_program", "run_linter", "run_syntax_check"):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _args(self, tool: str) -> dict:
+        args: dict = {"project_dir": str(self.project_dir),
+                      "capability_token": "cap_secret"}
+        if tool == "run_program":
+            args["command"] = ["true"]
+        if tool == "compile_project":
+            args["build_system"] = "make"
+        return args
+
+    def test_every_tool_refuses_it(self) -> None:
+        # `detect_build_system` included: it is the one tool the retirement made MORE
+        # available (it used to be refused outright under the workflow), so a row that
+        # skipped it would leave the only re-opened surface unchecked.
+        for tool in ("compile_project", "run_program", "run_quality_checks",
+                     "run_linter", "run_syntax_check", "detect_build_system"):
             with self.subTest(tool=tool):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({"OBJDIR": f"{self.repo_root}/obj"}, tool=tool)
-                self.assertIn("(none)", str(ctx.exception))
+                with mock.patch.object(self.mod, "_run_command") as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        getattr(self.mod, f"tool_{tool}")(self._args(tool))
+                self.assertIn("capability_token", str(ctx.exception))
+                self.assertIn("#171", str(ctx.exception))
+                run_command.assert_not_called()
 
-    def test_allowlist_matches_the_conductor_payload(self) -> None:
-        # The set is exactly what Validate.execute passes (workflow_conductor.py's
-        # make_test re-run, canonical in docs/workflow/phases/phase_04_validate.md).
-        # If that payload grows, this fails rather than the run failing mid-phase.
-        self.assertEqual(
-            self.mod._MAKE_VARIABLE_ALLOWLIST,
-            frozenset({"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}))
-
-    def test_values_that_reach_the_recipe_shell_are_refused(self) -> None:
-        # The host-authored Makefile interpolates these unquoted into a recipe line
-        # (`cd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so an accepted
-        # key with a metacharacter in its value is a command. Names alone are not the
-        # rule.
-        for value in ("c1; touch /tmp/x", "c1 && id", "$(shell id)", "`id`", "a|b",
-                      "a\nb", "a>b", "'x'", "c1 --evil"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({"CASES": value})
-                self.assertIn("reach the make recipe's shell", str(ctx.exception))
-
-    def test_a_path_value_must_land_inside_the_repository(self) -> None:
-        # BINDIR alone points the recipe at any executable on the machine, so a path
-        # value is judged by where it resolves, not by its spelling.
-        for value in ("/usr/bin", "../../usr/bin", f"{self.repo_root}/../etc"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({"BINDIR": value})
-                self.assertIn("inside the repository", str(ctx.exception))
-    def test_a_path_value_must_be_absolute(self) -> None:
-        # Refused even when the relative value WOULD land inside the repository: make
-        # reads it from its own working directory (or from wherever `cd $(RUNDIR)` left
-        # it), never from the root this check measures against, so a relative value can
-        # only ever be checked as a different path from the one that runs.
-        (self.repo_root / "workspace/binary/bin_1/bin").mkdir(parents=True)
-        cwd = os.getcwd()
-        os.chdir(self.repo_root)
-        self.addCleanup(os.chdir, cwd)
-        self.assertTrue(
-            Path("workspace/binary/bin_1/bin").resolve().is_relative_to(self.repo_root))
-        with self.assertRaises(ValueError) as ctx:
-            self._check({"BINDIR": "workspace/binary/bin_1/bin"})
-        self.assertIn("absolute", str(ctx.exception))
-
-    def test_a_path_value_may_hold_any_character_the_filesystem_does(self) -> None:
-        # The rule for a path is containment, not a character class: a checkout whose
-        # path is non-ASCII must not fail every Build with a message about shell
-        # metacharacters.
-        nested = self.repo_root / "作業" / "build"
-        self._check({"OBJDIR": str(nested)})
-
-    def test_bin_is_one_name_not_a_list(self) -> None:
-        # `BIN` is a command name in `$(BINDIR)/$(BIN) --cases ...`, so a space in it
-        # appends an argument to the runner. Only CASES is a list.
-        for value in ("runner extra", "/bin/sh", "../../bin/sh", "sub/runner"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({"BIN": value})
-                self.assertIn(f"BIN={value}", str(ctx.exception))
-        self._check({"CASES": "case_a case_b"})
-
-    def test_a_path_value_may_not_hold_a_shell_metacharacter(self) -> None:
-        # Absolute, inside the repository, no space — and still a command, because the
-        # recipe interpolates it unquoted. Containment cannot see this; this rule is
-        # the only thing between it and `cd $(RUNDIR) && $(BINDIR)/$(BIN) ...`.
-        for value in (f"{self.repo_root}/x`id`", f"{self.repo_root}/a$FOO",
-                      f"{self.repo_root}/a;id", f"{self.repo_root}/a|id"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({"OBJDIR": value})
-                self.assertIn("reach the make recipe's shell", str(ctx.exception))
-
-    def test_a_refusal_caused_by_the_checkout_path_names_it(self) -> None:
-        # Otherwise the message blames a value the caller composed correctly from a
-        # repo_root it does not choose.
-        root = Path(tempfile.mkdtemp()) / "my repo"
-        root.mkdir()
-        self.addCleanup(shutil.rmtree, root.parent, ignore_errors=True)
-        with self.assertRaises(ValueError) as ctx:
-            self.mod._validate_env_overrides(
-                {"OBJDIR": f"{root}/obj"}, "run_quality_checks",
-                orchestrated=True, repo_root=root)
-        self.assertIn("repository path itself", str(ctx.exception))
-        # Not appended to a refusal it did not cause: BIN is never composed from the
-        # checkout path, so the clause would explain the wrong thing.
-        with self.assertRaises(ValueError) as ctx_name:
-            self.mod._validate_env_overrides(
-                {"BIN": "my runner"}, "run_quality_checks",
-                orchestrated=True, repo_root=root)
-        self.assertNotIn("repository path itself", str(ctx_name.exception))
-
-    def test_a_path_value_may_not_hold_a_space(self) -> None:
-        # The other half of the path rule: `<repo>/a b` resolves inside the repository
-        # and still word-splits in `cd $(RUNDIR) && $(BINDIR)/$(BIN) …`.
-        with self.assertRaises(ValueError) as ctx:
-            self._check({"OBJDIR": f"{self.repo_root}/a b"})
-        self.assertIn("reach the make recipe's shell", str(ctx.exception))
-
-    def test_an_empty_path_or_command_value_is_refused(self) -> None:
-        # `RUNDIR=` is not "unset": make imports it as set, so `?=` keeps the default
-        # away and `cd $(RUNDIR)` becomes a bare `cd`, which lands in the home
-        # directory. `$(OBJDIR)/x` likewise becomes an absolute path at the root.
-        for key in ("OBJDIR", "BINDIR", "RUNDIR", "SPEC", "BIN"):
-            with self.subTest(key=key):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check({key: ""})
-                self.assertIn(key, str(ctx.exception))
-        # An empty case list is a list.
-        self._check({"CASES": ""})
-
-    def test_only_an_absent_repo_root_falls_back_to_project_dir(self) -> None:
-        # A present but empty `repo_root` is a value, not an omission — the capability
-        # gate reads it that way, so every containment check must too, or the caller
-        # picks the root its paths are measured from.
-        self.assertNotEqual(
-            self.mod._repo_root_for_call({"repo_root": ""}, "/some/caller/dir"),
-            Path("/some/caller/dir"))
-        self.assertEqual(
-            self.mod._repo_root_for_call({}, str(self.repo_root)), self.repo_root)
-
-    def test_under_the_workflow_the_root_must_be_the_servers_own_checkout(self) -> None:
-        """Everything the capability gate trusts is read from under `repo_root`, so a
-        caller that names its own root brings its own evidence. A leaf can write a whole
-        orchestration tree in the scratch directory the agent contract grants it and hold
-        a capability it wrote itself; the root has to be the server's checkout."""
-        checkout = self.mod._server_checkout_root()
-        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
-            with self.assertRaises(ValueError) as ctx:
-                self.mod._repo_root_for_call(
-                    {"repo_root": str(self.repo_root)}, str(self.repo_root))
-            self.assertIn("must be this server's own checkout", str(ctx.exception))
-            # project_dir is the fallback, so it cannot name a root either.
-            with self.assertRaises(ValueError):
-                self.mod._repo_root_for_call({}, str(self.repo_root))
-            # The real checkout is accepted.
-            self.assertEqual(
-                self.mod._repo_root_for_call({"repo_root": str(checkout)}, "/x"), checkout)
-        # Outside a run there is no orchestration to anchor.
-        self.assertEqual(
-            self.mod._repo_root_for_call(
-                {"repo_root": str(self.repo_root)}, "/x"), self.repo_root)
-
-    def test_a_forged_orchestration_tree_is_refused_through_the_handler(self) -> None:
-        # End to end: a complete, self-consistent orchestration tree the caller wrote —
-        # preflight, phase_state, launch record, capability with its own token — buys
-        # nothing, because the gate never reads it.
-        forged = self.repo_root / "fake"
-        orch = forged / "workspace/orchestrations/x"
-        (orch / "launches").mkdir(parents=True)
-        (orch / "capabilities").mkdir(parents=True)
-        (orch / "preflight.json").write_text(json.dumps({"status": "pass"}), encoding="utf-8")
-        (orch / "phase_state.json").write_text(
-            json.dumps({"current_state": "preflight_passed"}), encoding="utf-8")
-        (orch / "launches/evil.response.json").write_text("{}", encoding="utf-8")
-        (orch / "capabilities/evil.json").write_text(
-            json.dumps({"capability_token": "attacker-chosen",
-                        "mcp_permissions": ["run_program"]}), encoding="utf-8")
-        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}):
-            with self.assertRaises(ValueError) as ctx:
-                self.mod.tool_run_program({
-                    "project_dir": str(forged), "repo_root": str(forged),
-                    "orchestration_id": "x", "agent_run_id": "evil",
-                    "capability_token": "attacker-chosen", "command": ["true"]})
-        self.assertIn("must be this server's own checkout", str(ctx.exception))
-
-    def test_the_numeric_arguments_are_held_to_their_declared_minimums(self) -> None:
-        # The served schema declares these minimums and an MCP argument schema is
-        # advisory, so the server enforces them. `make -j-5` waits forever.
-        for raw, minimum, name in ((0, 1, "jobs"), (-5, 1, "jobs"), (0, 1, "timeout_sec"),
-                                   (999, 1000, "capture_limit")):
-            with self.subTest(name=name, raw=raw):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._bounded_int(raw, 10, minimum, name)
-                self.assertIn(f"{name} must be >= {minimum}", str(ctx.exception))
-        # An absent value and an explicit null both take the default.
-        self.assertEqual(self.mod._bounded_int(None, 7, 1, "jobs"), 7)
-        self.assertEqual(self.mod._bounded_int(3, 7, 1, "jobs"), 3)
-
-    def test_argv_values_are_refused_the_same_way(self) -> None:
-        with self.assertRaises(ValueError) as ctx:
-            self.mod._validate_build_argv_overrides(
-                None, ["OBJDIR=obj; touch /tmp/x;"], "compile_project",
-                orchestrated=True, repo_root=self.repo_root)
-        self.assertIn("reach the make recipe's shell", str(ctx.exception))
-
-    def test_every_assignment_is_checked_not_just_the_last(self) -> None:
-        # Both elements reach the command line, so a duplicate key must not let the
-        # first one through unchecked.
-        # The LAST assignment is the one make keeps, so it is valid here: only the
-        # earlier element is dangerous, and collapsing the pairs into a mapping would
-        # drop exactly that one.
-        good = f"OBJDIR={self.repo_root}/obj"
-        with self.assertRaises(ValueError) as ctx:
-            self.mod._validate_build_argv_overrides(
-                None, [f"OBJDIR={self.repo_root}/obj; touch /tmp/x;", good],
-                "compile_project", orchestrated=True, repo_root=self.repo_root)
-        self.assertIn("touch /tmp/x", str(ctx.exception))
-
-    def test_a_target_is_refused_under_an_orchestration(self) -> None:
-        # Build names no target, and a target runs whatever else the Makefile defines
-        # under a grant that covers compiling.
-        with self.assertRaises(ValueError) as ctx:
-            self.mod._validate_build_argv_overrides(
-                "test", [], "compile_project", orchestrated=True,
-                repo_root=self.repo_root)
-        self.assertIn("does not accept a target", str(ctx.exception))
-
-    def test_standalone_argv_is_the_operators_own(self) -> None:
-        # The deliberate counterpart to the standalone env guardrail: outside an
-        # orchestration the caller already chose the command, so `target` and
-        # `extra_args` are not restricted. Pinned so the asymmetry is a decision.
-        self.assertEqual(
-            self.mod._validate_build_argv_overrides(
-                "all", ["-j2", "FC=gfortran-13"], "compile_project", orchestrated=False,
-                repo_root=self.repo_root),
-            "all")
-
-    def test_non_string_argv_arguments_are_refused_not_crashed(self) -> None:
-        for target, extra in ((True, []), (3, []), (None, 7), (None, [1])):
-            with self.subTest(target=target, extra_args=extra):
-                with self.assertRaises(ValueError):
-                    self.mod._validate_build_argv_overrides(
-                        target, extra, "compile_project", orchestrated=True,
-                        repo_root=self.repo_root)
-
-    def test_blank_orchestration_id_is_not_orchestrated(self) -> None:
-        # The gate reads a blank orchestration_id as absent; this predicate must agree,
-        # or a whitespace value would pick a different rule than the gate applied.
-        self.assertFalse(self.mod._is_orchestrated_call({"orchestration_id": "   "}))
-        self.assertFalse(self.mod._is_orchestrated_call({}))
-        self.assertTrue(self.mod._is_orchestrated_call({"orchestration_id": "orch_x"}))
+    def test_the_attribution_arguments_are_not_refused(self) -> None:
+        # The negative control: the two ids that REPLACED the token must be served.
+        with mock.patch.object(
+                self.mod, "_run_command",
+                return_value={"ok": True, "return_code": 0}) as run_command:
+            self.mod.tool_run_linter({
+                "project_dir": str(self.project_dir), "preset": "ruff",
+                "orchestration_id": "orch_x", "agent_run_id": "arid_x"})
+        self.assertEqual(run_command.call_args.kwargs["attribution"],
+                         {"orchestration_id": "orch_x", "agent_run_id": "arid_x"})
 
 
 class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
@@ -1051,40 +1131,6 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
             result = self._call(["a.f90"])
         # Reaches the ordinary missing-compiler skip, i.e. it was not refused.
         self.assertTrue(result["skipped"])
-
-
-class GatedHandlerWiringTests(unittest.TestCase):
-    """Every gated handler must apply the orchestrated rules, and must choose them per
-    call.
-
-    The restriction is selected from `orchestration_id` at each call site, so a site
-    that asked for the standalone rule instead would leave the workflow on the weaker
-    one — with every helper-level test still green. Asserting the call literal is how
-    `test_mcp_grant_table_matches_conductor_call_sites` pins the capability gate for the
-    same reason."""
-
-    GATED_TOOLS = (
-        "compile_project", "run_program", "run_quality_checks", "run_linter",
-        "run_syntax_check",
-    )
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def test_each_gated_handler_applies_the_orchestrated_rules(self) -> None:
-        import inspect
-        for tool in self.GATED_TOOLS:
-            source = inspect.getsource(getattr(self.mod, f"tool_{tool}"))
-            with self.subTest(tool=tool):
-                self.assertIn("_maybe_enforce_orchestration_mcp_gate", source)
-                self.assertIn(
-                    f'_validate_env_overrides(\n        env, "{tool}", '
-                    "orchestrated=_is_orchestrated_call(args),",
-                    source)
-                self.assertIn(
-                    f'_validate_orchestrated_paths(command_log_path, args, project_dir, "{tool}")',
-                    source)
 
 
 class _ReadBudgetExceeded(RuntimeError):
@@ -1433,25 +1479,27 @@ class RequestDispatchTests(unittest.TestCase):
         self.assertEqual(response["result"]["structuredContent"]["error"], "the gate said no")
         self.assertIn("the gate said no", response["result"]["content"][0]["text"])
 
-    def test_a_REAL_capability_gate_refusal_reaches_the_client_as_isError(self) -> None:
-        """The same row driven by the real gate rather than a stub, because a stub cannot show
+    def test_a_REAL_argument_refusal_reaches_the_client_as_isError(self) -> None:
+        """The same row driven by a real refusal rather than a stub, because a stub cannot show
         that the refusal actually TRAVELS this path.
 
-        A workflow-mode server with no `orchestration_id` is the refusal every gated tool makes
-        (`_maybe_enforce_orchestration_mcp_gate`), and it arrives as a ValueError. What this
-        asserts is that the client can tell it from a pass: `isError` is True, the reason is
-        carried, and the response is NOT a successful result with data in it.
+        The refusal used to be the capability gate's (a workflow-mode server called without
+        `orchestration_id`); that gate was retired in issue #171, and the argument refusal that
+        replaced it — `capability_token`, which this server no longer implements — is raised from
+        the same place in the same way. What this asserts is unchanged: the client can tell a
+        refusal from a pass. `isError` is True, the reason is carried, and the response is NOT a
+        successful result with data in it.
         """
-        with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False), \
-                tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             response = self.mod._handle_request({
                 "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                "params": {"name": "run_syntax_check", "arguments": {"project_dir": tmp}}})
+                "params": {"name": "run_syntax_check",
+                           "arguments": {"project_dir": tmp,
+                                         "capability_token": "cap_secret"}}})
         result = response["result"]
-        self.assertIs(result["isError"], True, "a capability-gate refusal must not look like a pass")
+        self.assertIs(result["isError"], True, "an argument refusal must not look like a pass")
         detail = result["structuredContent"]["error"]
-        self.assertIn("orchestration_id", detail)
-        self.assertIn("ATMOFAB_WORKFLOW_MODE", detail)
+        self.assertIn("capability_token", detail)
         self.assertNotIn("ok", result["structuredContent"],
                          "a refusal must not carry a handler's success keys")
 
@@ -1462,16 +1510,14 @@ class RequestDispatchTests(unittest.TestCase):
         red, which is the property; without this one, `isError: True -> True` everywhere would
         pass."""
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_MODE": "1"}, clear=False):
-                refused = self.mod._handle_request({
-                    "jsonrpc": "2.0", "id": 8, "method": "tools/call",
-                    "params": {"name": "run_syntax_check", "arguments": {"project_dir": tmp}}})
-            env = {k: v for k, v in os.environ.items()
-                   if k not in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID")}
-            with mock.patch.dict(os.environ, env, clear=True):
-                served = self.mod._handle_request({
-                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-                    "params": {"name": "detect_build_system", "arguments": {"project_dir": tmp}}})
+            refused = self.mod._handle_request({
+                "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                "params": {"name": "run_syntax_check",
+                           "arguments": {"project_dir": tmp,
+                                         "capability_token": "cap_secret"}}})
+            served = self.mod._handle_request({
+                "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": {"name": "detect_build_system", "arguments": {"project_dir": tmp}}})
         self.assertIs(refused["result"]["isError"], True)
         self.assertIs(served["result"]["isError"], False)
 
@@ -1836,21 +1882,23 @@ class McpCallClientTests(unittest.TestCase):
             timeout=30,
             check=False)  # the return code IS the subject of these rows
 
-    def test_a_capability_gate_refusal_comes_back_as_a_nonzero_exit_and_a_message(self) -> None:
+    def test_an_argument_refusal_comes_back_as_a_nonzero_exit_and_a_message(self) -> None:
         """The end-to-end the skills actually run, and the property they rely on.
 
-        A gated tool called under the workflow without `orchestration_id` is refused by
-        `_maybe_enforce_orchestration_mcp_gate`. That refusal travels as a ValueError -> an
-        `isError` result -> a `RuntimeError` in the client -> a non-zero exit. Every link is
-        somebody's twenty lines, and until this row nothing drove the chain.
+        A call carrying the retired `capability_token` is refused by
+        `_refuse_retired_arguments`. That refusal travels as a ValueError -> an `isError`
+        result -> a `RuntimeError` in the client -> a non-zero exit. Every link is somebody's
+        twenty lines, and until this row nothing drove the chain. (The refusal it used to drive
+        was the capability gate's, retired in issue #171; the chain under test is the same.)
         """
         with tempfile.TemporaryDirectory() as tmp:
-            done = self._call("run_syntax_check", {"project_dir": tmp}, workflow=True)
+            done = self._call("run_syntax_check",
+                              {"project_dir": tmp, "capability_token": "cap_secret"},
+                              workflow=False)
         self.assertNotEqual(done.returncode, 0,
                             "a refused call exited 0; a script reading the exit code would "
-                            "record the gate as satisfied")
-        self.assertIn("orchestration_id", done.stderr)
-        self.assertIn("ATMOFAB_WORKFLOW_MODE", done.stderr)
+                            "record the refusal as satisfied")
+        self.assertIn("capability_token", done.stderr)
         self.assertEqual(done.stdout.strip(), "",
                          "a refused call printed a result document on stdout")
 
@@ -2053,6 +2101,174 @@ class McpCallClientTests(unittest.TestCase):
             with self.subTest(document=rel):
                 self.assertTrue(path.is_file(), f"{rel} is gone; this coupling has no subject")
                 self.assertIn(needle, path.read_text(encoding="utf-8"))
+
+
+class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
+    """An MCP argument schema is advisory; `_bounded_int` is what makes it a rule.
+
+    The served schema declares `"minimum": 1` on `jobs` and `timeout_sec` and 1000 on
+    `capture_limit`, and a client is free to ignore it — `make -j-5` then waits forever
+    and `timeout_sec=0` kills the build instantly, neither with an error naming the
+    cause. `_bounded_int` is the only thing refusing them.
+
+    It lost its witness in PR-2: the check lived in `OrchestratedEnvAllowlistTests`,
+    which was deleted whole with the capability gate, and it has nothing to do with that
+    gate. Deleting the `if value < minimum` raise left the full suite green.
+
+    The minimums are read OUT OF THE SERVED SCHEMA rather than restated here, so the two
+    cannot drift apart in the direction this test exists to catch: a schema that declares
+    a bound the code does not hold."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _args(self, tool: str) -> dict:
+        args: dict = {"project_dir": str(self.project_dir)}
+        if tool == "run_program":
+            args["command"] = ["true"]
+        if tool == "compile_project":
+            args["build_system"] = "make"
+        if tool == "run_linter":
+            args["preset"] = "fortitude"
+        return args
+
+    def _bounded_properties(self) -> list[tuple[str, str, int]]:
+        out = []
+        for name, tool in self.mod.TOOLS.items():
+            for prop, schema in tool.input_schema.get("properties", {}).items():
+                if schema.get("type") == "integer" and "minimum" in schema:
+                    out.append((name, prop, int(schema["minimum"])))
+        return out
+
+    def test_every_declared_minimum_is_refused_below_its_bound(self) -> None:
+        bounded = self._bounded_properties()
+        self.assertTrue(bounded, "no integer minimum in any served schema; "
+                                 "this coupling has lost its subject")
+        for tool, prop, minimum in bounded:
+            with self.subTest(tool=tool, argument=prop):
+                args = self._args(tool)
+                args[prop] = minimum - 1
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ) as run_command, self.assertRaises(ValueError) as ctx:
+                    getattr(self.mod, f"tool_{tool}")(args)
+                self.assertIn(prop, str(ctx.exception))
+                self.assertIn(str(minimum), str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_bound_itself_is_accepted(self) -> None:
+        # Off-by-one in the other direction: a rule that refused the declared minimum
+        # would make the schema a lie the same way.
+        for tool, prop, minimum in self._bounded_properties():
+            with self.subTest(tool=tool, argument=prop):
+                args = self._args(tool)
+                args[prop] = minimum
+                with mock.patch.object(
+                    self.mod, "_run_command",
+                    return_value={"ok": True, "return_code": 0,
+                                  "stdout": "", "stderr": ""},
+                ):
+                    getattr(self.mod, f"tool_{tool}")(args)
+
+
+class ServedSchemaDescribesWhatIsEnforcedTests(unittest.TestCase):
+    """`compile_project`'s served descriptions, driven against the rules they describe.
+
+    `mcp_servers/tools/*.json` exists for only two tools, so `ToolSchemaDocumentParityTests`
+    compares a document to the served schema for those two and `compile_project`'s
+    descriptions are coupled to NOTHING. That is how they went on advertising the retired
+    allowlist to every client through PR-2 — "Refused under an orchestration", "only
+    assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted" — and it is how the
+    `extra_args` text drifted again one commit after it was corrected, still saying every
+    element must be a make assignment after that rule was scoped to make.
+
+    Coupled by DRIVING: each row runs the real validator, asserts it refuses (so the row
+    cannot pass by describing a rule that is gone), and then asserts the served description
+    names the rule. The code is the authority; the description is checked against it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _description(self, tool: str, argument: str) -> str:
+        return self.mod.TOOLS[tool].input_schema["properties"][argument]["description"]
+
+    def test_every_argv_refusal_is_described_where_the_caller_reads_it(self) -> None:
+        rows = (
+            ("target", {"target": "--eval=$(shell id)"}, "not open with -"),
+            ("target", {"target": "a b"}, "whitespace"),
+            # Added by 6d77f2f9, one commit after this class was written, and not added
+            # HERE by it — which is how the class built to stop description drift failed
+            # to cover the next rule. Deleting either clause from the served description
+            # left the whole suite green.
+            ("target", {"target": "SHELL=./evil"}, "redirection of what is executed"),
+            ("target", {"target": "OBJDIR=/repo/obj"}, "not be a variable assignment"),
+            ("extra_args", {"extra_args": ["--release"]}, "ASSIGN a make variable"),
+            ("extra_args", {"extra_args": ["SHELL=/tmp/x"]}, "redirection of what is executed"),
+            ("extra_args", {"extra_args": ["X=a; id"]}, "character a shell acts on"),
+        )
+        for argument, payload, phrase in rows:
+            with self.subTest(argument=argument, payload=payload):
+                # (1) the rule is REALLY enforced — otherwise the description below would be
+                # describing something that no longer happens, which is the whole defect.
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        payload.get("target"), payload.get("extra_args", []),
+                        "compile_project", build_system="make")
+                # (2) and the client is told.
+                self.assertIn(phrase, self._description("compile_project", argument))
+
+    def test_no_served_description_names_a_retired_mechanism(self) -> None:
+        # Derived from what the server REFUSES as retired, plus the phrase the two deleted
+        # modes were spelled with. A description naming one of these is describing a contract
+        # this server no longer implements.
+        retired = tuple(self.mod._RETIRED_ARGUMENTS) + (
+            "under an orchestration", "Under an orchestration", "allowlist")
+        scanned = 0
+        for name, tool in self.mod.TOOLS.items():
+            for argument, spec in tool.input_schema.get("properties", {}).items():
+                description = spec.get("description")
+                # A property with no description states nothing and so names nothing
+                # retired; skipped rather than compared against the empty string, which
+                # would make the row read as covering 58 properties when it covers the
+                # ones that actually say something. The rule a missing description COULD
+                # silence — a description that must state an enforced rule — is owned by
+                # the row above, which asserts the phrase is present.
+                if not description:
+                    continue
+                scanned += 1
+                for token in retired:
+                    with self.subTest(tool=name, argument=argument, token=token):
+                        self.assertNotIn(token, description)
+        self.assertGreater(scanned, 0, "no served property carries a description; this "
+                                       "row compared nothing")
+
+    def test_every_declared_minimum_is_covered_by_the_row_that_drives_them(self) -> None:
+        # The other half of "the schema is advisory": a declared minimum the code does not
+        # hold is the same defect in the other direction. `SchemaMinimumsAreEnforcedTests`
+        # derives its subject from the schema and drives each; this row pins that the two
+        # derivations see the SAME set, so a new bounded argument cannot be added to the
+        # schema and skipped there by a derivation that quietly narrowed.
+        declared = {
+            (name, argument)
+            for name, tool in self.mod.TOOLS.items()
+            for argument, spec in tool.input_schema.get("properties", {}).items()
+            if spec.get("type") == "integer" and "minimum" in spec
+        }
+        self.assertTrue(declared, "no integer minimum in any served schema")
+        driven = {
+            (tool, argument)
+            for tool, argument, _minimum
+            in SchemaMinimumsAreEnforcedTests._bounded_properties(self)
+        }
+        self.assertEqual(declared, driven)
 
 
 class ToolSchemaDocumentParityTests(unittest.TestCase):

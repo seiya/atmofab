@@ -10,20 +10,23 @@ leaf-non-writable location that already forces host authorship of `lineage.json`
 written ONLY host-side by the conductor. The validator reads it read-only and fail-closes
 when it is missing/invalid.
 
-Mirrors the codex feature-check cache pattern in `tools/hooks/codex_feature.py`. Placement
+Mirrors the codex feature-check cache pattern that lived in `tools/hooks/codex_feature.py`
+until the leaf hook layer was deleted (Z4, issue #171). Placement
 is keyed on the pipeline root (which the validator already receives as `--pipeline-root`)
 rather than the orchestration id, so no extra `--orchestration-id` plumbing is needed.
 
-Unlike the codex cache (written outside any substep window), this certificate is written by
-the conductor DURING the in-process `generate.gate` substep (its lint check), so it lands in
-that substep's FS-diff at terminalization. Because it sits at the pipeline root — outside the
-generate substep's `source/` write_root — the write-attribution check
-(`orchestration_runtime._validate_actual_write_paths`) explicitly EXEMPTS the EXACT
-`<pipeline_root>/lint_evidence/<source_id>.json` certificate for the gate substep (scoped to
-step==generate ∧ substep==gate; `source_id` from the host-authored launch request). The
-exemption is the exact file, NOT the whole `lint_evidence/` directory, so a stray sibling
-there is still flagged. The sandboxed `generate.generate` leaf is never exempted and cannot
-reach the pipeline root under bwrap, preserving non-forgeability.
+This certificate is written by the conductor DURING the in-process `generate.gate` substep
+(its lint check) and sits at the pipeline root. Non-forgeability comes from WHO writes it:
+the conductor's own process, from a `source_id` taken out of the host-authored launch request.
+No leaf can write it — since Z4 (issue #171) a leaf holds no repository write authority at
+all, and the `generate.generate` leaf cannot even reach the pipeline root under bwrap.
+
+(Until PR-2 of that issue there was a second argument for the same conclusion: the write lands
+in the gate substep's terminal FS-diff, outside the generate substep's `source/` write root,
+so that diff's write-attribution check had to EXEMPT this exact file — the file, never the
+`lint_evidence/` directory, so a stray sibling stayed flagged. The diff, the write roots and
+the exemption are all gone with the leaf's write authority; the first paragraph is what
+carries the property now.)
 """
 
 from __future__ import annotations

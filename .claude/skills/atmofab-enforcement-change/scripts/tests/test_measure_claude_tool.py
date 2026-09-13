@@ -57,7 +57,8 @@ class CaseListCoverageTests(unittest.TestCase):
     """The default list must ask every question the prose says it asks.
 
     This is the fault round 15 found: the list is cited by `TODO.md`, `docs/HOOKS.md` and
-    `tools/hooks/cli.py` as the re-check for the narrowing, and it omitted the shapes the
+    `tools/hooks/cli.py` (deleted in Z4, issue #171 — a pure leaf holds no tool) as the
+    re-check for the narrowing, and it omitted the shapes the
     narrowing's strongest sentence depends on. A future CLI that expanded braces before
     testing `isAbsolute` is the named reopening scenario, and the list could not see it.
     """
@@ -81,7 +82,7 @@ class CaseListCoverageTests(unittest.TestCase):
         self.assertEqual(self.patterns.get("\t{BASE}/secret/*"), "inert")
 
     def test_the_absolute_rows_the_hook_comment_records_are_asked(self) -> None:
-        """`tools/hooks/cli.py`'s table records braces and `..` AFTER the leading slash as
+        """The deleted leaf hook layer's table recorded braces and `..` AFTER the leading slash as
         still reading. Those are the rows that say WHY the trigger is the first character
         rather than the resolved location."""
         for pattern in ("{BASE}/{secret,outside}/*", "{BASE}/secret/../secret/*",

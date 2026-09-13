@@ -30,7 +30,7 @@ import os
 import unittest
 from pathlib import Path
 
-import tools.hooks.common as hooks_common
+import tools.operator_private_root as private_root
 import tools.orchestration_runtime as ort
 from tools import run_workflow
 
@@ -62,7 +62,7 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
         This is the assertion the module docstring is about: it is only worth anything in
         a file that installs no redirect of its own.
         """
-        secret_root = hooks_common.operator_secret_root()
+        secret_root = private_root.operator_secret_root()
         for label, resolver in self._resolvers():
             resolved = Path(resolver()).resolve()
             self.assertFalse(

@@ -5,9 +5,7 @@ Usage:
     python3 tools/audit_orchestration.py --orchestration-id <id> [--format json|markdown]
 
 Collects and aggregates:
-- Policy-level block counts from native_hook_events.jsonl
-- fix_hint presence/absence per policy
-- Last 5 hook events before fail_closed
+- the `fail_closed` instant from phase_state_log.jsonl
 - phase_state_log fail/fail_closed entries
 - agent_runs.jsonl completion status
 - Dangling launch (open active_child window with no child return / terminal run),
@@ -24,15 +22,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 # One import identity, always `tools.`: a bare-first shim would let `leaf_usage` and
 # `tools.leaf_usage` coexist as two module objects once the root is on the path. The
-# consumers below reach for `tools.hooks.*` at run time, so a shim that merely makes
-# THIS module importable buys nothing (issue #130).
+# consumers below reach for other `tools.*` modules at run time, so a shim that merely
+# makes THIS module importable buys nothing (issue #130).
 try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
     from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
@@ -107,215 +105,6 @@ def _load_json_if_dict(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-# Audit-log continuity: a hook-policy id that was renamed forward keeps a legacy
-# alias here so historical block records (carrying the old id) aggregate under the
-# new id rather than splitting into a separate, stale bucket. Add an entry whenever
-# a policy id is renamed; the right-hand side is the current canonical id.
-_LEGACY_POLICY_ALIASES: dict[str, str] = {
-    # P2-7 cleanup: the guard that rejects unauthorized direct artifact writes was
-    # renamed from the guarded-apply-patch-era id to one that names its actual job.
-    "enforce_guarded_apply_patch": "forbid_unauthorized_file_write",
-}
-
-
-def _policy_of(block: dict[str, Any]) -> str:
-    """Canonical policy id for a block record, applying legacy-id aliases so a
-    record written before a policy rename is counted under the current id."""
-    policy = (block.get("audit_detail") or {}).get("policy", "unknown")
-    return _LEGACY_POLICY_ALIASES.get(policy, policy)
-
-
-_EXPECTED_BENIGN_POLICIES: frozenset[str] = frozenset({
-    # Claude Code platform-level auto-reads at session start.  Hooks must keep
-    # blocking these to preserve the read trust boundary, but they are not real
-    # agent violations and should be aggregated separately from substantive
-    # policy hits (read_manifest_read_guard, output_manifest_write_guard, etc.).
-    "auto_read_expected_block",
-})
-
-# Per-policy "expected count" budget.  A benign block count above this budget
-# (per agent_run_id) suggests the orchestration agent is making EXPLICIT (not
-# just startup) reads of allowlisted paths — which the hook still blocks, but
-# which should NOT be silently filed under "benign noise."  Operators see these
-# excess counts surfaced in the audit report.
-#
-# auto_read_expected_block: Claude Code auto-reads up to 5 allowlisted files
-# at session start (MEMORY.md, README.md, TODO.md, CLAUDE.md, .claude/settings.json,
-# project-memory MEMORY.md).  We allow some slack (2x) for retries/double-fires
-# before flagging as suspicious.
-_BENIGN_POLICY_EXPECTED_MAX_PER_AGENT: dict[str, int] = {
-    "auto_read_expected_block": 12,
-}
-
-
-def collect_policy_block_counts(
-    blocks: list[dict[str, Any]],
-) -> dict[str, int]:
-    counter: Counter = Counter()
-    for b in blocks:
-        policy = _policy_of(b)
-        counter[policy] += 1
-    return dict(counter.most_common())
-
-
-def collect_allow_auto_approve_stats(
-    hook_events: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Return the total of `action=allow_auto_approve` and the breakdown by tool_name.
-
-    For visualizing Write/Edit events that bypassed the harness's permission
-    prompt with `hookSpecificOutput.permissionDecision="allow"`. When the volume
-    is unexpectedly large, it is a signal that manifest verification is lax, or
-    that unintended multiple writes are running on the agent side.
-    """
-    by_tool: Counter = Counter()
-    total = 0
-    for e in hook_events:
-        if e.get("action") != "allow_auto_approve":
-            continue
-        total += 1
-        tool_name = e.get("tool_name") or (e.get("audit_detail") or {}).get("tool_name") or "unknown"
-        by_tool[tool_name] += 1
-    return {
-        "total": total,
-        "by_tool": dict(by_tool.most_common()),
-    }
-
-
-def split_substantive_and_benign(
-    blocks: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Partition block events into (substantive, benign) groups.
-
-    Benign blocks (e.g. auto_read_expected_block) represent expected
-    platform-level noise; substantive blocks indicate real policy hits that
-    deserve operator attention.
-    """
-    substantive: list[dict[str, Any]] = []
-    benign: list[dict[str, Any]] = []
-    for b in blocks:
-        policy = _policy_of(b)
-        if policy in _EXPECTED_BENIGN_POLICIES:
-            benign.append(b)
-        else:
-            substantive.append(b)
-    return substantive, benign
-
-
-def detect_suspicious_benign_volume(
-    benign_blocks: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Flag benign-policy blocks that exceed expected per-agent volume.
-
-    The hook policy still blocks these reads, so the trust boundary holds, but
-    a count well above the platform's startup auto-read budget suggests the
-    orchestration agent is making EXPLICIT post-startup reads of allowlisted
-    files — which an operator should see in the audit report rather than have
-    silently aggregated into the benign bucket.
-
-    Returns one entry per (agent_run_id, policy) combination that exceeds the
-    expected budget, including the actual count and the budget threshold.
-    """
-    counts: dict[tuple[str, str], int] = {}
-    for b in benign_blocks:
-        audit_detail = b.get("audit_detail") or {}
-        policy = _policy_of(b)
-        # Resolution order for agent_run_id: audit_detail (canonical, set by
-        # validate_read_access for auto_read_expected_block) → top-level →
-        # payload_summary → "<unknown>".
-        agent_id = audit_detail.get("agent_run_id") or b.get("agent_run_id") or ""
-        if not agent_id:
-            payload = b.get("payload_summary")
-            if isinstance(payload, dict):
-                agent_id = payload.get("agent_run_id", "")
-        agent_id = str(agent_id) if agent_id else "<unknown>"
-        counts[(agent_id, policy)] = counts.get((agent_id, policy), 0) + 1
-
-    flagged: list[dict[str, Any]] = []
-    for (agent_id, policy), cnt in sorted(counts.items()):
-        budget = _BENIGN_POLICY_EXPECTED_MAX_PER_AGENT.get(policy)
-        if budget is not None and cnt > budget:
-            flagged.append({
-                "agent_run_id": agent_id,
-                "policy": policy,
-                "count": cnt,
-                "expected_max": budget,
-                "note": (
-                    "benign count exceeds expected startup-read budget; "
-                    "may indicate explicit post-startup reads"
-                ),
-            })
-    return flagged
-
-
-def _repeat_key_of(block: dict[str, Any]) -> str:
-    """What identifies "THIS agent tried the same thing again".
-
-    Bash blocks are identified by their command. A Grep/Glob block carries no
-    command — its target is `path` (+ `pattern`) — so keying on `command` alone
-    made a search retried in a loop invisible, which is exactly the signal this
-    aggregation exists to surface.
-
-    The key is scoped to the agent and the tool. Two agents blocked once each on
-    the same path is not a retry, and reporting it as one accuses an agent of
-    ignoring a hint it never saw. `agent_run_id` is the identity where the
-    record carries it; the session id is the fallback.
-    """
-    summary = block.get("payload_summary")
-    if not isinstance(summary, dict):
-        return str(summary or "")
-    detail = block.get("audit_detail")
-    identity = ""
-    if isinstance(detail, dict) and isinstance(detail.get("agent_run_id"), str):
-        identity = detail["agent_run_id"].strip()
-    if not identity and isinstance(summary.get("session_id"), str):
-        identity = summary["session_id"].strip()
-    tool = block.get("tool_name")
-    scope = [part for part in (identity, tool if isinstance(tool, str) else "") if part]
-
-    command = summary.get("command")
-    if isinstance(command, str) and command.strip():
-        target = command.strip()
-    else:
-        target = "::".join(
-            str(summary[key]).strip()
-            for key in ("path", "pattern", "file_path")
-            if isinstance(summary.get(key), str) and str(summary[key]).strip()
-        )
-    if not target:
-        return ""
-    return "::".join([*scope, target])
-
-
-def collect_fix_hint_stats(
-    blocks: list[dict[str, Any]],
-) -> dict[str, Any]:
-    hint_present: Counter = Counter()
-    hint_absent: Counter = Counter()
-    repeated: defaultdict = defaultdict(list)
-    seen_commands: list[str] = []
-    for b in blocks:
-        policy = _policy_of(b)
-        fix_hint = (b.get("audit_detail") or {}).get("fix_hint")
-        cmd = _repeat_key_of(b)
-        # A hint is present when it carries ANY actionable field. Read blocks
-        # deliberately carry `note` rather than `next_command`, because for an
-        # out-of-manifest path there is no command that works.
-        if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
-            hint_present[policy] += 1
-        else:
-            hint_absent[policy] += 1
-        if cmd and cmd in seen_commands:
-            repeated[policy].append(cmd[:200])
-        if cmd:
-            seen_commands.append(cmd)
-    return {
-        "hint_present": dict(hint_present.most_common()),
-        "hint_absent": dict(hint_absent.most_common()),
-        "repeated": {k: v for k, v in repeated.items()},
-    }
-
-
 def _parse_ts(value: Any) -> datetime | None:
     """Parse an ISO-8601 timestamp into a timezone-aware datetime.
 
@@ -337,16 +126,16 @@ def _parse_ts(value: Any) -> datetime | None:
     return dt
 
 
-def collect_fail_closed_timeline(
-    hook_events: list[dict[str, Any]],
-    phase_log: list[dict[str, Any]],
-    n: int = 5,
-) -> dict[str, Any]:
-    # Pick the LATEST fail_closed transition by parsed datetime (not raw
-    # string max, which can disagree with chronological order under mixed
-    # offsets/precisions). Then slice the last n hook events sorted by
-    # parsed timestamp — file order is not reliable when multiple hook
-    # processes append concurrently.
+def _latest_fail_closed_at(phase_log: list[dict[str, Any]]) -> str | None:
+    """The timestamp of the LATEST `fail_closed` transition in `phase_state_log.jsonl`.
+
+    By parsed datetime rather than raw string max, which can disagree with chronological
+    order under mixed offsets or precisions. `None` when the run never fail-closed.
+
+    This is what is left of `collect_fail_closed_timeline`, which also sliced the five hook
+    events preceding that instant; the hook trace it read is deleted with the leaf hook layer
+    (issue #171).
+    """
     fail_entries: list[tuple[datetime, str]] = []
     for entry in phase_log:
         new_state = entry.get("to") or entry.get("new_state", "")
@@ -358,52 +147,9 @@ def collect_fail_closed_timeline(
             if parsed is not None and isinstance(raw_ts, str):
                 fail_entries.append((parsed, raw_ts))
     if not fail_entries:
-        return {"fail_closed_at": None, "last_events": []}
+        return None
     fail_entries.sort(key=lambda x: x[0])
-    fail_dt, fail_ts = fail_entries[-1]
-
-    # Sort hook events by parsed timestamp.  Events with an unparseable
-    # timestamp would otherwise be silently dropped from the timeline,
-    # which is an observability gap during incident analysis (the worst
-    # case is a malformed-timestamp event RIGHT before fail_closed).
-    # We sort the parseable ones, then append unparseable ones at the end
-    # so they appear in `last_events`, AND we surface their count as an
-    # integrity warning the caller can render.
-    indexed: list[tuple[datetime | None, int, dict[str, Any]]] = []
-    for i, e in enumerate(hook_events):
-        raw = e.get("ts") or e.get("timestamp")
-        indexed.append((_parse_ts(raw), i, e))
-    sortable = [(dt, idx, e) for (dt, idx, e) in indexed if dt is not None]
-    unparseable = [e for (dt, _idx, e) in indexed if dt is None]
-    sortable.sort(key=lambda x: (x[0], x[1]))
-    events_before_sorted = [e for (dt, _i, e) in sortable if dt <= fail_dt]
-    # Combine sliced parseable events with all unparseable events at the
-    # end (they have no time signal — append rather than drop).
-    candidate_window = events_before_sorted + unparseable
-    last_n = candidate_window[-n:] if len(candidate_window) > n else candidate_window
-
-    def _render_event(e: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ts": e.get("ts") or e.get("timestamp"),
-            "action": e.get("action"),
-            "tool_name": e.get("tool_name") or (
-                (e.get("payload_summary") or {}).get("tool_name") if isinstance(e.get("payload_summary"), dict) else None
-            ),
-            # Preserve None for non-block events (no policy), but alias a legacy id.
-            "policy": (
-                _LEGACY_POLICY_ALIASES.get(_raw_policy, _raw_policy)
-                if (_raw_policy := (e.get("audit_detail") or {}).get("policy")) is not None
-                else None
-            ),
-            "payload_summary": str(e.get("payload_summary", ""))[:120],
-        }
-
-    return {
-        "fail_closed_at": fail_ts,
-        "last_events": [_render_event(e) for e in last_n],
-        "unparseable_timestamp_count": len(unparseable),
-        "unparseable_events": [_render_event(e) for e in unparseable[:10]],
-    }
+    return fail_entries[-1][1]
 
 
 def collect_agent_run_summary(
@@ -942,18 +688,21 @@ def audit(repo_root: Path, orchestration_id: str, *,
     # reached by a mistyped id or by running the RUNBOOK's command from a cwd where the
     # default `--repo-root .` does not name this checkout.
     orchestration_found = root.is_dir()
-    hook_events, hook_errs = _load_jsonl_with_errors(root / "hooks" / "native_hook_events.jsonl")
+    # NO HOOK EVENTS. `hooks/native_hook_events.jsonl` was the in-sandbox leaf hook's trace,
+    # and every section derived from it — the per-policy block counts, the benign/substantive
+    # split and its volume budget, the `fix_hint` presence report, the `allow_auto_approve`
+    # count and the five events before `fail_closed` — described decisions a hook made about a
+    # leaf's tool call. Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted
+    # the hook with the leaf that held tools; PR-2 deletes this half of the audit, which had
+    # been reporting zero over a file nothing writes. The `fail_closed` timestamp survives,
+    # read from `phase_state_log.jsonl` as it always was.
     phase_log, phase_errs = _load_jsonl_with_errors(root / "phase_state_log.jsonl")
     agent_runs, runs_errs = _load_jsonl_with_errors(root / "agent_runs.jsonl")
     invalid_runs, inv_errs = _load_jsonl_with_errors(root / "agent_runs_invalid.jsonl")
     meta = _load_json_if_dict(root / "orchestration_meta.json") or {}
 
-    all_blocks = [e for e in hook_events if e.get("action") == "block"]
-    substantive_blocks, benign_blocks = split_substantive_and_benign(all_blocks)
-    suspicious_benign = detect_suspicious_benign_volume(benign_blocks)
-    parse_errors = hook_errs + phase_errs + runs_errs + inv_errs
-    timeline = collect_fail_closed_timeline(hook_events, phase_log)
-    unparseable_count = timeline.get("unparseable_timestamp_count", 0)
+    parse_errors = phase_errs + runs_errs + inv_errs
+    fail_closed_at = _latest_fail_closed_at(phase_log)
     # Each best-effort section below still refuses to break the audit, but a swallowed
     # failure is RECORDED in `diagnostic_failures` and surfaced by the renderer: a
     # section that failed must not print its clean-negative sentence, which reads as a
@@ -1016,16 +765,7 @@ def audit(repo_root: Path, orchestration_id: str, *,
 
     return {
         "orchestration_id": orchestration_id,
-        "total_hook_events": len(hook_events),
-        "total_blocks": len(all_blocks),
-        "substantive_block_count": len(substantive_blocks),
-        "benign_block_count": len(benign_blocks),
-        "policy_block_counts": collect_policy_block_counts(substantive_blocks),
-        "benign_policy_block_counts": collect_policy_block_counts(benign_blocks),
-        "suspicious_benign_volume": suspicious_benign,
-        "allow_auto_approve_stats": collect_allow_auto_approve_stats(hook_events),
-        "fix_hint_stats": collect_fix_hint_stats(substantive_blocks),
-        "fail_closed_timeline": timeline,
+        "fail_closed_at": fail_closed_at,
         "launch_incident": launch_incident,
         "launch_incident_snapshots": launch_incident_snapshots,
         "agent_run_summary": collect_agent_run_summary(agent_runs, invalid_runs),
@@ -1033,10 +773,9 @@ def audit(repo_root: Path, orchestration_id: str, *,
         "pure_leaf_ab_summary": pure_leaf_ab_summary,
         "invalid_run_count": len(invalid_runs),
         "invalid_run_ids": [r.get("agent_run_id") for r in invalid_runs if r.get("agent_run_id")],
-        "data_integrity_warning": (len(parse_errors) > 0) or (unparseable_count > 0),
+        "data_integrity_warning": len(parse_errors) > 0,
         "parse_error_count": len(parse_errors),
         "parse_errors": parse_errors,
-        "unparseable_timestamp_count": unparseable_count,
         "diagnostic_failures": diagnostic_failures,
         "orchestration_found": orchestration_found,
         "orchestration_root": str(root),
@@ -1444,9 +1183,6 @@ def _render_markdown(result: dict[str, Any]) -> str:
     orch_id = result["orchestration_id"]
     lines.append(f"# Audit: {orch_id}")
     lines.append("")
-    lines.append(f"Total hook events: {result['total_hook_events']}  ")
-    lines.append(f"Total blocks: {result['total_blocks']}")
-    lines.append("")
 
     if not result.get("orchestration_found", True):
         lines.append("## ⚠ orchestration not found")
@@ -1460,108 +1196,11 @@ def _render_markdown(result: dict[str, Any]) -> str:
         )
         lines.append("")
 
-    lines.append("## Policy block counts (substantive)")
+    fail_closed_at = result.get("fail_closed_at")
+    lines.append("## fail_closed")
     lines.append("")
-    lines.append("| Policy | Count | Note |")
-    lines.append("|---|---|---|")
-    for policy, cnt in result["policy_block_counts"].items():
-        note = "**REPEATED ERROR PATTERN**" if cnt >= 5 else ""
-        lines.append(f"| `{policy}` | {cnt} | {note} |")
-    lines.append("")
-
-    benign_counts = result.get("benign_policy_block_counts", {})
-    if benign_counts:
-        lines.append("## Benign block counts (platform auto-reads)")
-        lines.append("")
-        lines.append(
-            "These reads are blocked by policy (the trust boundary holds), but "
-            "are expected Claude Code platform behavior at session start. "
-            "Counts are surfaced here so operators can detect anomalous volume."
-        )
-        lines.append("")
-        lines.append("| Policy | Count |")
-        lines.append("|---|---|")
-        for policy, cnt in benign_counts.items():
-            lines.append(f"| `{policy}` | {cnt} |")
-        lines.append("")
-
-    suspicious = result.get("suspicious_benign_volume", [])
-    if suspicious:
-        lines.append("## ⚠ Suspicious benign-block volume")
-        lines.append("")
-        lines.append(
-            "Benign blocks exceed the expected platform-auto-read budget for "
-            "one or more agents — possible explicit (post-startup) reads of "
-            "allowlisted paths."
-        )
-        lines.append("")
-        lines.append("| agent_run_id | policy | count | expected_max |")
-        lines.append("|---|---|---|---|")
-        for entry in suspicious:
-            lines.append(
-                f"| `{entry['agent_run_id']}` | `{entry['policy']}` | "
-                f"{entry['count']} | {entry['expected_max']} |"
-            )
-        lines.append("")
-
-    aa = result.get("allow_auto_approve_stats", {})
-    if aa.get("total", 0) > 0:
-        lines.append("## Auto-approved Write/Edit (hookSpecificOutput)")
-        lines.append("")
-        lines.append(
-            "Count of `action=allow_auto_approve` events. These are Write/Edit "
-            "calls where the hook returned `permissionDecision=\"allow\"` because "
-            "the target path matched `output_manifest.allowed_file_tool_paths`, "
-            "bypassing the Claude Code harness permission prompt. High volume on "
-            "a single tool may indicate an agent doing more direct writes than "
-            "expected; check the corresponding agent's output_manifest scope."
-        )
-        lines.append("")
-        lines.append(f"Total: {aa.get('total', 0)}")
-        # Because collect_allow_auto_approve_stats() always includes at least 1
-        # by_tool entry when total>0 (adopting "unknown" when tool_name is unknown),
-        # the empty check can be omitted here.
-        lines.append("")
-        lines.append("| Tool | Count |")
-        lines.append("|---|---|")
-        for tool_name, cnt in aa.get("by_tool", {}).items():
-            lines.append(f"| `{tool_name}` | {cnt} |")
-        lines.append("")
-
-    fhs = result["fix_hint_stats"]
-    lines.append("## fix_hint stats")
-    lines.append("")
-    lines.append("### Hints present")
-    for p, c in fhs["hint_present"].items():
-        lines.append(f"- `{p}`: {c}")
-    lines.append("")
-    lines.append("### Hints absent (possible docs gap)")
-    for p, c in fhs["hint_absent"].items():
-        lines.append(f"- `{p}`: {c}")
-    lines.append("")
-    if fhs["repeated"]:
-        lines.append("### Repeated commands (hint possibly ignored)")
-        for p, cmds in fhs["repeated"].items():
-            lines.append(f"- `{p}`: {len(cmds)} repeat(s)")
-    lines.append("")
-
-    fc = result["fail_closed_timeline"]
-    lines.append("## fail_closed timeline")
-    lines.append("")
-    if fc["fail_closed_at"] is None:
-        lines.append("No fail_closed event found.")
-    else:
-        lines.append(f"fail_closed at: `{fc['fail_closed_at']}`")
-        lines.append("")
-        lines.append("Last events before fail_closed:")
-        lines.append("")
-        lines.append("| ts | action | tool | policy | summary |")
-        lines.append("|---|---|---|---|---|")
-        for e in fc["last_events"]:
-            lines.append(
-                f"| {e['ts']} | {e['action']} | {e.get('tool_name','')} "
-                f"| {e.get('policy','')} | {e['payload_summary']} |"
-            )
+    lines.append(f"fail_closed at: `{fail_closed_at}`" if fail_closed_at
+                 else "No fail_closed transition recorded.")
     lines.append("")
 
     failures = result.get("diagnostic_failures") or []

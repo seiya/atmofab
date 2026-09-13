@@ -3822,17 +3822,11 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                      / wc.LAUNCH_INSTANT_PROBE_BASENAME)
             self.assertEqual(probe.stat().st_mtime, instant)
             self.assertEqual(json.loads(probe.read_text())["agent_run_id"], "arid-1")
-            # The exemption the placement rests on, asked of the runtime that owns it rather
-            # than asserted in prose here.
-            from tools import orchestration_runtime as ort
-            rel = probe.relative_to(repo).as_posix()
-            self.assertTrue(ort._should_ignore_runtime_snapshot_path(
-                rel, orchestration_id="orch_x", agent_run_id="arid-1"))
-            # ... and a control that must NOT be exempt, or the assertion above would hold for
-            # a predicate that ignores everything.
-            self.assertFalse(ort._should_ignore_runtime_snapshot_path(
-                "workspace/pipelines/p/runs/r/n/pre_judge_meta.json",
-                orchestration_id="orch_x", agent_run_id="arid-1"))
+            # The probe used to need an EXEMPTION: it is a host write inside the child's own
+            # agent directory, and the terminal FS-diff would have attributed it to the leaf.
+            # PR-2 of issue #171 deleted that diff with the write baseline it ran against, so
+            # the placement rests on nothing that has to be asked any more. What the probe is
+            # FOR — the launch instant, read back from the file's own mtime — is above.
             # A SECOND attempt is a second arid — every retry loop allocates one at the top of
             # its body — so it gets its own probe and the first attempt's record survives beside
             # its `dialogs/`. An earlier version of this block called the method twice with ONE
@@ -14068,8 +14062,6 @@ class WriteMakefileTest(unittest.TestCase):
         # dependency nodes (Model B); covers absent keys (build_system/language), where the
         # two sides must apply the SAME defaults. The reconstruction below mirrors the runtime
         # computation in orchestration_runtime.record_launch verbatim.
-        from tools.orchestration_runtime import (
-            _impl_resolved_build_system, _impl_resolved_language)
         cases = [
             # (label, spec.ir.yaml text)
             ("leaf+make+fortran",
@@ -15371,11 +15363,7 @@ class DeterministicBuildTest(unittest.TestCase):
             def spawn_leaf(self, *a, **k):  # type: ignore[override]
                 raise AssertionError("leaf must not spawn for deterministic build")
 
-            def _capability_token(self, child_arid):  # type: ignore[override]
-                return "captok"
-
-            def _build_inproc(self, refs, child_arid, cap_token):  # type: ignore[override]
-                captured["cap_token"] = cap_token
+            def _build_inproc(self, refs, child_arid):  # type: ignore[override]
                 captured["child_arid"] = child_arid
                 return {"stdout": "compiled", "stderr": ""}
 
@@ -15389,7 +15377,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
         self.assertEqual(oc.status, "pass")
         self.assertEqual(oc.leaf_returncode, 0)
-        self.assertEqual(captured["cap_token"], "captok")
+        self.assertTrue(str(captured["child_arid"]).strip())
         self.assertEqual(captured["prefix"], "deterministic")
         subs = [s for s, _ in c.calls]
         # SAME bookkeeping as a leaf run, but the conductor issues the child-return.
@@ -15398,15 +15386,15 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertIn("finalize-child", subs)
 
     def test_build_infra_failure_nonzero_returncode_fails_substep(self) -> None:
-        # A conductor/MCP INFRA failure (the _run_deterministic_substep except clause,
-        # e.g. missing capability) returns rc != 0 -> transport fail (leaf_returncode 1).
-        # Content failures (compile/gate) instead return rc 0 and route via the tables.
+        # A conductor/MCP INFRA failure (the _run_deterministic_substep except clause)
+        # returns rc != 0 -> transport fail (leaf_returncode 1). Content failures
+        # (compile/gate) instead return rc 0 and route via the tables.
         class C(_FakeConductor):
             def _run_deterministic_substep(self, *a, **k):  # type: ignore[override]
                 return wc.Conductor._run_deterministic_substep(self, *a, **k)
 
-            def _capability_token(self, child_arid):  # type: ignore[override]
-                raise RuntimeError("missing capability token")  # infra failure
+            def _build_inproc(self, refs, child_arid):  # type: ignore[override]
+                raise RuntimeError("the build body blew up")  # infra failure
 
             def _persist_leaf_output(self, *a, **k):  # type: ignore[override]
                 pass
@@ -15443,7 +15431,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
             with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
-                out = c._build_inproc(refs, "child-1", "captok")
+                out = c._build_inproc(refs, "child-1")
 
             self.assertEqual(out["returncode"], 0)  # content fail, not transport
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
@@ -15480,10 +15468,8 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
                         "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "_maybe_enforce_orchestration_mcp_gate",
-                                   lambda **kw: None), \
-                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
-                c._build_inproc(refs, "child-1", "captok")
+            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                c._build_inproc(refs, "child-1")
 
             # It reached the subprocess layer, i.e. no validator refused the payload.
             argv = fake_run_command.seen["command"]
@@ -15520,7 +15506,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
             with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
-                c._build_inproc(refs, "child-1", "captok")
+                c._build_inproc(refs, "child-1")
 
             self.assertIn("BIN=spec_x_runner", captured["extra_args"])
 
@@ -15584,7 +15570,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     mock.patch.object(wc.subprocess, "run",
                                       lambda *a, **k: wc.subprocess.CompletedProcess(
                                           a[0] if a else [], 0, "", "")):
-                c._build_inproc(refs, "child-1", "captok")
+                c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             bindings = meta["dependency_check"]["closure_bindings"]
@@ -15618,7 +15604,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
             with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
-                c._build_inproc(refs, "child-1", "captok")
+                c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             self.assertIn("closure_bindings", meta["dependency_check"])
@@ -15652,7 +15638,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
             with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
-                c._build_inproc(refs, "child-1", "captok")
+                c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             self.assertEqual(meta["source_ir_id"], "ir_20260707_007")
@@ -15699,7 +15685,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
                  mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_run_quality_checks):
                 try:
-                    c._execute_inproc(refs, "child-1", "captok")
+                    c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant; env is captured above
 
@@ -15740,11 +15726,7 @@ class DeterministicBuildTest(unittest.TestCase):
             # The leaf's write_root is the whole source tree, so it can author this name.
             (src / "-o.f90").write_text("program q\nend program q\n", encoding="utf-8")
 
-            from unittest import mock
-            with mock.patch.object(build_runtime_server,
-                                   "_maybe_enforce_orchestration_mcp_gate",
-                                   lambda **kw: None):
-                section = c._gate_syntax_check(refs, "child-1", "captok")
+            section = c._gate_syntax_check(refs, "child-1")
 
             self.assertEqual(section["status"], "fail")
             self.assertEqual(section["failure_category"], "syntax_error")
@@ -15793,7 +15775,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_syntax_check", refuse):
                 with self.assertRaises(ValueError):
-                    c._gate_syntax_check(refs, "child-1", "captok")
+                    c._gate_syntax_check(refs, "child-1")
 
     def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
         """Validate.execute is where the six-key `env` allowlist is actually used, and
@@ -15835,12 +15817,9 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
                         "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server,
-                                   "_maybe_enforce_orchestration_mcp_gate",
-                                   lambda **kw: None), \
-                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
                 try:
-                    c._execute_inproc(refs, "child-1", "captok")
+                    c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant here
 
@@ -15882,7 +15861,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "boom"}):
-                out = c._execute_inproc(refs, "child-1", "captok")
+                out = c._execute_inproc(refs, "child-1")
             # runtime error returns rc 0 (content failure) AND leaves no verdict.json ->
             # classify_failure sees no failure_class -> the Generate/C2 runner-failure path.
             self.assertEqual(out["returncode"], 0)
@@ -16533,7 +16512,7 @@ class DeterministicBuildTest(unittest.TestCase):
              mock.patch.object(build_runtime_server, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", fake_subprocess_run):
-            result = c._execute_inproc(refs, "child-1", "captok")
+            result = c._execute_inproc(refs, "child-1")
 
         meta_path = repo / refs.run_node_dir() / "trial_meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
@@ -16803,7 +16782,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
-                c._execute_inproc(refs, "child-1", "captok")
+                c._execute_inproc(refs, "child-1")
             self.assertFalse((node_dir / "trial_meta.json").exists())
 
     def test_execute_inproc_runtime_error_writes_no_trial_meta(self) -> None:
@@ -16831,7 +16810,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
-                out = c._execute_inproc(refs, "child-1", "captok")
+                out = c._execute_inproc(refs, "child-1")
             self.assertEqual(out["returncode"], 0)
             self.assertFalse((repo / refs.run_node_dir() / "trial_meta.json").exists())
 
@@ -16985,7 +16964,7 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             with self._patch_linter(self._attributing_linter({"whole", "leaf"})):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "lint_findings")
         self.assertIn("leaf set", out["failure_excerpt"])
@@ -17005,7 +16984,7 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             with self._patch_linter(self._attributing_linter({"whole", "host"})):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "host_rendered_lint_findings")
         self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
@@ -17028,7 +17007,7 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             with self._patch_linter(self._attributing_linter({"whole", "leaf", "host"})):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
         self.assertEqual(out["failure_category"], "host_rendered_lint_findings")
         self.assertIn("leaf set", out["failure_excerpt"])
         self.assertIn("host set", out["failure_excerpt"])
@@ -17045,7 +17024,7 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             with self._patch_linter(self._attributing_linter({"whole"})):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
         self.assertEqual(out["failure_category"], "lint_finding_unattributed")
         self.assertIn(out["failure_category"], wc.GATE_FAILURE_TERMINAL)
         self.assertIn("unattributed", out["failure_excerpt"])
@@ -17083,7 +17062,7 @@ class DeterministicLintTest(unittest.TestCase):
                         "stdout": "" if which != "whole" else "FINDING somewhere"}
 
             with self._patch_linter(_fn):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
         self.assertIn("sub/nested.f90", seen["leaf"])
         self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
         # Union == the whole tree, which is the property the attribution rests on.
@@ -17125,7 +17104,7 @@ class DeterministicLintTest(unittest.TestCase):
                         "command_id": f"cid-{which}", "preset": "fortitude", "stdout": "x"}
 
             with self._patch_linter(_fn):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
         self.assertIn("sub/Makefile", seen["leaf"])
         self.assertNotIn("sub/Makefile", seen["host"])
         self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
@@ -17149,7 +17128,7 @@ class DeterministicLintTest(unittest.TestCase):
                 return base(args)
 
             with self._patch_linter(_fn):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
         self.assertEqual(len(seen), 3)  # whole directory, then the two probes
         self.assertIn("command_log_path", seen[0])
         for probe in seen[1:]:
@@ -17189,7 +17168,7 @@ class DeterministicLintTest(unittest.TestCase):
 
                     with self._patch_linter(_fn):
                         with self.assertRaises(RuntimeError) as caught:
-                            c._gate_lint_check(refs, "child-1", "captok")
+                            c._gate_lint_check(refs, "child-1")
                 self.assertIn("without checking anything", str(caught.exception))
 
     def test_a_run_with_no_exit_status_is_a_transport_fail_closed(self) -> None:
@@ -17228,7 +17207,7 @@ class DeterministicLintTest(unittest.TestCase):
 
                     with self._patch_linter(_fn):
                         with self.assertRaises(RuntimeError) as caught:
-                            c._gate_lint_check(refs, "child-1", "captok")
+                            c._gate_lint_check(refs, "child-1")
                 self.assertIn("no exit status", str(caught.exception))
                 self.assertIn("timeout", str(caught.exception))
 
@@ -17250,7 +17229,7 @@ class DeterministicLintTest(unittest.TestCase):
                     "ok": False, "return_code": True, "command_id": "cid",
                     "preset": "fortitude", "stdout": "", "stderr": ""}):
                 with self.assertRaises(RuntimeError) as caught:
-                    c._gate_lint_check(refs, "child-1", "captok")
+                    c._gate_lint_check(refs, "child-1")
         self.assertIn("no exit status", str(caught.exception))
         self.assertIn("True", str(caught.exception))
 
@@ -17281,12 +17260,11 @@ class DeterministicLintTest(unittest.TestCase):
                 return base(args)
 
             with self._patch_linter(_fn):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
         self.assertEqual(len(seen), 3)
         for call in seen:
             self.assertEqual(call["orchestration_id"], c.orchestration_id)
             self.assertEqual(call["agent_run_id"], "child-1")
-            self.assertEqual(call["capability_token"], "captok")
             self.assertEqual(call["repo_root"], str(repo))
             self.assertEqual(call["capture_limit"], wc._FULL_CAPTURE_LIMIT)
 
@@ -17321,7 +17299,7 @@ class DeterministicLintTest(unittest.TestCase):
                         "stdout": "" if which != "whole" else "FINDING"}
 
             with self._patch_linter(_fn):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
         self.assertNotIn("left_over.f90", seen["leaf"])
 
     def test_host_rendered_src_names_comes_from_the_authorship_predicates(self) -> None:
@@ -17359,7 +17337,7 @@ class DeterministicLintTest(unittest.TestCase):
             with self._patch_linter(
                 lambda args: {"ok": True, "return_code": 0, "command_id": "cid",
                               "preset": "fortitude"}):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
@@ -17383,7 +17361,7 @@ class DeterministicLintTest(unittest.TestCase):
             with self._patch_linter(
                 lambda args: {"ok": False, "return_code": 1, "command_id": "cid",
                               "preset": "fortitude", "stdout": "S001 line too long"}):
-                out = c._gate_lint_check(refs, "child-1", "captok")
+                out = c._gate_lint_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -17416,7 +17394,7 @@ class DeterministicLintTest(unittest.TestCase):
                               "preset": "fortitude", "stdout": "",
                               "stderr": "error: invalid value 'ZZZ999' for '--select'"}):
                 with self.assertRaises(RuntimeError) as caught:
-                    c._gate_lint_check(refs, "child-1", "captok")
+                    c._gate_lint_check(refs, "child-1")
         self.assertIn("without checking anything", str(caught.exception))
         self.assertIn("lint.py", str(caught.exception))
 
@@ -17441,7 +17419,7 @@ class DeterministicLintTest(unittest.TestCase):
                 ],
             }
             with self._patch_linter(lambda args: mixed):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
             ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
             assert ev is not None
             self.assertEqual(ev["preset"], "mixed")
@@ -17455,7 +17433,7 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed(repo, refs, language="brainfuck")
             c = self._conductor(repo)
             with self.assertRaises(RuntimeError):
-                c._gate_lint_check(refs, "child-1", "captok")
+                c._gate_lint_check(refs, "child-1")
 
 
 class DeterministicSyntaxTest(unittest.TestCase):
@@ -17538,7 +17516,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "skipped": False}
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             staged = repo / "workspace" / "tmp" / "child-1" / "syntax" / "_deps"
             self.assertTrue((staged / "depz_model.f90").is_file())
@@ -17564,7 +17542,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "skipped": False}
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             self.assertEqual(seen_args[0]["compiler"], "gfortran")
             self.assertEqual(seen_args[0]["std"], "f2008")
@@ -17652,7 +17630,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
@@ -17679,7 +17657,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unattributed_interaction")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
@@ -17704,7 +17682,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 return base(args)
 
             with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "leaf")
         self.assertEqual([], [d for d in seen if d.endswith("_leaf_probe")])
 
@@ -17726,7 +17704,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 raise SyntaxSourceNameError("refused source name '-o.f90'")
 
             with self._patch_syntax(_raise):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
@@ -17770,7 +17748,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 return base(args)
 
             with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unattributed_interaction")
         self.assertNotIn("stale_broken.f90", seen["leaf"])
         self.assertIn("harness_mod.f90", seen["leaf"])
@@ -17803,7 +17781,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "skipped": False, "stderr": "adv1d_runner.f90:12: Error: boom"}
 
             with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unprobed")
         self.assertEqual(out["failure_category"], "syntax_error")
 
@@ -17822,7 +17800,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     "ok": True, "return_code": 0, "command_id": "sid",
                     "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
                     "skipped": False}):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
         self.assertIn("attribution", out)
         self.assertIsNone(out["attribution"])
 
@@ -17843,7 +17821,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "stderr": "Error: IMPLICIT NONE with spec list"}
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -17867,7 +17845,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 raise AssertionError("run_syntax_check must not run for language=cpp")
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
@@ -17885,7 +17863,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed(repo, refs, sources={})
             c = self._conductor(repo)
             with self._patch_syntax(lambda args: {"ok": True, "skipped": False}):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")  # content fail (no source to check)
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -17902,7 +17880,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 lambda args: {"ok": True, "skipped": True,
                               "reason": "compiler not available: gfortran"}):
                 with self.assertRaises(RuntimeError):
-                    c._gate_syntax_check(refs, "child-1", "captok")
+                    c._gate_syntax_check(refs, "child-1")
 
     def test_gate_syntax_check_optional_stage_skipped_records_and_passes(self) -> None:
         import sys
@@ -17931,7 +17909,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             with mock.patch.object(
                     build_runtime_server, "_SYNTAX_COMPILER_ADAPTERS", registry), \
                     self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
@@ -17961,7 +17939,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                                       return_value=["component/dep@0.1.0"]):
                 with self._patch_syntax(lambda args: {"ok": True, "skipped": False}):
                     with self.assertRaises(RuntimeError):
-                        c._gate_syntax_check(refs, "child-1", "captok")
+                        c._gate_syntax_check(refs, "child-1")
 
     DEP_REF = "workspace/pipelines/component__dep__0.1.0/p_1/source/s_1/src/dep_model.f90"
 
@@ -18026,7 +18004,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             stage_p, closure_p = self._with_dep(c)
             with stage_p, closure_p, self._patch_syntax(fake):
                 with self.assertRaises(RuntimeError) as ctx:
-                    c._gate_syntax_check(refs, "child-1", "captok")
+                    c._gate_syntax_check(refs, "child-1")
             self.assertIn(self.DEP_REF, str(ctx.exception))
             self.assertIn("Unused dummy argument", str(ctx.exception))
             # NO deliverable assertion here, deliberately. `_gate_syntax_check` authors no
@@ -18065,7 +18043,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
             stage_p, closure_p = self._with_dep(c)
             with stage_p, closure_p, self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -18092,7 +18070,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             stage_p, closure_p = self._with_dep(c)
             with stage_p, closure_p, self._patch_syntax(lambda args: unviable):
                 with self.assertRaises(RuntimeError) as ctx:
-                    c._gate_syntax_check(refs, "child-1", "captok")
+                    c._gate_syntax_check(refs, "child-1")
             msg = str(ctx.exception)
             self.assertIn("not viable", msg)
             self.assertIn("toolchain.standard", msg)
@@ -18126,7 +18104,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             stage_p, closure_p = self._with_dep(c)
             with stage_p, closure_p, self._patch_syntax(fake):
                 with self.assertRaises(RuntimeError) as ctx:
-                    c._gate_syntax_check(refs, "child-1", "captok")
+                    c._gate_syntax_check(refs, "child-1")
             msg = str(ctx.exception)
             self.assertIn("re-certify", msg)          # cause 1: a defective dependency
             self.assertIn("toolchain.standard", msg)  # cause 2: this node's standard
@@ -18164,7 +18142,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
             stage_p, closure_p = self._with_dep(c)
             with stage_p, closure_p, self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -18189,7 +18167,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "compiler_version": "GNU Fortran 13", "skipped": False}
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1", "captok")
+                out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
             assert ev is not None
@@ -18241,7 +18219,7 @@ class DeterministicStaticTest(unittest.TestCase):
             self._seed(repo, refs)
             c = self._conductor(repo)
             with self._patch_run(self._fake_run(0, 0)):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
@@ -18255,7 +18233,7 @@ class DeterministicStaticTest(unittest.TestCase):
             self._seed(repo, refs)
             c = self._conductor(repo)
             with self._patch_run(self._fake_run(0, 1)):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -18288,7 +18266,7 @@ class DeterministicStaticTest(unittest.TestCase):
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "static_frontend_unavailable")
 
@@ -18325,7 +18303,7 @@ class DeterministicStaticTest(unittest.TestCase):
                     raise AssertionError(f"unexpected subprocess: {cmd}")
 
                 with self._patch_run(run):
-                    out = c._gate_static_check(refs, "child-1", "captok")
+                    out = c._gate_static_check(refs, "child-1")
             self.assertEqual("post_generate_violation", out["failure_category"], payload)
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
@@ -18359,7 +18337,7 @@ class DeterministicStaticTest(unittest.TestCase):
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "stale_dependency_ir")
         self.assertEqual("fail_closed",
@@ -18398,7 +18376,7 @@ class DeterministicStaticTest(unittest.TestCase):
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "host_authored_artifact_violation")
         self.assertEqual("fail_closed",
@@ -18430,7 +18408,7 @@ class DeterministicStaticTest(unittest.TestCase):
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["failure_category"], "post_generate_violation")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
 
@@ -18468,7 +18446,7 @@ class DeterministicStaticTest(unittest.TestCase):
                     raise AssertionError(f"unexpected subprocess: {cmd}")
 
                 with self._patch_run(run):
-                    out = c._gate_static_check(refs, "child-1", "captok")
+                    out = c._gate_static_check(refs, "child-1")
             self.assertEqual("post_generate_violation", out["failure_category"], payload)
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
@@ -18483,7 +18461,7 @@ class DeterministicStaticTest(unittest.TestCase):
             # workspace_root fails first; post_generate must NOT run (pg_rc would also fail,
             # but the category proves the short-circuit picked workspace_root).
             with self._patch_run(self._fake_run(1, 1)):
-                out = c._gate_static_check(refs, "child-1", "captok")
+                out = c._gate_static_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")  # workspace_root short-circuit
             meta = out
             self.assertEqual(meta["status"], "fail")
@@ -18568,7 +18546,7 @@ class DeterministicGateTest(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 for p in self._patches(linter, self._syntax_fail, run):
                     stack.enter_context(p)
-                out = c._gate_inproc(refs, "child-1", "captok")
+                out = c._gate_inproc(refs, "child-1")
 
             self.assertEqual(out["returncode"], 0)  # content fail, not transport
             self.assertFalse(ran_static["called"])
@@ -18624,7 +18602,7 @@ class DeterministicGateTest(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 for p in self._patches(linter, self._syntax_pass, run):
                     stack.enter_context(p)
-                out = c._gate_inproc(refs, "child-1", "captok")
+                out = c._gate_inproc(refs, "child-1")
 
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.source_dir() / "gate_meta.json").read_text())
@@ -18663,12 +18641,9 @@ class DeterministicGateTest(unittest.TestCase):
                 return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
                         "stderr": "Error"}
 
-            from unittest import mock
             with contextlib.ExitStack() as stack:
                 for p in self._patches(linter, syntax):
                     stack.enter_context(p)
-                stack.enter_context(
-                    mock.patch.object(c, "_capability_token", lambda arid: "captok"))
                 proc = c._run_deterministic_substep(
                     refs, "generate", "gate", "child-1",
                     {"step": "generate", "substep": "gate"})
@@ -18694,12 +18669,9 @@ class DeterministicGateTest(unittest.TestCase):
             def run(cmd, **kwargs):  # the static checker's validator subprocess blows up
                 raise OSError("python3 not found")
 
-            from unittest import mock
             with contextlib.ExitStack() as stack:
                 for p in self._patches(linter, self._syntax_pass, run):
                     stack.enter_context(p)
-                stack.enter_context(
-                    mock.patch.object(c, "_capability_token", lambda arid: "captok"))
                 proc = c._run_deterministic_substep(
                     refs, "generate", "gate", "child-1",
                     {"step": "generate", "substep": "gate"})
@@ -18766,7 +18738,7 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             c = self._conductor(repo)
             seen: list[str] = []
             with self._patch_run(self._fake_run(0, 0, seen)):
-                out = c._compile_static_inproc(refs, "child-1", "captok")
+                out = c._compile_static_inproc(refs, "child-1")
             # TWO gates, in this order, each run once. Issue #180 removed a third that used
             # to sit between them; a re-added or duplicated gate is red here.
             self.assertEqual(
@@ -18784,7 +18756,7 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             self._seed(repo, refs)
             c = self._conductor(repo)
             with self._patch_run(self._fake_run(0, 1)):
-                out = c._compile_static_inproc(refs, "child-1", "captok")
+                out = c._compile_static_inproc(refs, "child-1")
             self.assertEqual(out["returncode"], 0)  # content fail, not transport
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "fail")
@@ -18801,7 +18773,7 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             # workspace_root fails first; --stage compile must NOT run.
             seen: list[str] = []
             with self._patch_run(self._fake_run(1, 1, seen)):
-                out = c._compile_static_inproc(refs, "child-1", "captok")
+                out = c._compile_static_inproc(refs, "child-1")
             self.assertEqual(seen, ["validate_workspace_root.py"])
             self.assertEqual(out["returncode"], 0)
             meta = self._meta(repo, refs)
@@ -18821,9 +18793,7 @@ class DeterministicCompileStaticTest(unittest.TestCase):
                 raise OSError("python3 not found")
 
             request = {"step": "compile", "substep": "static"}
-            with self._patch_run(boom), \
-                    __import__("unittest").mock.patch.object(
-                        c, "_capability_token", lambda arid: "captok"):
+            with self._patch_run(boom):
                 proc = c._run_deterministic_substep(refs, "compile", "static", "child-1", request)
             self.assertNotEqual(proc.returncode, 0)
 
@@ -19161,14 +19131,14 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             c = self._conductor(repo)
             # empty closure -> pass
             with mock.patch.object(c, "_judge_pre_spawn_dag_block", lambda r: None):
-                out = c._pre_judge_inproc(refs, "child-pj", "captok")
+                out = c._pre_judge_inproc(refs, "child-pj")
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "pass")
             # incomplete closure -> fail with dag category
             with mock.patch.object(c, "_judge_pre_spawn_dag_block",
                                    lambda r: "missing ['component/dep']"):
-                out = c._pre_judge_inproc(refs, "child-pj", "captok")
+                out = c._pre_judge_inproc(refs, "child-pj")
             self.assertEqual(out["returncode"], 0)  # content failure, not transport
             meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "fail")
@@ -19182,7 +19152,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
             with self._patch_run(lambda cmd, **k: wc.subprocess.CompletedProcess(cmd, 0, "", "")):
-                out = c._post_judge_inproc(refs, "child-post", "captok")
+                out = c._post_judge_inproc(refs, "child-post")
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "pass")
@@ -19198,7 +19168,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                    "- workspace/runs/n/semantic_review.json: review_method must be "
                    "llm_semantic_review\n")
             with self._patch_run(lambda cmd, **k: wc.subprocess.CompletedProcess(cmd, 1, out, "")):
-                res = c._post_judge_inproc(refs, "child-post", "captok")
+                res = c._post_judge_inproc(refs, "child-post")
             self.assertEqual(res["returncode"], 0)  # content failure, not transport
             meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "fail")
@@ -19217,7 +19187,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             out = ("pipeline semantic validation: FAIL\n"
                    "- workspace/orchestrations/o/agent_graph.json:edges[1] child not found\n")
             with self._patch_run(lambda cmd, **k: wc.subprocess.CompletedProcess(cmd, 1, out, "")):
-                c._post_judge_inproc(refs, "child-post", "captok")
+                c._post_judge_inproc(refs, "child-post")
             meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["disposition"], "fail_closed")
 
@@ -19232,7 +19202,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 raise OSError("python3 not found")
 
             with self._patch_run(boom):
-                res = c._post_judge_inproc(refs, "child-post", "captok")
+                res = c._post_judge_inproc(refs, "child-post")
             self.assertEqual(res["returncode"], 0)
             meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "fail")
@@ -19268,7 +19238,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 c = self._conductor(repo)
                 with self._patch_run(lambda cmd, _rc=rc, **k: wc.subprocess.CompletedProcess(
                         cmd, _rc, recoverable_bullet, "")):
-                    res = c._post_judge_inproc(refs, "child-post", "captok")
+                    res = c._post_judge_inproc(refs, "child-post")
                 meta = json.loads(
                     (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(res["returncode"], 0, rc)  # content failure, not transport
@@ -19300,7 +19270,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 c = self._conductor(repo)
                 with self._patch_run(lambda cmd, _o=out, **k: wc.subprocess.CompletedProcess(
                         cmd, 1, _o, "")):
-                    c._post_judge_inproc(refs, "child-post", "captok")
+                    c._post_judge_inproc(refs, "child-post")
                 meta = json.loads(
                     (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
             self.assertEqual(meta["failure_category"], "pre_judge_violation", marker)
@@ -19322,7 +19292,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 return wc.subprocess.CompletedProcess(cmd, 0, "", "")
 
             with self._patch_run(run):
-                c._post_judge_inproc(refs, "child-post", "captok")
+                c._post_judge_inproc(refs, "child-post")
             cmd = seen["cmd"]
             self.assertEqual(cmd[cmd.index("--stage") + 1], "pre_judge")
             self.assertEqual(cmd[cmd.index("--pipeline-root") + 1], refs.pipeline_ref)
@@ -19909,7 +19879,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
-                "  capabilities: [pure, warm_resume, mcp_tools]\n"))
+                "  capabilities: [pure, warm_resume]\n"))
         rows, meta = restricted._run_usage_probe(restricted.entry_for("validate", "judge"))
         self.assertIsNone(rows)
         self.assertEqual(meta["outcome"], "backend_unsupported")
@@ -20719,7 +20689,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
             c = wc.Conductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
             with mock.patch.object(wc.subprocess, "run", self._shim(repo)):
-                out = c._compile_static_inproc(refs, "child-1", "captok")
+                out = c._compile_static_inproc(refs, "child-1")
 
             meta = json.loads(
                 (repo / refs.ir_ref / "compile_static_meta.json").read_text(encoding="utf-8"))
@@ -20777,7 +20747,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
              mock.patch.object(build_runtime_server, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", self._shim(repo)):
-            result = c._execute_inproc(refs, "child-1", "captok")
+            result = c._execute_inproc(refs, "child-1")
 
         meta_path = repo / refs.run_node_dir() / "trial_meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}

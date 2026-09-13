@@ -10409,35 +10409,6 @@ end program shallow_water2d_runner
                 msg=f"substep-parent edge must still fail closed; got: {violations}",
             )
 
-    def test_pre_judge_refuses_an_outstanding_unauthorized_write(self) -> None:
-        """Two layers, not one. Issue #177 moved the landed-write refusal from the diverted
-        child's `agent_graph.json` edge to the violation marker — the edge is pruned as an
-        orphan once `agent_runs_invalid.jsonl` no longer names the child — and moving it left
-        this gate covering nothing. Narrowing a defense is a classification, not a side effect,
-        so the marker check belongs here too: pre_judge runs long before any `set-status pass`,
-        so it stops the run before a whole Validate phase is spent on a workspace that cannot be
-        certified."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            violations = self._violations_with_removed_child(
-                repo, removed_arid="substep_run_validate_execute_001",
-                divert_removed_child_to_invalid=True)
-            self.assertFalse(
-                any("unauthorized write violation is outstanding" in v for v in violations),
-                msg=f"no marker was written; got: {violations}")
-
-            orch = repo / "workspace/orchestrations/orch_test_001"
-            (orch / "violations").mkdir(parents=True, exist_ok=True)
-            (orch / "violations" / "substep_run_validate_execute_001."
-                                   "unauthorized_write_violation.json").write_text(
-                "{}", encoding="utf-8")
-            violations2 = self._violations_with_removed_child(
-                repo, removed_arid="substep_run_validate_execute_001",
-                divert_removed_child_to_invalid=True)
-            self.assertTrue(
-                any("unauthorized write violation is outstanding" in v for v in violations2),
-                msg=f"the marker must be refused; got: {violations2}")
-
     def test_pre_judge_tolerates_an_invalid_log_child_edge(self) -> None:
         """This scan checks graph INTEGRITY. A terminal attempt whose payload was refused lives
         only in `agent_runs_invalid.jsonl` and its edge is deliberately kept; tolerating it here
@@ -10445,11 +10416,12 @@ end program shallow_water2d_runner
         validation — a session-id mismatch, a missing sandbox profile, an empty `output_refs` —
         and refusing them all would wedge an honest run permanently.
 
-        The case that must NOT pass — a landed unauthorized write — is refused by the completion
-        vouch instead, anchored on `violations/<arid>.unauthorized_write_violation.json`. That
-        anchor was chosen over this edge for two measured reasons: `violations/` is not exempt
-        from the terminal write-audit diff (this log IS), and deleting the log prunes the edge
-        as an orphan, leaving this scan nothing to refuse."""
+        The case that used to justify the OTHER half of this reasoning — a landed unauthorized
+        write, refused by the completion vouch's clause (c) and anchored on
+        `violations/<arid>.unauthorized_write_violation.json` rather than on this edge — no
+        longer exists: issue #171 PR-2 deleted the write audit, the marker and that clause,
+        because a pure leaf has no write authority to exceed. The tolerance above stands on
+        the divert list alone, and every member of it leaves nothing behind."""
         execute_arid = "substep_run_validate_execute_001"
         with tempfile.TemporaryDirectory() as tmp:
             violations = self._violations_with_removed_child(
@@ -15044,9 +15016,10 @@ class MakefileTestInvokesCasesTest(unittest.TestCase):
 class MakefileTestNoRelinkTest(unittest.TestCase):
     """post_generate gate: the `test`/`check` target must use a non-relinking
     fail-closed guard and must not recurse into make. A relinking guard in
-    Validate.execute writes into the read-only-bound binary/ and escalates a
-    binary-name/availability mismatch into an unauthorized_write_violation ->
-    fail_closed (orch_20260619T113225Z_f48fe14b)."""
+    Validate.execute writes into the read-only-bound binary/, which turns a
+    binary-name/availability mismatch into an EROFS mid-phase
+    (orch_20260619T113225Z_f48fe14b; it was an unauthorized_write_violation ->
+    fail_closed until issue #171 PR-2 retired the write audit)."""
 
     def _run(
         self,
@@ -23699,8 +23672,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     def _orch_root(self, repo_root: Path) -> Path:
         return repo_root / "workspace" / "orchestrations" / self._ORCH
 
-    def _make_pure(self, repo_root: Path, *, capability_mode: str = "pure_readonly",
-                   pure_prompt: bool = True) -> None:
+    def _make_pure(self, repo_root: Path, *, pure_prompt: bool = True) -> None:
         """Convert the generate.generate substep launch record into a pure record."""
         from tools.orchestration_runtime import (
             prepare_launch_request_payload, render_launch_prompt_text)
@@ -23731,21 +23703,10 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             prompt = render_launch_prompt_text(pure_render_req)
             (orch_root / "launches" / f"{self._ARID}.prompt.txt").write_text(
                 prompt, encoding="utf-8")
-        # A pure launch's zero-authority capability.
-        cap_dir = orch_root / "capabilities"
-        cap_dir.mkdir(parents=True, exist_ok=True)
-        (cap_dir / f"{self._ARID}.json").write_text(
-            json.dumps({"agent_run_id": self._ARID, "mode": capability_mode,
-                        "write_roots": [], "mcp_permissions": [],
-                        "step": "generate", "substep": "generate"}),
-            encoding="utf-8")
-        # Deny-all read manifest + read-only sandbox profile a real pure launch persists.
-        rman_dir = orch_root / "read_manifests"
-        rman_dir.mkdir(parents=True, exist_ok=True)
-        (rman_dir / f"{self._ARID}.json").write_text(
-            json.dumps({"agent_run_id": self._ARID, "allowed_read_roots": [],
-                        "denied_read_roots": ["./"]}),
-            encoding="utf-8")
+        # The read-only sandbox profile — the ONE document a real pure launch persists about
+        # itself since PR-2 of issue #171. The capability and the read manifest this fixture
+        # also wrote went with the audit that read them (`_make_pr2_pure` below removes the
+        # directories the minimal-tree builder may still create).
         sbx_dir = orch_root / "sandbox_profiles"
         sbx_dir.mkdir(parents=True, exist_ok=True)
         (sbx_dir / f"{self._ARID}.json").write_text(
@@ -23898,27 +23859,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         from tools.orchestration_runtime import _HTTP_PROVIDER_TOKENS
         self.assertEqual(vps._HTTP_PURE_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
 
-    def test_pure_record_with_output_manifest_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            om_dir = self._orch_root(repo_root) / "output_manifests"
-            om_dir.mkdir(parents=True, exist_ok=True)
-            (om_dir / f"{self._ARID}.json").write_text("{}", encoding="utf-8")
-            self.assertTrue(
-                any("must NOT have an output manifest" in v
-                    for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_wrong_capability_mode_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root, capability_mode="readwrite")
-            self.assertTrue(
-                any("capability mode must be 'pure_readonly'" in v
-                    for v in self._pure_violations(repo_root)))
-
     def test_pure_request_with_nonpure_prompt_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -23927,36 +23867,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._make_pure(repo_root, pure_prompt=False)
             self.assertTrue(
                 any("pure-launch mismatch" in v
-                    for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_nonempty_capability_write_roots_flagged(self) -> None:
-        # Positive test for the sweep's `write_roots must be []` clause (otherwise it could be
-        # deleted and stay green — _make_pure always writes []).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            cap_path = self._orch_root(repo_root) / "capabilities" / f"{self._ARID}.json"
-            cap = json.loads(cap_path.read_text(encoding="utf-8"))
-            cap["write_roots"] = ["workspace/pipelines/x/source/s/src/"]
-            cap_path.write_text(json.dumps(cap), encoding="utf-8")
-            self.assertTrue(
-                any("write_roots must be []" in v
-                    for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_nonempty_capability_mcp_permissions_flagged(self) -> None:
-        # Positive test for the sweep's `mcp_permissions must be []` tripwire — a pure leaf
-        # invokes no gate/MCP, so a populated list is a zero-authority-record violation.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            cap_path = self._orch_root(repo_root) / "capabilities" / f"{self._ARID}.json"
-            cap = json.loads(cap_path.read_text(encoding="utf-8"))
-            cap["mcp_permissions"] = ["build-runtime"]
-            cap_path.write_text(json.dumps(cap), encoding="utf-8")
-            self.assertTrue(
-                any("mcp_permissions must be []" in v
                     for v in self._pure_violations(repo_root)))
 
     def test_pure_record_obsolete_contract_version_flagged(self) -> None:
@@ -23984,60 +23894,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 encoding="utf-8")
             self.assertTrue(
                 any("prompt_contract_version" in v for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_omitted_mcp_permissions_flagged(self) -> None:
-        # An absent mcp_permissions (truncated/hand-crafted capability) must be flagged, not
-        # defaulted to [] — the producer always emits an explicit empty list.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            cap_path = self._orch_root(repo_root) / "capabilities" / f"{self._ARID}.json"
-            cap = json.loads(cap_path.read_text(encoding="utf-8"))
-            cap.pop("mcp_permissions", None)
-            cap_path.write_text(json.dumps(cap), encoding="utf-8")
-            self.assertTrue(
-                any("mcp_permissions must be []" in v
-                    for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_non_denyall_read_manifest_flagged(self) -> None:
-        # A pure launch mistakenly provisioned with a non-empty read manifest must be caught.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            rman_path = self._orch_root(repo_root) / "read_manifests" / f"{self._ARID}.json"
-            rman = json.loads(rman_path.read_text(encoding="utf-8"))
-            rman["allowed_read_roots"] = ["workspace/ir/"]
-            rman_path.write_text(json.dumps(rman), encoding="utf-8")
-            self.assertTrue(
-                any("read manifest allowed_read_roots must be []" in v
-                    for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_read_manifest_with_the_key_absent_is_flagged(self) -> None:
-        """ABSENT is a different input from a non-empty list, and both must be caught.
-
-        FOUND BY THE ROUND-1 SECURITY REVIEW as a surviving mutant: relaxing this arm to
-        `not in ([], None)` — which reads an absent `allowed_read_roots` as compliant — survived
-        the whole file, because every case here mutated the VALUE and none removed the key. A
-        truncated or hand-crafted record is the shape that arrives with it missing, and the
-        production code already refuses it; what was missing is the case that says so. The
-        CORRECTION to the finding as reported: it named this arm AND the capability's
-        `mcp_permissions` arm above. Only this one was undriven —
-        `test_pure_record_omitted_mcp_permissions_flagged` already pops that key and kills the
-        same mutation there, verified by running it. One gap, not two.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            rman_path = self._orch_root(repo_root) / "read_manifests" / f"{self._ARID}.json"
-            rman = json.loads(rman_path.read_text(encoding="utf-8"))
-            rman.pop("allowed_read_roots", None)
-            rman_path.write_text(json.dumps(rman), encoding="utf-8")
-            self.assertTrue(
-                any("read manifest allowed_read_roots must be []" in v
-                    for v in self._pure_violations(repo_root)))
 
     def test_pure_record_writable_sandbox_profile_flagged(self) -> None:
         # A pure launch provisioned through the generic (writable/non-readonly) sandbox path
@@ -24075,6 +23931,86 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 any("missing launch-prompt template markers" in v
                     and "prompt_contract_version:" in v
                     for v in violations))
+
+    # ----------------------------------------------------------------------------------
+    # PR-2 of Z4 (issue #171): the records this sweep used to demand are no longer written.
+    #
+    # Three of the five checks above ask about a document the enforcement complex produced
+    # for a leaf that could write: the output manifest's ABSENCE, the capability's
+    # `pure_readonly` / empty `write_roots` / empty `mcp_permissions`, and the read
+    # manifest's deny-all `allowed_read_roots`. None of them is enforced by anything — the
+    # hook layer that read the manifests went in PR-1 — so each is a record checked against
+    # itself, and PR-2 stops writing all three.
+    #
+    # What must SURVIVE is the pair that describes something real: the sandbox profile
+    # (`readonly`, `write_roots == []`), which the kernel enforces through bwrap, and the
+    # terminal row's `output_refs == []`, which is the claim the host's own bundle writer
+    # contradicts if it is wrong.
+    # ----------------------------------------------------------------------------------
+
+    def _make_pr2_pure(self, repo_root: Path) -> None:
+        """The pure record as PR-2 writes it: no capability, no manifests, no audit dirs."""
+        import shutil
+        self._make_pure(repo_root)
+        orch_root = self._orch_root(repo_root)
+        for name in ("capabilities", "read_manifests", "output_manifests",
+                     "access_policies", "access_logs", "violations", "gates"):
+            shutil.rmtree(orch_root / name, ignore_errors=True)
+
+    def test_hierarchy_validator_ignores_absent_record_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pr2_pure(repo_root)
+            self.assertEqual(self._pure_violations(repo_root), [])
+
+    def test_the_readonly_sandbox_profile_is_still_required_without_them(self) -> None:
+        """The surviving half, checked on the SAME workspace the row above passes on — so a
+        deletion that silenced the pure audit altogether fails here."""
+        for mutation, expected in (
+            ({"readonly": False}, "must be readonly"),
+            ({"write_roots": ["workspace/"]}, "write_roots must be []"),
+        ):
+            with self.subTest(mutation=sorted(mutation)), \
+                    tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    self._build_tree(repo_root)
+                    self._make_pr2_pure(repo_root)
+                    sbx = (self._orch_root(repo_root) / "sandbox_profiles"
+                           / f"{self._ARID}.json")
+                    doc = json.loads(sbx.read_text(encoding="utf-8"))
+                    doc.update(mutation)
+                    sbx.write_text(json.dumps(doc), encoding="utf-8")
+                    self.assertTrue(
+                        any(expected in v for v in self._pure_violations(repo_root)),
+                        self._pure_violations(repo_root))
+
+    def test_a_pure_pass_row_must_still_declare_no_output_refs_without_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pr2_pure(repo_root)
+            runs = self._orch_root(repo_root) / "agent_runs.jsonl"
+            lines = []
+            forged = False
+            for line in runs.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("agent_run_id") == self._ARID:
+                        row["output_refs"] = ["workspace/forged.txt"]
+                        forged = True
+                    line = json.dumps(row, ensure_ascii=False)
+                lines.append(line)
+            self.assertTrue(forged, "the pure row was not found in agent_runs.jsonl")
+            runs.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            # NOT `_pure_violations`: that filter matches "pure launch", and this arm's
+            # message opens "pure pass row". Reading the whole list is also what makes the
+            # row a real pin — the mutated workspace must produce this violation and no
+            # other, so a deletion that silences the arm shows up either way.
+            violations = validate(repo_root=repo_root, workspace_root="workspace",
+                                  require_orchestration=True)
+            self.assertTrue(
+                any("output_refs of exactly []" in v for v in violations), violations)
 
 
 class DirectExecutionBootstrapTests(unittest.TestCase):

@@ -48,7 +48,6 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
-from tools.hooks.common import operator_secret_root
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -56,9 +55,10 @@ from tools.llm_config import (
     load_llm_config,
     resolve_default_config_path,
 )
+from tools.operator_private_root import operator_secret_root
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
-# unlike the homes root and the token store it does not live in `tools/hooks/common.py`,
+# unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
 # because the claims are not a protected read root and nothing in the hooks layer needs
 # to resolve them. What is shared with those two is the DEFAULT: it hangs off
 # `operator_secret_root()`, so the one place `~/.atmofab` is spelled decides where all
@@ -102,7 +102,7 @@ PHASE_ALIASES = {
 PHASE_ORDER = ["Compile", "Generate", "Build", "Validate"]
 
 # CLI tools the workflow runtime depends on (used internally by orchestration_runtime
-# subcommands such as run-gate / guarded-apply-patch, and by git-based status probes
+# subcommands, and by git-based status probes
 # in tools/run_workflow.py itself). Missing any one fails the run before init, so
 # agents never hit a partial-failure state where (e.g.) jq is unavailable to runtime
 # but already in the agent's environment.
@@ -517,33 +517,6 @@ def _collect_noncanonical_write_violations(repo_root: Path, orchestration_id: st
     return collected
 
 
-def _collect_unauthorized_write_violations(repo_root: Path, orchestration_id: str) -> list[dict[str, Any]]:
-    orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
-    violations_root = orch_root / "violations"
-    if not violations_root.is_dir():
-        return []
-    collected: list[dict[str, Any]] = []
-    for path in sorted(violations_root.glob("*.unauthorized_write_violation.json")):
-        payload = _read_json_if_exists(path)
-        if not isinstance(payload, dict):
-            continue
-        unauthorized_obj = payload.get("unauthorized_paths")
-        unauthorized_paths = (
-            [str(item).strip() for item in unauthorized_obj if isinstance(item, str) and str(item).strip()]
-            if isinstance(unauthorized_obj, list)
-            else []
-        )
-        collected.append(
-            {
-                "violation_ref": str(path.relative_to(repo_root)),
-                "agent_run_id": str(payload.get("agent_run_id") or "").strip(),
-                "reason_code": "unauthorized_write_violation",
-                "attempted_paths": unauthorized_paths,
-            }
-        )
-    return collected
-
-
 def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     meta_path = orch_root / "orchestration_meta.json"
@@ -612,9 +585,15 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         for p in sorted(orch_root.glob("launch_incident.runtime.*.json"))
     ]
 
+    # `unauthorized_write_violations` was the second source here until issue #171 PR-2.
+    # Its writer was the terminal FS-diff, which compared a leaf's actual writes against
+    # the capability's `write_roots`; a pure leaf has no write authority to exceed (the
+    # host writes every artifact), so the diff and the marker it wrote are both gone. The
+    # reader survived one round longer and reported `[]` on every failed run — which reads
+    # as MEASURED CLEAN rather than NOT MEASURED, the same false record PR-2 deleted the
+    # equivalent readers in `validate_pipeline_semantics` and `audit_orchestration` for.
     noncanonical_write_violations = _collect_noncanonical_write_violations(repo_root, orchestration_id)
-    unauthorized_write_violations = _collect_unauthorized_write_violations(repo_root, orchestration_id)
-    write_contract_violations = [*noncanonical_write_violations, *unauthorized_write_violations]
+    write_contract_violations = list(noncanonical_write_violations)
     recommended_retry_decisions: list[dict[str, Any]] = []
     for violation in write_contract_violations:
         target_run = str(violation.get("agent_run_id") or "").strip()
@@ -644,7 +623,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         "failed_agent_run": failed_run,
         "failed_step_results": failed_step_results,
         "noncanonical_write_violations": noncanonical_write_violations,
-        "unauthorized_write_violations": unauthorized_write_violations,
         "recommended_retry_decisions": recommended_retry_decisions,
         "launch_reply_tail": launch_reply_tail,
         "agent_summary_tail": agent_summary_tail,
@@ -1298,7 +1276,7 @@ def _start_claims_root() -> Path:
     on process death, is the point.
 
     `expanduser` before `absolute`, matching `workflow_homes_root` in
-    `tools/hooks/common.py`. It is a behaviour CHANGE: a quoted
+    `tools/operator_private_root.py`. It is a behaviour CHANGE: a quoted
     `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
 
@@ -2180,8 +2158,10 @@ def _run_main(
     # repo_root allows, so every module imported from here on (notably the conductor's
     # lazy build_runtime_server / tools.hooks.lint_evidence during compile.static / generate.gate)
     # compiles into workspace/.pycache/ instead of mcp_servers/__pycache__/ etc. Those in-repo
-    # writes land in a child window's FS-diff and are misattributed as unauthorized_write_violation
-    # — the defect this prevents. base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
+    # writes used to land in a child window's FS-diff and be misattributed as an
+    # unauthorized write (issue #171 PR-2 deleted that diff); what they still are is bytecode
+    # littering the source tree of a checkout every structural check reads.
+    # base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
     # job: it governs SUBPROCESSES only, and sys.dont_write_bytecode is fixed at interpreter start.
     #
     # The prefix is a LITERAL on purpose: importing orchestration_runtime here to read its
@@ -2598,9 +2578,10 @@ def _run_main(
     # Prevent Python from writing *.pyc / __pycache__ bytecode under tools/.
     # Without this, any `python3 tools/orchestration_runtime.py` call made by
     # the orchestration agent (or child subprocesses) generates
-    # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc, which is not
-    # in any agent's output_manifest and triggers unauthorized_write_violation
-    # at record-agent-run terminal validation.  Setting this in the shared env
+    # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc. That used to be
+    # refused at record-agent-run as an unauthorized write (the output manifest and
+    # the terminal diff both went with issue #171 PR-2); it is still bytecode in the
+    # source tree of a checkout every structural check reads.  Setting this in the shared env
     # dict ensures it propagates to: (a) _runtime_command() subprocesses,
     # (b) the orchestration agent launch subprocess, and (c) any grandchild
     # `python3 tools/...` invocations the agent makes.
@@ -3108,11 +3089,11 @@ def _open_run_log(repo_root: Path, orchestration_id: str) -> Any:
     """Open a fresh timestamped run-log file under the orchestration dir.
 
     The name is `run_<UTC timestamp>_<uuid8>.jsonl` so repeated runs against the
-    same orchestration_id (notably `--resume`) never collide. The `run_logs/`
-    prefix is exempt from the runtime write-snapshot
-    (`_should_ignore_runtime_snapshot_path`), so this host-side write never
-    contaminates a leaf's terminal write-diff. Returns the open file object, or
-    None if it could not be created (logging is best-effort)."""
+    same orchestration_id (notably `--resume`) never collide. (The prefix was
+    exempt from the runtime write-snapshot until PR-2 of issue #171, so that this
+    host-side write was not attributed to a leaf; there is no terminal write-diff
+    to contaminate any more.) Returns the open file object, or None if it could
+    not be created (logging is best-effort)."""
     try:
         run_logs_dir = (
             repo_root / "workspace" / "orchestrations" / orchestration_id / "run_logs"

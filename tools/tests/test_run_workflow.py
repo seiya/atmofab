@@ -94,33 +94,33 @@ def tearDownModule() -> None:
 
 
 class RunWorkflowTests(unittest.TestCase):
-    def test_collect_failure_analysis_includes_unauthorized_write_violation(self) -> None:
+    def test_collect_failure_analysis_reports_no_unauthorized_write_field(self) -> None:
+        """The field went with its writer (issue #171 PR-2 retired the terminal FS-diff).
+
+        Asserted as ABSENT rather than deleted silently: it reported `[]` on every failed
+        run for one round after the marker stopped being written, and an empty list in a
+        failure report reads as "measured clean", not as "not measured"."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_vio"
-            violations = orch_root / "violations"
-            violations.mkdir(parents=True, exist_ok=True)
+            (orch_root / "violations").mkdir(parents=True, exist_ok=True)
             (orch_root / "orchestration_meta.json").write_text(
                 json.dumps({"orchestration_id": "orch_vio", "status": "fail"}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            (violations / "run_001.unauthorized_write_violation.json").write_text(
-                json.dumps(
-                    {
-                        "agent_run_id": "run_001",
-                        "unauthorized_paths": ["workspace/pipelines/x/test3.tmp"],
-                    },
-                    ensure_ascii=False,
-                ),
+            # Plant the marker the deleted diff used to write. Nothing reads it now, so it
+            # must not resurface in the report on the strength of a leftover file.
+            (orch_root / "violations" / "run_001.unauthorized_write_violation.json").write_text(
+                json.dumps({"agent_run_id": "run_001",
+                            "unauthorized_paths": ["workspace/pipelines/x/test3.tmp"]},
+                           ensure_ascii=False),
                 encoding="utf-8",
             )
             analysis = run_workflow._collect_failure_analysis(repo_root, "orch_vio")
-            self.assertEqual(len(analysis.get("unauthorized_write_violations", [])), 1)
-            decisions = analysis.get("recommended_retry_decisions", [])
-            self.assertTrue(isinstance(decisions, list) and decisions)
-            self.assertEqual(decisions[0].get("repair_strategy"), "restart")
-            self.assertIn("unauthorized_write_violation", str(decisions[0].get("repair_reason")))
+            self.assertNotIn("unauthorized_write_violations", analysis)
+            self.assertEqual(analysis.get("recommended_retry_decisions"), [])
+            self.assertFalse(hasattr(run_workflow, "_collect_unauthorized_write_violations"))
 
     def test_collect_failure_analysis_excludes_superseded_nonpass_runs(self) -> None:
         """A terminal-nonpass agent_run that a *later* same-(node,step,substep) run
@@ -1227,16 +1227,16 @@ class RunWorkflowTests(unittest.TestCase):
         spelled `Path.home() / ".atmofab"` for itself.
 
         Pinned at the SHARED resolver, not against a transcribed path: `_home_dir` is
-        patched in `tools.hooks.common`, the module `operator_secret_root` reads, so if
+        patched in `tools.operator_private_root`, the module `operator_secret_root` reads, so if
         the default stopped going through it this lands somewhere else and fails.
         """
-        import tools.hooks.common as hooks_common
+        import tools.operator_private_root as private_root
         with tempfile.TemporaryDirectory() as tmp:
             fake_home = Path(tmp) / "home"
             env = {k: v for k, v in os.environ.items()
                    if k != run_workflow.START_CLAIMS_ROOT_ENV}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(hooks_common, "_home_dir",
+                    mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
             self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
@@ -1493,7 +1493,7 @@ class RunWorkflowTests(unittest.TestCase):
         `operator_secret_root()/start_claims` — and asserting BOTH halves of "prevent,
         not detect": it raises, and nothing appeared in the operator's tree.
         """
-        from tools.hooks.common import operator_secret_root
+        from tools.operator_private_root import operator_secret_root
         if not getattr(run_workflow._start_claims_root,
                        "_atmofab_private_root_guard_installed", False):
             # The subject is a pytest fixture. Under plain `unittest` there is no guard

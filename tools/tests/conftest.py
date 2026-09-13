@@ -242,7 +242,7 @@ def _forbid_anything_in_operator_secret_root():
     """Fail any test about to resolve one of the private roots to the real `~/.atmofab`."""
     import tools.orchestration_runtime as runtime
     from tools import run_workflow
-    from tools.hooks.common import operator_secret_root
+    from tools.operator_private_root import operator_secret_root
 
     # Resolved ONCE, before any test can patch `$HOME` — see the module docstring.
     secret_root = operator_secret_root()

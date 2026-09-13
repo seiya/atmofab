@@ -578,7 +578,7 @@ class PostJudgeReclassificationTests(_Fixture):
                 cmd, 1, stdout=f"FAIL\n- {bullet}\n", stderr="")
 
         with mock.patch.object(wc.subprocess, "run", _gate):
-            c._post_judge_inproc(self.refs, "child-1", "tok")
+            c._post_judge_inproc(self.refs, "child-1")
         meta = json.loads(self.run_node("post_judge_meta.json").read_text())
         return meta["disposition"]
 

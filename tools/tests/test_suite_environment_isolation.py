@@ -48,17 +48,30 @@ _CITATION_SOURCES = (
     "tools/tests/conftest.py",
     "tools/tests/test_suite_environment_isolation.py",
     # `tools/tests/test_hooks_common.py` was the fourth source until Z4 (issue #171) deleted
-    # the hook layer this change's guard was written around. `tools/hooks/common.py` survives
-    # as a plain helper module with no test file of its own; the pins for the names it still
-    # exports moved to `test_operator_private_root.py`, which cites no test by name.
+    # the hook layer this change's guard was written around. What survived of
+    # `tools/hooks/common.py` is `tools/operator_private_root.py` (PR-2 of the same issue),
+    # a plain helper module with no test file of its own; the pins for the names it exports
+    # are in `test_operator_private_root.py`, which cites no test by name.
 )
 
 # The regression issue #84 opens with: under the workflow the MCP server refuses a
 # caller-named `repo_root`, and this test asserts the OUTSIDE-a-run branch. An operator
 # with `ATMOFAB_ORCHESTRATION_ID` exported got a failure belonging to no change.
-_SUBJECT_MODULE = "tools.tests.test_build_runtime_server"
-_SUBJECT_CLASS = "OrchestratedEnvAllowlistTests"
-_SUBJECT_TEST = "test_only_an_absent_repo_root_falls_back_to_project_dir"
+# The end-to-end witness: ONE poison name and ONE test that reads it from the ambient
+# environment, so the guarded run and the unguarded control differ. The subject was
+# `test_build_runtime_server.OrchestratedEnvAllowlistTests` under
+# `ATMOFAB_ORCHESTRATION_ID` until PR-2 of issue #171 retired the orchestration gate: that
+# server no longer reads the workflow environment at all, so nothing in the tree is poisoned
+# by that name any more (measured — every reader of it is now a WRITER, putting it on a
+# leaf's environment). Re-anchored on `CODEX_HOME`, whose reader is
+# `operator_private_root.backend_credential_home_paths`, and on a codex preflight probe that
+# resolves the home: measured clean-OK / poisoned-FAILED / guarded-pass on the commit that
+# moved it. The witness needs the control to FAIL, so `test_a_poisoned_environment_...`
+# asserts exactly that and tells you to find a new subject when it stops.
+_SUBJECT_POISON = {"CODEX_HOME": "/tmp/atmofab_witness_codex_home"}
+_SUBJECT_MODULE = "tools.tests.test_orchestration_runtime"
+_SUBJECT_CLASS = "CodexOrchestrationRuntimeTests"
+_SUBJECT_TEST = "test_probe_codex_cli_accepts_multi_agent_as_advisory"
 
 def _environment_names_read_by(repo_root: Path) -> set[str]:
     """Every upper-case environment name READ in non-test `tools/` and `mcp_servers/`.
@@ -383,10 +396,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # under `tools/`, so dropping the whole `mcp_servers` root survived — the exact
         # silent shrinkage this block exists to stop.
         # The `tools/hooks` anchor was `("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py")` until
-        # Z4 (issue #171) deleted the leaf hook entrypoint with the agentic leaf. The root still
-        # holds `tools/hooks/common.py`, so it is re-anchored on a name read THERE and nowhere
-        # else under the scanned roots — measured, not assumed.
-        for name, where in (("ATMOFAB_WORKFLOW_HOMES_ROOT", "tools/hooks/common.py"),
+        # Z4 (issue #171) deleted the leaf hook entrypoint with the agentic leaf, then
+        # `tools/hooks/common.py` until PR-2 of the same issue moved what survived of it to
+        # `tools/operator_private_root.py` and deleted the module. The anchor follows the NAME,
+        # which is read there and nowhere else under the scanned roots — measured, not assumed.
+        # It no longer anchors the `tools/hooks` subtree specifically; what is left under
+        # `tools/hooks/` reads no environment name of its own, so there is none to anchor on.
+        for name, where in (("ATMOFAB_WORKFLOW_HOMES_ROOT", "tools/operator_private_root.py"),
                             ("PYTHONPATH", "mcp_servers/build_runtime_server.py"),
                             ("ATMOFAB_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
                             ("ATMOFAB_START_CLAIM_ROOT", "tools/run_workflow.py")):
@@ -767,7 +783,11 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         An operator who set it deliberately has to be able to see that, and to say they
         meant it. Neither the header nor the flag had a witness; both mutants survived.
         """
-        poison = {"ATMOFAB_ORCHESTRATION_ID": "orch_header_witness"}
+        # The SAME pair the end-to-end witness uses (`_SUBJECT_POISON` and the subject
+        # below): the `--keep-operator-env` half of this test needs the subject to FAIL
+        # when the name survives, so a second, unrelated poison name would disclose the
+        # strip without ever exercising the decline.
+        poison = dict(_SUBJECT_POISON)
         node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
                f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
 
@@ -789,7 +809,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                     f"with {extra or 'no flag'} the strip was disclosed {seen} times, "
                     f"expected {expected} (header + summary at default verbosity, summary "
                     f"alone under -q):\n{reported.stdout[:2000]}")
-                self.assertIn("ATMOFAB_ORCHESTRATION_ID", reported.stdout)
+                for name in poison:
+                    self.assertIn(name, reported.stdout)
                 self.assertIn("--keep-operator-env", reported.stdout)
         # The control: with nothing to strip there is no line to print.
         quiet = _run([sys.executable, "-m", "pytest", node, "-q"], {})
@@ -871,7 +892,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         is to start pytest. `unittest` loads no conftest, which makes it the control
         runner — the same code, the same poison, no guard.
         """
-        poison = {"ATMOFAB_ORCHESTRATION_ID": "orch_witness"}
+        poison = dict(_SUBJECT_POISON)
         node = f"tools/tests/{_SUBJECT_MODULE.rsplit('.', 1)[1]}.py" \
                f"::{_SUBJECT_CLASS}::{_SUBJECT_TEST}"
         unittest_target = f"{_SUBJECT_MODULE}.{_SUBJECT_CLASS}.{_SUBJECT_TEST}"

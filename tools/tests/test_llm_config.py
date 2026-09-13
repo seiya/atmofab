@@ -11,11 +11,11 @@ wrong:
 2. **Every named rejection rule fires, exactly once, on its own input.** The rule name is the
    operator's search key, so a rule that silently changed name (or was shadowed by an earlier
    check) is a real regression.
-3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` /
-   `MCP_REQUIRED_LLM_SUBSTEPS` are copies of facts owned by the conductor and the runtime.
-   Each guard derives the original BEHAVIORALLY (running the conductor predicate, reading the
-   runtime table) rather than re-asserting the same literal, so moving the original reds the
-   test instead of leaving two agreeing-but-wrong copies.
+3. **The mirror tables still mirror.** `LLM_LEAF_SUBSTEPS` is a copy of a fact owned by the
+   conductor. Its guard derives the original BEHAVIORALLY (running the conductor predicate)
+   rather than re-asserting the same literal, so moving the original reds the test instead of
+   leaving two agreeing-but-wrong copies. `MCP_REQUIRED_LLM_SUBSTEPS` was the second such
+   table and went with the MCP capability gate (issue #171 PR-2), along with its guard.
 """
 
 from __future__ import annotations
@@ -496,6 +496,93 @@ class ResolutionTests(_Tmp):
         self.assertEqual([r["backend"] for r in lc.describe_providers(cfg)], ["claude"])
 
 
+
+class ProviderCapabilityTableTests(unittest.TestCase):
+    """`docs/ORCHESTRATION.md`'s provider table is checked against the code, not read.
+
+    The table is the third statement of `PROVIDER_CAPABILITIES` (the code, `docs/GLOSSARY.md`
+    and this table), which is the count at which the skill says discipline has already lost —
+    and it lost: Z4 deleted `agentic` and swept the glossary and the example configuration,
+    and PR-2 deleted `mcp_tools` and swept them again, while the table kept a whole `mcp_tools`
+    column reading `yes | yes | — | —` through both. Nothing had ever read it.
+
+    Coupled by MEMBERS in both directions, because the table names them in full: the capability
+    columns must be exactly `KNOWN_CAPABILITIES`, and each cell must agree with that provider's
+    set. The code is the authority and the document is compared against it, never the reverse.
+    """
+
+    TABLE_DOC = REPO_ROOT / "docs" / "ORCHESTRATION.md"
+
+    def _rows(self) -> list[list[str]]:
+        lines = self.TABLE_DOC.read_text(encoding="utf-8").splitlines()
+        # Anchor on the header, which names the two non-capability columns. Text that
+        # PRECEDES the rule and is byte-identical in the wording being refused: a table that
+        # loses a capability column still opens `| provider | backend token |`.
+        # Anchored on the first column alone, not on the header's full text: anchoring on
+        # `| provider | backend token |` let a second table headed `| provider | backend |`
+        # sit in the same document unnoticed, which is how a stale copy comes back.
+        starts = [i for i, line in enumerate(lines)
+                  if line.strip().replace(" ", "").startswith("|provider|")]
+        self.assertEqual(len(starts), 1,
+                         f"{self.TABLE_DOC.name}: expected exactly one provider table, "
+                         f"found {len(starts)}")
+        rows = []
+        for line in lines[starts[0]:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            rows.append([cell.strip() for cell in stripped.strip("|").split("|")])
+        self.assertGreater(len(rows), 2, "table has a header but no provider rows")
+        # RAGGEDNESS is the escape `zip` leaves open in both directions: a row missing its
+        # last cell silently drops that capability's claim, and a row with an extra cell
+        # resurrects a column the header no longer has. Checked before any `zip` runs.
+        widths = {len(row) for row in rows}
+        self.assertEqual(len(widths), 1,
+                         f"the provider table is ragged (row widths {sorted(widths)}); a "
+                         "short or long row makes the cell comparison read the wrong column")
+        return rows
+
+    def test_the_columns_are_exactly_the_known_capabilities(self) -> None:
+        header = self._rows()[0]
+        self.assertEqual(header[:2], ["provider", "backend token"])
+        columns = [cell.strip("`") for cell in header[2:]]
+        self.assertEqual(sorted(columns), sorted(lc.KNOWN_CAPABILITIES),
+                         "the table's capability columns and KNOWN_CAPABILITIES disagree; "
+                         "the code is the authority")
+
+    def test_every_cell_agrees_with_the_capability_authority(self) -> None:
+        rows = self._rows()
+        columns = [cell.strip("`") for cell in rows[0][2:]]
+        # A DUPLICATE ROW is the row-granular twin of the duplicate table this anchor
+        # already refuses: a stale `claude_cli` row above the real one is silently
+        # overwritten by `documented[provider] = ...`, and the stale copy — which is what
+        # a reader's eye lands on first — goes unchecked. Counted before it is built.
+        providers = [row[0].strip("`") for row in rows[2:]]
+        self.assertEqual(len(providers), len(set(providers)),
+                         f"the provider table lists a provider twice: {providers}")
+        self.assertEqual(len(providers), len(lc.PROVIDER_CAPABILITIES),
+                         "the table and PROVIDER_CAPABILITIES have different row counts")
+        documented = {}
+        for row in rows[2:]:
+            provider = row[0].strip("`")
+            documented[provider] = frozenset(
+                cap for cap, cell in zip(columns, row[2:]) if cell == "yes")
+            for cap, cell in zip(columns, row[2:]):
+                with self.subTest(provider=provider, capability=cap):
+                    self.assertIn(cell, ("yes", "\u2014"),
+                                  "a cell is `yes` or an em dash and nothing else")
+        self.assertEqual(documented, dict(lc.PROVIDER_CAPABILITIES))
+
+    def test_the_backend_token_column_is_the_launch_identity(self) -> None:
+        # The other half of each row. A provider whose token the table invents would send an
+        # operator to `init --backend <token>` with a name the parser refuses.
+        for row in self._rows()[2:]:
+            provider, token = row[0].strip("`"), row[1].strip("`")
+            with self.subTest(provider=provider):
+                expected = "claude" if provider == "claude_cli" else (
+                    "codex" if provider == "codex_cli" else provider)
+                self.assertEqual(token, expected)
+
 class CapabilityTests(_Tmp):
     def test_provider_capability_table_is_the_authority(self) -> None:
         self.assertEqual(set(lc.PROVIDER_CAPABILITIES), set(lc.SUPPORTED_PROVIDERS))
@@ -516,11 +603,11 @@ class CapabilityTests(_Tmp):
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: claude_cli\n"
-            "  capabilities: [pure, mcp_tools]\n"))
+            "  capabilities: [pure, usage_probe]\n"))
         entry = cfg.entry_for("validate", "judge")
         self.assertTrue(entry.supports(lc.CAP_PURE))
+        self.assertTrue(entry.supports(lc.CAP_USAGE_PROBE))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
-        self.assertFalse(entry.supports(lc.CAP_USAGE_PROBE))
 
     def test_http_provider_on_a_pure_leaf_is_accepted(self) -> None:
         for substep in ("generate", "verify"):
@@ -559,10 +646,12 @@ class CapabilityTests(_Tmp):
         it and an entry narrowed away from it is refused by name — on every pair, not on the
         one this test happened to pick.
 
-        The second half is what makes the first enforceable rather than advisory: `agentic` is
-        no longer a capability the vocabulary knows, so a configuration still spelling it is
-        refused at `capabilities:` parse time rather than resolving to a transport that no
-        longer exists. (`mcp_tools` is retired with the MCP gate in PR-2, not here.)"""
+        The second half is what makes the first enforceable rather than advisory: neither
+        `agentic` nor `mcp_tools` is a capability the vocabulary knows any more, so a
+        configuration still spelling one is refused at `capabilities:` parse time rather than
+        resolving to a transport or a grant that no longer exists. Both are asserted, because
+        PR-2 retired `mcp_tools` while pinning only `agentic`, and re-adding `mcp_tools` to
+        `KNOWN_CAPABILITIES` was silent."""
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             err = self.assert_rule(
                 "llm_config_capability_insufficient_for_substep",
@@ -573,14 +662,16 @@ class CapabilityTests(_Tmp):
             # Not "agentic OR pure": there is no second transport to fall back to, and a
             # message offering one is the shape this row exists to keep out.
             self.assertNotIn("agentic", str(err), msg=f"{phase}.{substep}")
-        err = self.assert_rule(
-            "llm_config_invalid_field",
-            "defaults:\n  provider: claude_cli\n"
-            "  capabilities: [agentic, pure]\n")
-        self.assertIn("agentic", str(err))
-        self.assertNotIn("agentic", lc.KNOWN_CAPABILITIES)
-        for provider, caps in lc.PROVIDER_CAPABILITIES.items():
-            self.assertNotIn("agentic", caps, msg=provider)
+        for retired in ("agentic", "mcp_tools"):
+            with self.subTest(capability=retired):
+                err = self.assert_rule(
+                    "llm_config_invalid_field",
+                    "defaults:\n  provider: claude_cli\n"
+                    f"  capabilities: [{retired}, pure]\n")
+                self.assertIn(retired, str(err))
+                self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
+                for provider, caps in lc.PROVIDER_CAPABILITIES.items():
+                    self.assertNotIn(retired, caps, msg=provider)
 
     def test_every_declared_provider_validates_for_the_compile_leaves(self) -> None:
         """Issue #168's completion criterion: whichever provider this repository declares can be
@@ -1390,11 +1481,6 @@ class MirrorTableDriftTests(unittest.TestCase):
             [("compile", "generate"), ("compile", "verify"),
              ("generate", "generate"), ("generate", "verify"),
              ("validate", "judge")])
-
-    def test_mcp_required_llm_substeps_matches_runtime(self) -> None:
-        granted = {key for key, tools in ort._MCP_TOOL_GRANTS_BY_SUBSTEP.items() if tools}
-        self.assertEqual(granted & set(lc.LLM_LEAF_SUBSTEPS),
-                         set(lc.MCP_REQUIRED_LLM_SUBSTEPS))
 
     def test_backend_tokens_cover_the_legacy_supported_backends(self) -> None:
         cli_tokens = {lc.PROVIDER_BACKEND_TOKENS[p] for p in lc.CLI_PROVIDERS}

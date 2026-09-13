@@ -12,6 +12,29 @@ Investigate the logs of a completed or interrupted workflow execution across the
 2. **information-gathering behavior** - places where, due to unclear CLI specifications or insufficient state awareness, a `--help` reference or file exploration was performed
 3. **redos due to check failures** - gate / validator failures, multiple phase-launch attempts, status-setting mistakes
 
+> **RETIRED RECORDS — READ THIS FIRST.** Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171))
+> deleted the leaf hook layer and, in PR-2, the enforcement records that outlived it. **None of
+> these files is written any more**, so every section of this skill that reads one is describing
+> a run recorded before the cut: `hooks/native_hook_events.jsonl` (the hook trace, and with it
+> every `action=block` / `fix_hint` / `allow_auto_approve` analysis below), `gates/<arid>/*.json`
+> and the `workspace/tmp/<arid>/gate_results/` copy (`run-gate` is deleted — the conductor runs
+> every gate itself, in its own process), `access_logs/<arid>.jsonl`, `capabilities/<arid>.json`,
+> `read_manifests/` and `output_manifests/`. `violations/` survives with one live writer,
+> SANDBOX ENFORCEMENT, reached from five sites and carrying five reasons —
+> `sandbox_profile_build_failed` (at `record-launch`), and `sandbox_runtime_not_bwrap`,
+> `sandbox_not_enforced`, `sandbox_profile_missing`, `sandbox_profile_not_found` (at
+> `record-agent-run`). Since bwrap is now the ONLY thing confining a leaf, those four
+> terminal ones are the record that it was in force — audit for all five reasons, not just
+> the launch one. The directory is created
+> only when one occurs. (A noncanonical-phase-write attempt writes there too and has no
+> caller; it was already dead before this change and `TODO.md` owns its removal. Do not audit
+> for it.) What a current run leaves is `agent_runs.jsonl`,
+> `phase_state_log.jsonl`, `hooks/workflow_hooks.jsonl` (the HOST's own hook log),
+> `launches/<arid>.*`, `sandbox_profiles/<arid>.json`, `steps/.../step_result.json` and
+> `failure_analysis.json`. Consolidating the two audit skills against that set is
+> [issue #179](https://github.com/seiya/atmofab/issues/179); until it lands, treat a section
+> naming a deleted record as history rather than as an instruction.
+
 ## Log collection sources
 
 | log | collection source |
@@ -241,46 +264,19 @@ for key, cnt in counter.items():
 EOF
 ```
 
-#### 5-b. Gate failures and re-execution counts
+#### 5-b. Gate failures and re-execution counts — RETIRED
 
-When `hook=pre_command_execute` and the same `gate` appears multiple times in `workflow_hooks.jsonl`, a fix loop after a gate failure has occurred.
-
-```bash
-python3 - <<'EOF'
-import json
-from collections import Counter
-
-orch_id = "<orchestration_id>"
-path = f"workspace/orchestrations/{orch_id}/hooks/workflow_hooks.jsonl"
-counter = Counter()
-with open(path) as f:
-    for line in f:
-        obj = json.loads(line.strip())
-        if obj.get("hook") == "pre_command_execute" and obj.get("gate"):
-            key = f"{obj['gate']}::{obj.get('step')}"
-            counter[key] += 1
-
-for key, cnt in counter.items():
-    if cnt > 1:
-        print(f"GATE RETRY x{cnt}: {key}")
-EOF
-```
-
-For the actual gate-failure content, read `gates/<agent_run_id>/<gate_name>.json` and confirm the `violations` field.
-
-```bash
-ls workspace/orchestrations/<orch_id>/gates/
-python3 -c "
-import json, pathlib
-orch_id = '<orchestration_id>'
-for p in sorted(pathlib.Path(f'workspace/orchestrations/{orch_id}/gates').rglob('*.json')):
-    obj = json.loads(p.read_text())
-    if obj.get('status') != 'pass':
-        print(p)
-        print(json.dumps(obj, ensure_ascii=False, indent=2))
-        print()
-"
-```
+This step counted repeated `gate` values on `hook=pre_command_execute` rows of
+`workflow_hooks.jsonl` to spot a fix loop after a gate failure. **Nothing writes that
+hook any more**: it belonged to the LEAF hook layer, which went with the agentic leaf in
+Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) — a pure leaf holds no
+tool, so there is no tool call for a hook to judge. The file survives and is the HOST's
+own log; the events it still carries are `pre_orchestration_start`, `pre_phase_launch`,
+`pre_agent_launch`, `pre_phase_complete`, `post_phase_complete` and `reply_over_budget`.
+Running the old query returns nothing on every run, which reads as "no gate loop" and
+is not a measurement. Use the deterministic gates' own records instead —
+`gate_meta.json` under `source/<source_id>/` for `Generate.gate`, and the per-attempt
+rows in `agent_runs.jsonl` — to see whether a phase re-ran.
 
 #### 5-c. Confirm sandbox violations
 

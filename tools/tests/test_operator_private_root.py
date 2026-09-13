@@ -3,7 +3,7 @@
 
 Issues #132 and #133. Writers create trees under the operator-private root and one guard
 forbids a leaf from reading it, and until this file existed nothing tied them together:
-`tools/hooks/common.py::operator_secret_root` was the guard's anchor, while the leaf
+`tools/operator_private_root.py::operator_secret_root` was the guard's anchor, while the leaf
 launcher, `init_orchestration`'s operator-token writer and
 `tools/run_workflow.py::_claim_lock_path` each spelled `Path.home() / ".atmofab" / ...`
 for themselves. Moving the root was a four-site coordinated edit, and the #127 rename had
@@ -11,7 +11,7 @@ already split one of them. Issue #176 deleted the token writer with `dismiss-vio
 leaving two writers and the guard.
 
 A SEPARATE FILE, and not because `tools/tests/test_orchestration_runtime.py` is 39k lines.
-The seam is what has no owner: it crosses `tools.hooks.common`, `tools.orchestration_runtime`
+The seam is what has no owner: it crosses `tools.operator_private_root`, `tools.orchestration_runtime`
 and `tools.run_workflow`, and no existing module imports all three. Keeping it small also
 keeps the mutation check's `--test-cmd` down to one file.
 
@@ -21,7 +21,7 @@ What is PINNED here and what is only SAMPLED:
     `_claim_lock_path` / `_workflow_homes_root` / `protected_host_read_roots`
     under one patched `$HOME` (`test_the_two_writers_and_the_guard_resolve_one_root`);
   * PINNED — that `".atmofab"` is spelled exactly ONCE across `tools/` and
-    `mcp_servers/`, and in `tools/hooks/common.py`
+    `mcp_servers/`, and in `tools/operator_private_root.py`
     (`test_the_dot_atmofab_constant_is_spelled_once`). The FILE and the COUNT, not the
     function name: hoisting the literal to a module constant in that file strengthens the
     property and is allowed. A BOUND ON GROWTH,
@@ -45,7 +45,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import tools.hooks.common as hooks_common
+import tools.operator_private_root as private_root
 import tools.orchestration_runtime as ort
 from tools import run_workflow
 from tools.tests.private_root_fixture import (
@@ -93,46 +93,10 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
     def _prepare_under(self, override: str, repo: Path, oid: str = "opr_1"):
         """Drive the homes preparer with `ATMOFAB_WORKFLOW_HOMES_ROOT` set to `override`."""
         env = {k: v for k, v in os.environ.items()
-               if k != hooks_common.WORKFLOW_HOMES_ROOT_ENV}
-        env[hooks_common.WORKFLOW_HOMES_ROOT_ENV] = override
+               if k != private_root.WORKFLOW_HOMES_ROOT_ENV}
+        env[private_root.WORKFLOW_HOMES_ROOT_ENV] = override
         with mock.patch.dict(os.environ, env, clear=True):
             ort._create_workflow_backend_home(repo, oid, "claude", "Claude")
-
-    def test_the_in_repo_refusal_rests_on_a_read_manifest_that_still_grants_spec(self) -> None:
-        """The premise the in-repo refusal is FOR, pinned where it can be seen.
-
-        The refusal exists because `_write_read_access_manifest` puts `docs/` and `spec/`
-        in every agentic leaf's `allowed_read_roots` unconditionally and the Read tool
-        never consults `protected_host_read_roots`. Nothing on this branch pinned that,
-        and a round-3 reviewer said so: delete `"spec/"` from the base list and the
-        refusal becomes correct-but-unmotivated with every test green.
-
-        Driven through the real manifest writer rather than by reading the literal, so a
-        change that keeps the constant but stops it reaching the manifest is caught too.
-        Both roots, because either one alone reaches a store an operator would plausibly
-        put there.
-
-        This is a PREMISE check, not the rule: the refusal fails closed either way, and
-        if this list ever legitimately loses `spec/` the right response is to re-derive
-        the refusal's justification, not to delete this assertion.
-        """
-        policy = ort.build_access_policy_payload(
-            agent_run_id="arid-1",
-            request_payload={
-                "node_key": "n", "step": "generate",
-                "ir_ref": "workspace/ir/x",
-                "pipeline_ref": "workspace/pipelines/x",
-                "orchestration_id": "o",
-            })
-        roots = policy["allowed_read_roots"]
-        for granted in ("docs/", "spec/"):
-            with self.subTest(root=granted):
-                self.assertIn(
-                    granted, roots,
-                    f"an agentic leaf no longer reads {granted} unconditionally. The "
-                    "in-repo refusal in `_require_usable_private_root_override` is "
-                    "justified by exactly this — re-derive its reason before assuming it "
-                    "still holds")
 
     def test_an_override_naming_an_existing_file_is_refused_before_the_first_write(self) -> None:
         """The half-created tree the POSITION of the refusal is supposed to prevent.
@@ -161,7 +125,7 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
                         self._prepare_under(str(target), repo, oid="opr_notdir")
                     message = str(ctx.exception)
                     self.assertIn("is not a directory", message)
-                    self.assertIn(hooks_common.WORKFLOW_HOMES_ROOT_ENV, message)
+                    self.assertIn(private_root.WORKFLOW_HOMES_ROOT_ENV, message)
                     self.assertFalse(
                         (target / "opr_notdir").exists(),
                         "the refusal arrived after the tree was half-created")
@@ -197,7 +161,7 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
                 self._prepare_under(str(Path(td) / "outer"), repo, oid="opr_outer")
             message = str(ctx.exception)
             self.assertIn("must not contain the repository", message)
-            self.assertIn(hooks_common.WORKFLOW_HOMES_ROOT_ENV, message)
+            self.assertIn(private_root.WORKFLOW_HOMES_ROOT_ENV, message)
             self.assertFalse((Path(td) / "outer" / "opr_outer").exists())
 
     def test_a_whitespace_only_override_takes_the_default(self) -> None:
@@ -215,9 +179,9 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
         with mock.patch.dict(
                 os.environ,
                 {"HOME": "/tmp/fake-home-probe",
-                 hooks_common.WORKFLOW_HOMES_ROOT_ENV: "   "},
+                 private_root.WORKFLOW_HOMES_ROOT_ENV: "   "},
                 clear=False):
-            self.assertEqual(hooks_common.workflow_homes_root(),
+            self.assertEqual(private_root.workflow_homes_root(),
                              Path("/tmp/fake-home-probe/.atmofab/homes"))
 
 
@@ -242,7 +206,7 @@ class OnePrivateRootTests(unittest.TestCase):
         Driven through the REAL functions, not through the resolvers — pinning at the
         resolver would leave the wiring free to be deleted, which is the failure this
         repository has already had (4 of 5 sites). `$HOME` is moved by patching
-        `_home_dir` in `tools.hooks.common`, the one function `operator_secret_root`
+        `_home_dir` in `tools.operator_private_root`, the one function `operator_secret_root`
         reads, and the three overrides are cleared so every default branch is taken.
 
         Nothing else ties them.
@@ -256,7 +220,7 @@ class OnePrivateRootTests(unittest.TestCase):
             redirected = {name for name, _sub in _private_root_redirects()}
             env = {k: v for k, v in os.environ.items() if k not in redirected}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(hooks_common, "_home_dir",
+                    mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
                 atmofab = (fake_home / ".atmofab").resolve()
 
@@ -273,7 +237,7 @@ class OnePrivateRootTests(unittest.TestCase):
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
         """`".atmofab"` is spelled exactly ONCE across `tools/` and `mcp_servers/`, in
-        `tools/hooks/common.py`.
+        `tools/operator_private_root.py`.
 
         A BOUND ON GROWTH, not a detector, and the difference matters. What it catches is
         the ordinary way this splits again: someone needs a path under the operator-private
@@ -282,7 +246,7 @@ class OnePrivateRootTests(unittest.TestCase):
 
           * an f-string (`f"{home}/.atmofab/x"`) — the constant is not a bare `".atmofab"`
             node;
-          * the same string inside a longer one — `tools/hooks/common.py` carries several
+          * the same string inside a longer one — `tools/operator_private_root.py` carries several
             marker regexes and argparse help texts that spell the path in prose, and they
             are out of scope by construction;
           * a rename of the constant, or resolution through a variable.
@@ -319,7 +283,7 @@ class OnePrivateRootTests(unittest.TestCase):
         # `operator_secret_root()`, which the code was already doing. Found by the round-2
         # census aiming the over-refusal question at the instrument.
         self.assertEqual(
-            {rel for rel, _fn in found}, {"tools/hooks/common.py"},
+            {rel for rel, _fn in found}, {"tools/operator_private_root.py"},
             "`.atmofab` is spelled outside the module that owns the resolvers. Reach the "
             "location through `operator_secret_root()` / `workflow_homes_root()` / "
             "`run_workflow._start_claims_root()` instead "
@@ -329,7 +293,7 @@ class OnePrivateRootTests(unittest.TestCase):
             f"the rule stated in prose alone. Sites found: {sorted(found)}")
         self.assertEqual(
             len(found), 1,
-            "the literal is spelled more than once inside tools/hooks/common.py. One "
+            "the literal is spelled more than once inside tools/operator_private_root.py. One "
             "spelling is the rule; where in the file it lives is not, so a module-level "
             "constant is fine and a second copy is not — including a second copy in the "
             f"SAME function, which an earlier version of this counter could not see. "
@@ -395,7 +359,7 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
     The relocators are stated in more than three places — `docs/RUNBOOK.md` at the
     inventory table and the hook-recovery row; `docs/HOOKS.md` twice;
     and the module comments in `orchestration_runtime`, `run_workflow` and
-    `hooks/common`. Three or more statement sites is where
+    `operator_private_root`. Three or more statement sites is where
     `.claude/skills/atmofab-enforcement-change` rule 3-a says discipline has already
     lost, and the site an OPERATOR reads is the one to check first — a RUNBOOK that
     names one of two relocators sends them to a shell without the export that decides

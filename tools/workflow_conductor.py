@@ -1624,8 +1624,10 @@ def build_launch_request(
             # Deterministic in-process gate: the conductor authors gate_meta.json (the single
             # freshness-gated deliverable, unioning the lint / syntax / static checkers). The
             # lint and syntax checkers both append to the canonical src/command_log.jsonl, so it
-            # MUST be listed — otherwise the gate child's FS-diff write-attribution would flag
-            # those appends as unauthorized writes. The host-authored lint / syntax evidence
+            # MUST be listed: the substep DECLARES what it produces, which is what
+            # `post_generate` validates the phase root against. (Until issue #171 PR-2 the
+            # listing also had to satisfy the gate child's FS-diff write-attribution, which
+            # would otherwise have flagged those appends.) The host-authored lint / syntax evidence
             # (pipeline-root, leaf-non-writable) is NOT a leaf output and is intentionally
             # omitted from allowed_output_paths. The static checker (validate_pipeline_semantics
             # --stage post_generate + validate_workspace_root) writes nothing beyond gate_meta.
@@ -1746,13 +1748,17 @@ def build_launch_request(
     # A verify substep's allowed_output_paths is already narrowed to exactly its stage-meta file
     # on ALL turns (compile.verify -> ir_meta.json, generate.verify -> source_meta.json, above),
     # so a verify_meta_schema repair turn — which re-authors ONLY that meta — needs no special-case
-    # narrowing here: the normal list already IS the meta. All three write-authorization layers are
-    # now substep-granular, giving real defence in depth: (1) allowed_file_tool_paths -> the
-    # output_manifest_write_guard hook (rejects an Edit/Write/apply_patch to any unlisted path),
-    # (2) the bwrap `write_roots` (the runtime pins verify's write_root to that same stage-meta
-    # file, so the rest of the source/ (resp. ir/) tree is not even RW-bound), and (3) the terminal
-    # FS-diff (which reads the narrowed write_roots). Because (2)/(3) are structural and independent
-    # of the pattern-based Bash-write detector, a source rewritten on a verify turn — which would
+    # narrowing here: the normal list already IS the meta. The THREE write-authorization layers this
+    # comment used to describe — `allowed_file_tool_paths` into the output-manifest write guard, the
+    # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
+    # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
+    # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
+    # branch, and `_validate_pure_launch_request_payload` REFUSES a pure request whose list is
+    # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
+    # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
+    # list against the phase contract at record-launch (NOT `post_<phase>` validation, which
+    # never reads the field). The hazard the three layers were defence in depth
+    # against — a source rewritten on a verify turn, which would
     # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
     # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
     # rely on the findings text (which the slim renderer fences as untrusted data anyway).
@@ -1942,8 +1948,8 @@ LEAF_STREAM_ABANDONED_MARKER = (
 # right default: a wrongly killed leaf costs ONE resumable fail_closed, while no cap at all costs
 # unbounded wall-clock that nothing in the event stream reports.
 #
-# A per-substep table (the `_MCP_TOOL_GRANTS_BY_SUBSTEP` shape) is future work: one cap already
-# bounds the damage, and per-substep numbers need per-substep evidence this repo does not have yet.
+# A per-substep table is future work: one cap already bounds the damage, and per-substep numbers
+# need per-substep evidence this repo does not have yet.
 LEAF_TIMEOUT_DEFAULT_SECONDS = 7200  # 2h
 # Ceiling for the env override: a sanity bound on an operator-settable value, pinned to the
 # largest deadline the `select`-based waits in `subprocess` accept (they select with an
@@ -4435,13 +4441,13 @@ class Conductor:
         return thread
 
     def _bwrap_enabled(self) -> bool:
-        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap
-        only). The FS-diff write-authorization model (`_validate_actual_write_paths`
-        authorizes a leaf write purely by write_roots containment) is only sound while
-        bwrap actually confines each leaf to its write_roots, so there is no opt-out: a
-        host that cannot sandbox the leaf fails closed at launch rather than running
-        unconfined (an unconfined leaf + FS-diff would authorize writes anywhere). The
-        method is retained as a single seam for the call sites; it always returns True."""
+        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap only).
+
+        Since issue #171 PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff
+        that audited a leaf's writes after the fact is deleted, so an unconfined leaf would be
+        unconfined and unaudited both. A host that cannot sandbox the leaf therefore fails
+        closed at launch rather than running it. The method is retained as a single seam for
+        the call sites; it always returns True."""
         return True
 
     def _http_history_key(self, timeout_context: dict[str, str] | None) -> tuple[str, str]:
@@ -7802,12 +7808,14 @@ clean:
         written as `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below
         names either.
 
-        The finalize-before-write ordering is load-bearing: the pure capability's empty
-        write_roots make ANY write inside the child window an unauthorized write
-        (`_validate_actual_write_paths`), so the host must close the window (finalize_child)
-        before it writes files[] / codegen_bundle.json / bundle_meta.json / Makefile. Reversing
-        the order attributes the host writes to the dying leaf and fails closed — pinned by a
-        conformance test."""
+        The finalize-before-write ordering is kept, and its REASON changed with issue #171
+        PR-2. It used to be load-bearing against the terminal FS-diff: the pure capability's
+        empty write_roots made any write inside the child window an unauthorized write, so
+        writing before `finalize_child` attributed the HOST's writes to the dying leaf and
+        failed the run closed. That audit is deleted. What the ordering still buys is that the
+        artifacts appear only once the leaf is recorded as finished, so a reader never sees a
+        deliverable attributed to a window that is still open — and a leaf cannot be resumed
+        into a tree the host has already rewritten. Pinned by a conformance test."""
         from tools.pure_leaf import (
             extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
             RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
@@ -8677,9 +8685,11 @@ clean:
         phase repair to the producer at index 0 — so there is no external seed to accept.)
 
         The finalize-before-write ordering is load-bearing for the same reason as the producer:
-        the pure capability's empty write_roots make any write inside the child window an
-        unauthorized write, so the host closes the window (finalize_child) before it authors the
-        verdict projection and the per-attempt record."""
+        the host must not author the verdict projection or the per-attempt record while the
+        child window is open, or the record describes a window it is itself inside. (Until
+        issue #171 PR-2 the same ordering was ALSO what kept the host's write out of the
+        terminal FS-diff, the pure capability's empty write_roots making any write in the
+        window an unauthorized one; that diff is gone and the ordering is not.)"""
         from tools.pure_leaf import (
             extract_json_document,
             MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
@@ -9405,10 +9415,11 @@ clean:
         with an arid it has already been called with does re-stamp in place; no production path
         does.)
 
-        Placement: the child's bookkeeping dir, whose whole subtree
-        `_should_ignore_runtime_snapshot_path` exempts from the terminal write-diff — the same
-        standing that lets `_persist_leaf_output` write `dialogs/*.log` inside the child window
-        without the write being attributed to the leaf. It is written and read HERE, before the
+        Placement: the child's bookkeeping dir — the same place `_persist_leaf_output` writes
+        `dialogs/*.log`. (Both used to need the terminal write-diff's runtime-prefix exemption
+        so a host write inside the child window was not attributed to the leaf; PR-2 of issue
+        #171 deleted that diff with the leaf's write authority.) It is written and read HERE,
+        before the
         leaf is spawned, so a leaf that can reach the path cannot move the instant it is judged
         against.
 
@@ -9688,15 +9699,6 @@ clean:
                 or (phase == "generate" and substep == "gate")
                 or (phase == "compile" and substep == "static"))
 
-    def _capability_token(self, child_arid: str) -> str:
-        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                / "capabilities" / f"{child_arid}.json")
-        cap = _read_json(path) or {}
-        token = str(cap.get("capability_token", "")).strip()
-        if not token:
-            raise RuntimeError(f"deterministic step: missing capability_token at {path}")
-        return token
-
     def _resolve_exe_name(self, refs: NodeRefs) -> str:
         """The canonical execution binary basename: `<spec_id>_runner`.
 
@@ -9746,21 +9748,20 @@ clean:
         """Run a non-LLM substep body in-process and return a ProcResult shaped like a
         leaf's (returncode 0 == clean conductor run; a content failure such as a
         compile error is still rc 0 and routed via binary_meta.failure_category).
-        A nonzero rc means a conductor-side/MCP-gate failure -> transport fail_closed."""
+        A nonzero rc means a conductor-side/MCP failure -> transport fail_closed."""
         try:
-            cap_token = self._capability_token(child_arid)
             if phase == "build":
-                out = self._build_inproc(refs, child_arid, cap_token)
+                out = self._build_inproc(refs, child_arid)
             elif phase == "validate" and substep == "pre_judge":
-                out = self._pre_judge_inproc(refs, child_arid, cap_token)
+                out = self._pre_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "post_judge":
-                out = self._post_judge_inproc(refs, child_arid, cap_token)
+                out = self._post_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "execute":
-                out = self._execute_inproc(refs, child_arid, cap_token)
+                out = self._execute_inproc(refs, child_arid)
             elif phase == "generate" and substep == "gate":
-                out = self._gate_inproc(refs, child_arid, cap_token)
+                out = self._gate_inproc(refs, child_arid)
             elif phase == "compile" and substep == "static":
-                out = self._compile_static_inproc(refs, child_arid, cap_token)
+                out = self._compile_static_inproc(refs, child_arid)
             else:
                 raise RuntimeError(f"no deterministic body for {phase}.{substep}")
         except Exception as exc:  # noqa: BLE001 - surfaced as transport failure
@@ -9856,7 +9857,7 @@ clean:
             staged.append(binding)
         return staged
 
-    def _build_inproc(self, refs: NodeRefs, child_arid: str, cap_token: str) -> dict[str, str]:
+    def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Build: in-process compile_project + binary_meta + post_build gate."""
         import sys as _sys
         mcp_dir = str(self.repo_root / "mcp_servers")
@@ -9892,8 +9893,10 @@ clean:
 
         result = tool_compile_project({
             "project_dir": str(src_dir),
-            # The MCP orchestration gate resolves the orchestration root from repo_root
-            # (defaulting to project_dir); pass our repo_root so it finds the capability.
+            # `repo_root` is accepted and unused by the server since issue #171 PR-2 (it
+            # anchored the retired capability gate's evidence); passed because the served
+            # schema still declares it and it is the one place the call records which
+            # checkout it belongs to.
             "repo_root": str(self.repo_root),
             "language": language,
             "build_system": build_system,
@@ -9905,7 +9908,6 @@ clean:
             "capture_limit": _FULL_CAPTURE_LIMIT,
             "orchestration_id": self.orchestration_id,
             "agent_run_id": child_arid,
-            "capability_token": cap_token,
         })
         ok = bool(result.get("ok"))
         # return_code is None on a subprocess timeout; treat that as a build failure.
@@ -10026,8 +10028,7 @@ clean:
                 stderr += "\n[post_build gate fail]\n" + gate.stdout + gate.stderr
         return {"returncode": 0, "stdout": stdout, "stderr": stderr}
 
-    def _gate_inproc(self, refs: NodeRefs, child_arid: str,
-                     cap_token: str) -> dict[str, str]:
+    def _gate_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Generate.gate: run the three source checkers (lint, syntax, static) as
         a single unioned substep and author ONE gate_meta.json. Replaces the former
         lint/syntax/static substeps so a source with defects in several classes gets ONE warm
@@ -10050,15 +10051,19 @@ clean:
         ran and passed). failure_categories / the composed excerpt are in canonical order
         (syntax_error -> lint_findings -> static family). A content failure returns rc 0 so
         run_phase routes it via classify_gate_failure -> generate.generate (warm resume);
-        determine_substep_status reads gate_meta.gate_status. The DRIFT GUARD
-        (test_mcp_grant_table_matches_conductor_call_sites) walks the `self._gate_*_check(` calls
-        BELOW to derive this substep's gated-tool set, so keep them as explicit method calls."""
-        lint = self._gate_lint_check(refs, child_arid, cap_token)
-        syntax = self._gate_syntax_check(refs, child_arid, cap_token)
+        determine_substep_status reads gate_meta.gate_status. A DRIFT GUARD
+        (`test_mcp_grant_table_matches_conductor_call_sites`) used to walk the
+        `self._gate_*_check(` calls BELOW to derive this substep's gated MCP tool set and compare
+        it against `_MCP_TOOL_GRANTS_BY_SUBSTEP`; the grant table and the guard went with the MCP
+        capability gate (issue #171 PR-2), so NOTHING reads the shape of these calls any more and
+        writing them as anything else breaks no test. They stay explicit because the composition
+        above is read line by line, not because a check requires it."""
+        lint = self._gate_lint_check(refs, child_arid)
+        syntax = self._gate_syntax_check(refs, child_arid)
         lint_ok = lint.get("status") == "pass"
         syntax_ok = syntax.get("status") == "pass"
         if lint_ok and syntax_ok:
-            static = self._gate_static_check(refs, child_arid, cap_token)
+            static = self._gate_static_check(refs, child_arid)
         else:
             # Skip static: its post_generate certifier hard-fails on non-ok lint/syntax evidence,
             # so it could only echo the failure already recorded above.
@@ -10165,7 +10170,7 @@ clean:
                 raise RuntimeError(f"generate.gate lint check: {reason}")
 
     def _attribute_lint_findings(
-        self, refs: NodeRefs, child_arid: str, cap_token: str, preset: str,
+        self, refs: NodeRefs, child_arid: str, preset: str,
         whole_dir_excerpts: list[str],
     ) -> tuple[str, str | None]:
         """Which SIDE of `src/` a failing lint run's findings are on (issue #112).
@@ -10262,7 +10267,6 @@ clean:
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 "orchestration_id": self.orchestration_id,
                 "agent_run_id": child_arid,
-                "capability_token": cap_token,
             })
             # A probe that could not JUDGE is not evidence about either side. The classifier is
             # the same one the main run went through, so a refused invocation here raises to a
@@ -10310,8 +10314,7 @@ clean:
                 "reproducible. Refusing rather than blaming the leaf (issue #112).\n"
                 + _tail("\n".join(whole_dir_excerpts)))
 
-    def _gate_lint_check(self, refs: NodeRefs, child_arid: str,
-                         cap_token: str) -> dict[str, Any]:
+    def _gate_lint_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate lint checker: in-process run_linter over source/<id>/src/, plus a
         host-side (leaf-non-writable) lint evidence certificate. Returns the `lint` section of
         gate_meta (status / preset / language / run_linter / failure_category / failure_excerpt);
@@ -10352,7 +10355,6 @@ clean:
             "capture_limit": _FULL_CAPTURE_LIMIT,
             "orchestration_id": self.orchestration_id,
             "agent_run_id": child_arid,
-            "capability_token": cap_token,
         })
 
         # Normalize single vs mixed (2 sub-runs) into a uniform run_linter entry list.
@@ -10401,7 +10403,7 @@ clean:
             # directory output is passed in so the unattributed arm can quote what it could not
             # place; nothing here reads it to decide anything.
             failure_category, failure_excerpt = self._attribute_lint_findings(
-                refs, child_arid, cap_token, preset, excerpts)
+                refs, child_arid, preset, excerpts)
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
         # against. The evidence keys (preset/command_id/command_log_ref) are exactly what
@@ -10430,8 +10432,7 @@ clean:
             "failure_excerpt": failure_excerpt,
         }
 
-    def _gate_syntax_check(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, Any]:
+    def _gate_syntax_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate syntax checker: in-process run_syntax_check (a real compiler
         front-end, gfortran -fsyntax-only) over the staged node + dependency-closure
         sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
@@ -10583,7 +10584,6 @@ clean:
                         "capture_limit": _FULL_CAPTURE_LIMIT,
                         "orchestration_id": self.orchestration_id,
                         "agent_run_id": child_arid,
-                        "capability_token": cap_token,
                     })
                 except SyntaxSourceNameError as exc:
                     # A source name the tool refuses (an option-shaped `-o.f90`, a
@@ -10662,7 +10662,6 @@ clean:
                             "capture_limit": _FULL_CAPTURE_LIMIT,
                             "orchestration_id": self.orchestration_id,
                             "agent_run_id": child_arid,
-                            "capability_token": cap_token,
                         })
 
                     # Attribution step 1 — is the INVOCATION itself viable? `std` comes from
@@ -10854,8 +10853,7 @@ clean:
             "failure_excerpt": failure_excerpt,
         }
 
-    def _gate_static_check(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, Any]:
+    def _gate_static_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate static checker: run the purely-static post_generate gates that the
         verify leaf used to own (so verify is now a pure LLM semantic G1-G7 pass reached only
         on a deterministically-clean source). Returns the `static` section of gate_meta (status /
@@ -10939,8 +10937,7 @@ clean:
             "skipped_reason": None,
         }
 
-    def _compile_static_inproc(self, refs: NodeRefs, child_arid: str,
-                               cap_token: str) -> dict[str, str]:
+    def _compile_static_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Compile.static: run the purely-static IR gates the verify leaf used to
         own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
@@ -11174,7 +11171,7 @@ clean:
         """repo-root-relative POSIX path for canonical refs."""
         return str(path.relative_to(self.repo_root)).replace("\\", "/")
 
-    def _execute_inproc(self, refs: NodeRefs, child_arid: str, cap_token: str) -> dict[str, Any]:
+    def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
         promote the runner's primary evidence to the canonical run node dir, author the
         agent-owned metadata (snapshot_schema/quality_check/trial_meta/stdout/stderr),
@@ -11230,9 +11227,10 @@ clean:
             if _prev.exists():
                 _prev.unlink()
 
+        # Attribution only: the server records both ids in `command_log.jsonl` and
+        # decides nothing from them (the capability gate went with issue #171).
         gate_args = {"orchestration_id": self.orchestration_id,
-                     "agent_run_id": child_arid, "capability_token": cap_token,
-                     # so the MCP orchestration gate resolves the right orchestration root
+                     "agent_run_id": child_arid,
                      "repo_root": str(self.repo_root)}
 
         # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
@@ -12253,8 +12251,7 @@ clean:
         path.write_text(
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str,
-                          cap_token: str) -> dict[str, str]:
+    def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Validate.pre_judge: the pre-spawn dependency-DAG readiness gate,
         promoted from a run_phase pre-loop branch to a recorded substep at index 0. Runs
         BEFORE execute so a --with-deps closure that is not built+validated in its own
@@ -12494,8 +12491,7 @@ clean:
             "judge_command_ref": f"{refs.run_node_dir()}/semantic_review.json",
         })
 
-    def _post_judge_inproc(self, refs: NodeRefs, child_arid: str,
-                           cap_token: str) -> dict[str, str]:
+    def _post_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Validate.post_judge: FIRST author the derived artifacts
         (`_author_derived_validate_artifacts` — G6: aggregate_verdict/summary/validate_meta),
         then run `validate_pipeline_semantics --stage pre_judge` (the gate the judge leaf
@@ -12695,7 +12691,8 @@ clean:
         # R1/M3c-β: for a physics node with a harness dependency the conductor host-renders
         # src/<spec_id>_runner.f90 (glue over the certified harness plumbing + the leaf-authored
         # <spec_id>_checks.f90), BEFORE the substeps run — so, like the Makefile, the write is
-        # outside the substep FS-diff window (no write-attribution regression) and re-renders on
+        # the host's own and is never mistaken for a leaf's (it was outside the substep FS-diff
+        # window while that diff existed; issue #171 PR-2 deleted it) and re-renders on
         # each attempt after the source_id rotate (_ensure_fresh_producer_id, above). An
         # unresolvable/unbuilt harness, a harness-interface drift (signature pin), or an
         # unrenderable IR is a fail_closed precondition (operator --resume), NOT a Generate retry.

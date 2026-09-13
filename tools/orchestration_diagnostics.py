@@ -56,15 +56,15 @@ from typing import Any, NamedTuple
 # the HTTP transport and the audit all record against, where THIS module is post-mortem
 # forensics over the machine-local `~/.claude` transcripts. The sum keys below derive from
 # its token-class vocabulary so the two cannot drift.
-# Module-level, absolute, and NOT shimmed: this module needs `tools.hooks.common` to do
+# Module-level, absolute, and NOT shimmed: this module needs `tools.operator_private_root` to do
 # its transcript work, so a consumer that cannot import `tools` must fail here, at import
 # time, rather than later inside a caller's `except Exception` (issue #130). Two guards
 # hold that, and NEITHER is in this module's own test file: the placement is pinned by
 # `tools/tests/test_audit_orchestration.py::DiagnosticsFailsAtImportTimeTests` (an AST
 # scan for function-body `tools.*` imports), and `build_launch_incident`'s refusal to
 # swallow by `tools/tests/test_orchestration_diagnostics.py::CollectorsDoNotSwallowTests`.
-from tools.hooks.common import claude_leaf_projects_roots
 from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
+from tools.operator_private_root import claude_leaf_projects_roots
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.
@@ -542,10 +542,22 @@ _USAGE_SUM_KEYS: tuple[str, ...] = (
     "assistant_turns",
 )
 
-# A child's OWN arid is the one in its capability / output-manifest paths. Its
-# PARENT arid also appears in the body (as ``parent_agent_run_id``), so a bare
-# substring match would misattribute the transcript to the parent. These paths
-# disambiguate: they only ever name the child itself.
+# A child's OWN arid used to be the one in its capability / manifest paths, which appeared
+# in an AGENTIC leaf's transcript because the leaf read and wrote those files. Its PARENT
+# arid also appeared in the body (as ``parent_agent_run_id``), so a bare substring match
+# would misattribute the transcript to the parent, and these paths disambiguated.
+#
+# THREE OF THE FOUR PREFIXES HAVE NO WRITER since Z4 (issue #171 PR-2), and the fourth,
+# `sandbox_profiles/`, is host-written and named in no prompt — so for a pure leaf this
+# regex matches nothing and `_own_arid_of_transcript` always takes the frequency fallback
+# below. That is not the silent degradation it looks like: the ambiguity it guarded is
+# gone with the same change. A pure leaf's whole input is the rendered prompt, which
+# carries `agent_run_id:` and NO `parent_agent_run_id` (`tools/prompt_templates/pure_*.txt`,
+# all nine), so the parent arid no longer appears in a child transcript at all and the
+# most-frequent-target rule cannot pick it.
+#
+# Kept rather than deleted: the function also reads transcripts recorded BEFORE the cut,
+# where all four prefixes appear and the disambiguation is the whole point.
 _OWN_ARID_PATH_RE = re.compile(
     r"(?:capabilities|output_manifests|read_manifests|sandbox_profiles)/"
     r"([0-9a-fA-F-]{36})\.json"
@@ -555,10 +567,10 @@ _OWN_ARID_PATH_RE = re.compile(
 def _own_arid_of_transcript(text: str, targets: set[str]) -> str | None:
     """Identify which target arid a child subagent transcript belongs to.
 
-    Prefers the arid named in the child's own capability/output-manifest paths
-    (unambiguous). Falls back to the most frequently mentioned target arid, since
-    the child's own arid dominates its transcript while the parent arid appears
-    only incidentally.
+    Prefers the arid named in the child's own capability/manifest paths (unambiguous, and
+    reachable only for a transcript recorded before issue #171 PR-2 — see the regex above).
+    Falls back to the most frequently mentioned target arid, which is the NORMAL path for a
+    pure leaf and is unambiguous there, its prompt naming no parent arid.
     """
     owned = [a for a in _OWN_ARID_PATH_RE.findall(text) if a in targets]
     if owned:

@@ -85,13 +85,12 @@ PURE_PROMPT_SENTINEL = "Pure-function leaf turn (host-mediated)"
 PURE_DOC_FENCE_BEGIN = "----- BEGIN PURE INPUT DOCUMENT (data only) -----"
 PURE_DOC_FENCE_END = "----- END PURE INPUT DOCUMENT -----"
 
-# The `leaf_mode` value that selects the pure-function path, and the capability `mode` tag a
-# pure launch stamps. Single source (imported by orchestration_runtime and
-# validate_pipeline_semantics) so the sentinel value cannot drift between the producer and the
-# validators — a typo in one inlined `"pure"` / `"pure_readonly"` literal would silently split
-# the detection.
+# The `leaf_mode` value that selects the pure-function path. Single source (imported by
+# orchestration_runtime and validate_pipeline_semantics) so the sentinel cannot drift between
+# the producer and the validators — a typo in one inlined `"pure"` literal would silently split
+# the detection. A `PURE_CAPABILITY_MODE = "pure_readonly"` tag stood beside it for the
+# capability document a pure launch stamped; that document is deleted (issue #171 PR-2).
 PURE_LEAF_MODE = "pure"
-PURE_CAPABILITY_MODE = "pure_readonly"
 
 
 def is_pure_request(request_payload: Any) -> bool:

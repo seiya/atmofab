@@ -1742,10 +1742,9 @@ class PureTerminalCarveOutTests(unittest.TestCase):
         return repo, arid
 
     def test_pure_pass_row_requires_empty_output_refs(self) -> None:
-        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             repo, arid = self._setup(tmp)
-            with patch.object(ort, "_validate_actual_write_paths", return_value=None):
+            if True:  # (the terminal write audit this block used to stub out is deleted)
                 # empty output_refs accepted
                 ort._validate_terminal_run_payload(
                     repo, "o", {"agent_role": "substep", "status": "pass",
