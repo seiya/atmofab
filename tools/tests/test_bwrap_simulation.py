@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -192,6 +193,168 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertIn("OWN_TMP:WRITABLE", out, out)
             # The host's copies are untouched — this hides, it does not delete.
             self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
+
+    # ---- issue #226: the backend CLI itself starts inside the profile rendered for it ----
+
+    def _assert_backend_cli_starts_inside_its_profile(
+        self, backend_type: str, cli: str, *, private_home: bool,
+    ) -> None:
+        """Exec the operator's REAL backend CLI, by name, under the profile production renders.
+
+        The ro bind of the CLI's install root is what `_backend_runtime_bind_paths` exists
+        for, and until issue #226 it was complete for one install shape only: a `claude`
+        literal, and nothing for a `codex` behind a volta shim (measured: rc=7, `Volta
+        update error`, because the shim needs `~/.volta/tools` and `~/.volta/layout.*`
+        beside `~/.volta/bin`). The rule is now shape-delimited, and a unit row over a
+        synthetic tree cannot say whether the REAL install is covered — only the real CLI
+        under real bwrap can, which is why this row does not fake the shim.
+
+        The rw half follows production's shape per backend, because the rw half is where a
+        row can leave something behind in the operator's home. A codex launch passes
+        `codex_isolation_profile_kwargs`: a private `CODEX_HOME` bound rw INSTEAD of
+        `~/.codex` (the operator's `~/.codex` is never bound rw in production); the row
+        passes the same two kwargs with a home under its own tempdir — measured, `codex
+        --version` creates `tmp/arg0/codex-arg0*/` under whichever `CODEX_HOME` it runs
+        with, which the first version of this row left in the operator's real `~/.codex`.
+        (The auth / config ro mappings production adds are not needed by `--version`.) A
+        claude launch takes the default rw set, `~/.claude` + `~/.claude.json`, and the row
+        does the same; measured over repeated runs with a `find -newer` marker, `claude
+        --version` under the profile leaves nothing new there (an operator's own
+        interactive session writes `~/.claude.json` concurrently, so one probe is not a
+        measurement). The CLI is launched by NAME through the host PATH the profile env carries. `_bwrap_stdout`
+        raises with bwrap's stderr and exit code, so a regression reads as the CLI's own
+        start-up error. On a host carrying neither CLI both rows skip, and the criterion is
+        unmeasured there.
+        """
+        if shutil.which(cli) is None:
+            self.skipTest("backend CLI not installed on this host")
+        with tempfile.TemporaryDirectory() as t, tempfile.TemporaryDirectory() as h:
+            repo = Path(t).resolve()
+            orch, arid = f"orch_{cli}", f"arid_{cli}"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            kwargs: dict = {}
+            if private_home:
+                home = Path(h).resolve() / "home"
+                home.mkdir(mode=0o700)
+                kwargs = {"backend_rw_override": [str(home)],
+                          "env_overrides": {"CODEX_HOME": str(home)}}
+            profile = build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command=cli, backend_type=backend_type, **kwargs)
+            out = _bwrap_stdout(render_bwrap_command(profile=profile,
+                                                     command_argv=[cli, "--version"]),
+                                timeout=120)
+        self.assertTrue(out.strip(), out)
+
+    _BIND_ALIAS_CHILD = textwrap.dedent("""
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        import tools.orchestration_runtime as ort
+        d = Path(sys.argv[2]); home = d / "home" / "user"
+        repo = Path(sys.argv[3]); path_dir = sys.argv[4]
+        os.environ["HOME"] = str(home)
+        os.environ["PATH"] = f"{path_dir}:" + os.environ["PATH"]
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        try:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex",
+                backend_rw_override=[str(d / "ch")], env_overrides={"CODEX_HOME": str(d / "ch")})
+        except ValueError as exc:
+            print("REFUSED", exc)
+        else:
+            print("ACCEPTED")
+    """)
+
+    @staticmethod
+    def _outer_bwrap(binds: list[tuple[Path, Path]]) -> list[str]:
+        argv = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        for src, dst in binds:
+            argv += ["--bind", str(src), str(dst)]
+        return argv
+
+    def test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused(self) -> None:
+        """Round-3 security finding (issue #226): `realpath` is blind to a bind mount, so a
+        data disk bound into `~/work` that holds both the checkout and a CLI wrapper, with the
+        workflow started from the disk's own spelling, bound `~/work` read-only and exposed
+        the hidden `workspace/` at `~/work/atmofab/...` (measured: `PRODUCER REASONING`).
+        `_refuse_backend_ro_alias_of_repo` compares inodes now. The bind mount needs a mount
+        namespace, so the layout is built under an OUTER bwrap and the builder runs inside
+        it; the control row is the same layout with `repo_root` spelled through the bind,
+        which the overlays cover and the builder accepts."""
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            data_work = d / "data" / "work"
+            (data_work / "atmofab" / "workspace").mkdir(parents=True)
+            bindir = data_work / "npm" / "bin"
+            bindir.mkdir(parents=True)
+            (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (bindir / "cli-sim").chmod(0o755)
+            (d / "home" / "user" / "work").mkdir(parents=True)
+            (d / "ch").mkdir(mode=0o700)
+            repo_root = Path(__file__).resolve().parents[2]
+            home_work = d / "home" / "user" / "work"
+            outer = [*self._outer_bwrap([(data_work, home_work)]), "--",
+                     sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d)]
+            refused = subprocess.run([*outer, str(data_work / "atmofab"), str(home_work / "npm" / "bin")],
+                                     capture_output=True, text=True, timeout=120,
+                                     check=False)  # the exit code is asserted below
+            self.assertEqual(refused.returncode, 0, refused.stderr)
+            self.assertIn("REFUSED", refused.stdout, refused.stdout)
+            self.assertIn("is the same directory as", refused.stdout)
+            accepted = subprocess.run([*outer, str(home_work / "atmofab"), str(home_work / "npm" / "bin")],
+                                      capture_output=True, text=True, timeout=120,
+                                      check=False)  # the exit code is asserted below
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(accepted.stdout.strip(), "ACCEPTED", accepted.stdout)
+
+    def test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused(self) -> None:
+        """Round-5 security finding and the round-3 residual, closed together by the mount
+        table (`_mount_table` / `_fs_identity`): a `$HOME` child that IS a bind mount of
+        `<checkout>/workspace` holding the wrapper (`realpath` is blind to it, and the inode
+        walk only sees ancestors), and a bind mount of that tree BELOW a real root
+        (`~/tools/alias`). Both printed the planted dialogs before the mount-table
+        comparison landed (measured under a nested bwrap). Control: the same root with no
+        mount is accepted."""
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            home = d / "home" / "user"
+            repo = home / "atmofab"
+            ws_bin = repo / "workspace" / "bin"
+            ws_bin.mkdir(parents=True)
+            (ws_bin / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (ws_bin / "cli-sim").chmod(0o755)
+            tools = home / "tools"
+            (tools / "bin").mkdir(parents=True)
+            (tools / "alias").mkdir()
+            (tools / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (tools / "bin" / "cli-sim").chmod(0o755)
+            (d / "ch").mkdir(mode=0o700)
+            repo_root = Path(__file__).resolve().parents[2]
+            child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d), str(repo)]
+            cases = [
+                ("root is the bind", [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
+                ("bind below the root", [(repo / "workspace", tools / "alias")], tools / "bin",
+                 "REFUSED"),
+                ("no mount (control)", [], tools / "bin", "ACCEPTED"),
+            ]
+            for label, binds, path_dir, expected in cases:
+                with self.subTest(case=label):
+                    res = subprocess.run([*self._outer_bwrap(binds), "--", *child, str(path_dir)],
+                                         capture_output=True, text=True, timeout=120,
+                                         check=False)  # the exit code is asserted below
+                    self.assertEqual(res.returncode, 0, res.stderr)
+                    self.assertTrue(res.stdout.startswith(expected), res.stdout)
+                    if expected == "REFUSED":
+                        self.assertIn("carries a mount", res.stdout)
+
+    def test_codex_cli_starts_inside_its_own_profile(self) -> None:
+        self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
+
+    def test_claude_cli_starts_inside_its_own_profile(self) -> None:
+        self._assert_backend_cli_starts_inside_its_profile("claude", "claude",
+                                                          private_home=False)
 
 
 if __name__ == "__main__":

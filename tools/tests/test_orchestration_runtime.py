@@ -24150,7 +24150,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
     def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
-        """The profile's read-only bind of the CLI install directory used to come from
+        """The profile's read-only bind of the CLI install root used to come from
         `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run could
         only have ONE command; with a per-entry `command:` the leaf would be launched inside a
         sandbox where its own binary is not bound."""
@@ -24168,7 +24168,10 @@ class MultiProviderPreflightTests(unittest.TestCase):
             profile = json.loads(
                 (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
             self.assertEqual(profile["backend_command"], str(wrapper))
-            self.assertIn(bindir, json.dumps(profile))
+            # The BIND, not the echo: `profile["backend_command"]` alone satisfied the
+            # `json.dumps` substring form this used to assert (round-1 finding, issue #226).
+            # `bindir` is a tempdir outside $HOME, so its install root is itself.
+            self.assertIn(str(Path(bindir).resolve()), profile["runtime_ro_bind_paths"])
 
     def test_a_launch_without_its_own_command_still_uses_the_preflight_one(self) -> None:
         """The fallback: a legacy response carries no `backend_command`."""
@@ -26415,6 +26418,191 @@ class LeafEnvClosureTests(unittest.TestCase):
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", child_env=bad_entry)
 
+    def _alias_layout(self, d: Path, *, symlinked_home: bool) -> tuple[Path, Path, Path]:
+        """A checkout and a CLI wrapper under the same $HOME child (`~/work`), with `$HOME`
+        either a symlink to the physical home (`/home/x -> /data/x`) or the physical home.
+        Returns `(home_as_spelled, repo_root, wrapper_bindir_as_spelled)`."""
+        physical = d / "data" / "user"
+        physical.mkdir(parents=True)
+        if symlinked_home:
+            (d / "home").mkdir()
+            home = d / "home" / "user"
+            home.symlink_to(physical, target_is_directory=True)
+        else:
+            home = physical
+        repo = physical / "work" / "atmofab"
+        dialogs = repo / "workspace" / "orchestrations" / "o" / "agents" / "P" / "dialogs"
+        dialogs.mkdir(parents=True)
+        (dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+        bindir = physical / "work" / "wrap" / "bin"
+        bindir.mkdir(parents=True)
+        wrapper = bindir / "cli-sim"
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        return home, repo, home / "work" / "wrap" / "bin"
+
+    def test_an_install_root_that_aliases_the_checkout_is_refused(self) -> None:
+        """Round-2 security finding (issue #226): with `$HOME` a symlink, the `which`
+        candidate's root `<link home>/work` resolves to `<physical>/work`, which holds the
+        checkout — and `render_bwrap_command` overlays `workspace/` at the checkout's
+        resolved path only, so the producer's `dialogs/` were readable at the alias
+        (measured under real bwrap: `PRODUCER REASONING`). The builder refuses the root;
+        `record_launch` routes the `ValueError` to transport `fail_closed`."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home, repo, bindir = self._alias_layout(d, symlinked_home=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{bindir}:{os.environ['PATH']}"}), \
+                self.assertRaises(ValueError) as ctx:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn("contains the checkout", str(ctx.exception))
+        self.assertIn(str(repo), str(ctx.exception))
+
+    def test_an_install_root_that_contains_the_checkout_by_its_own_path_is_accepted(self) -> None:
+        """The over-refusal probe for the row above: the same layout with a real `$HOME`.
+        `~/work` is bound and contains the checkout AT ITS OWN PATH, where the repo bind and
+        the `workspace/` overlay are emitted later and stack on top (measured under real
+        bwrap: the dialogs stay hidden). Refusing it would fail every operator who keeps the
+        checkout and a CLI wrapper under one `$HOME` child."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home, repo, bindir = self._alias_layout(d, symlinked_home=False)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{bindir}:{os.environ['PATH']}"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn(str(home / "work"), profile["runtime_ro_bind_paths"])
+
+    def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
+        # The equality boundary of the ancestor walk (a `resolved_repo != physical` exemption
+        # survived the round-3 sweep): `~/x -> ~/atmofab` with the wrapper at `~/x/bin/` makes
+        # the root the checkout ITSELF under a second name, and every hidden tree is readable
+        # at `~/x/workspace/...` (measured under real bwrap by the round-3 security axis).
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        repo = home / "atmofab"
+        (repo / "workspace").mkdir(parents=True)
+        (home / "x").symlink_to(repo, target_is_directory=True)
+        bindir = repo / "bin"
+        bindir.mkdir()
+        wrapper = bindir / "cli-sim"
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{home / 'x' / 'bin'}:{os.environ['PATH']}"}), \
+                self.assertRaises(ValueError) as ctx:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn("is the same directory as", str(ctx.exception))
+
+    def test_an_install_root_that_lies_inside_the_checkout_under_another_name_is_refused(self) -> None:
+        """Round-4 security finding (issue #226): the mirror of the alias above. A `$HOME`
+        child symlinked INTO a hidden tree (`~/tools -> <checkout>/workspace`) holding the
+        wrapper is bound at `~/tools`, where the overlay at the checkout's own path does not
+        reach (measured under real bwrap: the dialogs readable at `~/tools/orchestrations/`;
+        `origin/main` bound only `workspace/bin`). The walk runs in the other direction too:
+        the checkout against each ancestor of the root's realpath. A root SPELLED under the
+        checkout is exempt — it is overlaid with the rest (measured)."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        repo = d / "data" / "atmofab"
+        bindir = repo / "workspace" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+        (bindir / "cli-sim").chmod(0o755)
+        (home / "tools").symlink_to(repo / "workspace", target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{home / 'tools' / 'bin'}:{os.environ['PATH']}"}), \
+                self.assertRaises(ValueError) as ctx:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn("lies inside the checkout", str(ctx.exception))
+        # The exemption: the same wrapper reached by its own in-checkout spelling.
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{bindir}:{os.environ['PATH']}"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn(str(bindir), profile["runtime_ro_bind_paths"])
+
+    def test_backend_ro_extra_goes_through_the_alias_refusal(self) -> None:
+        # No production caller passes `backend_ro_extra` today; the round-4 sweep found the
+        # ordering (extend, THEN refuse) unpinned, and a caller added later must not be
+        # able to bind an alias of the checkout by that parameter.
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        repo = home / "atmofab"
+        (repo / "workspace").mkdir(parents=True)
+        (d / "alias").symlink_to(repo, target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin"}), \
+                self.assertRaises(ValueError):
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude",
+                backend_ro_extra=[str(d / "alias")])
+
+    def test_the_mount_table_decodes_escapes_and_the_longest_mount_point_wins(self) -> None:
+        # Two properties of the instrument the alias refusal reads, driven on a synthetic
+        # table: an octal escape in a path field (`\\040` is how mountinfo spells a space),
+        # and the longest-prefix rule that picks the mount owning a path — with a bind
+        # mount's root-within-device carried into the identity.
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        fake = d / "mountinfo"
+        fake.write_text(
+            "20 1 8:1 / / rw - xfs /dev/sda1 rw\n"
+            "30 20 8:2 / /mnt/my\\040disk rw - xfs /dev/sdb1 rw\n"
+            "40 20 8:1 /data/atmofab/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
+            encoding="utf-8")
+        table = ort._mount_table(fake)
+        self.assertEqual(table[1][0], "/mnt/my disk")
+        self.assertEqual(ort._fs_identity(Path("/home/u/tools/bin"), table),
+                         ("8:1", Path("/data/atmofab/workspace/bin")))
+        self.assertEqual(ort._fs_identity(Path("/home/u/other"), table),
+                         ("8:1", Path("/home/u/other")))
+        self.assertEqual(ort._fs_identity(Path("/mnt/my disk/x"), table), ("8:2", Path("/x")))
+        self.assertEqual(ort._mount_table(d / "absent"), [])
+
+    def test_the_spelled_root_exemption_is_taken_on_the_normalised_spelling(self) -> None:
+        """Round-5 finding F2: with `HOME` unset the parent dir is bound un-normalised, and a
+        PATH entry `<checkout>/../alias/workspace` (with `~/alias -> <checkout>`) is
+        lexically under the checkout — exempt — while bwrap mounts it at `~/alias/workspace`,
+        which no overlay covers (measured: the dialogs readable). The exemption reads the
+        normalised spelling now, so the inode walk sees the alias."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        repo = home / "atmofab"
+        ws = repo / "workspace"
+        ws.mkdir(parents=True)
+        (ws / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+        (ws / "cli-sim").chmod(0o755)
+        (home / "alias").symlink_to(repo, target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        dotted = f"{repo}/../alias/workspace"
+        with mock.patch.dict(os.environ, {"PATH": f"{dotted}:{os.environ['PATH']}"}):
+            os.environ.pop("HOME", None)
+            with self.assertRaises(ValueError) as ctx:
+                ort.build_readonly_bwrap_profile(
+                    repo_root=repo, orchestration_id="o", agent_run_id="A",
+                    backend_command="cli-sim", backend_type="codex")
+        self.assertIn("lies inside the checkout", str(ctx.exception))
+
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
         """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
         inheriting: it filters the host environment through the same owner constant."""
@@ -26432,7 +26620,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
 
 class BackendRuntimeBindPathsTests(unittest.TestCase):
-    """The backend CLI's own install dir and credential home, which the bare profile misses.
+    """The backend CLI's own install root and credential home, which the bare profile misses.
 
     `_backend_runtime_bind_paths` is the sole producer of both, and its only caller is
     `build_readonly_bwrap_profile`, which is now the only profile builder there is. Its
@@ -26445,7 +26633,9 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
     TYPE, since the command may be a wrapper whose name says nothing; and it is resolved
     through `tools.operator_private_root.backend_credential_home_paths`, which is the
     single canonical answer to "where does a backend keep its credentials" — a second
-    spelling here is how the profile and that resolver drift apart."""
+    spelling here is how the profile and that resolver drift apart. The ro set is the
+    CLI's install ROOT, delimited by the shape of the resolved path and by no backend
+    name (issue #226); its rows are the second half of this class."""
 
     def _paths(self, btype: str, command: str, home: Path):
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
@@ -26487,26 +26677,6 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
                            "no backend declares a credential FILE; the assertions above "
                            "looped over nothing and this pin covers only the dirs")
 
-    def test_the_backend_data_dir_is_bound_ro_for_claude(self) -> None:
-        """The third thing this function produces, and the one the class first missed.
-
-        The `claude` CLI reads `~/.local/share/claude` at startup, outside every system dir
-        `_runtime_ro_bind_paths` covers and outside the credential home. The class was
-        written because `return ([], [])` left the full suite green; it closed the rw
-        credential set and the install dir and not this, so a third of the subject stayed
-        exactly as unpinned as before. `grep -rn "local/share/claude"` over the tree found
-        this path in the implementation and nowhere else."""
-        d = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, d, True)
-        home = d / "home"
-        data_dir = home / ".local" / "share" / "claude"
-        data_dir.mkdir(parents=True)
-        ro, _rw = self._paths("claude", "claude", home)
-        self.assertIn(str(data_dir), ro)
-        # Keyed on the TYPE like the rw set: a codex leaf has no claude data dir to read.
-        ro_codex, _ = self._paths("codex", "codex", home)
-        self.assertNotIn(str(data_dir), ro_codex)
-
     def test_the_rw_set_is_keyed_on_the_type_not_on_the_command_string(self) -> None:
         # A `command:` wrapper resolves to the wrapper binary, so reading the command
         # string for the backend's identity binds the wrong home — or none.
@@ -26519,21 +26689,179 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         self.assertEqual(direct, wrapped)
         self.assertTrue(any(entry.endswith(".codex") for entry in wrapped), wrapped)
 
-    def test_the_backend_install_dir_is_bound_ro(self) -> None:
-        # The `claude` CLI installs under the operator's home, outside every system dir
-        # `_runtime_ro_bind_paths` covers, so without this the sandbox cannot exec it.
+    # ---- the ro half: the install ROOT, delimited by shape (issue #226) ----
+    #
+    # Each row below writes a real executable into a temp tree and resolves it through
+    # the host PATH, because `_backend_runtime_bind_paths` reads the command's first token
+    # via `shutil.which` (so `_paths`, which patches HOME only, cannot drive this half).
+    # The rows pin the PROPERTY of the rule — one bind, the $HOME-child root, for both
+    # `which` and its realpath — with `assertEqual` over the whole list, so a second entry
+    # for `bin/` or a deeper dir turns a row red. Each branch of `_install_root_for` gets
+    # its own probe: under $HOME (two install shapes), outside $HOME, directly under
+    # $HOME (refused), and no HOME at all.
+
+    def _ro_for(self, cmd: str, home: Path | None, bindir: Path) -> list[str]:
+        env = {"PATH": f"{bindir}:{os.environ['PATH']}"}
+        if home is not None:
+            env["HOME"] = str(home)
+        with mock.patch.dict(os.environ, env):
+            if home is None:
+                os.environ.pop("HOME", None)
+            ro, _rw = ort._backend_runtime_bind_paths("codex", cmd)
+        return ro
+
+    @staticmethod
+    def _executable(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def _tool_manager_install(self, home: Path) -> tuple[Path, Path]:
+        """`home/.toolmgr/bin/cli-sim` -> `shim`, beside `tools/` and a `layout` file:
+        the volta shape, where the shim needs siblings of `bin/` at start-up."""
+        root = home / ".toolmgr"
+        shim = self._executable(root / "bin" / "shim")
+        (root / "bin" / "cli-sim").symlink_to(shim)
+        (root / "tools").mkdir()
+        (root / "layout").write_text("", encoding="utf-8")
+        return root, root / "bin"
+
+    def test_an_install_under_home_binds_its_home_child_root(self) -> None:
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        bindir = home / ".local" / "bin"
-        bindir.mkdir(parents=True)
-        exe = bindir / "claude-sim"
-        exe.write_text("#!/bin/sh\n", encoding="utf-8")
-        exe.chmod(0o755)
+        root, bindir = self._tool_manager_install(home)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir), [str(root)])
+        # Second shape: `home/.local/bin/cli` -> `home/.local/share/x/versions/1/cli`, the
+        # installer layout where `bin/` and `share/` are siblings under one $HOME child.
+        home2 = d / "home2"
+        real = self._executable(home2 / ".local" / "share" / "x" / "versions" / "1" / "cli-sim")
+        bindir2 = home2 / ".local" / "bin"
+        bindir2.mkdir(parents=True)
+        (bindir2 / "cli-sim").symlink_to(real)
+        self.assertEqual(self._ro_for("cli-sim", home2, bindir2), [str(home2 / ".local")])
+
+    def test_the_install_root_does_not_depend_on_the_backend_name(self) -> None:
+        """The pin for issue #226's criterion: no backend-name literal in the ro half.
+
+        The tree carries `home/.local/share/claude`, the directory the OLD literal named,
+        so restoring `if btype == "claude": ro.add(~/.local/share/claude)` makes the claude
+        answer differ from the codex answer for the same command — and this row red."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        root, bindir = self._tool_manager_install(home)
+        (home / ".local" / "share" / "claude").mkdir(parents=True)
         with mock.patch.dict(os.environ,
                              {"HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            ro, _rw = ort._backend_runtime_bind_paths("claude", "claude-sim")
-        self.assertIn(str(bindir), ro)
+            ro_claude, _ = ort._backend_runtime_bind_paths("claude", "cli-sim")
+            ro_codex, _ = ort._backend_runtime_bind_paths("codex", "cli-sim")
+        self.assertEqual(ro_claude, ro_codex)
+        self.assertEqual(ro_claude, [str(root)])
+
+    def test_an_install_outside_home_binds_the_parent_dirs(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        real = self._executable(d / "opt" / "lib" / "real")
+        bindir = d / "opt" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "cli-sim").symlink_to(real)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir),
+                         sorted([str(bindir), str(d / "opt" / "lib")]))
+
+    def test_an_executable_directly_in_home_is_refused(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        self._executable(home / "cli-sim")
+        with self.assertRaises(ValueError) as ctx:
+            self._ro_for("cli-sim", home, home)
+        self.assertIn("directly under $HOME", str(ctx.exception))
+        self.assertIn(str(home / "cli-sim"), str(ctx.exception))
+
+    def test_a_dot_dot_component_cannot_name_the_home_child(self) -> None:
+        # `shutil.which` joins the PATH entry verbatim, so `$HOME/../home/.local/bin` reaches
+        # the rule spelled with `..`, whose first component after $HOME would then be `..`
+        # itself — the parent of the home, bound read-only. Found by the round-1 security
+        # axis; the rule normalises lexically before delimiting.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        root, _bindir = self._tool_manager_install(home)
+        dotted = home / ".." / "home" / ".toolmgr" / "bin"
+        self.assertEqual(self._ro_for("cli-sim", home, dotted), [str(root)])
+
+    def test_a_symlinked_home_keeps_the_home_spelling_for_the_which_candidate(self) -> None:
+        # `$HOME` is a symlink to the real home. The `which` candidate carries the $HOME
+        # spelling and yields the full `$HOME/.toolmgr` root — which is what a tool manager
+        # resolves `$HOME` against at start-up; the realpath candidate escapes the $HOME
+        # prefix and takes the outside-home branch. Pins that the rule does NOT resolve
+        # `home` first (a `Path(home).resolve()` mutant survived the round-0 rows).
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        real_home = d / "real_home"
+        root, _bindir = self._tool_manager_install(real_home)
+        link_home = d / "home"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        ro = self._ro_for("cli-sim", link_home, link_home / ".toolmgr" / "bin")
+        self.assertIn(str(link_home / ".toolmgr"), ro)
+        self.assertEqual(ro, sorted([str(link_home / ".toolmgr"), str(root / "bin")]))
+
+    def test_a_sibling_home_with_the_same_prefix_is_outside_home(self) -> None:
+        # `/home/seiya2/...` is not under `/home/seiya`: the containment test is
+        # component-wise, not a string prefix (a `str.startswith` mutant survived round 0).
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        sibling = d / "home2"
+        _root, bindir = self._tool_manager_install(sibling)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir), [str(bindir)])
+
+    def test_a_home_child_that_is_a_symlink_to_the_parent_of_home_is_refused(self) -> None:
+        # `~/up -> <parent of home>`: lexically a $HOME child, physically the whole home
+        # (and every sibling home) — bwrap resolves the bind source, so the alias would
+        # expose every dotdir at `~/up/<user>/`. Found by the round-2 security axis.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        (home / "up").symlink_to(d, target_is_directory=True)
+        self._executable(d / "wrap" / "bin" / "cli-sim")
+        with self.assertRaises(ValueError) as ctx:
+            self._ro_for("cli-sim", home, home / "up" / "wrap" / "bin")
+        self.assertIn("contains the whole home", str(ctx.exception))
+
+    def test_a_dot_dot_inside_home_itself_is_normalised(self) -> None:
+        # The `home` operand's half of the normalisation (a `.resolve()`-free mutant that
+        # normalises `path` only survived the round-1 rows): `HOME=<d>/x/../home` still
+        # delimits the same root, rather than falling to the parent dirs.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        root, bindir = self._tool_manager_install(home)
+        (d / "x").mkdir()
+        self.assertEqual(self._ro_for("cli-sim", d / "x" / ".." / "home", bindir), [str(root)])
+
+    def test_a_path_equal_to_home_is_refused(self) -> None:
+        # Not reachable through `shutil.which` (a directory is never an executable), so
+        # the helper is driven directly: the branch exists so that no caller can ever
+        # turn "$HOME" into a read-only bind of the whole home.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        with self.assertRaises(ValueError) as ctx:
+            ort._install_root_for(d, str(d))
+        self.assertIn("$HOME itself", str(ctx.exception))
+
+    def test_no_home_falls_back_to_the_parent_dirs(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        _root, bindir = self._tool_manager_install(home)
+        self.assertEqual(self._ro_for("cli-sim", None, bindir), [str(bindir)])
 
 
 @unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")

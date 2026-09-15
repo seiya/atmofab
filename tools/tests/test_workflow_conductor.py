@@ -18633,7 +18633,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual([r["backend"] for r in recorded], ["claude", "codex"])
 
     def test_record_launch_names_the_executable_this_leaf_is_launched_through(self) -> None:
-        """`record_launch` builds the sandbox's read-only bind of the CLI install directory
+        """`record_launch` builds the sandbox's read-only bind of the CLI install root
         from this. It used to take `preflight.json#probe_command` — the run's `defaults` — which
         was the same object only while a run could have one command. With a per-entry
         `command:` the leaf would be launched inside a sandbox where its binary is not bound."""

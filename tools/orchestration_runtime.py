@@ -7878,16 +7878,91 @@ def _resolve_backend_type(backend_type: str, backend_command: str) -> str:
     return ""
 
 
+def _install_root_for(path: Path, home: str) -> Path:
+    """The directory a backend CLI's install lives under, delimited by shape, not by name.
+
+    Under ``$HOME`` the root is the ancestor that is a direct child of ``$HOME``: a tool
+    manager such as volta keeps its shims (``bin/``), its layout file and the real tools
+    under one such root, and the claude installer keeps ``bin/`` and ``share/claude/`` under
+    ``~/.local``. Outside ``$HOME`` it is the path's parent directory, as before issue #226
+    (the system dirs are already in `_runtime_ro_bind_paths`, so that bind is a harmless
+    duplicate). A path equal to ``$HOME``, or whose parent is ``$HOME``, has no install
+    root: refuse rather than bind the operator's whole home read-only. ``path`` and
+    ``home`` must both be absolute; the caller passes `shutil.which`'s answer and its
+    `os.path.realpath`. Both are normalised lexically first (``os.path.normpath``): a
+    PATH entry spelled ``$HOME/../<user>/.local/bin`` otherwise yields ``..`` as the
+    "$HOME child" and binds the parent of the home (measured, issue #226 round 1).
+    """
+    home_path = Path(os.path.normpath(home))
+    path = Path(os.path.normpath(path))
+    if path == home_path:
+        raise ValueError(
+            f"backend CLI path is $HOME itself, which is not an install root: {path}"
+        )
+    try:
+        rel = path.relative_to(home_path)
+    except ValueError:
+        return path.parent
+    if len(rel.parts) < 2:
+        raise ValueError(
+            "backend CLI executable sits directly under $HOME, which has no install root "
+            f"to bind (an executable is expected under a $HOME-child directory): {path}"
+        )
+    root = home_path / rel.parts[0]
+    # The lexical answer can still be the whole home PHYSICALLY: a $HOME child that is a
+    # symlink to the home's parent (`~/up -> /home`) binds every dotdir of the home at the
+    # alias `~/up/<user>/` (measured, issue #226 round 2). bwrap resolves the source, so the
+    # refusal has to compare realpaths.
+    if Path(os.path.realpath(home_path)).is_relative_to(Path(os.path.realpath(root))):
+        raise ValueError(
+            f"backend CLI install root {root} resolves to {os.path.realpath(root)}, which "
+            f"contains the whole home {home_path}; an install root must not cover $HOME"
+        )
+    return root
+
+
 def _backend_runtime_bind_paths(
     backend_type: str, backend_command: str
 ) -> tuple[list[str], list[str]]:
     """Absolute host paths the backend CLI needs that live outside ``repo_root``.
 
     Returns ``(ro_paths, rw_paths)``:
-    - ro: the backend's install location (binary dir + resolved-symlink dir). The
-      `claude` CLI installs under ``~/.local/...``, outside the system dirs that
-      `_runtime_ro_bind_paths` covers, so the bare profile cannot find it. Resolved
-      from the command's first token (a custom wrapper resolves to the wrapper binary).
+    - ro: the backend CLI's install root, for both the command's first token as
+      `shutil.which` finds it and that path's `os.path.realpath` (a custom wrapper
+      resolves to the wrapper binary). The root is delimited by SHAPE, by
+      `_install_root_for`, with no per-backend literal (issue #226): under ``$HOME`` it is
+      the ``$HOME``-child directory the path lives under (``~/.volta`` for a volta shim,
+      whose start-up needs ``tools/`` and ``layout.*`` beside ``bin/``; ``~/.local`` for the
+      claude installer's ``bin/`` + ``share/<cli>/versions/``); outside ``$HOME`` it is the
+      parent directory. An executable directly under ``$HOME``, or a path equal to
+      ``$HOME``, is refused with `ValueError` (`record_launch` routes a profile-build
+      failure to transport `fail_closed`), since the only root that would cover it is the
+      operator's whole home; so is a root that covers the home PHYSICALLY (a ``$HOME``
+      child symlinked to the home's parent), and — at `build_readonly_bwrap_profile`,
+      which knows ``repo_root`` — a root that is, holds, or lies inside the checkout under
+      a path the artifact overlays do not cover, by inode and by the mount table
+      (`_refuse_backend_ro_alias_of_repo`). With ``HOME`` unset there is nothing to delimit against and
+      the parent directories are bound, as before #226.
+      Cost of the polarity, measured on the planning host: the claude bind widens from
+      the CLI's own data dir under ``~/.local/share/`` (+ ``~/.local/bin``, + its
+      ``versions/``) to ``~/.local``, which also holds ``share/keyrings``, ``state/`` and
+      ``lib/``. The same widening applies to WHATEVER ``$HOME`` child holds the command or
+      its realpath — a per-entry ``command:`` wrapper under ``~/work/wrappers/`` binds
+      ``~/work``, and a codex installed with an npm prefix of ``~/.local`` binds
+      ``~/.local`` (on the planning host it is ``~/.volta``, a measurement rather than a
+      property). A pure claude leaf holds no tool (``--tools ""``) and cannot read any of
+      it; a tool-bearing pure codex leaf can, and reading the operator's data is outside
+      the defended set (`AGENTS.md` §Development premises) — a sibling checkout kept under
+      such a root is the one case with a named gain, and it is issue #227's read-boundary
+      work, not this rule's. Unmodelled shapes, stated rather than guessed (none is
+      measurable on the planning host): an ``/opt/<x>/bin`` install whose realpath needs a
+      sibling ``lib/``; a realpath that is a ``#!/usr/bin/env <interp>`` script whose
+      interpreter lives under a different root; a per-entry ``command:`` wrapper that execs
+      the CLI BY NAME (the wrapper's root is bound, the CLI it names is not — rc 127 at
+      launch, measured, and the same before #226); and a claude executable outside
+      ``~/.local`` that still reads the CLI's data dir under ``~/.local/share/`` (the
+      literal bound that directory for every claude leaf; the shape rule binds it only
+      when the executable resolves under ``~/.local``).
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
       string, which may be a wrapper), and resolved by the canonical
@@ -7903,13 +7978,14 @@ def _backend_runtime_bind_paths(
     rw: set[str] = set()
     first_token = (backend_command or "").split()
     exe = shutil.which(first_token[0]) if first_token else None
-    if exe:
-        ro.add(str(Path(exe).parent))
-        ro.add(str(Path(os.path.realpath(exe)).parent))
     home = (os.environ.get("HOME") or "").strip()
+    if exe:
+        for candidate in (Path(exe), Path(os.path.realpath(exe))):
+            if home:
+                ro.add(str(_install_root_for(candidate, home)))
+            else:
+                ro.add(str(candidate.parent))
     if home:
-        if btype == "claude":
-            ro.add(str(Path(home) / ".local" / "share" / "claude"))
         # The credential-home paths come from the single canonical resolver in
         # `tools/operator_private_root.py`, so there is no second spelling of where a backend's
         # config/credential home is.
@@ -7942,6 +8018,140 @@ def _backend_runtime_bind_paths(
     # verifies the parent is writable) still gets a writable bind.
     rw_paths = sorted(p for p in rw if p)
     return ro_paths, rw_paths
+
+
+def _mount_table(source: Path = Path("/proc/self/mountinfo")) -> list[tuple[str, str, str]]:
+    """`(mount_point, device, root_within_device)` per entry of `/proc/self/mountinfo`.
+
+    Empty where the file does not exist (a non-Linux host; bwrap is Linux-only, so nothing
+    is lost there) — the callers then keep only the inode comparison. Octal escapes in the
+    two path fields (``\040`` for a space) are decoded.
+    """
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    def _unescape(field: str) -> str:
+        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+    table: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        table.append((_unescape(fields[4]), fields[2], _unescape(fields[3])))
+    return table
+
+
+def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple[str, Path] | None:
+    """Where `physical` lives on its filesystem: `(device, path within that device)`.
+
+    The mount whose point is the longest prefix of `physical` owns it; a bind mount reports
+    the SOURCE subtree it was taken from as its root-within-device, which is what makes two
+    mount points of one subtree comparable. None when no entry covers the path.
+    """
+    best: tuple[str, Path] | None = None
+    best_len = -1
+    for point, device, root_within in table:
+        point_path = Path(point)
+        if not physical.is_relative_to(point_path):
+            continue
+        if len(point_path.parts) > best_len:
+            best_len = len(point_path.parts)
+            best = (device, Path(root_within) / physical.relative_to(point_path))
+    return best
+
+
+def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str]) -> None:
+    """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
+
+    `render_bwrap_command` hides the artifact trees (`workspace/`, the archives, `releases/`)
+    with tmpfs overlays at the `repo_root` path the caller passes — which every production
+    caller resolves first (`main` and `run_workflow.py` both `.resolve()`; the conductor
+    passes `--repo-root .`). bwrap resolves a bind's SOURCE on the host and mounts it at the
+    spelled destination, so an install root that is the checkout, one of its ancestors, or
+    a tree INSIDE it under a different name — a symlinked `$HOME` (`/home/x -> /data/x`)
+    with the checkout and the CLI under the same `$HOME` child; a `$HOME` child that is a
+    symlink to the parent of the home; a data disk bind-mounted into `~/work` while the
+    workflow was started from the disk's own spelling; a `$HOME` child symlinked or
+    bind-mounted onto `<checkout>/workspace` with the wrapper kept there — exposes the
+    checkout at the alias with nothing overlaid: a VERIFY leaf reads the producer's
+    `dialogs/leaf.stdout.jsonl` there, the gain the overlay exists to remove. Every form
+    named was measured under real bwrap before its refusal landed (issue #226 rounds 2-5).
+
+    Two comparisons, neither by path. (1) INODE: `os.path.samestat` between the root and
+    each ancestor of the resolved checkout (the checkout itself included), and between the
+    checkout and each strict ancestor of the root's realpath — sees a symlink in either
+    direction and a bind mount whose root IS an ancestor. (2) MOUNT TABLE: the root's and
+    the checkout's `(device, path within the device)` from `/proc/self/mountinfo`, for the
+    root itself and for every mount point beneath it — sees a bind mount of a tree inside
+    the checkout, and a bind mount BELOW the root, which `realpath` and a single inode
+    cannot. A root whose SPELLING (normalised) contains the checkout, or is under it, is
+    exempt: the repo bind and the overlays are emitted later at that path and stack on top
+    (measured: the dialogs stay hidden). Same shape as the rw refusal below.
+    """
+    resolved_repo = repo_root.resolve()
+    try:
+        repo_stat = os.stat(resolved_repo)
+    except OSError:
+        repo_stat = None
+    ancestors = [resolved_repo, *resolved_repo.parents]
+    table = _mount_table()
+    repo_identity = _fs_identity(resolved_repo, table) if table else None
+
+    def _overlaps(identity: tuple[str, Path] | None) -> bool:
+        if identity is None or repo_identity is None or identity[0] != repo_identity[0]:
+            return False
+        return (repo_identity[1].is_relative_to(identity[1])
+                or identity[1].is_relative_to(repo_identity[1]))
+
+    for root in backend_ro:
+        spelled = Path(os.path.normpath(root))
+        if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
+            continue
+        try:
+            root_stat = os.stat(root)
+        except OSError:
+            continue  # the existence filter in `_backend_runtime_bind_paths` already dropped it
+        for ancestor in ancestors:
+            try:
+                if not os.path.samestat(root_stat, os.stat(ancestor)):
+                    continue
+            except OSError:
+                continue
+            raise ValueError(
+                f"backend install root {root!r} is the same directory as {ancestor}, which "
+                f"contains the checkout {resolved_repo} under a path the sandbox does not "
+                "overlay (a symlink or a bind mount gives it the second name); move the CLI "
+                "(or its wrapper) out of the directory that holds the checkout, or spell HOME "
+                "and the PATH entry the way the checkout is spelled, so the root's own path "
+                "contains it"
+            )
+        physical = Path(os.path.realpath(root))
+        # Strict ancestors only: a root that IS the checkout is the forward walk's first hit.
+        for above in physical.parents:
+            try:
+                if repo_stat is None or not os.path.samestat(os.stat(above), repo_stat):
+                    continue
+            except OSError:
+                continue
+            raise ValueError(
+                f"backend install root {root!r} lies inside the checkout {resolved_repo} "
+                f"(it resolves to {physical}) under a path the sandbox does not overlay; "
+                "move the CLI (or its wrapper) out of the checkout, or reach it through the "
+                "checkout's own path"
+            )
+        mounts_under = [physical, *(Path(point) for point, _dev, _root in table
+                                    if Path(point).is_relative_to(physical) and Path(point) != physical)]
+        for mounted in mounts_under:
+            if not _overlaps(_fs_identity(mounted, table)):
+                continue
+            raise ValueError(
+                f"backend install root {root!r} carries a mount ({mounted}) of the same "
+                f"filesystem subtree as the checkout {resolved_repo}, under a path the "
+                "sandbox does not overlay (a bind mount gives it the second name); move the "
+                "CLI (or its wrapper) out of that tree, or spell HOME and the PATH entry the "
+                "way the checkout is spelled, so the root's own path contains it"
+            )
 
 
 def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]) -> list[str]:
@@ -8024,6 +8234,7 @@ def build_readonly_bwrap_profile(
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
+    _refuse_backend_ro_alias_of_repo(repo_root, backend_ro)
     if backend_rw_override is not None:
         backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
@@ -14543,7 +14754,7 @@ def record_launch(
             )
     # The executable this leaf is launched through, which is what
     # `_backend_runtime_bind_paths` resolves the sandbox's read-only bind of the CLI install
-    # directory from. Three sources, most specific first:
+    # root from. Three sources, most specific first:
     #   1. the launch RESPONSE's `backend_command` — THIS leaf's own, host-authored by the
     #      conductor from the entry it is about to spawn. Since issue #28 an entry can carry
     #      its own `command:`, so the run has no single answer; binding a different executable
