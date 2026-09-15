@@ -359,6 +359,26 @@ class RunWorkflowTests(unittest.TestCase):
         ns = run_workflow._parse_args(["spec/problem.md", "generate", "--wait-usage-reset"])
         self.assertTrue(ns.wait_usage_reset)
 
+    def test_the_wait_usage_reset_help_states_the_schedule_the_conductor_sleeps(self) -> None:
+        """The help is the operator's only statement of what the flag buys, and it used to
+        describe a mechanism the conductor no longer had (TODO's "predates human-form reset
+        support"). It is now DERIVED from `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, and this pins
+        the derivation: every schedule entry and the wait count appear in `--help`, and the
+        retired vocabulary (a reset time read from the leaf, the 6h cap) does not."""
+        from tools.workflow_conductor import USAGE_LIMIT_WAIT_SCHEDULE_SECONDS
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            run_workflow._parse_args(["--help"])
+        text = " ".join(out.getvalue().split())          # argparse re-wraps; compare unwrapped
+        flag = text.split("--wait-usage-reset ", 1)[1].split("--repo-root", 1)[0]
+        for seconds in USAGE_LIMIT_WAIT_SCHEDULE_SECONDS:
+            self.assertIn(f"{int(seconds)}s", flag)
+        self.assertIn(f"at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep", flag)
+        self.assertIn("No reset time is read from the leaf", flag)
+        self.assertIn("Default OFF", flag)
+        self.assertNotIn("6h", flag)
+        self.assertNotIn("epoch", flag)
+
     def test_parse_args_allows_omitted_positionals_for_resume(self) -> None:
         ns = run_workflow._parse_args(["--resume", "--no-run-conductor"])
         self.assertTrue(ns.resume)
