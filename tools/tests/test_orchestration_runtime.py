@@ -23056,6 +23056,81 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertEqual(by_stage["pipeline_ref"], b"{not json")
             self.assertEqual(by_stage["aggregate_verdict"], b"{not json")
 
+    def test_a_refused_stage_still_selects_its_artifact_on_every_refusal_branch(self) -> None:
+        """The `selected_path` contract, branch by branch (issue #178 round 1: the plain
+        `verification_status: fail` branches of `ir_ref` and `pipeline_ref`, the `fail` verdict
+        branch, the R6-lite stale branch and the unreadable `ir_meta.json` branch were all
+        unpinned — withholding the path on any of them survived the suite). Each refusal names
+        its own cause AND returns the file it judged, and the gate hashes that file, so a
+        rewrite of a refused artifact still moves the recorded `dep_set_fingerprint`.
+
+        One row per branch, each REMOVING the pass condition on one file with the rest of the
+        fixture intact, so a row can only be satisfied by the branch it names."""
+        from tools.orchestration_runtime import (
+            _certify_and_collect_dep_artifacts, _verify_dep_stage_detail)
+
+        def gate_bytes(repo_root: Path) -> dict[str, bytes]:
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            return {row[0]: row[4] for row in snap["artifact_bytes_in_order"]}
+
+        def paths(repo_root: Path) -> dict[str, Path]:
+            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                      / "b_20260101_001")
+            return {
+                "ir_ref": (repo_root / "workspace" / "ir" / "component__b__0.1.0"
+                           / "b_20260101_001" / "ir_meta.json"),
+                "pipeline_ref": b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json",
+                "aggregate_verdict": (b_pipe / "runs" / "run_20260101_001"
+                                      / "component__b__0.1.0" / "aggregate_verdict.json"),
+            }
+
+        # (stage, how the pass condition is removed, the cause the refusal must name, the
+        # level the gate must report).
+        rows = [
+            ("ir_ref", lambda f: f.write_text(json.dumps({"verification_status": "fail"})),
+             "no certified IR", 0),
+            ("ir_ref", lambda f: f.write_text("{not json"), "no certified IR", 0),
+            ("pipeline_ref", lambda f: f.write_text(json.dumps({
+                **json.loads(f.read_text()), "verification_status": "fail"})),
+             "verification_status='fail'", 1),
+            ("aggregate_verdict", lambda f: f.write_text(json.dumps({"aggregate_verdict": "fail"})),
+             "is 'fail'", 2),
+        ]
+        for stage, spoil, cause, level in rows:
+            with self.subTest(stage=stage, cause=cause):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    self._seed(repo_root)
+                    target = paths(repo_root)[stage]
+                    spoil(target)
+                    ok, detail, selected = _verify_dep_stage_detail(
+                        repo_root, "component", "b", "0.1.0", stage)
+                    self.assertFalse(ok)
+                    self.assertIn(cause, detail)
+                    self.assertEqual(selected, target)
+                    snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+                    self.assertEqual(snap["certified_entries"],
+                                     [("component", "b", "0.1.0", level)])
+                    self.assertEqual(gate_bytes(repo_root)[stage], target.read_bytes())
+        # The R6-lite stale branch: the IR passes and the resolution moved, so the refusal
+        # comes from `_dependency_resolution_freshness` and the path is still the ir_meta.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
+                       / "dependency_graph.json")
+            graph = json.loads(sidecar.read_text(encoding="utf-8"))
+            graph["all_nodes"] = [{"node_key": "component/c@0.0.9", "topo_level": 0},
+                                  {"node_key": "component/b@0.1.0", "topo_level": 1}]
+            sidecar.write_text(json.dumps(graph), encoding="utf-8")
+            ok, detail, selected = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "ir_ref")
+            self.assertFalse(ok)
+            self.assertIn("component/c@0.0.9", detail)
+            self.assertEqual(selected, paths(repo_root)["ir_ref"])
+            self.assertEqual(gate_bytes(repo_root)["ir_ref"],
+                             paths(repo_root)["ir_ref"].read_bytes())
+
     def test_stale_details_names_the_stale_binding_of_a_consumer(self) -> None:
         from tools.orchestration_runtime import _stale_dependency_details
         with tempfile.TemporaryDirectory() as tmp:
