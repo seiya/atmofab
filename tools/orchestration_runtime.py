@@ -8034,21 +8034,31 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     real bwrap for the symlink forms (issue #226 round 2) and, under a nested bwrap, for the
     bind-mount form (round 3).
 
-    The comparison is by IDENTITY, not by path: `os.path.samestat` between the root and each
-    ancestor of the resolved checkout (the checkout itself included). `realpath` sees through
-    symlinks and is blind to bind mounts; an inode comparison sees both with one test. A root
-    whose SPELLING contains the checkout is exempt: the repo bind and the overlays are emitted
-    later at that path and stack on top (measured: the dialogs stay hidden). What this does
-    NOT see, stated rather than guessed: a mount point BELOW the root that is a bind of a
-    checkout ancestor (`~/work/x` bound from `/data`, checkout `/data/atmofab`) — the root's
-    own inode is then unrelated to the checkout's, and the instrument for that shape is
-    `/proc/self/mountinfo` (a mount under the root whose source subtree contains the
+    The comparison is by IDENTITY, not by path, and in BOTH directions: `os.path.samestat`
+    between the root and each ancestor of the resolved checkout (the checkout itself
+    included) — the root IS the checkout or holds it — and between the checkout and each
+    ancestor of the root's realpath — the root lies INSIDE the checkout, which is a `$HOME`
+    child symlinked into `workspace/` or an archive with the wrapper kept there (round 4:
+    the alias exposed the same dialogs, `origin/main` bound only the wrapper's `bin/`).
+    `realpath` sees through symlinks and is blind to bind mounts; an inode comparison sees
+    both with one test. A root whose SPELLING contains the checkout, or is under it, is
+    exempt: the repo bind and the overlays are emitted later at that path and stack on top
+    (measured: the dialogs stay hidden). What this does NOT see, stated rather than guessed:
+    a mount point BELOW the root that is a bind of a checkout ancestor (`~/work/x` bound
+    from `/data`, checkout `/data/atmofab`; measured under a nested bwrap, round 4) — the
+    root's own inode is then unrelated to the checkout's, and the instrument for that shape
+    is `/proc/self/mountinfo` (a mount under the root whose source subtree contains the
     checkout), which is not built here. Same shape as the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
+    try:
+        repo_stat = os.stat(resolved_repo)
+    except OSError:
+        repo_stat = None
     ancestors = [resolved_repo, *resolved_repo.parents]
     for root in backend_ro:
-        if resolved_repo.is_relative_to(Path(root)):
+        spelled = Path(root)
+        if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
             continue
         try:
             root_stat = os.stat(root)
@@ -8067,6 +8077,20 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
                 "(or its wrapper) out of the directory that holds the checkout, or spell HOME "
                 "and the PATH entry the way the checkout is spelled, so the root's own path "
                 "contains it"
+            )
+        physical = Path(os.path.realpath(root))
+        # Strict ancestors only: a root that IS the checkout is the forward walk's first hit.
+        for above in physical.parents:
+            try:
+                if repo_stat is None or not os.path.samestat(os.stat(above), repo_stat):
+                    continue
+            except OSError:
+                continue
+            raise ValueError(
+                f"backend install root {root!r} lies inside the checkout {resolved_repo} "
+                f"(it resolves to {physical}) under a path the sandbox does not overlay; "
+                "move the CLI (or its wrapper) out of the checkout, or reach it through the "
+                "checkout's own path"
             )
 
 

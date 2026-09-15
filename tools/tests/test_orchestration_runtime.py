@@ -26503,6 +26503,59 @@ class LeafEnvClosureTests(unittest.TestCase):
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("is the same directory as", str(ctx.exception))
 
+    def test_an_install_root_that_lies_inside_the_checkout_under_another_name_is_refused(self) -> None:
+        """Round-4 security finding (issue #226): the mirror of the alias above. A `$HOME`
+        child symlinked INTO a hidden tree (`~/tools -> <checkout>/workspace`) holding the
+        wrapper is bound at `~/tools`, where the overlay at the checkout's own path does not
+        reach (measured under real bwrap: the dialogs readable at `~/tools/orchestrations/`;
+        `origin/main` bound only `workspace/bin`). The walk runs in the other direction too:
+        the checkout against each ancestor of the root's realpath. A root SPELLED under the
+        checkout is exempt — it is overlaid with the rest (measured)."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        repo = d / "data" / "atmofab"
+        bindir = repo / "workspace" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+        (bindir / "cli-sim").chmod(0o755)
+        (home / "tools").symlink_to(repo / "workspace", target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{home / 'tools' / 'bin'}:{os.environ['PATH']}"}), \
+                self.assertRaises(ValueError) as ctx:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn("lies inside the checkout", str(ctx.exception))
+        # The exemption: the same wrapper reached by its own in-checkout spelling.
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{bindir}:{os.environ['PATH']}"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn(str(bindir), profile["runtime_ro_bind_paths"])
+
+    def test_backend_ro_extra_goes_through_the_alias_refusal(self) -> None:
+        # No production caller passes `backend_ro_extra` today; the round-4 sweep found the
+        # ordering (extend, THEN refuse) unpinned, and a caller added later must not be
+        # able to bind an alias of the checkout by that parameter.
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        repo = home / "atmofab"
+        (repo / "workspace").mkdir(parents=True)
+        (d / "alias").symlink_to(repo, target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin"}), \
+                self.assertRaises(ValueError):
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude",
+                backend_ro_extra=[str(d / "alias")])
+
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
         """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
         inheriting: it filters the host environment through the same owner constant."""
