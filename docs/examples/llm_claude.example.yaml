@@ -75,7 +75,7 @@
 # directory are worked examples of each.
 #
 # `capabilities:` narrows what a provider may be used for. The key is RESTRICT-ONLY — it may
-# name a subset of what the provider has (`claude_cli`: pure, warm_resume, usage_probe)
+# name a subset of what the provider has (`claude_cli`: pure, warm_resume)
 # and never more, or the load is refused with
 # `llm_config_capability_exceeds_provider`. There is no configuration that puts a leaf on
 # another transport: the pure leaf is the only leaf model since Z4 (issue #171), so an entry

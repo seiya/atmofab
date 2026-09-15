@@ -38,17 +38,15 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
-from zoneinfo import ZoneInfo
 
 import yaml
 
 from tools.backends import registry as backend_registry
 from tools.llm_config import (
-    CAP_USAGE_PROBE,
     CAP_WARM_RESUME,
     LlmConfig,
     ResolvedLeafEntry,
@@ -67,15 +65,16 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     """The argv prefix a CLI leaf is launched through: the entry's configured wrapper command
     (with any flags) if it has one, else the bare backend binary name.
 
-    ONE definition, because THREE places have to agree about it or they probe/confine a
-    different executable than the leaf runs: `leaf_command`, `record_launch`'s
-    `backend_command` (which decides the CLI binary the sandbox profile binds, so it is the
-    one that CONFINES rather than probes), and the host-side `/usage` probe. A fourth,
-    `_ensure_codex_feature_cache`, certified the codex hooks feature of that binary and went
-    with the leaf hook layer in Z4 (issue #171). The count has been wrong here before — written
-    as three while four were listed, one of them the read-only diagnostician's in-process bwrap
-    profile, which issue #169 deleted (that leaf's profile is the runtime's now, built from this
-    same `backend_command`). Re-count the list when you change it; nothing compares the two."""
+    ONE definition, because TWO places have to agree about it or they confine a different
+    executable than the leaf runs: `leaf_command`, and `record_launch`'s `backend_command`
+    (which decides the CLI binary the sandbox profile binds, so it is the one that CONFINES).
+    A third, the host-side `/usage` probe, went with issue #170 (the usage-limit wait no
+    longer asks the provider anything), and a fourth, `_ensure_codex_feature_cache`, certified
+    the codex hooks feature of that binary and went with the leaf hook layer in Z4 (issue
+    #171). The count has been wrong here before — written as three while four were listed,
+    one of them the read-only diagnostician's in-process bwrap profile, which issue #169
+    deleted (that leaf's profile is the runtime's now, built from this same
+    `backend_command`). Re-count the list when you change it; nothing compares the two."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -1903,8 +1902,8 @@ LEAF_STREAM_READ_BLOCK_BYTES = 65536
 LEAF_STDERR_CAPTURE_MAX_CHARS = 1_000_000
 # ...and how much of the END of that stream is kept as well. Keeping only the head is wrong for
 # stderr specifically, because every consumer reads the TAIL: `_classify_leaf_infra_error` takes
-# the LAST matching line as the terminal cause, `_stream_terminal_usage_limit_line` takes the last
-# usage-limit line, and `_leaf_failure_summary` takes the last 400 characters. A leaf that logs a
+# the LAST matching line as the terminal cause, and `_leaf_failure_summary` takes the last 400
+# characters. A leaf that logs a
 # megabyte of progress and THEN dies with `API Error: …` would otherwise have its budget spent on
 # the progress and its cause discarded — the run fail_closes untagged, with no transient retry and
 # `--wait-usage-reset` silently disarmed. That is not hypothetical: the measurement behind this
@@ -2880,9 +2879,8 @@ _API_STATUS_CONTEXT = (
 # phrase (`Error: Premature close`, `TypeError: fetch failed`).
 _TERMINAL = r"\b(?=[.'\")\]]*\s*$)"
 
-# The CLI's observed usage-limit abort lead-in, shared VERBATIM by the classifier's `llm_usage_limit`
-# pattern and by `_CLI_USAGE_ABORT_LINE_RE` (which arms the `--wait-usage-reset` wait), so the two can
-# never drift into disagreeing about the same family. Two properties are load-bearing:
+# The CLI's observed usage-limit abort lead-in, the classifier's `llm_usage_limit` pattern's rank-0
+# alternative. Two properties are load-bearing:
 #   * `^\s*` — the message LEADS the line. Without the anchor this is the loosest pattern in the
 #     table AND sits at rank 0, so it steals the tag from more specific ones and from leaf prose:
 #     `API Error: 429 rate_limit_error - you've hit your rate limit` would tag `llm_usage_limit`
@@ -2899,7 +2897,7 @@ _TERMINAL = r"\b(?=[.'\")\]]*\s*$)"
 #     or a weekday), not a bare advice word: `try again` / `upgrade` are ordinary engineering
 #     English, and `you've hit your CFL limit — try again with a smaller dt` would have sailed
 #     through, as would `... limit; the halo index resets each sweep`. Stating WHEN is what makes a
-#     quota message a quota message — and it is the only cue the reset parsers can consume anyway.
+#     quota message a quota message.
 #     "WHEN" must be a CLOCK token — a bare digit is not enough, and the imperative `reset` does not
 #     count. `you've hit your iteration limit - reset max_iter to 500`, `... the halo index resets to
 #     0 each sweep` and `... the counter resets at step 3` are all ordinary prose that a
@@ -2910,13 +2908,11 @@ _TERMINAL = r"\b(?=[.'\")\]]*\s*$)"
 #     `Opus weekly` / `5-hour` windows: those carry neither "reached" nor a bare `usage limit` /
 #     `session limit`, so nothing else in the table covers them and the run terminalizes UNTAGGED —
 #     the round-3 failure, one wording at a time. (The `usage` / `session` windows DO fall back.)
-#   * NO LITERAL WHITESPACE anywhere in this string. It is interpolated into `_CLI_USAGE_ABORT_LINE_RE`,
-#     which is compiled `re.VERBOSE` — that strips unescaped spaces, so a literal `try again` would
-#     silently become `tryagain` there and the two regexes would disagree while documented as
-#     identical. Use `\s`. `test_the_shared_lead_in_is_verbose_safe` pins this.
+#   * NO LITERAL WHITESPACE anywhere in this string: it is compiled as a plain pattern today, and a
+#     `re.VERBOSE` compilation strips unescaped spaces, so a literal `try again` would silently
+#     become `tryagain` under one. Use `\s`. `test_the_shared_lead_in_is_verbose_safe` pins this.
 
-# The quota windows the CLI names, shared by the classifier's `<window> limit reached` alternative
-# and by `_CLI_USAGE_ABORT_LINE_RE`'s machine-form alternative so they cannot enumerate differently.
+# The quota windows the CLI names, for the classifier's `<window> limit reached` alternative.
 _USAGE_LIMIT_WINDOWS = r"(?:usage|session|weekly|hourly|\d+-hour)"
 
 _HIT_YOUR_LIMIT_BODY = (
@@ -2942,26 +2938,16 @@ _HIT_YOUR_LIMIT_BODY = (
     r"|\b(?:mon|tues?|wednes|thurs?|fri|satur?|sun)(?:day)?\b"
     r"|\b(?:tomorrow|midnight|noon|next\s+week)\b))")
 
-# ARMING form (`_CLI_USAGE_ABORT_LINE_RE`): the message must LEAD the line, full stop. The `^` is
-# belt-and-braces — `_is_cli_usage_abort_line` uses `.match()`, which already anchors — so it is
-# deliberately unpinned by any test (a no-op mutation): it exists so a future `.match()` -> `.search()`
-# edit cannot quietly widen arming. The TAGGABLE form's anchor below IS load-bearing (the classifier
-# uses `.search()`) and is pinned by `test_the_hit_your_limit_alternative_does_not_steal_other_tags`
-# — whose counterexamples must use a QUOTA window, or the non-quota-window exclusion below rejects
-# them first and the anchor goes unpinned (which is exactly what happened when that exclusion landed).
-_USAGE_ABORT_HIT_YOUR_LIMIT = r"^\s*" + _HIT_YOUR_LIMIT_BODY
-
-# TAGGING form (the classifier): the same body, also allowed to lead the CLI envelope's `result`
-# field. In the ENVELOPED shape the line leads with `{"type":"result"...`, so a strictly
-# line-anchored pattern cannot see the message at all — and the fallback phrases only cover the
-# `usage` / `session` windows, so an enveloped `You've hit your 5-hour limit · resets ...` (a shape
-# only a stdout that is still an envelope when it reaches here produces, i.e. the pure surface —
-# an agentic leaf's envelope is lifted at capture) terminalized UNTAGGED:
-# no `llm_usage_limit`, no wait, not even a decline to grep. That is round-3's defect surviving one
-# shape further in. Deliberately NOT shared with the arming form: arming an envelope goes through
-# `_cli_abort_envelope_result`, whose CLI-authored-key gates are the trust boundary, and letting a
-# bare `"result":"` prefix arm directly would hand a leaf a 200-char forgery that skips those gates.
-# Tagging is the weaker power (it can only REMOVE a re-launch), and this prefix adds zero tags across
+# TAGGING form (the classifier): the body above, leading the line OR the CLI envelope's `result`
+# field. The anchor IS load-bearing (the classifier uses `.search()`) and is pinned by
+# `test_the_hit_your_limit_alternative_does_not_steal_other_tags` — whose counterexamples must use
+# a QUOTA window, or the non-quota-window exclusion above rejects them first and the anchor goes
+# unpinned (which is exactly what happened when that exclusion landed). In the ENVELOPED shape the
+# line leads with `{"type":"result"...`, so a strictly line-anchored pattern cannot see the message
+# at all — and the fallback phrases only cover the `usage` / `session` windows, so an enveloped
+# `You've hit your 5-hour limit · resets ...` (a pure leaf's stdout is still the CLI's envelope
+# when it reaches here) terminalized UNTAGGED: no `llm_usage_limit`, no wait, not even a decline to
+# grep. That is round-3's defect surviving one shape further in. This prefix adds zero tags across
 # all 1422 recorded leaf logs.
 # The `"result":"` prefix is deliberately UNBOUNDED (`[^\n]*`, not `[^\n]{0,N}`): the key's offset
 # is set by the CLI's key ORDER, which has already changed once under us — 128..202 chars in the
@@ -2972,10 +2958,10 @@ _USAGE_ABORT_HIT_YOUR_LIMIT = r"^\s*" + _HIT_YOUR_LIMIT_BODY
 _USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE = (
     r"^(?:\s*|\{[^\n]*\"result\"\s*:\s*\")" + _HIT_YOUR_LIMIT_BODY)
 
-# Named because it is the ONE member other code reaches for directly (the `--wait-usage-reset`
-# arming path checks its own abort shape against it). It used to be spelled
+# Named so rank 0 can be pointed at by name (`test_the_named_usage_limit_pattern_is_the_registered_one`
+# pins that it IS the registered rank-0 pattern). It used to be spelled
 # `_LEAF_INFRA_ERROR_PATTERNS[0][1]`, which silently meant "whatever is most severe" — inserting
-# any rank above it would have repointed the usage-limit wait at an unrelated pattern.
+# any rank above it would have repointed every reader at an unrelated pattern.
 _USAGE_LIMIT_INFRA_PATTERN = re.compile(
     r"(?<!not your )\busage limit\b|\bsession limit\b"
     rf"|\b{_USAGE_LIMIT_WINDOWS}\s+limit\s+reached\b"
@@ -3000,7 +2986,7 @@ _USAGE_LIMIT_INFRA_PATTERN = re.compile(
 _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # `(?<!not your )` — the CLI's 429 message literally reads "Server is temporarily limiting
     # requests (not your usage limit)". Tagging that a usage limit would be exactly backwards.
-    # `{_USAGE_ABORT_HIT_YOUR_LIMIT}` — the CLI's OBSERVED abort family (`You've hit your session
+    # `_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE` — the CLI's OBSERVED abort family (`You've hit your session
     # limit · resets 5:50pm (Asia/Tokyo)`). Only the `session` member was tagged before, and by the
     # bare `session limit` alternative: the sibling windows (`weekly`, `Opus weekly`, `5-hour`) carry
     # no "reached", so they matched NOTHING and a real quota stop terminalized UNTAGGED — no
@@ -3107,8 +3093,10 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 # Infra tags the conductor RETRIES in place (bounded, with backoff) instead of fail-closing the
 # run. Everything else stays terminal, and each exclusion is deliberate:
-#   - `llm_usage_limit` is a hard stop lasting hours. Retrying it burns the budget in seconds and
-#     only delays the operator's `--resume`. (Manual BY DESIGN; see deterministic_followups L5.)
+#   - `llm_usage_limit` is a hard stop lasting hours, not a transient. Retrying it on this
+#     schedule burns the budget in seconds and only delays the operator's `--resume` (manual BY
+#     DESIGN; see deterministic_followups L5). The opt-in `--wait-usage-reset` waits it out on its
+#     own budget and its own schedule (`USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, below).
 #   - `llm_client_error` (4xx) is a rejected REQUEST: an expired credential, an unsupported
 #     parameter, an oversized prompt. Every re-launch sends the same request and gets the same 4xx.
 #   - `llm_permission_probe_unavailable` needs an operator/config fix, not another attempt.
@@ -3163,10 +3151,14 @@ TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS = 600.0
 # would hand the retry decision to whatever the model happened to write. These two are the
 # exception because (a) the CLI reports both as its RESULT TEXT — i.e. on stdout, with stderr
 # often empty (the E2E #4 incident line arrived exactly that way) — and (b) both are
-# NON-RETRYABLE, so promoting them can only ever remove a re-launch, never add one:
+# NON-TRANSIENT, so by default promoting them can only ever remove a re-launch, never add one:
 #   - a usage limit retried is three re-launches into a multi-hour hard stop, burning the budget
 #     the post-reset resume needs;
 #   - a 4xx retried is three re-launches of a request the API rejects identically every time.
+# Under the opt-in `--wait-usage-reset` a promoted `llm_usage_limit` can ARM a wait, bounded at
+# `MAX_USAGE_LIMIT_WAITS` sleeps of `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`. A leaf whose own stdout
+# names a quota gains nothing by it — what it arms is a cold re-launch of the same substep, not a
+# weaker judgment of its result — so the promotion is not narrowed for the flag.
 _CROSS_STREAM_PROMOTING_TAGS = frozenset({"llm_usage_limit", "llm_client_error"})
 
 # A TRANSIENT retry notice — the CLI prints `API Error (429 …) · Retrying in 1 seconds… (attempt
@@ -3176,612 +3168,15 @@ _CROSS_STREAM_PROMOTING_TAGS = frozenset({"llm_usage_limit", "llm_client_error"}
 # `exceeded retry limit, last status: 429 Too Many Requests`) and must stay classifiable.
 _LEAF_RETRY_NOTICE_RE = re.compile(r"\bretrying\b|attempt \d+/\d+")
 
-# --wait-usage-reset (opt-in): a usage limit is a multi-hour HARD STOP, so the conductor's DEFAULT
-# stays fail_closed (a manual `--resume` after the reset — see deterministic_followups L5). When the
-# operator opts in AND the dead leaf's terminal usage-limit line carries a RESOLVABLE reset instant,
-# the conductor waits it out IN PLACE and re-launches the same substep — a same-run, substep-granular
-# resume instead of a next-day fresh run. Two forms resolve, tried in order on the SAME terminal line:
-#   (1) MACHINE form — a trailing `|<unix-epoch>` (`_parse_usage_reset_epoch`);
-#   (2) HUMAN form — a wall-clock time-of-day + a parenthesized IANA timezone
-#       ("resets 10:20pm (Asia/Tokyo)"), resolved to an epoch by `_parse_usage_reset_human`.
-# The real CLI emits form (2), not (1), so (2) is what actually arms the wait in practice; (1) is
-# kept first for backward-compat and any future machine envelope. A human reset WITHOUT a
-# parenthesized IANA TZ ("resets 6:10pm"), or without a time-of-day ("resets Monday"), is NOT
-# resolved — the reset instant is not guessed from the host's local TZ (that would make the wait
-# depend on where the conductor runs and could wake into a still-shut window), so it declines to
-# fail_closed and emits `leaf_usage_limit_wait_declined` for visibility.
-# The STREAM matters as much as the wording: the CLI aborts with that line on STDOUT and an EMPTY
-# stderr, so the terminal line is resolved stderr-first with a narrow stdout carve-out
-# (`_sole_content_usage_limit_line` — one short line that OPENS with the abort wording). Reading
-# stderr alone made this feature inert against the real CLI, which is how an opted-in run still
-# fail_closed; a per-line "nothing but usage limits" test would have been just as inert in the other
-# direction, since a pure leaf's whole stdout is a single JSON line. All three bounds are hard,
-# and — with the +margin, the 6h cap, and the nearest-occurrence resolution — a resolved human
-# instant is safe even a few minutes stale (it floors to a margin-only relaunch):
-MAX_USAGE_LIMIT_WAITS = 1  # per substep; a distinct budget from the transient-retry retries above
-# The session window is 5h; a reset further out than this is a weekly limit or a misparsed epoch,
-# neither of which the in-place wait should sit on — fall back to fail_closed.
-MAX_USAGE_LIMIT_WAIT_SECONDS = 6 * 3600
-# Sleep slightly PAST the reset instant: the re-launch's record-launch runs a preflight live-probe
-# (TTL-driven), and waking a hair early would find the window still shut and fail the probe.
-USAGE_LIMIT_WAIT_MARGIN_SECONDS = 120
-# The machine-form reset suffix a usage-limit leaf may carry: `...usage limit reached|1752200000`.
-# Ten digits pins it to a plausible unix-second epoch (through year 2286) and keeps an ordinary
-# `|<number>` in the model's own prose from being read as a reset time.
-_USAGE_RESET_EPOCH_RE = re.compile(r"\|(\d{10})\s*$")
-# The human-form reset the real CLI emits: `... resets 10:20pm (Asia/Tokyo)` (also `resets at 5pm`,
-# `resets 12am`). The time-of-day requires an am/pm marker (so a weekday word `resets Monday` never
-# matches); the TZ must be a parenthesized IANA `Area/City` name — a reset without one is NOT
-# resolved (the instant is never guessed from the host-local TZ; see the design note above).
-_USAGE_RESET_HUMAN_TIME_RE = re.compile(
-    r"resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.IGNORECASE)
-# The parenthesized IANA zone name is passed UNCHANGED to `ZoneInfo` (the validator), so the
-# charset must admit every IANA name shape: letters/digits/underscore, plus the `+`/`-` that
-# appear in fixed-offset zones (`Etc/GMT+5`, `Etc/GMT-14`) and hyphenated cities
-# (`America/Port-au-Prince`). The first segment starts with a letter (every IANA area does) and at
-# least one `/`-segment is required, so a plain parenthetical word or `(1/2)` is never mistaken for
-# a zone. Anchoring the WHOLE token to `)` is load-bearing: a narrower charset would stop at the
-# first `+`/`-`, then fail the `)` anchor and DECLINE a valid zone — it never truncates to a
-# different (wrong-offset) zone, so the failure was a missed wait, not a wrong one.
-_USAGE_RESET_HUMAN_TZ_RE = re.compile(r"\(([A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)+)\)")
-# A human wall-clock reset is printed to the minute, and the leaf-death → conductor-processing lag
-# plus clock skew can leave the terminal message a few minutes stale. Resolve to the occurrence
-# NEAREST `now` (yesterday/today/tomorrow at that wall time) that is no more than this far in the
-# past, so a just-passed reset floors to a margin-only relaunch instead of jumping to tomorrow (and
-# being declined by the 6h cap). Only ever reaches into the PAST, so it can never manufacture a
-# large positive wait.
-_USAGE_RESET_HUMAN_GRACE_SECONDS = 900
-# The stdout carve-out's shape test (`_sole_content_usage_limit_line`): the CLI's usage-limit abort
-# is a SHORT line that OPENS with the limit itself. The recorded incidents are 58 and 59 chars
-# (`You've hit your session limit · resets 5:50pm (Asia/Tokyo)` — 60/61 bytes as written, the `·`
-# being 2 bytes and the trailing newline 1); the ceiling leaves room for a longer wording
-# without admitting any leaf output — the smallest ORDINARY (non-error) single-line leaf
-# envelope in any recorded workspace is 1530 chars.
-_CLI_USAGE_ABORT_LINE_MAX_CHARS = 200
-# A PARSE-COST guard on the CLI's `--output-format json` envelope, not a security bound: it only
-# keeps `json.loads` off a pathologically large line. The security work is done by `allow_envelope`
-# (only a `claude_cli` PURE launch, whose stdout is still the CLI's own envelope when it reaches
-# here — an agentic leaf's was unwrapped at capture — so the leaf cannot forge those keys) and by the
-# INNER text facing every abort-shape clause including `_CLI_USAGE_ABORT_LINE_MAX_CHARS`.
-# Sized ABOVE every recorded envelope (largest 47370 chars) on purpose. A tight bound here would be
-# the inertness bug again: envelope size is dominated by the CLI's own accounting blocks (`usage`,
-# `modelUsage`, timings — 705..1578 chars, median 1292 across the 112 recorded envelopes), not by
-# `result`, so the one recorded abort envelope is small (771 chars) only because that leaf died at
-# `num_turns: 1`. A 1500-char cap would have declined ~27% of abort envelopes synthesised from the
-# recorded accounting blocks — a silent `no_reset_time` decline per envelope shape.
-_CLI_ABORT_ENVELOPE_MAX_CHARS = 65536
-# Anchored at line start, and deliberately NARROWER than the classifier's `usage limit|session limit`
-# phrase match: a leaf's own sentence may CONTAIN the phrase, but the CLI's abort LEADS with it.
-# Covers the observed human form (`You've hit your <window> limit · resets ...`) and the machine form
-# kept for backward-compat (`Claude AI usage limit reached|<epoch>`, also bare). A wording this does
-# not recognise declines the wait — i.e. degrades to today's fail_closed, the safe direction, and
-# emits `leaf_usage_limit_wait_declined` so the next unrecognised envelope is greppable rather than
-# silent (the failure mode that hid the stderr-only bug for two rounds).
-_CLI_USAGE_ABORT_LINE_RE = re.compile(
-    # The first alternative is the classifier's own lead-in, reused VERBATIM (already `^`-anchored),
-    # so a wording the classifier tags as this family is never one the wait silently declines.
-    rf"""{_USAGE_ABORT_HIT_YOUR_LIMIT}                           # You've hit your <window> limit
-      # The MACHINE form, and nothing looser. The window list mirrors the classifier's
-      # `<window> limit reached` alternative EXACTLY (same shared constant, same `reached`), and the
-      # trailing `|<epoch>` is required because that suffix is the whole reason this alternative
-      # exists — it is the only shape it can arm, and the CLI has never actually emitted it (0 of 711
-      # recorded stdout logs; the observed abort always takes the lead-in alternative above).
-      # Without those two markers the alternative degenerates to "<window> limit at line start",
-      # which an agentic leaf's OWN one-line prose satisfies: stdout `Session limit resets at 5pm
-      # (Asia/Tokyo)` after an unrelated death (a hook denial) armed a real multi-hour wait.
-      # A future human-worded `usage limit reached · resets 3pm (Asia/Tokyo)` — no lead-in, no epoch
-      # — therefore declines. That is the safe direction and it is not silent: the classifier still
-      # tags it (bare `usage limit`), so `leaf_usage_limit_wait_declined` fires with the evidence
-      # line attached.
-      | ^\s*(?:claude(?:\s+ai)?\s+)?{_USAGE_LIMIT_WINDOWS}\s+limit\s+reached\b
-        (?=[^\n]*\|\d{{10}}\s*$)""",
-    re.IGNORECASE | re.VERBOSE)
-
-
-def _stream_terminal_usage_limit_line(stream: str) -> str | None:
-    """The LAST line of ONE stream that the `llm_usage_limit` pattern matches, skipping recovered
-    retry-notice banners, or None when there is none. The per-stream scan behind
-    `_terminal_usage_limit_line`."""
-    usage_pattern = _USAGE_LIMIT_INFRA_PATTERN
-    lines = (stream or "").splitlines()
-    terminal: str | None = None
-    for idx, line in enumerate(lines):
-        # Skip a recovered retry-notice banner AND the line it continues from, exactly as the
-        # classifier does — a `Retrying... (attempt 1/10)` line the run survived is not terminal.
-        nxt = lines[idx + 1] if idx + 1 < len(lines) else ""
-        if (_LEAF_RETRY_NOTICE_RE.search(line.lower())
-                or _LEAF_RETRY_NOTICE_RE.search(nxt.lower())):
-            continue
-        if not usage_pattern.search(line.lower()):
-            continue
-        terminal = line  # last usage-limit line wins
-    return terminal
-
-
-def _sole_line(stream: str | None) -> str:
-    """The single non-blank line of `stream`, or "" when it has none or more than one."""
-    lines = [line for line in (stream or "").splitlines() if line.strip()]
-    return lines[0] if len(lines) == 1 else ""
-
-
-def _cli_abort_envelope_result(line: str) -> str | None:
-    """The `result` text of the CLI's OWN error envelope, or None when `line` is not one.
-
-    Only ever reached for a `claude_cli` PURE launch (see the `allow_envelope` gate in
-    `_sole_content_usage_limit_line`), because only there is the stdout still a CLI-authored
-    envelope when it arrives: the recorded incidents show one shape per launch
-    mode — a bare abort line for the agentic launches (5 of 6) and, for the one PURE launch, the
-    same message carried in `result`. Both launch modes existed when that sweep was taken; only
-    the pure one does now (Z4, issue #171), which makes the `result` shape the live one and the
-    bare shape the historical majority of the corpus.
-
-        {"type":"result","is_error":true,"api_error_status":429,...,
-         "result":"You've hit your session limit · resets 12:30pm (Asia/Tokyo)",
-         "terminal_reason":"api_error"}
-
-    The gating keys are CLI-AUTHORED, not model-authored: a leaf writes `result`'s TEXT, but
-    `is_error` / `api_error_status` / `terminal_reason` are stamped by the CLI wrapper, and a leaf
-    that finished normally carries `is_error:false` with no error status. That argument holds ONLY
-    where the CLI actually writes the envelope — hence the caller's `allow_envelope` gate. Unwrapping
-    therefore hands the leaf no new way to arm the wait: the inner text must clear every abort-shape
-    clause afterwards, length included. `_CLI_ABORT_ENVELOPE_MAX_CHARS` is only a parse-cost guard —
-    deliberately far above every recorded envelope, because sizing it to the one recorded ABORT
-    envelope (771 chars) would decline the fatter ones the CLI's own accounting blocks produce."""
-    if len(line) > _CLI_ABORT_ENVELOPE_MAX_CHARS:
-        return None
-    if '"is_error"' not in line:            # cheap reject: no envelope, no parse
-        return None
-    try:
-        doc = json.loads(line)
-    except Exception:
-        return None
-    if not isinstance(doc, dict) or doc.get("is_error") is not True:
-        return None
-    if doc.get("terminal_reason") != "api_error" and doc.get("api_error_status") is None:
-        return None
-    result = doc.get("result")
-    return result if isinstance(result, str) else None
-
-
-def _is_cli_usage_abort_line(line: str) -> bool:
-    """The abort-SHAPE test for ONE line: short enough, not a recovered retry banner, opening with
-    the limit, and a line the classifier's own usage pattern matches (so this can only ever narrow —
-    never contradict — the `llm_usage_limit` tag that reached the wait).
-
-    That last clause is now PROVABLY IMPLIED by the first three and is kept as a defensive invariant,
-    not because any input needs it: both alternatives of `_CLI_USAGE_ABORT_LINE_RE` are subsets of
-    the classifier's `llm_usage_limit` pattern (the lead-in alternative is the taggable form minus
-    the envelope prefix; the machine alternative shares `_USAGE_LIMIT_WINDOWS` and the same
-    `limit`-then-`reached` wording — spelled with a whitespace CLASS on BOTH sides, since a literal space on one side
-    made `usage  limit  reached|<epoch>` match the arming pattern and not the classifier, leaving
-    the implication true only modulo whitespace). Mutating it away therefore survives the suite by construction — like
-    the `^` in the arming pattern — and `test_arming_implies_the_classifier_would_tag` asserts the
-    IMPLICATION instead, so a future widening of either alternative that broke it still fails."""
-    if len(line) > _CLI_USAGE_ABORT_LINE_MAX_CHARS:
-        return False
-    lowered = line.lower()
-    if _LEAF_RETRY_NOTICE_RE.search(lowered):
-        return False
-    if not _CLI_USAGE_ABORT_LINE_RE.match(line):
-        return False
-    return bool(_USAGE_LIMIT_INFRA_PATTERN.search(lowered))
-
-
-def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str | None:
-    """A leaf's stdout when it is NOTHING BUT the CLI's own usage-limit abort — the message alone, or
-    the CLI's error envelope carrying it — else None.
-
-    This is the narrow carve-out that lets the REAL CLI arm the wait; a stderr-only rule never armed
-    it in production, which is how the opted-in E2E run still fail_closed. TWO recorded shapes, both
-    with an EMPTY stderr, and BOTH must be admitted — this function was written against the first
-    alone and stayed inert for the pure loops, the same bug one layer in. The direction this code
-    RELIES on is `envelope => the CLI authored this stdout`, which holds by construction: the
-    callers pass `allow_envelope` only for a `claude_cli` PURE launch. A codex or HTTP pure leaf
-    writes the model's own answer to stdout, so a JSON line there is model-written and its keys
-    prove nothing. (The third case this used to name — an agentic claude leaf, whose envelope
-    was lifted at the capture boundary by `_unwrap_agentic_envelope` — went with that leaf in
-    Z4, issue #171.) The converse is not assumed — a pure launch may
-    still abort bare, and the bare path accepts it. Every count in this docstring and the two
-    below comes from ONE sweep of the recorded workspaces (2026-07-24, 711 leaf stdout logs);
-    in it an envelope appears iff the launch was pure, with zero exceptions. The corpus has
-    grown since, so read them as that snapshot, not as today's totals.
-      * BARE — all 5 agentic incidents across the recorded workspaces: stdout is the message,
-        ~59 chars (in that snapshot there was no envelope at all; since issue #47 the capture
-        boundary unwraps the agentic one, so this scrape still sees the bare shape);
-      * ENVELOPED — the single PURE incident: stdout is the `--output-format json` result envelope
-        with the message in `result` and the CLI's own `is_error` / `api_error_status` /
-        `terminal_reason` keys stamped alongside — see `_cli_abort_envelope_result`, which unwraps
-        it (gated on `allow_envelope`) before the shape clauses run against the inner text.
-
-    Every clause exists to keep the leaf's OWN OUTPUT SURFACE from arming a multi-hour wait, and the
-    obvious weaker formulations do NOT hold:
-      * `len(lines) == 1` — NOT "every line matches the usage pattern". A pure leaf's entire stdout
-        is ONE line (a single-line JSON envelope, newlines escaped: 15 of the 46 stdout logs in the
-        live workspace and 112 of 711 across every recorded workspace, up to 47 kB), so a per-line test is vacuous for it — any model-authored text
-        INSIDE the envelope would satisfy it.
-      * `<= _CLI_USAGE_ABORT_LINE_MAX_CHARS` — a leaf that produced work produces far more than a
-        one-line abort message, so length alone excludes every recorded envelope. Applied to the
-        INNER text when unwrapping, since the envelope itself is legitimately longer.
-      * `_CLI_USAGE_ABORT_LINE_RE` anchored at line start, NOT the broad classifier pattern, whose
-        first alternative is the bare phrase `usage limit` / `session limit` — an ordinary English
-        sentence ("I could not finish: the session limit was reached, resets 11pm (Asia/Tokyo)")
-        contains it, and a leaf's one-paragraph result text is also a single line. The abort message
-        LEADS with the limit; a leaf discussing one does not.
-    The classifier pattern is required too, so this can only ever narrow — never contradict — the
-    tag that reached the wait. A leaf can still produce a message the CLI would produce, but only by
-    producing nothing else at all, and only while exiting nonzero; the outcome is bounded by the wait
-    budget and the 6h cap."""
-    line = _sole_line(stdout)
-    if not line:
-        return None
-    if _is_cli_usage_abort_line(line):
-        return line
-    # Not the bare shape — try the CLI's own error envelope, then apply the SAME clauses to the
-    # message it carries (never to the envelope, which is CLI-framed but leaf-filled). Only a
-    # claude PURE leaf's stdout is still a CLI-authored envelope when it reaches here: a codex or
-    # HTTP leaf's stdout is its own answer text, and an agentic claude leaf's was unwrapped at
-    # capture, so a JSON line in either is model-written and its `is_error` / `api_error_status`
-    # keys prove nothing. That is exactly the distinction `allow_envelope` carries.
-    if not allow_envelope:
-        return None
-    inner = _cli_abort_envelope_result(line)
-    if inner is None:
-        return None
-    inner_lines = [text for text in inner.splitlines() if text.strip()]
-    if len(inner_lines) != 1 or not _is_cli_usage_abort_line(inner_lines[0]):
-        return None
-    return inner_lines[0]
-
-
-def _terminal_usage_limit_line(stderr: str, stdout: str, *,
-                               allow_envelope: bool) -> str | None:
-    """The TERMINAL usage-limit line of a dead leaf — the LAST line the `llm_usage_limit` pattern
-    matches, skipping recovered retry-notice banners — or None when there is none.
-
-    STDERR FIRST (the trusted CLI error channel). stdout is consulted only when stderr named no
-    usage limit at all, and then only through the `_sole_content_usage_limit_line` carve-out — see
-    there for why that stays safe against a leaf's own untrusted prose. Note this is STRICTLY
-    NARROWER than `_classify_leaf_infra_error`'s cross-stream rule, not a mirror of it: that rule
-    (`_CROSS_STREAM_PROMOTING_TAGS`) lets a stdout match OUTRANK a stderr one, whereas here a stderr
-    usage-limit line always wins and stdout may only fill a stderr silence. Since `llm_usage_limit`
-    is the classifier's most severe tag, a stderr usage-limit line is also what the classifier tagged
-    from, so the wait still resolves against the very line the run was tagged from.
-
-    Selecting the TERMINAL line makes the wait AGREE with `_classify_leaf_infra_error`, which tags
-    the run from that same line (most-severe-then-last): the wait is governed by the cause that
-    actually terminated the leaf, never by an earlier message the run went on to survive. Shared by
-    the machine-epoch and human-reset parsers so they resolve against the identical line."""
-    return (_stream_terminal_usage_limit_line(stderr)
-            or _sole_content_usage_limit_line(stdout, allow_envelope=allow_envelope))
-
-
-def _parse_usage_reset_epoch(stderr: str, stdout: str, *, allow_envelope: bool) -> int | None:
-    """The unix-second reset epoch a usage-limit leaf carried as a trailing `|<10-digit>` on its
-    TERMINAL usage-limit line, or None when absent (a human-worded reset, or none at all).
-
-    MACHINE FORM ONLY. The human-worded form ("resets 10:20pm (Asia/Tokyo)") is resolved separately
-    by `_parse_usage_reset_human`; `_usage_reset_wait_plan` tries this machine parser FIRST and falls
-    back to the human parser on the same terminal line (via `_terminal_usage_limit_line`).
-
-    Ten digits pins the suffix to a plausible unix-second epoch and keeps a stray `|1234567890` in
-    the model's own prose from being read as a reset time (only the terminal usage-limit line is
-    considered). When that line carries NO epoch (a human-worded weekly limit, or a session limit
-    the machine envelope simply omits) the result is None even if an earlier line had one — the wait
-    is governed by the cause that actually terminated the leaf, not by an epoch the run survived.
-
-    `stdout` participates only through `_terminal_usage_limit_line`'s sole-content carve-out."""
-    line = _terminal_usage_limit_line(stderr, stdout, allow_envelope=allow_envelope)
-    if line is None:
-        return None
-    match = _USAGE_RESET_EPOCH_RE.search(line)
-    return int(match.group(1)) if match else None
-
-
-def _parse_usage_reset_human(stderr: str, now: float, stdout: str, *,
-                             allow_envelope: bool) -> int | None:
-    """The unix-second reset epoch resolved from a HUMAN-worded reset on the TERMINAL usage-limit
-    line — a wall-clock time-of-day + a parenthesized IANA timezone, e.g. `resets 10:20pm
-    (Asia/Tokyo)` — or None when the line is not resolvable.
-
-    Returns None (declines, no wait) when: there is no terminal usage-limit line; the line has no
-    `h[:mm](am|pm)` time-of-day (a weekday-worded `resets Monday`); or the line has no parenthesized
-    IANA timezone. The timezone is REQUIRED — the instant is never guessed from the conductor host's
-    local TZ, which would make the wait depend on where the run executes and could resolve to a
-    plausible-but-wrong instant that wakes into a still-shut window.
-
-    Resolution: the wall time is matched to the occurrence NEAREST `now` among yesterday / today /
-    tomorrow (in the parsed TZ) that is no more than `_USAGE_RESET_HUMAN_GRACE_SECONDS` in the past.
-    This picks the next upcoming reset, or a just-passed one when the message is minutes stale
-    (which then floors, in `_usage_reset_wait_plan`, to a margin-only relaunch), and it handles both
-    midnight-wrap directions. The caller's 6h cap declines an occurrence resolved further out (a
-    message stale beyond the grace flips cleanly to tomorrow and is capped). A DST fold/gap can skew
-    the resolved instant by up to 1h on the 1-2 days/year a transition lands in-window; that is
-    absorbed by the +margin and the relaunch preflight probe (the same residual the machine path
-    carries). NEVER raises (a bad/unknown TZ or missing tzdata → None), matching its siblings.
-
-    `now` is passed in (not read here) so the machine and human paths and the wait math all see one
-    `time.time()` instant, and so the resolution is deterministically testable. `stdout` participates
-    only through `_terminal_usage_limit_line`'s sole-content carve-out — and it is the stream the
-    real CLI actually uses, so this is the path that arms the wait in practice."""
-    try:
-        line = _terminal_usage_limit_line(stderr, stdout, allow_envelope=allow_envelope)
-        if line is None:
-            return None
-        time_match = _USAGE_RESET_HUMAN_TIME_RE.search(line)
-        if time_match is None:
-            return None
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2) or 0)
-        meridiem = time_match.group(3).lower()
-        if not (1 <= hour <= 12) or not (0 <= minute <= 59):
-            return None
-        if meridiem == "am":
-            hour24 = 0 if hour == 12 else hour
-        else:  # pm
-            hour24 = 12 if hour == 12 else hour + 12
-        # Take the first parenthesized token `ZoneInfo` ACCEPTS, not merely the first that matches
-        # the shape: an earlier non-zone parenthetical that happens to look like `Area/City`
-        # (`(opus/sonnet)`, `(plan-1/of-2)`) must not shadow the real timezone later on the line and
-        # decline an otherwise resolvable reset. Still fail-closed — a line with no acceptable zone
-        # yields None.
-        tz = None
-        for tz_match in _USAGE_RESET_HUMAN_TZ_RE.finditer(line):
-            try:
-                tz = ZoneInfo(tz_match.group(1))
-                break
-            except Exception:
-                continue
-        if tz is None:
-            return None
-        today = datetime.fromtimestamp(now, tz).date()
-        candidates = [
-            datetime(d.year, d.month, d.day, hour24, minute, tzinfo=tz).timestamp()
-            for d in (today - timedelta(days=1), today, today + timedelta(days=1))
-        ]
-        eligible = [e for e in candidates if e >= now - _USAGE_RESET_HUMAN_GRACE_SECONDS]
-        return int(min(eligible)) if eligible else None
-    except Exception:
-        return None
-
-
-# --wait-usage-reset, PRIMARY reset source (issue #8). Everything above SCRAPES the reset instant out
-# of a dead leaf's UNTRUSTED stdout, which is why it needs the whole anti-forgery apparatus
-# (`allow_envelope`, `_cli_abort_envelope_result`, the abort-shape clauses) — and even then the
-# scraped line carries no DATE (yesterday/today/tomorrow is guessed within a 15-min grace) and no
-# WINDOW NAME (the 6h cap stands in for "probably not the weekly one").
-#
-# The HOST can simply ask instead: `claude --output-format json -p /usage` is a local slash command
-# that spends 0 tokens (`num_turns: 0`, ~1.0s on the recorded run) and answers with the server's own
-# accounting, dates and window names included:
-#
-#     You are currently using your subscription to power your Claude Code usage
-#
-#     Current session: 31% used · resets Jul 25, 3:49am (Asia/Tokyo)
-#     Current week (all models): 86% used · resets Jul 28, 9:59am (Asia/Tokyo)
-#     Current week (Fable): 33% used · resets Jul 28, 10am (Asia/Tokyo)
-#
-# Because the CONDUCTOR runs it, there is no forgery surface at all: no leaf authored these bytes, so
-# NONE of the abort-shape clauses above apply here and none are duplicated below. The probe is tried
-# FIRST and the scrape remains the fallback, so every failure mode degrades to exactly today's
-# behavior.
-#
-# OPEN QUESTION (deliberately unanswered here): whether `/usage` still answers once the quota is
-# actually exhausted — the one state that cannot be reproduced on demand. That is why the probe is
-# primary-with-fallback rather than a replacement, and why `leaf_usage_limit_probe` records the raw
-# outcome of EVERY attempt: the next real incident answers it from the event stream, without a
-# purpose-built experiment. (The sibling lesson from the scrape's two failed rounds: an invisible
-# decline hides the defect.)
-# Generous against a ~1.0s observed probe: the cost of a slow probe is a delayed fallback, while the
-# cost of a tight timeout is losing the primary source on a loaded host.
-USAGE_PROBE_TIMEOUT_SECONDS = 60
-# SECURITY floor on arming the wait from a probe row — see `_probe_reset_for_evidence`. The
-# classifier's `llm_usage_limit` tag can come from the leaf's OWN stdout prose
-# (`_CROSS_STREAM_PROMOTING_TAGS`), and the probe path does not pass through the abort-shape clauses
-# that catch that. The server-observed usage percentage is the replacement gate, and it must be a
-# FULLY exhausted window (100%): the probe's job is to CORROBORATE that the named window is out of
-# quota, and a window with headroom (95..99%) does not — the leaf cannot have been stopped by a limit
-# it had not reached, so such a death is a mis-attribution or a local-approximation artifact, and the
-# correct action is to decline to the scrape (whose abort-shape clauses still decide) rather than sit
-# on a multi-hour wait. `/usage`'s percentage is explicitly approximate and local-only, so a genuine
-# exhaustion may read under 100 on this host; that only ever costs the probe a decline-to-scrape (the
-# safe direction) and the `leaf_usage_limit_probe` event records the observed percentage, so a real
-# incident reporting e.g. 99 is the evidence that would justify lowering this — never a guess.
-USAGE_PROBE_EXHAUSTED_MIN_PCT = 100
-# Bounded raw evidence for `leaf_usage_limit_probe`. Sized to cover the whole window block of the
-# recorded live response (~270 chars once whitespace is collapsed): the excerpt is the ONLY record of
-# what `/usage` said when it could not be parsed, which is precisely the exhausted-quota response the
-# open question is about, so clipping it at the sibling decline's 160 would cut it off mid-window.
-_USAGE_PROBE_EXCERPT_MAX_CHARS = 400
-_USAGE_PROBE_MONTHS = {name: idx for idx, name in enumerate(
-    ("jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
-# One `/usage` window row. `re.VERBOSE` DROPS literal spaces, so every gap is spelled `\s+`/`\s*`.
-# The window label is `session` or `week<anything but a colon>` — the real response names two week
-# rows (`Current week (all models)`, `Current week (<model>)`), and the label is kept whole so the
-# event says which one matched. The date is fully specified (`Jul 25`), which is the whole reason the
-# probe beats the scrape: no yesterday/today/tomorrow guess. The minutes are OPTIONAL because the
-# real response prints `10am` for an on-the-hour reset. The `^` is redundant with the caller's
-# `.match()` and is kept deliberately (a stats line like `  92% of your usage ...` must never be read
-# as a window); the test asserts the PATTERN's own anchoring so neither spelling can be dropped
-# silently on the strength of the other.
-_USAGE_PROBE_ROW_RE = re.compile(
-    r"""^\s*Current\s+(?P<window>session|week[^:\n]*?)\s*:\s*
-        (?P<pct>\d{1,3})%\s+used\b
-        [^\n]*?
-        \bresets\s+(?P<month>[A-Za-z]{3})[a-z]*\s+(?P<day>\d{1,2})\s*,\s*
-        (?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm)\b""",
-    re.IGNORECASE | re.VERBOSE)
-# The window FAMILY named by the dead leaf's own abort line, matched against the probe's row labels.
-# `\b` on both sides is load-bearing: an enveloped abort's classifier evidence is raw JSON, whose
-# `"session_id"` must not be read as the session window (the underscore is a word char, so the `\b`
-# after `session` keeps `\bsessions?\b` from matching there either). Both families admit the plural
-# for symmetry — a wording of `sessions limit` / `weekly limit` alike names its family — but never
-# fail OPEN by doing so: a family this does not recognise merely declines to the scrape. The
-# classifier's other windows (`usage`, `hourly`, `<n>-hour` — `_USAGE_LIMIT_WINDOWS`) have no
-# counterpart row, so they match nothing and fall back to the scrape.
-_USAGE_PROBE_EVIDENCE_FAMILY_RES = (
-    ("session", re.compile(r"\bsessions?\b", re.IGNORECASE)),
-    ("week", re.compile(r"\bweek(?:ly|s)?\b", re.IGNORECASE)),
-)
-
-
-def _parse_usage_probe_rows(result_text: str, now: float) -> list[dict[str, Any]]:
-    """The window rows of a `/usage` probe response's `result` text, as
-    `{window_label, family, used_pct, reset_epoch}` — `[]` when it names none.
-
-    HOST-AUTHORED INPUT: the conductor ran the probe itself, so this text is the CLI's own, not a
-    leaf's. None of the anti-forgery shape clauses that guard the stdout scrape
-    (`_sole_content_usage_limit_line` and friends) apply, and none are repeated here.
-
-    Per-LINE degradation on purpose: a line this does not recognise is skipped, so a future wording
-    change costs the rows it touched and nothing else (the caller then finds no matching window and
-    falls back to the scrape). NEVER raises, matching its scrape siblings.
-
-    The response prints a month/day but no YEAR, so the year is resolved the same way the scrape
-    resolves its missing date: the previous, current, and next years (in the parse timezone) are
-    tried in ascending order and the EARLIEST occurrence not more than `_USAGE_RESET_HUMAN_GRACE_SECONDS`
-    in the past is taken — the `min(eligible)` semantics of the scrape's yesterday/today/tomorrow
-    resolution. The previous year matters only at the New Year boundary (a Dec-31 reset seen just
-    after midnight on Jan 1, still within grace, resolves to the just-passed occurrence rather than
-    one ~a year out); the next year handles the forward Dec→Jan wrap; the Feb-29 case fails the
-    non-leap years and takes the next leap year. `now` is passed in so one `time.time()` instant
-    governs the whole decision and the resolution is deterministically testable.
-
-    The wall-clock is resolved through `datetime(...).timestamp()`, so a DST fold/gap can skew the
-    instant by up to 1h on the 1-2 days/year a transition lands in-window — the same residual
-    `_parse_usage_reset_human` carries, absorbed the same way (the +margin and the relaunch preflight
-    probe). Not worth a fold-aware resolution the scrape does not have."""
-    rows: list[dict[str, Any]] = []
-    for line in (result_text or "").splitlines():
-        try:
-            match = _USAGE_PROBE_ROW_RE.match(line)
-            if match is None:
-                continue
-            month = _USAGE_PROBE_MONTHS.get(match.group("month").lower()[:3])
-            if month is None:
-                continue
-            hour = int(match.group("hour"))
-            minute = int(match.group("minute") or 0)
-            if not (1 <= hour <= 12) or not (0 <= minute <= 59):
-                continue
-            if match.group("meridiem").lower() == "am":
-                hour24 = 0 if hour == 12 else hour
-            else:
-                hour24 = 12 if hour == 12 else hour + 12
-            # Same first-zone-`ZoneInfo`-ACCEPTS idiom as the human scrape: `(all models)` /
-            # `(Fable)` in the label are rejected by the shape, and a model name that happened to
-            # look like `Area/City` is rejected by `ZoneInfo` rather than shadowing the real zone.
-            tz = None
-            for tz_match in _USAGE_RESET_HUMAN_TZ_RE.finditer(line):
-                try:
-                    tz = ZoneInfo(tz_match.group(1))
-                    break
-                except Exception:
-                    continue
-            if tz is None:
-                continue
-            reset_epoch: float | None = None
-            base_year = datetime.fromtimestamp(now, tz).year
-            # PREVIOUS / current / next year, ascending, taking the EARLIEST occurrence not more
-            # than the grace in the past — the same `min(eligible)` resolution the scrape's
-            # yesterday/today/tomorrow parser uses. The previous year is load-bearing at the New Year
-            # boundary: `/usage` run just after midnight on Jan 1 can still report a Dec 31 reset that
-            # just passed (within grace); without `base_year - 1` the earliest candidate would be
-            # Dec 31 of THIS year — ~a year out — which the caller then "resolves" and declines under
-            # the 6h cap WITHOUT trying the scrape, killing an otherwise-recoverable relaunch. The
-            # next year still handles the forward Dec→Jan wrap, and Feb-29 falls through invalid
-            # years to the next leap year.
-            for year in (base_year - 1, base_year, base_year + 1):
-                try:
-                    candidate = datetime(year, month, int(match.group("day")),
-                                         hour24, minute, tzinfo=tz).timestamp()
-                except ValueError:      # e.g. Feb 29 of a non-leap year
-                    continue
-                if candidate >= now - _USAGE_RESET_HUMAN_GRACE_SECONDS:
-                    reset_epoch = candidate
-                    break
-            if reset_epoch is None:
-                continue
-            # Sanitize the label at CONSTRUCTION, not just where the raw response is excerpted:
-            # `json.loads` turns an escaped `\ud800` in the CLI's response into a REAL lone
-            # surrogate, and this label is emitted verbatim on `leaf_usage_limit_probe`
-            # (`windows` / `matched_window`) and, once matched, on `leaf_usage_limit_wait` /
-            # `_declined` (`window`). Any of those would fail `emit`'s
-            # `json.dumps(..., ensure_ascii=False)` and turn a fail_closed usage-limit path into a
-            # conductor crash — the same round-trip the excerpt uses, applied once at the source so
-            # every downstream emit of the label is safe. (`family` / `used_pct` / `reset_epoch` are
-            # safe literals and integers.)
-            label = " ".join(match.group("window").split()).encode(
-                "utf-8", "backslashreplace").decode("utf-8")
-            rows.append({
-                "window_label": label,
-                "family": "session" if label.lower().startswith("session") else "week",
-                "used_pct": int(match.group("pct")),
-                "reset_epoch": int(reset_epoch),
-            })
-        except Exception:
-            continue
-    return rows
-
-
-def _probe_reset_for_evidence(evidence: str,
-                              rows: list[dict[str, Any]]) -> tuple[str, int | None, str | None]:
-    """`(outcome, reset_epoch, window_label)` for arming the wait from probe rows.
-
-    `outcome` is `resolved` (and then `reset_epoch` is set) or the reason the probe declined, which
-    the caller emits verbatim on `leaf_usage_limit_probe` — the decline reasons ARE the field
-    evidence this feature collects, so they are returned rather than collapsed into None.
-
-    WINDOW AGREEMENT IS REQUIRED (operator decision). The dead leaf's own abort line names the window
-    that stopped it (`You've hit your session limit …`); only a probe row of that family may arm the
-    wait. Waking on the wrong window is the failure this excludes structurally: a weekly stop matched
-    to the session row would sleep a couple of hours and then fail the relaunch preflight against a
-    window still shut. `window_unmatched` covers both "the abort named no family this probe reports"
-    (`usage` / `hourly` / `<n>-hour`) and "it named one but the probe listed no such row";
-    `window_ambiguous` covers a family whose rows disagree on the instant (the real response's two
-    week rows can reset a minute apart) — a disagreement is not resolved by picking one.
-
-    `window_not_exhausted` is the SECURITY gate, not a sanity check. The `llm_usage_limit` tag that
-    reached the wait may have been promoted out of the leaf's own stdout prose
-    (`_CROSS_STREAM_PROMOTING_TAGS`), and the recorded Codex P2 incident is exactly that: a leaf that
-    died of a HOOK DENIAL, printing `Session limit resets at 5pm`, armed a real multi-hour wait until
-    the abort-shape clauses were tightened. The probe path bypasses those clauses, so the
-    server-observed usage percentage replaces them — a session row always EXISTS (at 31%, say), so
-    without this gate the probe would re-open that hole with better date parsing. The floor is FULL
-    exhaustion (`USAGE_PROBE_EXHAUSTED_MIN_PCT`, 100): a window with headroom (95..99%) has demonstrably
-    NOT been reached, so it cannot be the cause of the death and the probe must not corroborate it —
-    such a row declines to the scrape, where the abort-shape clauses still stand. The gate is applied
-    to the HIGHEST row of the family: a `week` stop is caused by whichever of its rows is full, not by
-    the least-used one."""
-    families = {family for family, pattern in _USAGE_PROBE_EVIDENCE_FAMILY_RES
-                if pattern.search(evidence or "")}
-    if len(families) != 1:      # named none, or named both — no unambiguous window to match
-        return ("window_unmatched", None, None)
-    family = families.pop()
-    matched = [row for row in rows if row.get("family") == family]
-    if not matched:
-        return ("window_unmatched", None, None)
-    epochs = {int(row["reset_epoch"]) for row in matched}
-    if len(epochs) != 1:
-        return ("window_ambiguous", None, None)
-    top = max(matched, key=lambda row: int(row.get("used_pct") or 0))
-    label = str(top.get("window_label") or family)
-    if int(top.get("used_pct") or 0) < USAGE_PROBE_EXHAUSTED_MIN_PCT:
-        return ("window_not_exhausted", None, label)
-    return ("resolved", epochs.pop(), label)
-
-
-class UsageResetWaitPlan(NamedTuple):
-    """What `_usage_reset_wait_plan` decided: how long to sleep, to which instant, from WHICH source
-    and (probe only) for which window. A NamedTuple, so the positional `(wait_seconds, reset_epoch)`
-    reading the plan had before the probe existed still holds. `reset_source` / `window` exist to be
-    emitted: an operator reading `leaf_usage_limit_wait` must be able to tell a host-observed reset
-    from one scraped out of a dead leaf's stdout, since only the latter can be wrong about the
-    window."""
-    wait_seconds: float
-    reset_epoch: int
-    reset_source: str
-    window: str | None
+# --wait-usage-reset (opt-in; default OFF keeps `llm_usage_limit` terminal for a manual --resume).
+# A usage limit is a provider-side stop lasting up to a session window. With the flag set the
+# conductor sleeps this FIXED schedule and re-launches the same substep, indexed by the number of
+# usage-limit deaths this substep has already waited out. No reset instant is read from the leaf's
+# output or from any provider endpoint: the schedule is the same for every declared provider, and
+# the decision is the classifier's tag alone. The wait after the last entry is declined
+# (`leaf_usage_limit_wait_declined`, reason `budget_spent`) and the death is terminal.
+USAGE_LIMIT_WAIT_SCHEDULE_SECONDS: tuple[float, ...] = (900.0, 3600.0, 14400.0)
+MAX_USAGE_LIMIT_WAITS = len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)   # per substep; separate from the transient budget
 
 
 #: The `pure_context_assembly_failed` EVENT's detail cap. Wider than the persisted
@@ -3967,10 +3362,10 @@ class Conductor:
     orchestration_agent_run_id: str
     env: dict[str, str] = field(default_factory=dict)
     workflow_mode: str = "dev"
-    # --wait-usage-reset (opt-in, default OFF): when a leaf dies of an `llm_usage_limit` whose
-    # terminal line carries a RESOLVABLE reset instant (machine epoch, else TZ-anchored human form —
-    # the latter is what the real CLI emits), wait it out in place and re-launch the substep instead
-    # of fail-closing the run for a next-day manual `--resume`. Off keeps the prior behavior exactly.
+    # --wait-usage-reset (opt-in, default OFF): when a leaf dies of an `llm_usage_limit`, sleep
+    # the fixed `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` and re-launch the substep in place instead of
+    # fail-closing the run for a next-day manual `--resume` (`_usage_limit_wait`). Off keeps the
+    # prior behavior exactly.
     wait_usage_reset: bool = False
     # THE leaf-model authority (issue #28). One `ResolvedLeafEntry` per LLM leaf, so a launch
     # carries its provider, model, command/endpoint and CAPABILITIES instead of a run-wide
@@ -4667,8 +4062,8 @@ class Conductor:
             raise
         self._feed_prompt_stdin(process, prompt_text)
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
-        # be armed: a deterministic substep never reaches spawn_leaf, the usage-reset wait happens
-        # BETWEEN launches, and the `/usage` probe carries its own timeout.
+        # be armed: a deterministic substep never reaches spawn_leaf, and the usage-limit wait
+        # happens BETWEEN launches.
         timeout_seconds = _leaf_timeout_seconds()
         started = time.monotonic()
         deadline = (started + timeout_seconds) if timeout_seconds else None
@@ -5446,7 +4841,7 @@ class Conductor:
             # A failed turn is a leaf death even when the CLI exits 0. Normalize it to a
             # nonzero exit rather than signalling it out-of-band: every downstream
             # consumer of a leaf death — `_classify_leaf_infra_error`, the
-            # `--wait-usage-reset` plan, run_substep's transient retry, and run_phase's
+            # `--wait-usage-reset` wait, run_substep's transient retry, and run_phase's
             # fail_closed transport branch — keys on `returncode != 0`. Reported as a
             # content defect instead, a usage limit would burn the whole bundle-repair
             # budget re-prompting a throttled API.
@@ -8178,36 +7573,21 @@ clean:
                 return SubstepOutcome(child_arid, "pass", [], proc.returncode,
                                       None, len(per_attempt))
 
-            # --wait-usage-reset (opt-in): a transport death carrying a resolvable usage-limit
-            # reset (in practice the CLI's TZ-anchored human form) is waited out in place and the
-            # SAME turn re-launched, rather than falling
-            # to the terminal fail branch for a next-day --resume. Nothing else here treats a
-            # transport death as repairable, so the wait is its only in-loop recovery. `attempt` and
+            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out on the fixed
+            # schedule and the SAME turn re-launched, rather than falling to the terminal fail
+            # branch for a next-day --resume. Decided from the classified TAG alone — `pure_transport`
+            # is set for ANY nonzero leaf exit, so the tag is required explicitly, and nothing about
+            # the dead leaf's output, its stream or its provider is consulted. `attempt` and
             # `resume_session_id` are UNCHANGED (a wait is not a repair turn): a cold first attempt
             # retries cold; an interrupted repair turn re-runs against the same carriers (which the
-            # bookkeeping guard above kept intact). The dead arid was already finalized above, so the
-            # tombstone lands outside its write window; per_attempt keeps its row.
-            # Gate on the classified tag (not merely a nonzero exit): `pure_transport` is set for ANY
-            # nonzero leaf exit, so require `llm_usage_limit` explicitly — the same guard run_substep
-            # uses — so a non-usage crash whose prose happens to match the usage pattern is not waited.
+            # bookkeeping guard above kept intact). per_attempt keeps the dead attempt's row.
             if (category == "pure_transport" and infra_error is not None
-                    and infra_error[0] == "llm_usage_limit"):
-                plan = self._usage_reset_wait_plan(
-                    proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase, substep=substep,
-                    dead_agent_run_id=child_arid, evidence=infra_error[1],
-                    # Only a claude pure leaf's stdout IS a CLI-authored envelope. A codex or
-                    # HTTP pure leaf writes the model's own answer there, so its `is_error` /
-                    # `api_error_status` keys would be forgeable — the same predicate the
-                    # agentic loop uses, for the same reason.
-                    allow_envelope=entry.provider == "claude_cli")
-                if plan is not None:
-                    self._wait_for_usage_reset(
-                        node_key=refs.node_key, step=phase, substep=substep,
-                        dead_agent_run_id=child_arid, wait_seconds=plan.wait_seconds,
-                        reset_epoch=plan.reset_epoch, reset_source=plan.reset_source,
-                        window=plan.window, wait_attempt=usage_waits + 1)
-                    usage_waits += 1
-                    continue
+                    and infra_error[0] == "llm_usage_limit"
+                    and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
+                                               child_arid=child_arid, waits_done=usage_waits,
+                                               evidence=infra_error[1])):
+                usage_waits += 1
+                continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
             # connection) is re-launched in place rather than fail-closing a run that has
             # already paid for every earlier phase. `attempt` and the repair carriers are
@@ -8926,33 +8306,19 @@ clean:
                                      agent_model_override=model,
                                      usage=usage, resume_mode=proc.resume_mode))
 
-            # --wait-usage-reset (opt-in): a transport death carrying a resolvable usage-limit
-            # reset (in practice the CLI's TZ-anchored human form) is waited out in place and the
-            # SAME turn re-launched, rather than falling
-            # to the terminal fail branch. `attempt` / `resume_session_id` are UNCHANGED (a wait is
-            # not a repair turn; persona separation is preserved — the reviewer only ever resumes its
-            # OWN prior attempt). The dead arid was finalized above, so the tombstone is outside its
-            # write window. Mirrors the producer loop — including the explicit `llm_usage_limit` tag
-            # guard (a `pure_transport` category is set for ANY nonzero exit; only a usage limit is
-            # waited, matching run_substep).
+            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out on the fixed
+            # schedule and the SAME turn re-launched, rather than falling to the terminal fail
+            # branch. Decided from the classified TAG alone (`pure_transport` is set for ANY nonzero
+            # exit, so the tag is required explicitly). `attempt` / `resume_session_id` are
+            # UNCHANGED (a wait is not a repair turn; persona separation is preserved — the reviewer
+            # only ever resumes its OWN prior attempt). Mirrors the producer loop.
             if (category == "pure_transport" and infra_error is not None
-                    and infra_error[0] == "llm_usage_limit"):
-                plan = self._usage_reset_wait_plan(
-                    proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase, substep=substep,
-                    dead_agent_run_id=child_arid, evidence=infra_error[1],
-                    # Only a claude pure leaf's stdout IS a CLI-authored envelope. A codex or
-                    # HTTP pure leaf writes the model's own answer there, so its `is_error` /
-                    # `api_error_status` keys would be forgeable — the same predicate the
-                    # agentic loop uses, for the same reason.
-                    allow_envelope=entry.provider == "claude_cli")
-                if plan is not None:
-                    self._wait_for_usage_reset(
-                        node_key=refs.node_key, step=phase, substep=substep,
-                        dead_agent_run_id=child_arid, wait_seconds=plan.wait_seconds,
-                        reset_epoch=plan.reset_epoch, reset_source=plan.reset_source,
-                        window=plan.window, wait_attempt=usage_waits + 1)
-                    usage_waits += 1
-                    continue
+                    and infra_error[0] == "llm_usage_limit"
+                    and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
+                                               child_arid=child_arid, waits_done=usage_waits,
+                                               evidence=infra_error[1])):
+                usage_waits += 1
+                continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
             # connection) is re-launched in place rather than fail-closing a run that has
             # already paid for every earlier phase. `attempt` and the repair carriers are
@@ -11666,6 +11032,38 @@ clean:
         self._sleep_backoff(delay)
         return True
 
+    def _usage_limit_wait(self, *, refs: NodeRefs, phase: str, substep: str | None,
+                          child_arid: str, waits_done: int, evidence: str) -> bool:
+        """Wait out an `llm_usage_limit` death on the fixed schedule and return True once the
+        caller may re-launch; False leaves the death terminal (flag off, or the schedule is spent).
+
+        The sibling of `_pure_transient_retry` for the one non-transient tag the conductor can
+        recover from in place: `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` indexed by the number of
+        usage-limit deaths this substep has already waited out, and a separate budget from the
+        transient retries (a transient tag is never `llm_usage_limit`). Decided from the TAG alone:
+        nothing here reads the dead leaf's output for a reset instant or asks the provider for one,
+        so every declared provider gets the same wait. `evidence` is the classifier's own line
+        (`infra_error[1]`), already-decoded process output, emitted verbatim as
+        `leaf_transient_retry` does. Flag off emits nothing: the caller falls through to the
+        transient branch, which does not retry this tag, and the death stays terminal for a manual
+        `--resume`. The declined event carries the ONE reason left (`budget_spent`), so a run that
+        opted in and still fail_closed is greppable."""
+        if not self.wait_usage_reset:
+            return False
+        if waits_done >= MAX_USAGE_LIMIT_WAITS:
+            self.emit("leaf_usage_limit_wait_declined", node_key=refs.node_key, step=phase,
+                      substep=substep, tag="llm_usage_limit", reason="budget_spent",
+                      wait_attempt=waits_done + 1, dead_agent_run_id=child_arid,
+                      evidence=evidence)
+            return False
+        delay = USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[waits_done]
+        self.emit("leaf_usage_limit_wait", node_key=refs.node_key, step=phase, substep=substep,
+                  tag="llm_usage_limit", wait_seconds=delay, wait_attempt=waits_done + 1,
+                  max_waits=MAX_USAGE_LIMIT_WAITS, dead_agent_run_id=child_arid,
+                  evidence=evidence)
+        self._sleep_backoff(delay)
+        return True
+
     def _sleep_backoff(self, seconds: float) -> None:
         """Wait out a transient LLM-infrastructure failure before re-launching the leaf.
 
@@ -11675,265 +11073,6 @@ clean:
         only as 20-50ms spin guards inside a bounded loop (`_gone_within`, the post-break
         drain)."""
         time.sleep(seconds)
-
-    def _run_usage_probe(self, entry: ResolvedLeafEntry | None = None
-                         ) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
-        """`(rows, meta)` from a HOST-side `claude --output-format json -p /usage` — the PRIMARY
-        reset source for `--wait-usage-reset` (see `_parse_usage_probe_rows`). `rows` is None when
-        the probe produced nothing usable, and `meta` then names the outcome; on success `meta`
-        carries only the timing + excerpt and the caller decides the outcome from the rows.
-
-        Run by the CONDUCTOR, not a leaf: no untrusted prompt is involved, so it needs no bwrap
-        (same trust model as the preflight backend probes in `orchestration_runtime`) and its output
-        needs none of the abort-shape anti-forgery clauses the stdout scrape carries. It spends 0
-        tokens — `/usage` is a local slash command that answers at `num_turns: 0`.
-
-        The argv base is `leaf_command`'s (the entry's `command:` wrapper if configured, else the bare
-        backend), so the probe interrogates the executable the LEAF actually uses rather than a
-        hardcoded `claude` — the same reasoning the codex feature probe used before Z4
-        (issue #171) deleted it.
-
-        The `result` is trusted ONLY when the envelope proves it came from the BUILT-IN `/usage`
-        slash command, not from a model turn. `--output-format json -p /usage` on the real CLI
-        answers at `num_turns == 0` (a local command, 0 tokens); an older or `command:`-wrapped
-        binary that does not recognise `/usage` would instead run it as an ordinary PROMPT, and the
-        model's reply — attacker-uncontrolled but still model-authored, and free to contain
-        window-shaped text — would arrive at `num_turns >= 1` (or with the field absent). Requiring
-        `num_turns == 0` keeps that model output from being read as trusted usage data and arming a
-        multi-hour wait; a response that fails it declines to the scrape, where the abort-shape
-        clauses independently decide. This is the probe's equivalent of the scrape's forgery guard:
-        the scrape distrusts a leaf's stdout, and here the conductor distrusts anything the probe's
-        own model produced.
-
-        NEVER raises: a timeout, a missing binary, a nonzero exit, unparseable output, an envelope
-        that is itself an error, or one that consumed a model turn all return `(None, meta)` and the
-        caller falls back to the scrape, i.e. to exactly today's behavior. An `is_error` envelope is
-        not an exception either — it is the very field evidence the open question needs, so its raw
-        text is kept in `excerpt` and reported as `probe_unparseable`."""
-        started = time.monotonic()
-
-        def _meta(outcome: str | None, excerpt: str = "") -> dict[str, Any]:
-            meta: dict[str, Any] = {
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                # Same backslashreplace round-trip the decline excerpt uses, so `emit`'s
-                # `json.dumps(..., ensure_ascii=False)` can always encode what it is handed.
-                "excerpt": (" ".join((excerpt or "").split())[:_USAGE_PROBE_EXCERPT_MAX_CHARS]
-                            .encode("utf-8", "backslashreplace").decode("utf-8")),
-            }
-            if outcome is not None:
-                meta["outcome"] = outcome
-            return meta
-
-        entry = entry if entry is not None else self.entry_for(None, None)
-        if not entry.supports(CAP_USAGE_PROBE):
-            # Not a codex branch: `usage_probe` is simply absent from every provider that does
-            # not answer `-p /usage`, so a provider added later declines here by default.
-            return None, _meta("backend_unsupported")
-        argv = [*_provider_command_base(entry), "--output-format", "json", "-p", "/usage"]
-        try:
-            # The probe must query the SAME account/endpoint context the leaf runs under, or
-            # its reset instant is for the wrong quota — and this is the trusted PRIMARY
-            # source, so a confidently-wrong instant here arms a multi-hour wait ahead of the
-            # scrape. That invariant used to be spelled `env=self.env`, which was the leaf's
-            # environment while the leaf inherited. It no longer is: a leaf's environment is
-            # RECONSTRUCTED by `_child_env` from the declared allowlist, so `self.env` would
-            # query the operator's endpoint while the leaf runs on the allowlisted one. Going
-            # through the same AUTHOR is what keeps the account and endpoint the same.
-            #
-            # Two things that author adds are wrong for a HOST-side probe, and both are
-            # dropped here rather than papered over:
-            #   TMPDIR names `workspace/tmp/<arid>`, a directory only a PROFILE BUILDER
-            #     creates — and the meta arid gets a profile only if `escalate()` ran. So for
-            #     an ordinary run the probe was handed a TMPDIR that does not exist, and the
-            #     CLI is a node program: `mkdtemp` under a missing TMPDIR is ENOENT. Measured.
-            #     This was a live regression introduced when the probe was rerouted; dropping
-            #     the name restores exactly the pre-reroute behaviour (the CLI falls back to
-            #     /tmp) without touching the account/endpoint half.
-            #   the claude output-ceiling / auto-memory pair describes a LEAF's turn. `/usage`
-            #     is a built-in slash command answering at `num_turns == 0`, so they say
-            #     nothing here.
-            # And the invariant is NOT "by construction" end to end, which an earlier version
-            # of this comment claimed: a leaf's real environment is author PLUS deliverer, and
-            # the deliverer adds `CLAUDE_CONFIG_DIR=<private home>`, which this host-side probe
-            # does not get. It reads the operator's `~/.claude`. Same ACCOUNT — the private
-            # home binds the operator's own credentials file — so the quota is right, which is
-            # what the invariant is actually about.
-            from tools.orchestration_runtime import CLAUDE_LEAF_ENV_EXTRAS
-            probe_env = self._child_env(self.orchestration_agent_run_id, entry)
-            for host_side_irrelevant in ("TMPDIR", *CLAUDE_LEAF_ENV_EXTRAS):
-                probe_env.pop(host_side_irrelevant, None)
-            proc = subprocess.run(argv, cwd=self.repo_root, env=probe_env,
-                                  text=True,
-                                  capture_output=True, check=False,
-                                  timeout=USAGE_PROBE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            return None, _meta("probe_timeout")
-        except Exception as exc:      # missing binary, decode failure, OS error
-            return None, _meta("probe_error", f"{type(exc).__name__}: {exc}")
-        if proc.returncode != 0:
-            return None, _meta("probe_error", proc.stderr or proc.stdout or "")
-        try:
-            doc = json.loads(proc.stdout or "")
-        except Exception:
-            return None, _meta("probe_unparseable", proc.stdout or "")
-        result = doc.get("result") if isinstance(doc, dict) else None
-        # Trust the `result` only as the BUILT-IN `/usage` command's output: `is_error` false, a
-        # string result, AND `num_turns == 0` (no model turn was consumed). A binary that ran
-        # `/usage` as a prompt yields model-authored text at `num_turns >= 1` — reject it so it is
-        # never parsed into trusted rows. The raw envelope is kept as the excerpt for diagnosis.
-        if (not isinstance(doc, dict) or doc.get("is_error") is True
-                or doc.get("num_turns") != 0 or not isinstance(result, str)):
-            return None, _meta("probe_unparseable", proc.stdout or "")
-        rows = _parse_usage_probe_rows(result, time.time())
-        if not rows:
-            # Answered, but named no window this parser recognises — a wording change, or (the open
-            # question) whatever `/usage` says once the quota is gone. The excerpt is the record.
-            return None, _meta("probe_unparseable", result)
-        return rows, _meta(None, result)
-
-    def _usage_reset_wait_plan(self, proc: ProcResult, waits_done: int, *,
-                               entry: ResolvedLeafEntry | None = None,
-                               node_key: str, step: str, substep: str | None,
-                               dead_agent_run_id: str, evidence: str,
-                               allow_envelope: bool) -> UsageResetWaitPlan | None:
-        """The `UsageResetWaitPlan` for a usage-limit-killed leaf that should be waited out and
-        re-launched in place, or None to keep the current fail_closed behavior.
-
-        Called only for an `llm_usage_limit`-tagged death (the call-site guard). Two reset sources,
-        tried in order (the probe resolves its rows against its own `time.time()`; the SCRAPE path
-        and the `remaining` math share the single `now` read here, so the scrape and the wait
-        arithmetic see one instant):
-
-        1. PROBE (`reset_source="probe"`) — the host asks the CLI (`_run_usage_probe`), and the row
-           whose window the dead leaf's own abort line NAMES arms the wait, provided that window is
-           actually exhausted (`_probe_reset_for_evidence`). Host-authored, dated, and window-named.
-        2. SCRAPE — the dead leaf's terminal usage-limit line: the MACHINE epoch
-           (`_parse_usage_reset_epoch`, `reset_source="scrape_machine"`) then the HUMAN TZ-anchored
-           form (`_parse_usage_reset_human`, `reset_source="scrape_human"`), which is what the real
-           CLI emits and therefore what armed the wait before the probe existed.
-
-        The probe is PRIMARY and the scrape stays the fallback, so every probe failure — including
-        the unverified case where `/usage` itself is refused once the quota is gone — degrades to
-        exactly the previous behavior rather than to no wait at all. Every probe attempt emits
-        `leaf_usage_limit_probe` with its raw outcome, which is how the next real incident answers
-        that open question without a purpose-built experiment.
-
-        None (fall back to fail_closed) whenever ANY precondition misses — the flag is off; the
-        per-substep wait budget is spent; neither source resolved an instant (the probe declined AND
-        the terminal line carries neither a machine epoch nor a resolvable TZ-anchored human reset —
-        a human reset with no IANA TZ / no time-of-day is not guessed at, and a usage limit sharing
-        the leaf's untrusted stdout with any other output does not arm the wait, see
-        `_sole_content_usage_limit_line`); or the reset lies further out than
-        MAX_USAGE_LIMIT_WAIT_SECONDS. That cap applies to BOTH sources unchanged: a weekly reset days
-        out is still not something to sit on, the difference being that a probe-sourced decline now
-        names the window it declined instead of inferring one. Every decline EXCEPT the flag-off
-        short-circuit emits `leaf_usage_limit_wait_declined` with a reason, so a run that opted in
-        but did not wait is greppable — the invisibility of this decline is exactly what masked the
-        machine-vs-human envelope mismatch.
-
-        The wait sleeps slightly PAST the reset (USAGE_LIMIT_WAIT_MARGIN_SECONDS) so the re-launch's
-        preflight live-probe finds the window actually open; a reset already in the past (a
-        minutes-stale human message) waits only that margin."""
-        if not self.wait_usage_reset:
-            return None
-
-        # The line the wait is actually DECIDED from — the classifier's own tagged line, except for
-        # the enveloped shape where that line is raw JSON clipped at 160 chars (it truncates
-        # mid-`result` and hides the wording). Computed once and used for BOTH the decline excerpt
-        # and the probe's window match, so the operator-facing evidence and the window the code
-        # matched on are the same text. The override is narrow in both uses: stdout must be the
-        # stream the resolver actually consulted (stderr named no usage limit) AND the text must
-        # pass the shape check — otherwise it would quote, and match on, a `result` the decision was
-        # never made from.
-        inner = None
-        if allow_envelope and _stream_terminal_usage_limit_line(proc.stderr or "") is None:
-            inner = _sole_content_usage_limit_line(proc.stdout or "", allow_envelope=True)
-        decision_line = " ".join(inner.split())[:160] if inner else evidence
-
-        def _decline(reason: str, *, window: str | None = None,
-                     reset_source: str | None = None) -> None:
-            # The arid and the offending line are what the NEXT unrecognised envelope will be
-            # diagnosed from: without them the operator gets a bare `no_reset_time` and has to
-            # guess which `agents/<arid>/dialogs/` to open — and this decline being uninformative
-            # is what let the stderr-only bug survive two rounds of investigation. `decision_line`
-            # is the CLASSIFIER's own line (`infra_error[1]`), i.e. the line the `llm_usage_limit`
-            # tag came from — not a stream tail, which on a leaf with noisy stderr would quote
-            # something the decision was never made from — with the enveloped-shape override applied
-            # above. Same field the sibling `leaf_transient_retry` emits.
-            # `json.loads` turns an escaped lone surrogate (`\ud800`) in the leaf's `result` into a
-            # REAL surrogate, which `emit`'s `json.dumps(..., ensure_ascii=False)` then cannot encode
-            # on write — turning this fail_closed decline into a conductor crash. Same
-            # backslashreplace round-trip the other leaf-derived excerpts use. (The classifier line
-            # comes from already-decoded process output and cannot carry one, but sanitizing both
-            # branches keeps the emit unconditionally safe.)
-            self.emit("leaf_usage_limit_wait_declined", node_key=node_key, step=step,
-                      substep=substep, reason=reason, dead_agent_run_id=dead_agent_run_id,
-                      window=window, reset_source=reset_source,
-                      evidence=decision_line.encode("utf-8", "backslashreplace").decode("utf-8"))
-
-        if waits_done >= MAX_USAGE_LIMIT_WAITS:
-            # Before the probe on purpose: a spent budget cannot wait whatever `/usage` answers, so
-            # probing here would spend a subprocess (and its timeout) on a decision already made.
-            _decline("budget_spent")
-            return None
-
-        rows, probe_meta = self._run_usage_probe(entry)
-        probe_epoch: int | None = None
-        window: str | None = None
-        probe_outcome = probe_meta.get("outcome")
-        if rows is not None:
-            probe_outcome, probe_epoch, window = _probe_reset_for_evidence(decision_line, rows)
-        # Emitted for EVERY attempt, resolved or not: this event is the field evidence that answers
-        # whether `/usage` still responds once the quota is exhausted — the one open question the
-        # design could not settle offline. `windows` carries the parsed rows so a decline can be
-        # re-judged after the fact; `excerpt` carries the raw text when there were none.
-        self.emit("leaf_usage_limit_probe", node_key=node_key, step=step, substep=substep,
-                  outcome=probe_outcome, windows=rows or [], matched_window=window,
-                  reset_epoch=probe_epoch, duration_ms=probe_meta.get("duration_ms"),
-                  excerpt=probe_meta.get("excerpt", ""), dead_agent_run_id=dead_agent_run_id)
-
-        now = time.time()
-        if probe_epoch is not None:
-            reset_epoch: int | None = probe_epoch
-            reset_source = "probe"
-        else:
-            window = None       # the scrape resolves no window name; do not carry the probe's
-            reset_epoch = _parse_usage_reset_epoch(proc.stderr or "", proc.stdout or "",
-                                                   allow_envelope=allow_envelope)
-            reset_source = "scrape_machine"
-            if reset_epoch is None:
-                reset_epoch = _parse_usage_reset_human(proc.stderr or "", now, proc.stdout or "",
-                                                       allow_envelope=allow_envelope)
-                reset_source = "scrape_human"
-        if reset_epoch is None:
-            _decline("no_reset_time")
-            return None
-        remaining = reset_epoch - now
-        if remaining > MAX_USAGE_LIMIT_WAIT_SECONDS:
-            _decline("over_6h_cap", window=window, reset_source=reset_source)
-            return None
-        wait_seconds = max(0.0, remaining) + USAGE_LIMIT_WAIT_MARGIN_SECONDS
-        return UsageResetWaitPlan(wait_seconds, reset_epoch, reset_source, window)
-
-    def _wait_for_usage_reset(self, *, node_key: str, step: str, substep: str | None,
-                              dead_agent_run_id: str, wait_seconds: float, reset_epoch: int,
-                              reset_source: str, window: str | None,
-                              wait_attempt: int) -> None:
-        """Tombstone the usage-limit-killed attempt, announce the wait, and sleep out the reset
-        before the caller re-launches the substep.
-
-        The dead attempt is finalized (terminalized) by the caller BEFORE this runs, so the
-        tombstone lands OUTSIDE the child FS-diff window (same ordering invariant the transient
-        retry and the pure loops rely on). Its orphan arid — terminalized but never vouched by a
-        step_result — would otherwise fail the completion check on the surviving pass, so it is
-        superseded here; idempotent (a set union) with the pure loop's later per-attempt tombstone.
-        The lone `_sleep_backoff` is reused so tests stub one sleep and this loop stays the
-        conductor's only block."""
-        self.emit("leaf_usage_limit_wait", node_key=node_key, step=step,
-                  substep=substep, reset_epoch=reset_epoch, wait_seconds=wait_seconds,
-                  reset_source=reset_source, window=window,
-                  wait_attempt=wait_attempt, dead_agent_run_id=dead_agent_run_id)
-        self._sleep_backoff(wait_seconds)
 
     def _persist_leaf_output(self, child_arid: str, proc: ProcResult,
                              prefix: str = "leaf") -> None:

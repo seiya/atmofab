@@ -16,10 +16,8 @@ import re
 import shutil
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 from unittest import mock
-from zoneinfo import ZoneInfo
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
@@ -27,7 +25,7 @@ import tools.orchestration_runtime as wc_ort
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
-    _NODE, _SPEC_ID, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
+    _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
 
@@ -725,95 +723,55 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.infra_error[0], "leaf_timeout")
         self.assertEqual(oc.attempts, 1)             # not repaired, not retried...
         self.assertEqual(c.slept, [])                # ...and never parked for a reset
-        self.assertEqual(getattr(c, "usage_probe_calls", 0), 0)
         # The event has to NAME the wedged leaf; only the caller knows node/step/substep.
         self.assertEqual(spawn_kwargs[0]["timeout_context"],
                          {"node_key": refs.node_key, "step": "generate", "substep": "verify",
                           "agent_run_id": spawn_kwargs[0]["child_arid"]})
 
-    def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
-        """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death carrying a
-        machine-form usage-limit epoch is waited out in place and re-launched, rather than
-        fail-closing. The wait is not a repair turn (attempts stays the reviewer's repair count)."""
-        now = 1_752_200_000.0
+    class _WaitingC(_PureFakeConductor):
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+            self._spawn = getattr(self, "_spawn", 0)
+            proc = self.procs[min(self._spawn, len(self.procs) - 1)]
+            self._spawn += 1
+            return proc
 
-        class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                self._spawn = getattr(self, "_spawn", 0)
-                proc = self.procs[min(self._spawn, len(self.procs) - 1)]
-                self._spawn += 1
-                return proc
+        def _sleep_backoff(self, seconds):  # type: ignore[override]
+            self.slept.append(seconds)
 
-            def _sleep_backoff(self, seconds):  # type: ignore[override]
-                self.slept.append(seconds)
-
+    def _waiting(self, dead: wc.ProcResult) -> tuple[_WaitingC, wc.NodeRefs]:
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
-        c.procs = [wc.ProcResult(1, "", f"usage limit reached|{int(now) + 300}"),
-                   wc.ProcResult(0, _envelope(_verdict("pass")), "")]
+        c = self._WaitingC(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                           llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
+        c.procs = [dead, wc.ProcResult(0, _envelope(_verdict("pass")), "")]
         c.slept = []
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        return c, refs
+
+    def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
+        """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
+        classifier tags `llm_usage_limit` is waited out in place on the fixed schedule and
+        re-launched, rather than fail-closing. The wait is not a repair turn (attempts stays the
+        reviewer's repair count)."""
+        c, refs = self._waiting(wc.ProcResult(1, "", "usage limit reached"))
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         self.assertEqual(oc.status, "pass")
         self.assertEqual(c._spawn, 2)
         self.assertEqual(oc.attempts, 2)             # launch count (the wait launch is counted)
-        self.assertEqual(c.slept, [420.0])           # 300s + 120s margin
+        self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
         self.assertTrue((c.repo_root / refs.source_dir() / "source_meta.json").exists())
-        # the wait consulted the host `/usage` probe first and fell back to the scrape;
-        # the stub is what keeps the suite from spawning the real backend
-        self.assertEqual(c.usage_probe_calls, 1)
 
-    def test_wait_usage_reset_recovers_the_real_cli_stdout_abort(self) -> None:
+    def test_wait_usage_reset_recovers_a_real_cli_abort_in_either_shape(self) -> None:
         """REGRESSION, production shapes: the CLI reports a usage limit on STDOUT with a 0-byte
-        stderr, in one of two recorded shapes — the bare message (5 of the 6 incidents on record) or
-        the `--output-format json` envelope carrying it in `result` (the 1 that struck a pure leaf;
-        pinned in the producer suite). Either must wait; the sibling test above uses the
-        machine-form-on-stderr shape, which production has never produced. Both are accepted on this
-        loop: a pure launch may still abort bare, so the bare path must work here too — only the
-        converse (unwrapping an envelope) is gated on the launch mode."""
-        # 2026-07-24 07:38:45 UTC = 16:38 JST, the bare incident's leaf-death instant.
-        now = 1_784_878_725.0
-        recorded_stdout = "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n"
-
-        class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                self._spawn = getattr(self, "_spawn", 0)
-                proc = self.procs[min(self._spawn, len(self.procs) - 1)]
-                self._spawn += 1
-                return proc
-
-            def _sleep_backoff(self, seconds):  # type: ignore[override]
-                self.slept.append(seconds)
-
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _verify_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
-        c.procs = [wc.ProcResult(1, recorded_stdout, ""),
-                   wc.ProcResult(0, _envelope(_verdict("pass")), "")]
-        c.slept = []
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 2)                # waited, then relaunched
-        reset = datetime(2026, 7, 24, 17, 50, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
-        self.assertEqual(c.slept, [reset - now + wc.USAGE_LIMIT_WAIT_MARGIN_SECONDS])
-
-    def test_wait_usage_reset_recovers_the_real_cli_abort_envelope(self) -> None:
-        """The ENVELOPED shape on the reviewer loop. `_run_pure_verify_substep` launches
-        `--output-format json` exactly as the producer does, so it must pass `allow_envelope=True`
-        too — the recorded enveloped abort (verbatim below, from the producer-loop incident) is what
-        this loop would meet, and with the gate off it declines `no_reset_time` and fail_closes.
-        Without this test that wiring can be flipped with a green suite, re-creating the defect for
-        half the pure surface."""
-        now = datetime(2026, 7, 19, 11, 12, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
-        RECORDED_ABORT_ENVELOPE = (
+        stderr, in one of two recorded shapes — the bare message (5 of the 6 incidents on record)
+        or the `--output-format json` envelope carrying it in `result` (the 1 that struck a pure
+        leaf, verbatim below from `orch_20260719T021249Z_419ebdf9`). The wait is decided from the
+        classifier's tag, so BOTH shapes wait the same first schedule entry on this loop — the
+        classifier's `"result":"` prefix is what tags the enveloped one, and this pins that the
+        tag reaches the wait from the reviewer loop as well as from the producer's."""
+        bare = "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n"
+        enveloped = (
             '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"duration_ms":64'
             '6,"duration_api_ms":0,"num_turns":1,"result":"You\'ve hit your session limit · resets 12:30pm'
             ' (Asia/Tokyo)","stop_reason":"stop_sequence","session_id":"160cb9c9-b595-4a87-aa72-fc1cf86c4'
@@ -823,34 +781,13 @@ class PureVerifySubstepTests(unittest.TestCase):
             'ral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":'
             '{},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","uuid":"ab0'
             '9298a-847a-415f-87d6-88205cc51fb4"}')
-        class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                self._spawn = getattr(self, "_spawn", 0)
-                proc = self.procs[min(self._spawn, len(self.procs) - 1)]
-                self._spawn += 1
-                return proc
-
-            def _sleep_backoff(self, seconds):  # type: ignore[override]
-                self.slept.append(seconds)
-
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _verify_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
-        c.procs = [wc.ProcResult(1, RECORDED_ABORT_ENVELOPE, ""),
-                   wc.ProcResult(0, _envelope(_verdict("pass")), "")]
-        c.slept = []
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 2)
-        reset = datetime(2026, 7, 19, 12, 30, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
-        self.assertEqual(c.slept, [reset - now + wc.USAGE_LIMIT_WAIT_MARGIN_SECONDS])
-        # the wait consulted the host `/usage` probe first and fell back to the scrape;
-        # the stub is what keeps the suite from spawning the real backend
-        self.assertEqual(c.usage_probe_calls, 1)
+        for shape, stdout in (("bare", bare), ("enveloped", enveloped)):
+            with self.subTest(shape=shape):
+                c, refs = self._waiting(wc.ProcResult(1, stdout, ""))
+                oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+                self.assertEqual(oc.status, "pass")
+                self.assertEqual(c._spawn, 2)                # waited, then relaunched
+                self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone
