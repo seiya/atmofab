@@ -5460,6 +5460,94 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertIn("was compiled against", b["rerun_reason"]["detail"])
             self.assertIn("infrastructure/c@0.1.0", b["rerun_reason"]["detail"])
 
+    def test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved(self) -> None:
+        """The R6-lite twin of the test above, driven end to end through the REAL readiness
+        machinery (issue #178 round 0: deleting `_dependency_resolution_freshness` from the
+        primitive was killed by the launch-gate witness and by NOTHING in this file).
+
+        The shape is R6-lite's own: the consumer `b` was certified when its closure resolved the
+        harness to `c@0.0.9` (that is what its `dependency_graph.json` sidecar records); the
+        registry has since moved `c` to `0.1.0`, which is itself certified. `b`'s binary still
+        links the current source (the binding is fresh), so only the RESOLUTION moved — and the
+        driver must re-run `b`, naming `ir_ref`."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+
+            leaf_body = "module c_model\nend module c_model\n"
+            sha = self._seed_certified_node(
+                repo_root, "infrastructure", "c", "0.1.0", closure_bindings=[],
+                dep_body=leaf_body)
+            binding = {
+                "node_key": "infrastructure/c@0.1.0",
+                "pipeline_ref": "workspace/pipelines/infrastructure__c__0.1.0/c_20260101_001",
+                "binary_id": "bin_20260101_001", "source_id": "src_20260101_001",
+                "model_source_ref": ("workspace/pipelines/infrastructure__c__0.1.0/"
+                                     "c_20260101_001/source/src_20260101_001/src/c_model.f90"),
+                "model_source_sha256": sha,
+            }
+            self._seed_certified_node(repo_root, "component", "b", "0.1.0",
+                                      closure_bindings=[binding])
+
+            def drive() -> list[dict[str, Any]]:
+                seen: dict[str, Any] = {}
+
+                def fake_run_node(**kw):
+                    if kw.get("spec_ref") == "spec/problem/a":
+                        seen["extra_output"] = kw.get("extra_output") or {}
+                    return 0
+
+                orig = run_workflow._run_node
+                run_workflow._run_node = fake_run_node  # type: ignore[assignment]
+                try:
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        run_workflow._run_with_dependency_closure(
+                            repo_root=repo_root,
+                            base_env={"PATH": os.environ.get("PATH", "")},
+                            target_orchestration_id="orch_target",
+                            target_spec_ref="spec/problem/a",
+                            target_source_dependency_ref="spec/problem/a/deps.yaml",
+                            until_phase="Validate", llm="claude", llm_command="claude",
+                            llm_config=_sample_config("claude"), workflow_mode="dev",
+                            agent_model=None, status="running", run_conductor=False,
+                            stdout_format="jsonl")
+                finally:
+                    run_workflow._run_node = orig  # type: ignore[assignment]
+                events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+                fails = [e for e in events if e.get("dependency_runs")]
+                if fails:
+                    return fails[-1]["dependency_runs"]
+                return list(seen.get("extra_output", {}).get("dependency_runs") or [])
+
+            # BEFORE: both dependency nodes are ready, so both are skipped.
+            runs = drive()
+            by_ref = {r["spec_ref"]: r for r in runs}
+            for ref in ("spec/component/c", "spec/component/b"):
+                self.assertTrue(by_ref[ref]["skipped"], runs)
+
+            # `b`'s recorded resolution names a harness version the registry no longer derives.
+            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
+                       / "dependency_graph.json")
+            graph = json.loads(sidecar.read_text(encoding="utf-8"))
+            graph["all_nodes"] = [
+                {"node_key": "infrastructure/c@0.0.9", "topo_level": 0},
+                {"node_key": "component/b@0.1.0", "topo_level": 1}]
+            sidecar.write_text(json.dumps(graph), encoding="utf-8")
+
+            runs = drive()
+            by_ref = {r["spec_ref"]: r for r in runs}
+            # `c` is a leaf with no recorded resolution to drift; still ready.
+            self.assertTrue(by_ref["spec/component/c"]["skipped"], runs)
+            b = by_ref["spec/component/b"]
+            self.assertFalse(b["skipped"], runs)
+            self.assertEqual(b["rerun_reason"]["failed_stage"], "ir_ref")
+            self.assertIn("infrastructure/c@0.0.9", b["rerun_reason"]["detail"])
+            self.assertIn("infrastructure/c@0.1.0", b["rerun_reason"]["detail"])
+
     def test_driver_stops_when_dependency_not_ready_after_run(self) -> None:
         # A dependency that exits 0 without producing readiness evidence
         # (e.g. --no-run-conductor) must stop the run before the dependent/target.
