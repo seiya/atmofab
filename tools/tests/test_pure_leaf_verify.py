@@ -917,6 +917,13 @@ class PureVerifySubstepTests(unittest.TestCase):
                          ["none", "reuse", "reuse"])
         self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs],
                          [None, "child-1", "child-1"])  # same target before and after the wait
+        # ...and the same FINDINGS: the transport death neither overwrote the carriers (the
+        # guard above the wait) nor did the wait clear them — a leaf's 160-char evidence line
+        # must never become the next repair prompt's findings.
+        findings = [str(r.get("repair_findings", "")) for r in c.requests[1:]]
+        self.assertEqual(findings[0], findings[1])
+        self.assertTrue(findings[1])
+        self.assertNotIn("usage limit", findings[1].lower())
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone

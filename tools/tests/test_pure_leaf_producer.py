@@ -1232,8 +1232,17 @@ class PureUsageLimitWaitTest(unittest.TestCase):
     terminal behavior."""
 
     class _C(_PureFakeConductor):
+        # The last scripted result repeats, so a wait that never counted its budget would loop
+        # until the harness `timeout` killed the run — which no assertion reports (the verify
+        # driver's `MAX_SPAWNS_PAST_SCRIPT` closed this there first). Refusing makes it a red row.
+        MAX_SPAWNS_PAST_SCRIPT = 2
+
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self._spawn = getattr(self, "_spawn", 0)
+            if self._spawn >= len(self.procs) + self.MAX_SPAWNS_PAST_SCRIPT:
+                raise AssertionError(
+                    f"launch {self._spawn + 1} past a {len(self.procs)}-entry script: the loop "
+                    f"is re-launching without bound")
             proc = self.procs[min(self._spawn, len(self.procs) - 1)]
             self._spawn += 1
             return proc
@@ -1248,6 +1257,72 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         c.procs = procs
         c.slept = []
         return c
+
+    def _recording(self, c: "_C") -> tuple[list[dict], list[dict]]:
+        """Capture every launch request and every spawn's kwargs on `c`."""
+        requests: list[dict] = []
+        spawn_kwargs: list[dict] = []
+        orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
+
+        def _rec(child_arid, request, entry=None, **kw):
+            requests.append(request)
+            return orig_rec(child_arid, request)
+
+        def _spawn(prompt_text, child_env, entry=None, **kwargs):
+            spawn_kwargs.append(dict(kwargs))
+            return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
+        c.record_launch = _rec  # type: ignore[assignment]
+        c.spawn_leaf = _spawn   # type: ignore[assignment]
+        return requests, spawn_kwargs
+
+    def test_the_producer_wait_is_not_a_repair_turn(self) -> None:
+        """The producer twin of the reviewer's row, and the pin 9afa77cf described but did not
+        commit (its "pass with 4 launches -> fail with 3" was a hand measurement). (1) a wait on
+        the cold attempt followed by exactly `MAX_BUNDLE_REPAIR_TURNS` schema violations still
+        passes — a wait that spent an `attempt` refuses the last repair and fails closed; the
+        fixture straddles the budget on purpose (one violation is green under that regression).
+        (2) a wait that interrupts a REPAIR turn re-runs it against the same session with the
+        same findings: `resume_session_id` unchanged across the wait, `repair_findings` the
+        SCHEMA finding and never the transport evidence (a transport death must not overwrite
+        the carriers — the guard above the wait — nor may the wait clear them)."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        quota = wc.ProcResult(1, "", "You've hit your weekly limit · resets 3pm (Asia/Tokyo)")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [quota] + [wc.ProcResult(0, _envelope(bad), "")] * MAX_BUNDLE_REPAIR_TURNS
+                + [wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
+            requests, spawn_kwargs = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+            self.assertEqual([r["repair_strategy"] for r in requests],
+                             ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, None] + [f"child-{n + 2}" for n in range(MAX_BUNDLE_REPAIR_TURNS)])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [wc.ProcResult(0, _envelope(bad), ""), quota,
+                       wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
+            requests, spawn_kwargs = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, 3)
+            self.assertEqual([r["repair_strategy"] for r in requests], ["none", "reuse", "reuse"])
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, "child-1", "child-1"])     # same target before and after
+            findings = [str(r.get("repair_findings", "")) for r in requests[1:]]
+            self.assertEqual(findings[0], findings[1])          # the wait changed nothing
+            self.assertIn("capability_requirements", findings[1])
+            self.assertNotIn("limit", findings[1].lower())      # never the transport evidence
 
     def test_a_pure_leaf_that_wrote_no_envelope_names_the_exit_it_died_at(self) -> None:
         """The other `unavailable` half (issue #47). A leaf killed at the per-leaf cap writes
