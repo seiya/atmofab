@@ -188,6 +188,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             lines: list[str] = []
             _render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
             joined = "\n".join(lines)
+            self.assertIn("| leaf agent_run_id | total | reasoning | source |", joined)
             self.assertIn("| 56,538 | 23,438 | http_provider |", joined)
             # ...and a provider that reported no split says so, rather than rendering a 0.
             self.assertIn("| 6 | n/a | cli_result_envelope |", joined)
@@ -291,6 +292,25 @@ class TokenCostSummaryTests(unittest.TestCase):
             _render_token_cost(tcs, lines)
             self.assertIn("unavailable", "\n".join(lines))
             self.assertNotIn("0 tokens", "\n".join(lines))
+
+    def test_an_unaccounted_row_is_named_as_a_leaf(self) -> None:
+        # One numeric row makes the section render; the row with no usage field is then
+        # counted in the vocabulary the section uses everywhere else — leaf, not child.
+        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [{"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                     "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+                    {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
+                     "agent_role": "substep", "status": "pass"}]
+            lines: list[str] = []
+            _render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
+            joined = "\n".join(lines)
+            self.assertIn("1 leaf arid(s) carry no usage field at all", joined)
+            self.assertNotIn("child", joined)
 
     def test_the_leaf_total_is_the_whole_section(self) -> None:
         # The durable rows alone produce the total, and no "parent" side exists to be
@@ -408,6 +428,14 @@ class AuditIntegrationTests(unittest.TestCase):
         for retired in ("parent", "parent_total_tokens", "node_total_tokens",
                         "children_fraction"):
             self.assertNotIn(retired, result["token_cost_summary"])
+
+    def test_audit_takes_no_transcript_option(self) -> None:
+        # The opt-in that used to reach ~/.claude is not a silently accepted no-op.
+        with tempfile.TemporaryDirectory() as tmp:
+            orch_id = "orch_test_sig"
+            self._build_fixture(tmp, orch_id)
+            with self.assertRaises(TypeError):
+                audit(Path(tmp), orch_id, token_cost_from_transcripts=True)  # type: ignore[call-arg]
 
     def test_audit_renders_markdown_without_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
