@@ -1717,6 +1717,10 @@ class InRepoRecordSectionTests(unittest.TestCase):
             self.assertIn("no sandbox enforcement record (the records below are of "
                           "another kind)", section)
             self.assertIn("kind `unauthorized_write_violation` arid=`arid-7`", section)
+            self.assertIn("(not a sandbox enforcement finding)", section)
+            # The header does not claim the writer is gone: `noncanonical_phase_write_attempt`'s
+            # exists uncalled, and the section knows only the kind.
+            self.assertNotIn("no longer exists", section)
             self.assertNotIn("`unknown`", section)
             self.assertNotIn("sandbox enforcement record(s):", section)
             # ...and next to a real one, the two are listed apart.
