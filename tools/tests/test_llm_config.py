@@ -603,10 +603,9 @@ class CapabilityTests(_Tmp):
         cfg = lc.load_llm_config(self.write(
             "defaults:\n"
             "  provider: claude_cli\n"
-            "  capabilities: [pure, usage_probe]\n"))
+            "  capabilities: [pure]\n"))
         entry = cfg.entry_for("validate", "judge")
         self.assertTrue(entry.supports(lc.CAP_PURE))
-        self.assertTrue(entry.supports(lc.CAP_USAGE_PROBE))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
 
     def test_http_provider_on_a_pure_leaf_is_accepted(self) -> None:
@@ -938,6 +937,17 @@ class RuleTests(_Tmp):
     def test_invalid_field_unknown_capability_name(self) -> None:
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  provider: claude_cli\n  capabilities: [teleport]\n")
+
+    def test_a_retired_capability_is_refused_not_ignored(self) -> None:
+        """`usage_probe` (retired by issue #170, with `agentic` / `mcp_tools` before it) is not
+        in `KNOWN_CAPABILITIES`, so a configuration still spelling it fails at parse time
+        naming the accepted set — never accepted and silently dropped."""
+        for retired in ("usage_probe", "agentic", "mcp_tools"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
+                self.assert_rule(
+                    "llm_config_invalid_field",
+                    f"defaults:\n  provider: claude_cli\n  capabilities: [pure, {retired}]\n")
 
     def test_field_not_applicable_http_field_on_a_cli_provider(self) -> None:
         self.assert_rule("llm_config_field_not_applicable",

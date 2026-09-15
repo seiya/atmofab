@@ -522,7 +522,12 @@ re-run confirming Build passes on attempt 1 (operator-gated).
   Behavior unchanged; covered by `test_recurring_execute_failure_escalates_to_compile`.
 - **L4** `_impl_is_leaf_node` disagrees with the YAML parser only for **invalid** YAML
   (tab-indented `direct_deps`) — benign/unreachable (fails compile), not worth fixing.
-- **L5 — PARTIALLY CLOSED (2026-07-12).** A leaf that dies of an LLM-infrastructure fault ends as
+- **L5 — PARTIALLY CLOSED (2026-07-12).** **Status (2026-09-15, issue #170)**: the reset-instant
+  scrape and the `/usage` probe described below are retired; `--wait-usage-reset` now sleeps a
+  fixed schedule on the `llm_usage_limit` tag alone (`docs/ORCHESTRATION.md` "leaf transient
+  retry"). The default (manual `--resume`) is unchanged. What follows is the history of the
+  retired mechanism, kept as the record of why it was built and what it cost.
+  A leaf that dies of an LLM-infrastructure fault ends as
   a clean resumable `fail_closed` (`leaf_transport_error`). The split is now by infra tag:
   - **Transient faults auto-recover.** `llm_transport_flake` / `llm_overloaded` / `llm_rate_limit`
     are retried in place by the conductor (at most 2 retries, per-tag backoff; canonical:

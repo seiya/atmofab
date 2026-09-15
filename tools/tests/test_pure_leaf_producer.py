@@ -16,9 +16,7 @@ import os
 import re
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest import mock
 
@@ -239,18 +237,6 @@ class _PureFakeConductor(wc.Conductor):
 
     def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
         return True
-
-    # `--wait-usage-reset` asks the host CLI for the reset instant (`claude -p /usage`) before
-    # falling back to scraping the dead leaf's stdout. Stubbed for EVERY fake so no test spawns the
-    # real backend, and stubbed as a FAILED probe so these loops exercise the scrape fallback — the
-    # path they were written against. `usage_probe_calls` is asserted by the wait tests, so removing
-    # this override cannot go unnoticed.
-    usage_probe_result: tuple = (None, {"outcome": "probe_error", "duration_ms": 0,
-                                        "excerpt": "stubbed: no probe in tests"})
-
-    def _run_usage_probe(self, entry=None):  # type: ignore[override]
-        self.usage_probe_calls = getattr(self, "usage_probe_calls", 0) + 1
-        return self.usage_probe_result
 
 
 def _envelope(bundle_or_text, *, model="claude-opus-4-8", is_error=False) -> str:
@@ -1238,15 +1224,25 @@ class PureProducerSubstepTests(unittest.TestCase):
 # --wait-usage-reset in the pure producer loop
 # ======================================================================================
 class PureUsageLimitWaitTest(unittest.TestCase):
-    """--wait-usage-reset (opt-in) in the pure producer: a transport death (rc!=0) that carries a
-    machine-form usage-limit reset epoch is waited out IN PLACE and the SAME turn re-launched,
-    instead of falling to the terminal fail branch for a next-day --resume. The wait is NOT a repair
-    turn — it must not consume the bundle-repair budget and must not pollute the repair carriers
-    (last_excerpt / resume_session_id). Default OFF preserves the current terminal behavior."""
+    """--wait-usage-reset (opt-in) in the pure producer: a transport death (rc!=0) the classifier
+    tags `llm_usage_limit` is waited out IN PLACE on the fixed `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`
+    and the SAME turn re-launched, instead of falling to the terminal fail branch for a next-day
+    --resume. The wait is NOT a repair turn — it must not consume the bundle-repair budget and must
+    not pollute the repair carriers (last_excerpt / resume_session_id). Default OFF preserves the
+    terminal behavior."""
 
     class _C(_PureFakeConductor):
+        # The last scripted result repeats, so a wait that never counted its budget would loop
+        # until the harness `timeout` killed the run — which no assertion reports (the verify
+        # driver's `MAX_SPAWNS_PAST_SCRIPT` closed this there first). Refusing makes it a red row.
+        MAX_SPAWNS_PAST_SCRIPT = 2
+
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self._spawn = getattr(self, "_spawn", 0)
+            if self._spawn >= len(self.procs) + self.MAX_SPAWNS_PAST_SCRIPT:
+                raise AssertionError(
+                    f"launch {self._spawn + 1} past a {len(self.procs)}-entry script: the loop "
+                    f"is re-launching without bound")
             proc = self.procs[min(self._spawn, len(self.procs) - 1)]
             self._spawn += 1
             return proc
@@ -1261,6 +1257,72 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         c.procs = procs
         c.slept = []
         return c
+
+    def _recording(self, c: _C) -> tuple[list[dict], list[dict]]:
+        """Capture every launch request and every spawn's kwargs on `c`."""
+        requests: list[dict] = []
+        spawn_kwargs: list[dict] = []
+        orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
+
+        def _rec(child_arid, request, entry=None, **kw):
+            requests.append(request)
+            return orig_rec(child_arid, request)
+
+        def _spawn(prompt_text, child_env, entry=None, **kwargs):
+            spawn_kwargs.append(dict(kwargs))
+            return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
+        c.record_launch = _rec  # type: ignore[assignment]
+        c.spawn_leaf = _spawn   # type: ignore[assignment]
+        return requests, spawn_kwargs
+
+    def test_the_producer_wait_is_not_a_repair_turn(self) -> None:
+        """The producer twin of the reviewer's row, and the pin 9afa77cf described but did not
+        commit (its "pass with 4 launches -> fail with 3" was a hand measurement). (1) a wait on
+        the cold attempt followed by exactly `MAX_BUNDLE_REPAIR_TURNS` schema violations still
+        passes — a wait that spent an `attempt` refuses the last repair and fails closed; the
+        fixture straddles the budget on purpose (one violation is green under that regression).
+        (2) a wait that interrupts a REPAIR turn re-runs it against the same session with the
+        same findings: `resume_session_id` unchanged across the wait, `repair_findings` the
+        SCHEMA finding and never the transport evidence (a transport death must not overwrite
+        the carriers — the guard above the wait — nor may the wait clear them)."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        quota = wc.ProcResult(1, "", "You've hit your weekly limit · resets 3pm (Asia/Tokyo)")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [quota] + [wc.ProcResult(0, _envelope(bad), "")] * MAX_BUNDLE_REPAIR_TURNS
+                + [wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
+            requests, spawn_kwargs = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+            self.assertEqual([r["repair_strategy"] for r in requests],
+                             ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, None] + [f"child-{n + 2}" for n in range(MAX_BUNDLE_REPAIR_TURNS)])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [wc.ProcResult(0, _envelope(bad), ""), quota,
+                       wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
+            requests, spawn_kwargs = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, 3)
+            self.assertEqual([r["repair_strategy"] for r in requests], ["none", "reuse", "reuse"])
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, "child-1", "child-1"])     # same target before and after
+            findings = [str(r.get("repair_findings", "")) for r in requests[1:]]
+            self.assertEqual(findings[0], findings[1])          # the wait changed nothing
+            self.assertIn("capability_requirements", findings[1])
+            self.assertNotIn("limit", findings[1].lower())      # never the transport evidence
 
     def test_a_pure_leaf_that_wrote_no_envelope_names_the_exit_it_died_at(self) -> None:
         """The other `unavailable` half (issue #47). A leaf killed at the per-leaf cap writes
@@ -1278,33 +1340,6 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         self.assertEqual(row["usage"]["status"], "unavailable")
         self.assertIn("no result envelope on leaf stdout", row["usage"]["reason"])
         self.assertIn("leaf_exit=-9", row["usage"]["reason"])
-
-    def test_a_non_claude_pure_leaf_never_unwraps_an_envelope(self) -> None:
-        """WIRING pin for the PURE sites' `allow_envelope`. Only a `claude_cli` pure leaf's
-        stdout is CLI-authored; a codex or HTTP pure leaf writes the MODEL's answer there, so
-        its `is_error` / `api_error_status` keys are forgeable. Unwrapping them would let a
-        leaf that crashed for an unrelated reason park the run for hours. The same bytes DO
-        arm under a claude entry — asserted here — so only the provider separates them."""
-        now = 1_752_200_000.0
-        abort = json.dumps({
-            "type": "result", "is_error": True, "api_error_status": 429, "num_turns": 1,
-            "terminal_reason": "api_error",
-            "result": f"Claude AI usage limit reached|{int(now) + 300}"})
-        self.assertIsNotNone(wc._sole_content_usage_limit_line(abort, allow_envelope=True))
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _write_node(repo)
-        c = self._conductor(repo, [wc.ProcResult(1, abort, "")], wait_usage_reset=True)
-        c.llm_config = _cfg("codex", agent_model="gpt-5.6-sol")
-        events: list = []
-        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-        with mock.patch.object(wc.time, "time", return_value=now):
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
-        self.assertEqual(oc.status, "fail")
-        self.assertEqual(c.slept, [])                                  # no wait
-        self.assertEqual([e for e, _ in events if e == "leaf_usage_limit_wait"], [])
-        self.assertEqual([f["reason"] for e, f in events
-                          if e == "leaf_usage_limit_wait_declined"], ["no_reset_time"])
 
     def test_a_timed_out_producer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
         """`generate.generate` is the substep of the 99-minute field hang, so this loop's own
@@ -1338,7 +1373,6 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertEqual(oc.infra_error[0], "leaf_timeout")
             self.assertEqual(c._spawn, 1)          # no re-launch...
             self.assertEqual(c.slept, [])          # ...and no multi-hour park
-            self.assertEqual(getattr(c, "usage_probe_calls", 0), 0)
             meta = json.loads(
                 (c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
             self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
@@ -1350,23 +1384,21 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                               "agent_run_id": spawn_kwargs[0]["child_arid"]})
 
     def test_transport_usage_limit_waits_then_passes(self) -> None:
-        now = 1_752_200_000.0
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
             c = self._conductor(
                 repo,
-                [wc.ProcResult(1, "", f"Claude AI usage limit reached|{int(now) + 300}"),
+                [wc.ProcResult(1, "", "Claude AI usage limit reached"),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
-            with mock.patch.object(wc.time, "time", return_value=now):
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 2)          # dead attempt + the recovered launch
             # `attempts` is the LAUNCH count (== len(per_attempt)); the repair BUDGET is untouched
             # (a wait is not a repair turn), but the wait's launch is still counted honestly.
             self.assertEqual(oc.attempts, 2)
-            self.assertEqual(c.slept, [420.0])     # 300s to the reset + 120s margin
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
             base = c.repo_root / refs.source_dir()
             self.assertTrue((base / "codegen_bundle.json").exists())
             meta = json.loads((base / "bundle_meta.json").read_text())
@@ -1375,25 +1407,24 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             # both launches are visible as per_attempt rows; the dead one is labeled pure_transport
             self.assertEqual(len(meta["per_attempt"]), 2)
             self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
-            # the wait consulted the host `/usage` probe first and fell back to the scrape;
-            # the stub is what keeps the suite from spawning the real backend
-            self.assertEqual(c.usage_probe_calls, 1)
 
     def test_transport_usage_limit_waits_on_the_real_cli_abort_envelope(self) -> None:
         """REGRESSION, the production shape THIS loop actually met: the only recorded usage limit to
         strike a pure leaf (`orch_20260719T021249Z_419ebdf9`, `generate.generate`, its run log
         showing `pure_bundle_attempt_failed / pure_transport`) did NOT have its abort pre-empt the
         `--output-format json` envelope — the CLI completed the envelope and put the message in
-        `result`, with `is_error` / `api_error_status` / `terminal_reason` stamped alongside. Stdout
-        was 773 bytes, so a bare-line-only carve-out declines it and this loop stays inert exactly
-        where the expensive substeps live. Bytes below are verbatim from that log (`workspace*/` is
-        gitignored, so they are pinned here); the sibling test above uses the machine-form-on-stderr
-        shape, which production has never produced."""
-        # 2026-07-19 02:12 UTC = 11:12 JST, before the recorded 12:30pm JST reset.
-        now = datetime(2026, 7, 19, 11, 12, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
+        `result`, with `is_error` / `api_error_status` / `terminal_reason` stamped alongside. The
+        wait is decided from the classifier's tag, so this pins that the recorded production
+        envelope reaches the wait from this loop. It does NOT pin the classifier's `"result":"`
+        prefix: the recorded message names the `session` window, which the bare `session limit`
+        fallback tags too (measured: the row stays green with the prefix alternative deleted);
+        the prefix is pinned by
+        `test_workflow_conductor.py::test_an_enveloped_abort_is_tagged_whatever_the_cli_key_order`
+        on the non-fallback windows. Bytes below are verbatim from that log (`workspace*/` is
+        gitignored, so they are pinned here); the sibling test above uses the bare-line-on-stderr
+        shape."""
         # VERBATIM from that log (771 chars / 773 bytes), including the CLI accounting blocks
-        # that dominate envelope size — a re-serialized minimal fixture would be ~250 chars
-        # and could not exercise the envelope-size guard at all.
+        # that dominate envelope size.
         recorded_stdout = (
             '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"duration_ms":64'
             '6,"duration_api_ms":0,"num_turns":1,"result":"You\'ve hit your session limit · resets 12:30pm'
@@ -1412,33 +1443,31 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 [wc.ProcResult(1, recorded_stdout, ""),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
-            with mock.patch.object(wc.time, "time", return_value=now):
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 2)          # waited, then relaunched
-            reset = datetime(2026, 7, 19, 12, 30, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
-            self.assertEqual(c.slept, [reset - now + wc.USAGE_LIMIT_WAIT_MARGIN_SECONDS])
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
 
     def test_a_declined_wait_names_the_dead_leaf_and_its_evidence(self) -> None:
-        """A decline is the operator's only breadcrumb when a wording is not resolvable, and a bare
-        `no_reset_time` is what made the stderr-only bug take two investigations. The event must name
-        the dead attempt's arid and quote the classifier's own line, from EVERY loop."""
-        now = 1_752_200_000.0
+        """A decline is the operator's only breadcrumb when an opted-in run still fail_closed on a
+        usage limit; a bare reason is what made the stderr-only bug take two investigations. The
+        one reason left is `budget_spent`, and the event must name the dead attempt's arid and
+        quote the classifier's own line, from EVERY loop."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            c = self._conductor(
-                repo,
-                # A usage limit with no resolvable reset -> declines.
-                [wc.ProcResult(1, "You've hit your session limit; resets soon", ""),
-                 wc.ProcResult(0, _envelope(_valid_bundle()), "")],
-                wait_usage_reset=True)
+            dead = wc.ProcResult(1, "You've hit your session limit · resets 3pm (Asia/Tokyo)", "")
+            c = self._conductor(repo, [dead] * (wc.MAX_USAGE_LIMIT_WAITS + 1),
+                                wait_usage_reset=True)
             events: list = []
             c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-            with mock.patch.object(wc.time, "time", return_value=now):
-                c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(c._spawn, wc.MAX_USAGE_LIMIT_WAITS + 1)
+            self.assertEqual(c.slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
             declined = [f for e, f in events if e == "leaf_usage_limit_wait_declined"]
-            self.assertEqual([f["reason"] for f in declined], ["no_reset_time"])
+            self.assertEqual([f["reason"] for f in declined], ["budget_spent"])
+            self.assertEqual(declined[0]["wait_attempt"], wc.MAX_USAGE_LIMIT_WAITS + 1)
             self.assertTrue(declined[0]["dead_agent_run_id"])
             self.assertIn("session limit", declined[0]["evidence"])
 
@@ -1447,7 +1476,6 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         fresh COLD attempt (no prior_document, no repair_findings carrying the transport summary),
         and the following content violation repairs normally. Sequence: transport(usage) -> wait ->
         cold launch that content-fails -> warm repair -> pass."""
-        now = 1_752_200_000.0
         bad = _valid_bundle()
         del bad["capability_requirements"]     # a content (schema) violation
         with tempfile.TemporaryDirectory() as tmp:
@@ -1455,29 +1483,39 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             refs = _write_node(repo)
             c = self._conductor(
                 repo,
-                [wc.ProcResult(1, "", f"usage limit reached|{int(now) + 100}"),
+                [wc.ProcResult(1, "", "usage limit reached"),
                  wc.ProcResult(0, _envelope(bad), ""),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
             captured: list[dict] = []
-            orig = c.record_launch
+            spawn_kwargs: list[dict] = []
+            orig, orig_spawn = c.record_launch, c.spawn_leaf
 
             def _rec(child_arid, request, entry=None, **kw):  # capture the per-launch request shape
                 captured.append(request)
                 return orig(child_arid, request)
 
+            def _spawn(prompt_text, child_env, entry=None, **kwargs):
+                spawn_kwargs.append(dict(kwargs))
+                return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
             c.record_launch = _rec  # type: ignore[assignment]
-            with mock.patch.object(wc.time, "time", return_value=now):
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            c.spawn_leaf = _spawn   # type: ignore[assignment]
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 3)
             # 3 launches: transport(waited) + cold content-fail + warm repair pass. `attempts` is the
             # launch count; the repair budget saw only 1 turn (the wait did not consume it).
             self.assertEqual(oc.attempts, 3)
-            self.assertEqual(c.slept, [220.0])     # 100s + 120s margin
-            # the post-wait launch (index 1) is a COLD retry: no prior_document carried from the
-            # transport death.
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+            # the post-wait launch (index 1) is a COLD retry: `repair_strategy: none` on its
+            # request and no session to resume on its spawn. (Asserting only that no
+            # `prior_document` is carried was vacuous — a transport death never sets one — so a
+            # wait that set `resume_session_id` to the dead arid passed it.)
             self.assertNotIn("prior_document", captured[1])
+            self.assertEqual([r["repair_strategy"] for r in captured], ["none", "none", "reuse"])
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, None, "child-2"])
             # the repair turn (index 2) carries the CONTENT failure's findings, never the transport
             # summary ("Connection closed"/"usage limit").
             repair_req = captured[2]
@@ -1485,20 +1523,23 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertNotIn("usage limit", findings.lower())
 
     def test_transport_usage_limit_is_terminal_when_flag_off(self) -> None:
-        now = 1_752_200_000.0
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
             c = self._conductor(   # wait_usage_reset defaults OFF
                 repo,
-                [wc.ProcResult(1, "", f"usage limit reached|{int(now) + 300}"),
+                [wc.ProcResult(1, "", "usage limit reached"),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")])
-            with mock.patch.object(wc.time, "time", return_value=now):
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            events: list = []
+            c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "fail")
             self.assertEqual(oc.leaf_returncode, 1)   # run_phase's transport fail_closed branch
             self.assertEqual(c._spawn, 1)             # no second launch
             self.assertEqual(c.slept, [])
+            # ...and NOTHING is emitted for the wait: the operator reads a decline as "an
+            # opted-in run still fail_closed" (RUNBOOK), which a flag-off decline would falsify.
+            self.assertEqual([e for e, _ in events if e.startswith("leaf_usage_limit")], [])
             # Regression pin (byte-identity): the terminal bundle_meta must describe the transport
             # DEATH that terminated the substep — the bookkeeping guard that protects the repair
             # carriers must NOT leak an empty/stale failure_excerpt into the meta.
@@ -1594,19 +1635,38 @@ class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
             self.assertEqual(
                 [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
 
-    def test_a_usage_limit_wait_does_not_spend_the_transient_budget(self) -> None:
-        """`--wait-usage-reset` parks for as long as the quota window says. Billing that to the
-        transient budget would refuse the next flake on time no transient attempt ever spent."""
+    def test_a_usage_limit_wait_does_not_regrant_the_transient_count_budget(self) -> None:
+        """The transient COUNT budget (`MAX_LEAF_TRANSIENT_RETRIES`) survives a wait unchanged:
+        two flakes spend it, a quota is waited, and a THIRD flake is terminal — a wait that
+        reset `transient_retries` would grant it a retry and hide a persistent fault behind up
+        to three extra launches per wait."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            now = 1_752_200_000.0
             c, oc, events = self._run(
                 repo,
-                [wc.ProcResult(1, "", f"Claude AI usage limit reached|{int(now) + 300}"),
+                [self._FLAKE, self._FLAKE, wc.ProcResult(1, "", "Claude AI usage limit reached"),
+                 self._FLAKE, wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[2.0], wait_usage_reset=True)
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(oc.infra_error[0], "llm_transport_flake")
+            self.assertEqual(c._spawn, 4)                   # flake, flake, quota, flake — done
+            self.assertEqual(c.slept, [2.0, 10.0, wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+            self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 2)
+
+    def test_a_usage_limit_wait_does_not_spend_the_transient_budget(self) -> None:
+        """`--wait-usage-reset` parks on its fixed schedule after an attempt that itself ran
+        twenty minutes. Billing that attempt to the transient budget would refuse the next flake
+        on time no transient attempt ever spent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c, oc, events = self._run(
+                repo,
+                [wc.ProcResult(1, "", "Claude AI usage limit reached"),
                  self._FLAKE,
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 seconds=[1200.0, 2.0, 5.0], wait_usage_reset=True)
             self.assertEqual(oc.status, "pass")
+            self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0], 2.0])
             self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
             self.assertEqual(
                 [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)

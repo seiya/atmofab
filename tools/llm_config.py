@@ -113,28 +113,26 @@ def _is_loopback(host: str) -> bool:
 #                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
-#   usage_probe  the provider answers a host-side `/usage` probe, which is how a run waits out
-#                a usage-limit reset instead of failing (see docs/RUNBOOK.md).
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
-CAP_USAGE_PROBE = "usage_probe"
 
-# `agentic` and `mcp_tools` are deliberately absent rather than accepted-and-ignored: a
-# configuration still spelling either is refused at `capabilities:` parse time, where the
-# operator can read why, rather than resolving to a transport or a grant that no longer
-# exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf holds a
-# tool since Z4 (issue #171), and PR-2 of that issue retired the capability gate the grant
-# was spent at.
+# `agentic`, `mcp_tools` and `usage_probe` are deliberately absent rather than
+# accepted-and-ignored: a configuration still spelling one is refused at `capabilities:` parse
+# time (`llm_config_invalid_field`, naming the accepted set), rather than resolving to a
+# transport or a grant that no longer exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf
+# holds a tool since Z4 (issue #171), and PR-2 of that issue retired the capability gate the
+# grant was spent at. `usage_probe` said the provider answered a host-side `/usage` probe;
+# issue #170 made the usage-limit wait tag-driven (a fixed schedule, the same for every
+# provider), so there is nothing left to ask a provider.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
-    CAP_PURE, CAP_WARM_RESUME, CAP_USAGE_PROBE,
+    CAP_PURE, CAP_WARM_RESUME,
 })
 
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
-    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_USAGE_PROBE}),
+    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME}),
     "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME}),
-    # HTTP providers: one request, one response. No session to reopen, no tools to grant, and
-    # no `/usage` endpoint in the shape the probe speaks.
+    # HTTP providers: one request, one response. No session to reopen, no tools to grant.
     "openai_compatible": frozenset({CAP_PURE}),
     "anthropic_api": frozenset({CAP_PURE}),
 }

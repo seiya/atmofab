@@ -359,6 +359,26 @@ class RunWorkflowTests(unittest.TestCase):
         ns = run_workflow._parse_args(["spec/problem.md", "generate", "--wait-usage-reset"])
         self.assertTrue(ns.wait_usage_reset)
 
+    def test_the_wait_usage_reset_help_states_the_schedule_the_conductor_sleeps(self) -> None:
+        """The help is the operator's only statement of what the flag buys, and it used to
+        describe a mechanism the conductor no longer had (TODO's "predates human-form reset
+        support"). It is now DERIVED from `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, and this pins
+        the derivation: every schedule entry and the wait count appear in `--help`, and the
+        retired vocabulary (a reset time read from the leaf, the 6h cap) does not."""
+        from tools.workflow_conductor import USAGE_LIMIT_WAIT_SCHEDULE_SECONDS
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            run_workflow._parse_args(["--help"])
+        text = " ".join(out.getvalue().split())          # argparse re-wraps; compare unwrapped
+        flag = text.split("--wait-usage-reset ", 1)[1].split("--repo-root", 1)[0]
+        for seconds in USAGE_LIMIT_WAIT_SCHEDULE_SECONDS:
+            self.assertIn(f"{int(seconds)}s", flag)
+        self.assertIn(f"at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep", flag)
+        self.assertIn("No reset time is read from the leaf", flag)
+        self.assertIn("Default OFF", flag)
+        self.assertNotIn("6h", flag)
+        self.assertNotIn("epoch", flag)
+
     def test_parse_args_allows_omitted_positionals_for_resume(self) -> None:
         ns = run_workflow._parse_args(["--resume", "--no-run-conductor"])
         self.assertTrue(ns.resume)
@@ -6156,28 +6176,18 @@ class StdoutFormatTests(unittest.TestCase):
             "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
-        # An opt-in usage-limit wait: the run is deliberately parked until the reset, so the wait is
-        # announced rather than left as a silent multi-hour gap the operator might kill.
+        # An opt-in usage-limit wait: the run is deliberately parked on the fixed schedule, so the
+        # wait is announced — with its place in the budget — rather than left as a silent
+        # multi-hour gap the operator might kill.
         wait_line = f({"status": "info", "event": "leaf_usage_limit_wait",
                        "node_key": "n", "step": "generate", "substep": "generate",
-                       "reset_epoch": 1752200000, "wait_seconds": 420.0, "wait_attempt": 1,
-                       "reset_source": "scrape_human", "window": None,
-                       "dead_agent_run_id": "ar_dead", "orchestration_id": "o"})
+                       "tag": "llm_usage_limit", "wait_seconds": 900.0, "wait_attempt": 1,
+                       "max_waits": 3, "dead_agent_run_id": "ar_dead", "evidence": "e",
+                       "orchestration_id": "o"})
         self.assertEqual(
             wait_line,
-            "    [warn   ] usage limit in generate.generate [wait 1] (source=scrape_human): "
-            "waiting 420.0s for the reset, then re-launching",
-        )
-        # A probe-sourced instant additionally names the window it was observed on — the operator
-        # can tell a host-observed reset from one scraped out of the dead leaf's own output, which
-        # is the only one that can be wrong about which window stopped the run.
-        self.assertEqual(
-            f({"status": "info", "event": "leaf_usage_limit_wait", "node_key": "n",
-               "step": "generate", "substep": "generate", "reset_epoch": 1752200000,
-               "wait_seconds": 420.0, "wait_attempt": 1, "reset_source": "probe",
-               "window": "session", "dead_agent_run_id": "ar_dead", "orchestration_id": "o"}),
-            "    [warn   ] usage limit in generate.generate [wait 1] (source=probe/session): "
-            "waiting 420.0s for the reset, then re-launching",
+            "    [warn   ] usage limit in generate.generate [wait 1/3]: "
+            "sleeping 900.0s on the fixed schedule, then re-launching",
         )
         # The claim-degradation warning. `human` is the DEFAULT format, so a payload the
         # renderer has no arm for falls through to the raw-JSON fallback — which is the leak

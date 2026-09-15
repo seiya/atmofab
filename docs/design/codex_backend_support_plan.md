@@ -81,10 +81,10 @@ the strict tool-free isolation provided by the Claude backend.
 - Normalize Codex JSONL `error` and `turn.failed` events and stderr into the
   existing infrastructure-failure classifications.
 - Record `turn.completed.usage` when Codex emits it.
-- For `--wait-usage-reset`, wait only when Codex reports a trustworthy,
-  parseable reset time within the configured cap. Otherwise, return
-  `reset_time_unavailable` and require manual resume. The implementation must
-  not estimate a reset time.
+- `--wait-usage-reset` needs nothing from Codex: since issue #170 the wait is
+  tag-driven and provider-independent (a fixed schedule on the `llm_usage_limit`
+  tag; canonical: `docs/ORCHESTRATION.md` "leaf transient retry"). No reset time
+  is read from any leaf's output.
 
 ### Pure Generate CLI approximation
 

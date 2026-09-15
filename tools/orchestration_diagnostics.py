@@ -551,12 +551,13 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     schema: `{result, failure_category, attempts, prompt_contract_version,
     per_attempt[], failure_excerpt?}`. `result` is `pass`/`fail`; `attempts`
     counts every LAUNCH (== len(per_attempt)). Not every launch is a repair turn:
-    an opt-in `--wait-usage-reset` WAIT re-launches the same substep in place
-    without advancing the repair budget, so `repair_turns = attempts - 1 - waits`.
-    The wait count is recovered from `per_attempt` (no separate counter is
-    persisted): a `pure_transport` attempt that is NOT the terminating (last) row
-    is necessarily a wait — a transport death that is not waited is terminal, hence
-    always the last row. `found=False` when the file is absent, unparseable, or not
+    a transient retry or an opt-in `--wait-usage-reset` WAIT re-launches the same
+    substep in place without advancing the repair budget, so
+    `repair_turns = attempts - 1 - relaunches`. The re-launch count is recovered
+    from `per_attempt` (no separate counter is persisted): a `pure_transport`
+    attempt that is NOT the terminating (last) row is a re-launch in place — a
+    transport death that is neither retried nor waited is terminal, hence always
+    the last row. `found=False` when the file is absent, unparseable, or not
     a pure-leaf meta envelope (see `_PURE_META_PAYLOAD_KEY`). When `attempts` is
     absent or corrupt it falls back to the count of structurally valid (dict)
     attempt entries.
@@ -570,18 +571,19 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     attempts = _nonneg_int_or_none(meta.get("attempts"))
     if attempts is None:
         attempts = valid_attempt_count
-    # A non-terminal `pure_transport` row is a waited-and-relaunched usage limit, not a repair
-    # turn: exclude it from the repair count so a substep that only waited (never repaired) reads
-    # `repair_turns=0`. per_attempt[:-1] drops the terminating attempt (the only row a genuine
-    # terminal transport death would occupy).
-    usage_wait_rows = sum(
+    # A non-terminal `pure_transport` row is a re-launch in place — a transient retry or a
+    # `--wait-usage-reset` wait — not a repair turn: exclude it from the repair count so a
+    # substep that only re-launched (never repaired) reads `repair_turns=0`. per_attempt[:-1]
+    # drops the terminating attempt (the only row a genuine terminal transport death would
+    # occupy).
+    relaunch_rows = sum(
         1 for a in per_attempt[:-1]
         if isinstance(a, dict) and a.get("failure_category") == "pure_transport")
     return {
         "found": True,
         "result": meta.get("result"),
         "attempts": attempts,
-        "repair_turns": max(attempts - 1 - usage_wait_rows, 0),
+        "repair_turns": max(attempts - 1 - relaunch_rows, 0),
         "failure_category": meta.get("failure_category"),
         "prompt_contract_version": meta.get("prompt_contract_version"),
         "usage_total": usage_total,
