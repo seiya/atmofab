@@ -3823,10 +3823,11 @@ def _certify_and_collect_dep_artifacts(
             # aggregate_verdict). The primitive already carries the R6-lite / R6 proper
             # freshness demotions on `ir_ref` / `pipeline_ref`, so nothing is re-applied here.
             # Every stage is asked even after one refuses — no short-circuit — because the
-            # file a refused stage selected is still part of the fingerprint below (a level-1
-            # dep's `binary_meta.json` is hashed), and short-circuiting would change the
-            # recorded `dep_set_fingerprint` of every dep with a refused stage that still
-            # selected a file.
+            # files of the stages AFTER the first refusal are part of the fingerprint below,
+            # as they were before issue #178: a level-0 dep's `binary_meta.json` and verdict,
+            # a level-1 dep's verdict. A `break` at the first refusal would drop exactly those
+            # files (the refused stage's own file is recorded before `ok` is read, so it would
+            # survive a break — the loss is the later stages, not the refused one).
             paths: dict[str, Path] = {}
             level = len(_DEPENDENCY_READINESS_STAGES)
             for idx, stage in enumerate(_DEPENDENCY_READINESS_STAGES):

@@ -22996,9 +22996,9 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
     def test_launch_gate_judges_through_the_primitive(self) -> None:
         """Issue #178: the launch gate holds no predicate of its own. Every `(dep, version)`
         candidate is judged by `_verify_dep_stage_detail`, and EVERY stage is asked even after
-        one refuses — the gate does not short-circuit — because the file a refused stage
-        selected is still hashed into the fingerprint (`..._hashes_the_selected_artifact_...`
-        below pins that half)."""
+        one refuses — the gate does not short-circuit — because the files of the stages AFTER
+        the first refusal are still hashed into the fingerprint
+        (`..._hashes_the_selected_artifact_...` below pins that half)."""
         import tools.orchestration_runtime as rt
         asked: list[tuple[str, str, str, str]] = []
         real = rt._verify_dep_stage_detail
@@ -23177,6 +23177,8 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("component/c@0.0.9", detail)
             self.assertEqual(selected, paths(repo_root)["ir_ref"])
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 0)])
             self.assertEqual(gate_bytes(repo_root)["ir_ref"],
                              paths(repo_root)["ir_ref"].read_bytes())
 
@@ -23243,6 +23245,16 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("no certified IR", detail)
             self.assertIsNone(selected)
+            # A pipeline with no binary refuses `pipeline_ref` / `aggregate_verdict` by name
+            # and selects nothing for either (the verdict cannot be bound to a binary that
+            # does not exist).
+            shutil.rmtree(b_pipe / "binary")
+            for stage in ("pipeline_ref", "aggregate_verdict"):
+                ok, detail, selected = _verify_dep_stage_detail(
+                    repo_root, "component", "b", "0.1.0", stage)
+                self.assertFalse(ok)
+                self.assertIn("no binary_meta.json", detail)
+                self.assertIsNone(selected)
             # A missing pipeline refuses `pipeline_ref` / `aggregate_verdict` by name.
             shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
             for stage in ("pipeline_ref", "aggregate_verdict"):

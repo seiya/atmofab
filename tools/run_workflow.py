@@ -3743,7 +3743,9 @@ def _dependency_node_readiness(
     witness has to drive on real artifacts: in `test_run_workflow.py`,
     `test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated` (R6 proper)
     and `test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved` (R6-lite) are
-    those witnesses, and every other driver test in their class fakes this function.
+    the only driver tests that drive it on CERTIFIED artifacts; every other driver test in
+    their class either fakes this function or runs it on a workspace with no artifacts, where
+    neither invariant is reached.
 
     Returns `{"ready": bool, "version": str | None, "failed_stage": str | None,
     "detail": str | None}`. When ready, `version` is the matching catalog version that satisfied
