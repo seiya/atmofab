@@ -19135,13 +19135,23 @@ class DependencyArtifactBindingTests(unittest.TestCase):
 
     def test_aggregate_verdict_fail_is_rejected(self) -> None:
         """File existence is no longer sufficient; aggregate_verdict must be
-        pass or xfail per docs/GLOSSARY.md."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        pass or xfail per docs/GLOSSARY.md.
+
+        The verdict predicate is reached only when a binary the verdict binds to exists; until
+        issue #178's round 1 this test seeded none, so it refused for "no binary_meta.json" and
+        the `{"pass", "xfail"}` membership itself had no witness (a mutant admitting `fail`
+        survived). The detail assertion is the self-test that the predicate was reached."""
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build(repo_root)
             _load_spec_catalog.cache_clear()
             safe = "component__dep_a__0.1.0"
+            b = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
+                 / "binary" / "bin_20260101_001")
+            b.mkdir(parents=True)
+            (b / "binary_meta.json").write_text(
+                json.dumps({"verification_status": "pass"}), encoding="utf-8")
             v = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
                  / "runs" / "run_20260101_001" / safe)
             v.mkdir(parents=True)
@@ -19149,9 +19159,11 @@ class DependencyArtifactBindingTests(unittest.TestCase):
                 json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
             (v / "trial_meta.json").write_text(
                 json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "aggregate_verdict=fail must not satisfy the gate")
+            ok, detail, selected = _verify_dep_stage_detail(
+                repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict")
+            self.assertFalse(ok, "aggregate_verdict=fail must not satisfy the gate")
+            self.assertIn("is 'fail'", detail)
+            self.assertEqual(selected, v / "aggregate_verdict.json")
 
     def test_aggregate_verdict_xfail_is_accepted(self) -> None:
         from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
@@ -19179,7 +19191,7 @@ class DependencyArtifactBindingTests(unittest.TestCase):
                 "aggregate_verdict=xfail must satisfy the gate (per glossary)")
 
     def test_stale_passing_verdict_overridden_by_newer_failing_verdict(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         import time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19201,9 +19213,17 @@ class DependencyArtifactBindingTests(unittest.TestCase):
                 json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
             (new / "trial_meta.json").write_text(
                 json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "newer verdict=fail must override older verdict=pass")
+            # The newer pipeline needs the binary its verdict binds to, or the stage refuses
+            # for "no binary_meta.json" before it ever compares verdicts (issue #178 round 1).
+            nb = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260601_002"
+                  / "binary" / "bin_20260101_001")
+            nb.mkdir(parents=True)
+            (nb / "binary_meta.json").write_text(
+                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            ok, detail, _selected = _verify_dep_stage_detail(
+                repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict")
+            self.assertFalse(ok, "newer verdict=fail must override older verdict=pass")
+            self.assertIn("is 'fail'", detail)
 
 
 class VersionConstraintResolutionTests(unittest.TestCase):
