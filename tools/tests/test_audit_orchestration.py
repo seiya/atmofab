@@ -298,8 +298,6 @@ class TokenCostSummaryTests(unittest.TestCase):
         # `orchestration_meta.json#orchestration_agent_run_id`, with no `usage` (48 of 48
         # in the corpus). Dropping the exclusion prints "1 leaf arid(s) carry no usage
         # field" on every audit; this is the pin the deleted parent-path fixtures held.
-        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
-
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
@@ -313,14 +311,12 @@ class TokenCostSummaryTests(unittest.TestCase):
             self.assertEqual(tcs["children"]["unmatched_arids"], [])
             self.assertNotIn(parent, tcs["children"]["per_child"])
             lines: list[str] = []
-            _render_token_cost(tcs, lines)
+            ao._render_token_cost(tcs, lines)
             self.assertNotIn("carry no usage field", "\n".join(lines))
 
     def test_an_unaccounted_row_is_named_as_a_leaf(self) -> None:
         # One numeric row makes the section render; the row with no usage field is then
         # counted in the vocabulary the section uses everywhere else — leaf, not child.
-        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
-
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
@@ -330,7 +326,7 @@ class TokenCostSummaryTests(unittest.TestCase):
                     {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
                      "agent_role": "substep", "status": "pass"}]
             lines: list[str] = []
-            _render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
+            ao._render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
             joined = "\n".join(lines)
             self.assertIn("1 leaf arid(s) carry no usage field at all", joined)
             self.assertNotIn("child", joined)
@@ -338,8 +334,6 @@ class TokenCostSummaryTests(unittest.TestCase):
     def test_the_leaf_total_is_the_whole_section(self) -> None:
         # The durable rows alone produce the total, and no "parent" side exists to be
         # partial against: the conductor is a Python process with no session of its own.
-        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
-
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
@@ -354,7 +348,7 @@ class TokenCostSummaryTests(unittest.TestCase):
                             "children_fraction"):
                 self.assertNotIn(retired, tcs)
             lines: list[str] = []
-            _render_token_cost(tcs, lines)
+            ao._render_token_cost(tcs, lines)
             joined = "\n".join(lines)
             self.assertIn("## Token cost (per leaf)", joined)
             self.assertIn("**leaf total**: 1,020 tokens", joined)
@@ -1732,6 +1726,12 @@ class InRepoRecordSectionTests(unittest.TestCase):
             self.assertIn("1 sandbox enforcement record(s):", section)
             self.assertIn("- `sandbox_not_enforced`: 1", section)
             self.assertIn("1 record(s) of another kind", section)
+            # ...apart: the other-kind arid appears only under its own heading, so the
+            # sandbox list above it must not carry `arid-7` (a listing over `records`
+            # instead of the sandbox subset survived the round-1 tests).
+            sandbox_list = section.split("1 record(s) of another kind")[0]
+            self.assertNotIn("arid-7", sandbox_list)
+            self.assertIn("arid=`arid-1`", sandbox_list)
             self.assertEqual(result["sandbox_violations"]["by_reason"],
                              {"sandbox_not_enforced": 1})
 
@@ -1871,17 +1871,19 @@ class InRepoRecordSectionTests(unittest.TestCase):
             result, _md = self._rendered(tmp)
         self.assertEqual([(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
                          [("failure_analysis", "TypeError")])
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._root(tmp, status="fail_closed")
-            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
-                                                       encoding="utf-8")
-            (root / "failure_analysis.runtime.abc123def456.json").write_text(
-                "{not json", encoding="utf-8")
-            result, md = self._rendered(tmp)
-        self.assertIsNone(result["failure_analysis"])
-        self.assertEqual([(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
-                         [("failure_analysis", "JSONDecodeError")])
-        self.assertIn("UNKNOWN, not absent", md)
+        for sidecar_text, error_type in (("{not json", "JSONDecodeError"), ("[]", "TypeError")):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self._root(tmp, status="fail_closed")
+                (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
+                                                           encoding="utf-8")
+                (root / "failure_analysis.runtime.abc123def456.json").write_text(
+                    sidecar_text, encoding="utf-8")
+                result, md = self._rendered(tmp)
+            self.assertIsNone(result["failure_analysis"])
+            self.assertEqual(
+                [(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
+                [("failure_analysis", error_type)])
+            self.assertIn("UNKNOWN, not absent", md)
 
     # --- repeated substeps ----------------------------------------------------------
 
