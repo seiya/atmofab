@@ -7939,8 +7939,9 @@ def _backend_runtime_bind_paths(
       failure to transport `fail_closed`), since the only root that would cover it is the
       operator's whole home; so is a root that covers the home PHYSICALLY (a ``$HOME``
       child symlinked to the home's parent), and — at `build_readonly_bwrap_profile`,
-      which knows ``repo_root`` — a root whose realpath contains the checkout under a
-      path the artifact overlays do not cover (`_refuse_backend_ro_alias_of_repo`). With ``HOME`` unset there is nothing to delimit against and
+      which knows ``repo_root`` — a root that is, holds, or lies inside the checkout under
+      a path the artifact overlays do not cover, by inode and by the mount table
+      (`_refuse_backend_ro_alias_of_repo`). With ``HOME`` unset there is nothing to delimit against and
       the parent directories are bound, as before #226.
       Cost of the polarity, measured on the planning host: the claude bind widens from
       the CLI's own data dir under ``~/.local/share/`` (+ ``~/.local/bin``, + its
@@ -8019,36 +8020,74 @@ def _backend_runtime_bind_paths(
     return ro_paths, rw_paths
 
 
+def _mount_table(source: Path = Path("/proc/self/mountinfo")) -> list[tuple[str, str, str]]:
+    """`(mount_point, device, root_within_device)` per entry of `/proc/self/mountinfo`.
+
+    Empty where the file does not exist (a non-Linux host; bwrap is Linux-only, so nothing
+    is lost there) — the callers then keep only the inode comparison. Octal escapes in the
+    two path fields (``\040`` for a space) are decoded.
+    """
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    def _unescape(field: str) -> str:
+        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+    table: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        table.append((_unescape(fields[4]), fields[2], _unescape(fields[3])))
+    return table
+
+
+def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple[str, Path] | None:
+    """Where `physical` lives on its filesystem: `(device, path within that device)`.
+
+    The mount whose point is the longest prefix of `physical` owns it; a bind mount reports
+    the SOURCE subtree it was taken from as its root-within-device, which is what makes two
+    mount points of one subtree comparable. None when no entry covers the path.
+    """
+    best: tuple[str, Path] | None = None
+    best_len = -1
+    for point, device, root_within in table:
+        point_path = Path(point)
+        if not physical.is_relative_to(point_path):
+            continue
+        if len(point_path.parts) > best_len:
+            best_len = len(point_path.parts)
+            best = (device, Path(root_within) / physical.relative_to(point_path))
+    return best
+
+
 def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str]) -> None:
     """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
 
     `render_bwrap_command` hides the artifact trees (`workspace/`, the archives, `releases/`)
-    with tmpfs overlays at `repo_root`'s own (resolved) path. bwrap resolves a bind's SOURCE
-    on the host and mounts it at the spelled destination, so an install root that IS the
-    checkout or one of its ancestors under a different name — a symlinked `$HOME`
-    (`/home/x -> /data/x`) with the checkout and the CLI under the same `$HOME` child; a
-    `$HOME` child that is a symlink to the parent of the home; a data disk bind-mounted into
-    `~/work` while the workflow was started from the disk's own spelling — exposes the
+    with tmpfs overlays at the `repo_root` path the caller passes — which every production
+    caller resolves first (`main` and `run_workflow.py` both `.resolve()`; the conductor
+    passes `--repo-root .`). bwrap resolves a bind's SOURCE on the host and mounts it at the
+    spelled destination, so an install root that is the checkout, one of its ancestors, or
+    a tree INSIDE it under a different name — a symlinked `$HOME` (`/home/x -> /data/x`)
+    with the checkout and the CLI under the same `$HOME` child; a `$HOME` child that is a
+    symlink to the parent of the home; a data disk bind-mounted into `~/work` while the
+    workflow was started from the disk's own spelling; a `$HOME` child symlinked or
+    bind-mounted onto `<checkout>/workspace` with the wrapper kept there — exposes the
     checkout at the alias with nothing overlaid: a VERIFY leaf reads the producer's
-    `dialogs/leaf.stdout.jsonl` there, the gain the overlay exists to remove. Measured under
-    real bwrap for the symlink forms (issue #226 round 2) and, under a nested bwrap, for the
-    bind-mount form (round 3).
+    `dialogs/leaf.stdout.jsonl` there, the gain the overlay exists to remove. Every form
+    named was measured under real bwrap before its refusal landed (issue #226 rounds 2-5).
 
-    The comparison is by IDENTITY, not by path, and in BOTH directions: `os.path.samestat`
-    between the root and each ancestor of the resolved checkout (the checkout itself
-    included) — the root IS the checkout or holds it — and between the checkout and each
-    ancestor of the root's realpath — the root lies INSIDE the checkout, which is a `$HOME`
-    child symlinked into `workspace/` or an archive with the wrapper kept there (round 4:
-    the alias exposed the same dialogs, `origin/main` bound only the wrapper's `bin/`).
-    `realpath` sees through symlinks and is blind to bind mounts; an inode comparison sees
-    both with one test. A root whose SPELLING contains the checkout, or is under it, is
+    Two comparisons, neither by path. (1) INODE: `os.path.samestat` between the root and
+    each ancestor of the resolved checkout (the checkout itself included), and between the
+    checkout and each strict ancestor of the root's realpath — sees a symlink in either
+    direction and a bind mount whose root IS an ancestor. (2) MOUNT TABLE: the root's and
+    the checkout's `(device, path within the device)` from `/proc/self/mountinfo`, for the
+    root itself and for every mount point beneath it — sees a bind mount of a tree inside
+    the checkout, and a bind mount BELOW the root, which `realpath` and a single inode
+    cannot. A root whose SPELLING (normalised) contains the checkout, or is under it, is
     exempt: the repo bind and the overlays are emitted later at that path and stack on top
-    (measured: the dialogs stay hidden). What this does NOT see, stated rather than guessed:
-    a mount point BELOW the root that is a bind of a checkout ancestor (`~/work/x` bound
-    from `/data`, checkout `/data/atmofab`; measured under a nested bwrap, round 4) — the
-    root's own inode is then unrelated to the checkout's, and the instrument for that shape
-    is `/proc/self/mountinfo` (a mount under the root whose source subtree contains the
-    checkout), which is not built here. Same shape as the rw refusal below.
+    (measured: the dialogs stay hidden). Same shape as the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
     try:
@@ -8056,8 +8095,17 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     except OSError:
         repo_stat = None
     ancestors = [resolved_repo, *resolved_repo.parents]
+    table = _mount_table()
+    repo_identity = _fs_identity(resolved_repo, table) if table else None
+
+    def _overlaps(identity: tuple[str, Path] | None) -> bool:
+        if identity is None or repo_identity is None or identity[0] != repo_identity[0]:
+            return False
+        return (repo_identity[1].is_relative_to(identity[1])
+                or identity[1].is_relative_to(repo_identity[1]))
+
     for root in backend_ro:
-        spelled = Path(root)
+        spelled = Path(os.path.normpath(root))
         if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
             continue
         try:
@@ -8091,6 +8139,18 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
                 f"(it resolves to {physical}) under a path the sandbox does not overlay; "
                 "move the CLI (or its wrapper) out of the checkout, or reach it through the "
                 "checkout's own path"
+            )
+        mounts_under = [physical, *(Path(point) for point, _dev, _root in table
+                                    if Path(point).is_relative_to(physical) and Path(point) != physical)]
+        for mounted in mounts_under:
+            if not _overlaps(_fs_identity(mounted, table)):
+                continue
+            raise ValueError(
+                f"backend install root {root!r} carries a mount ({mounted}) of the same "
+                f"filesystem subtree as the checkout {resolved_repo}, under a path the "
+                "sandbox does not overlay (a bind mount gives it the second name); move the "
+                "CLI (or its wrapper) out of that tree, or spell HOME and the PATH entry the "
+                "way the checkout is spelled, so the root's own path contains it"
             )
 
 

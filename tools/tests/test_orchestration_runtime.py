@@ -26556,6 +26556,53 @@ class LeafEnvClosureTests(unittest.TestCase):
                 backend_command="claude", backend_type="claude",
                 backend_ro_extra=[str(d / "alias")])
 
+    def test_the_mount_table_decodes_escapes_and_the_longest_mount_point_wins(self) -> None:
+        # Two properties of the instrument the alias refusal reads, driven on a synthetic
+        # table: an octal escape in a path field (`\\040` is how mountinfo spells a space),
+        # and the longest-prefix rule that picks the mount owning a path — with a bind
+        # mount's root-within-device carried into the identity.
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        fake = d / "mountinfo"
+        fake.write_text(
+            "20 1 8:1 / / rw - xfs /dev/sda1 rw\n"
+            "30 20 8:2 / /mnt/my\\040disk rw - xfs /dev/sdb1 rw\n"
+            "40 20 8:1 /data/atmofab/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
+            encoding="utf-8")
+        table = ort._mount_table(fake)
+        self.assertEqual(table[1][0], "/mnt/my disk")
+        self.assertEqual(ort._fs_identity(Path("/home/u/tools/bin"), table),
+                         ("8:1", Path("/data/atmofab/workspace/bin")))
+        self.assertEqual(ort._fs_identity(Path("/home/u/other"), table),
+                         ("8:1", Path("/home/u/other")))
+        self.assertEqual(ort._fs_identity(Path("/mnt/my disk/x"), table), ("8:2", Path("/x")))
+        self.assertEqual(ort._mount_table(d / "absent"), [])
+
+    def test_the_spelled_root_exemption_is_taken_on_the_normalised_spelling(self) -> None:
+        """Round-5 finding F2: with `HOME` unset the parent dir is bound un-normalised, and a
+        PATH entry `<checkout>/../alias/workspace` (with `~/alias -> <checkout>`) is
+        lexically under the checkout — exempt — while bwrap mounts it at `~/alias/workspace`,
+        which no overlay covers (measured: the dialogs readable). The exemption reads the
+        normalised spelling now, so the inode walk sees the alias."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        repo = home / "atmofab"
+        ws = repo / "workspace"
+        ws.mkdir(parents=True)
+        (ws / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+        (ws / "cli-sim").chmod(0o755)
+        (home / "alias").symlink_to(repo, target_is_directory=True)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        dotted = f"{repo}/../alias/workspace"
+        with mock.patch.dict(os.environ, {"PATH": f"{dotted}:{os.environ['PATH']}"}):
+            os.environ.pop("HOME", None)
+            with self.assertRaises(ValueError) as ctx:
+                ort.build_readonly_bwrap_profile(
+                    repo_root=repo, orchestration_id="o", agent_run_id="A",
+                    backend_command="cli-sim", backend_type="codex")
+        self.assertIn("lies inside the checkout", str(ctx.exception))
+
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
         """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
         inheriting: it filters the host environment through the same owner constant."""

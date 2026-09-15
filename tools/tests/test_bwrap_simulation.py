@@ -252,9 +252,9 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         sys.path.insert(0, sys.argv[1])
         import tools.orchestration_runtime as ort
         d = Path(sys.argv[2]); home = d / "home" / "user"
-        repo = Path(sys.argv[3])
+        repo = Path(sys.argv[3]); path_dir = sys.argv[4]
         os.environ["HOME"] = str(home)
-        os.environ["PATH"] = f"{home}/work/npm/bin:" + os.environ["PATH"]
+        os.environ["PATH"] = f"{path_dir}:" + os.environ["PATH"]
         ort._ensure_orchestration_audit_dirs(repo, "o")
         try:
             ort.build_readonly_bwrap_profile(
@@ -266,6 +266,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         else:
             print("ACCEPTED")
     """)
+
+    @staticmethod
+    def _outer_bwrap(binds: list[tuple[Path, Path]]) -> list[str]:
+        argv = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        for src, dst in binds:
+            argv += ["--bind", str(src), str(dst)]
+        return argv
 
     def test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused(self) -> None:
         """Round-3 security finding (issue #226): `realpath` is blind to a bind mount, so a
@@ -287,20 +294,60 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             (d / "home" / "user" / "work").mkdir(parents=True)
             (d / "ch").mkdir(mode=0o700)
             repo_root = Path(__file__).resolve().parents[2]
-            outer = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-                     "--bind", str(data_work), str(d / "home" / "user" / "work"), "--",
+            home_work = d / "home" / "user" / "work"
+            outer = [*self._outer_bwrap([(data_work, home_work)]), "--",
                      sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d)]
-            refused = subprocess.run([*outer, str(data_work / "atmofab")],
+            refused = subprocess.run([*outer, str(data_work / "atmofab"), str(home_work / "npm" / "bin")],
                                      capture_output=True, text=True, timeout=120,
                                      check=False)  # the exit code is asserted below
             self.assertEqual(refused.returncode, 0, refused.stderr)
             self.assertIn("REFUSED", refused.stdout, refused.stdout)
             self.assertIn("is the same directory as", refused.stdout)
-            accepted = subprocess.run([*outer, str(d / "home" / "user" / "work" / "atmofab")],
+            accepted = subprocess.run([*outer, str(home_work / "atmofab"), str(home_work / "npm" / "bin")],
                                       capture_output=True, text=True, timeout=120,
                                       check=False)  # the exit code is asserted below
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
             self.assertEqual(accepted.stdout.strip(), "ACCEPTED", accepted.stdout)
+
+    def test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused(self) -> None:
+        """Round-5 security finding and the round-3 residual, closed together by the mount
+        table (`_mount_table` / `_fs_identity`): a `$HOME` child that IS a bind mount of
+        `<checkout>/workspace` holding the wrapper (`realpath` is blind to it, and the inode
+        walk only sees ancestors), and a bind mount of that tree BELOW a real root
+        (`~/tools/alias`). Both printed the planted dialogs before the mount-table
+        comparison landed (measured under a nested bwrap). Control: the same root with no
+        mount is accepted."""
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            home = d / "home" / "user"
+            repo = home / "atmofab"
+            ws_bin = repo / "workspace" / "bin"
+            ws_bin.mkdir(parents=True)
+            (ws_bin / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (ws_bin / "cli-sim").chmod(0o755)
+            tools = home / "tools"
+            (tools / "bin").mkdir(parents=True)
+            (tools / "alias").mkdir()
+            (tools / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (tools / "bin" / "cli-sim").chmod(0o755)
+            (d / "ch").mkdir(mode=0o700)
+            repo_root = Path(__file__).resolve().parents[2]
+            child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d), str(repo)]
+            cases = [
+                ("root is the bind", [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
+                ("bind below the root", [(repo / "workspace", tools / "alias")], tools / "bin",
+                 "REFUSED"),
+                ("no mount (control)", [], tools / "bin", "ACCEPTED"),
+            ]
+            for label, binds, path_dir, expected in cases:
+                with self.subTest(case=label):
+                    res = subprocess.run([*self._outer_bwrap(binds), "--", *child, str(path_dir)],
+                                         capture_output=True, text=True, timeout=120,
+                                         check=False)  # the exit code is asserted below
+                    self.assertEqual(res.returncode, 0, res.stderr)
+                    self.assertTrue(res.stdout.startswith(expected), res.stdout)
+                    if expected == "REFUSED":
+                        self.assertIn("carries a mount", res.stdout)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
         self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
