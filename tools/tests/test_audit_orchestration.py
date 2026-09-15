@@ -56,17 +56,14 @@ class TokenCostSummaryTests(unittest.TestCase):
     """The per-leaf token cost — read from the durable `usage` rows of agent_runs.jsonl and
     from nothing else (issue #179 deleted the ~/.claude reconstruction)."""
 
-    def test_prefers_persisted_usage_over_missing_transcript(self) -> None:
-        # finalize_child persists each child's usage into agent_runs.jsonl; a later
-        # audit must use it even when the ephemeral transcript is gone.
+    def test_a_marker_row_is_not_usage(self) -> None:
+        # finalize_child persists each leaf's usage into agent_runs.jsonl; that row is the
+        # whole source, and a `{"status": "unavailable"}` marker on it must NOT count as usage.
         from tools.audit_orchestration import collect_token_cost_summary
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            (home / ".claude" / "projects" / slug).mkdir(parents=True)  # dir exists, no transcripts
             child = "aaaa1111-1111-4111-8111-111111111111"
             runs = [
                 {
@@ -80,15 +77,12 @@ class TokenCostSummaryTests(unittest.TestCase):
                     },
                 }
             ]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs = collect_token_cost_summary(repo, {}, runs)
+            tcs = collect_token_cost_summary(repo, {}, runs)
             self.assertEqual(tcs["children_total_tokens"], 1020)
             self.assertEqual(tcs["children"]["per_child"][child]["source"], "agent_runs.jsonl")
-            # The {"status":"unavailable"} marker must NOT count as usage.
             runs2 = [{"agent_run_id": child, "agent_role": "substep", "status": "pass",
                       "usage": {"status": "unavailable", "reason": "x"}}]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs2 = collect_token_cost_summary(repo, {}, runs2)
+            tcs2 = collect_token_cost_summary(repo, {}, runs2)
             self.assertEqual(tcs2["children"]["matched_count"], 0)
 
     def test_every_backends_row_shape_is_accepted_by_the_durable_path(self) -> None:
