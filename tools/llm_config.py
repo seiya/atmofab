@@ -118,8 +118,8 @@ CAP_WARM_RESUME = "warm_resume"
 
 # `agentic`, `mcp_tools` and `usage_probe` are deliberately absent rather than
 # accepted-and-ignored: a configuration still spelling one is refused at `capabilities:` parse
-# time, where the operator can read why, rather than resolving to a transport or a grant that
-# no longer exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf
+# time (`llm_config_invalid_field`, naming the accepted set), rather than resolving to a
+# transport or a grant that no longer exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf
 # holds a tool since Z4 (issue #171), and PR-2 of that issue retired the capability gate the
 # grant was spent at. `usage_probe` said the provider answered a host-side `/usage` probe;
 # issue #170 made the usage-limit wait tag-driven (a fixed schedule, the same for every
