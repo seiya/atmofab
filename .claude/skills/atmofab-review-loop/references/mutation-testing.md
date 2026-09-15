@@ -326,6 +326,28 @@ two-procedure fixture, and its nested variant additionally required "another kin
 plus a following guard". Always include a version with one level of syntactic nesting: the round
 after the flat version was fixed, the nested version ate the fix.
 
+## A scripted driver that repeats its last result turns a budget regression into a hang (issue #170, 2026-09-15)
+
+Both pure-loop test files drive the real producer / reviewer loops with a fake conductor whose
+`spawn_leaf` returns `procs[min(index, len(procs) - 1)]` — the last scripted `ProcResult` repeats
+so a row can script "dead, dead, then pass" without counting launches. Issue #170's wait rows
+scripted four quota deaths and asserted the third wait is the last. Mutant R (`waits_done=0`, the
+budget never counts) and W3 (`usage_waits += 1` dropped) then re-launched the same quota death
+without bound: `_sleep_backoff` is stubbed, so nothing slept, `pytest` printed no result line,
+and the run ended only when the harness `timeout` killed it (rc 124). Two rounds' reviewers
+recorded it as "HUNG" — a verdict the script's scorer has no bucket for, and one a CI run reports
+as a timeout rather than a failed row.
+
+**What closed it**: `MAX_SPAWNS_PAST_SCRIPT = 2` on the fake — a launch more than two past the
+script raises `AssertionError("launch N past a K-entry script: the loop is re-launching without
+bound")`, which propagates out of the real loop (`_spawn_pure_turn` has no `except` around
+`spawn_leaf`) and reddens the row that scripted the deaths. Added to the verify fake in round 1
+and forgotten on the producer fake, where round 2 found the same hang (the twin sign in
+SKILL.md, from the other side).
+
+**The general form**: a fixture that makes the unit under test's next input available forever
+cannot observe "the unit stopped asking". Bound the supply and make the bound loud.
+
 ## Additions moved from SKILL.md (2026-08-25)
 
 The sub-rules below had no section here and were carried in `SKILL.md` in full. They are the

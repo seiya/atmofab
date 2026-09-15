@@ -263,6 +263,48 @@ Moved from `SKILL.md` §4 "Tests pin properties", which keeps the rule and the d
     `origin/main`'s wording and see it actually fail — "I asserted the new wording, so it is
     pinned" is inference
 
+## Rule 1-b: a test class deleted by its name carried five live pins over fourteen mechanisms (issue #170, 2026-09-15)
+
+Issue #170 replaced the `--wait-usage-reset` reset-instant scrape and `/usage` probe (13
+functions, 17 constants) with a fixed-schedule wait on the `llm_usage_limit` tag. The plan listed
+the test classes to delete as "direct tests of deleted functions", and the first commit deleted
+six of them (64 rows) under that label, `UsageLimitTerminalLineStreamTests` among them. That
+class was named after `_terminal_usage_limit_line`, a deleted function, and its docstrings were
+about the arming pattern, also deleted.
+
+**What the rows actually observed.** Their FIRST assertions drove `_classify_leaf_infra_error`
+and `_USAGE_LIMIT_INFRA_PATTERN` — live code the branch kept, and since #170 the ONLY thing
+between a quota death and a multi-hour sleep — and only their tails called the deleted arming
+function. `test_arming_implies_the_classifier_would_tag` asserted the classifier over a 4 leads ×
+6 windows × 5 cues matrix before it checked the implication its name is about;
+`test_every_wording_the_classifier_tags_here_also_arms` did the same over 8 × 12. With the class
+gone, dropping the `"result":"` envelope prefix, or `weekly` from the window list, or the
+`resets 18:00` / `in N hours` / weekday / `tomorrow` cues, or the bare `session limit`
+alternative, left every suite green; on origin/main each of those mutants was red in exactly
+one deleted row.
+
+**What it cost**: three rounds, and the same shape each time. Round 1's correctness axis found
+three rows (mutants P / Q1 / Q2) and the fix commit said "three of its rows pinned live code";
+round 2's security axis found ten more mechanisms behind one more row (the matrix) and said the
+correction was itself incomplete; round 3's disclosure axis found the relative-time unit cues,
+the first half of one more row. Five rows, fourteen mechanisms (3 + 10 + 1), restored in three
+commits (031f2093, 3a14ca84, 182c2ca9). Nothing in the loop found them
+except reviewers running origin/main's rows against HEAD's code — the sweep mutates HEAD, the
+census enumerates HEAD, and the branch's own new rows all read the constant back. The
+"deleted TEST" form of rule 1-b was not written anywhere: 1-b speaks of deleting a defense, and
+a test class named after a dead mechanism did not read as one.
+
+**What closed it**: classifying the rows by what their bodies call — `ast` over the deleted
+functions, cross-referenced against the names live at HEAD — which the round-3 reviewer did in
+one pass and which would have taken the author ten minutes before the first commit. The kept
+halves live on in `TransportFailureTest` as classifier-only pins, each witnessed by the mutant
+that had survived.
+
+**Corollary for the RECORD.** The first correction's count ("three") was written from what one
+round had found, not from a classification of the class, so it was wrong in the same way the
+original label was — a smaller under-count. A count of restored rows is a claim about the whole
+class; take it from the AST diff, not from the round.
+
 ## Rule 3-a: one rule, two forms, one cell — and the count wrong for the third time (issue #180, 2026-09-10)
 
 Issue #180 retired a gate and, in doing so, hand-edited the row of `docs/CLI_REFERENCE.md` and
