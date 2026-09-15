@@ -7585,7 +7585,7 @@ clean:
                     and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
                                                child_arid=child_arid, waits_done=usage_waits,
-                                               evidence=infra_error[1])):
+                                               infra_error=infra_error)):
                 usage_waits += 1
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
@@ -8316,7 +8316,7 @@ clean:
                     and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
                                                child_arid=child_arid, waits_done=usage_waits,
-                                               evidence=infra_error[1])):
+                                               infra_error=infra_error)):
                 usage_waits += 1
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
@@ -11033,7 +11033,7 @@ clean:
         return True
 
     def _usage_limit_wait(self, *, refs: NodeRefs, phase: str, substep: str | None,
-                          child_arid: str, waits_done: int, evidence: str) -> bool:
+                          child_arid: str, waits_done: int, infra_error: tuple[str, str]) -> bool:
         """Wait out an `llm_usage_limit` death on the fixed schedule and return True once the
         caller may re-launch; False leaves the death terminal (flag off, or the schedule is spent).
 
@@ -11042,23 +11042,29 @@ clean:
         usage-limit deaths this substep has already waited out, and a separate budget from the
         transient retries (a transient tag is never `llm_usage_limit`). Decided from the TAG alone:
         nothing here reads the dead leaf's output for a reset instant or asks the provider for one,
-        so every declared provider gets the same wait. `evidence` is the classifier's own line
-        (`infra_error[1]`), already-decoded process output, emitted verbatim as
-        `leaf_transient_retry` does. Flag off emits nothing: the caller falls through to the
+        so every declared provider gets the same wait. The caller has already required
+        `infra_error[0] == "llm_usage_limit"`; the tag is taken from the tuple rather than
+        spelled here so the events can never name a tag the death did not carry. `evidence` is
+        the classifier's own line (`infra_error[1]`), emitted verbatim as `leaf_transient_retry`
+        does — and with the same residual: on the codex transport that line is `json.dumps` of a
+        parsed JSONL event, so an escaped lone surrogate in it would reach `emit` as a real one
+        (the claude and HTTP transports hand over decoded process output, where it cannot).
+        Flag off emits nothing: the caller falls through to the
         transient branch, which does not retry this tag, and the death stays terminal for a manual
         `--resume`. The declined event carries the ONE reason left (`budget_spent`), so a run that
         opted in and still fail_closed is greppable."""
         if not self.wait_usage_reset:
             return False
+        tag, evidence = infra_error
         if waits_done >= MAX_USAGE_LIMIT_WAITS:
             self.emit("leaf_usage_limit_wait_declined", node_key=refs.node_key, step=phase,
-                      substep=substep, tag="llm_usage_limit", reason="budget_spent",
+                      substep=substep, tag=tag, reason="budget_spent",
                       wait_attempt=waits_done + 1, dead_agent_run_id=child_arid,
                       evidence=evidence)
             return False
         delay = USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[waits_done]
         self.emit("leaf_usage_limit_wait", node_key=refs.node_key, step=phase, substep=substep,
-                  tag="llm_usage_limit", wait_seconds=delay, wait_attempt=waits_done + 1,
+                  tag=tag, wait_seconds=delay, wait_attempt=waits_done + 1,
                   max_waits=MAX_USAGE_LIMIT_WAITS, dead_agent_run_id=child_arid,
                   evidence=evidence)
         self._sleep_backoff(delay)

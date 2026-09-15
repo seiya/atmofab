@@ -931,7 +931,7 @@ class _FakeConductor(wc.Conductor):
             if (infra_error is not None and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(
                         refs=refs, phase=phase, substep=substep, child_arid=child_arid,
-                        waits_done=usage_waits, evidence=infra_error[1])):
+                        waits_done=usage_waits, infra_error=infra_error)):
                 usage_waits += 1
                 continue
             if proc.returncode != 0 and self._pure_transient_retry(
@@ -18454,7 +18454,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
                     binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
                 granted = [c._usage_limit_wait(refs=refs, phase="generate", substep="generate",
                                                child_arid=f"child-{n + 1}", waits_done=n,
-                                               evidence="usage limit reached")
+                                               infra_error=("llm_usage_limit",
+                                                            "usage limit reached"))
                            for n in range(wc.MAX_USAGE_LIMIT_WAITS + 1)]
                 self.assertEqual(granted, [True] * wc.MAX_USAGE_LIMIT_WAITS + [False])
                 self.assertEqual(slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))

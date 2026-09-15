@@ -1413,13 +1413,19 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
             captured: list[dict] = []
-            orig = c.record_launch
+            spawn_kwargs: list[dict] = []
+            orig, orig_spawn = c.record_launch, c.spawn_leaf
 
             def _rec(child_arid, request, entry=None, **kw):  # capture the per-launch request shape
                 captured.append(request)
                 return orig(child_arid, request)
 
+            def _spawn(prompt_text, child_env, entry=None, **kwargs):
+                spawn_kwargs.append(dict(kwargs))
+                return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
             c.record_launch = _rec  # type: ignore[assignment]
+            c.spawn_leaf = _spawn   # type: ignore[assignment]
             oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 3)
@@ -1427,9 +1433,14 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             # launch count; the repair budget saw only 1 turn (the wait did not consume it).
             self.assertEqual(oc.attempts, 3)
             self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
-            # the post-wait launch (index 1) is a COLD retry: no prior_document carried from the
-            # transport death.
+            # the post-wait launch (index 1) is a COLD retry: `repair_strategy: none` on its
+            # request and no session to resume on its spawn. (Asserting only that no
+            # `prior_document` is carried was vacuous — a transport death never sets one — so a
+            # wait that set `resume_session_id` to the dead arid passed it.)
             self.assertNotIn("prior_document", captured[1])
+            self.assertEqual([r["repair_strategy"] for r in captured], ["none", "none", "reuse"])
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
+                             [None, None, "child-2"])
             # the repair turn (index 2) carries the CONTENT failure's findings, never the transport
             # summary ("Connection closed"/"usage limit").
             repair_req = captured[2]

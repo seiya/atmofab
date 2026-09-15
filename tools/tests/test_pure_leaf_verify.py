@@ -729,8 +729,17 @@ class PureVerifySubstepTests(unittest.TestCase):
                           "agent_run_id": spawn_kwargs[0]["child_arid"]})
 
     class _WaitingC(_PureFakeConductor):
+        # Every launch past the scripted ones would repeat the LAST script entry forever; a wait
+        # that never counts its budget would then loop until the harness `timeout` kills the
+        # run, which no assertion reports. Refusing here turns that regression into a red row.
+        MAX_SPAWNS_PAST_SCRIPT = 2
+
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self._spawn = getattr(self, "_spawn", 0)
+            if self._spawn >= len(self.procs) + self.MAX_SPAWNS_PAST_SCRIPT:
+                raise AssertionError(
+                    f"launch {self._spawn + 1} past a {len(self.procs)}-entry script: the loop "
+                    f"is re-launching without bound")
             proc = self.procs[min(self._spawn, len(self.procs) - 1)]
             self._spawn += 1
             return proc
@@ -738,16 +747,41 @@ class PureVerifySubstepTests(unittest.TestCase):
         def _sleep_backoff(self, seconds):  # type: ignore[override]
             self.slept.append(seconds)
 
-    def _waiting(self, dead: wc.ProcResult) -> tuple[_WaitingC, wc.NodeRefs]:
+    def _waiting(self, *procs: wc.ProcResult, flag: bool = True,
+                 record: bool = False) -> tuple[_WaitingC, wc.NodeRefs]:
+        """A REAL `_run_pure_verify_substep` driver: `procs` are the scripted leaf results (the
+        last one repeats), a passing verdict is appended when only one is given. `record=True`
+        captures every launch request on `c.requests` and every spawn's kwargs on `c.spawn_kwargs`;
+        events land on `c.events` either way (so a flag-off run can assert it emitted nothing)."""
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = self._WaitingC(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                           llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
-        c.procs = [dead, wc.ProcResult(0, _envelope(_verdict("pass")), "")]
+                           llm_config=_cfg("claude"), env={}, wait_usage_reset=flag)
+        c.procs = list(procs) + ([wc.ProcResult(0, _envelope(_verdict("pass")), "")]
+                                 if len(procs) == 1 else [])
         c.slept = []
+        c.events = []
+        c.emit = lambda event, **f: c.events.append((event, f))  # type: ignore[assignment]
+        if record:
+            c.requests, c.spawn_kwargs = [], []
+            orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
+
+            def _rec(child_arid, request, entry=None, **kw):
+                c.requests.append(request)
+                return orig_rec(child_arid, request)
+
+            def _spawn(prompt_text, child_env, entry=None, **kwargs):
+                c.spawn_kwargs.append(dict(kwargs))
+                return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
+            c.record_launch = _rec          # type: ignore[assignment]
+            c.spawn_leaf = _spawn           # type: ignore[assignment]
         return c, refs
+
+    _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
+    _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
 
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
@@ -791,6 +825,85 @@ class PureVerifySubstepTests(unittest.TestCase):
                 self.assertEqual(oc.status, "pass")
                 self.assertEqual(c._spawn, 2)                # waited, then relaunched
                 self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+
+    def test_the_reviewer_wait_budget_is_the_schedule_then_fails_closed(self) -> None:
+        """The reviewer loop's OWN `usage_waits` bookkeeping, driven through the real loop (the
+        conductor-file rows drive a fake loop with its own copy of the guard and cannot see this
+        call site): four usage-limit deaths sleep exactly the schedule, the fourth is DECLINED
+        `budget_spent` with the death's own tag, and the substep fails with the honest launch
+        count. Without this row `usage_waits += 1` could be dropped at this site with the suite
+        green — a lasting quota would then park `generate.verify` 900 s forever."""
+        c, refs = self._waiting(*([self._QUOTA] * (wc.MAX_USAGE_LIMIT_WAITS + 1)))
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "llm_usage_limit")
+        self.assertEqual(c._spawn, wc.MAX_USAGE_LIMIT_WAITS + 1)
+        self.assertEqual(oc.attempts, wc.MAX_USAGE_LIMIT_WAITS + 1)
+        self.assertEqual(c.slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
+        waits = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
+        self.assertEqual([w["wait_attempt"] for w in waits], [1, 2, 3])
+        declined = [f for e, f in c.events if e == "leaf_usage_limit_wait_declined"]
+        self.assertEqual([(d["reason"], d["tag"], d["wait_attempt"]) for d in declined],
+                         [("budget_spent", "llm_usage_limit", wc.MAX_USAGE_LIMIT_WAITS + 1)])
+        meta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(meta["attempts"], wc.MAX_USAGE_LIMIT_WAITS + 1)
+        self.assertEqual([a["failure_category"] for a in meta["per_attempt"]],
+                         ["pure_transport"] * (wc.MAX_USAGE_LIMIT_WAITS + 1))
+
+    def test_the_reviewer_waits_only_a_usage_limit_not_any_transport_death(self) -> None:
+        """The reviewer call site's tag guard, driven for real. A transient death takes the
+        transient retry (2 s), never the usage schedule; a 4xx is terminal at once. Widening the
+        guard to "any non-timeout transport death" would park a 429 for 15 minutes AND emit a
+        `leaf_usage_limit_wait` whose `tag` is what the death carried — which is why the tag is
+        taken from `infra_error` rather than spelled inside `_usage_limit_wait`."""
+        c, refs = self._waiting(self._FLAKE)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c.slept, [2.0])                                  # transient backoff
+        self.assertEqual([e for e, _ in c.events if e.startswith("leaf_usage_limit")], [])
+        c, refs = self._waiting(wc.ProcResult(1, "", "API Error: 400 invalid_request_error"))
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "llm_client_error")
+        self.assertEqual(c.slept, [])
+        self.assertEqual([e for e, _ in c.events if e.startswith("leaf_usage_limit")], [])
+
+    def test_the_reviewer_wait_is_not_a_repair_turn(self) -> None:
+        """`attempt` and `resume_session_id` are UNCHANGED across a wait, in the reviewer loop:
+        (1) a wait on a cold first attempt re-launches COLD — `repair_strategy: none`, no
+        `resume_session_id` on the spawn — and the following schema violation still gets its
+        repair turn (a wait that spent one would refuse it and fail closed); (2) a wait that
+        interrupts a REPAIR turn re-runs that turn against the same session, not the dead one.
+        Asserted on the launch request and the spawn kwargs, not on the absence of a carrier a
+        transport death never sets."""
+        # (1) quota on the cold attempt, then EVERY repair turn the budget allows is needed:
+        # `MAX_BUNDLE_REPAIR_TURNS` malformed verdicts before the valid one. A wait that spent
+        # one `attempt` would refuse the last repair and fail closed (the fixture straddles the
+        # budget on purpose — one malformed verdict would pass under that regression).
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        malformed = [wc.ProcResult(0, _envelope("nope"), "")] * MAX_BUNDLE_REPAIR_TURNS
+        c, refs = self._waiting(self._QUOTA, *malformed,
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+        # each repair resumes the attempt before it, starting from the cold RE-launch
+        # (`child-2`): the dead attempt (`child-1`) is never a resume target
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs],
+                         [None, None] + [f"child-{n + 2}" for n in range(MAX_BUNDLE_REPAIR_TURNS)])
+        # (2) malformed verdict, quota on the repair turn, then the repair passes.
+        c, refs = self._waiting(wc.ProcResult(0, _envelope("nope"), ""), self._QUOTA,
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c._spawn, 3)
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none", "reuse", "reuse"])
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs],
+                         [None, "child-1", "child-1"])  # same target before and after the wait
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone
