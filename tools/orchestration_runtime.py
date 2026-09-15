@@ -7932,13 +7932,18 @@ def _backend_runtime_bind_paths(
       Cost of the polarity, measured on the planning host: the claude bind widens from
       the CLI's own data dir under ``~/.local/share/`` (+ ``~/.local/bin``, + its
       ``versions/``) to ``~/.local``, which also holds ``share/keyrings``, ``state/`` and
-      ``lib/``. A pure claude leaf holds no
-      tool (``--tools ""``) and cannot read them; a tool-bearing pure codex leaf gets
-      ``~/.volta``, not ``~/.local``; and reading the operator's data is outside the
-      defended set (`AGENTS.md` §Development premises). Unmodelled shapes, stated rather
-      than guessed (neither is measurable on the planning host): an ``/opt/<x>/bin``
-      install whose realpath needs a sibling ``lib/``, and a realpath that is a
-      ``#!/usr/bin/env <interp>`` script whose interpreter lives under a different root.
+      ``lib/``. The same widening applies to WHATEVER ``$HOME`` child holds the command or
+      its realpath — a per-entry ``command:`` wrapper under ``~/work/wrappers/`` binds
+      ``~/work``, and a codex installed with an npm prefix of ``~/.local`` binds
+      ``~/.local`` (on the planning host it is ``~/.volta``, a measurement rather than a
+      property). A pure claude leaf holds no tool (``--tools ""``) and cannot read any of
+      it; a tool-bearing pure codex leaf can, and reading the operator's data is outside
+      the defended set (`AGENTS.md` §Development premises) — a sibling checkout kept under
+      such a root is the one case with a named gain, and it is issue #227's read-boundary
+      work, not this rule's. Unmodelled shapes, stated rather than guessed (neither is
+      measurable on the planning host): an ``/opt/<x>/bin`` install whose realpath needs a
+      sibling ``lib/``, and a realpath that is a ``#!/usr/bin/env <interp>`` script whose
+      interpreter lives under a different root.
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
       string, which may be a wrapper), and resolved by the canonical
@@ -14595,7 +14600,7 @@ def record_launch(
             )
     # The executable this leaf is launched through, which is what
     # `_backend_runtime_bind_paths` resolves the sandbox's read-only bind of the CLI install
-    # directory from. Three sources, most specific first:
+    # root from. Three sources, most specific first:
     #   1. the launch RESPONSE's `backend_command` — THIS leaf's own, host-authored by the
     #      conductor from the entry it is about to spawn. Since issue #28 an entry can carry
     #      its own `command:`, so the run has no single answer; binding a different executable

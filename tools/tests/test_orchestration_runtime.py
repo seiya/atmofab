@@ -24168,7 +24168,10 @@ class MultiProviderPreflightTests(unittest.TestCase):
             profile = json.loads(
                 (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
             self.assertEqual(profile["backend_command"], str(wrapper))
-            self.assertIn(bindir, json.dumps(profile))
+            # The BIND, not the echo: `profile["backend_command"]` alone satisfied the
+            # `json.dumps` substring form this used to assert (round-1 finding, issue #226).
+            # `bindir` is a tempdir outside $HOME, so its install root is itself.
+            self.assertIn(str(Path(bindir).resolve()), profile["runtime_ro_bind_paths"])
 
     def test_a_launch_without_its_own_command_still_uses_the_preflight_one(self) -> None:
         """The fallback: a legacy response carries no `backend_command`."""
@@ -26432,7 +26435,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
 
 class BackendRuntimeBindPathsTests(unittest.TestCase):
-    """The backend CLI's own install dir and credential home, which the bare profile misses.
+    """The backend CLI's own install root and credential home, which the bare profile misses.
 
     `_backend_runtime_bind_paths` is the sole producer of both, and its only caller is
     `build_readonly_bwrap_profile`, which is now the only profile builder there is. Its
