@@ -1573,14 +1573,17 @@ class InRepoRecordSectionTests(unittest.TestCase):
     # --- phase state failures -------------------------------------------------------
 
     def test_fail_and_fail_closed_transitions_are_listed_in_order(self) -> None:
+        # The row shape is the corpus's: `set_status` is the only writer of these states
+        # (19 rows over 48 orchestrations, keys ts/event/to/reason_code/reason_detail/
+        # blocking_policy_scope/detected_at — never a node, step or arid).
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             _write_jsonl(root / "phase_state_log.jsonl", [
                 {"ts": "2026-09-05T00:00:00Z", "event": "init_orchestration",
                  "from": None, "to": "initialized"},
-                {"ts": "2026-09-05T00:01:00Z", "event": "child_finished",
-                 "node_key_safe": "n1", "step": "compile", "from": "launched",
-                 "to": "fail", "agent_run_id": "arid-1"},
+                {"ts": "2026-09-05T00:01:00Z", "event": "set_status", "to": "fail",
+                 "reason_code": "validate_failed", "reason_detail": "judge: fail",
+                 "blocking_policy_scope": None, "detected_at": "2026-09-05T00:00:59Z"},
                 {"ts": "2026-09-05T00:02:00Z", "event": "child_finished",
                  "node_key_safe": "n1", "step": "compile", "from": "launched",
                  "to": "pass", "agent_run_id": "arid-2"},
@@ -1591,15 +1594,34 @@ class InRepoRecordSectionTests(unittest.TestCase):
             result, md = self._rendered(tmp)
         failures = result["phase_state_failures"]
         self.assertEqual([f["to"] for f in failures], ["fail", "fail_closed"])
-        self.assertEqual(failures[0]["agent_run_id"], "arid-1")
-        self.assertEqual(failures[0]["step"], "compile")
+        self.assertEqual(failures[0]["reason_code"], "validate_failed")
         self.assertEqual(failures[1]["reason_code"], "leaf_transport_error")
+        self.assertEqual(sorted(failures[0]),
+                         ["event", "reason_code", "reason_detail", "to", "ts"])
         self.assertIn("## Phase state failures", md)
         self.assertIn("fail_closed at: `2026-09-05T00:03:00Z`", md)
-        self.assertIn("child_finished → `fail` `n1` compile arid=`arid-1`", md)
+        self.assertIn("[2026-09-05T00:01:00Z] set_status → `fail` — `validate_failed`: "
+                      "judge: fail", md)
         self.assertIn("set_status → `fail_closed` — `leaf_transport_error`: "
                       "leaf_transport_error: leaf_exit=1", md)
         self.assertNotIn("No fail / fail_closed transition recorded", md)
+
+    def test_a_fail_without_fail_closed_is_listed_not_denied(self) -> None:
+        # The shape of every `status: fail` run in the corpus (5 of 48): a `fail` row and no
+        # `fail_closed`. The section must list it, and must not print the negative sentence
+        # beside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "phase_state_log.jsonl", [
+                {"ts": "2026-09-05T00:01:00Z", "event": "set_status", "to": "fail",
+                 "reason_code": "validate_failed", "reason_detail": "judge: fail"}])
+            result, md = self._rendered(tmp)
+        self.assertIsNone(result["fail_closed_at"])
+        self.assertEqual([f["to"] for f in result["phase_state_failures"]], ["fail"])
+        section = md.split("## Phase state failures")[1].split("## failure_analysis")[0]
+        self.assertIn("set_status → `fail` — `validate_failed`: judge: fail", section)
+        self.assertNotIn("fail_closed at:", section)
+        self.assertNotIn("No fail / fail_closed transition recorded", section)
 
     def test_no_failure_renders_one_negative_sentence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

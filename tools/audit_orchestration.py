@@ -6,8 +6,8 @@ Usage:
 
 Collects and aggregates, from the in-repo records under
 workspace/orchestrations/<id>/ (docs/WORKSPACE_LAYOUT.md is canonical for them):
-- every `fail` / `fail_closed` transition in phase_state_log.jsonl, and the instant of
-  the latest `fail_closed`
+- every `fail` / `fail_closed` transition in phase_state_log.jsonl (the `set_status`
+  rows, with their reason), and the instant of the latest `fail_closed`
 - failure_analysis.json (the host's own failure diagnosis) and its runtime / fallback
   sidecars
 - Dangling launch (open active_child window with no child return / terminal run),
@@ -207,9 +207,11 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
 
     File order rather than sorted by `ts`: the conductor appends, so file order is the
     chronology, and a row with an unparseable timestamp is still a recorded failure. The
-    fields kept are the ones an operator reads to route the failure — which node and step,
-    which attempt, and the `reason_code` / `reason_detail` `set_status` carries. A missing
-    field renders as `None`; nothing is invented.
+    only writer that records these states is `set_status`, whose row carries the
+    orchestration-level `reason_code` / `reason_detail` and no node, step or attempt (the
+    node-step transition writer records other states). Which node and attempt failed is
+    `failure_analysis.json`'s to say; this section names the instant and the reason. A
+    missing field renders as `None`; nothing is invented.
     """
     out: list[dict[str, Any]] = []
     for entry in phase_log:
@@ -222,9 +224,6 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
             "ts": entry.get("ts") or entry.get("timestamp"),
             "event": entry.get("event"),
             "to": new_state,
-            "node_key_safe": entry.get("node_key_safe"),
-            "step": entry.get("step"),
-            "agent_run_id": entry.get("agent_run_id"),
             "reason_code": entry.get("reason_code"),
             "reason_detail": entry.get("reason_detail"),
         })
@@ -1309,17 +1308,12 @@ def _render_phase_state_failures(result: dict[str, Any], lines: list[str]) -> No
         lines.append("")
     if entries:
         for e in entries:
-            where = ""
-            if e.get("node_key_safe") or e.get("step"):
-                where = f" `{e.get('node_key_safe')}` {e.get('step')}"
-            arid = f" arid=`{e['agent_run_id']}`" if e.get("agent_run_id") else ""
             reason = ""
             if e.get("reason_code") or e.get("reason_detail"):
                 reason = f" — `{e.get('reason_code')}`: {e.get('reason_detail')}"
-            lines.append(
-                f"- [{e.get('ts')}] {e.get('event')} → `{e.get('to')}`{where}{arid}{reason}"
-            )
-    elif not fail_closed_at:
+            lines.append(f"- [{e.get('ts')}] {e.get('event')} → `{e.get('to')}`{reason}")
+    else:
+        # `fail_closed_at` is derived from the same rows, so it is None here too.
         lines.append("No fail / fail_closed transition recorded.")
     lines.append("")
 
