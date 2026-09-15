@@ -335,11 +335,12 @@ def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, .
     # (`SpecCatalogCorruption`). Previously it returned `{}` which downstream
     # dep resolution treated as "no matching versions" — making a repo-wide
     # registry outage look like an ordinary readiness=false dependency miss
-    # and sending operators to the wrong layer for recovery. Both
-    # production call sites (`_certify_and_collect_dep_artifacts`,
-    # `_relevant_catalog_subset_bytes`) only
-    # invoke this function AFTER deps.yaml entries are confirmed non-empty,
-    # so leaf orchestrations (which need no catalog) are unaffected.
+    # and sending operators to the wrong layer for recovery. A leaf orchestration
+    # (which needs no catalog) never reaches this raise: this module's readiness
+    # callers invoke it only AFTER deps.yaml entries are confirmed non-empty, and
+    # the closure builders load it lazily and handle the error themselves. (The
+    # count of callers this comment used to carry was wrong twice — issue #178
+    # round 1 — so it states the property and no number.)
     catalog_path = Path(repo_root_str) / "spec" / "registry" / "spec_catalog.yaml"
     if not catalog_path.is_file():
         raise SpecCatalogCorruption(
@@ -1663,10 +1664,10 @@ def _verify_dep_stage_detail(
     `selected_path` is the file this stage SELECTED and judged — `ir_meta.json`,
     `binary_meta.json`, or `aggregate_verdict.json` — and it is set whenever a file was selected,
     INCLUDING when the verdict is `False` (unreadable, not `pass`, stale). It is `None` only when
-    nothing was selected (unsafe token, no workspace root, no pipeline, no bound verdict). The
-    launch gate hashes `selected_path`'s bytes into `dep_set_fingerprint`, and a demoted dep's
-    artifacts (a level-1 dep's `binary_meta.json`) are part of that hash, so the path must not be
-    withheld on failure.
+    nothing was selected (unsafe token, no workspace root, no pipeline, no binary, no bound
+    verdict). The launch gate hashes `selected_path`'s bytes into `dep_set_fingerprint`, and a
+    demoted dep's artifacts (a level-1 dep's `binary_meta.json`) are part of that hash, so the
+    path must not be withheld on failure.
     """
     # Defensive: every caller validates upstream, but recheck before
     # composing a filesystem path (Codex round 15 F2 defense-in-depth).
@@ -3823,8 +3824,9 @@ def _certify_and_collect_dep_artifacts(
             # freshness demotions on `ir_ref` / `pipeline_ref`, so nothing is re-applied here.
             # Every stage is asked even after one refuses — no short-circuit — because the
             # file a refused stage selected is still part of the fingerprint below (a level-1
-            # dep's `binary_meta.json` is hashed), and short-circuiting would change every
-            # recorded `dep_set_fingerprint`.
+            # dep's `binary_meta.json` is hashed), and short-circuiting would change the
+            # recorded `dep_set_fingerprint` of every dep with a refused stage that still
+            # selected a file.
             paths: dict[str, Path] = {}
             level = len(_DEPENDENCY_READINESS_STAGES)
             for idx, stage in enumerate(_DEPENDENCY_READINESS_STAGES):

@@ -3740,9 +3740,10 @@ def _dependency_node_readiness(
     too, instead of being skipped and then failing closed inside the target's own gates.
 
     This is the ONLY wire by which either invariant decides skip-vs-re-run, so it is the wire a
-    witness has to drive on real artifacts:
-    `test_run_workflow.py::test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated`
-    is that witness, and every other driver test in its class fakes this function.
+    witness has to drive on real artifacts: in `test_run_workflow.py`,
+    `test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated` (R6 proper)
+    and `test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved` (R6-lite) are
+    those witnesses, and every other driver test in their class fakes this function.
 
     Returns `{"ready": bool, "version": str | None, "failed_stage": str | None,
     "detail": str | None}`. When ready, `version` is the matching catalog version that satisfied
