@@ -219,6 +219,47 @@ not.
   other decisions that name the same root** — membership, exemption, sort order, attribution —
   and re-check each in the moved configuration
 
+## Surface 9-c — a path-keyed hide and the second names of the checkout (issue #226)
+
+The rule is in SKILL.md; this is what it cost. PR #228 replaced a claude-only literal in
+`_backend_runtime_bind_paths` with a shape rule: bind the `$HOME`-child ancestor of the CLI's
+`which` path and of its realpath (`~/.volta`, `~/.local`) read-only, so a volta shim can start.
+The read-only leaf profile hides `workspace/`, the `workspace_*/` archives and `releases/` with
+tmpfs overlays at the checkout's own path, and a bound `$HOME` child is exactly the place a
+second name for the checkout can sit. Round 0's own sweep and the round-1 reviewers saw none of
+this; round 1's security axis found the first name and every later round found the next, each
+INSIDE the previous round's fix:
+
+| round | second name | what the previous check compared | what closed it |
+|---|---|---|---|
+| 1 | `PATH=$HOME/../<user>/.local/bin` → root `$HOME/..` | the first path component after `$HOME` | lexical `os.path.normpath` on both operands |
+| 2 | `$HOME` a symlink, checkout and wrapper under the same `$HOME` child | the spelling | `realpath(root)` contains `repo_root.resolve()` while the spelled root does not |
+| 3 | the same layout by `mount --bind` — `realpath` returns the alias unchanged | `realpath` | `os.path.samestat` between the root and every ancestor of the resolved checkout |
+| 4 | the mirror: `~/tools -> <checkout>/workspace` with the wrapper kept there | ancestors of the checkout only | the inode walk in the other direction too (checkout against the root's realpath ancestors) |
+| 5 | the mirror by bind mount | the reverse walk uses `realpath` | `/proc/self/mountinfo`: `(device, path within the device)` for the root and every mount point beneath it, compared both ways — which also closed the residual round 3 had stated (a bind mount BELOW the root) |
+
+Every row was reproduced under real bwrap (rounds 3 and 5 under a NESTED bwrap, which gives a
+mount namespace without privilege: `bwrap --bind / / --dev /dev --proc /proc --bind <src> <dst>
+-- python3 <probe>`), and every row's gain sentence was the same: a VERIFY codex leaf reads the
+producer's `dialogs/leaf.stdout.jsonl` of the run it is judging. `origin/main` bound `bin/` dirs
+only, so every row was introduced by the widening — the class that `AGENTS.md` §Development
+premises names second. What made it five rounds rather than one: each fix reached for the
+instrument that sees the alias class just found (`normpath` sees `..`, `realpath` sees symlinks,
+`samestat` sees a bind of an ancestor, mountinfo sees a bind of anything), and none of the
+reviewers or the author enumerated the classes before choosing. The loop stopped at the cap with
+the round-5 instrument unreviewed, disclosed in the PR body.
+
+Two follow-through facts worth keeping beside the rule:
+
+- **The exemption is a rule too** (3-a): a root whose OWN spelling contains the checkout is safe
+  because the repo bind and the overlays are emitted later at that path and stack on top —
+  measured, the control row asserts it — and the round-5 security axis found the exemption
+  itself taken on the RAW spelling, so a `..` in the spelled root under an unset `HOME` passed it.
+  An exemption keyed on a spelling gets the same treatment as the check.
+- **The instrument has its own unpinned direction.** Dropping the device comparison in the
+  mount-table overlap test survived the sweep: it only ever REFUSES more (a same-path prefix on a
+  different device), so no acceptance row can see it. Name it, as `862a581c` does.
+
 ## Surface 9-b — a host write outside every child window (issue #177)
 
 The certification stamp of issue #177 writes `artifact_hashes` into a stage meta at
