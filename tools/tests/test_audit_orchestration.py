@@ -1596,9 +1596,10 @@ class InRepoRecordSectionTests(unittest.TestCase):
     # --- phase state failures -------------------------------------------------------
 
     def test_fail_and_fail_closed_transitions_are_listed_in_order(self) -> None:
-        # The row shape is the corpus's: `set_status` is the only writer of these states
-        # (19 rows over 48 orchestrations, keys ts/event/to/reason_code/reason_detail/
-        # blocking_policy_scope/detected_at — never a node, step or arid).
+        # The row shape is the corpus's: the orchestration-status writer is the only one
+        # recording these states (19 rows over 48 orchestrations, all `set_status`, keys
+        # ts/event/to/reason_code/reason_detail/blocking_policy_scope/detected_at — never a
+        # node, step or arid).
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             _write_jsonl(root / "phase_state_log.jsonl", [
@@ -1930,10 +1931,12 @@ class InRepoRecordSectionTests(unittest.TestCase):
 
     def test_a_step_row_repeats_without_a_substep_and_two_conductor_rows_do_not(self) -> None:
         # Corpus shapes: `Build` is `agent_role: step`, `substep: None` (31 of 48 runs carry
-        # one), and the conductor's own row has neither node nor step (a resumed run has two
-        # of them). The first is an attempt and is keyed with `substep=None`; the second is
-        # not an attempt at anything and must not render as `None None.None: 2 attempts`.
-        # A single retry — 2 attempts, the commonest repeat in the corpus — is listed.
+        # one), and the conductor's own row has neither node nor step (exactly one per run
+        # in the corpus, a resume rewriting it in place; two are used here so a dropped
+        # guard is visible). The first is an attempt and is keyed with `substep=None`; the
+        # second is not an attempt at anything and must not render as
+        # `None None.None: 2 attempts`. A single retry — 2 attempts, the commonest repeat
+        # in the corpus — is listed.
         runs = [
             {"agent_run_id": "o1", "agent_role": "orchestration", "status": "fail",
              "finished_at": "x"},

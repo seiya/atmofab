@@ -217,12 +217,13 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
     order, whatever its `event`.
 
     File order rather than sorted by `ts`: the conductor appends, so file order is the
-    chronology, and a row with an unparseable timestamp is still a recorded failure. The
-    only writer that records these states is `set_status`, whose row carries the
-    orchestration-level `reason_code` / `reason_detail` and no node, step or attempt (the
-    node-step transition writer records other states). Which node and attempt failed is
-    `failure_analysis.json`'s to say; this section names the instant and the reason. A
-    missing field renders as `None`; nothing is invented.
+    chronology, and a row with an unparseable timestamp is still a recorded failure. These
+    states are recorded only by the orchestration-status writer — `set_status`, and its
+    `set_status_noop_replay` / `set_status_cleanup_retry` events on a repeated terminal
+    call, which carry no reason — whose row is orchestration-level and names no node,
+    step or attempt (the node-step transition writer records other states). Which node
+    and attempt failed is `failure_analysis.json`'s to say; this section names the
+    instant and the reason. A missing field renders as `None`; nothing is invented.
     """
     out: list[dict[str, Any]] = []
     for entry in phase_log:
@@ -257,11 +258,11 @@ def collect_sandbox_violations(root: Path) -> dict[str, Any]:
     — the enforcement fired, and the reasons say what it saw.
 
     A record is a sandbox enforcement violation only when its `kind` says so. The
-    directory also holds records of writers that no longer exist (`unauthorized_write_violation`,
-    deleted in issue #171 PR-2, is on disk in the corpus); those carry no `reason`, and
-    reporting one under the sandbox heading with reason `unknown` would be a false
-    finding about the leaf's confinement. They are kept in `records` with their `kind`
-    and listed apart by the renderer.
+    directory also holds records of other kinds (`unauthorized_write_violation`, whose
+    writer was deleted in issue #171 PR-2, is on disk in the corpus); those carry no
+    `reason`, and reporting one under the sandbox heading with reason `unknown` would be
+    a false finding about the leaf's confinement. They are kept in `records` with their
+    `kind` and listed apart by the renderer.
 
     Raises on an unreadable or non-JSON file rather than dropping it: a violation record
     that cannot be read is exactly the one this section must not report as absent.
@@ -1429,11 +1430,10 @@ def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str],
                 f"(`{r.get('file')}`)"
             )
     if other:
-        # A retired writer's record: named by its kind so it is not read as enforcement.
+        # Another kind's record: named by its kind so it is not read as enforcement.
         lines.append("")
         lines.append(
-            f"{len(other)} record(s) of another kind (a writer that no longer exists; "
-            "not a sandbox enforcement finding):"
+            f"{len(other)} record(s) of another kind (not a sandbox enforcement finding):"
         )
         for r in other:
             lines.append(
