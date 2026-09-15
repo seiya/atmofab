@@ -1649,11 +1649,45 @@ class InRepoRecordSectionTests(unittest.TestCase):
             self.assertEqual(sv["by_kind"], {"sandbox_enforcement_violation": 3})
             self.assertEqual([r["agent_run_id"] for r in sv["records"]],
                              ["arid-1", "arid-2", "arid-3"])
-            self.assertIn("3 record(s):", md)
+            self.assertIn("3 sandbox enforcement record(s):", md)
             self.assertIn("- `sandbox_not_enforced`: 2", md)
             self.assertIn("- `sandbox_profile_build_failed`: 1", md)
             self.assertIn("[2026-09-05T00:00:02Z] `sandbox_not_enforced` arid=`arid-2`", md)
             self.assertNotIn("absent", md.split("## Sandbox")[1].split("## Token")[0])
+
+    def test_a_retired_kind_is_not_a_sandbox_enforcement_finding(self) -> None:
+        # The real corpus holds one `*.unauthorized_write_violation.json` (a writer deleted in
+        # issue #171 PR-2; `kind` differs, no `reason`, `detected_at` instead of
+        # `evaluated_at`). Rendering it under the sandbox heading as reason `unknown` told
+        # the operator a confinement finding that never happened.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "violations").mkdir()
+            (root / "violations" / "arid-7.unauthorized_write_violation.json").write_text(
+                json.dumps({"kind": "unauthorized_write_violation", "agent_run_id": "arid-7",
+                            "detected_at": "2026-07-24T04:53:10Z", "violations": []}),
+                encoding="utf-8")
+            result, md = self._rendered(tmp)
+            sv = result["sandbox_violations"]
+            self.assertEqual(sv["by_kind"], {"unauthorized_write_violation": 1})
+            self.assertEqual(sv["by_reason"], {})
+            self.assertEqual(sv["records"][0]["reason"], None)
+            self.assertEqual(sv["records"][0]["evaluated_at"], "2026-07-24T04:53:10Z")
+            section = md.split("## Sandbox")[1].split("## Token")[0]
+            self.assertIn("no sandbox enforcement record (the records below are of "
+                          "another kind)", section)
+            self.assertIn("kind `unauthorized_write_violation` arid=`arid-7`", section)
+            self.assertNotIn("`unknown`", section)
+            self.assertNotIn("sandbox enforcement record(s):", section)
+            # ...and next to a real one, the two are listed apart.
+            self._violation(root, "arid-1", "sandbox_not_enforced")
+            result, md = self._rendered(tmp)
+            section = md.split("## Sandbox")[1].split("## Token")[0]
+            self.assertIn("1 sandbox enforcement record(s):", section)
+            self.assertIn("- `sandbox_not_enforced`: 1", section)
+            self.assertIn("1 record(s) of another kind", section)
+            self.assertEqual(result["sandbox_violations"]["by_reason"],
+                             {"sandbox_not_enforced": 1})
 
     def test_an_unreadable_violation_record_is_a_diagnostic_failure(self) -> None:
         # The record a leaf's confinement wrote must not read as "nothing recorded"

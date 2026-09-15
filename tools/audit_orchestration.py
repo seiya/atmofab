@@ -231,16 +231,27 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
     return out
 
 
+# The `kind` the live `violations/` writer stamps (`_write_sandbox_enforcement_violation`).
+SANDBOX_VIOLATION_KIND = "sandbox_enforcement_violation"
+
+
 def collect_sandbox_violations(root: Path) -> dict[str, Any]:
     """Read `violations/*.json` — the sandbox enforcement record.
 
-    One writer, `_write_sandbox_enforcement_violation`, five reasons; the reason vocabulary
-    is NOT restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it), the file's
-    value is reported as written. Three states are told apart, because they mean three
-    things: `directory_present=False` — no violation was recorded (since issue #171 PR-2
-    the directory is created only when one occurs); present and `records=[]` — a run from
-    before that change pre-created it, and recorded nothing; present with records — the
-    enforcement fired, and the reasons say what it saw.
+    One live writer, `_write_sandbox_enforcement_violation`, five reasons; the reason
+    vocabulary is NOT restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it),
+    the file's value is reported as written. Three states are told apart, because they
+    mean three things: `directory_present=False` — no violation was recorded (since issue
+    #171 PR-2 the directory is created only when one occurs); present and `records=[]` — a
+    run from before that change pre-created it, and recorded nothing; present with records
+    — the enforcement fired, and the reasons say what it saw.
+
+    A record is a sandbox enforcement violation only when its `kind` says so. The
+    directory also holds records of writers that no longer exist (`unauthorized_write_violation`,
+    deleted in issue #171 PR-2, is on disk in the corpus); those carry no `reason`, and
+    reporting one under the sandbox heading with reason `unknown` would be a false
+    finding about the leaf's confinement. They are kept in `records` with their `kind`
+    and listed apart by the renderer.
 
     Raises on an unreadable or non-JSON file rather than dropping it: a violation record
     that cannot be read is exactly the one this section must not report as absent.
@@ -257,15 +268,17 @@ def collect_sandbox_violations(root: Path) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise TypeError(f"{path.name}: violation record is not a JSON object")
         kind = str(payload.get("kind") or "unknown")
-        reason = str(payload.get("reason") or "unknown")
+        reason = payload.get("reason")
         by_kind[kind] += 1
-        by_reason[reason] += 1
+        if kind == SANDBOX_VIOLATION_KIND:
+            by_reason[str(reason or "unknown")] += 1
         records.append({
             "file": path.name,
             "kind": kind,
-            "reason": reason,
+            "reason": reason if isinstance(reason, str) else None,
             "agent_run_id": payload.get("agent_run_id"),
-            "evaluated_at": payload.get("evaluated_at"),
+            # The live writer stamps `evaluated_at`; the retired one stamped `detected_at`.
+            "evaluated_at": payload.get("evaluated_at") or payload.get("detected_at"),
         })
     return {"directory_present": True, "records": records,
             "by_reason": dict(by_reason), "by_kind": dict(by_kind)}
@@ -1386,6 +1399,8 @@ def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str],
         return
     summary = summary or {}
     records = summary.get("records") or []
+    sandbox = [r for r in records if r.get("kind") == SANDBOX_VIOLATION_KIND]
+    other = [r for r in records if r.get("kind") != SANDBOX_VIOLATION_KIND]
     if not summary.get("directory_present"):
         lines.append("`violations/` absent — no sandbox enforcement violation was recorded.")
     elif not records:
@@ -1393,15 +1408,32 @@ def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str],
             "`violations/` directory present, no record (pre-created by a run before "
             "issue #171 PR-2)."
         )
+    elif not sandbox:
+        lines.append(
+            "`violations/` directory present, no sandbox enforcement record (the records "
+            "below are of another kind)."
+        )
     else:
-        lines.append(f"{len(records)} record(s):")
+        lines.append(f"{len(sandbox)} sandbox enforcement record(s):")
         for reason, cnt in sorted((summary.get("by_reason") or {}).items()):
             lines.append(f"- `{reason}`: {cnt}")
         lines.append("")
-        for r in records:
+        for r in sandbox:
             lines.append(
                 f"- [{r.get('evaluated_at')}] `{r.get('reason')}` arid=`{r.get('agent_run_id')}` "
                 f"(`{r.get('file')}`)"
+            )
+    if other:
+        # A retired writer's record: named by its kind so it is not read as enforcement.
+        lines.append("")
+        lines.append(
+            f"{len(other)} record(s) of another kind (a writer that no longer exists; "
+            "not a sandbox enforcement finding):"
+        )
+        for r in other:
+            lines.append(
+                f"- [{r.get('evaluated_at')}] kind `{r.get('kind')}` "
+                f"arid=`{r.get('agent_run_id')}` (`{r.get('file')}`)"
             )
     lines.append("")
 
