@@ -17327,6 +17327,55 @@ class CertifiedDepVersionTests(unittest.TestCase):
             self.assertEqual(certified[0]["spec_version"], "0.2.0",
                              "certified_deps must prefer highest version when both qualify")
 
+    def test_the_fingerprint_hashes_the_certified_versions_own_bytes(self) -> None:
+        """Issue #178 round 1: with two fully certified versions, `_write_full_chain` writes
+        byte-identical artifacts for both, so hashing the LOWER version's files under the
+        certified version's label was invisible to every row in this class (the mutant
+        `best_paths = paths` of the last version iterated survived). Here 0.2.0's artifacts
+        differ from 0.1.0's by one field per file, and the rows the gate hands to the hash
+        must be 0.2.0's own bytes — and a rewrite of 0.1.0's certified chain, the version
+        NOT certified, must leave the fingerprint alone."""
+        from tools.orchestration_runtime import (
+            _certify_and_collect_dep_artifacts, _compute_dep_readiness_and_fingerprint,
+            _load_spec_catalog,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build(repo_root)
+            self._write_full_chain(repo_root, "0.1.0")
+            self._write_full_chain(repo_root, "0.2.0")
+            safe_02 = "component__dep_a__0.2.0"
+            pipe_02 = repo_root / "workspace" / "pipelines" / safe_02 / "pipe_20260101_001"
+            files_02 = {
+                "ir_ref": (repo_root / "workspace" / "ir" / safe_02 / "dep-a_20260101_001"
+                           / "ir_meta.json"),
+                "pipeline_ref": pipe_02 / "binary" / "bin_20260101_001" / "binary_meta.json",
+                "aggregate_verdict": (pipe_02 / "runs" / "run_20260101_001" / safe_02
+                                      / "aggregate_verdict.json"),
+            }
+            for stage, path in files_02.items():
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                doc["marker"] = f"0.2.0-{stage}"
+                path.write_text(json.dumps(doc), encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
+            self.assertEqual(snap["certified_entries"], [("component", "dep_a", "0.2.0", 3)])
+            rows = snap["artifact_bytes_in_order"]
+            self.assertEqual([(r[0], r[3]) for r in rows],
+                             [(stage, "0.2.0") for stage in files_02])
+            for stage, _kind, _sid, _version, raw in rows:
+                self.assertEqual(raw, files_02[stage].read_bytes(), stage)
+                # Self-test that the two versions' bytes really differ on this file.
+                self.assertIn(f"0.2.0-{stage}".encode(), raw)
+            fp_before = _compute_dep_readiness_and_fingerprint(repo_root, "spec/component/user")[1]
+            # Rewriting the NOT-certified version's chain changes nothing hashed.
+            safe_01 = "component__dep_a__0.1.0"
+            (repo_root / "workspace" / "ir" / safe_01 / "dep-a_20260101_001"
+             / "ir_meta.json").write_text(
+                json.dumps({"verification_status": "pass", "marker": "churn"}), encoding="utf-8")
+            fp_after = _compute_dep_readiness_and_fingerprint(repo_root, "spec/component/user")[1]
+            self.assertEqual(fp_after, fp_before)
+
     def test_unrelated_version_artifact_churn_does_not_invalidate(self) -> None:
         """Codex round 17 F2 core test: only 0.1.0 is certified; touching
         0.2.0's artifacts must NOT change the persisted fingerprint, so the
