@@ -18922,8 +18922,8 @@ class MarkDependencyReadinessErrorPathTests(unittest.TestCase):
 class MalformedDepsYamlTests(unittest.TestCase):
     """Codex round 7 F1: a deps.yaml with malformed entries must NOT degrade to
     vacuous-true readiness. Previously, unparseable list items were dropped and
-    an all-malformed list produced empty `entries` which `_verify_dependency_readiness`
-    treated as the leaf case → all flags true → gate bypass.
+    an all-malformed list produced empty `entries` which readiness treated as the leaf
+    case → all flags true → gate bypass.
     """
 
     def _orch_with_deps(self, repo_root: Path, deps_body: str, orch: str = "mal") -> None:
@@ -22342,8 +22342,8 @@ class DependencyFreshnessTests(unittest.TestCase):
         # fail-closes on with `dependency_spec_ref_unresolved`), never fresh — else the launch
         # gate calls the dependency ready while `--with-deps` refuses to run on the same registry.
         from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog, _verify_dep_stage,
-            _verify_dependency_readiness)
+            _compute_dep_readiness_and_fingerprint, _dependency_resolution_freshness,
+            _load_spec_catalog, _verify_dep_stage)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "spec" / "registry").mkdir(parents=True)
@@ -22370,7 +22370,8 @@ class DependencyFreshnessTests(unittest.TestCase):
             self.assertIn("more than one spec directory", detail)
             self.assertFalse(_verify_dep_stage(repo_root, "component", "foo", "1.0.0", "ir_ref"))
             self.assertFalse(
-                _verify_dependency_readiness(repo_root, "spec/parent")["ir_ref_verified"])
+                _compute_dep_readiness_and_fingerprint(repo_root, "spec/parent")[0][
+                    "ir_ref_verified"])
 
     def test_pathless_catalog_entry_stays_fresh(self) -> None:
         # A version-only catalog entry (no deps_path / controlled_spec_path) resolves to ZERO
@@ -22396,8 +22397,9 @@ class DependencyFreshnessTests(unittest.TestCase):
 
     def test_launch_gate_certification_demotes_a_stale_dependency(self) -> None:
         # The launch gate recomputes readiness through `_certify_and_collect_dep_artifacts`,
-        # which does NOT route through `_verify_dep_stage` — so freshness must be enforced
-        # there too, else a stale dep still passes `workflow-launch-check` on a single-node run.
+        # which routes through `_verify_dep_stage_detail` since issue #178; kept as the
+        # launch-gate witness that the primitive's R6-lite demotion reaches the gate, else a
+        # stale dep would pass `workflow-launch-check` on a single-node run.
         from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -22427,8 +22429,9 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
 
     WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned: that the comparison is over the source
     BYTES (`test_identical_source_under_a_new_certification_stays_fresh` is the other direction of
-    `test_a_regenerated_dependency_source_makes_the_consumer_stale`), that both readiness
-    evaluators carry it, that a legacy binary fails closed while a leaf does not, and that the
+    `test_a_regenerated_dependency_source_makes_the_consumer_stale`), that the one readiness
+    primitive carries it and the launch gate reaches it, that a legacy binary fails closed while
+    a leaf does not, and that the
     selection Build stages from is the selection readiness compares
     (`test_binding_resolution_mirrors_build_staging` drives the production stager). Sampled: the
     malformed shapes — the entry validation rejects more shapes than the one probed."""
@@ -22627,9 +22630,12 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
                 self.assertIn("unsafe identifier token", detail)
                 self.assertFalse(_dep_binary_meta_passes(repo_root, kind, sid, version))
                 for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
-                    ok, why = _verify_dep_stage_detail(repo_root, kind, sid, version, stage)
+                    ok, why, selected = _verify_dep_stage_detail(
+                        repo_root, kind, sid, version, stage)
                     self.assertFalse(ok, (kind, sid, version, stage))
                     self.assertIn("unsafe identifier token", why)
+                    # An unsafe token composes no path, so nothing was selected to hash.
+                    self.assertIsNone(selected)
 
     def test_the_resolver_prefers_the_certified_source_over_a_newer_uncertified_one(self) -> None:
         """The selection rule the whole comparison rests on, asserted from the READINESS side.
@@ -22872,12 +22878,14 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertEqual(
                 _dependency_binding_freshness(repo_root, "component", "b", "0.1.0"), (True, None))
 
-    # ---- the second evaluator, and the reporting -----------------------------------------
+    # ---- the launch gate through the primitive, and the reporting ------------------------
 
     def test_launch_gate_certification_demotes_a_stale_binding_to_ir_level(self) -> None:
         """The launch gate recomputes readiness through `_certify_and_collect_dep_artifacts`,
-        which does NOT route through `_verify_dep_stage`. A drifted binding demotes the dep to
-        level 1 (its IR still certifies), so `workflow-launch-check` refuses a single-node run
+        which routes through `_verify_dep_stage_detail` since issue #178; kept as the
+        launch-gate witness that the primitive's demotion reaches the gate. A drifted binding
+        demotes the dep to level 1 (its IR still certifies), so `workflow-launch-check` refuses
+        a single-node run
         on the same tree `--with-deps` would re-certify. Twin of
         `DependencyFreshnessTests::test_launch_gate_certification_demotes_a_stale_dependency`,
         which demotes to level 0 because the IR itself is what went stale there."""
@@ -22916,6 +22924,76 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             self.assertTrue(readiness["ir_ref_verified"])
             self.assertFalse(readiness["pipeline_ref_verified"])
 
+    def test_launch_gate_judges_through_the_primitive(self) -> None:
+        """Issue #178: the launch gate holds no predicate of its own. Every `(dep, version)`
+        candidate is judged by `_verify_dep_stage_detail`, and EVERY stage is asked even after
+        one refuses — the gate does not short-circuit — because the file a refused stage
+        selected is still hashed into the fingerprint (`..._hashes_the_selected_artifact_...`
+        below pins that half)."""
+        import tools.orchestration_runtime as rt
+        asked: list[tuple[str, str, str, str]] = []
+        real = rt._verify_dep_stage_detail
+
+        def spy(repo_root: Path, kind: str, sid: str, version: str, stage: str):
+            asked.append((kind, sid, version, stage))
+            return real(repo_root, kind, sid, version, stage)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # Drift the binding so `pipeline_ref` refuses: a short-circuiting gate would stop
+            # asking after it.
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            with mock.patch.object(rt, "_verify_dep_stage_detail", side_effect=spy):
+                snap = rt._certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
+            self.assertEqual(
+                asked,
+                [("component", "b", "0.1.0", stage) for stage in rt._DEPENDENCY_READINESS_STAGES])
+            # The verdict was the primitive's, not a second predicate's: make the primitive
+            # refuse `ir_ref` and the gate's level follows it to 0 with the artifacts untouched.
+            with mock.patch.object(
+                    rt, "_verify_dep_stage_detail",
+                    side_effect=lambda r, k, s, v, st: (
+                        (False, "spy", None) if st == "ir_ref" else real(r, k, s, v, st))):
+                snap = rt._certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 0)])
+
+    def test_launch_gate_hashes_the_selected_artifact_of_a_demoted_dep(self) -> None:
+        """The fingerprint half of the issue #178 contract: a dep demoted to level 1 by a
+        binding drift still contributes the `binary_meta.json` (and the verdict) the refused
+        stages selected, byte-for-byte, so the `dep_set_fingerprint` recorded before the refactor
+        is the one recorded after it — and so a change to a demoted dep's artifacts still
+        invalidates the recorded readiness."""
+        from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
+                           source_id="src_20260903_001", binary_id="bin_20260903_001",
+                           body="module c_model ! REGENERATED\nend module c_model\n")
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
+            by_stage = {stage: (kind, sid, version, raw)
+                        for stage, kind, sid, version, raw in snap["artifact_bytes_in_order"]}
+            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                      / "b_20260101_001")
+            binary_meta = b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json"
+            verdict = (b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
+                       / "aggregate_verdict.json")
+            self.assertEqual(
+                [row[0] for row in snap["artifact_bytes_in_order"]],
+                ["ir_ref", "pipeline_ref", "aggregate_verdict"])
+            self.assertEqual(by_stage["pipeline_ref"],
+                             ("component", "b", "0.1.0", binary_meta.read_bytes()))
+            self.assertEqual(by_stage["aggregate_verdict"],
+                             ("component", "b", "0.1.0", verdict.read_bytes()))
+            # Self-test that the bytes are the DEMOTED dep's: the refused stage's file is the
+            # one hashed, not an empty placeholder.
+            self.assertIn(b"bin_20260725_001", by_stage["pipeline_ref"][3])
+
     def test_stale_details_names_the_stale_binding_of_a_consumer(self) -> None:
         from tools.orchestration_runtime import _stale_dependency_details
         with tempfile.TemporaryDirectory() as tmp:
@@ -22948,31 +23026,45 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
+            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                      / "b_20260101_001")
+            expected_selected = {
+                "ir_ref": (repo_root / "workspace" / "ir" / "component__b__0.1.0"
+                           / "b_20260101_001" / "ir_meta.json"),
+                "pipeline_ref": b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json",
+                "aggregate_verdict": (b_pipe / "runs" / "run_20260101_001"
+                                      / "component__b__0.1.0" / "aggregate_verdict.json"),
+            }
             for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
                 self.assertEqual(
                     _verify_dep_stage_detail(repo_root, "component", "b", "0.1.0", stage),
-                    (True, None), stage)
-            # A binding drift refuses `pipeline_ref` and names both sources.
+                    (True, None, expected_selected[stage]), stage)
+            # A binding drift refuses `pipeline_ref` and names both sources — and STILL returns
+            # the binary_meta.json it judged, because the launch gate hashes a demoted dep's
+            # selected artifacts (issue #178).
             self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
                            source_id="src_20260903_001", binary_id="bin_20260903_001",
                            body="module c_model ! REGENERATED\nend module c_model\n")
-            ok, detail = _verify_dep_stage_detail(
+            ok, detail, selected = _verify_dep_stage_detail(
                 repo_root, "component", "b", "0.1.0", "pipeline_ref")
             self.assertFalse(ok)
             self.assertIn("src_20260903_001", detail)
-            # A missing IR refuses `ir_ref` by name.
+            self.assertEqual(selected, expected_selected["pipeline_ref"])
+            # A missing IR refuses `ir_ref` by name, and selects nothing.
             shutil.rmtree(repo_root / "workspace" / "ir" / "component__b__0.1.0")
-            ok, detail = _verify_dep_stage_detail(
+            ok, detail, selected = _verify_dep_stage_detail(
                 repo_root, "component", "b", "0.1.0", "ir_ref")
             self.assertFalse(ok)
             self.assertIn("no certified IR", detail)
+            self.assertIsNone(selected)
             # A missing pipeline refuses `pipeline_ref` / `aggregate_verdict` by name.
             shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
             for stage in ("pipeline_ref", "aggregate_verdict"):
-                ok, detail = _verify_dep_stage_detail(
+                ok, detail, selected = _verify_dep_stage_detail(
                     repo_root, "component", "b", "0.1.0", stage)
                 self.assertFalse(ok)
                 self.assertIn("no pipeline", detail)
+                self.assertIsNone(selected)
 
     def test_binding_resolution_mirrors_build_staging(self) -> None:
         """The parity that makes CERTIFIED-AGAINST == STAGED-NOW true rather than intended: the
@@ -26735,7 +26827,9 @@ class ProfileExpansionTests(unittest.TestCase):
                 self.assertEqual(set(component), {"component_id", "version_constraint"})
 
     def test_readiness_asks_about_the_selected_components_and_never_the_profile(self) -> None:
-        from tools.orchestration_runtime import _verify_dependency_readiness
+        # Driven through the launch gate's readiness (`_compute_dep_readiness_and_fingerprint`),
+        # the one production evaluator since issue #178, with the primitive spied.
+        from tools.orchestration_runtime import _compute_dep_readiness_and_fingerprint
         import tools.orchestration_runtime as ort
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -26744,10 +26838,10 @@ class ProfileExpansionTests(unittest.TestCase):
 
             def _spy(_repo, kind, spec_id, _v, _stage):
                 asked.append((kind, spec_id))
-                return False
+                return (False, "spy", None)
 
-            with mock.patch.object(ort, "_verify_dep_stage", _spy):
-                result = _verify_dependency_readiness(repo, "spec/problem/a")
+            with mock.patch.object(ort, "_verify_dep_stage_detail", _spy):
+                result = _compute_dep_readiness_and_fingerprint(repo, "spec/problem/a")[0]
             self.assertEqual(result, {f"{s}_verified": False
                                       for s in ort._DEPENDENCY_READINESS_STAGES})
             self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
@@ -26755,15 +26849,18 @@ class ProfileExpansionTests(unittest.TestCase):
 
     def test_readiness_fails_closed_when_the_expansion_does(self) -> None:
         # Same class as a malformed schema: the declared dependency set does not resolve, so
-        # readiness must not degrade to vacuous true.
-        from tools.orchestration_runtime import _verify_dependency_readiness
-        import tools.orchestration_runtime as ort
+        # readiness must not degrade to vacuous true. The gate reports it the way it reports a
+        # malformed schema — `verified is None` with the schema fail_reason — which
+        # `mark_dependency_readiness` persists as a hard verification failure.
+        from tools.orchestration_runtime import _compute_dep_readiness_and_fingerprint
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            self.assertEqual(
-                _verify_dependency_readiness(repo, "spec/problem/a"),
-                {f"{s}_verified": False for s in ort._DEPENDENCY_READINESS_STAGES})
+            verified, _fp, certified, fail_reason = _compute_dep_readiness_and_fingerprint(
+                repo, "spec/problem/a")
+            self.assertIsNone(verified)
+            self.assertEqual(certified, [])
+            self.assertEqual(fail_reason, "deps_yaml_malformed_schema")
 
     def test_the_catalog_subset_covers_the_profile_and_what_it_selects(self) -> None:
         from tools.orchestration_runtime import _relevant_catalog_subset_bytes

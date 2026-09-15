@@ -3719,7 +3719,8 @@ def _dependency_node_readiness(
 ) -> dict[str, Any]:
     """Whether a closure node already satisfies `required_stages`, WITH the grounds for the answer.
 
-    Mirrors the runtime readiness contract (`_verify_dependency_readiness`): a node is ready when
+    Mirrors the launch gate's readiness contract (`_certify_and_collect_dep_artifacts`, judging
+    each stage through the same `_verify_dep_stage_detail` primitive): a node is ready when
     ANY single matching catalog version has a coherent artifact chain across all required stages
     (the same version V must satisfy every stage). Kept module-level so the closure driver uses one
     consistent readiness rule for both the pre-run skip check and the post-run verification.
@@ -3760,7 +3761,7 @@ def _dependency_node_readiness(
         failed_stage: str | None = None
         detail: str | None = None
         for st in required_stages:
-            ok, why = _verify_dep_stage_detail(repo_root, kind, sid, v, st)
+            ok, why, _selected = _verify_dep_stage_detail(repo_root, kind, sid, v, st)
             if not ok:
                 failed_stage, detail = st, why
                 break
@@ -3785,8 +3786,8 @@ def _resolve_dependency_closure(
         `{spec_ref, spec_kind, spec_id, spec_versions}`. `spec_versions` is the
         descending list of catalog versions satisfying the requiring edge's
         constraint (intersected across edges when a node is required more than
-        once). The readiness check mirrors the runtime contract
-        (`_verify_dependency_readiness`): a node is ready when ANY one of these
+        once). The readiness check mirrors the launch gate's contract
+        (`_certify_and_collect_dep_artifacts`): a node is ready when ANY one of these
         versions has a coherent artifact chain — so we keep all of them, not
         just the highest, to avoid re-running a dependency that an older
         matching version already satisfies.

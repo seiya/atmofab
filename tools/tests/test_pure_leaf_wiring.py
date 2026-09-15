@@ -1415,8 +1415,11 @@ class PureRenderTests(unittest.TestCase):
         # because that SKILL is deleted and the rule it stated was the host's already. READ
         # before re-approving: the line still routes on `dev_verify_major` /
         # `dev_verify_critical` and assigns no severity to anything.
+        # Re-taken a FIFTH time for issue #178: that sentence now names the gate function that
+        # survives (`_certify_and_collect_dep_artifacts`) instead of the deleted aggregator
+        # `_verify_dependency_readiness`; the routing is unchanged.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #4f8aa234c4e9",
+        " #30f836568599",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
