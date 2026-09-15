@@ -630,8 +630,9 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         self.assertEqual(row["repair_turns"], 0)
 
     def test_usage_wait_rows_are_not_counted_as_repair_turns(self) -> None:
-        # --wait-usage-reset: a non-terminal `pure_transport` row is a WAIT (re-launch in place),
-        # not a repair turn. `attempts` counts every launch, so repair_turns must subtract the waits.
+        # A non-terminal `pure_transport` row is a re-launch in place — a `--wait-usage-reset`
+        # wait or a transient retry — not a repair turn. `attempts` counts every launch, so
+        # repair_turns must subtract the re-launches.
         # wait -> pass: 2 launches, 0 repairs.
         row = diag._summarize_one_pure_meta({
             "result": "pass", "attempts": 2,
@@ -649,6 +650,14 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
             "result": "fail", "attempts": 1,
             "per_attempt": [{"failure_category": "pure_transport"}]})
         self.assertEqual(row["repair_turns"], 0)
+        # ...and the LAST row is excluded only when it is the last: a content repair that then
+        # died terminal of transport is 2 launches, 1 repair. Counting every transport row
+        # (`per_attempt` instead of `per_attempt[:-1]`) would read it as 0 repairs.
+        row = diag._summarize_one_pure_meta({
+            "result": "fail", "attempts": 2,
+            "per_attempt": [{"failure_category": "bundle_schema_violation"},
+                            {"failure_category": "pure_transport"}]})
+        self.assertEqual(row["repair_turns"], 1)
         # A pure content repair with no waits is unchanged: 2 launches, 1 repair.
         row = diag._summarize_one_pure_meta({
             "result": "pass", "attempts": 2,
