@@ -2532,6 +2532,39 @@ class TransportFailureTest(unittest.TestCase):
         self.assertTrue(any(not fallback_only.search(envelope(w).lower())
                             for w in ("weekly", "5-hour", "Opus weekly", "monthly")))
 
+    def test_the_classifier_tags_every_recorded_abort_wording(self) -> None:
+        """The `llm_usage_limit` vocabulary, element by element. Since issue #170 the tag is the
+        ONLY thing between a quota death and the `--wait-usage-reset` sleep, so a lead, a window
+        or a reset cue dropped from `_HIT_YOUR_LIMIT_BODY` / `_USAGE_LIMIT_WINDOWS` would
+        terminalize a real abort UNTAGGED — no wait, no decline to grep — with nothing red. This
+        is the classifier half of the deleted `test_arming_implies_the_classifier_would_tag`
+        matrix (the arming half went with the arming pattern): each lead × window × cue is one
+        assertion, and each `<window> limit reached` spelling one more, so a missing alternative
+        names itself. Measured round 2: with only the family rows above, dropping `session`,
+        `weekly`, `hourly` or `usage` from the windows, or the `18:00` / `in N hours` / weekday /
+        `tomorrow` cues, or the bare `session limit` alternative, left the suite green."""
+        for lead in ("You've hit your", "You’ve hit your", "You have hit your", "you hit your"):
+            for window in ("session", "weekly", "hourly", "5-hour", "Opus weekly", "monthly"):
+                for tail in ("· resets 3pm (Asia/Tokyo)", "· resets Monday", "· resets 18:00",
+                             "· resets in 2 hours", "· resets tomorrow"):
+                    line = f"{lead} {window} limit {tail}"
+                    got = wc._classify_leaf_infra_error("", line)
+                    self.assertEqual(got[0] if got else None, "llm_usage_limit", line)
+        # The `<window> limit reached` alternative, per window of `_USAGE_LIMIT_WINDOWS`, with
+        # the whitespace class on both sides of `limit` (a literal space once let
+        # `usage  limit  reached` through one pattern and not another).
+        for prefix in ("", "Claude ", "Claude AI "):
+            for window in ("usage", "session", "weekly", "hourly", "5-hour"):
+                for sep in (" ", "  ", "\t"):
+                    line = f"{prefix}{window}{sep}limit{sep}reached"
+                    got = wc._classify_leaf_infra_error(line, "")
+                    self.assertEqual(got[0] if got else None, "llm_usage_limit", repr(line))
+        # ...and the two bare phrases, which carry the `usage` / `session` windows when neither
+        # `reached` nor the lead-in is present.
+        for line in ("Session limit resets at 5pm (Asia/Tokyo)", "usage limit hit; stopping"):
+            got = wc._classify_leaf_infra_error(line, "")
+            self.assertEqual(got[0] if got else None, "llm_usage_limit", line)
+
     def test_the_lead_in_window_budget_is_bounded_from_both_sides(self) -> None:
         """The `[^\\n]{0,40}` window and the `{0,80}`/`{0,30}` cue distances are pinned NARROW by the
         family test above; widening them is the dangerous direction and is pinned here. With a
