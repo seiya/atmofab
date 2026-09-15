@@ -36,7 +36,7 @@ Sequenced (the pure-leaf migration and what it makes dead):
 
 1. #168 Z1: `compile.generate` and `compile.verify` as pure leaves, on every declared provider including the CLI transports' pure paths (premise 2).
 2. #169 `validate.judge`, the `infrastructure` node's Generate, and the escalate diagnostician as pure leaves. The `--mode prod` / `escalate` regime stays: an automatic diagnosis path for failures the deterministic tables cannot classify will be needed in unattended runs, and the diagnostician already reads no file and calls no tool.
-3. #170 `--wait-usage-reset` text parsing replaced by a bounded backoff on the `llm_usage_limit` tag. Landed in PR #223: the opt-in flag is kept (operator decision, 2026-09-15), the schedule is 15 min / 1 h / 4 h per substep.
+3. #170 `--wait-usage-reset` text parsing replaced by a bounded backoff on the `llm_usage_limit` tag. PR #223: the opt-in flag is kept (operator decision, 2026-09-15), the schedule is 15 min / 1 h / 4 h per substep.
 4. #171 Z4: the authoring-side enforcement complex deleted once no leaf holds a shell; blocked on 1 and 2. The read-only sandbox profile and the codex home / probe / feature-cache functions stay (premise 2). (The profile BUILDER named there is `orchestration_runtime.build_readonly_bwrap_profile`, the pure leaf's shared path. `workflow_conductor._readonly_sandbox_profile`, the diagnostician's in-process copy of it, is gone — #169's PR-1 gave the diagnostician a recorded launch like every other leaf's.)
 5. #177 resume from certified artifacts; the checkpoint ledger, reopen-phase and the superseded set retired. Smaller after #176.
 
