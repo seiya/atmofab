@@ -75,9 +75,10 @@ session and the rotated repair passed.
 
 **Leaf sandboxing (bwrap, unconditionally mandatory; Linux+userns only).**
 `record-launch` builds a per-arid bwrap profile (`sandbox_profiles/<arid>.json`: repo
-read-only; writes confined to the child's `write_roots` + `workspace/tmp`; the backend's
-install dir bound read-only and its config/credential home — `~/.claude{,.json}` — bound
-writable for auth + session transcript) and records `sandbox_enforced: true`. `spawn_leaf`
+read-only; writes confined to the child's `write_roots` + `workspace/tmp`; the backend CLI's
+install root — the `$HOME`-child directory its resolved executable lives under, or its parent
+directory outside `$HOME` (issue #226) — bound read-only and its config/credential home —
+`~/.claude{,.json}` — bound writable for auth + session transcript) and records `sandbox_enforced: true`. `spawn_leaf`
 **always** wraps every leaf (claude and codex) in that profile via `render_bwrap_command`;
 there is no opt-out. The conductor **fails closed** — a leaf with no usable profile (a
 missing or invalid file) raises rather than launching unconfined. Every leaf has a

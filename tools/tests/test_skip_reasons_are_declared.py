@@ -95,6 +95,9 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "must not decide a verdict (the launch probe refuses it for the same reason)",
     "bwrap / user namespaces not available":
         "the sandbox runtime is absent or unprivileged user namespaces are disabled",
+    "backend CLI not installed on this host":
+        "the row execs the operator's real backend CLI under the rendered profile, and this "
+        "host does not carry it (issue #226)",
     "symlink not supported on this filesystem":
         "the checkout is on a filesystem without symlinks",
     # `root bypasses file permissions` sat here until Z4 (issue #171): both of its skips were

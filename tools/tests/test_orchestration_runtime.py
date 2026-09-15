@@ -26445,7 +26445,9 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
     TYPE, since the command may be a wrapper whose name says nothing; and it is resolved
     through `tools.operator_private_root.backend_credential_home_paths`, which is the
     single canonical answer to "where does a backend keep its credentials" — a second
-    spelling here is how the profile and that resolver drift apart."""
+    spelling here is how the profile and that resolver drift apart. The ro set is the
+    CLI's install ROOT, delimited by the shape of the resolved path and by no backend
+    name (issue #226); its rows are the second half of this class."""
 
     def _paths(self, btype: str, command: str, home: Path):
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
@@ -26487,26 +26489,6 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
                            "no backend declares a credential FILE; the assertions above "
                            "looped over nothing and this pin covers only the dirs")
 
-    def test_the_backend_data_dir_is_bound_ro_for_claude(self) -> None:
-        """The third thing this function produces, and the one the class first missed.
-
-        The `claude` CLI reads `~/.local/share/claude` at startup, outside every system dir
-        `_runtime_ro_bind_paths` covers and outside the credential home. The class was
-        written because `return ([], [])` left the full suite green; it closed the rw
-        credential set and the install dir and not this, so a third of the subject stayed
-        exactly as unpinned as before. `grep -rn "local/share/claude"` over the tree found
-        this path in the implementation and nowhere else."""
-        d = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, d, True)
-        home = d / "home"
-        data_dir = home / ".local" / "share" / "claude"
-        data_dir.mkdir(parents=True)
-        ro, _rw = self._paths("claude", "claude", home)
-        self.assertIn(str(data_dir), ro)
-        # Keyed on the TYPE like the rw set: a codex leaf has no claude data dir to read.
-        ro_codex, _ = self._paths("codex", "codex", home)
-        self.assertNotIn(str(data_dir), ro_codex)
-
     def test_the_rw_set_is_keyed_on_the_type_not_on_the_command_string(self) -> None:
         # A `command:` wrapper resolves to the wrapper binary, so reading the command
         # string for the backend's identity binds the wrong home — or none.
@@ -26519,21 +26501,115 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         self.assertEqual(direct, wrapped)
         self.assertTrue(any(entry.endswith(".codex") for entry in wrapped), wrapped)
 
-    def test_the_backend_install_dir_is_bound_ro(self) -> None:
-        # The `claude` CLI installs under the operator's home, outside every system dir
-        # `_runtime_ro_bind_paths` covers, so without this the sandbox cannot exec it.
+    # ---- the ro half: the install ROOT, delimited by shape (issue #226) ----
+    #
+    # Each row below writes a real executable into a temp tree and resolves it through
+    # the host PATH, because `_backend_runtime_bind_paths` reads the command's first token
+    # via `shutil.which` (so `_paths`, which patches HOME only, cannot drive this half).
+    # The rows pin the PROPERTY of the rule — one bind, the $HOME-child root, for both
+    # `which` and its realpath — with `assertEqual` over the whole list, so a second entry
+    # for `bin/` or a deeper dir turns a row red. Each branch of `_install_root_for` gets
+    # its own probe: under $HOME (two install shapes), outside $HOME, directly under
+    # $HOME (refused), and no HOME at all.
+
+    def _ro_for(self, cmd: str, home: Path | None, bindir: Path) -> list[str]:
+        env = {"PATH": f"{bindir}:{os.environ['PATH']}"}
+        if home is not None:
+            env["HOME"] = str(home)
+        with mock.patch.dict(os.environ, env):
+            if home is None:
+                os.environ.pop("HOME", None)
+            ro, _rw = ort._backend_runtime_bind_paths("codex", cmd)
+        return ro
+
+    @staticmethod
+    def _executable(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def _tool_manager_install(self, home: Path) -> tuple[Path, Path]:
+        """`home/.toolmgr/bin/cli-sim` -> `shim`, beside `tools/` and a `layout` file:
+        the volta shape, where the shim needs siblings of `bin/` at start-up."""
+        root = home / ".toolmgr"
+        shim = self._executable(root / "bin" / "shim")
+        (root / "bin" / "cli-sim").symlink_to(shim)
+        (root / "tools").mkdir()
+        (root / "layout").write_text("", encoding="utf-8")
+        return root, root / "bin"
+
+    def test_an_install_under_home_binds_its_home_child_root(self) -> None:
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        bindir = home / ".local" / "bin"
-        bindir.mkdir(parents=True)
-        exe = bindir / "claude-sim"
-        exe.write_text("#!/bin/sh\n", encoding="utf-8")
-        exe.chmod(0o755)
+        root, bindir = self._tool_manager_install(home)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir), [str(root)])
+        # Second shape: `home/.local/bin/cli` -> `home/.local/share/x/versions/1/cli`, the
+        # installer layout where `bin/` and `share/` are siblings under one $HOME child.
+        home2 = d / "home2"
+        real = self._executable(home2 / ".local" / "share" / "x" / "versions" / "1" / "cli-sim")
+        bindir2 = home2 / ".local" / "bin"
+        bindir2.mkdir(parents=True)
+        (bindir2 / "cli-sim").symlink_to(real)
+        self.assertEqual(self._ro_for("cli-sim", home2, bindir2), [str(home2 / ".local")])
+
+    def test_the_install_root_does_not_depend_on_the_backend_name(self) -> None:
+        """The pin for issue #226's criterion: no backend-name literal in the ro half.
+
+        The tree carries `home/.local/share/claude`, the directory the OLD literal named,
+        so restoring `if btype == "claude": ro.add(~/.local/share/claude)` makes the claude
+        answer differ from the codex answer for the same command — and this row red."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        root, bindir = self._tool_manager_install(home)
+        (home / ".local" / "share" / "claude").mkdir(parents=True)
         with mock.patch.dict(os.environ,
                              {"HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            ro, _rw = ort._backend_runtime_bind_paths("claude", "claude-sim")
-        self.assertIn(str(bindir), ro)
+            ro_claude, _ = ort._backend_runtime_bind_paths("claude", "cli-sim")
+            ro_codex, _ = ort._backend_runtime_bind_paths("codex", "cli-sim")
+        self.assertEqual(ro_claude, ro_codex)
+        self.assertEqual(ro_claude, [str(root)])
+
+    def test_an_install_outside_home_binds_the_parent_dirs(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        real = self._executable(d / "opt" / "lib" / "real")
+        bindir = d / "opt" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "cli-sim").symlink_to(real)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir),
+                         sorted([str(bindir), str(d / "opt" / "lib")]))
+
+    def test_an_executable_directly_in_home_is_refused(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        self._executable(home / "cli-sim")
+        with self.assertRaises(ValueError) as ctx:
+            self._ro_for("cli-sim", home, home)
+        self.assertIn("directly under $HOME", str(ctx.exception))
+        self.assertIn(str(home / "cli-sim"), str(ctx.exception))
+
+    def test_a_path_equal_to_home_is_refused(self) -> None:
+        # Not reachable through `shutil.which` (a directory is never an executable), so
+        # the helper is driven directly: the branch exists so that no caller can ever
+        # turn "$HOME" into a read-only bind of the whole home.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        with self.assertRaises(ValueError) as ctx:
+            ort._install_root_for(d, str(d))
+        self.assertIn("$HOME itself", str(ctx.exception))
+
+    def test_no_home_falls_back_to_the_parent_dirs(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        _root, bindir = self._tool_manager_install(home)
+        self.assertEqual(self._ro_for("cli-sim", None, bindir), [str(bindir)])
 
 
 @unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")

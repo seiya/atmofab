@@ -7878,16 +7878,64 @@ def _resolve_backend_type(backend_type: str, backend_command: str) -> str:
     return ""
 
 
+def _install_root_for(path: Path, home: str) -> Path:
+    """The directory a backend CLI's install lives under, delimited by shape, not by name.
+
+    Under ``$HOME`` the root is the ancestor that is a direct child of ``$HOME``: a tool
+    manager such as volta keeps its shims (``bin/``), its layout file and the real tools
+    under one such root, and the claude installer keeps ``bin/`` and ``share/claude/`` under
+    ``~/.local``. Outside ``$HOME`` it is the path's parent directory, as before issue #226
+    (the system dirs are already in `_runtime_ro_bind_paths`, so that bind is a harmless
+    duplicate). A path equal to ``$HOME``, or whose parent is ``$HOME``, has no install
+    root: refuse rather than bind the operator's whole home read-only. ``path`` and
+    ``home`` must both be absolute; the caller passes `shutil.which`'s answer and its
+    `os.path.realpath`.
+    """
+    home_path = Path(home)
+    if path == home_path:
+        raise ValueError(
+            f"backend CLI path is $HOME itself, which is not an install root: {path}"
+        )
+    try:
+        rel = path.relative_to(home_path)
+    except ValueError:
+        return path.parent
+    if len(rel.parts) < 2:
+        raise ValueError(
+            "backend CLI executable sits directly under $HOME, which has no install root "
+            f"to bind (an executable is expected under a $HOME-child directory): {path}"
+        )
+    return home_path / rel.parts[0]
+
+
 def _backend_runtime_bind_paths(
     backend_type: str, backend_command: str
 ) -> tuple[list[str], list[str]]:
     """Absolute host paths the backend CLI needs that live outside ``repo_root``.
 
     Returns ``(ro_paths, rw_paths)``:
-    - ro: the backend's install location (binary dir + resolved-symlink dir). The
-      `claude` CLI installs under ``~/.local/...``, outside the system dirs that
-      `_runtime_ro_bind_paths` covers, so the bare profile cannot find it. Resolved
-      from the command's first token (a custom wrapper resolves to the wrapper binary).
+    - ro: the backend CLI's install root, for both the command's first token as
+      `shutil.which` finds it and that path's `os.path.realpath` (a custom wrapper
+      resolves to the wrapper binary). The root is delimited by SHAPE, by
+      `_install_root_for`, with no per-backend literal (issue #226): under ``$HOME`` it is
+      the ``$HOME``-child directory the path lives under (``~/.volta`` for a volta shim,
+      whose start-up needs ``tools/`` and ``layout.*`` beside ``bin/``; ``~/.local`` for the
+      claude installer's ``bin/`` + ``share/<cli>/versions/``); outside ``$HOME`` it is the
+      parent directory. An executable directly under ``$HOME``, or a path equal to
+      ``$HOME``, is refused with `ValueError` (`record_launch` routes a profile-build
+      failure to transport `fail_closed`), since the only root that would cover it is the
+      operator's whole home. With ``HOME`` unset there is nothing to delimit against and
+      the parent directories are bound, as before #226.
+      Cost of the polarity, measured on the planning host: the claude bind widens from
+      the CLI's own data dir under ``~/.local/share/`` (+ ``~/.local/bin``, + its
+      ``versions/``) to ``~/.local``, which also holds ``share/keyrings``, ``state/`` and
+      ``lib/``. A pure claude leaf holds no
+      tool (``--tools ""``) and cannot read them; a tool-bearing pure codex leaf gets
+      ``~/.volta``, not ``~/.local``; and reading the operator's data is outside the
+      defended set (`AGENTS.md` §Development premises). Unmodelled shapes, stated rather
+      than guessed (neither is measurable on the planning host): an ``/opt/<x>/bin``
+      install whose realpath needs a sibling ``lib/``, and a realpath that is a
+      ``#!/usr/bin/env <interp>`` script whose interpreter lives under a different root.
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
       string, which may be a wrapper), and resolved by the canonical
@@ -7903,13 +7951,14 @@ def _backend_runtime_bind_paths(
     rw: set[str] = set()
     first_token = (backend_command or "").split()
     exe = shutil.which(first_token[0]) if first_token else None
-    if exe:
-        ro.add(str(Path(exe).parent))
-        ro.add(str(Path(os.path.realpath(exe)).parent))
     home = (os.environ.get("HOME") or "").strip()
+    if exe:
+        for candidate in (Path(exe), Path(os.path.realpath(exe))):
+            if home:
+                ro.add(str(_install_root_for(candidate, home)))
+            else:
+                ro.add(str(candidate.parent))
     if home:
-        if btype == "claude":
-            ro.add(str(Path(home) / ".local" / "share" / "claude"))
         # The credential-home paths come from the single canonical resolver in
         # `tools/operator_private_root.py`, so there is no second spelling of where a backend's
         # config/credential home is.

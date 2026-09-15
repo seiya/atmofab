@@ -4909,7 +4909,7 @@ class Conductor:
             # here may run on a different provider than its siblings.
             "backend": (entry or self.entry_for(None, None)).backend_token,
             # The EXECUTABLE this leaf is actually launched through. `record_launch` builds the
-            # bwrap profile's read-only bind of the CLI's install directory from it; it used to
+            # bwrap profile's read-only bind of the CLI's install root from it; it used to
             # take `preflight.json#probe_command`, which describes `defaults`. Those were the
             # same object while a run had one run-wide command, and stop being once an entry can
             # carry its own `command:` — the leaf would then be launched inside a sandbox where

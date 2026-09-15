@@ -193,6 +193,47 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # The host's copies are untouched — this hides, it does not delete.
             self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
 
+    # ---- issue #226: the backend CLI itself starts inside the profile rendered for it ----
+
+    def _assert_backend_cli_starts_inside_its_profile(self, backend_type: str, cli: str) -> None:
+        """Exec the operator's REAL backend CLI, by name, under the profile production renders.
+
+        The ro bind of the CLI's install root is what `_backend_runtime_bind_paths` exists
+        for, and until issue #226 it was complete for one install shape only: a `claude`
+        literal, and nothing for a `codex` behind a volta shim (measured: rc=7, `Volta
+        update error`, because the shim needs `~/.volta/tools` and `~/.volta/layout.*`
+        beside `~/.volta/bin`). The rule is now shape-delimited, and a unit row over a
+        synthetic tree cannot say whether the REAL install is covered — only the real CLI
+        under real bwrap can, which is why this row does not fake the shim.
+
+        Two things this row shares with every production launch, stated rather than hidden:
+        it binds the operator's real credential home rw (`~/.codex` / `~/.claude`), since
+        that is the profile's default rw set for the operator's real install, and
+        `--version` writes nothing there; and it launches by NAME through the host PATH the
+        profile env carries. `_bwrap_stdout` raises with bwrap's stderr and exit code, so a
+        regression reads as the CLI's own start-up error. On a host carrying neither CLI
+        both rows skip, and the criterion is unmeasured there.
+        """
+        if shutil.which(cli) is None:
+            self.skipTest("backend CLI not installed on this host")
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t).resolve()
+            orch, arid = f"orch_{cli}", f"arid_{cli}"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            profile = build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command=cli, backend_type=backend_type)
+            out = _bwrap_stdout(render_bwrap_command(profile=profile,
+                                                     command_argv=[cli, "--version"]),
+                                timeout=120)
+        self.assertTrue(out.strip(), out)
+
+    def test_codex_cli_starts_inside_its_own_profile(self) -> None:
+        self._assert_backend_cli_starts_inside_its_profile("codex", "codex")
+
+    def test_claude_cli_starts_inside_its_own_profile(self) -> None:
+        self._assert_backend_cli_starts_inside_its_profile("claude", "claude")
+
 
 if __name__ == "__main__":
     unittest.main()
