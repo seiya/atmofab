@@ -195,7 +195,9 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
     # ---- issue #226: the backend CLI itself starts inside the profile rendered for it ----
 
-    def _assert_backend_cli_starts_inside_its_profile(self, backend_type: str, cli: str) -> None:
+    def _assert_backend_cli_starts_inside_its_profile(
+        self, backend_type: str, cli: str, *, private_home: bool,
+    ) -> None:
         """Exec the operator's REAL backend CLI, by name, under the profile production renders.
 
         The ro bind of the CLI's install root is what `_backend_runtime_bind_paths` exists
@@ -206,33 +208,49 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         synthetic tree cannot say whether the REAL install is covered — only the real CLI
         under real bwrap can, which is why this row does not fake the shim.
 
-        Two things this row shares with every production launch, stated rather than hidden:
-        it binds the operator's real credential home rw (`~/.codex` / `~/.claude`), since
-        that is the profile's default rw set for the operator's real install, and
-        `--version` writes nothing there; and it launches by NAME through the host PATH the
-        profile env carries. `_bwrap_stdout` raises with bwrap's stderr and exit code, so a
-        regression reads as the CLI's own start-up error. On a host carrying neither CLI
-        both rows skip, and the criterion is unmeasured there.
+        The rw half follows production's shape per backend, because the rw half is where a
+        row can leave something behind in the operator's home. A codex launch passes
+        `codex_isolation_profile_kwargs`: a private `CODEX_HOME` bound rw INSTEAD of
+        `~/.codex` (the operator's `~/.codex` is never bound rw in production); the row
+        passes the same two kwargs with a home under its own tempdir — measured, `codex
+        --version` creates `tmp/arg0/codex-arg0*/` under whichever `CODEX_HOME` it runs
+        with, which the first version of this row left in the operator's real `~/.codex`.
+        (The auth / config ro mappings production adds are not needed by `--version`.) A
+        claude launch takes the default rw set, `~/.claude` + `~/.claude.json`, and the row
+        does the same; measured over repeated runs with a `find -newer` marker, `claude
+        --version` under the profile leaves nothing new there (an operator's own
+        interactive session writes `~/.claude.json` concurrently, so one probe is not a
+        measurement). The CLI is launched by NAME through the host PATH the profile env carries. `_bwrap_stdout`
+        raises with bwrap's stderr and exit code, so a regression reads as the CLI's own
+        start-up error. On a host carrying neither CLI both rows skip, and the criterion is
+        unmeasured there.
         """
         if shutil.which(cli) is None:
             self.skipTest("backend CLI not installed on this host")
-        with tempfile.TemporaryDirectory() as t:
+        with tempfile.TemporaryDirectory() as t, tempfile.TemporaryDirectory() as h:
             repo = Path(t).resolve()
             orch, arid = f"orch_{cli}", f"arid_{cli}"
             _ensure_orchestration_audit_dirs(repo, orch)
+            kwargs: dict = {}
+            if private_home:
+                home = Path(h).resolve() / "home"
+                home.mkdir(mode=0o700)
+                kwargs = {"backend_rw_override": [str(home)],
+                          "env_overrides": {"CODEX_HOME": str(home)}}
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
-                backend_command=cli, backend_type=backend_type)
+                backend_command=cli, backend_type=backend_type, **kwargs)
             out = _bwrap_stdout(render_bwrap_command(profile=profile,
                                                      command_argv=[cli, "--version"]),
                                 timeout=120)
         self.assertTrue(out.strip(), out)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
-        self._assert_backend_cli_starts_inside_its_profile("codex", "codex")
+        self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
 
     def test_claude_cli_starts_inside_its_own_profile(self) -> None:
-        self._assert_backend_cli_starts_inside_its_profile("claude", "claude")
+        self._assert_backend_cli_starts_inside_its_profile("claude", "claude",
+                                                          private_home=False)
 
 
 if __name__ == "__main__":
