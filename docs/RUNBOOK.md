@@ -521,10 +521,11 @@ paragraph after the list for what that leaves):
   `allowed_read_roots` contained `docs/` and `spec/` unconditionally, so a homes root at
   `<repo>/spec/homes` was readable by every leaf, exposing every earlier leaf's transcript.
   Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted both layers with
-  the agentic leaf; the rule is KEPT because a homes root inside the checkout is still
-  visible to the one leaf that does hold tools — a codex pure leaf, whose read boundary
-  `TODO.md` records as open — and because a tree inside the checkout pollutes the operator's
-  `git status` whatever reads it. (The rule was written for two trees; the other, the dismiss-violation token
+  the agentic leaf, and [issue #227](https://github.com/seiya/atmofab/issues/227) then took
+  the checkout itself out of every leaf's sandbox, so the one leaf that does hold tools — a
+  codex pure leaf — cannot reach a homes root inside the checkout either; the rule is KEPT
+  because a tree inside the checkout pollutes the operator's `git status` whatever reads it,
+  and because it refuses at launch what the mount set would otherwise merely hide. (The rule was written for two trees; the other, the dismiss-violation token
   store, was where it was first measured — a leaf holding that token could approve its own
   `unauthorized_write_violation` — and it went away with issue #176.)
 

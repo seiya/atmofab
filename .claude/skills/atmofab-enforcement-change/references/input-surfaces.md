@@ -224,8 +224,10 @@ not.
 The rule is in SKILL.md; this is what it cost. PR #228 replaced a claude-only literal in
 `_backend_runtime_bind_paths` with a shape rule: bind the `$HOME`-child ancestor of the CLI's
 `which` path and of its realpath (`~/.volta`, `~/.local`) read-only, so a volta shim can start.
-The read-only leaf profile hides `workspace/`, the `workspace_*/` archives and `releases/` with
-tmpfs overlays at the checkout's own path, and a bound `$HOME` child is exactly the place a
+The read-only leaf profile hid `workspace/`, the `workspace_*/` archives and `releases/` with
+tmpfs overlays at the checkout's own path (since issue #227 it is one empty tmpfs over the whole
+checkout, at that same path, so `tools/` is on the hidden side too and the exemption below holds
+for the same reason), and a bound `$HOME` child is exactly the place a
 second name for the checkout can sit. Round 0's own sweep and the round-1 reviewers saw none of
 this; round 1's security axis found the first name and every later round found the next, each
 INSIDE the previous round's fix:
@@ -252,7 +254,7 @@ the round-5 instrument unreviewed, disclosed in the PR body.
 Two follow-through facts worth keeping beside the rule:
 
 - **The exemption is a rule too** (3-a): a root whose OWN spelling contains the checkout is safe
-  because the repo bind and the overlays are emitted later at that path and stack on top —
+  because the overlays (now the one tmpfs) are emitted later at that path and stack on top —
   measured, the control row asserts it — and the round-5 security axis found the exemption
   itself taken on the RAW spelling, so a `..` in the spelled root under an unset `HOME` passed it.
   An exemption keyed on a spelling gets the same treatment as the check.

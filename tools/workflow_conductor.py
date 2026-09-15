@@ -3741,8 +3741,14 @@ class Conductor:
             # `.codex/hooks.json` — written for an operator's own session — out of the leaf's
             # hook set. Since Z4 (issue #171) the leaf brings no hooks of its own: what
             # confines it is this read-only sandbox plus the output schema.
+            # `--skip-git-repo-check`: the sandbox holds no checkout — `render_bwrap_command`
+            # puts an empty tmpfs at `repo_root` (issue #227) — and codex refuses an untrusted
+            # non-git cwd before any API call without it (measured on codex-cli 0.154.0: `Not
+            # inside a trusted directory and --skip-git-repo-check was not specified.`, rc 1).
+            # The cwd stays `repo_root` so the private `CODEX_HOME`'s trust key, the schema
+            # path and `TMPDIR` are unchanged; only the git check is waived.
             pure_flags = ["--ignore-rules", "--sandbox", "read-only",
-                          "--output-schema", str(schema)]
+                          "--skip-git-repo-check", "--output-schema", str(schema)]
             # `codex exec resume` and `codex exec` do NOT accept the same options: resume has
             # no `--sandbox` (only the never-used
             # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy is
@@ -3752,7 +3758,7 @@ class Conductor:
             # repair a transport death (warm resume is how both pure loops run every repair
             # attempt). `--config`, not the `-c` alias, for the reason above.
             pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
-                                 "--output-schema", str(schema)]
+                                 "--skip-git-repo-check", "--output-schema", str(schema)]
             # `-` is the documented stdin sentinel for the positional prompt on BOTH
             # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
             # when the prompt is absent, but `codex exec resume` documents only the `-`

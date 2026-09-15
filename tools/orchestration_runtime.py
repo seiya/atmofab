@@ -7808,11 +7808,11 @@ LEAF_ENV_NAMED_EXCLUSIONS = (
     # ALLOWLIST — which is where these names would have to go to reach a leaf, and
     # not this exclusion list, whose members are precisely the ones that do NOT
     # travel — is persisted verbatim into `sandbox_profiles/<arid>.json` and into
-    # that file's `rendered_command`, and the repository is bound read-only INTO
-    # the sandbox whole. So allowlisting a live API key here writes it into a
-    # record that lives under `workspace/`, which every later run reads — the same
-    # hole the `api_key_env` rule above closes. Since Z4 (issue #171) no leaf holds
-    # a tool with which to read that record itself, which narrows the reader to the
+    # that file's `rendered_command`. So allowlisting a live API key here writes it
+    # into a record that lives under `workspace/`, which every later run reads — the
+    # same hole the `api_key_env` rule above closes. Since Z4 (issue #171) no leaf
+    # holds a tool with which to read that record itself, and since issue #227 no
+    # leaf's sandbox holds the checkout at all, which narrows the reader to the
     # operator and to whatever else reads `workspace/`, and does not change the
     # call: a credential belongs in no record. The supported route is the
     # credentials FILE, which is bound into the sandbox and never copied into one.
@@ -7952,9 +7952,12 @@ def _backend_runtime_bind_paths(
       ``~/.local`` (on the planning host it is ``~/.volta``, a measurement rather than a
       property). A pure claude leaf holds no tool (``--tools ""``) and cannot read any of
       it; a tool-bearing pure codex leaf can, and reading the operator's data is outside
-      the defended set (`AGENTS.md` §Development premises) — a sibling checkout kept under
-      such a root is the one case with a named gain, and it is issue #227's read-boundary
-      work, not this rule's. Unmodelled shapes, stated rather than guessed (none is
+      the defended set (`AGENTS.md` §Development premises). A SIBLING checkout kept under
+      such a root stays readable and is that data too: what issue #227 closed is the leaf's
+      OWN checkout, absent from the sandbox (`render_bwrap_command` puts an empty tmpfs at
+      `repo_root`) and refused under any second name by `_refuse_backend_ro_alias_of_repo`;
+      another clone holds neither this run's artifacts nor anything the prompt's rules were
+      derived from at this commit. Unmodelled shapes, stated rather than guessed (none is
       measurable on the planning host): an ``/opt/<x>/bin`` install whose realpath needs a
       sibling ``lib/``; a realpath that is a ``#!/usr/bin/env <interp>`` script whose
       interpreter lives under a different root; a per-entry ``command:`` wrapper that execs
@@ -8064,19 +8067,20 @@ def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple
 def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str]) -> None:
     """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
 
-    `render_bwrap_command` hides the artifact trees (`workspace/`, the archives, `releases/`)
-    with tmpfs overlays at the `repo_root` path the caller passes — which every production
-    caller resolves first (`main` and `run_workflow.py` both `.resolve()`; the conductor
-    passes `--repo-root .`). bwrap resolves a bind's SOURCE on the host and mounts it at the
-    spelled destination, so an install root that is the checkout, one of its ancestors, or
-    a tree INSIDE it under a different name — a symlinked `$HOME` (`/home/x -> /data/x`)
-    with the checkout and the CLI under the same `$HOME` child; a `$HOME` child that is a
-    symlink to the parent of the home; a data disk bind-mounted into `~/work` while the
-    workflow was started from the disk's own spelling; a `$HOME` child symlinked or
-    bind-mounted onto `<checkout>/workspace` with the wrapper kept there — exposes the
-    checkout at the alias with nothing overlaid: a VERIFY leaf reads the producer's
-    `dialogs/leaf.stdout.jsonl` there, the gain the overlay exists to remove. Every form
-    named was measured under real bwrap before its refusal landed (issue #226 rounds 2-5).
+    `render_bwrap_command` hides the whole checkout with an empty tmpfs at the `repo_root`
+    path the caller passes — which every production caller resolves first (`main` and
+    `run_workflow.py` both `.resolve()`; the conductor passes `--repo-root .`). bwrap
+    resolves a bind's SOURCE on the host and mounts it at the spelled destination, so an
+    install root that is the checkout, one of its ancestors, or a tree INSIDE it under a
+    different name — a symlinked `$HOME` (`/home/x -> /data/x`) with the checkout and the
+    CLI under the same `$HOME` child; a `$HOME` child that is a symlink to the parent of the
+    home; a data disk bind-mounted into `~/work` while the workflow was started from the
+    disk's own spelling; a `$HOME` child symlinked or bind-mounted onto
+    `<checkout>/workspace` with the wrapper kept there — exposes the checkout at the alias
+    with nothing overlaid: a VERIFY leaf reads the producer's `dialogs/leaf.stdout.jsonl`
+    there, and since issue #227 the gate's implementation under `tools/` too, the gains the
+    tmpfs exists to remove. Every form named was measured under real bwrap before its
+    refusal landed (issue #226 rounds 2-5).
 
     Two comparisons, neither by path. (1) INODE: `os.path.samestat` between the root and
     each ancestor of the resolved checkout (the checkout itself included), and between the
@@ -8086,8 +8090,10 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     root itself and for every mount point beneath it — sees a bind mount of a tree inside
     the checkout, and a bind mount BELOW the root, which `realpath` and a single inode
     cannot. A root whose SPELLING (normalised) contains the checkout, or is under it, is
-    exempt: the repo bind and the overlays are emitted later at that path and stack on top
-    (measured: the dialogs stay hidden). Same shape as the rw refusal below.
+    exempt: the tmpfs is emitted later at that path and stacks on top (measured under real
+    bwrap: the planted dialogs and `tools/` file stay hidden — the accepted control row of
+    `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`). Same shape as
+    the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
     try:
@@ -8209,16 +8215,22 @@ def build_readonly_bwrap_profile(
     """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
 
     The profile every leaf runs under — since Z4 (issue #171) there is no other kind of leaf.
-    Its sole production caller is `record_launch`'s `if is_pure:` branch. The repo is bound
-    read-only, there are NO write_roots and NO read-root file pins, and the only writable
-    surfaces are a tmp scratch (sandbox tmp + workspace/tmp/<arid>) and the backend's
-    config/credential home (auth/session, outside repo_root).
+    Its sole production caller is `record_launch`'s `if is_pure:` branch. The checkout is NOT
+    bound (issue #227): an empty tmpfs sits at `repo_root`, so a tool-bearing codex leaf finds
+    neither the artifact trees nor `tools/` / `docs/` / `spec/` — a pure leaf's whole context
+    is inlined in its launch prompt and it needs no repository file. What IS bound: the
+    system directories and the backend CLI's install root (ro, `runtime_ro_bind_paths`), the
+    backend's config/credential home (rw, auth/session, outside repo_root), and the leaf's
+    own two scratch roots (rw): `workspace/tmp/<arid>` and this profile's `tmp_dir`,
+    `sandboxes/<arid>/tmp` under the orchestration. There are NO write_roots and NO read-root
+    file pins.
 
-    Nothing inside the repository is writable EXCEPT `workspace/tmp/<arid>`, the leaf's own
-    scratch — bound rw below, and the reason `workspace/` is hidden by a tmpfs rather than left
-    unbound. Nothing an artifact could be written to is writable, so a leaf has nothing to
-    attribute and the FS-diff is trivially empty; an artifact write it attempts is refused by
-    bwrap itself. (The round-2 review caught this sentence claiming the stronger, false thing.) The
+    Nothing inside the repository is reachable EXCEPT those two roots, the leaf's own scratch
+    — bound rw below, under the tmpfs, so a codex launch's `--output-schema` file and its
+    `TMPDIR` resolve. Nothing an artifact could be written to is writable, so a leaf has
+    nothing to attribute and the FS-diff is trivially empty; an artifact write it attempts is
+    refused by bwrap itself. (The round-2 review caught this sentence claiming the stronger,
+    false thing.) The
     per-orchestration `hooks/` and `audit/` binds that used to sit here were for the leaf's own
     PreToolUse/PostToolUse hooks to persist their event log and first-read state — the leaf
     runs no hook now, so binding them writable would open the only repository-writable surface
@@ -8341,34 +8353,6 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     return body
 
 
-def _leaf_hidden_artifact_trees(repo_root: Path) -> list[Path]:
-    """The repository trees a read-only leaf's sandbox hides behind an empty tmpfs.
-
-    Every tree that holds RUN ARTIFACTS: the live `workspace/`, the `workspace_*` archives an
-    operator's convention leaves beside it, and `releases/` (the promoted artifacts of the
-    Promote flow). A pure leaf needs none of them — its whole context is inlined — and each
-    holds the same thing: another run's records, a producer's persisted reasoning, and
-    certified sources the workflow forbids referencing.
-
-    ENUMERATED FROM DISK rather than listed, because the archives are an operator convention
-    with no fixed set: a `workspace_20260723/` this repository has never heard of is hidden on
-    the machine that has it. `workspace/` is returned whether or not it exists, so the leaf's
-    own `workspace/tmp/<arid>` bind (emitted later, overriding this) has a mountpoint.
-    """
-    trees = [repo_root / "workspace"]
-    try:
-        for entry in sorted(repo_root.iterdir()):
-            if entry.name == "workspace" or not entry.is_dir():
-                continue
-            if entry.name.startswith("workspace_") or entry.name == "releases":
-                trees.append(entry)
-    except OSError:
-        # An unreadable repo root is a host defect the caller's own binds will surface; hiding
-        # the live `workspace/` is the part that must not depend on a directory listing.
-        pass
-    return trees
-
-
 def render_bwrap_command(
     *,
     profile: dict[str, Any],
@@ -8406,42 +8390,42 @@ def render_bwrap_command(
     for item in profile.get("runtime_ro_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--ro-bind", item.strip(), item.strip()])
-    cmd.extend(["--ro-bind", repo_root, repo_root])
-    if profile.get("readonly") is True:
-        # HIDE `workspace/` FROM A READ-ONLY LEAF, by overlaying an empty tmpfs on it after the
-        # repository's ro-bind (bwrap applies binds in order, later overriding earlier). The
-        # leaf's own `workspace/tmp/<arid>` is bind-mounted back further down, so the
-        # `--output-schema` file a codex pure launch needs and its `TMPDIR` still work; bwrap
-        # creates the mountpoint under the tmpfs.
-        #
-        # WHY, and it is not symmetry with the write side. A CLAUDE pure leaf is tool-free
-        # (`--tools ""`) and could not read this or anything else. A CODEX pure leaf is
-        # `codex exec --sandbox read-only`: tool-BEARING, with the repository ro-bound, and
-        # until Z4 (issue #171) its reads were refused by the leaf hook layer against the empty
-        # `allowed_read_roots` this profile still records. Deleting that layer left the read
-        # boundary to nothing, and `workspace/` is where the sharpest gain lives — a round-2
-        # Codex review named it: a VERIFY leaf can read the producer's own reasoning in
-        # `agents/<arid>/dialogs/leaf.stdout.jsonl` of the run it is reviewing and reuse its
-        # conclusions instead of reviewing the supplied context, which defeats the persona
-        # separation `_run_pure_verify_substep` calls structural. Past artifacts, sibling
-        # certified sources and other orchestrations are under here too, and the workflow
-        # forbids referencing them (`docs/workflow/WORKFLOW_CORE.md` §invariants 6-8).
-        #
-        # WHAT THIS DOES NOT CLOSE, named rather than implied: `tools/`, `docs/` and `spec/`
-        # stay readable, so a codex leaf can still read the deterministic gate's implementation.
-        # Closing that means binding only the launch's own necessities instead of the checkout,
-        # which needs a measured codex launch under the narrowed profile — `TODO.md` carries the
-        # entry and why that measurement could not be taken here. This change needs no such
-        # measurement: the repository root and every other tree stay exactly as they were.
-        #
-        # THE SET IS DERIVED FROM THE TREE, not just `workspace/`. A round-3 disclosure review
-        # measured the first version of this and found it incomplete: this checkout carries 51
-        # `workspace_*/` archives holding past orchestrations and certified sources — the same
-        # content, under a different name, and gitignored, which is why a `.gitignore`-respecting
-        # grep would not have surfaced them. Every artifact tree is hidden, so an operator's
-        # archiving convention cannot re-open what `workspace/` closes.
-        for artifact_tree in _leaf_hidden_artifact_trees(Path(repo_root)):
-            cmd.extend(["--tmpfs", str(artifact_tree)])
+    # THE CHECKOUT IS NOT BOUND. An empty tmpfs sits at `repo_root` — the same path, so
+    # `--chdir`, the private `CODEX_HOME`'s `[projects."<repo>"]` trust key and the
+    # `--output-schema` path under `workspace/tmp/<arid>` are all unchanged — and nothing of
+    # the repository is mounted under it except the leaf's OWN two scratch roots,
+    # `workspace/tmp/<arid>` and the profile's `tmp_dir` (`sandboxes/<arid>/tmp`), bound rw
+    # further down (bwrap creates each mountpoint under the tmpfs, as it did under the
+    # `workspace/` tmpfs this replaces). What the sandbox holds, in full: the system
+    # directories and the backend CLI's install root (`runtime_ro_bind_paths`, above), the
+    # backend's credential home (rw, outside the checkout, below), and those two roots.
+    # The tmpfs itself is writable, as bwrap's are: a write at the checkout's path lands on
+    # it and is gone with the process, never on the host (measured:
+    # `test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable`).
+    #
+    # WHY (issue #227). A CLAUDE pure leaf is tool-free (`--tools ""`) and could read
+    # nothing either way. A CODEX pure leaf is `codex exec --sandbox read-only`: tool-BEARING,
+    # and until Z4 (issue #171) its reads were refused by the leaf hook layer against the
+    # empty `allowed_read_roots` this profile still records. Deleting that layer left the
+    # read boundary to the mount set alone. Issue #171 PR-1 hid the artifact trees
+    # (`workspace/`, the `workspace_*/` archives, `releases/`) with per-tree tmpfs overlays
+    # over a whole-checkout ro-bind — a VERIFY leaf reading the producer's own
+    # `dialogs/leaf.stdout.jsonl`, sibling certified sources, other orchestrations — and left
+    # `tools/`, `docs/` and `spec/` readable, so a leaf could read the deterministic gate's
+    # IMPLEMENTATION and aim at the checker rather than the rule the prompt quotes: a
+    # presence floor's exact signal is cheaper to satisfy than the work the floor stands for,
+    # and a wrong certification is the severity. A pure leaf needs no repository file at all —
+    # its whole context is inlined in the launch prompt — so the checkout is simply absent,
+    # and the per-tree overlays are gone with it (nothing under a tmpfs needs hiding twice;
+    # `test_bwrap_simulation.py` pins each formerly overlaid tree, and the three source
+    # trees, as HIDDEN under real bwrap). The codex launch pays one flag for the empty cwd:
+    # `--skip-git-repo-check` (`leaf_command`), measured on codex-cli 0.154.0.
+    #
+    # An install root cannot smuggle the checkout back in under another name:
+    # `_refuse_backend_ro_alias_of_repo` refuses a root that is, holds, or lies inside the
+    # checkout by inode and by the mount table, and exempts only a root whose own spelling
+    # contains the checkout — which this tmpfs, emitted later at that spelling, covers.
+    cmd.extend(["--tmpfs", repo_root])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
     _write_abs = [
@@ -8451,8 +8435,8 @@ def render_bwrap_command(
     ]
     # UNREACHABLE IN PRODUCTION, like the `write_roots` file-pin branch above and
     # `runtime_rw_file_paths` below: `build_readonly_bwrap_profile` is the only profile
-    # builder left and it emits `"read_roots": []` (the repository is ro-bound whole, so a
-    # per-path read grant has nothing to add). Kept because `render_bwrap_command` takes a
+    # builder left and it emits `"read_roots": []` (the repository is not bound at all —
+    # an empty tmpfs sits at its path — and a pure leaf has no read input to grant). Kept because `render_bwrap_command` takes a
     # profile dict from its caller and a test may hand it one; the exemption below describes
     # a leaf that writes, and no leaf does since issue #171 PR-2.
     for rel in profile.get("read_roots", []):
@@ -8738,8 +8722,9 @@ def _is_host_pycache_redirect_write(rel_path: str) -> bool:
     env carries no PYTHONPYCACHEPREFIX) — so such a write still surfaces as an unauthorized write.
 
     The exemption is the WHOLE redirect subtree (not a ``.pyc``-suffix filter) deliberately: the
-    only writer that can reach this dir is the trusted host (bwrap binds the repo read-only, so a
-    confined leaf hits EROFS here — see build_readonly_bwrap_profile / render_bwrap_command), and it writes
+    only writer that can reach this dir is the trusted host (a leaf's sandbox holds no checkout at
+    all — an empty tmpfs at `repo_root`, issue #227 — so a confined leaf's write here lands on the
+    tmpfs and never on the host; see build_readonly_bwrap_profile / render_bwrap_command), and it writes
     only bytecode plus CPython's atomic-write temp siblings (``<name>.pyc.<int>``, named
     ``f'{path}.{id(path)}'`` in importlib._bootstrap_external). Matching the subtree covers those
     temp files too; a suffix filter would spuriously flag them.
@@ -8937,6 +8922,12 @@ CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
 # which asserts the emitted option set equals this one).
 CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
     "--model", "--json", "--output-schema", "--ignore-rules", "--config",
+    # The sandbox holds no checkout (issue #227: an empty tmpfs at `repo_root`), and codex
+    # refuses an untrusted non-git cwd before any API call without this flag — measured on
+    # codex-cli 0.154.0: `Not inside a trusted directory and --skip-git-repo-check was not
+    # specified.`, rc 1. Both subcommands take it; a repair turn that lacked it would die at
+    # start-up, before `thread.started`.
+    "--skip-git-repo-check",
 )
 
 
@@ -12861,11 +12852,13 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
         `<repo>/spec/homes/<oid>/<backend>/projects/` were Read-tool reachable, and
         reading an earlier leaf's transcript is the past-run state the workflow forbids.
         Measured for this caller at the time. Z4 (issue #171) deleted both layers with
-        the agentic leaf, and a claude pure leaf holds no tool to reach the tree with; the
-        rule is KEPT because a homes root inside the checkout is still visible to the one
-        leaf that does hold tools — a codex pure leaf, whose read boundary `TODO.md`
-        records as open — and because a tree inside the checkout pollutes the FS-diff and
-        the operator's `git status` whatever reads it. The rule was written for TWO
+        the agentic leaf, and a claude pure leaf holds no tool to reach the tree with;
+        issue #227 then took the checkout itself out of the sandbox (an empty tmpfs at
+        `repo_root`), so the one leaf that does hold tools — a codex pure leaf — cannot
+        reach a homes root inside the checkout either. The rule is KEPT because a tree
+        inside the checkout pollutes the FS-diff and the operator's `git status` whatever
+        reads it, and because it refuses at launch what the mount set would otherwise
+        merely hide. The rule was written for TWO
         relocatable trees, and the other one — the dismiss-violation operator token
         store, whose measured instance was a leaf reading the token and approving the
         `unauthorized_write_violation` its own `substep` produced — was deleted by issue
@@ -13644,6 +13637,10 @@ def _probe_codex_backend(
                 exec_help_proc.returncode == 0
                 and "--sandbox" in exec_help_text
                 and "--ignore-rules" in exec_help_text
+                # The pure launch runs from an empty cwd (issue #227); see
+                # `CODEX_EXEC_RESUME_REQUIRED_FLAGS` for the refusal a CLI without this
+                # flag emits.
+                and "--skip-git-repo-check" in exec_help_text
             ),
             "detail": exec_help_detail,
         },
@@ -15164,7 +15161,9 @@ def record_launch(
                 # The read-write arm that stood beside it built a profile carrying the
                 # capability's `write_roots` as `--bind` mounts; with no capability and no
                 # write authority to carry, `build_bwrap_profile` had no reachable caller and
-                # went with it in PR-2.
+                # went with it in PR-2. What the profile binds and why — the checkout is NOT
+                # among it (issue #227) — is stated once, in `build_readonly_bwrap_profile`'s
+                # docstring and at the `--tmpfs` emission in `render_bwrap_command`.
                 profile = build_readonly_bwrap_profile(
                     repo_root=repo_root,
                     orchestration_id=orchestration_id,
