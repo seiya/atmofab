@@ -335,11 +335,12 @@ def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, .
     # (`SpecCatalogCorruption`). Previously it returned `{}` which downstream
     # dep resolution treated as "no matching versions" — making a repo-wide
     # registry outage look like an ordinary readiness=false dependency miss
-    # and sending operators to the wrong layer for recovery. All three
-    # production call sites (`_certify_and_collect_dep_artifacts`,
-    # `_verify_dependency_readiness`, `_relevant_catalog_subset_bytes`) only
-    # invoke this function AFTER deps.yaml entries are confirmed non-empty,
-    # so leaf orchestrations (which need no catalog) are unaffected.
+    # and sending operators to the wrong layer for recovery. A leaf orchestration
+    # (which needs no catalog) never reaches this raise: this module's readiness
+    # callers invoke it only AFTER deps.yaml entries are confirmed non-empty, and
+    # the closure builders load it lazily and handle the error themselves. (The
+    # count of callers this comment used to carry was wrong twice — issue #178
+    # round 1 — so it states the property and no number.)
     catalog_path = Path(repo_root_str) / "spec" / "registry" / "spec_catalog.yaml"
     if not catalog_path.is_file():
         raise SpecCatalogCorruption(
@@ -575,7 +576,7 @@ def _matching_dep_versions(
     in descending semver order. Empty tuple → unresolvable dep (fail-closed).
 
     Codex round 13 F1: returning ALL matching versions (not just the max) lets
-    `_verify_dependency_readiness` evaluate per-stage artifact presence across
+    `_certify_and_collect_dep_artifacts` evaluate per-stage artifact presence across
     ANY of them. A newer catalog entry without artifacts no longer blocks
     parents whose older matching version is fully verified.
 
@@ -672,8 +673,8 @@ def _parse_dep_entries(
     carry the optional `infrastructure` key (the R1 harness dependency), and
     NOTHING else. An unknown key (e.g. typoed `component:`) or a missing required
     key marks the document as malformed — previously these silently yielded an
-    empty entry list which `_verify_dependency_readiness` collapsed to
-    vacuous-true readiness. `infrastructure` is optional so the pre-R1 corpus
+    empty entry list which readiness collapsed to
+    vacuous-true. `infrastructure` is optional so the pre-R1 corpus
     (components + profiles only) stays well-formed with no migration.
     """
     entries: list[tuple[str, str, str | None]] = []
@@ -1625,9 +1626,14 @@ def _verify_dep_stage(
 
 def _verify_dep_stage_detail(
     repo_root: Path, kind: str, spec_id: str, version: str, stage: str
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, Path | None]:
     """Whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion, WITH the reason when it does not.
+    completion, WITH the reason when it does not, AND the artifact file that was judged.
+
+    This is the ONE primitive that reads a dependency stage artifact and decides whether it
+    certifies (issue #178). The launch gate (`_certify_and_collect_dep_artifacts`) and the
+    closure driver (`run_workflow._dependency_node_readiness`) both go through it; neither
+    re-derives the judgment from the bytes.
 
     "Current" = the latest artifact under the versioned workspace directory, selected by parsed
     canonical id (not mtime). Historical artifacts from earlier passing runs do NOT satisfy the
@@ -1639,8 +1645,8 @@ def _verify_dep_stage_detail(
       AND (R6-lite) the dependency resolution that IR was certified against still matches
       the one the current deps.yaml + spec_catalog.yaml derive
       (`_dependency_resolution_freshness`). Anchoring resolution freshness on the `ir_ref` stage
-      makes it a single choke point: every readiness caller requires `ir_ref`, and the cumulative
-      chains in `_verify_dependency_readiness` short-circuit on it.
+      makes it a single choke point: every readiness caller — `_certify_and_collect_dep_artifacts`
+      and `run_workflow._dependency_node_readiness` — requires `ir_ref` first.
     - pipeline_ref: latest `workspace/pipelines/<safe>/*/binary/*/binary_meta.json`
       has verification_status=pass, AND (R6 proper, closure-source half) the dependency sources
       that binary was compiled against are still the ones a build would stage for it today
@@ -1654,6 +1660,14 @@ def _verify_dep_stage_detail(
     `detail` is `None` when fresh and an actionable one-line cause otherwise. It exists so
     `_stale_dependency_details` and the closure driver can say WHICH stage refused and why,
     instead of reporting an opaque `..._readiness_not_pass`.
+
+    `selected_path` is the file this stage SELECTED and judged — `ir_meta.json`,
+    `binary_meta.json`, or `aggregate_verdict.json` — and it is set whenever a file was selected,
+    INCLUDING when the verdict is `False` (unreadable, not `pass`, stale). It is `None` only when
+    nothing was selected (unsafe token, no workspace root, no pipeline, no binary, no bound
+    verdict). The launch gate hashes `selected_path`'s bytes into `dep_set_fingerprint`, and a
+    demoted dep's artifacts (a level-1 dep's `binary_meta.json`) are part of that hash, so the
+    path must not be withheld on failure.
     """
     # Defensive: every caller validates upstream, but recheck before
     # composing a filesystem path (Codex round 15 F2 defense-in-depth).
@@ -1662,17 +1676,20 @@ def _verify_dep_stage_detail(
         and _is_safe_path_token(spec_id)
         and _is_safe_path_token(version)
     ):
-        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token")
+        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token", None)
     safe = f"{kind}__{spec_id}__{version}"
     node_key = f"{kind}/{spec_id}@{version}"
     if stage == "ir_ref":
+        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+        ir_meta = None if ir_dir is None else ir_dir / "ir_meta.json"
         if not _dep_ir_meta_passes(repo_root, kind, spec_id, version):
             detail = (
                 f"{node_key} has no certified IR with verification_status=pass under "
                 f"workspace/ir/{safe}"
             )
-            return (False, detail)
-        return _dependency_resolution_freshness(repo_root, kind, spec_id, version)
+            return (False, detail, ir_meta)
+        fresh, detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
+        return (fresh, detail, ir_meta)
     if stage in {"pipeline_ref", "aggregate_verdict"}:
         # Codex round 11 F2: both pipeline_ref and aggregate_verdict are
         # evaluated against the SAME selected pipeline run (latest pipeline_id
@@ -1683,11 +1700,11 @@ def _verify_dep_stage_detail(
         safe_root = repo_root / "workspace" / "pipelines" / safe
         pipe_dir = _latest_pipeline_dir(safe_root)
         if pipe_dir is None:
-            return (False, f"{node_key} has no pipeline under workspace/pipelines/{safe}")
+            return (False, f"{node_key} has no pipeline under workspace/pipelines/{safe}", None)
         if stage == "pipeline_ref":
             latest = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
             if latest is None:
-                return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}")
+                return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}", None)
             try:
                 doc = json.loads(latest.read_text(encoding="utf-8"))
             except Exception:
@@ -1695,7 +1712,7 @@ def _verify_dep_stage_detail(
                     f"{node_key}: binary_meta.json of `{latest.parent.name}` is unreadable "
                     f"or malformed"
                 )
-                return (False, detail)
+                return (False, detail, latest)
             if not (
                 isinstance(doc, dict)
                 and str(doc.get("verification_status", "")).strip().lower() == "pass"
@@ -1705,17 +1722,18 @@ def _verify_dep_stage_detail(
                     f"{node_key}: latest binary `{latest.parent.name}` has "
                     f"verification_status={status!r}"
                 )
-                return (False, detail)
+                return (False, detail, latest)
             # R6 proper (closure-source half): a passing binary is not ready if the dependency
             # sources it links have been regenerated since it was certified.
-            return _dependency_binding_freshness(repo_root, kind, spec_id, version)
+            fresh, detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
+            return (fresh, detail, latest)
         # stage == "aggregate_verdict"
         # Codex round 24: bind the verdict to the SAME binary that
         # pipeline_ref would select; reject verdicts produced for a
         # different (older) binary even when newer binaries lack verdicts.
         latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
         if latest_binary is None:
-            return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}")
+            return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}", None)
         chosen_binary_id = latest_binary.parent.name
         latest = _latest_aggregate_verdict_under(
             pipe_dir, bound_to_binary_id=chosen_binary_id,
@@ -1725,22 +1743,22 @@ def _verify_dep_stage_detail(
                 f"{node_key} has no aggregate_verdict.json bound to binary "
                 f"`{chosen_binary_id}`"
             )
-            return (False, detail)
+            return (False, detail, None)
         try:
             doc = json.loads(latest.read_text(encoding="utf-8"))
         except Exception:
-            return (False, f"{node_key}: aggregate_verdict.json is unreadable or malformed")
+            return (False, f"{node_key}: aggregate_verdict.json is unreadable or malformed", latest)
         if not isinstance(doc, dict):
-            return (False, f"{node_key}: aggregate_verdict.json is not an object")
+            return (False, f"{node_key}: aggregate_verdict.json is not an object", latest)
         verdict = str(doc.get("aggregate_verdict", "")).strip().lower()
         # docs/GLOSSARY.md: "a state in which the latest aggregate_verdict is `pass` or `xfail`"
         if verdict in {"pass", "xfail"}:
-            return (True, None)
+            return (True, None, latest)
         detail = (
             f"{node_key}: aggregate_verdict bound to binary `{chosen_binary_id}` is "
             f"{verdict!r}"
         )
-        return (False, detail)
+        return (False, detail, latest)
     raise ValueError(f"unknown readiness stage: {stage!r}")
 
 
@@ -3736,101 +3754,13 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
         return None
 
 
-def _stage_status_from_bytes(stage: str, raw: bytes) -> bool:
-    """Decide whether `raw` (one artifact file's bytes) satisfies `stage`."""
-    try:
-        doc = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return False
-    if stage in {"ir_ref", "pipeline_ref"}:
-        return (
-            isinstance(doc, dict)
-            and str(doc.get("verification_status", "")).strip().lower() == "pass"
-        )
-    if stage == "aggregate_verdict":
-        if not isinstance(doc, dict):
-            return False
-        verdict = str(doc.get("aggregate_verdict", "")).strip().lower()
-        return verdict in {"pass", "xfail"}
-    raise ValueError(f"unknown readiness stage: {stage!r}")
-
-
-def _read_candidate_artifact_bytes(
-    repo_root: Path, kind: str, spec_id: str, version: str
-) -> dict[str, bytes]:
-    """Read each candidate stage's latest artifact bytes ONCE for one
-    `(kind, spec_id, version)` triple. Returns a dict whose presence of a
-    `stage` key indicates the file existed and was successfully read.
-    """
-    out: dict[str, bytes] = {}
-    if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
-    ):
-        return out
-    safe = f"{kind}__{spec_id}__{version}"
-    ir_root = repo_root / "workspace" / "ir" / safe
-    if ir_root.is_dir():
-        latest = _latest_meta_under(ir_root, "*/ir_meta.json")
-        if latest is not None:
-            try:
-                out["ir_ref"] = latest.read_bytes()
-            except OSError:
-                pass
-    safe_root = repo_root / "workspace" / "pipelines" / safe
-    pipe_dir = _latest_pipeline_dir(safe_root)
-    if pipe_dir is not None:
-        latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-        chosen_binary_id: str | None = None
-        if latest_binary is not None:
-            chosen_binary_id = latest_binary.parent.name
-            try:
-                out["pipeline_ref"] = latest_binary.read_bytes()
-            except OSError:
-                pass
-        # Codex round 24: only consider verdicts bound to the chosen binary
-        # (via trial_meta.source_binary_id). A passing verdict for an older
-        # binary cannot satisfy aggregate_verdict_verified while a newer
-        # un-validated binary is selected for pipeline_ref.
-        if chosen_binary_id is not None:
-            latest_verdict = _latest_aggregate_verdict_under(
-                pipe_dir, bound_to_binary_id=chosen_binary_id,
-            )
-            if latest_verdict is not None:
-                try:
-                    out["aggregate_verdict"] = latest_verdict.read_bytes()
-                except OSError:
-                    pass
-    return out
-
-
-def _level_from_stage_bytes(stage_bytes: dict[str, bytes]) -> int:
-    """Cumulative readiness level achieved by one `(kind, sid, version)`:
-
-      0 = no ir / ir fail
-      1 = ir pass
-      2 = ir + pipeline pass
-      3 = ir + pipeline + verdict pass
-
-    Used by `_certify_and_collect_dep_artifacts` to choose ONE certified
-    version per dep (highest matched version achieving the maximum level).
-    """
-    if not _stage_status_from_bytes("ir_ref", stage_bytes.get("ir_ref", b"")):
-        return 0
-    if not _stage_status_from_bytes("pipeline_ref", stage_bytes.get("pipeline_ref", b"")):
-        return 1
-    if not _stage_status_from_bytes("aggregate_verdict", stage_bytes.get("aggregate_verdict", b"")):
-        return 2
-    return 3
-
-
 def _certify_and_collect_dep_artifacts(
     repo_root: Path, spec_ref: Any
 ) -> dict[str, Any]:
-    """Single-pass: read every candidate dep artifact ONCE, select the
-    certified version per dep, and return both the certification decision
-    and the bytes to feed into the fingerprint (Codex round 17 F1+F2).
+    """Single-pass: judge every candidate dep version through `_verify_dep_stage_detail`,
+    select the certified version per dep, and read the bytes of that version's selected
+    artifacts to feed into the fingerprint (Codex round 17 F1+F2; one primitive since
+    issue #178).
 
     Returns a dict with:
       - `deps_doc_valid` (bool): True iff deps.yaml parsed as a dict.
@@ -3883,37 +3813,48 @@ def _certify_and_collect_dep_artifacts(
             continue
         best_v: str | None = None
         best_level = -1
-        best_bytes: dict[str, bytes] = {}
+        best_paths: dict[str, Path] = {}
         # matched is descending; iterate so ties prefer the higher version.
         for v in matched:
-            stage_bytes = _read_candidate_artifact_bytes(repo_root, kind, spec_id, v)
-            level = _level_from_stage_bytes(stage_bytes)
-            # R6-lite: this path is the launch gate's OWN readiness evaluator (it does not go
-            # through `_verify_dep_stage`), so the freshness invariant must be enforced here
-            # too — otherwise a stale dependency that `--with-deps` would re-run still passes
-            # `workflow-launch-check` on a single-node run. Staleness demotes the version to
-            # level 0 exactly as an ir_ref failure would.
-            if level >= 1 and not _dependency_resolution_freshness(repo_root, kind, spec_id, v)[0]:
-                level = 0
-            # R6 proper (closure-source half), same reasoning one stage down: the binding is a
-            # property of the BINARY, so a drifted closure source demotes the version to level 1
-            # (its IR still certifies) exactly as a `pipeline_ref` failure would. Both evaluators
-            # must carry the invariant or it leaks through whichever path is missed.
-            if level >= 2 and not _dependency_binding_freshness(repo_root, kind, spec_id, v)[0]:
-                level = 1
+            # Cumulative readiness level of this version (0 = no ir / ir fail, 1 = ir pass,
+            # 2 = ir + pipeline pass, 3 = ir + pipeline + verdict pass). The level is the INDEX
+            # of the first stage the primitive refuses, which relies on
+            # `_DEPENDENCY_READINESS_STAGES` being ordered (ir_ref, pipeline_ref,
+            # aggregate_verdict). The primitive already carries the R6-lite / R6 proper
+            # freshness demotions on `ir_ref` / `pipeline_ref`, so nothing is re-applied here.
+            # Every stage is asked even after one refuses — no short-circuit — because the
+            # files of the stages AFTER the first refusal are part of the fingerprint below,
+            # as they were before issue #178: a level-0 dep's `binary_meta.json` and verdict,
+            # a level-1 dep's verdict. A `break` at the first refusal would drop exactly those
+            # files (the refused stage's own file is recorded before `ok` is read, so it would
+            # survive a break — the loss is the later stages, not the refused one).
+            paths: dict[str, Path] = {}
+            level = len(_DEPENDENCY_READINESS_STAGES)
+            for idx, stage in enumerate(_DEPENDENCY_READINESS_STAGES):
+                ok, _detail, path = _verify_dep_stage_detail(repo_root, kind, spec_id, v, stage)
+                if path is not None:
+                    paths[stage] = path
+                if not ok and level == len(_DEPENDENCY_READINESS_STAGES):
+                    level = idx
             if level > best_level:
                 best_level = level
                 best_v = v
-                best_bytes = stage_bytes
+                best_paths = paths
         if best_v is None:
             snap["certified_entries"].append((kind, spec_id, None, 0))
             continue
         snap["certified_entries"].append((kind, spec_id, best_v, best_level))
         for stage in _DEPENDENCY_READINESS_STAGES:
-            if stage in best_bytes:
-                snap["artifact_bytes_in_order"].append(
-                    (stage, kind, spec_id, best_v, best_bytes[stage])
-                )
+            path = best_paths.get(stage)
+            if path is None:
+                continue
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                # Same disposition as before issue #178: a selected file that cannot be read
+                # contributes no bytes to the fingerprint for that stage.
+                continue
+            snap["artifact_bytes_in_order"].append((stage, kind, spec_id, best_v, raw))
     return snap
 
 
@@ -4131,78 +4072,6 @@ def _compute_dep_readiness_and_fingerprint(
             results["aggregate_verdict_verified"] = False
         certified_deps.append({"spec_kind": kind, "spec_id": spec_id, "spec_version": cert_v})
     return results, fingerprint, certified_deps, None
-
-
-def _verify_dependency_readiness(
-    repo_root: Path, spec_ref: Any
-) -> dict[str, bool] | None:
-    """Verify each direct-dep's artifacts and aggregate per-stage detail flags.
-
-    Returns:
-      - None if deps.yaml is missing/unparseable (caller decides fail-closed).
-      - dict {ir_ref_verified, pipeline_ref_verified, aggregate_verdict_verified}
-        otherwise. A stage is True iff EVERY listed direct dep passes its
-        per-stage artifact check. Empty deps → vacuous true for every stage.
-    """
-    deps_doc = _read_deps_yaml(repo_root, spec_ref)
-    if not isinstance(deps_doc, dict):
-        return None
-    entries, well_formed = _parse_dep_entries(deps_doc)
-    if not well_formed:
-        # Codex round 7 F1: malformed deps.yaml must NOT degrade to vacuous-true.
-        return {f"{stage}_verified": False for stage in _DEPENDENCY_READINESS_STAGES}
-    if not entries:
-        return {f"{stage}_verified": True for stage in _DEPENDENCY_READINESS_STAGES}
-    catalog = _load_spec_catalog(str(repo_root.resolve()))
-    # Issue #175: a `profile` has no artifacts of its own — it is expanded into the components
-    # it selects, and THOSE are what readiness verifies. An expansion failure is the same class
-    # as a malformed schema (the declared dependency set does not resolve) and takes the same
-    # all-stages-false answer rather than degrading to vacuous true.
-    entries, _profiles_record, expand_error = expand_profile_dependencies(
-        repo_root, spec_ref, entries, catalog
-    )
-    if expand_error is not None:
-        return {f"{stage}_verified": False for stage in _DEPENDENCY_READINESS_STAGES}
-    results: dict[str, bool] = {f"{s}_verified": True for s in _DEPENDENCY_READINESS_STAGES}
-    for kind, spec_id, constraint in entries:
-        # Codex round 13 F1 + round 14 F1 (same-version coherence):
-        # readiness for each stage requires SOME single catalog version V to
-        # satisfy a cumulative chain. Specifically, the per-dep contribution is:
-        #
-        #   ir_ref          ← ∃ V where ir_ref passes for V
-        #   pipeline_ref    ← ∃ V where ir_ref AND pipeline_ref pass for the SAME V
-        #   aggregate_verdict ← ∃ V where ir_ref AND pipeline_ref AND aggregate_verdict pass for the SAME V
-        #
-        # This blocks the cross-version mix where ir_ref is satisfied by one
-        # version and pipeline_ref by another — execution_readiness would
-        # otherwise certify a chain that never existed as a coherent dep run.
-        # Constraint membership remains required: only catalog versions that
-        # match the dependency's version_constraint contribute.
-        matched_versions = _matching_dep_versions(catalog, kind, spec_id, constraint)
-        if not matched_versions:
-            for s in _DEPENDENCY_READINESS_STAGES:
-                results[f"{s}_verified"] = False
-            continue
-        any_ir = False
-        any_ir_pipe = False
-        any_ir_pipe_verdict = False
-        for v in matched_versions:
-            if not _verify_dep_stage(repo_root, kind, spec_id, v, "ir_ref"):
-                continue
-            any_ir = True
-            if not _verify_dep_stage(repo_root, kind, spec_id, v, "pipeline_ref"):
-                continue
-            any_ir_pipe = True
-            if _verify_dep_stage(repo_root, kind, spec_id, v, "aggregate_verdict"):
-                any_ir_pipe_verdict = True
-                break  # full chain found; further versions can't downgrade.
-        if not any_ir:
-            results["ir_ref_verified"] = False
-        if not any_ir_pipe:
-            results["pipeline_ref_verified"] = False
-        if not any_ir_pipe_verdict:
-            results["aggregate_verdict_verified"] = False
-    return results
 
 
 def _dependency_set_fingerprint(repo_root: Path, spec_ref: Any) -> str:
