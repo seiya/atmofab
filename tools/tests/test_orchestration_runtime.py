@@ -22994,6 +22994,48 @@ class DependencyBindingFreshnessTests(unittest.TestCase):
             # one hashed, not an empty placeholder.
             self.assertIn(b"bin_20260725_001", by_stage["pipeline_ref"][3])
 
+    def test_a_malformed_stage_artifact_is_refused_and_still_selected(self) -> None:
+        """The unreadable / not-an-object branches of `pipeline_ref` and `aggregate_verdict`
+        (round 0 of issue #178 found the first unpinned). Each refuses with its own cause AND
+        returns the file it could not parse, and the launch gate hashes those bytes exactly as
+        it did when it read every candidate file without parsing — so a malformed artifact
+        still changes the recorded `dep_set_fingerprint` rather than dropping out of it."""
+        from tools.orchestration_runtime import (
+            _certify_and_collect_dep_artifacts, _verify_dep_stage_detail)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
+                      / "b_20260101_001")
+            binary_meta = b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json"
+            verdict = (b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
+                       / "aggregate_verdict.json")
+            # (a) a verdict that is JSON but not an object.
+            verdict.write_text("[]", encoding="utf-8")
+            ok, detail, selected = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "aggregate_verdict")
+            self.assertEqual((ok, selected), (False, verdict))
+            self.assertIn("not an object", detail)
+            # (b) a verdict that is not JSON at all.
+            verdict.write_text("{not json", encoding="utf-8")
+            ok, detail, selected = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "aggregate_verdict")
+            self.assertEqual((ok, selected), (False, verdict))
+            self.assertIn("unreadable or malformed", detail)
+            # (c) a binary_meta.json that is not JSON.
+            binary_meta.write_text("{not json", encoding="utf-8")
+            ok, detail, selected = _verify_dep_stage_detail(
+                repo_root, "component", "b", "0.1.0", "pipeline_ref")
+            self.assertEqual((ok, selected), (False, binary_meta))
+            self.assertIn("unreadable or malformed", detail)
+            # The gate: level 1 (ir certifies, pipeline_ref refuses), and BOTH malformed files
+            # are in the fingerprint input byte-for-byte.
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
+            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
+            by_stage = {row[0]: row[4] for row in snap["artifact_bytes_in_order"]}
+            self.assertEqual(by_stage["pipeline_ref"], b"{not json")
+            self.assertEqual(by_stage["aggregate_verdict"], b"{not json")
+
     def test_stale_details_names_the_stale_binding_of_a_consumer(self) -> None:
         from tools.orchestration_runtime import _stale_dependency_details
         with tempfile.TemporaryDirectory() as tmp:
