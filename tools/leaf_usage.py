@@ -23,7 +23,7 @@ def _nonneg_int_or_none(value: Any) -> int | None:
     `bool` is excluded although it IS an `int` (`True` would otherwise record as 1 token),
     and so are floats, negatives and strings: a value this module cannot vouch for is
     dropped rather than coerced, so a recorded count is always something the provider
-    actually said. (`orchestration_diagnostics` carries its own copy for the transcript
+    actually said. (`orchestration_diagnostics` carries its own copy for the pure-attempt
     sums it performs; this module must not depend on that one.)
     """
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -33,8 +33,8 @@ def _nonneg_int_or_none(value: Any) -> int | None:
 
 # The four token classes a Claude CLI `usage` object reports, and the vocabulary every other
 # provider's dialect is mapped onto. THE definition: `orchestration_diagnostics` derives its
-# transcript and pure-attempt sum keys from this one, so a new token class (or a rename)
-# cannot land in one aggregation and silently miss the other.
+# pure-attempt sum keys from this one, so a new token class (or a rename) cannot land in
+# one aggregation and silently miss the other.
 LEAF_TOKEN_CLASS_KEYS: tuple[str, ...] = (
     "input_tokens",
     "output_tokens",

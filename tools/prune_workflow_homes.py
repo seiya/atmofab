@@ -32,9 +32,10 @@ indefinitely, delete only by hand". Do not read either case as precedent for the
 WHAT DELETION COSTS, so the operator can decide rather than discover:
   * `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a
     leaf's session in the home's transcript; a rotated (re-created) home has none.
-  * the run stops being auditable. `skills/workflow-audit-claude` /
-    `workflow-audit-codex` / `workflow-timing-audit` all read from the home, and the
-    artifacts under `workspace/orchestrations/<id>/` record what the host saw, not the
+  * the run stops being auditable at the transcript level. `skills/workflow-timing-audit`
+    reads a pre-Z4 agentic claude leaf's transcript from the home (`skills/workflow-audit`
+    reads nothing from it and only names it as where a `codex_cli` leaf's rollout is), and
+    the artifacts under `workspace/orchestrations/<id>/` record what the host saw, not the
     leaf's own turn.
 
 FAIL-CLOSED, in five independent places, because both the root and the entry are

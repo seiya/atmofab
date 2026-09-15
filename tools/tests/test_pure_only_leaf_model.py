@@ -1101,8 +1101,7 @@ class SandboxViolationReasonsAreStatedWhereTheyAreAuditedTests(unittest.TestCase
     REPO_ROOT: ClassVar[Path] = Path(__file__).resolve().parent.parent.parent
     AUDIENCE: ClassVar[tuple[str, ...]] = (
         "docs/WORKSPACE_LAYOUT.md",
-        "skills/workflow-audit-claude/SKILL.md",
-        "skills/workflow-audit-codex/SKILL.md",
+        "skills/workflow-audit/SKILL.md",
     )
 
     def _reasons(self) -> dict[str, str]:

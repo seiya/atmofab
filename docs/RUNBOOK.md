@@ -617,8 +617,9 @@ python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --de
 
 - `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a leaf's
   session inside the home; a re-created one has none;
-- the run stops being auditable. `skills/workflow-audit-claude`, `workflow-audit-codex`
-  and `workflow-timing-audit` all read from the home.
+- the run stops being auditable at the transcript level. `skills/workflow-timing-audit`
+  reads a pre-Z4 agentic claude leaf's transcript from the home; `skills/workflow-audit`
+  reads nothing from it and only names it as where a `codex_cli` leaf's rollout is.
 
 The tool refuses FIVE things, and only one of them has an override:
 

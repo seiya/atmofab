@@ -383,68 +383,6 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             self.assertIsNone(diag.build_launch_incident(repo, ORCH_ID))
 
 
-def _usage_record(inp: int, out: int, cr: int, cc: int) -> dict:
-    return {
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "usage": {
-                "input_tokens": inp,
-                "output_tokens": out,
-                "cache_read_input_tokens": cr,
-                "cache_creation_input_tokens": cc,
-            },
-        },
-    }
-
-
-class SummarizeUsageTests(unittest.TestCase):
-    def test_sums_and_peak_context(self) -> None:
-        records = [
-            _usage_record(10, 5, 100, 20),   # ctx = 130
-            _usage_record(8, 4, 300, 0),     # ctx = 308 (peak)
-            {"type": "user", "message": {"role": "user", "content": "no usage"}},
-        ]
-        u = diag.summarize_jsonl_usage(records)
-        self.assertEqual(u["input_tokens"], 18)
-        self.assertEqual(u["output_tokens"], 9)
-        self.assertEqual(u["cache_read_input_tokens"], 400)
-        self.assertEqual(u["cache_creation_input_tokens"], 20)
-        self.assertEqual(u["total_tokens"], 18 + 9 + 400 + 20)
-        self.assertEqual(u["assistant_turns"], 2)
-        self.assertEqual(u["peak_context_tokens"], 308)
-
-    def test_empty_is_all_zero(self) -> None:
-        u = diag.summarize_jsonl_usage([])
-        self.assertEqual(u["total_tokens"], 0)
-        self.assertEqual(u["assistant_turns"], 0)
-        self.assertEqual(u["peak_context_tokens"], 0)
-
-
-class OwnAridDisambiguationTests(unittest.TestCase):
-    def test_capability_path_wins_over_parent_mention(self) -> None:
-        own = "11111111-1111-4111-8111-111111111111"
-        parent = "22222222-2222-4222-8222-222222222222"
-        # parent arid appears (as parent_agent_run_id) but own arid owns the
-        # capability path — the own arid must win.
-        text = (
-            f'{{"parent_agent_run_id": "{parent}"}}\n'
-            f'capabilities/{own}.json output_manifests/{own}.json'
-        )
-        self.assertEqual(
-            diag._own_arid_of_transcript(text, {own, parent}), own
-        )
-
-    def test_frequency_fallback_when_no_manifest_path(self) -> None:
-        own = "33333333-3333-4333-8333-333333333333"
-        parent = "44444444-4444-4444-8444-444444444444"
-        text = f"{own} {own} {own} {parent}"
-        self.assertEqual(diag._own_arid_of_transcript(text, {own, parent}), own)
-
-    def test_none_when_no_target_present(self) -> None:
-        self.assertIsNone(diag._own_arid_of_transcript("nothing here", {"x"}))
-
-
 class LeafTranscriptRootTests(unittest.TestCase):
     """The post-mortem readers find the transcript in the operator's home.
 
@@ -492,26 +430,8 @@ class LeafTranscriptRootTests(unittest.TestCase):
             # shape end to end.
             self.assertEqual(found.projects_root, operator / ".claude" / "projects")
 
-    def test_the_projects_dir_is_the_operator_home_with_an_orchestration_too(self) -> None:
-        """Passing an orchestration id changes nothing: there is no private home to prefer."""
-        with tempfile.TemporaryDirectory() as td:
-            repo, slug = self._repo_and_slug(td)
-            operator = Path(td) / "operator"
-            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
-                self.assertEqual(diag._claude_projects_dir(repo, "o"),
-                                 operator / ".claude" / "projects" / slug)
-
-    def test_without_an_orchestration_the_operator_home_answers(self) -> None:
-        """The parent/host agent is not a leaf, so its callers pass no id."""
-        with tempfile.TemporaryDirectory() as td:
-            repo, slug = self._repo_and_slug(td)
-            operator = Path(td) / "operator"
-            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
-                self.assertEqual(diag._claude_projects_dir(repo),
-                                 operator / ".claude" / "projects" / slug)
-
     def test_the_operator_home_is_the_only_root(self) -> None:
-        """The COUNT, not just the first entry. `_claude_projects_dir` takes the FIRST root, so
+        """The COUNT, not just the first entry. `_locate_leaf_transcript` walks every root, so
         a second root reintroduced ahead of this one would send every audit somewhere a pure
         leaf never writes, and a reader that only checked `roots[0]` would not see it."""
         from tools.operator_private_root import claude_leaf_projects_roots
@@ -521,137 +441,6 @@ class LeafTranscriptRootTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
                 roots = claude_leaf_projects_roots(repo, "o")
             self.assertEqual(roots, (operator / ".claude" / "projects",))
-
-
-class AggregateChildUsageTests(unittest.TestCase):
-    def _write_child(self, subagents: Path, fname: str, arid: str, parent: str, records: list) -> None:
-        body_head = (
-            f'{{"type":"user","message":{{"role":"user","content":'
-            f'"capabilities/{arid}.json output_manifests/{arid}.json '
-            f'parent_agent_run_id {parent}"}}}}'
-        )
-        lines = [body_head] + [json.dumps(r) for r in records]
-        (subagents / fname).write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def test_attributes_per_child_and_avoids_parent_misattribution(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            subagents = home / ".claude" / "projects" / slug / "hostsess" / "subagents"
-            subagents.mkdir(parents=True, exist_ok=True)
-            parent = "0e750000-0000-4000-8000-000000000000"
-            child_a = "aaaa1111-1111-4111-8111-111111111111"
-            child_b = "bbbb2222-2222-4222-8222-222222222222"
-            self._write_child(subagents, "agent-a.jsonl", child_a, parent, [_usage_record(10, 10, 1000, 0)])
-            self._write_child(subagents, "agent-b.jsonl", child_b, parent, [_usage_record(5, 5, 500, 0)])
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                # parent arid is in the target set but must NOT capture a child file.
-                agg = diag.aggregate_child_usage(repo, [child_a, child_b, parent])
-            self.assertTrue(agg["available"])
-            self.assertEqual(agg["matched_count"], 2)
-            self.assertIn(child_a, agg["per_child"])
-            self.assertIn(child_b, agg["per_child"])
-            self.assertNotIn(parent, agg["per_child"])
-            self.assertEqual(agg["per_child"][child_a]["total_tokens"], 1020)
-            self.assertEqual(agg["children_total"]["total_tokens"], 1020 + 510)
-            self.assertEqual(agg["unmatched_arids"], [parent])
-
-    def test_unavailable_when_projects_dir_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            empty_home = Path(tmp) / "home"
-            empty_home.mkdir()
-            with mock.patch.dict(os.environ, {"HOME": str(empty_home)}, clear=False):
-                agg = diag.aggregate_child_usage(repo, ["aaaa1111-1111-4111-8111-111111111111"])
-            self.assertFalse(agg["available"])
-            self.assertIn("reason", agg)
-
-    def test_no_targets_is_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            agg = diag.aggregate_child_usage(Path(tmp), [])
-            self.assertFalse(agg["available"])
-
-    def test_scans_all_host_sessions(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            base = home / ".claude" / "projects" / slug
-            child = "aaaa1111-1111-4111-8111-111111111111"
-            parent = "0e750000-0000-4000-8000-000000000000"
-            for sess in ("sessA", "sessB"):
-                d = base / sess / "subagents"
-                d.mkdir(parents=True, exist_ok=True)
-                self._write_child(d, "agent-x.jsonl", child, parent, [_usage_record(1, 1, 100, 0)])
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                # Every host session's subagents dir is scanned; the child is found
-                # regardless of which session ran it.
-                agg_all = diag.aggregate_child_usage(repo, [child])
-            self.assertTrue(agg_all["available"])
-            self.assertIn(child, agg_all["per_child"])
-
-
-class AggregateParentUsageTests(unittest.TestCase):
-    def _parent_session(self, base: Path, name: str, first_user: str, recs: list) -> None:
-        lines = [
-            json.dumps({"type": "user", "message": {"role": "user", "content": first_user}})
-        ] + [json.dumps(r) for r in recs]
-        (base / f"{name}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def test_sums_across_resume_sessions_and_excludes_discussion(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            base = home / ".claude" / "projects" / slug
-            base.mkdir(parents=True, exist_ok=True)
-            arid = "88c4f71a-efb3-4c89-a706-9d41969cc12e"
-            marker = f"workspace/tmp/{arid}"
-            # Two genuine parent sessions (launch prompt carries the marker).
-            self._parent_session(
-                base, "orig", f"Start the workflow. allowed_tmp_root: {marker}",
-                [_usage_record(10, 10, 1000, 0)],
-            )
-            self._parent_session(
-                base, "resume", f"Start the workflow. allowed_tmp_root: {marker}",
-                [_usage_record(5, 5, 500, 0)],
-            )
-            # A diagnostic session that merely DISCUSSES the orchestration: the
-            # marker appears later in the body but NOT in the first user message.
-            (base / "investigate.jsonl").write_text(
-                "\n".join(
-                    [
-                        json.dumps({"type": "user", "message": {"role": "user", "content": "review the workflow result"}}),
-                        json.dumps({"type": "user", "message": {"role": "user", "content": f"look at {marker}/foo"}}),
-                        json.dumps(_usage_record(9999, 9999, 999999, 0)),
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                agg = diag.aggregate_parent_usage(repo, arid)
-            self.assertTrue(agg["available"])
-            self.assertEqual(agg["session_count"], 2)
-            self.assertEqual(agg["total_tokens"], 1020 + 510)  # discussion excluded
-
-    def test_unavailable_when_no_parent_located(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            home = Path(tmp) / "home"
-            (home / ".claude" / "projects").mkdir(parents=True)
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                agg = diag.aggregate_parent_usage(repo, "nope-arid")
-            self.assertFalse(agg["available"])
-
-    def test_empty_arid_unavailable(self) -> None:
-        self.assertFalse(diag.aggregate_parent_usage(Path("/x"), "")["available"])
 
 
 class SummarizePureLeafMetasTest(unittest.TestCase):
@@ -880,22 +669,19 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         self.assertFalse(out["generate"]["found"])
         self.assertFalse(out["found"])
 
-    def test_usage_key_tuples_stay_consistent(self) -> None:
-        # Both sum-key tuples derive from the canonical token classes (`tools/leaf_usage.py`,
-        # the shape every backend records against). Pin the relation AND the derived contents:
-        # the obvious re-derivation `(*LEAF_TOKEN_CLASS_KEYS, "assistant_turns")` silently
-        # drops "total_tokens", which the transcript aggregators sum.
+    def test_usage_key_tuple_stays_consistent(self) -> None:
+        # The per-attempt sum keys derive from the canonical token classes
+        # (`tools/leaf_usage.py`, the shape every backend records against). Pin the relation
+        # AND the contents: total_tokens/assistant_turns are derived, not per-attempt CLI
+        # fields. (The transcript sum-key tuple that sat next to this one went with the
+        # transcript usage aggregators, issue #179.)
         self.assertEqual(diag._PURE_ATTEMPT_USAGE_KEYS, diag.LEAF_TOKEN_CLASS_KEYS)
-        self.assertTrue(set(diag._PURE_ATTEMPT_USAGE_KEYS) < set(diag._USAGE_SUM_KEYS))
-        self.assertIn("total_tokens", diag._USAGE_SUM_KEYS)
-        self.assertIn("assistant_turns", diag._USAGE_SUM_KEYS)
-        # total_tokens/assistant_turns are derived, not per-attempt CLI fields.
         self.assertNotIn("total_tokens", diag._PURE_ATTEMPT_USAGE_KEYS)
         self.assertNotIn("assistant_turns", diag._PURE_ATTEMPT_USAGE_KEYS)
         self.assertEqual(
-            diag._USAGE_SUM_KEYS,
+            diag._PURE_ATTEMPT_USAGE_KEYS,
             ("input_tokens", "output_tokens", "cache_read_input_tokens",
-             "cache_creation_input_tokens", "total_tokens", "assistant_turns"),
+             "cache_creation_input_tokens"),
         )
 
     def test_row_carries_no_source_dir_key(self) -> None:

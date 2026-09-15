@@ -52,169 +52,18 @@ def _make_block(policy: str, command: str = "cmd", fix_hint: dict | None = None)
     }
 
 
-def _usage_rec(inp: int, out: int, cr: int, cc: int) -> dict:
-    return {
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "usage": {
-                "input_tokens": inp,
-                "output_tokens": out,
-                "cache_read_input_tokens": cr,
-                "cache_creation_input_tokens": cc,
-            },
-        },
-    }
-
-
 class TokenCostSummaryTests(unittest.TestCase):
-    """The parent-vs-children token breakdown — surfaces the child subagent cost
-    that agent_runs.jsonl and the host transcript otherwise hide."""
+    """The per-leaf token cost — read from the durable `usage` rows of agent_runs.jsonl and
+    from nothing else (issue #179 deleted the ~/.claude reconstruction)."""
 
-    def _setup(self, tmp: str) -> tuple[Path, str]:
-        repo = Path(tmp) / "repo"
-        orch_id = "orch_tokens"
-        root = repo / "workspace" / "orchestrations" / orch_id
-        root.mkdir(parents=True)
-        parent_arid = "0e750000-0000-4000-8000-000000000000"
-        child_a = "aaaa1111-1111-4111-8111-111111111111"
-        child_b = "bbbb2222-2222-4222-8222-222222222222"
-        host_session = "hostsess"
-        (root / "orchestration_meta.json").write_text(
-            json.dumps(
-                {
-                    "orchestration_id": orch_id,
-                    "orchestration_agent_run_id": parent_arid,
-                }
-            ),
-            encoding="utf-8",
-        )
-        _write_jsonl(
-            root / "agent_runs.jsonl",
-            [
-                {"agent_run_id": parent_arid, "agent_role": "orchestration", "status": "pass"},
-                {"agent_run_id": child_a, "agent_role": "substep", "status": "pass"},
-                {"agent_run_id": child_b, "agent_role": "substep", "status": "pass"},
-            ],
-        )
-        home = Path(tmp) / "home"
-        slug = str(repo.resolve()).replace("/", "-")
-        projects = home / ".claude" / "projects" / slug
-        subagents = projects / host_session / "subagents"
-        subagents.mkdir(parents=True, exist_ok=True)
-        # Parent host transcript: 1 turn. Located by aggregate_parent_usage via the
-        # `workspace/tmp/<parent_arid>` marker in its first user (launch) message.
-        (projects / f"{host_session}.jsonl").write_text(
-            "\n".join(
-                [
-                    json.dumps(
-                        {
-                            "type": "user",
-                            "message": {
-                                "role": "user",
-                                "content": f"Start the workflow workspace/tmp/{parent_arid}",
-                            },
-                        }
-                    ),
-                    json.dumps(_usage_rec(100, 50, 2000, 0)),
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        def _child(fname: str, arid: str, rec: dict) -> None:
-            head = json.dumps(
-                {
-                    "type": "user",
-                    "message": {
-                        "role": "user",
-                        "content": (
-                            f"capabilities/{arid}.json output_manifests/{arid}.json "
-                            f"parent_agent_run_id {parent_arid}"
-                        ),
-                    },
-                }
-            )
-            (subagents / fname).write_text(head + "\n" + json.dumps(rec) + "\n", encoding="utf-8")
-
-        _child("agent-a.jsonl", child_a, _usage_rec(10, 10, 1000, 0))
-        _child("agent-b.jsonl", child_b, _usage_rec(5, 5, 500, 0))
-        return repo, orch_id
-
-    def test_collect_token_cost_summary_attributes_parent_and_children(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, orch_id = self._setup(tmp)
-            home = Path(tmp) / "home"
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                # Transcript reconstruction is OPT-IN since issue #47 — the workflow does not
-                # read ~/.claude, so the default audit never touches it. These rows carry no
-                # durable `usage`, which is what a pre-issue-#47 run looks like.
-                result = audit(repo, orch_id, token_cost_from_transcripts=True)
-            tcs = result["token_cost_summary"]
-            self.assertTrue(tcs["available"])
-            self.assertEqual(tcs["parent_total_tokens"], 100 + 50 + 2000)
-            self.assertEqual(tcs["children_total_tokens"], 1020 + 510)
-            self.assertEqual(tcs["node_total_tokens"], 2150 + 1530)
-            # Parent arid is excluded from the child set (not an unlocatable child).
-            self.assertEqual(tcs["children"]["unmatched_arids"], [])
-            self.assertEqual(tcs["children"]["matched_count"], 2)
-            md = _render_markdown(result)
-            self.assertIn("Token cost breakdown", md)
-            self.assertIn("child subagents", md)
-
-    def test_available_and_renders_when_only_parent_locatable(self) -> None:
-        # Post-cleanup audit: parent session survives, child transcripts are gone.
-        # The surviving parent total must still be reported, not discarded.
-        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            base = home / ".claude" / "projects" / slug
-            base.mkdir(parents=True, exist_ok=True)
-            parent_arid = "88c4f71a-efb3-4c89-a706-9d41969cc12e"
-            marker = f"workspace/tmp/{parent_arid}"
-            (base / "orig.jsonl").write_text(
-                "\n".join(
-                    [
-                        json.dumps({"type": "user", "message": {"role": "user", "content": f"Start the workflow {marker}"}}),
-                        json.dumps(_usage_rec(100, 50, 2000, 0)),
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            meta = {"orchestration_agent_run_id": parent_arid}
-            # No child agent_runs (only the parent): child attribution is
-            # unavailable, but the parent total must still be reported.
-            runs = [{"agent_run_id": parent_arid, "agent_role": "orchestration", "status": "pass"}]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
-            self.assertEqual(tcs["children"]["matched_count"], 0)  # no children measured
-            self.assertTrue(tcs["available"])  # parent rescues availability
-            self.assertEqual(tcs["parent_total_tokens"], 2150)
-            self.assertEqual(tcs["children_total_tokens"], 0)
-            lines: list[str] = []
-            _render_token_cost(tcs, lines)
-            joined = "\n".join(lines)
-            self.assertIn("2,150", joined)
-            self.assertIn("partial", joined)
-            self.assertIn("child subagents**: unavailable", joined)
-
-    def test_prefers_persisted_usage_over_missing_transcript(self) -> None:
-        # finalize_child persists each child's usage into agent_runs.jsonl; a later
-        # audit must use it even when the ephemeral transcript is gone.
+    def test_a_marker_row_is_not_usage(self) -> None:
+        # finalize_child persists each leaf's usage into agent_runs.jsonl; that row is the
+        # whole source, and a `{"status": "unavailable"}` marker on it must NOT count as usage.
         from tools.audit_orchestration import collect_token_cost_summary
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            (home / ".claude" / "projects" / slug).mkdir(parents=True)  # dir exists, no transcripts
             child = "aaaa1111-1111-4111-8111-111111111111"
             runs = [
                 {
@@ -228,15 +77,12 @@ class TokenCostSummaryTests(unittest.TestCase):
                     },
                 }
             ]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs = collect_token_cost_summary(repo, {}, runs)
+            tcs = collect_token_cost_summary(repo, {}, runs)
             self.assertEqual(tcs["children_total_tokens"], 1020)
             self.assertEqual(tcs["children"]["per_child"][child]["source"], "agent_runs.jsonl")
-            # The {"status":"unavailable"} marker must NOT count as usage.
             runs2 = [{"agent_run_id": child, "agent_role": "substep", "status": "pass",
                       "usage": {"status": "unavailable", "reason": "x"}}]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs2 = collect_token_cost_summary(repo, {}, runs2)
+            tcs2 = collect_token_cost_summary(repo, {}, runs2)
             self.assertEqual(tcs2["children"]["matched_count"], 0)
 
     def test_every_backends_row_shape_is_accepted_by_the_durable_path(self) -> None:
@@ -277,7 +123,7 @@ class TokenCostSummaryTests(unittest.TestCase):
 
     def test_a_run_that_reported_no_cost_does_not_render_a_zero_bill(self) -> None:
         """`$0.0000` reads as "this run was free", where the truth is that no provider
-        reported a figure — the same failure the node total avoids by saying `unavailable`."""
+        reported a figure — the same failure the leaf total avoids by saying `unavailable`."""
         from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -291,46 +137,6 @@ class TokenCostSummaryTests(unittest.TestCase):
             lines: list[str] = []
             _render_token_cost(tcs, lines)
             self.assertNotIn("provider-reported cost", "\n".join(lines))
-
-    def test_the_default_audit_never_reads_the_claude_transcripts(self) -> None:
-        """The change's central policy claim, and the one a default flip would silently undo:
-        with no opt-in flag the collector must not call the ~/.claude aggregator AT ALL, even
-        for rows that carry no usage — those are reported as unaccounted instead."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            child = "aaaa1111-1111-4111-8111-111111111111"
-            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
-            with mock.patch.object(
-                    ao, "aggregate_child_usage",
-                    side_effect=AssertionError("the default audit read ~/.claude")):
-                tcs = collect_token_cost_summary(repo, {}, runs)
-            self.assertEqual(tcs["children"]["unmatched_arids"], [child])
-            # ...and the opt-in really is what reaches it.
-            with mock.patch.object(ao, "aggregate_child_usage",
-                                   return_value={"available": True, "per_child": {}}) as agg:
-                collect_token_cost_summary(repo, {}, runs, from_transcripts=True)
-            agg.assert_called_once_with(repo, [child])
-
-    def test_the_cli_flag_reaches_the_collector(self) -> None:
-        """The flag is the only way to ask for the legacy path, so an unwired flag would leave
-        a run recorded before issue #47 unreadable with no way to say so."""
-        seen: dict = {}
-
-        def _audit(repo_root, orchestration_id, *, token_cost_from_transcripts=False):
-            seen["from_transcripts"] = token_cost_from_transcripts
-            return {}
-
-        # `--format json` so the assertion is about the flag's wiring, not about what the
-        # markdown renderer needs to be handed.
-        for argv, expected in ((["--orchestration-id", "o", "--format", "json"], False),
-                               (["--orchestration-id", "o", "--format", "json",
-                                 "--token-cost-from-transcripts"], True)):
-            with mock.patch.object(ao, "audit", _audit), \
-                    mock.patch.object(sys, "argv", ["audit_orchestration.py", *argv]), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                ao.main()
-            self.assertIs(seen["from_transcripts"], expected, msg=str(argv))
 
     def test_a_legacy_row_without_a_total_is_still_read(self) -> None:
         """Rows written before `total_tokens` was derived at finalize time carry only the raw
@@ -376,6 +182,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             lines: list[str] = []
             _render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
             joined = "\n".join(lines)
+            self.assertIn("| leaf agent_run_id | total | reasoning | source |", joined)
             self.assertIn("| 56,538 | 23,438 | http_provider |", joined)
             # ...and a provider that reported no split says so, rather than rendering a 0.
             self.assertIn("| 6 | n/a | cli_result_envelope |", joined)
@@ -456,65 +263,91 @@ class TokenCostSummaryTests(unittest.TestCase):
             self.assertNotIn("no child usage located", joined)
             # ...and the total must NOT read `0 tokens`, which says the node was free. A
             # marker makes the section renderable; it does not make it a measurement.
-            self.assertIn("**node total**: unavailable", joined)
+            self.assertIn("**leaf total**: unavailable", joined)
             self.assertNotIn("0 tokens", joined)
             # ...and the JSON consumer is told the same thing as the renderer: something WAS
             # located — every leaf said why it has no numbers.
             self.assertNotIn("reason", tcs["children"])
 
     def test_unavailable_when_nothing_matched(self) -> None:
-        # ~/.claude dir present but holds no transcripts for this orchestration, and
-        # no persisted usage / parent: report unavailable, not a 0-token breakdown.
+        # A row with neither numbers nor a marker: report unavailable, not a 0-token
+        # breakdown, and name the row as unaccounted.
         from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            (home / ".claude" / "projects" / slug).mkdir(parents=True)
-            runs = [{"agent_run_id": "bbbb2222-2222-4222-8222-222222222222", "agent_role": "substep", "status": "pass"}]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs = collect_token_cost_summary(repo, {}, runs)
+            child = "bbbb2222-2222-4222-8222-222222222222"
+            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
+            tcs = collect_token_cost_summary(repo, {}, runs)
             self.assertFalse(tcs["available"])
+            self.assertEqual(tcs["children"]["unmatched_arids"], [child])
             lines: list[str] = []
             _render_token_cost(tcs, lines)
             self.assertIn("unavailable", "\n".join(lines))
             self.assertNotIn("0 tokens", "\n".join(lines))
 
-    def test_render_partial_when_only_children_locatable(self) -> None:
-        # Children present, parent session not locatable (no orchestration_agent_run_id
-        # in meta): the child total must still render, with the parent
-        # side marked unavailable and the node total flagged partial.
-        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
-
+    def test_the_conductors_own_row_is_not_an_unaccounted_leaf(self) -> None:
+        # Every real orchestration has one `agent_role: orchestration` row, named by
+        # `orchestration_meta.json#orchestration_agent_run_id`, with no `usage` (48 of 48
+        # in the corpus). Dropping the exclusion prints "1 leaf arid(s) carry no usage
+        # field" on every audit; this is the pin the deleted parent-path fixtures held.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             repo.mkdir()
-            home = Path(tmp) / "home"
-            slug = str(repo.resolve()).replace("/", "-")
-            subagents = home / ".claude" / "projects" / slug / "hostsess" / "subagents"
-            subagents.mkdir(parents=True, exist_ok=True)
+            parent = "0e750000-0000-4000-8000-000000000000"
             child = "aaaa1111-1111-4111-8111-111111111111"
-            head = json.dumps(
-                {"type": "user", "message": {"role": "user", "content": f"capabilities/{child}.json"}}
-            )
-            (subagents / "agent-a.jsonl").write_text(
-                head + "\n" + json.dumps(_usage_rec(10, 10, 1000, 0)) + "\n", encoding="utf-8"
-            )
-            meta: dict = {}  # no parent identity → parent unavailable
-            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
-            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
-                tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
-            self.assertTrue(tcs["available"])
-            self.assertFalse(tcs["parent"].get("found"))
-            self.assertEqual(tcs["children_total_tokens"], 1020)
+            runs = [{"agent_run_id": parent, "agent_role": "orchestration", "status": "pass"},
+                    {"agent_run_id": child, "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}]
+            tcs = collect_token_cost_summary(
+                repo, {"orchestration_agent_run_id": parent}, runs)
+            self.assertEqual(tcs["children"]["unmatched_arids"], [])
+            self.assertNotIn(parent, tcs["children"]["per_child"])
             lines: list[str] = []
-            _render_token_cost(tcs, lines)
+            ao._render_token_cost(tcs, lines)
+            self.assertNotIn("carry no usage field", "\n".join(lines))
+
+    def test_an_unaccounted_row_is_named_as_a_leaf(self) -> None:
+        # One numeric row makes the section render; the row with no usage field is then
+        # counted in the vocabulary the section uses everywhere else — leaf, not child.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [{"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                     "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+                    {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
+                     "agent_role": "substep", "status": "pass"}]
+            lines: list[str] = []
+            ao._render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
             joined = "\n".join(lines)
-            self.assertIn("parent orchestration: unavailable", joined)
-            self.assertIn("partial — parent usage unavailable", joined)
-            self.assertIn("1,020", joined)
+            self.assertIn("1 leaf arid(s) carry no usage field at all", joined)
+            self.assertNotIn("child", joined)
+
+    def test_the_leaf_total_is_the_whole_section(self) -> None:
+        # The durable rows alone produce the total, and no "parent" side exists to be
+        # partial against: the conductor is a Python process with no session of its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            child = "aaaa1111-1111-4111-8111-111111111111"
+            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 10, "output_tokens": 10,
+                               "cache_read_input_tokens": 1000, "total_tokens": 1020}}]
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertTrue(tcs["available"])
+            self.assertEqual(tcs["children_total_tokens"], 1020)
+            for retired in ("parent", "parent_total_tokens", "node_total_tokens",
+                            "children_fraction"):
+                self.assertNotIn(retired, tcs)
+            lines: list[str] = []
+            ao._render_token_cost(tcs, lines)
+            joined = "\n".join(lines)
+            self.assertIn("## Token cost (per leaf)", joined)
+            self.assertIn("**leaf total**: 1,020 tokens", joined)
+            self.assertNotIn("parent", joined)
+            self.assertNotIn("partial", joined)
 
     def test_render_handles_unavailable(self) -> None:
         summary = {"available": False, "reason": "claude projects dir missing"}
@@ -602,6 +435,18 @@ class AuditIntegrationTests(unittest.TestCase):
                         "fix_hint_stats", "fail_closed_timeline",
                         "allow_auto_approve_stats", "suspicious_benign_volume"):
             self.assertNotIn(retired, result)
+        # ...and the parent/node token keys went the same way (issue #179).
+        for retired in ("parent", "parent_total_tokens", "node_total_tokens",
+                        "children_fraction"):
+            self.assertNotIn(retired, result["token_cost_summary"])
+
+    def test_audit_takes_no_transcript_option(self) -> None:
+        # The opt-in that used to reach ~/.claude is not a silently accepted no-op.
+        with tempfile.TemporaryDirectory() as tmp:
+            orch_id = "orch_test_sig"
+            self._build_fixture(tmp, orch_id)
+            with self.assertRaises(TypeError):
+                audit(Path(tmp), orch_id, token_cost_from_transcripts=True)  # type: ignore[call-arg]
 
     def test_audit_renders_markdown_without_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1554,6 +1399,10 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertIn("data_integrity_warning", proc.stdout)
         self.assertIn("diagnostic_failures", proc.stdout)
         self.assertIn("orchestration_found", proc.stdout)
+        # The ~/.claude reconstruction flag is gone with its path (issue #179): the tool
+        # reads no transcript for cost, and `--help` must not offer one.
+        self.assertNotIn("--token-cost-from-transcripts", proc.stdout)
+        self.assertNotIn("transcript", proc.stdout)
 
     def test_the_attributed_substeps_track_the_pure_capable_table(self) -> None:
         import tools.llm_config as lc
@@ -1711,18 +1560,429 @@ class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):
             self.assertIn("An open active_child window was found", proc.stdout)
             self.assertNotIn("No dangling active_child window detected", proc.stdout)
 
-    def test_token_cost_from_transcripts_no_longer_always_fails(self) -> None:
-        """Consequence 2 of the issue: the same swallowed import made the opt-in
-        transcript path report `token-cost collection failed` on every script run."""
+
+class InRepoRecordSectionTests(unittest.TestCase):
+    """The sections issue #179 moved out of the two workflow-audit SKILLs and into the tool:
+    `phase_state_log.jsonl` fail transitions, `violations/`, `failure_analysis.json`, and the
+    substeps attempted more than once. Each reads an in-repo record only."""
+
+    ORCH_ID = "orch_inrepo"
+
+    def _root(self, tmp: str, *, status: str | None = None) -> Path:
+        root = Path(tmp) / "workspace" / "orchestrations" / self.ORCH_ID
+        root.mkdir(parents=True)
+        if status is not None:
+            (root / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": self.ORCH_ID, "status": status}),
+                encoding="utf-8")
+        return root
+
+    def _rendered(self, tmp: str) -> tuple[dict, str]:
+        result = audit(Path(tmp), self.ORCH_ID)
+        return result, _render_markdown(result)
+
+    # --- phase state failures -------------------------------------------------------
+
+    def test_fail_and_fail_closed_transitions_are_listed_in_order(self) -> None:
+        # The row shape is the corpus's: the orchestration-status writer is the only one
+        # recording these states (19 rows over 48 orchestrations, all `set_status`, keys
+        # ts/event/to/reason_code/reason_detail/blocking_policy_scope/detected_at — never a
+        # node, step or arid).
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root, _arid, env = self._fixture(tmp)
-            proc = self._run(repo_root, env, "--format", "json",
-                             "--token-cost-from-transcripts")
-            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-            result = json.loads(proc.stdout)
-            self.assertEqual(result["diagnostic_failures"], [])
-            reason = str(result["token_cost_summary"].get("reason") or "")
-            self.assertFalse(reason.startswith("token-cost collection failed"), msg=reason)
+            root = self._root(tmp)
+            _write_jsonl(root / "phase_state_log.jsonl", [
+                {"ts": "2026-09-05T00:00:00Z", "event": "init_orchestration",
+                 "from": None, "to": "initialized"},
+                {"ts": "2026-09-05T00:01:00Z", "event": "set_status", "to": "fail",
+                 "reason_code": "validate_failed", "reason_detail": "judge: fail",
+                 "blocking_policy_scope": None, "detected_at": "2026-09-05T00:00:59Z"},
+                {"ts": "2026-09-05T00:02:00Z", "event": "child_finished",
+                 "node_key_safe": "n1", "step": "compile", "from": "launched",
+                 "to": "pass", "agent_run_id": "arid-2"},
+                {"ts": "2026-09-05T00:03:00Z", "event": "set_status", "to": "fail_closed",
+                 "reason_code": "leaf_transport_error",
+                 "reason_detail": "leaf_transport_error: leaf_exit=1"},
+            ])
+            result, md = self._rendered(tmp)
+        failures = result["phase_state_failures"]
+        self.assertEqual([f["to"] for f in failures], ["fail", "fail_closed"])
+        self.assertEqual(failures[0]["reason_code"], "validate_failed")
+        self.assertEqual(failures[1]["reason_code"], "leaf_transport_error")
+        self.assertEqual(sorted(failures[0]),
+                         ["event", "reason_code", "reason_detail", "to", "ts"])
+        self.assertIn("## Phase state failures", md)
+        self.assertIn("fail_closed at: `2026-09-05T00:03:00Z`", md)
+        self.assertIn("[2026-09-05T00:01:00Z] set_status → `fail` — `validate_failed`: "
+                      "judge: fail", md)
+        self.assertIn("set_status → `fail_closed` — `leaf_transport_error`: "
+                      "leaf_transport_error: leaf_exit=1", md)
+        self.assertNotIn("No fail / fail_closed transition recorded", md)
+
+    def test_a_fail_without_fail_closed_is_listed_not_denied(self) -> None:
+        # The shape of every `status: fail` run in the corpus (5 of 48): a `fail` row and no
+        # `fail_closed`. The section must list it, and must not print the negative sentence
+        # beside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "phase_state_log.jsonl", [
+                {"ts": "2026-09-05T00:01:00Z", "event": "set_status", "to": "fail",
+                 "reason_code": "validate_failed", "reason_detail": "judge: fail"}])
+            result, md = self._rendered(tmp)
+        self.assertIsNone(result["fail_closed_at"])
+        self.assertEqual([f["to"] for f in result["phase_state_failures"]], ["fail"])
+        section = md.split("## Phase state failures")[1].split("## failure_analysis")[0]
+        self.assertIn("set_status → `fail` — `validate_failed`: judge: fail", section)
+        self.assertNotIn("fail_closed at:", section)
+        self.assertNotIn("No fail / fail_closed transition recorded", section)
+
+    def test_no_failure_renders_one_negative_sentence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "phase_state_log.jsonl", [
+                {"ts": "2026-09-05T00:00:00Z", "event": "set_status", "to": "pass"}])
+            result, md = self._rendered(tmp)
+        self.assertEqual(result["phase_state_failures"], [])
+        self.assertIsNone(result["fail_closed_at"])
+        self.assertIn("No fail / fail_closed transition recorded.", md)
+        self.assertNotIn("fail_closed at:", md)
+
+    # --- sandbox violations ---------------------------------------------------------
+
+    def _violation(self, root: Path, arid: str, reason: str) -> None:
+        vdir = root / "violations"
+        vdir.mkdir(exist_ok=True)
+        (vdir / f"{arid}.sandbox_enforcement_violation.json").write_text(json.dumps({
+            "kind": "sandbox_enforcement_violation", "agent_run_id": arid,
+            "reason": reason, "evaluated_at": f"2026-09-05T00:00:0{arid[-1]}Z"}),
+            encoding="utf-8")
+
+    def test_the_three_states_of_the_violations_directory_are_told_apart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._root(tmp)
+            result, md = self._rendered(tmp)
+            self.assertFalse(result["sandbox_violations"]["directory_present"])
+            self.assertIn("`violations/` absent — no sandbox enforcement violation "
+                          "was recorded.", md)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "violations").mkdir()
+            result, md = self._rendered(tmp)
+            self.assertTrue(result["sandbox_violations"]["directory_present"])
+            self.assertEqual(result["sandbox_violations"]["records"], [])
+            self.assertIn("directory present, no record (pre-created by a run before "
+                          "issue #171 PR-2)", md)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            self._violation(root, "arid-1", "sandbox_profile_build_failed")
+            self._violation(root, "arid-2", "sandbox_not_enforced")
+            self._violation(root, "arid-3", "sandbox_not_enforced")
+            result, md = self._rendered(tmp)
+            sv = result["sandbox_violations"]
+            self.assertEqual(sv["by_reason"], {"sandbox_profile_build_failed": 1,
+                                               "sandbox_not_enforced": 2})
+            self.assertEqual(sv["by_kind"], {"sandbox_enforcement_violation": 3})
+            self.assertEqual([r["agent_run_id"] for r in sv["records"]],
+                             ["arid-1", "arid-2", "arid-3"])
+            self.assertIn("3 sandbox enforcement record(s):", md)
+            self.assertIn("- `sandbox_not_enforced`: 2", md)
+            self.assertIn("- `sandbox_profile_build_failed`: 1", md)
+            self.assertIn("[2026-09-05T00:00:02Z] `sandbox_not_enforced` arid=`arid-2`", md)
+            self.assertNotIn("absent", md.split("## Sandbox")[1].split("## Token")[0])
+
+    def test_a_retired_kind_is_not_a_sandbox_enforcement_finding(self) -> None:
+        # The real corpus holds one `*.unauthorized_write_violation.json` (a writer deleted in
+        # issue #171 PR-2; `kind` differs, no `reason`, `detected_at` instead of
+        # `evaluated_at`). Rendering it under the sandbox heading as reason `unknown` told
+        # the operator a confinement finding that never happened.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "violations").mkdir()
+            (root / "violations" / "arid-7.unauthorized_write_violation.json").write_text(
+                json.dumps({"kind": "unauthorized_write_violation", "agent_run_id": "arid-7",
+                            "detected_at": "2026-07-24T04:53:10Z", "violations": []}),
+                encoding="utf-8")
+            result, md = self._rendered(tmp)
+            sv = result["sandbox_violations"]
+            self.assertEqual(sv["by_kind"], {"unauthorized_write_violation": 1})
+            self.assertEqual(sv["by_reason"], {})
+            self.assertEqual(sv["records"][0]["reason"], None)
+            self.assertEqual(sv["records"][0]["evaluated_at"], "2026-07-24T04:53:10Z")
+            section = md.split("## Sandbox")[1].split("## Token")[0]
+            self.assertIn("no sandbox enforcement record (the records below are of "
+                          "another kind)", section)
+            self.assertIn("kind `unauthorized_write_violation` arid=`arid-7`", section)
+            self.assertIn("(not a sandbox enforcement finding)", section)
+            # The header does not claim the writer is gone: `noncanonical_phase_write_attempt`'s
+            # exists uncalled, and the section knows only the kind.
+            self.assertNotIn("no longer exists", section)
+            self.assertNotIn("`unknown`", section)
+            self.assertNotIn("sandbox enforcement record(s):", section)
+            # ...and next to a real one, the two are listed apart.
+            self._violation(root, "arid-1", "sandbox_not_enforced")
+            result, md = self._rendered(tmp)
+            section = md.split("## Sandbox")[1].split("## Token")[0]
+            self.assertIn("1 sandbox enforcement record(s):", section)
+            self.assertIn("- `sandbox_not_enforced`: 1", section)
+            self.assertIn("1 record(s) of another kind", section)
+            # ...apart: the other-kind arid appears only under its own heading, so the
+            # sandbox list above it must not carry `arid-7` (a listing over `records`
+            # instead of the sandbox subset survived the round-1 tests).
+            sandbox_list = section.split("1 record(s) of another kind")[0]
+            self.assertNotIn("arid-7", sandbox_list)
+            self.assertIn("arid=`arid-1`", sandbox_list)
+            self.assertEqual(result["sandbox_violations"]["by_reason"],
+                             {"sandbox_not_enforced": 1})
+
+    def test_an_unreadable_violation_record_is_a_diagnostic_failure(self) -> None:
+        # The record a leaf's confinement wrote must not read as "nothing recorded"
+        # because it failed to parse.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "violations").mkdir()
+            (root / "violations" / "x.json").write_text("{not json", encoding="utf-8")
+            result, md = self._rendered(tmp)
+        self.assertIsNone(result["sandbox_violations"])
+        self.assertEqual([f["section"] for f in result["diagnostic_failures"]],
+                         ["sandbox_violations"])
+        self.assertEqual(result["diagnostic_failures"][0]["error_type"], "JSONDecodeError")
+        self.assertIn("`violations/` could not be read", md)
+        self.assertIn("UNKNOWN, not empty", md)
+        self.assertNotIn("no sandbox enforcement violation was recorded", md)
+        self.assertNotIn("directory present, no record", md)
+
+    # --- failure_analysis -----------------------------------------------------------
+
+    def _failure_doc(self, **overrides) -> dict:
+        doc = {
+            "status": "fail", "orchestration_id": self.ORCH_ID,
+            "orchestration_status": "fail_closed",
+            "reason_code": "leaf_transport_error",
+            "reason_detail": "leaf_transport_error: leaf_exit=1",
+            "failed_agent_run": {"agent_run_id": "arid-9", "node_key": "problem/x@0.1.0",
+                                 "step": "generate", "substep": "gate", "status": "fail",
+                                 "launch_reply_ref": "…"},
+            "failed_step_results": [
+                {"path": "workspace/orchestrations/o/steps/n/generate/arid-9/step_result.json",
+                 "status": "fail", "failed_substeps": ["gate"]}],
+            "recommended_retry_decisions": [{"repair_strategy": "restart"}],
+            "launch_incident_refs": [],
+        }
+        doc.update(overrides)
+        return doc
+
+    def test_the_canonical_analysis_is_summarized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
+                                                       encoding="utf-8")
+            result, md = self._rendered(tmp)
+        fa = result["failure_analysis"]
+        self.assertTrue(fa["present"])
+        self.assertEqual(fa["canonical"]["reason_code"], "leaf_transport_error")
+        self.assertEqual(fa["canonical"]["failed_agent_run"],
+                         {"agent_run_id": "arid-9", "node_key": "problem/x@0.1.0",
+                          "step": "generate", "substep": "gate", "status": "fail"})
+        self.assertEqual(fa["canonical"]["recommended_retry_decision_count"], 1)
+        self.assertEqual(fa["sidecars"], [])
+        self.assertIn("## failure_analysis", md)
+        self.assertIn("`failure_analysis.json` (`orchestration_meta.json#status` = "
+                      "`fail_closed`):", md)
+        self.assertIn("reason `leaf_transport_error`: leaf_transport_error: leaf_exit=1", md)
+        self.assertIn("failed agent run: `arid-9` — `problem/x@0.1.0` generate.gate "
+                      "(status `fail`)", md)
+        self.assertIn("- failed step results: 1", md)
+        self.assertIn("steps/n/generate/arid-9/step_result.json` (status `fail`)", md)
+        self.assertIn("- recommended retry decisions: 1", md)
+
+    def test_sidecars_are_summarized_with_their_existing_file_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
+                                                       encoding="utf-8")
+            (root / "failure_analysis.runtime.abc123def456.json").write_text(json.dumps(
+                self._failure_doc(reason_code="leaf_timeout", existing_file_status="invalid")),
+                encoding="utf-8")
+            (root / "failure_analysis.fallback.0123456789ab.json").write_text(json.dumps(
+                self._failure_doc(reason_code="emergency")), encoding="utf-8")
+            result, md = self._rendered(tmp)
+        sidecars = result["failure_analysis"]["sidecars"]
+        self.assertEqual([(sc["file"], sc["existing_file_status"], sc["reason_code"])
+                          for sc in sidecars],
+                         [("failure_analysis.fallback.0123456789ab.json", None, "emergency"),
+                          ("failure_analysis.runtime.abc123def456.json", "invalid",
+                           "leaf_timeout")])
+        self.assertIn("sidecar `failure_analysis.runtime.abc123def456.json` "
+                      "(existing_file_status `invalid`):", md)
+        self.assertIn("reason `leaf_timeout`", md)
+        self.assertIn("sidecar `failure_analysis.fallback.0123456789ab.json`", md)
+
+    def test_a_null_failed_agent_run_and_incident_refs_render(self) -> None:
+        # `failed_run = failed_runs[-1] if failed_runs else None` (tools/run_workflow.py):
+        # a fail with no failed row in agent_runs.jsonl writes `null`, and a dangling launch
+        # writes a snapshot ref. Neither shape is in the corpus's 10 files; both are real.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail")
+            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc(
+                failed_agent_run=None, failed_step_results=[],
+                launch_incident_refs=["workspace/orchestrations/o/launch_incident.runtime.ab.json"])),
+                encoding="utf-8")
+            result, md = self._rendered(tmp)
+        fa = result["failure_analysis"]["canonical"]
+        self.assertIsNone(fa["failed_agent_run"])
+        self.assertEqual(fa["launch_incident_refs"],
+                         ["workspace/orchestrations/o/launch_incident.runtime.ab.json"])
+        self.assertIn("- failed agent run: none recorded", md)
+        self.assertIn("- launch incident: `workspace/orchestrations/o/"
+                      "launch_incident.runtime.ab.json`", md)
+        self.assertNotIn("failed step results", md)
+
+    def test_an_absent_analysis_is_rendered_next_to_the_terminal_status(self) -> None:
+        # Absent on a passed run is normal; absent on a failed run is a finding. The
+        # renderer does not decide which — it puts the status where the reader can.
+        for status in ("pass", "fail"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self._root(tmp, status=status)
+                result, md = self._rendered(tmp)
+            self.assertFalse(result["failure_analysis"]["present"])
+            self.assertEqual(result["orchestration_status"], status)
+            self.assertIn(f"`failure_analysis.json` absent (`orchestration_meta.json#status` "
+                          f"= `{status}`).", md)
+
+    def test_a_corrupt_analysis_is_a_diagnostic_failure_not_an_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text("{not json", encoding="utf-8")
+            result, md = self._rendered(tmp)
+        self.assertIsNone(result["failure_analysis"])
+        self.assertEqual([f["section"] for f in result["diagnostic_failures"]],
+                         ["failure_analysis"])
+        self.assertIn("failure_analysis could not be read", md)
+        self.assertIn("UNKNOWN, not absent", md)
+        self.assertNotIn("`failure_analysis.json` absent", md)
+
+    def test_a_non_object_analysis_or_corrupt_sidecar_is_a_diagnostic_failure(self) -> None:
+        # The docstring's two RAISE claims, each with its own witness: a canonical file that
+        # is JSON but not an object, and a sidecar that is not JSON (the canonical one intact).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text("[]", encoding="utf-8")
+            result, _md = self._rendered(tmp)
+        self.assertEqual([(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
+                         [("failure_analysis", "TypeError")])
+        for sidecar_text, error_type in (("{not json", "JSONDecodeError"), ("[]", "TypeError")):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self._root(tmp, status="fail_closed")
+                (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
+                                                           encoding="utf-8")
+                (root / "failure_analysis.runtime.abc123def456.json").write_text(
+                    sidecar_text, encoding="utf-8")
+                result, md = self._rendered(tmp)
+            self.assertIsNone(result["failure_analysis"])
+            self.assertEqual(
+                [(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
+                [("failure_analysis", error_type)])
+            self.assertIn("UNKNOWN, not absent", md)
+
+    # --- repeated substeps ----------------------------------------------------------
+
+    def test_a_substep_with_two_rows_is_listed_and_a_single_row_is_not(self) -> None:
+        runs = [
+            {"agent_run_id": "o", "agent_role": "orchestration", "status": "pass",
+             "finished_at": "x"},
+            {"agent_run_id": "a1", "node_key": "problem/x@0.1.0", "step": "compile",
+             "substep": "verify", "status": "fail", "finished_at": "x"},
+            {"agent_run_id": "a2", "node_key": "problem/x@0.1.0", "step": "compile",
+             "substep": "verify", "status": "pass", "finished_at": "x"},
+            {"agent_run_id": "b1", "node_key": "problem/x@0.1.0", "step": "compile",
+             "substep": "generate", "status": "pass", "finished_at": "x"},
+        ]
+        invalid = [{"agent_run_id": "a3", "node_key": "problem/x@0.1.0", "step": "compile",
+                    "substep": "verify", "status": "fail"}]
+        summary = collect_agent_run_summary(runs, invalid)
+        self.assertEqual(summary["repeated_substeps"], [
+            {"node_key": "problem/x@0.1.0", "step": "compile", "substep": "verify",
+             "attempts": 3, "statuses": ["fail", "pass", "fail"],
+             "agent_run_ids": ["a1", "a2", "a3"]}])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "agent_runs.jsonl", runs)
+            _write_jsonl(root / "agent_runs_invalid.jsonl", invalid)
+            _result, md = self._rendered(tmp)
+        self.assertIn("Repeated substeps (more than one attempt):", md)
+        # One line per attempt, status beside the arid: the arid is what Step 4's "what
+        # changed between them" is written from (`launches/<arid>.reply.txt`).
+        self.assertIn("- `problem/x@0.1.0` compile.verify: 3 attempts\n"
+                      "  - `fail` `a1`\n  - `pass` `a2`\n  - `fail` `a3`", md)
+        self.assertNotIn("compile.generate", md)
+
+    def test_attempts_are_ordered_by_start_across_the_two_files(self) -> None:
+        # A rejected first attempt lives in agent_runs_invalid.jsonl, the retry that recovered
+        # in agent_runs.jsonl. Concatenating the files rendered `pass, fail` for that run —
+        # the retry read as the failure (Codex, round 2). Both writers stamp `started_at`.
+        runs = [{"agent_run_id": "a2", "node_key": "n", "step": "compile", "substep": "verify",
+                 "status": "pass", "started_at": "2026-09-05T00:02:00Z", "finished_at": "x"}]
+        invalid = [{"agent_run_id": "a1", "node_key": "n", "step": "compile",
+                    "substep": "verify", "status": "fail",
+                    "started_at": "2026-09-05T00:01:00Z"}]
+        summary = collect_agent_run_summary(runs, invalid)
+        self.assertEqual(summary["repeated_substeps"][0]["statuses"], ["fail", "pass"])
+        self.assertEqual(summary["repeated_substeps"][0]["agent_run_ids"], ["a1", "a2"])
+        # A row with no parseable `started_at` keeps its file position, after the dated rows.
+        undated = [{"agent_run_id": "a0", "node_key": "n", "step": "compile",
+                    "substep": "verify", "status": "fail", "started_at": None}]
+        summary = collect_agent_run_summary(undated + runs, invalid)
+        self.assertEqual(summary["repeated_substeps"][0]["statuses"], ["fail", "pass", "fail"])
+
+    def test_a_step_row_repeats_without_a_substep_and_two_conductor_rows_do_not(self) -> None:
+        # Corpus shapes: `Build` is `agent_role: step`, `substep: None` (31 of 48 runs carry
+        # one), and the conductor's own row has neither node nor step (exactly one per run
+        # in the corpus, a resume rewriting it in place; two are used here so a dropped
+        # guard is visible). The first is an attempt and is keyed with `substep=None`; the
+        # second is not an attempt at anything and must not render as
+        # `None None.None: 2 attempts`. A single retry — 2 attempts, the commonest repeat
+        # in the corpus — is listed.
+        runs = [
+            {"agent_run_id": "o1", "agent_role": "orchestration", "status": "fail",
+             "finished_at": "x"},
+            {"agent_run_id": "o2", "agent_role": "orchestration", "status": "pass",
+             "finished_at": "x"},
+            {"agent_run_id": "b1", "agent_role": "step", "node_key": "problem/x@0.1.0",
+             "step": "build", "substep": None, "status": "fail", "finished_at": "x"},
+            {"agent_run_id": "b2", "agent_role": "step", "node_key": "problem/x@0.1.0",
+             "step": "build", "substep": None, "status": "pass", "finished_at": "x"},
+        ]
+        summary = collect_agent_run_summary(runs)
+        self.assertEqual(summary["repeated_substeps"], [
+            {"node_key": "problem/x@0.1.0", "step": "build", "substep": None,
+             "attempts": 2, "statuses": ["fail", "pass"], "agent_run_ids": ["b1", "b2"]}])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "agent_runs.jsonl", runs)
+            _result, md = self._rendered(tmp)
+        self.assertIn("- `problem/x@0.1.0` build: 2 attempts\n  - `fail` `b1`\n  - `pass` `b2`",
+                      md)
+        self.assertNotIn("None", md.split("Repeated substeps")[1])
+
+    def test_no_repeat_renders_no_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "agent_runs.jsonl", [
+                {"agent_run_id": "a1", "node_key": "n", "step": "compile",
+                 "substep": "verify", "status": "pass", "finished_at": "x"}])
+            result, md = self._rendered(tmp)
+        self.assertEqual(result["agent_run_summary"]["repeated_substeps"], [])
+        self.assertNotIn("Repeated substeps", md)
+
+    def test_the_section_order_puts_the_failure_records_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._root(tmp, status="pass")
+            _result, md = self._rendered(tmp)
+        headings = [ln for ln in md.splitlines() if ln.startswith("## ")]
+        self.assertEqual(headings, [
+            "## Phase state failures", "## failure_analysis",
+            "## Dangling launch (active_child window)",
+            "## Sandbox enforcement violations", "## Token cost (per leaf)",
+            "## Pure-leaf A/B metrics", "## agent_runs summary"])
 
 
 class DiagnosticFailureRecordingTests(unittest.TestCase):
