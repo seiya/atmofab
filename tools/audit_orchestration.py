@@ -170,12 +170,14 @@ def collect_agent_run_summary(
     per attempt (`docs/WORKSPACE_LAYOUT.md`), so the row count IS the attempt count, and
     a key that appears twice was retried — a repair loop, a transient retry, or a resume.
     Rows from both files count: a run rejected at terminal validation was an attempt too.
-    A row without all three keys (the conductor's own `orchestration` row has none) is
-    not a substep and is left out.
+    A `step` row has no `substep` (`Build` is recorded as `agent_role: step`, `step:
+    build`, `substep: None`) and is keyed with `substep=None`; a row without a `node_key`
+    and a `step` (the conductor's own `orchestration` row) is not an attempt at anything
+    and is left out.
     """
     status_counts: Counter = Counter()
     missing_entries: list[str] = []
-    attempts: dict[tuple[str, str, str], list[str]] = {}
+    attempts: dict[tuple[str, str, str | None], list[str]] = {}
     for run in agent_runs:
         status = run.get("status", "unknown")
         status_counts[status] += 1
@@ -185,9 +187,10 @@ def collect_agent_run_summary(
         status = run.get("status", "fail")
         status_counts[status] += 1
     for run in list(agent_runs) + list(invalid_runs or []):
-        key = tuple(run.get(k) for k in ("node_key", "step", "substep"))
-        if not all(isinstance(v, str) and v for v in key):
+        node_key, step, substep = (run.get(k) for k in ("node_key", "step", "substep"))
+        if not (isinstance(node_key, str) and node_key and isinstance(step, str) and step):
             continue
+        key = (node_key, step, substep if isinstance(substep, str) and substep else None)
         attempts.setdefault(key, []).append(str(run.get("status", "unknown")))
     repeated = [
         {"node_key": k[0], "step": k[1], "substep": k[2],
@@ -1514,9 +1517,11 @@ def _render_markdown(result: dict[str, Any]) -> str:
         lines.append("Repeated substeps (more than one attempt):")
         for row in repeated:
             statuses = ", ".join(f"`{st}`" for st in row.get("statuses") or [])
+            step = row.get("step")
+            if row.get("substep"):
+                step = f"{step}.{row['substep']}"
             lines.append(
-                f"- `{row.get('node_key')}` {row.get('step')}.{row.get('substep')}: "
-                f"{row.get('attempts')} attempts ({statuses})"
+                f"- `{row.get('node_key')}` {step}: {row.get('attempts')} attempts ({statuses})"
             )
     lines.append("")
 

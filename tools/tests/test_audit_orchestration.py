@@ -1847,6 +1847,33 @@ class InRepoRecordSectionTests(unittest.TestCase):
                       md)
         self.assertNotIn("compile.generate", md)
 
+    def test_a_step_row_repeats_without_a_substep_and_two_conductor_rows_do_not(self) -> None:
+        # Corpus shapes: `Build` is `agent_role: step`, `substep: None` (31 of 48 runs carry
+        # one), and the conductor's own row has neither node nor step (a resumed run has two
+        # of them). The first is an attempt and is keyed with `substep=None`; the second is
+        # not an attempt at anything and must not render as `None None.None: 2 attempts`.
+        # A single retry — 2 attempts, the commonest repeat in the corpus — is listed.
+        runs = [
+            {"agent_run_id": "o1", "agent_role": "orchestration", "status": "fail",
+             "finished_at": "x"},
+            {"agent_run_id": "o2", "agent_role": "orchestration", "status": "pass",
+             "finished_at": "x"},
+            {"agent_run_id": "b1", "agent_role": "step", "node_key": "problem/x@0.1.0",
+             "step": "build", "substep": None, "status": "fail", "finished_at": "x"},
+            {"agent_run_id": "b2", "agent_role": "step", "node_key": "problem/x@0.1.0",
+             "step": "build", "substep": None, "status": "pass", "finished_at": "x"},
+        ]
+        summary = collect_agent_run_summary(runs)
+        self.assertEqual(summary["repeated_substeps"], [
+            {"node_key": "problem/x@0.1.0", "step": "build", "substep": None,
+             "attempts": 2, "statuses": ["fail", "pass"]}])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            _write_jsonl(root / "agent_runs.jsonl", runs)
+            _result, md = self._rendered(tmp)
+        self.assertIn("- `problem/x@0.1.0` build: 2 attempts (`fail`, `pass`)", md)
+        self.assertNotIn("None", md.split("Repeated substeps")[1])
+
     def test_no_repeat_renders_no_heading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
