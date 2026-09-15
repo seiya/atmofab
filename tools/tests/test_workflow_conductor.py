@@ -2489,6 +2489,96 @@ class TransportFailureTest(unittest.TestCase):
             line = f"You've hit your {window} limit · resets 3pm (Asia/Tokyo)"
             self.assertEqual(wc._classify_leaf_infra_error("", line)[0], "llm_usage_limit", line)
 
+    def test_an_enveloped_abort_is_tagged_whatever_the_cli_key_order(self) -> None:
+        """The classifier must see the abort INSIDE the envelope, for EVERY window and at any
+        `"result":"` offset. Two traps, both of which bit:
+
+        * a strictly line-anchored pattern cannot see it at all, and only `usage` / `session` have an
+          unanchored fallback phrase — so an enveloped `weekly` / `5-hour` abort terminalized with no
+          tag, no wait and no decline event to grep;
+        * a POSITIONAL bound on the prefix rots with the CLI's key order. It has already changed:
+          `"result":"` sits at 128..202 chars in the 2026-07-19/21/23 envelopes but at 1132..1424 in
+          every envelope the current CLI writes (`usage` / `modelUsage` moved ahead of it), so a
+          `{0,300}` bound was inert for the CLI actually in use.
+
+        Since issue #170 the tag is all that arms `--wait-usage-reset`, so this row is the ONE pin
+        on the `"result":"` prefix of `_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE`: the recorded
+        production envelope in the pure-loop tests names the `session` window, which the bare
+        `session limit` fallback also tags, so those rows cannot see the prefix. The non-fallback
+        windows here can (deleting the prefix alternative reddens `weekly` / `5-hour` / ...)."""
+        # The CURRENT CLI's key order, verbatim from a live-workspace envelope.
+        def envelope(window: str) -> str:
+            return json.dumps({
+                "is_error": True, "duration_api_ms": 646, "num_turns": 1,
+                "stop_reason": "stop_sequence", "session_id": "s", "total_cost_usd": 0,
+                "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                          "cache_read_input_tokens": 0, "output_tokens": 0,
+                          "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+                          "service_tier": "standard", "iterations": [], "speed": "standard"},
+                "modelUsage": {}, "permission_denials": [], "terminal_reason": "api_error",
+                "fast_mode_state": "off", "subtype": "success", "api_error_status": 429,
+                "result": f"You've hit your {window} limit · resets 3pm (Asia/Tokyo)"},
+                separators=(",", ":"))   # the CLI writes COMPACT JSON, as the recorded bytes show
+
+        for window in ("session", "usage", "weekly", "hourly", "5-hour", "Opus weekly", "monthly"):
+            line = envelope(window)
+            self.assertGreater(line.index('"result":"'), 300, "key order sanity")
+            got = wc._classify_leaf_infra_error("", line)
+            self.assertIsNotNone(got, window)
+            self.assertEqual(got[0], "llm_usage_limit", window)
+        # Self-test of the pin: at least one window here is NOT covered by a fallback phrase, or
+        # the loop above would be green with the prefix alternative deleted.
+        fallback_only = re.compile(r"\busage limit\b|\bsession limit\b")
+        self.assertTrue(any(not fallback_only.search(envelope(w).lower())
+                            for w in ("weekly", "5-hour", "Opus weekly", "monthly")))
+
+    def test_the_lead_in_window_budget_is_bounded_from_both_sides(self) -> None:
+        """The `[^\\n]{0,40}` window and the `{0,80}`/`{0,30}` cue distances are pinned NARROW by the
+        family test above; widening them is the dangerous direction and is pinned here. With a
+        400-char window this sentence starts tagging (rank 0, so it would cost a real transport
+        failure its retries — and, under `--wait-usage-reset`, would arm a multi-hour sleep on a
+        leaf that died of something else)."""
+        # EVERY sentence here carries a real clock token, so the cue cannot be what rejects it —
+        # only the bound under test can. (Sentences without one are rejected by the cue and would
+        # make this test vacuous, which is exactly what happened once the cue was tightened.)
+        # `[^\n]{0,40}` — the limit sits far past the lead-in.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            "", "You've hit your first milestone: the runtime is now under the wall-clock limit, "
+                "so the nightly cache resets at midnight."))
+        # `{0,80}` — `resets` sits far past the limit.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            "", "You've hit your CFL limit, so the timestep must shrink; the diagnostic table "
+                "below lists each scheme, its stencil width and its stability bound, and the "
+                "sweep counter resets at midnight."))
+        # `{0,30}` — the clock token sits far past `resets`.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            "", "You've hit your CFL limit and the counter resets after the halo exchange, the "
+                "flux update and the boundary pass at midnight."))
+
+    def test_the_lead_in_body_is_verbose_safe(self) -> None:
+        """`_HIT_YOUR_LIMIT_BODY` is compiled as a plain pattern today. A `re.VERBOSE` compilation
+        STRIPS unescaped literal whitespace, so a literal space in it would silently become a
+        different regex the day it is interpolated into one (that is how a `try again` cue once
+        became `tryagain`). Any whitespace in this constant must be written `\\s`."""
+        import re as _re
+        # No unescaped literal whitespace: strip the escapes first, then look for real spaces.
+        without_escapes = _re.sub(r"\\.", "", wc._HIT_YOUR_LIMIT_BODY)
+        self.assertNotRegex(without_escapes, r"\s")
+        # And the property that matters: VERBOSE compilation does not change what it matches.
+        plain = _re.compile(r"^\s*" + wc._HIT_YOUR_LIMIT_BODY, _re.IGNORECASE)
+        verbose = _re.compile(r"^\s*" + wc._HIT_YOUR_LIMIT_BODY, _re.IGNORECASE | _re.VERBOSE)
+        for line in ("You've hit your weekly limit · resets 3pm (Asia/Tokyo)",
+                     "You've hit your weekly limit, try again in 3 hours",
+                     "You've hit your 5-hour limit · resets Monday",
+                     "You've hit your weekly limit · resets next week"):
+            self.assertEqual(bool(plain.match(line)), bool(verbose.match(line)), line)
+        # The cue keyword itself: `resets` (what the CLI writes), not the imperative `reset`.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            "", "You've hit your weekly limit, reset 3pm (Asia/Tokyo)"))
+        # ...and the keyword is required — a clock token alone is not a quota message.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            "", "You've hit your weekly limit at 3pm (Asia/Tokyo)"))
+
     def test_the_hit_your_limit_alternative_does_not_steal_other_tags(self) -> None:
         """`llm_usage_limit` is rank 0 AND cross-stream-promoting, so this alternative must not be
         the loosest pattern in the table. Two clauses keep it honest and BOTH are pinned here:

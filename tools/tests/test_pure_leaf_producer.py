@@ -1339,10 +1339,15 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         showing `pure_bundle_attempt_failed / pure_transport`) did NOT have its abort pre-empt the
         `--output-format json` envelope — the CLI completed the envelope and put the message in
         `result`, with `is_error` / `api_error_status` / `terminal_reason` stamped alongside. The
-        wait is decided from the classifier's tag, and the classifier's `"result":"` prefix is
-        what tags this shape — so this pins that the recorded production envelope reaches the
-        wait. Bytes below are verbatim from that log (`workspace*/` is gitignored, so they are
-        pinned here); the sibling test above uses the bare-line-on-stderr shape."""
+        wait is decided from the classifier's tag, so this pins that the recorded production
+        envelope reaches the wait from this loop. It does NOT pin the classifier's `"result":"`
+        prefix: the recorded message names the `session` window, which the bare `session limit`
+        fallback tags too (measured: the row stays green with the prefix alternative deleted);
+        the prefix is pinned by
+        `test_workflow_conductor.py::test_an_enveloped_abort_is_tagged_whatever_the_cli_key_order`
+        on the non-fallback windows. Bytes below are verbatim from that log (`workspace*/` is
+        gitignored, so they are pinned here); the sibling test above uses the bare-line-on-stderr
+        shape."""
         # VERBATIM from that log (771 chars / 773 bytes), including the CLI accounting blocks
         # that dominate envelope size.
         recorded_stdout = (

@@ -767,9 +767,12 @@ class PureVerifySubstepTests(unittest.TestCase):
         stderr, in one of two recorded shapes — the bare message (5 of the 6 incidents on record)
         or the `--output-format json` envelope carrying it in `result` (the 1 that struck a pure
         leaf, verbatim below from `orch_20260719T021249Z_419ebdf9`). The wait is decided from the
-        classifier's tag, so BOTH shapes wait the same first schedule entry on this loop — the
-        classifier's `"result":"` prefix is what tags the enveloped one, and this pins that the
-        tag reaches the wait from the reviewer loop as well as from the producer's."""
+        classifier's tag, so BOTH shapes wait the same first schedule entry on this loop; this
+        pins that the tag reaches the wait from the reviewer loop as well as from the producer's.
+        It does NOT pin the classifier's `"result":"` prefix — the recorded message names the
+        `session` window, which the bare `session limit` fallback tags too (measured: green with
+        the prefix alternative deleted); that prefix is pinned by
+        `test_workflow_conductor.py::test_an_enveloped_abort_is_tagged_whatever_the_cli_key_order`."""
         bare = "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n"
         enveloped = (
             '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"duration_ms":64'

@@ -2910,7 +2910,7 @@ _TERMINAL = r"\b(?=[.'\")\]]*\s*$)"
 #     the round-3 failure, one wording at a time. (The `usage` / `session` windows DO fall back.)
 #   * NO LITERAL WHITESPACE anywhere in this string: it is compiled as a plain pattern today, and a
 #     `re.VERBOSE` compilation strips unescaped spaces, so a literal `try again` would silently
-#     become `tryagain` under one. Use `\s`. `test_the_shared_lead_in_is_verbose_safe` pins this.
+#     become `tryagain` under one. Use `\s`. `test_the_lead_in_body_is_verbose_safe` pins this.
 
 # The quota windows the CLI names, for the classifier's `<window> limit reached` alternative.
 _USAGE_LIMIT_WINDOWS = r"(?:usage|session|weekly|hourly|\d+-hour)"
