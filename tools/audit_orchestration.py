@@ -166,10 +166,14 @@ def collect_agent_run_summary(
     field — so they're rolled into `status_counts` (typically as `fail`).
 
     `repeated_substeps` lists every `(node_key, step, substep)` that has more than one
-    row, with the statuses in file order. The conductor allocates a fresh `agent_run_id`
-    per attempt (`docs/WORKSPACE_LAYOUT.md`), so the row count IS the attempt count, and
-    a key that appears twice was retried — a repair loop, a transient retry, or a resume.
-    Rows from both files count: a run rejected at terminal validation was an attempt too.
+    row, with the statuses in the order the attempts STARTED. The conductor allocates a
+    fresh `agent_run_id` per attempt (`docs/WORKSPACE_LAYOUT.md`), so the row count IS the
+    attempt count, and a key that appears twice was retried — a repair loop, a transient
+    retry, or a resume. Rows from both files count: a run rejected at terminal validation
+    was an attempt too — and because it sits in a separate file, the two files are merged
+    by `started_at` (parsed; a row without a parseable one keeps its file position, after
+    the dated rows) rather than concatenated, which would show a rejected first attempt
+    AFTER the retry that recovered from it and read as the retry having failed.
     A `step` row has no `substep` (`Build` is recorded as `agent_role: step`, `step:
     build`, `substep: None`) and is keyed with `substep=None`; a row without a `node_key`
     and a `step` (the conductor's own `orchestration` row) is not an attempt at anything
@@ -186,7 +190,11 @@ def collect_agent_run_summary(
     for run in (invalid_runs or []):
         status = run.get("status", "fail")
         status_counts[status] += 1
-    for run in list(agent_runs) + list(invalid_runs or []):
+    merged = list(agent_runs) + list(invalid_runs or [])
+    merged.sort(key=lambda run: (
+        (0, ts) if (ts := _parse_ts(run.get("started_at"))) is not None
+        else (1, datetime.min.replace(tzinfo=timezone.utc))))
+    for run in merged:
         node_key, step, substep = (run.get(k) for k in ("node_key", "step", "substep"))
         if not (isinstance(node_key, str) and node_key and isinstance(step, str) and step):
             continue

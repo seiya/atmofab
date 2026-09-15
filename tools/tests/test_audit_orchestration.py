@@ -1911,6 +1911,23 @@ class InRepoRecordSectionTests(unittest.TestCase):
                       md)
         self.assertNotIn("compile.generate", md)
 
+    def test_attempts_are_ordered_by_start_across_the_two_files(self) -> None:
+        # A rejected first attempt lives in agent_runs_invalid.jsonl, the retry that recovered
+        # in agent_runs.jsonl. Concatenating the files rendered `pass, fail` for that run —
+        # the retry read as the failure (Codex, round 2). Both writers stamp `started_at`.
+        runs = [{"agent_run_id": "a2", "node_key": "n", "step": "compile", "substep": "verify",
+                 "status": "pass", "started_at": "2026-09-05T00:02:00Z", "finished_at": "x"}]
+        invalid = [{"agent_run_id": "a1", "node_key": "n", "step": "compile",
+                    "substep": "verify", "status": "fail",
+                    "started_at": "2026-09-05T00:01:00Z"}]
+        summary = collect_agent_run_summary(runs, invalid)
+        self.assertEqual(summary["repeated_substeps"][0]["statuses"], ["fail", "pass"])
+        # A row with no parseable `started_at` keeps its file position, after the dated rows.
+        undated = [{"agent_run_id": "a0", "node_key": "n", "step": "compile",
+                    "substep": "verify", "status": "fail", "started_at": None}]
+        summary = collect_agent_run_summary(undated + runs, invalid)
+        self.assertEqual(summary["repeated_substeps"][0]["statuses"], ["fail", "pass", "fail"])
+
     def test_a_step_row_repeats_without_a_substep_and_two_conductor_rows_do_not(self) -> None:
         # Corpus shapes: `Build` is `agent_role: step`, `substep: None` (31 of 48 runs carry
         # one), and the conductor's own row has neither node nor step (a resumed run has two
