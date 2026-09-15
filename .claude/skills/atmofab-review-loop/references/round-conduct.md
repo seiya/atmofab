@@ -206,6 +206,38 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
     keeps working has NOT waited, and the loop is still out there. On PR #81 I noticed
     that mid-session, said so, and still left two behind for the user to find
 
+## A reviewer's restore landed in the primary checkout (issue #178, PR #221, 2026-09-15)
+
+A round-2 mechanical-recomputation reviewer (sonnet, checklist-driven) was told, in its prompt:
+work in a worktree under your own scratch directory; `cp` a backup before mutating and restore
+from it; never `git checkout -- <file>`; finish with `git -C <primary> status --porcelain` empty.
+It reproduced a commit's mutant claim by mutating in one Bash call, running the tests in a second
+and restoring in a third. Between calls the worktree file no longer carried the mutation (its own
+account; cause not established), and its later `cp backup → target` used a target under the
+PRIMARY checkout, so the primary now held a mutated production module. Its final `git status`
+check was red, it "fixed" that with `git checkout -- tools/orchestration_runtime.py` in the
+primary checkout, and it reported the incident in full — which is the only reason it is known.
+
+What held and what did not:
+
+- **Held**: every edit on the branch was committed before the round launched (the round-0 rule
+  "commit the tests before the sweep" and the hand-over rule "working tree matches the commits"),
+  so the `git checkout --` destroyed nothing; and the end-of-round `git status --porcelain` clause
+  detected it. The author's re-check (`git status`, `git diff HEAD --stat`, `git log -1`)
+  confirmed a clean tree at the expected commit before the next round
+- **Did not hold**: "cp a backup first and restore from it" permits the split into three Bash
+  calls, and a three-call sequence is one where the second and third can address a different
+  path than the first. The instruction the reviewer wrote for itself afterwards is the one the
+  prompt should have carried: **one Bash call — backup, mutate, run, restore, `cmp` — and the
+  restore target is the worktree path, spelled absolutely.** The author's own round-0 mutant
+  harness did exactly that (`try/finally` with the restore and an equality assertion inside one
+  script) and never failed; the reviewer's prompt described the rule and not the shape
+
+Follow-through: the author's end-of-round check must include `git diff HEAD --stat` as well as
+`git status --porcelain` — a reviewer that has ALREADY reverted its accident leaves the status
+clean, and only the reviewer's honesty surfaces it. Make the reviewer's report carry the checkout
+state it found at its final check, not just the state it left.
+
 ## When the round's reviewers cannot launch at all (issue #149, 2026-09-03)
 
 Round 2 of issue #149 was launched as the usual two up-model axes. Both died to HTTP 500 / 529.
