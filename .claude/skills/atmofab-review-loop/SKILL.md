@@ -235,6 +235,15 @@ when a rule does not obviously apply:
   collides with the parallel worktrees `scripts/mutation_check.py` runs under `TMPDIR`. Keep the
   escaping path INSIDE the tempdir (traverse back into it) and assert the landing path resolves
   under it.
+- **A reviewer's hand mutation must mutate, run and restore in ONE Bash call, with a `cmp`
+  against the backup after the restore, and the launch prompt says so.** "cp a backup first and
+  restore from it" was in the prompt of the round-2 reviewer on issue #178 that split the three
+  steps across Bash calls, lost track of which tree its backup path pointed at, and wrote a
+  MUTATED `tools/orchestration_runtime.py` into the primary checkout — then reverted it there with
+  `git checkout -- <file>`, the command the same prompt forbade. Nothing was lost because every
+  edit was committed, and the end-of-round `git status --porcelain` is what caught it; the rule
+  is here because the prompt wording "cp a backup" permits the split that caused it
+  (`references/round-conduct.md`)
 - **Never revert a mutation with `git checkout -- <file>`. TWO reasons, and the second is worse:
   it deletes uncommitted work, and on an UNTRACKED file it is a SILENT NO-OP** — PR #104 shipped a
   mutant for two commits that way. Use a worktree (the script's default; `--keep` leaves it
@@ -1162,7 +1171,13 @@ that tells you how it closed.
   figure three times, each correction sweeping the wording it had just written, and each missing a
   different phrasing of the same measurement — the fourth spelling sat eleven lines from the third
   and survived four rounds. Sweep for the NUMBER and for what it is a number OF, then read every
-  hit; a `grep` for last round's sentence finds last round's sentence
+  hit; a `grep` for last round's sentence finds last round's sentence.
+  **A corrected QUANTIFIER is still a quantifier.** "every X" found false and rewritten as "every
+  X that also Y" is the summary-of-a-measurement case wearing a narrower hat: it still asserts a
+  set you have not enumerated, and the disclosure round will find the member outside it. Issue
+  #178 did this to one comment twice in two rounds; what closed it was the same move as the
+  spread — delete the quantifier and state the MECHANISM (which files a short-circuit drops and
+  why), which has a witness the set never had (`references/signs-episodes.md`)
 - **A comment or docstring RESTATES a measurement the assertion beside it already carries** →
   delete the restatement; do not correct it. Criterion: could this sentence and the line under it
   disagree? Then they will, and the sentence is the one that will be wrong, because nothing runs

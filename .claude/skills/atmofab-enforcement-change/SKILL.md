@@ -160,7 +160,10 @@ zero, with `git status` clean throughout because the test restores the bytes in 
 else in flight, and say so beside the number.** And **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
 inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
-explicitly, or re-measure before writing. **The place this fires that you will not expect is a
+explicitly, or re-measure before writing. **Arithmetic on an inherited count is that
+substitution in its quietest form**: deleting one member and turning "all three" into "both"
+carries the old, unverified count forward as if you had measured it (issue #178 — the "three"
+had been six, so the "both" was five; `references/judgment-episodes.md` §Rule 3). **The place this fires that you will not expect is a
 CORRECTION**: a reviewer's finding arrives already carrying evidence, so it feels verified before you
 write it, and issue #153 wrote a reviewer's HEAD-measured count into a corrections bullet as the count
 "when that commit landed" — replacing a correct figure with a wrong one, one item after condemning

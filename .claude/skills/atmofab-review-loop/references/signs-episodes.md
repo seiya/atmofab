@@ -60,7 +60,19 @@ the case history that tells you how it closed.
   (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one statement
   repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
   COUPLING problem, which `atmofab-enforcement-change` rule 3-a owns and states the threshold
-  for.** Do not restate its number here — that is the drift this pair is about
+  for.** Do not restate its number here — that is the drift this pair is about.
+  - **The quantifier variant (issue #178, PR #221, 2026-09-15).** A gate comment justified a
+    no-short-circuit loop with "short-circuiting would change EVERY recorded `dep_set_fingerprint`".
+    Round 1 measured it false (a reviewer's `break` mutant left 9 of 17 fixtures unchanged, the
+    fully certified ones included) and the fix narrowed it to "of every dep with a refused stage
+    that still selected a file". Round 3 measured THAT false too: under the mutant the refused
+    stage's own file is recorded before `ok` is read, so a failing LAST stage (a `fail` verdict)
+    still hashed it and the fingerprint did not move. Both versions asserted a set; neither round
+    enumerated it. The third rewrite stated the mechanism — a `break` drops the files of the
+    stages AFTER the first refusal, which is what the fingerprint must keep — and that sentence
+    has a witness (the three tests that kill the `break`) where the two quantifiers had none.
+    Same closure as the spread summary above: the corrected sentence must pass the check the
+    wrong one failed, and a quantifier cannot be checked without the enumeration it hides
 - **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
   numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
   this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test

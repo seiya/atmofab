@@ -116,6 +116,17 @@ emitted** 40 lines below stayed stale. Worse, the "measured value" I cited as gr
 inverted by an implementation change (the consequence of `language: " fortran"`). Use the grep
 procedure in `references/verification.md`.
 
+- **Arithmetic on an inherited count (issue #178, PR #221, 2026-09-15).** `_load_spec_catalog`'s
+  comment said "All three production call sites (A, B, C) only invoke this function AFTER
+  deps.yaml entries are confirmed non-empty". The branch deleted B and rewrote it to "Both
+  production call sites (A, C)". A round-1 reviewer ran the grep: six callers before the branch,
+  five after. The "three" had never been true and the "both" inherited it — a decrement is a
+  claim about the present made from a number nobody had measured, and it feels safer than
+  writing a fresh number because it looks like a smaller edit. The property the sentence was
+  protecting ("a leaf orchestration never reaches this raise") held for all five, which is why
+  the fix replaced the count with the property and no number. **The tell: a diff whose only
+  change to a numeral is `n-1` beside a deletion.** Re-measure, or drop the number.
+
 **3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3
 is a discipline, and on issue #71 it failed **four consecutive rounds after it had been
 diagnosed**: round 11 named "the rounds were reliable about code and unreliable about their own
