@@ -26594,6 +26594,45 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         self.assertIn("directly under $HOME", str(ctx.exception))
         self.assertIn(str(home / "cli-sim"), str(ctx.exception))
 
+    def test_a_dot_dot_component_cannot_name_the_home_child(self) -> None:
+        # `shutil.which` joins the PATH entry verbatim, so `$HOME/../home/.local/bin` reaches
+        # the rule spelled with `..`, whose first component after $HOME would then be `..`
+        # itself — the parent of the home, bound read-only. Found by the round-1 security
+        # axis; the rule normalises lexically before delimiting.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        root, bindir = self._tool_manager_install(home)
+        dotted = home / ".." / "home" / ".toolmgr" / "bin"
+        self.assertEqual(self._ro_for("cli-sim", home, dotted), [str(root)])
+
+    def test_a_symlinked_home_keeps_the_home_spelling_for_the_which_candidate(self) -> None:
+        # `$HOME` is a symlink to the real home. The `which` candidate carries the $HOME
+        # spelling and yields the full `$HOME/.toolmgr` root — which is what a tool manager
+        # resolves `$HOME` against at start-up; the realpath candidate escapes the $HOME
+        # prefix and takes the outside-home branch. Pins that the rule does NOT resolve
+        # `home` first (a `Path(home).resolve()` mutant survived the round-0 rows).
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        real_home = d / "real_home"
+        root, _bindir = self._tool_manager_install(real_home)
+        link_home = d / "home"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        ro = self._ro_for("cli-sim", link_home, link_home / ".toolmgr" / "bin")
+        self.assertIn(str(link_home / ".toolmgr"), ro)
+        self.assertEqual(ro, sorted([str(link_home / ".toolmgr"), str(root / "bin")]))
+
+    def test_a_sibling_home_with_the_same_prefix_is_outside_home(self) -> None:
+        # `/home/seiya2/...` is not under `/home/seiya`: the containment test is
+        # component-wise, not a string prefix (a `str.startswith` mutant survived round 0).
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        home.mkdir()
+        sibling = d / "home2"
+        _root, bindir = self._tool_manager_install(sibling)
+        self.assertEqual(self._ro_for("cli-sim", home, bindir), [str(bindir)])
+
     def test_a_path_equal_to_home_is_refused(self) -> None:
         # Not reachable through `shutil.which` (a directory is never an executable), so
         # the helper is driven directly: the branch exists so that no caller can ever

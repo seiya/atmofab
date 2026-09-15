@@ -7889,9 +7889,12 @@ def _install_root_for(path: Path, home: str) -> Path:
     duplicate). A path equal to ``$HOME``, or whose parent is ``$HOME``, has no install
     root: refuse rather than bind the operator's whole home read-only. ``path`` and
     ``home`` must both be absolute; the caller passes `shutil.which`'s answer and its
-    `os.path.realpath`.
+    `os.path.realpath`. Both are normalised lexically first (``os.path.normpath``): a
+    PATH entry spelled ``$HOME/../<user>/.local/bin`` otherwise yields ``..`` as the
+    "$HOME child" and binds the parent of the home (measured, issue #226 round 1).
     """
-    home_path = Path(home)
+    home_path = Path(os.path.normpath(home))
+    path = Path(os.path.normpath(path))
     if path == home_path:
         raise ValueError(
             f"backend CLI path is $HOME itself, which is not an install root: {path}"
