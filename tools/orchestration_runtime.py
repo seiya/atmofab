@@ -7908,7 +7908,17 @@ def _install_root_for(path: Path, home: str) -> Path:
             "backend CLI executable sits directly under $HOME, which has no install root "
             f"to bind (an executable is expected under a $HOME-child directory): {path}"
         )
-    return home_path / rel.parts[0]
+    root = home_path / rel.parts[0]
+    # The lexical answer can still be the whole home PHYSICALLY: a $HOME child that is a
+    # symlink to the home's parent (`~/up -> /home`) binds every dotdir of the home at the
+    # alias `~/up/<user>/` (measured, issue #226 round 2). bwrap resolves the source, so the
+    # refusal has to compare realpaths.
+    if Path(os.path.realpath(home_path)).is_relative_to(Path(os.path.realpath(root))):
+        raise ValueError(
+            f"backend CLI install root {root} resolves to {os.path.realpath(root)}, which "
+            f"contains the whole home {home_path}; an install root must not cover $HOME"
+        )
+    return root
 
 
 def _backend_runtime_bind_paths(
@@ -7927,7 +7937,10 @@ def _backend_runtime_bind_paths(
       parent directory. An executable directly under ``$HOME``, or a path equal to
       ``$HOME``, is refused with `ValueError` (`record_launch` routes a profile-build
       failure to transport `fail_closed`), since the only root that would cover it is the
-      operator's whole home. With ``HOME`` unset there is nothing to delimit against and
+      operator's whole home; so is a root that covers the home PHYSICALLY (a ``$HOME``
+      child symlinked to the home's parent), and — at `build_readonly_bwrap_profile`,
+      which knows ``repo_root`` — a root whose realpath contains the checkout under a
+      path the artifact overlays do not cover (`_refuse_backend_ro_alias_of_repo`). With ``HOME`` unset there is nothing to delimit against and
       the parent directories are bound, as before #226.
       Cost of the polarity, measured on the planning host: the claude bind widens from
       the CLI's own data dir under ``~/.local/share/`` (+ ``~/.local/bin``, + its
@@ -7999,6 +8012,32 @@ def _backend_runtime_bind_paths(
     # verifies the parent is writable) still gets a writable bind.
     rw_paths = sorted(p for p in rw if p)
     return ro_paths, rw_paths
+
+
+def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str]) -> None:
+    """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
+
+    `render_bwrap_command` hides the artifact trees (`workspace/`, the archives, `releases/`)
+    with tmpfs overlays at `repo_root`'s own path. bwrap resolves a bind's SOURCE on the host
+    and mounts it at the spelled destination, so an install root whose realpath contains the
+    checkout while its spelling does not (a symlinked `$HOME` — `/home/x -> /data/x` — with
+    the checkout and the CLI under the same `$HOME` child; or a `$HOME` child that is a
+    symlink to the parent of the home) exposes the checkout at the alias with nothing
+    overlaid: a VERIFY leaf reads the producer's `dialogs/leaf.stdout.jsonl` there, the gain
+    the overlay exists to remove. Measured under real bwrap (issue #226 round 2). A root
+    whose spelling ALSO contains the checkout is fine: the repo bind and the overlays are
+    emitted later at that path and stack on top. Same shape as the rw refusal below.
+    """
+    resolved_repo = repo_root.resolve()
+    for root in backend_ro:
+        physical = Path(os.path.realpath(root))
+        if resolved_repo.is_relative_to(physical) and not resolved_repo.is_relative_to(Path(root)):
+            raise ValueError(
+                f"backend install root {root!r} resolves to {physical}, which contains the "
+                f"checkout {resolved_repo} under a path the sandbox does not overlay; move the "
+                "CLI (or its wrapper) out of the directory that holds the checkout through "
+                "that symlink, or launch from the checkout's canonical path"
+            )
 
 
 def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]) -> list[str]:
@@ -8081,6 +8120,7 @@ def build_readonly_bwrap_profile(
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
+    _refuse_backend_ro_alias_of_repo(repo_root, backend_ro)
     if backend_rw_override is not None:
         backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
