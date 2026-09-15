@@ -7953,10 +7953,15 @@ def _backend_runtime_bind_paths(
       it; a tool-bearing pure codex leaf can, and reading the operator's data is outside
       the defended set (`AGENTS.md` §Development premises) — a sibling checkout kept under
       such a root is the one case with a named gain, and it is issue #227's read-boundary
-      work, not this rule's. Unmodelled shapes, stated rather than guessed (neither is
+      work, not this rule's. Unmodelled shapes, stated rather than guessed (none is
       measurable on the planning host): an ``/opt/<x>/bin`` install whose realpath needs a
-      sibling ``lib/``, and a realpath that is a ``#!/usr/bin/env <interp>`` script whose
-      interpreter lives under a different root.
+      sibling ``lib/``; a realpath that is a ``#!/usr/bin/env <interp>`` script whose
+      interpreter lives under a different root; a per-entry ``command:`` wrapper that execs
+      the CLI BY NAME (the wrapper's root is bound, the CLI it names is not — rc 127 at
+      launch, measured, and the same before #226); and a claude executable outside
+      ``~/.local`` that still reads the CLI's data dir under ``~/.local/share/`` (the
+      literal bound that directory for every claude leaf; the shape rule binds it only
+      when the executable resolves under ``~/.local``).
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
       string, which may be a wrapper), and resolved by the canonical
@@ -8018,25 +8023,50 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
 
     `render_bwrap_command` hides the artifact trees (`workspace/`, the archives, `releases/`)
-    with tmpfs overlays at `repo_root`'s own path. bwrap resolves a bind's SOURCE on the host
-    and mounts it at the spelled destination, so an install root whose realpath contains the
-    checkout while its spelling does not (a symlinked `$HOME` — `/home/x -> /data/x` — with
-    the checkout and the CLI under the same `$HOME` child; or a `$HOME` child that is a
-    symlink to the parent of the home) exposes the checkout at the alias with nothing
-    overlaid: a VERIFY leaf reads the producer's `dialogs/leaf.stdout.jsonl` there, the gain
-    the overlay exists to remove. Measured under real bwrap (issue #226 round 2). A root
-    whose spelling ALSO contains the checkout is fine: the repo bind and the overlays are
-    emitted later at that path and stack on top. Same shape as the rw refusal below.
+    with tmpfs overlays at `repo_root`'s own (resolved) path. bwrap resolves a bind's SOURCE
+    on the host and mounts it at the spelled destination, so an install root that IS the
+    checkout or one of its ancestors under a different name — a symlinked `$HOME`
+    (`/home/x -> /data/x`) with the checkout and the CLI under the same `$HOME` child; a
+    `$HOME` child that is a symlink to the parent of the home; a data disk bind-mounted into
+    `~/work` while the workflow was started from the disk's own spelling — exposes the
+    checkout at the alias with nothing overlaid: a VERIFY leaf reads the producer's
+    `dialogs/leaf.stdout.jsonl` there, the gain the overlay exists to remove. Measured under
+    real bwrap for the symlink forms (issue #226 round 2) and, under a nested bwrap, for the
+    bind-mount form (round 3).
+
+    The comparison is by IDENTITY, not by path: `os.path.samestat` between the root and each
+    ancestor of the resolved checkout (the checkout itself included). `realpath` sees through
+    symlinks and is blind to bind mounts; an inode comparison sees both with one test. A root
+    whose SPELLING contains the checkout is exempt: the repo bind and the overlays are emitted
+    later at that path and stack on top (measured: the dialogs stay hidden). What this does
+    NOT see, stated rather than guessed: a mount point BELOW the root that is a bind of a
+    checkout ancestor (`~/work/x` bound from `/data`, checkout `/data/atmofab`) — the root's
+    own inode is then unrelated to the checkout's, and the instrument for that shape is
+    `/proc/self/mountinfo` (a mount under the root whose source subtree contains the
+    checkout), which is not built here. Same shape as the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
+    ancestors = [resolved_repo, *resolved_repo.parents]
     for root in backend_ro:
-        physical = Path(os.path.realpath(root))
-        if resolved_repo.is_relative_to(physical) and not resolved_repo.is_relative_to(Path(root)):
+        if resolved_repo.is_relative_to(Path(root)):
+            continue
+        try:
+            root_stat = os.stat(root)
+        except OSError:
+            continue  # the existence filter in `_backend_runtime_bind_paths` already dropped it
+        for ancestor in ancestors:
+            try:
+                if not os.path.samestat(root_stat, os.stat(ancestor)):
+                    continue
+            except OSError:
+                continue
             raise ValueError(
-                f"backend install root {root!r} resolves to {physical}, which contains the "
-                f"checkout {resolved_repo} under a path the sandbox does not overlay; move the "
-                "CLI (or its wrapper) out of the directory that holds the checkout through "
-                "that symlink, or launch from the checkout's canonical path"
+                f"backend install root {root!r} is the same directory as {ancestor}, which "
+                f"contains the checkout {resolved_repo} under a path the sandbox does not "
+                "overlay (a symlink or a bind mount gives it the second name); move the CLI "
+                "(or its wrapper) out of the directory that holds the checkout, or spell HOME "
+                "and the PATH entry the way the checkout is spelled, so the root's own path "
+                "contains it"
             )
 
 

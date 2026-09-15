@@ -24150,7 +24150,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
     def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
-        """The profile's read-only bind of the CLI install directory used to come from
+        """The profile's read-only bind of the CLI install root used to come from
         `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run could
         only have ONE command; with a per-entry `command:` the leaf would be launched inside a
         sandbox where its own binary is not bound."""
@@ -26477,6 +26477,31 @@ class LeafEnvClosureTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn(str(home / "work"), profile["runtime_ro_bind_paths"])
+
+    def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
+        # The equality boundary of the ancestor walk (a `resolved_repo != physical` exemption
+        # survived the round-3 sweep): `~/x -> ~/atmofab` with the wrapper at `~/x/bin/` makes
+        # the root the checkout ITSELF under a second name, and every hidden tree is readable
+        # at `~/x/workspace/...` (measured under real bwrap by the round-3 security axis).
+        d = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = d / "home"
+        repo = home / "atmofab"
+        (repo / "workspace").mkdir(parents=True)
+        (home / "x").symlink_to(repo, target_is_directory=True)
+        bindir = repo / "bin"
+        bindir.mkdir()
+        wrapper = bindir / "cli-sim"
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        with mock.patch.dict(os.environ, {"HOME": str(home),
+                                          "PATH": f"{home / 'x' / 'bin'}:{os.environ['PATH']}"}), \
+                self.assertRaises(ValueError) as ctx:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex")
+        self.assertIn("is the same directory as", str(ctx.exception))
 
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
         """`child_env=None` — a test fixture, the standalone CLI — must not fall back to

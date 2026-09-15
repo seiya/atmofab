@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -244,6 +245,62 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                                                      command_argv=[cli, "--version"]),
                                 timeout=120)
         self.assertTrue(out.strip(), out)
+
+    _BIND_ALIAS_CHILD = textwrap.dedent("""
+        import os, sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        import tools.orchestration_runtime as ort
+        d = Path(sys.argv[2]); home = d / "home" / "user"
+        repo = Path(sys.argv[3])
+        os.environ["HOME"] = str(home)
+        os.environ["PATH"] = f"{home}/work/npm/bin:" + os.environ["PATH"]
+        ort._ensure_orchestration_audit_dirs(repo, "o")
+        try:
+            ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="cli-sim", backend_type="codex",
+                backend_rw_override=[str(d / "ch")], env_overrides={"CODEX_HOME": str(d / "ch")})
+        except ValueError as exc:
+            print("REFUSED", exc)
+        else:
+            print("ACCEPTED")
+    """)
+
+    def test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused(self) -> None:
+        """Round-3 security finding (issue #226): `realpath` is blind to a bind mount, so a
+        data disk bound into `~/work` that holds both the checkout and a CLI wrapper, with the
+        workflow started from the disk's own spelling, bound `~/work` read-only and exposed
+        the hidden `workspace/` at `~/work/atmofab/...` (measured: `PRODUCER REASONING`).
+        `_refuse_backend_ro_alias_of_repo` compares inodes now. The bind mount needs a mount
+        namespace, so the layout is built under an OUTER bwrap and the builder runs inside
+        it; the control row is the same layout with `repo_root` spelled through the bind,
+        which the overlays cover and the builder accepts."""
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            data_work = d / "data" / "work"
+            (data_work / "atmofab" / "workspace").mkdir(parents=True)
+            bindir = data_work / "npm" / "bin"
+            bindir.mkdir(parents=True)
+            (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (bindir / "cli-sim").chmod(0o755)
+            (d / "home" / "user" / "work").mkdir(parents=True)
+            (d / "ch").mkdir(mode=0o700)
+            repo_root = Path(__file__).resolve().parents[2]
+            outer = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+                     "--bind", str(data_work), str(d / "home" / "user" / "work"), "--",
+                     sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d)]
+            refused = subprocess.run([*outer, str(data_work / "atmofab")],
+                                     capture_output=True, text=True, timeout=120,
+                                     check=False)  # the exit code is asserted below
+            self.assertEqual(refused.returncode, 0, refused.stderr)
+            self.assertIn("REFUSED", refused.stdout, refused.stdout)
+            self.assertIn("is the same directory as", refused.stdout)
+            accepted = subprocess.run([*outer, str(d / "home" / "user" / "work" / "atmofab")],
+                                      capture_output=True, text=True, timeout=120,
+                                      check=False)  # the exit code is asserted below
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(accepted.stdout.strip(), "ACCEPTED", accepted.stdout)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
         self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
