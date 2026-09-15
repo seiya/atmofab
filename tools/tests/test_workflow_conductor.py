@@ -4719,7 +4719,8 @@ class LeafTransientRetryTest(unittest.TestCase):
         (the abort-shape clauses that used to decline this are gone with issue #170).
 
         Classified out of scope by `AGENTS.md` §Development premises: a leaf that takes this is
-        closer to NOTHING — what it arms is a cold re-launch of the same substep, not a weaker
+        closer to NOTHING — what it arms is the same turn again with the same repair carriers
+        (cold for a first attempt, the same `reuse` repair for an interrupted one), not a weaker
         judgment of its result, and the cost is bounded by the schedule (three sleeps, three
         launches) after which the death is terminal with the tag intact. This pins that bound:
         the stdout shape is a pure leaf's real one — ONE line of `--output-format json` envelope
@@ -5124,8 +5125,9 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
 
     def test_the_agentic_loop_does_not_charge_a_usage_limit_wait_to_this_budget(self) -> None:
         """The drift the two implementations had. In the pure loops the usage-limit `continue`
-        sits above the accumulator, so a wait was already free there; in the agentic loop the
-        accumulator ran first and charged it. `--wait-usage-reset` parks on its fixed schedule
+        sits above the accumulator, so a wait was already free there; in the agentic loop (gone
+        since Z4, issue #171 — the name of this row is that history) the accumulator ran first
+        and charged it. `--wait-usage-reset` parks on its fixed schedule
         (fifteen minutes for the first wait) after an attempt that itself ran twenty minutes —
         and billing that attempt to the transient budget refused the two-second flake that
         followed, on time no transient attempt ever spent."""

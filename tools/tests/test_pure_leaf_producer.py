@@ -1258,7 +1258,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         c.slept = []
         return c
 
-    def _recording(self, c: "_C") -> tuple[list[dict], list[dict]]:
+    def _recording(self, c: _C) -> tuple[list[dict], list[dict]]:
         """Capture every launch request and every spawn's kwargs on `c`."""
         requests: list[dict] = []
         spawn_kwargs: list[dict] = []

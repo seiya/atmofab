@@ -3157,8 +3157,9 @@ TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS = 600.0
 #   - a 4xx retried is three re-launches of a request the API rejects identically every time.
 # Under the opt-in `--wait-usage-reset` a promoted `llm_usage_limit` can ARM a wait, bounded at
 # `MAX_USAGE_LIMIT_WAITS` sleeps of `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`. A leaf whose own stdout
-# names a quota gains nothing by it — what it arms is a cold re-launch of the same substep, not a
-# weaker judgment of its result — so the promotion is not narrowed for the flag.
+# names a quota gains nothing by it — what it arms is the SAME turn again with the same repair
+# carriers (cold for a first attempt, the same `reuse` repair for an interrupted repair turn),
+# not a weaker judgment of its result — so the promotion is not narrowed for the flag.
 _CROSS_STREAM_PROMOTING_TAGS = frozenset({"llm_usage_limit", "llm_client_error"})
 
 # A TRANSIENT retry notice — the CLI prints `API Error (429 …) · Retrying in 1 seconds… (attempt
@@ -4841,7 +4842,7 @@ class Conductor:
             # A failed turn is a leaf death even when the CLI exits 0. Normalize it to a
             # nonzero exit rather than signalling it out-of-band: every downstream
             # consumer of a leaf death — `_classify_leaf_infra_error`, the
-            # `--wait-usage-reset` wait, run_substep's transient retry, and run_phase's
+            # `--wait-usage-reset` wait, the pure loops' transient retry, and run_phase's
             # fail_closed transport branch — keys on `returncode != 0`. Reported as a
             # content defect instead, a usage limit would burn the whole bundle-repair
             # budget re-prompting a throttled API.

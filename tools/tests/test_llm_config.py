@@ -941,7 +941,7 @@ class RuleTests(_Tmp):
     def test_a_retired_capability_is_refused_not_ignored(self) -> None:
         """`usage_probe` (retired by issue #170, with `agentic` / `mcp_tools` before it) is not
         in `KNOWN_CAPABILITIES`, so a configuration still spelling it fails at parse time
-        where the operator can read why — never accepted and silently dropped."""
+        naming the accepted set — never accepted and silently dropped."""
         for retired in ("usage_probe", "agentic", "mcp_tools"):
             with self.subTest(retired=retired):
                 self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
