@@ -1907,15 +1907,18 @@ class InRepoRecordSectionTests(unittest.TestCase):
         summary = collect_agent_run_summary(runs, invalid)
         self.assertEqual(summary["repeated_substeps"], [
             {"node_key": "problem/x@0.1.0", "step": "compile", "substep": "verify",
-             "attempts": 3, "statuses": ["fail", "pass", "fail"]}])
+             "attempts": 3, "statuses": ["fail", "pass", "fail"],
+             "agent_run_ids": ["a1", "a2", "a3"]}])
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             _write_jsonl(root / "agent_runs.jsonl", runs)
             _write_jsonl(root / "agent_runs_invalid.jsonl", invalid)
             _result, md = self._rendered(tmp)
         self.assertIn("Repeated substeps (more than one attempt):", md)
-        self.assertIn("- `problem/x@0.1.0` compile.verify: 3 attempts (`fail`, `pass`, `fail`)",
-                      md)
+        # One line per attempt, status beside the arid: the arid is what Step 4's "what
+        # changed between them" is written from (`launches/<arid>.reply.txt`).
+        self.assertIn("- `problem/x@0.1.0` compile.verify: 3 attempts\n"
+                      "  - `fail` `a1`\n  - `pass` `a2`\n  - `fail` `a3`", md)
         self.assertNotIn("compile.generate", md)
 
     def test_attempts_are_ordered_by_start_across_the_two_files(self) -> None:
@@ -1929,6 +1932,7 @@ class InRepoRecordSectionTests(unittest.TestCase):
                     "started_at": "2026-09-05T00:01:00Z"}]
         summary = collect_agent_run_summary(runs, invalid)
         self.assertEqual(summary["repeated_substeps"][0]["statuses"], ["fail", "pass"])
+        self.assertEqual(summary["repeated_substeps"][0]["agent_run_ids"], ["a1", "a2"])
         # A row with no parseable `started_at` keeps its file position, after the dated rows.
         undated = [{"agent_run_id": "a0", "node_key": "n", "step": "compile",
                     "substep": "verify", "status": "fail", "started_at": None}]
@@ -1956,12 +1960,13 @@ class InRepoRecordSectionTests(unittest.TestCase):
         summary = collect_agent_run_summary(runs)
         self.assertEqual(summary["repeated_substeps"], [
             {"node_key": "problem/x@0.1.0", "step": "build", "substep": None,
-             "attempts": 2, "statuses": ["fail", "pass"]}])
+             "attempts": 2, "statuses": ["fail", "pass"], "agent_run_ids": ["b1", "b2"]}])
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             _write_jsonl(root / "agent_runs.jsonl", runs)
             _result, md = self._rendered(tmp)
-        self.assertIn("- `problem/x@0.1.0` build: 2 attempts (`fail`, `pass`)", md)
+        self.assertIn("- `problem/x@0.1.0` build: 2 attempts\n  - `fail` `b1`\n  - `pass` `b2`",
+                      md)
         self.assertNotIn("None", md.split("Repeated substeps")[1])
 
     def test_no_repeat_renders_no_heading(self) -> None:

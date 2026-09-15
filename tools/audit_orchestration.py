@@ -166,7 +166,8 @@ def collect_agent_run_summary(
     field — so they're rolled into `status_counts` (typically as `fail`).
 
     `repeated_substeps` lists every `(node_key, step, substep)` that has more than one
-    row, with the statuses in the order the attempts STARTED. The conductor allocates a
+    row, with the statuses and the `agent_run_id`s in the order the attempts STARTED —
+    the ids are what an operator opens `launches/<arid>.reply.txt` by. The conductor allocates a
     fresh `agent_run_id` per attempt (`docs/WORKSPACE_LAYOUT.md`), so the row count IS the
     attempt count, and a key that appears twice was retried — a repair loop, a transient
     retry, or a resume. Rows from both files count: a run rejected at terminal validation
@@ -181,7 +182,7 @@ def collect_agent_run_summary(
     """
     status_counts: Counter = Counter()
     missing_entries: list[str] = []
-    attempts: dict[tuple[str, str, str | None], list[str]] = {}
+    attempts: dict[tuple[str, str, str | None], list[tuple[str, str]]] = {}
     for run in agent_runs:
         status = run.get("status", "unknown")
         status_counts[status] += 1
@@ -199,10 +200,12 @@ def collect_agent_run_summary(
         if not (isinstance(node_key, str) and node_key and isinstance(step, str) and step):
             continue
         key = (node_key, step, substep if isinstance(substep, str) and substep else None)
-        attempts.setdefault(key, []).append(str(run.get("status", "unknown")))
+        attempts.setdefault(key, []).append(
+            (str(run.get("status", "unknown")), str(run.get("agent_run_id") or "?")))
     repeated = [
         {"node_key": k[0], "step": k[1], "substep": k[2],
-         "attempts": len(v), "statuses": v}
+         "attempts": len(v), "statuses": [st for st, _ in v],
+         "agent_run_ids": [arid for _, arid in v]}
         for k, v in attempts.items() if len(v) > 1
     ]
     return {
@@ -1524,13 +1527,12 @@ def _render_markdown(result: dict[str, Any]) -> str:
         lines.append("")
         lines.append("Repeated substeps (more than one attempt):")
         for row in repeated:
-            statuses = ", ".join(f"`{st}`" for st in row.get("statuses") or [])
             step = row.get("step")
             if row.get("substep"):
                 step = f"{step}.{row['substep']}"
-            lines.append(
-                f"- `{row.get('node_key')}` {step}: {row.get('attempts')} attempts ({statuses})"
-            )
+            lines.append(f"- `{row.get('node_key')}` {step}: {row.get('attempts')} attempts")
+            for st, arid in zip(row.get("statuses") or [], row.get("agent_run_ids") or []):
+                lines.append(f"  - `{st}` `{arid}`")
     lines.append("")
 
     return "\n".join(lines)
