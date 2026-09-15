@@ -1259,14 +1259,14 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         def _sleep_backoff(self, seconds):  # type: ignore[override]
             self.slept.append(seconds)
 
-    def _run(self, procs: list, seconds: "list[float]"):
+    def _run(self, procs: list, seconds: "list[float]", **kw):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = self._C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                    llm_config=_cfg("claude"), env={})
+                    llm_config=_cfg("claude"), env={}, **kw)
         c.procs, c.slept, c.seconds = procs, [], seconds
         c.clock = [1_752_200_000.0]
         events: list = []
@@ -1279,6 +1279,22 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         return c, oc, events
 
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+
+    def test_a_usage_limit_wait_does_not_regrant_the_transient_count_budget(self) -> None:
+        """The transient COUNT budget (`MAX_LEAF_TRANSIENT_RETRIES`) survives a wait unchanged,
+        as the wall-clock one does (the reviewer twin of the producer's row): two flakes spend
+        it, a quota is waited, and a THIRD flake is terminal — a wait that reset
+        `transient_retries` would grant it a retry and hide a persistent fault behind up to
+        three extra launches per wait. Reviewer loop, real."""
+        c, oc, events = self._run(
+            [self._FLAKE, self._FLAKE, wc.ProcResult(1, "", "Claude AI usage limit reached"),
+             self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")],
+            [2.0], wait_usage_reset=True)
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "llm_transport_flake")
+        self.assertEqual(c._spawn, 4)                       # flake, flake, quota, flake — done
+        self.assertEqual(c.slept, [2.0, 10.0, wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 2)
 
     def test_a_transient_attempt_that_burned_the_clock_is_refused(self) -> None:
         """The incident's own shape on the reviewer leaf: one 613 s death, no second launch."""

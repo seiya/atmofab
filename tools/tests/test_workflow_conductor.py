@@ -4650,6 +4650,34 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual({w["evidence"] for w in waits}, {self._QUOTA_STDERR})
         self.assertEqual([e for e, _ in c.events if e == "leaf_usage_limit_wait_declined"], [])
 
+    def test_the_documented_schedule_is_the_constant(self) -> None:
+        """`docs/ORCHESTRATION.md` "leaf transient retry" states the schedule in words ("15 min,
+        then 1 h, then 4 h (5 h 15 min in total)") and the budget as a number; every other
+        site (`--help`, the events) is derived from the constant. Coupled by NUMBER
+        (atmofab-enforcement-change rule 3-a): the words are rendered from
+        `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` here and looked for in the sentence that OPENS with
+        the constant's name, so a schedule edit that leaves the prose behind — or a prose edit
+        that invents a schedule — is red. Self-test: the render is checked against the literal
+        the document is expected to carry today, so a renderer that produced something the
+        document never said cannot pass on its own output."""
+        def words(seconds: float) -> str:
+            minutes = int(seconds) // 60
+            return f"{minutes // 60} h" if minutes % 60 == 0 else f"{minutes} min"
+
+        schedule = wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS
+        total = int(sum(schedule)) // 60
+        rendered = (", then ".join(words(s) for s in schedule)
+                    + f" ({total // 60} h {total % 60} min in total)")
+        self.assertEqual(rendered, "15 min, then 1 h, then 4 h (5 h 15 min in total)")
+        doc = (Path(wc.__file__).resolve().parents[1] / "docs" / "ORCHESTRATION.md").read_text(
+            encoding="utf-8")
+        marker = "The wait is a **fixed schedule**, `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`"
+        self.assertEqual(doc.count(marker), 1)
+        sentence = doc.split(marker, 1)[1].split(". ", 1)[0]
+        self.assertIn(rendered, sentence)
+        self.assertIn(f"`MAX_USAGE_LIMIT_WAITS` = {wc.MAX_USAGE_LIMIT_WAITS} waits per `substep`",
+                      sentence)
+
     def test_usage_limit_wait_budget_is_the_schedule_length_then_fails_closed(self) -> None:
         """The wait budget is `MAX_USAGE_LIMIT_WAITS` (= the schedule's length) per substep: the
         death after the last scheduled wait is terminal (fail_closed, honest launch count), and

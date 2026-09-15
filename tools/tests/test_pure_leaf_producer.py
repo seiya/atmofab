@@ -1635,6 +1635,24 @@ class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
             self.assertEqual(
                 [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
 
+    def test_a_usage_limit_wait_does_not_regrant_the_transient_count_budget(self) -> None:
+        """The transient COUNT budget (`MAX_LEAF_TRANSIENT_RETRIES`) survives a wait unchanged:
+        two flakes spend it, a quota is waited, and a THIRD flake is terminal — a wait that
+        reset `transient_retries` would grant it a retry and hide a persistent fault behind up
+        to three extra launches per wait."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c, oc, events = self._run(
+                repo,
+                [self._FLAKE, self._FLAKE, wc.ProcResult(1, "", "Claude AI usage limit reached"),
+                 self._FLAKE, wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[2.0], wait_usage_reset=True)
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(oc.infra_error[0], "llm_transport_flake")
+            self.assertEqual(c._spawn, 4)                   # flake, flake, quota, flake — done
+            self.assertEqual(c.slept, [2.0, 10.0, wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+            self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 2)
+
     def test_a_usage_limit_wait_does_not_spend_the_transient_budget(self) -> None:
         """`--wait-usage-reset` parks on its fixed schedule after an attempt that itself ran
         twenty minutes. Billing that attempt to the transient budget would refuse the next flake
