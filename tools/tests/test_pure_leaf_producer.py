@@ -1455,11 +1455,16 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 repo,
                 [wc.ProcResult(1, "", "usage limit reached"),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")])
+            events: list = []
+            c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
             oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
             self.assertEqual(oc.status, "fail")
             self.assertEqual(oc.leaf_returncode, 1)   # run_phase's transport fail_closed branch
             self.assertEqual(c._spawn, 1)             # no second launch
             self.assertEqual(c.slept, [])
+            # ...and NOTHING is emitted for the wait: the operator reads a decline as "an
+            # opted-in run still fail_closed" (RUNBOOK), which a flag-off decline would falsify.
+            self.assertEqual([e for e, _ in events if e.startswith("leaf_usage_limit")], [])
             # Regression pin (byte-identity): the terminal bundle_meta must describe the transport
             # DEATH that terminated the substep — the bookkeeping guard that protects the repair
             # carriers must NOT leak an empty/stale failure_excerpt into the meta.

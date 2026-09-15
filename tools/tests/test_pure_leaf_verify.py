@@ -850,6 +850,19 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual([a["failure_category"] for a in meta["per_attempt"]],
                          ["pure_transport"] * (wc.MAX_USAGE_LIMIT_WAITS + 1))
 
+    def test_a_flag_off_usage_limit_emits_no_wait_event_at_all(self) -> None:
+        """`docs/ORCHESTRATION.md`: "with the flag off nothing is emitted and the death is
+        terminal as before", and `docs/RUNBOOK.md` tells the operator to read a
+        `leaf_usage_limit_wait_declined` as "an opted-in run still fail_closed". A decline
+        emitted on the flag-off path would make that reading false for a run that never opted
+        in; the flag check is the FIRST thing `_usage_limit_wait` does, and this pins it."""
+        c, refs = self._waiting(self._QUOTA, flag=False)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "llm_usage_limit")
+        self.assertEqual(c.slept, [])
+        self.assertEqual([e for e, _ in c.events if e.startswith("leaf_usage_limit")], [])
+
     def test_the_reviewer_waits_only_a_usage_limit_not_any_transport_death(self) -> None:
         """The reviewer call site's tag guard, driven for real. A transient death takes the
         transient retry (2 s), never the usage schedule; a 4xx is terminal at once. Widening the
