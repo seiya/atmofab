@@ -4,18 +4,21 @@
 Usage:
     python3 tools/audit_orchestration.py --orchestration-id <id> [--format json|markdown]
 
-Collects and aggregates:
-- the `fail_closed` instant from phase_state_log.jsonl
-- phase_state_log fail/fail_closed entries
-- agent_runs.jsonl completion status
+Collects and aggregates, from the in-repo records under
+workspace/orchestrations/<id>/ (docs/WORKSPACE_LAYOUT.md is canonical for them):
+- every `fail` / `fail_closed` transition in phase_state_log.jsonl, and the instant of
+  the latest `fail_closed`
+- failure_analysis.json (the host's own failure diagnosis) and its runtime / fallback
+  sidecars
 - Dangling launch (open active_child window with no child return / terminal run),
-  correlated with the leaf transcript tail (since issue #63 the orchestration's
-  private home first, then the operator's ~/.claude; see
-  orchestration_diagnostics.build_launch_incident). That home is machine-local but
-  DURABLE since issue #64, and is removed only by an operator running
-  tools/prune_workflow_homes.py. Also surfaced: any persisted
-  launch_incident.runtime.*.json snapshots (which survive after --resume clears the
-  window or the transcript's home is cleaned)
+  correlated with the leaf transcript tail under the operator's ~/.claude/projects (see
+  orchestration_diagnostics.build_launch_incident) — the one read outside the
+  repository. Also surfaced: any persisted launch_incident.runtime.*.json snapshots
+  (which survive after --resume clears the window or the transcript is expired)
+- violations/*.json (sandbox enforcement)
+- per-leaf token cost from the `usage` rows of agent_runs.jsonl
+- the pure-leaf A/B metrics from bundle_meta.json / verdict_meta.json
+- agent_runs.jsonl completion status, including substeps attempted more than once
 """
 from __future__ import annotations
 
@@ -35,10 +38,8 @@ try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
     from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
-        build_launch_incident,
         api_error_from_records,
-        aggregate_child_usage,
-        aggregate_parent_usage,
+        build_launch_incident,
         summarize_pure_leaf_metas,
     )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
@@ -48,10 +49,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
     from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
-        build_launch_incident,
         api_error_from_records,
-        aggregate_child_usage,
-        aggregate_parent_usage,
+        build_launch_incident,
         summarize_pure_leaf_metas,
     )
 
@@ -165,9 +164,18 @@ def collect_agent_run_summary(
     a stuck workflow need to see those failed-validation runs in the
     per-status breakdown — not just in the separate `invalid_run_count`
     field — so they're rolled into `status_counts` (typically as `fail`).
+
+    `repeated_substeps` lists every `(node_key, step, substep)` that has more than one
+    row, with the statuses in file order. The conductor allocates a fresh `agent_run_id`
+    per attempt (`docs/WORKSPACE_LAYOUT.md`), so the row count IS the attempt count, and
+    a key that appears twice was retried — a repair loop, a transient retry, or a resume.
+    Rows from both files count: a run rejected at terminal validation was an attempt too.
+    A row without all three keys (the conductor's own `orchestration` row has none) is
+    not a substep and is left out.
     """
     status_counts: Counter = Counter()
     missing_entries: list[str] = []
+    attempts: dict[tuple[str, str, str], list[str]] = {}
     for run in agent_runs:
         status = run.get("status", "unknown")
         status_counts[status] += 1
@@ -176,10 +184,156 @@ def collect_agent_run_summary(
     for run in (invalid_runs or []):
         status = run.get("status", "fail")
         status_counts[status] += 1
+    for run in list(agent_runs) + list(invalid_runs or []):
+        key = tuple(run.get(k) for k in ("node_key", "step", "substep"))
+        if not all(isinstance(v, str) and v for v in key):
+            continue
+        attempts.setdefault(key, []).append(str(run.get("status", "unknown")))
+    repeated = [
+        {"node_key": k[0], "step": k[1], "substep": k[2],
+         "attempts": len(v), "statuses": v}
+        for k, v in attempts.items() if len(v) > 1
+    ]
     return {
         "status_counts": dict(status_counts),
         "missing_finished_at": missing_entries,
+        "repeated_substeps": repeated,
     }
+
+
+def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every `phase_state_log.jsonl` entry whose `to` is `fail` or `fail_closed`, in file
+    order, whatever its `event`.
+
+    File order rather than sorted by `ts`: the conductor appends, so file order is the
+    chronology, and a row with an unparseable timestamp is still a recorded failure. The
+    fields kept are the ones an operator reads to route the failure — which node and step,
+    which attempt, and the `reason_code` / `reason_detail` `set_status` carries. A missing
+    field renders as `None`; nothing is invented.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in phase_log:
+        if not isinstance(entry, dict):
+            continue
+        new_state = entry.get("to") or entry.get("new_state")
+        if new_state not in ("fail", "fail_closed"):
+            continue
+        out.append({
+            "ts": entry.get("ts") or entry.get("timestamp"),
+            "event": entry.get("event"),
+            "to": new_state,
+            "node_key_safe": entry.get("node_key_safe"),
+            "step": entry.get("step"),
+            "agent_run_id": entry.get("agent_run_id"),
+            "reason_code": entry.get("reason_code"),
+            "reason_detail": entry.get("reason_detail"),
+        })
+    return out
+
+
+def collect_sandbox_violations(root: Path) -> dict[str, Any]:
+    """Read `violations/*.json` — the sandbox enforcement record.
+
+    One writer, `_write_sandbox_enforcement_violation`, five reasons; the reason vocabulary
+    is NOT restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it), the file's
+    value is reported as written. Three states are told apart, because they mean three
+    things: `directory_present=False` — no violation was recorded (since issue #171 PR-2
+    the directory is created only when one occurs); present and `records=[]` — a run from
+    before that change pre-created it, and recorded nothing; present with records — the
+    enforcement fired, and the reasons say what it saw.
+
+    Raises on an unreadable or non-JSON file rather than dropping it: a violation record
+    that cannot be read is exactly the one this section must not report as absent.
+    """
+    vdir = root / "violations"
+    if not vdir.is_dir():
+        return {"directory_present": False, "records": [],
+                "by_reason": {}, "by_kind": {}}
+    records: list[dict[str, Any]] = []
+    by_reason: Counter = Counter()
+    by_kind: Counter = Counter()
+    for path in sorted(vdir.glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError(f"{path.name}: violation record is not a JSON object")
+        kind = str(payload.get("kind") or "unknown")
+        reason = str(payload.get("reason") or "unknown")
+        by_kind[kind] += 1
+        by_reason[reason] += 1
+        records.append({
+            "file": path.name,
+            "kind": kind,
+            "reason": reason,
+            "agent_run_id": payload.get("agent_run_id"),
+            "evaluated_at": payload.get("evaluated_at"),
+        })
+    return {"directory_present": True, "records": records,
+            "by_reason": dict(by_reason), "by_kind": dict(by_kind)}
+
+
+def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    failed_run = doc.get("failed_agent_run")
+    failed_run = failed_run if isinstance(failed_run, dict) else {}
+    step_results = doc.get("failed_step_results")
+    step_results = step_results if isinstance(step_results, list) else []
+    retries = doc.get("recommended_retry_decisions")
+    refs = doc.get("launch_incident_refs")
+    return {
+        "status": doc.get("status"),
+        "reason_code": doc.get("reason_code"),
+        "reason_detail": doc.get("reason_detail"),
+        "orchestration_status": doc.get("orchestration_status"),
+        "failed_agent_run": {
+            k: failed_run.get(k)
+            for k in ("agent_run_id", "node_key", "step", "substep", "status")
+        } if failed_run else None,
+        "failed_step_results": [
+            {"path": r.get("path"), "status": r.get("status")}
+            for r in step_results if isinstance(r, dict)
+        ],
+        "recommended_retry_decision_count": len(retries) if isinstance(retries, list) else 0,
+        "launch_incident_refs": [r for r in refs if isinstance(r, str)]
+                                if isinstance(refs, list) else [],
+    }
+
+
+def collect_failure_analysis(root: Path) -> dict[str, Any]:
+    """Read `failure_analysis.json` — the host's own diagnosis of a failed run — and every
+    sidecar next to it.
+
+    The canonical file is written once, exclusively; when it already existed the host
+    writes `failure_analysis.runtime.<uuid12>.json` with `existing_file_status` saying
+    whether the canonical one was `valid` for this run or `invalid` (stale), and an
+    emergency path writes `failure_analysis.fallback.<uuid12>.json`
+    (`tools/run_workflow.py::_write_failure_analysis`). All three are summarized; the
+    canonical one is `canonical`, the others are `sidecars` in name order.
+
+    `present=False` is not a verdict by itself: a run that passed writes none, a run that
+    failed should have one. The renderer puts `orchestration_meta.json#status` next to it
+    so the reader can tell which. An unreadable or non-JSON file RAISES — `audit()` records
+    it under `diagnostic_failures` — rather than being read as absent (`TODO.md` records
+    the `_load_json_if_dict` swallow this section deliberately does not use).
+    """
+    canonical_path = root / "failure_analysis.json"
+    result: dict[str, Any] = {"present": canonical_path.is_file(),
+                              "canonical": None, "sidecars": []}
+    if result["present"]:
+        doc = json.loads(canonical_path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            raise TypeError("failure_analysis.json is not a JSON object")
+        result["canonical"] = _summarize_failure_analysis_doc(doc)
+    sidecar_paths = sorted(
+        list(root.glob("failure_analysis.runtime.*.json"))
+        + list(root.glob("failure_analysis.fallback.*.json")))
+    for path in sidecar_paths:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            raise TypeError(f"{path.name} is not a JSON object")
+        summary = _summarize_failure_analysis_doc(doc)
+        summary["file"] = path.name
+        summary["existing_file_status"] = doc.get("existing_file_status")
+        result["sidecars"].append(summary)
+    return result
 
 
 def collect_token_cost_summary(
@@ -187,32 +341,30 @@ def collect_token_cost_summary(
     meta: dict[str, Any] | None,
     agent_runs: list[dict[str, Any]],
     invalid_runs: list[dict[str, Any]] | None = None,
-    *,
-    from_transcripts: bool = False,
 ) -> dict[str, Any]:
-    """Attribute token cost across the orchestration (parent) and its children.
+    """Sum token cost over the orchestration's leaves.
 
-    Child usage comes from the durable ``usage`` field the conductor writes into
-    ``agent_runs.jsonl`` via ``finalize_child`` — in-repo, and therefore surviving
-    ``~/.claude`` cleanup. Since issue #47 every leaf writes one: a normalized dict from
-    its own output, or an explicit marker saying why it has no numbers. The two markers
-    are NOT equivalent and are counted separately (``not_measured`` — a deterministic
-    in-process substep that launched no leaf, nothing to measure; ``unavailable`` — a
-    usage channel that failed, i.e. a defect).
+    Every number comes from the durable ``usage`` field the conductor writes into
+    ``agent_runs.jsonl`` via ``finalize_child``. Since issue #47 every leaf writes one: a
+    normalized dict from its own output, or an explicit marker saying why it has no
+    numbers. The two markers are NOT equivalent and are counted separately
+    (``not_measured`` — a deterministic in-process substep that launched no leaf, nothing
+    to measure; ``unavailable`` — a usage channel that failed, i.e. a defect).
 
-    ``from_transcripts`` opts into reconstructing the missing rows from the ephemeral
-    ``~/.claude`` subagent transcripts. OFF by default, because for conductor-spawned leaves
-    that lookup never matched anything; it remains available for the rows of runs recorded
-    before this change. (``parent`` below reads ``~/.claude`` unconditionally — it is the
-    orchestration session's own usage, which has no in-repo source.)
+    This is the whole source. The conductor is a Python process with no session of its
+    own, so there is no "parent" usage to add to the leaves', and a row that carries no
+    ``usage`` is reported as unaccounted rather than reconstructed from a transcript (the
+    ``~/.claude`` reconstruction that used to be opt-in read a layout no conductor-spawned
+    leaf produces; issue #179 deleted it). Best-effort — reports ``available=False``
+    (never raises) when no row yields data.
 
-    ``parent`` is the orchestration session(s)' own usage. Best-effort — reports
-    ``available=False`` (never raises) when neither side yields data.
+    ``repo_root`` is not read: nothing this collector reports lives outside the rows it is
+    handed.
     """
     meta = meta or {}
-    # The orchestration agent's own arid appears in agent_runs.jsonl but is the
-    # parent, not a child subagent — exclude it so it isn't reported as an
-    # unlocatable child.
+    # The orchestration agent's own arid appears in agent_runs.jsonl (the conductor records
+    # itself under `agent_role: orchestration`) but is not a leaf — exclude it so it isn't
+    # reported as an unaccounted row.
     parent_arid = str(meta.get("orchestration_agent_run_id") or "").strip()
     arids: list[str] = []
     persisted: dict[str, dict[str, Any]] = {}
@@ -244,22 +396,7 @@ def collect_token_cost_summary(
         elif isinstance(u.get("status"), str):
             markers[arid] = dict(u)
 
-    # Reconstruct from the ephemeral transcripts only when the operator opted in, and only
-    # for children that lack durable usage (rows recorded before issue #47). Skipping the child
-    # transcripts is the DEFAULT: the conductor records usage in-repo now, and this lookup reads
-    # the `subagents/` layout, which a conductor-spawned leaf does not produce. (`parent` below still reads ~/.claude
-    # unconditionally — it is the orchestration session's own usage and has no in-repo source.)
-    missing = [a for a in arids if a not in persisted]
-    transcripts = (
-        aggregate_child_usage(repo_root, missing)
-        if missing and from_transcripts
-        else {"available": True, "per_child": {}, "unmatched_arids": [], "matched_count": 0}
-    )
     per_child: dict[str, Any] = dict(persisted)
-    for c_arid, c_usage in (transcripts.get("per_child") or {}).items():
-        if isinstance(c_usage, dict):
-            c_usage.setdefault("source", "transcript")
-        per_child[c_arid] = c_usage
 
     sum_keys = (
         "input_tokens",
@@ -285,7 +422,7 @@ def collect_token_cost_summary(
     if cost > 0:
         children_total["cost_usd"] = round(cost, 6)
     children: dict[str, Any] = {
-        "available": bool(per_child) or bool(markers) or bool(transcripts.get("available")),
+        "available": bool(per_child) or bool(markers),
         "per_child": per_child,
         "children_total": children_total,
         "matched_count": len(per_child),
@@ -297,45 +434,25 @@ def collect_token_cost_summary(
         "usage_unavailable": sorted(a for a, m in markers.items()
                                     if m.get("status") == "unavailable"),
         "markers": markers,
-        "projects_dir": transcripts.get("projects_dir"),
     }
     if not per_child and not markers:
         # Only when NOTHING was located. A markers-only run did locate something — every leaf
         # said why it has no numbers — and a `--format json` consumer reading this field
         # would otherwise be told the opposite of what the rows say.
-        children["reason"] = transcripts.get("reason") or "no child usage located"
+        children["reason"] = "no leaf usage located"
 
-    # Parent usage: the multi-session sum across the orchestration agent's host
-    # sessions (a resumed node may run the parent under more than one host session).
-    parent: dict[str, Any] = {"found": False}
-    if parent_arid:
-        agg_parent = aggregate_parent_usage(repo_root, parent_arid)
-        if agg_parent.get("available"):
-            parent = agg_parent
-
-    # Available when EITHER side actually yielded data: in a post-cleanup audit the
-    # parent session may survive while child transcripts are gone (or vice-versa),
-    # and the surviving total is worth showing. But when NEITHER side matched
-    # anything, report unavailable rather than a misleading 0-token breakdown — a
-    # present-but-empty ~/.claude dir must not count as "available".
-    # `markers` counts toward availability: a run whose every leaf recorded WHY it has no
-    # numbers (all-deterministic, or every leaf dead) is not an absent measurement — it is a
-    # measurement that says "none, because …", and reporting it as "no usage located" would
-    # send an operator looking for data that was deliberately not there.
-    summary: dict[str, Any] = {
-        "available": bool(per_child) or bool(markers) or bool(parent.get("found")),
-        "parent": parent,
+    # When no row carried anything, report unavailable rather than a misleading 0-token
+    # breakdown. `markers` counts toward availability: a run whose every leaf recorded WHY
+    # it has no numbers (all-deterministic, or every leaf dead) is not an absent
+    # measurement — it is a measurement that says "none, because …", and reporting it as
+    # "no usage located" would send an operator looking for data that was deliberately
+    # not there.
+    return {
+        "available": bool(per_child) or bool(markers),
         "children": children,
+        "children_total_tokens": int(
+            (children.get("children_total") or {}).get("total_tokens", 0) or 0),
     }
-    parent_total = int(parent.get("total_tokens", 0) or 0) if parent.get("found") else 0
-    child_total = int((children.get("children_total") or {}).get("total_tokens", 0) or 0)
-    node_total = parent_total + child_total
-    summary["node_total_tokens"] = node_total
-    summary["parent_total_tokens"] = parent_total
-    summary["children_total_tokens"] = child_total
-    if node_total > 0:
-        summary["children_fraction"] = round(child_total / node_total, 3)
-    return summary
 
 
 # The `generate-executor` vocabulary as HISTORICALLY RECORDED on `invocation.generate_executor`.
@@ -679,8 +796,7 @@ def collect_pure_leaf_ab_summary(
     return result
 
 
-def audit(repo_root: Path, orchestration_id: str, *,
-          token_cost_from_transcripts: bool = False) -> dict[str, Any]:
+def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     root = _orch_root(repo_root, orchestration_id)
     # An absent root is NOT an orchestration with nothing wrong with it. Every collector
     # below reads missing files as empty and would report a clean negative over a
@@ -724,14 +840,11 @@ def audit(repo_root: Path, orchestration_id: str, *,
     except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
         launch_incident = None
         _record_failure("launch_incident", exc)
-    # Token-cost attribution (parent orchestration vs child subagents). Reads the durable
-    # per-leaf `usage` rows in agent_runs.jsonl; the ~/.claude transcript reconstruction is
-    # opt-in (see `collect_token_cost_summary`). Best-effort — must never break the audit.
+    # Per-leaf token cost, from the durable `usage` rows in agent_runs.jsonl and nothing
+    # else (see `collect_token_cost_summary`). Best-effort — must never break the audit.
     try:
         token_cost_summary = collect_token_cost_summary(
-            repo_root, meta, agent_runs, invalid_runs,
-            from_transcripts=token_cost_from_transcripts,
-        )
+            repo_root, meta, agent_runs, invalid_runs)
     except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
         token_cost_summary = {
             "available": False,
@@ -749,6 +862,19 @@ def audit(repo_root: Path, orchestration_id: str, *,
             "reason": f"pure-leaf A/B collection failed: {type(exc).__name__}: {exc}",
         }
         _record_failure("pure_leaf_ab_summary", exc)
+    # Sandbox enforcement violations and the host's failure diagnosis. Both read files
+    # nothing else in this audit reads, and an unreadable one is recorded as a failure of
+    # the section rather than rendered as its clean negative.
+    try:
+        sandbox_violations: dict[str, Any] | None = collect_sandbox_violations(root)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        sandbox_violations = None
+        _record_failure("sandbox_violations", exc)
+    try:
+        failure_analysis: dict[str, Any] | None = collect_failure_analysis(root)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
+        failure_analysis = None
+        _record_failure("failure_analysis", exc)
     # Persisted incident snapshots captured at run time. These survive after
     # `--resume` clears the active-child markers (live detection then returns None)
     # and after ~/.claude cleanup removes the transcript, so they are the durable
@@ -765,7 +891,11 @@ def audit(repo_root: Path, orchestration_id: str, *,
 
     return {
         "orchestration_id": orchestration_id,
+        "orchestration_status": meta.get("status"),
         "fail_closed_at": fail_closed_at,
+        "phase_state_failures": collect_phase_state_failures(phase_log),
+        "failure_analysis": failure_analysis,
+        "sandbox_violations": sandbox_violations,
         "launch_incident": launch_incident,
         "launch_incident_snapshots": launch_incident_snapshots,
         "agent_run_summary": collect_agent_run_summary(agent_runs, invalid_runs),
@@ -955,59 +1085,35 @@ def _fmt_tok(n: Any) -> str:
 
 
 def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None:
-    """Render the parent-vs-children token breakdown — the measurement that makes
-    the (usually dominant) child subagent cost visible."""
-    lines.append("## Token cost breakdown (parent vs child subagents)")
+    """Render the per-leaf token cost — the leaf total, its reasoning / cache shares, the
+    rows that said why they have no numbers, and the ranked per-leaf table."""
+    lines.append("## Token cost (per leaf)")
     lines.append("")
     if not isinstance(summary, dict) or not summary.get("available"):
         reason = (summary or {}).get("reason") or (
             (summary or {}).get("children", {}) or {}
         ).get("reason", "unavailable")
         lines.append(
-            f"Child token attribution unavailable: {reason}. "
+            f"Leaf token cost unavailable: {reason}. "
             "(Per-leaf usage is written into `agent_runs.jsonl` at finalize time; a run "
-            "recorded before that carries none, and `--token-cost-from-transcripts` can "
-            "try the machine-local leaf transcripts instead.)"
+            "recorded before that carries none.)"
         )
         lines.append("")
         return
 
     children = summary.get("children", {}) or {}
-    parent = summary.get("parent", {}) or {}
-    parent_ok = bool(parent.get("found"))
-    # "available" but zero matched transcripts (dir present, all arids cleaned) is
-    # not a measurement — showing "0 (0%)" would read as "children cost nothing".
+    # "available" with zero numeric rows (every row a marker) is not a measurement —
+    # showing "0" would read as "the leaves cost nothing".
     children_ok = bool(children.get("available")) and int(children.get("matched_count", 0) or 0) > 0
-    node = _fmt_tok(summary.get("node_total_tokens"))
-    parent_t = summary.get("parent_total_tokens", 0)
     child_t = summary.get("children_total_tokens", 0)
-    frac = summary.get("children_fraction")
-    frac_str = f" ({frac:.0%} of node)" if isinstance(frac, (int, float)) else ""
-    if not (parent_ok or children_ok):
-        # NEITHER side yielded a number. The section is still rendered — the marker lines
-        # below say what each row reported — but the total must not read `0 tokens`, which
-        # says the node was free. This is reachable since a marker counts as "available":
-        # a run whose every substep was deterministic, or whose every leaf died.
-        lines.append("- **node total**: unavailable (no launch reported a measurement)")
+    if not children_ok:
+        # No row yielded a number. The section is still rendered — the marker lines below
+        # say what each row reported — but the total must not read `0 tokens`, which says
+        # the run was free. This is reachable since a marker counts as "available": a run
+        # whose every substep was deterministic, or whose every leaf died.
+        lines.append("- **leaf total**: unavailable (no launch reported a measurement)")
     else:
-        note = ""
-        if not (parent_ok and children_ok):
-            # Partial data (post-cleanup audit): node total covers only the side(s) below.
-            missing = "child" if not children_ok else "parent"
-            note = f" (partial — {missing} usage unavailable)"
-        lines.append(f"- **node total**: {node} tokens{note}")
-    lines.append(
-        f"- parent orchestration: {_fmt_tok(parent_t) if parent_ok else 'unavailable'}"
-    )
-    lines.append(
-        f"- **child subagents**: "
-        f"{(_fmt_tok(child_t) + frac_str) if children_ok else 'unavailable'}"
-    )
-    if parent.get("found"):
-        lines.append(
-            f"  - parent peak context: {_fmt_tok(parent.get('peak_context_tokens'))} "
-            f"over {parent.get('assistant_turns', 'n/a')} turns"
-        )
+        lines.append(f"- **leaf total**: {_fmt_tok(child_t)} tokens")
     totals = children.get("children_total") or {}
     reasoning = int(totals.get("reasoning_tokens", 0) or 0)
     out_tokens = int(totals.get("output_tokens", 0) or 0)
@@ -1042,7 +1148,7 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
     unmatched = children.get("unmatched_arids") or []
     if unmatched:
         lines.append(
-            f"  - ⚠ {len(unmatched)} child arid(s) carry no usage field at all "
+            f"  - ⚠ {len(unmatched)} leaf arid(s) carry no usage field at all "
             "(recorded before per-leaf usage was durable)"
         )
     lines.append("")
@@ -1053,7 +1159,7 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
             key=lambda kv: int(kv[1].get("total_tokens", 0) or 0),
             reverse=True,
         )
-        lines.append("| child agent_run_id | total | reasoning | source |")
+        lines.append("| leaf agent_run_id | total | reasoning | source |")
         lines.append("|---|---|---|---|")
         for arid, usage in ranked:
             reasoning_cell = (_fmt_tok(usage["reasoning_tokens"])
@@ -1178,6 +1284,128 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
         lines.append("")
 
 
+def _render_phase_state_failures(result: dict[str, Any], lines: list[str]) -> None:
+    """Render every `fail` / `fail_closed` transition, after the latest `fail_closed`
+    instant. One line per entry, in file order."""
+    lines.append("## Phase state failures")
+    lines.append("")
+    fail_closed_at = result.get("fail_closed_at")
+    entries = result.get("phase_state_failures") or []
+    if fail_closed_at:
+        lines.append(f"fail_closed at: `{fail_closed_at}`")
+        lines.append("")
+    if entries:
+        for e in entries:
+            where = ""
+            if e.get("node_key_safe") or e.get("step"):
+                where = f" `{e.get('node_key_safe')}` {e.get('step')}"
+            arid = f" arid=`{e['agent_run_id']}`" if e.get("agent_run_id") else ""
+            reason = ""
+            if e.get("reason_code") or e.get("reason_detail"):
+                reason = f" — `{e.get('reason_code')}`: {e.get('reason_detail')}"
+            lines.append(
+                f"- [{e.get('ts')}] {e.get('event')} → `{e.get('to')}`{where}{arid}{reason}"
+            )
+    elif not fail_closed_at:
+        lines.append("No fail / fail_closed transition recorded.")
+    lines.append("")
+
+
+def _render_failure_analysis_doc(doc: dict[str, Any], lines: list[str]) -> None:
+    lines.append(
+        f"- status `{doc.get('status')}`, orchestration status "
+        f"`{doc.get('orchestration_status')}`, reason `{doc.get('reason_code')}`: "
+        f"{doc.get('reason_detail')}"
+    )
+    run = doc.get("failed_agent_run")
+    if isinstance(run, dict):
+        lines.append(
+            f"- failed agent run: `{run.get('agent_run_id')}` — `{run.get('node_key')}` "
+            f"{run.get('step')}.{run.get('substep')} (status `{run.get('status')}`)"
+        )
+    else:
+        lines.append("- failed agent run: none recorded")
+    step_results = doc.get("failed_step_results") or []
+    if step_results:
+        lines.append(f"- failed step results: {len(step_results)}")
+        for r in step_results:
+            lines.append(f"  - `{r.get('path')}` (status `{r.get('status')}`)")
+    lines.append(
+        f"- recommended retry decisions: {doc.get('recommended_retry_decision_count', 0)}"
+    )
+    for ref in doc.get("launch_incident_refs") or []:
+        lines.append(f"- launch incident: `{ref}`")
+
+
+def _render_failure_analysis(result: dict[str, Any], lines: list[str], *,
+                             failure: dict[str, Any] | None = None) -> None:
+    """Render the host's failure diagnosis next to the orchestration's terminal status,
+    so an absent file reads as normal for a passed run and as a finding for a failed
+    one."""
+    lines.append("## failure_analysis")
+    lines.append("")
+    status = result.get("orchestration_status")
+    if failure is not None:
+        lines.append(
+            f"failure_analysis could not be read — `{failure.get('error_type')}: "
+            f"{failure.get('error')}`. Its content is UNKNOWN, not absent "
+            f"(`orchestration_meta.json#status` = `{status}`)."
+        )
+        lines.append("")
+        return
+    fa = result.get("failure_analysis") or {}
+    if not fa.get("present"):
+        lines.append(
+            f"`failure_analysis.json` absent (`orchestration_meta.json#status` = `{status}`)."
+        )
+    else:
+        lines.append(f"`failure_analysis.json` (`orchestration_meta.json#status` = `{status}`):")
+        _render_failure_analysis_doc(fa.get("canonical") or {}, lines)
+    for side in fa.get("sidecars") or []:
+        lines.append("")
+        lines.append(
+            f"sidecar `{side.get('file')}` "
+            f"(existing_file_status `{side.get('existing_file_status')}`):"
+        )
+        _render_failure_analysis_doc(side, lines)
+    lines.append("")
+
+
+def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str], *,
+                               failure: dict[str, Any] | None = None) -> None:
+    """Render `violations/` with its three states kept apart: absent (nothing recorded),
+    present-and-empty (pre-created by an older run), and populated."""
+    lines.append("## Sandbox enforcement violations")
+    lines.append("")
+    if failure is not None:
+        lines.append(
+            f"`violations/` could not be read — `{failure.get('error_type')}: "
+            f"{failure.get('error')}`. Its content is UNKNOWN, not empty."
+        )
+        lines.append("")
+        return
+    summary = summary or {}
+    records = summary.get("records") or []
+    if not summary.get("directory_present"):
+        lines.append("`violations/` absent — no sandbox enforcement violation was recorded.")
+    elif not records:
+        lines.append(
+            "`violations/` directory present, no record (pre-created by a run before "
+            "issue #171 PR-2)."
+        )
+    else:
+        lines.append(f"{len(records)} record(s):")
+        for reason, cnt in sorted((summary.get("by_reason") or {}).items()):
+            lines.append(f"- `{reason}`: {cnt}")
+        lines.append("")
+        for r in records:
+            lines.append(
+                f"- [{r.get('evaluated_at')}] `{r.get('reason')}` arid=`{r.get('agent_run_id')}` "
+                f"(`{r.get('file')}`)"
+            )
+    lines.append("")
+
+
 def _render_markdown(result: dict[str, Any]) -> str:
     lines: list[str] = []
     orch_id = result["orchestration_id"]
@@ -1196,15 +1424,12 @@ def _render_markdown(result: dict[str, Any]) -> str:
         )
         lines.append("")
 
-    fail_closed_at = result.get("fail_closed_at")
-    lines.append("## fail_closed")
-    lines.append("")
-    lines.append(f"fail_closed at: `{fail_closed_at}`" if fail_closed_at
-                 else "No fail_closed transition recorded.")
-    lines.append("")
-
     failures = result.get("diagnostic_failures") or []
     failures_by_section = {f.get("section"): f for f in failures if isinstance(f, dict)}
+
+    _render_phase_state_failures(result, lines)
+    _render_failure_analysis(result, lines,
+                             failure=failures_by_section.get("failure_analysis"))
     # `orchestration_found` defaults to True so a caller holding an older result dict
     # renders exactly as before rather than growing a spurious banner.
     unmeasured = None
@@ -1240,6 +1465,9 @@ def _render_markdown(result: dict[str, Any]) -> str:
             lines.append(f"- `{err['path']}:{err['line_number']}` — {err['message']}")
         lines.append("")
 
+    _render_sandbox_violations(result.get("sandbox_violations"), lines,
+                               failure=failures_by_section.get("sandbox_violations"))
+
     _render_token_cost(result.get("token_cost_summary"), lines)
 
     _render_pure_leaf_ab(result.get("pure_leaf_ab_summary"), lines)
@@ -1254,6 +1482,16 @@ def _render_markdown(result: dict[str, Any]) -> str:
         lines.append("Missing `finished_at` (incomplete records):")
         for run_id in ar["missing_finished_at"]:
             lines.append(f"- `{run_id}`")
+    repeated = ar.get("repeated_substeps") or []
+    if repeated:
+        lines.append("")
+        lines.append("Repeated substeps (more than one attempt):")
+        for row in repeated:
+            statuses = ", ".join(f"`{st}`" for st in row.get("statuses") or [])
+            lines.append(
+                f"- `{row.get('node_key')}` {row.get('step')}.{row.get('substep')}: "
+                f"{row.get('attempts')} attempts ({statuses})"
+            )
     lines.append("")
 
     return "\n".join(lines)
@@ -1281,19 +1519,10 @@ def main() -> None:
         default=".",
         help="Repository root (default: current directory)",
     )
-    parser.add_argument(
-        "--token-cost-from-transcripts",
-        action="store_true",
-        help=("Reconstruct per-leaf token usage from the machine-local leaf "
-              "transcripts (the orchestration's private home, else ~/.claude) for runs "
-              "recorded before per-leaf usage became durable. Off by default: the "
-              "workflow does not read ~/.claude."),
-    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
-    result = audit(repo_root, args.orchestration_id,
-                   token_cost_from_transcripts=args.token_cost_from_transcripts)
+    result = audit(repo_root, args.orchestration_id)
 
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))

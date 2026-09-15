@@ -26,10 +26,9 @@ recorded as an accepted loss, and the files are still on disk for
 ``~/.claude`` an operator may clean. Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
-that transcript when it is still on disk. It can also aggregate leaf token usage
-from it, but only for the audit's opt-in legacy path: since issue #47 each leaf's
-usage is recorded in-repo from the leaf's own output (see ``tools/leaf_usage.py``),
-and no workflow path reads ``~/.claude``. Older runs may additionally carry a persisted
+that transcript when it is still on disk. That is the only thing it reads a transcript
+for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
+``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``. Older runs may additionally carry a persisted
 ``launch_incident.runtime.<uuid>.json`` snapshot, which the audit renderer
 surfaces; the conductor writes no new ones.
 
@@ -46,16 +45,14 @@ Callers:
 from __future__ import annotations
 
 import json
-import re
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
 # The canonical leaf-usage shape lives in its own module: it is the contract the conductor,
 # the HTTP transport and the audit all record against, where THIS module is post-mortem
-# forensics over the machine-local `~/.claude` transcripts. The sum keys below derive from
-# its token-class vocabulary so the two cannot drift.
+# forensics over the machine-local `~/.claude` transcripts. The pure-attempt sum keys below
+# derive from its token-class vocabulary so the two cannot drift.
 # Module-level, absolute, and NOT shimmed: this module needs `tools.operator_private_root` to do
 # its transcript work, so a consumer that cannot import `tools` must fail here, at import
 # time, rather than later inside a caller's `except Exception` (issue #130). Two guards
@@ -476,301 +473,6 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
     return None
 
 
-def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -> Path:
-    # Claude Code derives the project slug from the absolute cwd, with every "/"
-    # replaced by "-" (e.g. /home/seiya/work/atmofab -> -home-seiya-work-atmofab).
-    # Resolve first so a relative repo_root (e.g. Path(".")) still maps correctly.
-    try:
-        abs_root = repo_root.resolve()
-    except OSError:
-        abs_root = repo_root
-    slug = str(abs_root).replace("/", "-")
-    # First root wins. There is one since Z4 (issue #171) — the operator's `~/.claude` — and
-    # this still reads it through the shared resolver rather than spelling the path, so a
-    # second root returning is picked up here without an edit. Same resolver as every other
-    # transcript consumer.
-    return claude_leaf_projects_roots(repo_root, orchestration_id)[0] / slug
-
-
-def summarize_jsonl_usage(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Sum token usage across the assistant turns of a Claude Code transcript.
-
-    Each assistant record carries ``message.usage`` with input / output /
-    cache_read / cache_creation token counts. ``total_tokens`` is their sum;
-    ``peak_context_tokens`` is the max per-turn resident context
-    (input + cache_read + cache_creation), which exposes the quadratic
-    cache_read growth that dominates long agent sessions. Defensive: records
-    without a ``message.usage`` dict are skipped.
-    """
-    inp = out = cache_read = cache_creation = turns = 0
-    peak = 0
-    for record in records:
-        message = record.get("message")
-        if not isinstance(message, dict):
-            continue
-        usage = message.get("usage")
-        if not isinstance(usage, dict):
-            continue
-        turns += 1
-        i = int(usage.get("input_tokens") or 0)
-        o = int(usage.get("output_tokens") or 0)
-        cr = int(usage.get("cache_read_input_tokens") or 0)
-        cc = int(usage.get("cache_creation_input_tokens") or 0)
-        inp += i
-        out += o
-        cache_read += cr
-        cache_creation += cc
-        peak = max(peak, i + cr + cc)
-    return {
-        "input_tokens": inp,
-        "output_tokens": out,
-        "cache_read_input_tokens": cache_read,
-        "cache_creation_input_tokens": cache_creation,
-        "total_tokens": inp + out + cache_read + cache_creation,
-        "assistant_turns": turns,
-        "peak_context_tokens": peak,
-    }
-
-
-# Transcript-usage sum keys: the token classes plus the two values
-# `summarize_jsonl_usage` derives itself. `total_tokens` is load-bearing here (it is
-# summed across transcripts by `aggregate_child_usage` / `aggregate_parent_usage`)
-# and must not be dropped when re-deriving this tuple.
-_USAGE_SUM_KEYS: tuple[str, ...] = (
-    *LEAF_TOKEN_CLASS_KEYS,
-    "total_tokens",
-    "assistant_turns",
-)
-
-# A child's OWN arid used to be the one in its capability / manifest paths, which appeared
-# in an AGENTIC leaf's transcript because the leaf read and wrote those files. Its PARENT
-# arid also appeared in the body (as ``parent_agent_run_id``), so a bare substring match
-# would misattribute the transcript to the parent, and these paths disambiguated.
-#
-# THREE OF THE FOUR PREFIXES HAVE NO WRITER since Z4 (issue #171 PR-2), and the fourth,
-# `sandbox_profiles/`, is host-written and named in no prompt — so for a pure leaf this
-# regex matches nothing and `_own_arid_of_transcript` always takes the frequency fallback
-# below. That is not the silent degradation it looks like: the ambiguity it guarded is
-# gone with the same change. A pure leaf's whole input is the rendered prompt, which
-# carries `agent_run_id:` and NO `parent_agent_run_id` (`tools/prompt_templates/pure_*.txt`,
-# all nine), so the parent arid no longer appears in a child transcript at all and the
-# most-frequent-target rule cannot pick it.
-#
-# Kept rather than deleted: the function also reads transcripts recorded BEFORE the cut,
-# where all four prefixes appear and the disambiguation is the whole point.
-_OWN_ARID_PATH_RE = re.compile(
-    r"(?:capabilities|output_manifests|read_manifests|sandbox_profiles)/"
-    r"([0-9a-fA-F-]{36})\.json"
-)
-
-
-def _own_arid_of_transcript(text: str, targets: set[str]) -> str | None:
-    """Identify which target arid a child subagent transcript belongs to.
-
-    Prefers the arid named in the child's own capability/manifest paths (unambiguous, and
-    reachable only for a transcript recorded before issue #171 PR-2 — see the regex above).
-    Falls back to the most frequently mentioned target arid, which is the NORMAL path for a
-    pure leaf and is unambiguous there, its prompt naming no parent arid.
-    """
-    owned = [a for a in _OWN_ARID_PATH_RE.findall(text) if a in targets]
-    if owned:
-        return Counter(owned).most_common(1)[0][0]
-    present = [a for a in targets if a in text]
-    if not present:
-        return None
-    counts = {a: text.count(a) for a in present}
-    return max(counts, key=counts.get)
-
-
-def _first_user_text_contains(records: list[dict[str, Any]], needle: str) -> bool:
-    """True if the first ``type=="user"`` record's text content contains ``needle``."""
-    for record in records:
-        if record.get("type") != "user":
-            continue
-        message = record.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        text = ""
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict):
-                    if isinstance(block.get("text"), str):
-                        parts.append(block["text"])
-                    elif isinstance(block.get("content"), str):
-                        parts.append(block["content"])
-            text = " ".join(parts)
-        # A type=="user" record carrying only a tool_result block yields no text
-        # here and is intentionally skipped, so the real opening launch-prompt user
-        # record is the one tested — do not "fix" this to inspect tool_result bodies.
-        if not text.strip():
-            continue
-        return needle in text
-    return False
-
-
-def aggregate_child_usage(
-    repo_root: Path,
-    agent_run_ids: list[str],
-) -> dict[str, Any]:
-    """Attribute per-child token usage from the ephemeral ``~/.claude`` transcripts.
-
-    For a run recorded BEFORE issue #47, ``agent_runs.jsonl`` carries no usage fields and
-    child subagents are not sidechains in the host transcript, so child token cost
-    (empirically the majority of a workflow node's cost) is invisible without this. It
-    locates each child's ``~/.claude/projects/<slug>/<host>/subagents/agent-*.jsonl``
-    transcript by arid-in-body (the child launch prompt embeds its own arid) and sums usage.
-    A run recorded since carries its own ``usage`` on every row, and does not come here.
-
-    Scans every host session's ``subagents`` dir, which is robust to multi-session
-    nodes — e.g. a ``--resume`` that ran some children under a different host
-    session than the others. Best-effort: returns ``available=False`` with a
-    reason when ``~/.claude`` is absent/cleaned; never raises.
-
-    LEGACY, and reached only behind ``audit_orchestration``'s opt-in
-    ``--token-cost-from-transcripts``. Since issue #47 every leaf's usage is written into
-    ``agent_runs.jsonl`` from the leaf's OWN output, in-repo and durable; this path exists
-    for rows recorded before that. It is not on any workflow path, because the workflow does
-    not read ``~/.claude`` — and the glob matches the ``subagents/`` layout, which a
-    conductor-spawned leaf does not produce.
-    """
-    targets = [a for a in agent_run_ids if isinstance(a, str) and a]
-    projects_dir = _claude_projects_dir(repo_root)
-    result: dict[str, Any] = {
-        "projects_dir": str(projects_dir),
-        "per_child": {},
-        "matched_count": 0,
-        "unmatched_arids": sorted(set(targets)),
-    }
-    if not targets:
-        result["available"] = False
-        result["reason"] = "no agent_run_ids to attribute"
-        return result
-    if not projects_dir.is_dir():
-        result["available"] = False
-        result["reason"] = "claude projects dir missing (transcripts machine-local/ephemeral)"
-        return result
-
-    target_set = set(targets)
-    per_child: dict[str, Any] = {}
-    for sub in sorted(projects_dir.glob("*/subagents/agent-*.jsonl")):
-        try:
-            text = sub.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        owner = _own_arid_of_transcript(text, target_set)
-        if owner is None or owner in per_child:
-            continue
-        records: list[dict[str, Any]] = []
-        for line in text.splitlines():
-            token = line.strip()
-            if not token:
-                continue
-            try:
-                payload = json.loads(token)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                records.append(payload)
-        usage = summarize_jsonl_usage(records)
-        usage["transcript"] = str(sub)
-        per_child[owner] = usage
-        if len(per_child) == len(target_set):
-            break
-
-    totals = {k: 0 for k in _USAGE_SUM_KEYS}
-    for usage in per_child.values():
-        for key in _USAGE_SUM_KEYS:
-            totals[key] += int(usage.get(key, 0) or 0)
-    totals["peak_context_tokens"] = max(
-        (int(u.get("peak_context_tokens", 0) or 0) for u in per_child.values()),
-        default=0,
-    )
-
-    result["available"] = True
-    result["per_child"] = per_child
-    result["children_total"] = totals
-    result["matched_count"] = len(per_child)
-    result["unmatched_arids"] = sorted(target_set - set(per_child))
-    return result
-
-
-def aggregate_parent_usage(
-    repo_root: Path, orchestration_agent_run_id: str
-) -> dict[str, Any]:
-    """Sum the orchestration (parent) agent's token usage across all its host sessions.
-
-    A node that was ``--resume``-d runs the parent under more than one host session
-    (the original plus each resume), so reading only one session understates the
-    parent total and skews the parent/children ratio. A parent session's *first
-    user message* is the orchestration launch
-    prompt, which embeds ``workspace/tmp/<orchestration_agent_run_id>`` (its
-    allowed_tmp_root) — a token unique to this parent. Matching on the FIRST user
-    message (not anywhere in the body) is what makes this precise: a diagnostic /
-    ``/plan`` session that merely *discusses* this orchestration also contains the
-    token, but not as its opening prompt. Best-effort: ``available=False`` (never
-    raises) when ``~/.claude`` is gone or the id is empty.
-    """
-    arid = (orchestration_agent_run_id or "").strip()
-    projects_dir = _claude_projects_dir(repo_root)
-    result: dict[str, Any] = {"sessions": []}
-    if not arid:
-        result["available"] = False
-        result["reason"] = "no orchestration_agent_run_id"
-        return result
-    if not projects_dir.is_dir():
-        result["available"] = False
-        result["reason"] = "claude projects dir missing (transcripts machine-local/ephemeral)"
-        return result
-
-    marker = f"workspace/tmp/{arid}"
-    totals = {k: 0 for k in _USAGE_SUM_KEYS}
-    peak = 0
-    sessions: list[dict[str, Any]] = []
-    for sess in sorted(projects_dir.glob("*.jsonl")):
-        try:
-            text = sess.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if marker not in text:
-            continue
-        records: list[dict[str, Any]] = []
-        for line in text.splitlines():
-            token = line.strip()
-            if not token:
-                continue
-            try:
-                payload = json.loads(token)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                records.append(payload)
-        # Precise gate: the marker must be in this session's FIRST user message
-        # (the launch prompt), not merely somewhere in the body — otherwise a
-        # session that only discusses this orchestration would be counted.
-        if not _first_user_text_contains(records, marker):
-            continue
-        usage = summarize_jsonl_usage(records)
-        usage["transcript"] = str(sess)
-        for key in _USAGE_SUM_KEYS:
-            totals[key] += int(usage.get(key, 0) or 0)
-        peak = max(peak, int(usage.get("peak_context_tokens", 0) or 0))
-        sessions.append(usage)
-
-    if not sessions:
-        result["available"] = False
-        result["reason"] = "no parent transcript located"
-        return result
-    totals["peak_context_tokens"] = peak
-    result["available"] = True
-    result["found"] = True
-    result.update(totals)
-    result["session_count"] = len(sessions)
-    result["sessions"] = sessions
-    return result
-
-
 # Token fields summed across a pure leaf's repair attempts: the CLI result-envelope
 # `usage` keys the conductor persists per attempt into bundle_meta.json /
 # verdict_meta.json (`per_attempt[].usage`), the ~/.claude-free provenance for
@@ -950,12 +652,8 @@ def build_launch_incident(
     ``launch_incident.runtime.*.json`` snapshots from older runs are additionally
     surfaced by the audit renderer.
 
-    Only conductor-spawned leaves (arid-pinned sessions) are correlated. Transcripts
-    from pre-migration LLM-orchestrator runs lived under the old
-    ``<host_session_id>/subagents/`` layout and are intentionally NOT resolved:
-    ``host_session_id`` was removed, and reviving that lookup is out of scope (such
-    ``~/.claude`` transcripts are long since GC'd, and any persisted incident
-    snapshot is still surfaced).
+    Only conductor-spawned leaves (arid-pinned sessions) are correlated: a transcript
+    is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else.
     """
     dangling = detect_dangling_active_child(repo_root, orchestration_id)
     if dangling is None:
