@@ -26602,7 +26602,7 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        root, bindir = self._tool_manager_install(home)
+        root, _bindir = self._tool_manager_install(home)
         dotted = home / ".." / "home" / ".toolmgr" / "bin"
         self.assertEqual(self._ro_for("cli-sim", home, dotted), [str(root)])
 
