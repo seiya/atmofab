@@ -145,8 +145,8 @@ def claude_leaf_projects_roots(repo_root: Path,
 
     CANONICAL for the consumers that must not drift apart, all of which locate a leaf's own
     session by `<projects-root>/<slug>/<session-id>.jsonl`:
-      * `orchestration_diagnostics._locate_leaf_transcript` / `_claude_projects_dir`
-        (post-mortem of a dangling leaf).
+      * `orchestration_diagnostics._locate_leaf_transcript` (post-mortem of a dangling
+        leaf).
 
     `workflow_conductor._claude_session_resumable` is deliberately NOT one of them and must not
     be added: a resume is served from the ONE home the launch uses, so the version that searched

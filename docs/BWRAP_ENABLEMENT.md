@@ -63,8 +63,9 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 | `workspace/` hidden from the leaf | a leaf's sandbox sees only its own `workspace/tmp/<arid>` and its own sandbox dir: no other orchestration's records, no `dialogs/`, no sibling pipeline. Since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); pinned by `test_bwrap_simulation.BwrapReadonlyProfileTests::test_readonly_profile_hides_workspace_from_the_leaf` |
 | **Build output landed where the phase declares it** | the **Build phase passed** — `compile_project` wrote `.o`/`.mod` to the per-run object dir and the exe to `binary/<binary_id>/bin/` with no EROFS. `Build` is a DETERMINISTIC substep in the conductor's own process, so no sandbox is involved in that write; what this row is still for is that the output-directory overrides resolve to the right places. It read `no unauthorized_write_violation` until [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 deleted the terminal write audit that produced that marker. |
 
-`python3 tools/audit_orchestration.py <orchestration_id>` summarizes per-run cost and
-status for a quick read.
+`python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>` summarizes
+per-run cost, status and the `violations/` records for a quick read
+(`skills/workflow-audit/SKILL.md`).
 
 ## Codex session criteria
 
