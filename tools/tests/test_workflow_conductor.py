@@ -2546,7 +2546,16 @@ class TransportFailureTest(unittest.TestCase):
         for lead in ("You've hit your", "You’ve hit your", "You have hit your", "you hit your"):
             for window in ("session", "weekly", "hourly", "5-hour", "Opus weekly", "monthly"):
                 for tail in ("· resets 3pm (Asia/Tokyo)", "· resets Monday", "· resets 18:00",
-                             "· resets in 2 hours", "· resets tomorrow"):
+                             "· resets in 2 hours", "· resets tomorrow",
+                             # every relative-time UNIT the cue admits, one tail each (round 3:
+                             # with only `in 2 hours` above, trimming the unit list to `hours`
+                             # stayed green), a weekday+clock cue, a 12h clock with minutes,
+                             # and a cue sitting deep in the `{0,80}` gap after `limit`
+                             "· resets in 1 hour", "· resets in 45 minutes", "· resets in 3 hrs",
+                             "· resets in 1 hr", "· resets in 2h", "· resets in 5 mins",
+                             "· resets in 1 min", "· resets in 1 minute", "· resets Mon 9am",
+                             "· resets 10:20pm (Asia/Tokyo)",
+                             ", so this run stops here; your quota resets 3pm (Asia/Tokyo)"):
                     line = f"{lead} {window} limit {tail}"
                     got = wc._classify_leaf_infra_error("", line)
                     self.assertEqual(got[0] if got else None, "llm_usage_limit", line)
