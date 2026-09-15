@@ -293,6 +293,29 @@ class TokenCostSummaryTests(unittest.TestCase):
             self.assertIn("unavailable", "\n".join(lines))
             self.assertNotIn("0 tokens", "\n".join(lines))
 
+    def test_the_conductors_own_row_is_not_an_unaccounted_leaf(self) -> None:
+        # Every real orchestration has one `agent_role: orchestration` row, named by
+        # `orchestration_meta.json#orchestration_agent_run_id`, with no `usage` (48 of 48
+        # in the corpus). Dropping the exclusion prints "1 leaf arid(s) carry no usage
+        # field" on every audit; this is the pin the deleted parent-path fixtures held.
+        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            parent = "0e750000-0000-4000-8000-000000000000"
+            child = "aaaa1111-1111-4111-8111-111111111111"
+            runs = [{"agent_run_id": parent, "agent_role": "orchestration", "status": "pass"},
+                    {"agent_run_id": child, "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}]
+            tcs = collect_token_cost_summary(
+                repo, {"orchestration_agent_run_id": parent}, runs)
+            self.assertEqual(tcs["children"]["unmatched_arids"], [])
+            self.assertNotIn(parent, tcs["children"]["per_child"])
+            lines: list[str] = []
+            _render_token_cost(tcs, lines)
+            self.assertNotIn("carry no usage field", "\n".join(lines))
+
     def test_an_unaccounted_row_is_named_as_a_leaf(self) -> None:
         # One numeric row makes the section render; the row with no usage field is then
         # counted in the vocabulary the section uses everywhere else — leaf, not child.
@@ -1794,6 +1817,26 @@ class InRepoRecordSectionTests(unittest.TestCase):
         self.assertIn("reason `leaf_timeout`", md)
         self.assertIn("sidecar `failure_analysis.fallback.0123456789ab.json`", md)
 
+    def test_a_null_failed_agent_run_and_incident_refs_render(self) -> None:
+        # `failed_run = failed_runs[-1] if failed_runs else None` (tools/run_workflow.py):
+        # a fail with no failed row in agent_runs.jsonl writes `null`, and a dangling launch
+        # writes a snapshot ref. Neither shape is in the corpus's 10 files; both are real.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail")
+            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc(
+                failed_agent_run=None, failed_step_results=[],
+                launch_incident_refs=["workspace/orchestrations/o/launch_incident.runtime.ab.json"])),
+                encoding="utf-8")
+            result, md = self._rendered(tmp)
+        fa = result["failure_analysis"]["canonical"]
+        self.assertIsNone(fa["failed_agent_run"])
+        self.assertEqual(fa["launch_incident_refs"],
+                         ["workspace/orchestrations/o/launch_incident.runtime.ab.json"])
+        self.assertIn("- failed agent run: none recorded", md)
+        self.assertIn("- launch incident: `workspace/orchestrations/o/"
+                      "launch_incident.runtime.ab.json`", md)
+        self.assertNotIn("failed step results", md)
+
     def test_an_absent_analysis_is_rendered_next_to_the_terminal_status(self) -> None:
         # Absent on a passed run is normal; absent on a failed run is a finding. The
         # renderer does not decide which — it puts the status where the reader can.
@@ -1817,6 +1860,27 @@ class InRepoRecordSectionTests(unittest.TestCase):
         self.assertIn("failure_analysis could not be read", md)
         self.assertIn("UNKNOWN, not absent", md)
         self.assertNotIn("`failure_analysis.json` absent", md)
+
+    def test_a_non_object_analysis_or_corrupt_sidecar_is_a_diagnostic_failure(self) -> None:
+        # The docstring's two RAISE claims, each with its own witness: a canonical file that
+        # is JSON but not an object, and a sidecar that is not JSON (the canonical one intact).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text("[]", encoding="utf-8")
+            result, _md = self._rendered(tmp)
+        self.assertEqual([(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
+                         [("failure_analysis", "TypeError")])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp, status="fail_closed")
+            (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc()),
+                                                       encoding="utf-8")
+            (root / "failure_analysis.runtime.abc123def456.json").write_text(
+                "{not json", encoding="utf-8")
+            result, md = self._rendered(tmp)
+        self.assertIsNone(result["failure_analysis"])
+        self.assertEqual([(f["section"], f["error_type"]) for f in result["diagnostic_failures"]],
+                         [("failure_analysis", "JSONDecodeError")])
+        self.assertIn("UNKNOWN, not absent", md)
 
     # --- repeated substeps ----------------------------------------------------------
 
