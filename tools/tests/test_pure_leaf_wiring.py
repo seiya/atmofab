@@ -1418,8 +1418,11 @@ class PureRenderTests(unittest.TestCase):
         # Re-taken a FIFTH time for issue #178: that sentence now names the gate function that
         # survives (`_certify_and_collect_dep_artifacts`) instead of the deleted aggregator
         # `_verify_dependency_readiness`; the routing is unchanged.
+        # Re-taken a SIXTH time for issue #171's PR-3: the clause "where the agentic leaf's
+        # identical `Compile fail` declaration also lands" is now past tense ("landed before
+        # Z4"), because that leaf is deleted. READ: same two routing tokens, nothing assigned.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #30f836568599",
+        " #5c1bf36514e9",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.

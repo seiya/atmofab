@@ -54,7 +54,7 @@ statement of that set for a reader; the machine-readable definition is
   `venv/` / `.venv/` / `.git/` subdirectories (measured on 0.8.0 and 0.9.2; `docs/`,
   `node_modules/`, `target/`, `__pycache__/` and a plain hidden directory are scanned), and it
   reads `.f90` only — a `body.inc` pulled in by an `include` line is compiled by the compiler
-  and never linted. Neither is reachable today: an agentic leaf's manifest admits only the exact
+  and never linted. Neither is reachable today: no leaf writes a file (Z4, issue #171 — the host writes every artifact), and before that an agentic leaf's manifest admitted only the exact
   files it declares, and the pure path's `logical_path` allowlist is `.f90` alone. `TODO.md`
   carries it as a bound on growth. It is named here because this section states a COUNT, and a
   count of closed channels is not a claim that nothing else decides the verdict.
