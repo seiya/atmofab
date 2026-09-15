@@ -72,6 +72,21 @@ a fail-open that way, on the strength of **one** compiler probe).
   you write it, execute one case from that spec and confirm.** What breaks these claims is always
   the language's **special form** (PEP 420 namespace packages, use association, implicit
   association rules). Any "impossible" about package structure, scope, or visibility gets one run
+- **DELETING A TEST CLASS is deleting every pin it carries, and a row is not classified by its
+  NAME.** A class named after a mechanism you are deleting reads as "direct tests of deleted
+  functions", and the reason to delete it is the same "this shape cannot occur" as any other
+  defense — so it gets 1-b's classification, per ROW, before it goes. Issue #170 deleted
+  `UsageLimitTerminalLineStreamTests` under that label; five of its rows pinned LIVE classifier
+  code in their FIRST assertions — fourteen mechanisms — and called the deleted function only
+  in their tails, and it took three review rounds (3 mechanisms, then 10, then 1) to restore
+  them, each time against mutants origin/main killed and HEAD did not. **Rule: before deleting a test class, classify
+  each row by what its assertions OBSERVE — the names its body calls, read by `ast`, not the
+  docstring or the class name — and keep the rows (or their first halves) whose subject
+  survives.** The tell is a row whose docstring is about the deleted mechanism and whose body
+  starts with a call into something else. This is the test-side form of "what CHECK went with
+  what was deleted" (`atmofab-review-loop` §Stopping conditions), which otherwise fires only in
+  the disclosure round, i.e. two rounds too late. Episode: `references/judgment-episodes.md`
+  §Rule 1-b (issue #170)
 - **MOVING a fact is deleting a defense you never classified**, and it is the one shape here that
   reaches no classification at all, because nothing prompts you to make one: the check still
   runs, still passes, and now covers less. Issue #175 moved the adopted `profile` out of the

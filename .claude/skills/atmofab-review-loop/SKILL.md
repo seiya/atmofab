@@ -260,6 +260,15 @@ when a rule does not obviously apply:
     the fixture that could produce the expected violation is removed, it does not pin its name
   - **a negative assertion is green when the detector breaks — self-test the detector**
   - **when a mutant dies, read why**: a kill from a setup error is worth exactly as much as green
+  - **a fake driver that REPEATS its last scripted result reports a lost budget only as a
+    HANG** — and a hang killed by the harness `timeout` is neither a kill nor a survivor. Issue
+    #170's producer fake clamped the spawn index to the last `ProcResult`; with the wait's
+    `usage_waits += 1` dropped, the loop re-launched the same quota death forever, `pytest`
+    produced no result line, and two rounds recorded the mutant as "hangs" while the verify
+    twin's identical regression was a red row. **Give every scripted driver a launch bound past
+    its script that RAISES** (`MAX_SPAWNS_PAST_SCRIPT`), so an unbounded loop names itself.
+    Trigger: any `procs[min(i, len(procs) - 1)]` in a fixture that drives a retry loop
+    (`references/mutation-testing.md`)
   - **a witness for an ABSENCE assertion must mutate the WRITER, not the function you are
     calling.** Making the unit under test create file X reddens ANY `assertFalse(X.exists())`,
     including one naming a file no code writes — so it distinguishes spellings, not coverage.
