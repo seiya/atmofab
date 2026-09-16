@@ -126,10 +126,11 @@ RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
 }
 # Where a runtime value goes when an IR reaches for a raw-evidence artifact the
-# workflow does not produce. Stated once here and cited by phase_01_compile.md
-# (`evidence_ref` bullet) so a warm retry converges on the same routing the
-# contract states; `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy`
-# pins the two spellings together. Stated in the form the PRODUCER supports, not
+# workflow does not produce. Defined here and RESTATED verbatim by
+# phase_01_compile.md (`evidence_ref` bullet) so a warm retry converges on the
+# same routing the contract states; the document does not cite this constant, so
+# `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` is
+# what holds the two spellings together. Stated in the form the PRODUCER supports, not
 # only the form this validator accepts: the snapshot getters of
 # docs/workflow/CHECKS_MODULE_CONTRACT.md return numbers, and a metrics_basis.json
 # row is valued from a test's required_raw_variables, which must be snapshot
