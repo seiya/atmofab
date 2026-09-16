@@ -1020,6 +1020,51 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                 self._write(d, theirs)
                 self.assertFalse(diag.summarize_pure_leaf_metas(d, phase)["found"], phase)
 
+    def test_reviewer_row_carries_the_projected_verdict_beside_the_loop_outcome(self) -> None:
+        """`result` is the loop outcome — the conductor writes `pass` whenever a schema-valid
+        document was obtained, whatever it decided — so a rejecting reviewer read `result=pass`
+        (issue #241). The row now reads the verdict from its projection file and carries it as
+        `verdict`; a producer row, which has no verdict, carries no such key."""
+        cases = (
+            ("compile", "verify", "ir_meta.json", "verification_status", "revoked"),
+            ("generate", "verify", "source_meta.json", "verification_status", "fail"),
+            ("validate", "judge", "semantic_review.json", "decision", "fail"),
+        )
+        for phase, substep, basename, field, decision in cases:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, tuple(diag.PURE_LEAF_META_FILES[phase].values()))
+                (d / basename).write_text(json.dumps({field: decision}), encoding="utf-8")
+                out = diag.summarize_pure_leaf_metas(d, phase)
+                self.assertEqual(out[substep]["result"], "pass")
+                self.assertEqual(out[substep]["verdict"], decision)
+                for other, row in out.items():
+                    if other not in (substep, "found"):
+                        self.assertNotIn("verdict", row, other)
+
+    def test_reviewer_row_without_a_projection_reads_verdict_none(self) -> None:
+        """A budget exhaustion writes no projection; the row says so (`None`, rendered
+        `none`) rather than inventing a verdict, and a malformed projection reads the same."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "artifacts"
+            self._write(d, ("compile_verify_meta.json",))
+            out = diag.summarize_pure_leaf_metas(d, "compile")
+            self.assertIn("verdict", out["verify"])
+            self.assertIsNone(out["verify"]["verdict"])
+            (d / "ir_meta.json").write_text("{not json", encoding="utf-8")
+            self.assertIsNone(diag.summarize_pure_leaf_metas(d, "compile")["verify"]["verdict"])
+            (d / "ir_meta.json").write_text(json.dumps({"verification_status": ""}),
+                                            encoding="utf-8")
+            self.assertIsNone(diag.summarize_pure_leaf_metas(d, "compile")["verify"]["verdict"])
+        # A projection with no meta beside it does not conjure a row.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "artifacts"
+            d.mkdir()
+            (d / "ir_meta.json").write_text(json.dumps({"verification_status": "pass"}),
+                                            encoding="utf-8")
+            self.assertEqual(diag.summarize_pure_leaf_metas(d, "compile")["verify"],
+                             {"found": False})
+
     def test_an_unknown_phase_reports_a_gap_rather_than_raising(self) -> None:
         """`found: False` and no substep rows, because an unknown phase HAS no substeps to
         name. The subject used to be `validate`, which is a real phase since Z3 (issue #169);

@@ -604,6 +604,31 @@ PURE_LEAF_META_FILES: dict[str, dict[str, str]] = {
     "validate": {"judge": "judge_meta.json"},
 }
 
+#: Where a REVIEWER substep's verdict is projected, beside its per-attempt record: the file
+#: and the field, keyed like `PURE_LEAF_META_FILES`. A reviewer meta's `result` says only that
+#: the loop obtained a schema-valid document (`docs/WORKSPACE_LAYOUT.md`: "the VERDICT itself is
+#: projected onto `ir_meta.json`; this file records how it was obtained"), and the conductor
+#: writes `result="pass"` on the accepted-document path whatever that document decided. A row
+#: that carried `result` alone printed a rejecting reviewer as `result=pass` (issue #241), so
+#: the verdict is read from its projection and carried as a second field. A producer substep
+#: has no verdict and no entry here.
+PURE_LEAF_VERDICT_FILES: dict[str, dict[str, tuple[str, str]]] = {
+    "generate": {"verify": ("source_meta.json", "verification_status")},
+    "compile": {"verify": ("ir_meta.json", "verification_status")},
+    "validate": {"judge": ("semantic_review.json", "decision")},
+}
+
+
+def _projected_verdict(artifact_dir: Path, basename: str, field: str) -> str | None:
+    """The reviewer's projected verdict, or `None` when no projection was written — a budget
+    exhaustion writes none, and the renderer prints that as `verdict=none` rather than
+    guessing. Best-effort like every reader here: a malformed file reads as absent."""
+    doc = _read_json(artifact_dir / basename)
+    if doc is None:
+        return None
+    value = doc.get(field)
+    return value if isinstance(value, str) and value else None
+
 
 def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """A/B metrics for one phase's pure producer / reviewer leaves in one artifact directory.
@@ -617,7 +642,10 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     rows read `generate` / `verify` exactly as a `generate` node's do, and a `validate` node's
     reads `judge`.
 
-    Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); `found` is true
+    Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); a REVIEWER row
+    additionally carries `verdict`, the decision projected beside the record
+    (`PURE_LEAF_VERDICT_FILES`), because the row's `result` is the loop outcome and says
+    nothing about what the reviewer decided. `found` is true
     when any of the phase's files was present. Best-effort: never raises. An agentic node has neither file and
     yields `found=False`, so the caller can tell a pure node from an agentic one by presence
     alone. The row carries no directory key: the caller passes the directory in and owns how it
@@ -636,6 +664,12 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """
     rows = {substep: _summarize_one_pure_meta(_read_json(artifact_dir / basename))
             for substep, basename in PURE_LEAF_META_FILES.get(phase, {}).items()}
+    # A reviewer row carries the verdict as well as the loop outcome (issue #241). The key is
+    # present on every reviewer row that was found — `None` when the projection is absent — and
+    # absent from a producer row, so the renderer prints `verdict=` exactly where one exists.
+    for substep, (basename, field) in PURE_LEAF_VERDICT_FILES.get(phase, {}).items():
+        if rows.get(substep, {}).get("found"):
+            rows[substep]["verdict"] = _projected_verdict(artifact_dir, basename, field)
     return {**rows, "found": any(row.get("found") for row in rows.values())}
 
 

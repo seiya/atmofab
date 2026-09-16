@@ -1218,8 +1218,15 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
     # under different contract versions are not measuring the same thing.
     contract = row.get("prompt_contract_version")
     contract_str = f", contract=`{contract}`" if contract else ""
+    # `result` is the LOOP outcome (a schema-valid document was obtained); a reviewer's
+    # decision is a separate field, so a rejecting reviewer no longer reads `result=pass`
+    # alone (issue #241). The key is present only on a reviewer row; `None` means the
+    # projection file was not written (budget exhaustion), printed as `none`.
+    verdict_str = (f", verdict=`{row.get('verdict') or 'none'}`"
+                   if "verdict" in row else "")
     lines.append(
-        f"- `{label}`: result=`{row.get('result')}`, attempts={row.get('attempts')} "
+        f"- `{label}`: result=`{row.get('result')}`{verdict_str}, "
+        f"attempts={row.get('attempts')} "
         f"(repair turns={row.get('repair_turns')}){cat_str}{contract_str}"
     )
     # `total` sums all four token classes; show cache_creation too so the four

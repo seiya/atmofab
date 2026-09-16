@@ -1204,6 +1204,26 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("model(s): zeta, alpha", md)  # first-seen order, not alphabetical
         self.assertNotIn("alpha, zeta", md)
 
+    def test_render_prints_the_verdict_as_its_own_field(self) -> None:
+        # A rejecting reviewer used to print `result=pass` and nothing else (issue #241):
+        # `result` is the loop outcome. The verdict is a second field, `none` when the
+        # projection was not written, and absent from a producer row.
+        base = {
+            "found": True, "result": "pass", "attempts": 1, "repair_turns": 0,
+            "failure_category": None, "prompt_contract_version": "pure-43",
+            "usage_total": {"total_tokens": 1}, "models": ["m"],
+        }
+        lines: list[str] = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "revoked"}, lines)
+        self.assertIn("- `verify`: result=`pass`, verdict=`revoked`, attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": None}, lines)
+        self.assertIn("result=`pass`, verdict=`none`, attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("generate", base, lines)
+        self.assertIn("- `generate`: result=`pass`, attempts=1", lines[0])
+        self.assertNotIn("verdict", lines[0])
+
     def test_no_reservation_reports_discovery_reason(self) -> None:
         # No pipeline reservation at all (prepare_node never ran): the one case where
         # discovery genuinely could not proceed. Must be named, not rendered as an
