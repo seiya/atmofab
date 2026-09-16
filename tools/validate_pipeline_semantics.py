@@ -9179,12 +9179,16 @@ def _exit_code_for_violations(violations: list[str]) -> int:
     co-findings lose their warm repair; they are still PRINTED, so they reach
     `gate_meta.failure_excerpt` and the operator.
 
-    The two terminal shapes CAN co-occur on a real node since issue #238: the §5.1 stale-IR
-    guard fires only on an `infrastructure` node and the host-authored wrap only on an M3c
-    physics one, but the io_contract half of the stale-IR class (`_as_stale_certified_ir`) applies
-    to every `spec_kind`, so an M3c node whose certified IR predates an io_contract rule answers
-    4 over 5 — and the re-certification 4 names re-renders the runner 5 would have sent the
-    operator to. The order is pinned here rather than through a fixture.
+    The two terminal shapes CAN co-occur on a real node. This paragraph used to say they could
+    not ("a stale-IR violation is raised only on an `infrastructure` node"), which has been false
+    since issue #153 PR-2 put `component` into `_EXACT_PUBLISHED_SURFACE_KINDS`: an M3c physics
+    node is a `component`, so its §5.1 guard (rc 4) and its host-runner wrap (rc 5) could already
+    co-occur. Issue #238 added a second rc 4 source that applies to every `spec_kind` — the
+    io_contract half (`_as_stale_certified_ir`). Either way 4 wins: the re-certification it names
+    re-renders the runner 5 would have sent the operator to. Pinned on a hand-built list here
+    (`test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`) and through the
+    real CLI on an M3c node
+    (`test_a_stale_certified_ir_on_an_m3c_node_answers_4_over_5_in_a_real_subprocess`).
     """
     if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
         return STALE_DEPENDENCY_IR_EXIT_CODE
