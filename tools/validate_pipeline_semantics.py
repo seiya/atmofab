@@ -7889,7 +7889,12 @@ def _validate_io_contract_file(
 
     for idx, item in output_items:
         evidence_ref = item.get("evidence_ref")
-        has_snapshot_ref = isinstance(evidence_ref, str) and "state_snapshots" in evidence_ref
+        # Read through the one spelling rule the enum gate applies (case, `\\`), so a
+        # re-cased token cannot move an output off the snapshot-side rules (PR #236 round 1).
+        has_snapshot_ref = (
+            isinstance(evidence_ref, str)
+            and "state_snapshots" in _normalize_raw_evidence_spelling(evidence_ref)
+        )
 
         raw_variables = item.get("raw_variables")
         if has_snapshot_ref:

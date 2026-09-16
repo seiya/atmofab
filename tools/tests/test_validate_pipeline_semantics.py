@@ -9859,6 +9859,74 @@ end program shallow_water2d_runner
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("shape_expr must match referenced state_snapshots schema shape" in v for v in violations))
 
+    def test_snapshot_evidence_ref_rules_read_the_normalized_spelling(self) -> None:
+        """PR #236 round 1 (security axis): the `evidence_ref` test that selects the
+        snapshot-side rules (`raw_variables` required; the single-resolved-shape rule of
+        #233) was a case-sensitive substring match, so `raw/State_Snapshots` — the same
+        token the enum gate normalizes case-insensitively — took the non-snapshot branch and
+        an output whose `shape_expr` contradicts its snapshot schema passed `Compile.static`.
+        A leaf red on the #233 rule reported done by re-casing one token. Now both gates read
+        one spelling rule (`normalize_raw_evidence_spelling`). Each spelling is a subtest;
+        the control is the bare form the corpus carries, refused on origin/main too."""
+        model_text = """module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+"""
+        runner_text = """program shallow_water2d_runner
+implicit none
+write(*,*) 'diagnostics only'
+end program shallow_water2d_runner
+"""
+        for spelling in ("raw/state_snapshots", "raw/State_Snapshots", "RAW\\state_snapshots", " raw/state_snapshots "):
+            with self.subTest(spelling=spelling), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text=model_text,
+                    runner_text=runner_text,
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                    io_contract={
+                        "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
+                        "outputs": [
+                            {
+                                "name": "U_np1",
+                                "shape_expr": "(3, 2, 2)",
+                                "evidence_ref": spelling,
+                                "raw_variables": ["h"],
+                            }
+                        ],
+                        "semantic_dependency": {"required_sources": ["h"]},
+                        "raw_requirements": {
+                            "required_evidence": [
+                                {"artifact": "metrics_basis.json", "required": True},
+                                {
+                                    "artifact": "state_snapshots",
+                                    "required": True,
+                                    "min_samples": 1,
+                                    "schema": {
+                                        "variables": [{"name": "h", "shape_expr": "[2,2]"}],
+                                        "time_variable": "time",
+                                        "time_shape_expr": "scalar",
+                                    },
+                                },
+                            ]
+                        },
+                    },
+                )
+                violations = validate(repo_root=repo_root, workspace_root="workspace")
+                self.assertTrue(
+                    any("outputs[0].shape_expr must match referenced state_snapshots schema shape" in v for v in violations),
+                    violations,
+                )
+
     def test_snapshot_output_listing_field_and_time_variable_is_refused_and_contract_states_it(self) -> None:
         """Issue #233: `raw_variables: [h, time]` on one snapshot output resolves to two
         shapes (`[2,2]` and scalar) and is refused by the single-resolved-shape rule. The
