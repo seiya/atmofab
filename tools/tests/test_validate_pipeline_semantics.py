@@ -24791,12 +24791,17 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                          (proc.stdout, proc.stderr))
         # The marker stays in the message for a human reader; it carries no decision.
         self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
-        # The remedy is ordered by reachability (issue #238): `--resume` — readiness now
-        # refuses the IR and Compile re-derives it — before the wider `--with-deps`.
+        # The remedy (issue #238) is `--resume` — readiness refuses the IR and Compile
+        # re-derives it — and it says that `--with-deps` is NOT one: the closure driver skips a
+        # ready member without re-validating its IR. The round-1 wording sent the operator to
+        # `--with-deps` "when the closure must be re-certified too"; pin the FACT, not the token
+        # order (an order pin stayed green on that wording — round-2 correctness F2).
         guard = [line for line in proc.stdout.splitlines()
                  if "does not carry the controlled_spec" in line]
         self.assertEqual(1, len(guard), proc.stdout)
-        self.assertLess(guard[0].index("`--resume`"), guard[0].index("--with-deps"), guard[0])
+        self.assertIn("`--resume`", guard[0])
+        self.assertIn("never for a validator rule", guard[0])
+        self.assertNotIn("when the closure must be re-certified", guard[0])
 
     def _seed_io_contract_ir(self, tmp: Path, *, evidence_ref: str,
                              source: str | None = None) -> tuple[Path, str]:
@@ -24840,11 +24845,14 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                 if "names no raw-evidence artifact" in line]
         self.assertEqual(1, len(hits), proc.stdout)
         # The original finding text survives (the wrap is a suffix), the marker follows it,
-        # and the remedy names `--resume` before `--with-deps`.
+        # the remedy is `--resume`, and it says `--with-deps` does NOT re-validate a dependency's
+        # IR (pin the fact, not the token order — see the §5.1 row above).
         self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
         self.assertLess(hits[0].index("names no raw-evidence artifact"),
                         hits[0].index(vps.STALE_DEPENDENCY_IR_MARKER))
-        self.assertLess(hits[0].index("`--resume`"), hits[0].index("--with-deps"))
+        self.assertIn("`--resume`", hits[0])
+        self.assertIn("does NOT re-validate", hits[0])
+        self.assertNotIn("when the closure must be re-certified", hits[0])
         # No §5.1 guard fired: the rc 4 came from the io_contract wrap alone.
         self.assertNotIn("does not carry the controlled_spec", proc.stdout)
 
