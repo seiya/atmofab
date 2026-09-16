@@ -6364,27 +6364,25 @@ class DiagnosticianTest(unittest.TestCase):
         # what would turn this rule into a shortcut to `fail_closed`.
         self.assertIn("insufficient evidence", rule)
 
-    def test_a_pure_codex_argv_without_a_session_id_is_refused_by_name(self) -> None:
-        """`leaf_command`'s `session_id` is still `str | None`, and `spawn_leaf` does NOT thread
-        its (now mandatory) `child_arid` into it — the two production callers simply pass
-        `session_id=child_arid`. So making `_codex_pure_schema_path` require a value did not
-        make the argument mandatory at the signature that feeds it; it turned a
-        signature-legal call into an `AttributeError` on `None.strip()`, where before this
-        branch there was a shared `codex-pure-schema` fallback filename.
-
-        The fallback is not coming back — two concurrent launches sharing one schema file is
-        what keying it per child fixes — but the refusal is now NAMED, so a host defect reports
-        itself instead of surfacing as an attribute error from inside argv construction.
+    def test_a_pure_codex_argv_without_a_session_id_is_an_ordinary_argv(self) -> None:
+        """`leaf_command`'s `session_id` is `str | None`, and on the codex arm it is now read
+        for nothing. This row replaced `..._is_refused_by_name`, whose subject — the
+        `SandboxEnforcementError` `_codex_pure_schema_path` raised when given no session id —
+        went with the per-child output-schema file (issue #230). What its assertions observed
+        was `leaf_command(entry)` on a codex entry with no session id, and that call is now an
+        ordinary argv derivation: it returns the argv, the argv carries no `--output-schema`,
+        and NOTHING is written under `repo_root` — the tree is a fresh `TemporaryDirectory`
+        so the absence is observable, where the `/tmp/repo` literal the old row used was not.
         """
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
-                           orchestration_agent_run_id="O", env={},
-                           llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
-        with self.assertRaises(wc.SandboxEnforcementError) as caught:
-            c.leaf_command(c.entry_for(None, None))
-        self.assertIn("session_id", str(caught.exception))
-        # ...and the ordinary call, the one both production callers make, still works.
-        argv = c.leaf_command(c.entry_for(None, None), session_id="child-1")
-        self.assertIn("child-1", "\x00".join(argv))
+        with tempfile.TemporaryDirectory() as tmp:
+            c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
+                               orchestration_agent_run_id="O", env={},
+                               llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
+            for kwargs in ({}, {"session_id": "child-1"}):
+                argv = c.leaf_command(c.entry_for(None, None), **kwargs)
+                self.assertEqual(argv[:2], ["codex", "exec"], msg=str(kwargs))
+                self.assertNotIn("--output-schema", argv, msg=str(kwargs))
+            self.assertFalse((Path(tmp) / "workspace").exists())
 
     def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
         """On the HTTP transport the conversation lives in memory, keyed by `(step, substep)`
@@ -7308,9 +7306,8 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command(), self._claude_argv("claude"))
-        # A codex launch AUTHORS its output schema keyed by the child's id, so it is given
-        # one; `leaf_command` refuses a codex launch without it rather than falling back to a
-        # shared path two concurrent launches would collide on.
+        # `session_id` as every production launch passes it; the codex arm reads it for
+        # nothing since issue #230.
         argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="a")
         self.assertEqual(argv[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
@@ -7400,12 +7397,13 @@ class LeafSpawnTest(unittest.TestCase):
             c.leaf_command(session_id="arid-1"),
             self._claude_argv("claude", "--session-id", "arid-1"),
         )
-        # codex has no per-session flag: the id decides the OUTPUT SCHEMA path and reaches the
-        # argv only there.
+        # codex has no per-session flag, and since issue #230 the id reaches a codex argv
+        # NOWHERE: the `--output-schema` path it used to key is gone.
         argv = self._c(backend="codex",
                        agent_model="gpt-5.6-sol").leaf_command(session_id="arid-1")
         self.assertNotIn("--session-id", argv)
-        self.assertIn("arid-1", argv[argv.index("--output-schema") + 1])
+        self.assertNotIn("--output-schema", argv)
+        self.assertFalse(any("arid-1" in part for part in argv), argv)
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
         c = self._c(backend="claude")
@@ -9334,9 +9332,7 @@ class LeafSpawnTest(unittest.TestCase):
                             patch.object(wc, "LEAF_STREAM_POLL_SECONDS", 0.01), \
                             patch.object(wc, "_leaf_timeout_seconds", lambda: 0.02), \
                             redirect_stdout(io.StringIO()):
-                        # `session_id=child_arid` as every production launch does: a codex
-                        # leaf authors its output schema keyed by the child's id and refuses a
-                        # launch given none.
+                        # `session_id=child_arid` as every production launch does.
                         proc = c.spawn_leaf("P", {"HOME": "/h"}, child_arid="A",
                                             session_id="A")
                 self.assertIs(proc.timed_out, True)
@@ -13745,7 +13741,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_codex_m3c_uses_sandboxed_structured_pure_leaf(self) -> None:
+    def test_codex_m3c_uses_the_sandboxed_pure_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -18472,9 +18468,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
         entry = c.entry_for("generate", "generate")
-        # The pure codex branch writes its output schema under the leaf's own agent_run_id, so
-        # a `pure=True` argv needs one (issue #169 removed the shared fallback filename two
-        # concurrent launches could have collided on).
+        # `session_id` as every production launch passes it (the codex arm reads it for
+        # nothing since issue #230).
         for argv in (c.leaf_command(entry, session_id="t2"),
                      c.leaf_command(entry, session_id="t2", resume_session_id="t1")):
             self.assertIn('model_reasoning_effort="xhigh"', argv)
@@ -18789,12 +18784,12 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
 
-        `leaf_command` is deterministic in its RESULT but not free of side effects on every
-        branch: the codex pure branch writes its `--output-schema` file, and the path is keyed
-        on the session id. Called without one it fell back to a literal `codex-pure-schema`
-        directory under `workspace/tmp/`, which nothing owns and nothing cleans — a launch
-        record leaving litter outside any agent_run_id. `record_launch` passes the same
-        `session_id` `spawn_leaf` does, so the re-derivation stays on the production path."""
+        Re-deriving the argv is side-effect-free on every branch since issue #230: the codex
+        pure branch used to write its `--output-schema` file under `workspace/tmp/<session
+        id>` (and, called without one, into a literal `codex-pure-schema` directory nothing
+        owned). Now a pure codex `record_launch` leaves `workspace/tmp` absent or EMPTY — the
+        assertion is on the whole listing, not on the one stray name — and the argv it
+        recorded carries no `--output-schema`."""
         repo = self._scratch_repo_root()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
@@ -18805,11 +18800,11 @@ class LeafEntryThreadingTests(unittest.TestCase):
             c, "arid-1", {"leaf_mode": PURE_LEAF_MODE, "step": "generate",
                           "substep": "generate"},
             c.entry_for("generate", "generate"))
-        stray = repo / "workspace" / "tmp" / "codex-pure-schema"
-        self.assertFalse(stray.exists(), f"stray schema directory: {stray}")
         tmp_root = repo / "workspace" / "tmp"
-        owned = sorted(p.name for p in tmp_root.iterdir()) if tmp_root.exists() else []
-        self.assertNotIn("codex-pure-schema", owned)
+        listing = sorted(p.name for p in tmp_root.iterdir()) if tmp_root.exists() else []
+        self.assertEqual(listing, [], f"record_launch wrote under {tmp_root}: {listing}")
+        argv = c.leaf_command(c.entry_for("generate", "generate"), session_id="arid-1")
+        self.assertNotIn("--output-schema", argv)
 
     def test_the_recorded_setting_surface_is_derived_from_the_argv(self) -> None:
         """Not from the constants `leaf_command` used. Re-reading `CLAUDE_LEAF_MCP_CONFIG`

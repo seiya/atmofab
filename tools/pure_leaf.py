@@ -6,7 +6,7 @@ A *pure leaf* is an LLM stage run as a host-mediated pure function
 model returns exactly one typed JSON document, and the host validates and writes it. The
 model holds no workflow-gate or repository-write authority. Claude launches with tools and
 slash commands disabled and returns through the `--output-format json` result envelope;
-Codex uses a read-only sandbox and an output schema as a structured-output approximation.
+Codex runs a tool-bearing CLI inside a read-only sandbox and the host parses its one reply.
 
 This module is the STAGE-AGNOSTIC substrate of that channel: the launch flag set, the
 result-envelope parser, the single-document extractor with its truncation classifier, and
@@ -74,8 +74,8 @@ PURE_PROMPT_SENTINEL = "Pure-function leaf turn (host-mediated)"
 
 # Data-only fence around an untrusted document inlined into a pure launch prompt (`tests.md`,
 # `controlled_spec.md`, the IR, the bundle under repair). The prompt directs the closed-context
-# leaf not to use tools; Claude enforces that transport strictly, while Codex applies its
-# read-only structured-output approximation. An injected instruction can therefore at most
+# leaf not to use tools; Claude enforces that transport strictly, while Codex runs inside its
+# read-only sandbox. An injected instruction can therefore at most
 # corrupt the returned bundle content (caught downstream by `validate_bundle` / the gates /
 # verify), never gain repository write authority. The fence also tells the model to treat the
 # span as DATA and, load-bearingly, marks the region for the gate-allowlist lint's scan carve-out

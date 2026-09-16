@@ -13,6 +13,7 @@ audit — so what is left is the one profile production builds.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -43,10 +44,11 @@ class _Loopback400:
 
     def __init__(self) -> None:
         hits: list[str] = []
+        bodies: list[bytes] = []
 
         class Handler(BaseHTTPRequestHandler):
             def _answer(self) -> None:
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                bodies.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 hits.append(f"{self.command} {self.path}")
                 body = (b'{"type":"error","error":{"type":"invalid_request_error",'
                         b'"message":"loopback stand-in"}}')
@@ -63,6 +65,7 @@ class _Loopback400:
                 pass
 
         self.hits = hits
+        self.bodies = bodies  # one raw request body per hit, same order
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
@@ -285,9 +288,8 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                         ("SPEC", "spec/x.yaml"),
                         ("GIT", ".git/HEAD")):
                     print(f"{{tag}}:" + ("READABLE" if Path(rel).exists() else "HIDDEN"), flush=True)
-                # ... while the leaf's OWN tmp root is still there: a codex pure launch needs it
-                # for its `--output-schema` file and its TMPDIR.
-                p = Path("workspace/tmp/{arid}/schema.json")
+                # ... while the leaf's OWN tmp root is still there: it is the leaf's TMPDIR.
+                p = Path("workspace/tmp/{arid}/probe.txt")
                 try:
                     p.write_text("{{}}"); print("OWN_TMP:WRITABLE", flush=True)
                 except Exception as e:
@@ -666,8 +668,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         on codex-cli 0.154.0: `Not inside a trusted directory and --skip-git-repo-check was
         not specified.`, rc 1). The production argv carries the flag; this row execs the real
         CLI with that argv under the rendered profile and observes the request arriving at a
-        loopback stand-in: the CLI got past the git check, read its `--output-schema` file
-        from the tmpfs-mounted `workspace/tmp/<arid>`, and reached the network.
+        loopback stand-in: the CLI got past the git check and reached the network.
 
         The redirect is a `--config model_provider` override, NOT `OPENAI_BASE_URL`: measured,
         the env variable is not honoured by codex-cli 0.154.0 with a private `CODEX_HOME`
@@ -678,6 +679,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         CONTROL: the same launch with the flag removed must NOT reach the stand-in and must
         name the refusal — that is what makes the flag load-bearing rather than decorative,
         and it is the row a revert of `leaf_command`'s hunk fails.
+
+        The request BODY is read too: with `--output-schema` gone (issue #230) it carries no
+        `text.format` — the strict `json_schema` format codex-cli built from the host's
+        `{"type": "object"}` is what the Responses API refused on every pure codex turn. The
+        body is the wire-level observation; the argv assertion in `test_pure_leaf.py` is the
+        source-level one, and a revert of `leaf_command`'s schema hunk fails both.
         """
         argv, profile, _repo = self._pure_launch_under_profile(
             "codex", model="gpt-5.6-sol", private_home=True)
@@ -696,6 +703,10 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
         self.assertEqual(server.hits, ["POST /v1/responses"], res.stdout + res.stderr)
         self.assertNotIn("skip-git-repo-check", res.stderr)
+        request = json.loads(server.bodies[0])
+        self.assertNotIn("format", request.get("text") or {}, request.get("text"))
+        self.assertNotIn("json_schema", server.bodies[0].decode("utf-8", "replace"))
+        self.assertNotIn("--output-schema", with_flag)
         without_flag = [tok for tok in with_flag if tok != "--skip-git-repo-check"]
         res = subprocess.run(render_bwrap_command(profile=profile, command_argv=without_flag),
                              input="Reply with one word.", capture_output=True, text=True,

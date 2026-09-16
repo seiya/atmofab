@@ -13,6 +13,12 @@ contracts. A Codex pure-function leaf uses a sandboxed structured-output
 approximation. The implementation records that isolation level separately from
 the strict tool-free isolation provided by the Claude backend.
 
+Status note, 2026-09-16: the output schema this plan's `--output-schema` bullets and
+the `structured-output support` preflight check describe is retired
+([issue #230](https://github.com/seiya/atmofab/issues/230)); the pure codex leaf is the
+read-only sandbox alone and the host's own parse is the shape check. The bullets below
+are kept as the record of what this plan implemented.
+
 ## Requirements
 
 ### Backend-neutral leaf execution
