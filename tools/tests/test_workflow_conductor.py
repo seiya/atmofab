@@ -8020,6 +8020,26 @@ class LeafSpawnTest(unittest.TestCase):
             (wc._classify_leaf_infra_error(proc.stderr, proc.stdout) or ("", ""))[0],
             "llm_usage_limit")
 
+    def test_codex_last_agent_message_is_the_answer_not_the_first(self) -> None:
+        """Codex emits one `agent_message` per message, and the LAST one of a completed
+        turn is the leaf's answer: a turn that narrates ("Let me start…") and then returns
+        its document is ordinary for a tool-bearing CLI. With `--output-schema` gone (issue
+        #230) nothing API-side constrains the earlier messages to be JSON, so this last-wins
+        rule in `_absorb_codex_event` is what makes the schemaless path work, and it had no
+        pin: a first-wins regression turned every such reply into
+        `pure_response_unparseable`, burning the warm-repair budget on a false record
+        (round-1 security axis of PR #232, mutant survived every test file).
+        """
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message",'
+                  '"text":"Let me start by reading the spec."}}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"a\\":1}"}}\n'
+                  '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), '{"a":1}')
+        self.assertNotIn("reading the spec", proc.stdout)
+
     def test_codex_recovered_error_event_does_not_discard_the_document(self) -> None:
         # `error` is NOT guaranteed terminal in the JSONL stream. A turn that reported
         # one and then produced a valid final message must keep both its document and
