@@ -24540,6 +24540,27 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         self.assertIn("host_render.render_runner", proc.stdout, proc.stdout)
         self.assertIn("Re-running Generate cannot change this finding", proc.stdout)
 
+    def test_a_stale_certified_ir_on_an_m3c_node_answers_4_over_5_in_a_real_subprocess(self) -> None:
+        """The co-occurrence `_exit_code_for_violations`'s docstring names since issue #238 — an
+        M3c node with a host-runner finding AND a certified IR the io_contract reader rejects —
+        driven through the real CLI, not a hand-built list (that row is
+        `StaleDependencyIRExitCodeTests.test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`).
+        Both markers are printed; rc 4 wins because the re-certification it names re-renders the
+        runner 5 would have sent the operator to."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            pipeline_dir = self._seed(tmp, spec_kind="component")
+            ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
+            doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            doc["io_contract"]["inputs"].append(
+                {"name": "topography_profile", "evidence_ref": "raw/execution_trace.json"})
+            ir_path.write_text(json.dumps(doc), encoding="utf-8")
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
+        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         (proc.stdout, proc.stderr))
+
     def test_cooccurring_host_and_leaf_violations_answer_the_host_exit_code(self) -> None:
         """Hoisting `return 1` above the isinstance check would degrade this to 1.
 
@@ -24689,8 +24710,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     The rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
     is carried by the violation's Python TYPE: a helper-level assertion would stay green while an
     unwrapped ``violations.append`` or a list rebuild silently degraded production to exit code 1.
-    The two rows about the exit-code CONSTANTS do not — they read module attributes, and
-    ``_help`` calls ``main(["--help"])`` in-process. Stated because this class's first docstring
+    Three rows do not: the two about the exit-code CONSTANTS read module attributes (``_help``
+    calls ``main(["--help"])`` in-process), and ``…stays_rc_1_at_compile_stage`` calls
+    ``validate_compile_stage`` in-process, since what it pins is the TYPE of a violation the
+    compile stage returns, not the exit code. Stated because this class's first docstring
     said "these drive the real CLI" of all of them, which is the same false claim a sibling test
     in ``test_fortran_structure.py`` had to be renamed for.
     """
@@ -24824,6 +24847,29 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         self.assertLess(hits[0].index("`--resume`"), hits[0].index("--with-deps"))
         # No §5.1 guard fired: the rc 4 came from the io_contract wrap alone.
         self.assertNotIn("does not carry the controlled_spec", proc.stdout)
+
+    def test_every_io_contract_finding_on_the_certified_ir_is_wrapped(self) -> None:
+        """The wrap is per FINDING. The incident IR carried three io_contract findings; a wrap
+        that marked only the first (rc 4 either way) would strip the marker and the remedy from
+        the others in `gate_meta.failure_excerpt`. Survived the round-0 sweep because every
+        subprocess row seeded exactly one finding (round-1 correctness axis, F5)."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            _seed_shape_expr_schema_into(tmp)
+            pipeline_dir, _ = self._seed_io_contract_ir(
+                tmp, evidence_ref="raw/execution_trace.json")
+            ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
+            doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            doc["io_contract"]["inputs"].append(
+                {"name": "second", "evidence_ref": "raw/execution_trace.json"})
+            ir_path.write_text(json.dumps(doc), encoding="utf-8")
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
+        hits = [line for line in proc.stdout.splitlines()
+                if "names no raw-evidence artifact" in line]
+        self.assertEqual(2, len(hits), proc.stdout)
+        for line in hits:
+            self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, line)
 
     def test_the_same_io_contract_finding_stays_rc_1_at_compile_stage(self) -> None:
         """Decision pinned in both directions: at `--stage compile` the IR is the artifact
