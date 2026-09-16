@@ -619,15 +619,34 @@ PURE_LEAF_VERDICT_FILES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 
-def _projected_verdict(artifact_dir: Path, basename: str, field: str) -> str | None:
-    """The reviewer's projected verdict, or `None` when no projection was written — a budget
-    exhaustion writes none, and the renderer prints that as `verdict=none` rather than
-    guessing. Best-effort like every reader here: a malformed file reads as absent."""
+def _projected_verdict(artifact_dir: Path, basename: str, field: str
+                       ) -> tuple[str | None, str | None]:
+    """`(verdict, revocation)` for a reviewer substep, read from its projection file.
+
+    `verdict` is the REVIEWER's decision. When a retry route has since revoked the artifact
+    (`revoke-artifact` rewrites the field to `revoked` and keeps the decision in
+    `prior_verification_status`), the decision is read from there and `revocation` carries the
+    route's `revocation_reason` — a revocation is a fact about the retry route, not about what
+    the reviewer decided, and the two artifacts of the issue #241 run that read `revoked` were
+    one the reviewer had REJECTED and one it had ACCEPTED. `revocation` is `""` when the file is
+    revoked and records no reason, `None` when it is not revoked.
+
+    `verdict` is `None` when no projection was written: the reviewer loop's budget exhaustion
+    writes none for `generate` / `validate`, and the renderer prints that as `verdict=none`
+    rather than guessing. `compile` is the exception — its producer writes `ir_meta.json` at
+    `pending` before the reviewer runs, so an exhausted `compile.verify` reads `pending`, which is
+    what the file says. Best-effort like every reader here: a malformed file reads as absent."""
     doc = _read_json(artifact_dir / basename)
     if doc is None:
-        return None
+        return None, None
     value = doc.get(field)
-    return value if isinstance(value, str) and value else None
+    value = value if isinstance(value, str) and value else None
+    if value != "revoked":
+        return value, None
+    prior = doc.get("prior_verification_status")
+    reason = doc.get("revocation_reason")
+    return (prior if isinstance(prior, str) and prior else "revoked",
+            reason if isinstance(reason, str) else "")
 
 
 def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
@@ -645,7 +664,8 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); a REVIEWER row
     additionally carries `verdict`, the decision projected beside the record
     (`PURE_LEAF_VERDICT_FILES`), because the row's `result` is the loop outcome and says
-    nothing about what the reviewer decided. `found` is true
+    nothing about what the reviewer decided, and `revocation` — the retry route's reason when
+    it has since revoked the artifact, else `None` (see `_projected_verdict`). `found` is true
     when any of the phase's files was present. Best-effort: never raises. An agentic node has neither file and
     yields `found=False`, so the caller can tell a pure node from an agentic one by presence
     alone. The row carries no directory key: the caller passes the directory in and owns how it
@@ -664,12 +684,15 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """
     rows = {substep: _summarize_one_pure_meta(_read_json(artifact_dir / basename))
             for substep, basename in PURE_LEAF_META_FILES.get(phase, {}).items()}
-    # A reviewer row carries the verdict as well as the loop outcome (issue #241). The key is
-    # present on every reviewer row that was found — `None` when the projection is absent — and
-    # absent from a producer row, so the renderer prints `verdict=` exactly where one exists.
+    # A reviewer row carries the verdict as well as the loop outcome (issue #241). The keys are
+    # present on every reviewer row that was found — `verdict` is `None` when the projection is
+    # absent, `revocation` is `None` unless a retry route revoked the artifact — and absent from
+    # a producer row, so the renderer prints `verdict=` exactly where one exists.
     for substep, (basename, field) in PURE_LEAF_VERDICT_FILES.get(phase, {}).items():
         if rows.get(substep, {}).get("found"):
-            rows[substep]["verdict"] = _projected_verdict(artifact_dir, basename, field)
+            verdict, revocation = _projected_verdict(artifact_dir, basename, field)
+            rows[substep]["verdict"] = verdict
+            rows[substep]["revocation"] = revocation
     return {**rows, "found": any(row.get("found") for row in rows.values())}
 
 

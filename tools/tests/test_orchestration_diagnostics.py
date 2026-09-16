@@ -1026,7 +1026,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         (issue #241). The row now reads the verdict from its projection file and carries it as
         `verdict`; a producer row, which has no verdict, carries no such key."""
         cases = (
-            ("compile", "verify", "ir_meta.json", "verification_status", "revoked"),
+            ("compile", "verify", "ir_meta.json", "verification_status", "fail"),
             ("generate", "verify", "source_meta.json", "verification_status", "fail"),
             ("validate", "judge", "semantic_review.json", "decision", "fail"),
         )
@@ -1038,9 +1038,67 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                 out = diag.summarize_pure_leaf_metas(d, phase)
                 self.assertEqual(out[substep]["result"], "pass")
                 self.assertEqual(out[substep]["verdict"], decision)
+                self.assertIsNone(out[substep]["revocation"])
                 for other, row in out.items():
                     if other not in (substep, "found"):
                         self.assertNotIn("verdict", row, other)
+                        self.assertNotIn("revocation", row, other)
+
+    def test_a_revoked_projection_reads_the_reviewers_own_decision(self) -> None:
+        """`revoke-artifact` rewrites `verification_status` to `revoked` and keeps the decision
+        in `prior_verification_status`; the row carries THAT as the verdict and the route's
+        reason as `revocation`. Round 1 of issue #241: the reference run held a REJECTED
+        artifact and an ACCEPTED one under the same `revoked` status, and reading the status
+        verbatim rendered both as a rejection."""
+        cases = (
+            ({"verification_status": "revoked", "prior_verification_status": "pass",
+              "revocation_reason": "validate_execute_post_execute_violation"},
+             "pass", "validate_execute_post_execute_violation"),
+            ({"verification_status": "revoked", "prior_verification_status": "fail",
+              "revocation_reason": "verify_minor"},
+             "fail", "verify_minor"),
+            # A revocation that recorded no reason, or a malformed one, is still a revocation.
+            ({"verification_status": "revoked", "prior_verification_status": "pass"},
+             "pass", ""),
+            ({"verification_status": "revoked", "prior_verification_status": "pass",
+              "revocation_reason": 7},
+             "pass", ""),
+            # No prior at all: `revoked` is the most that can be said, and it is said.
+            ({"verification_status": "revoked"}, "revoked", ""),
+            ({"verification_status": "revoked", "prior_verification_status": ""}, "revoked", ""),
+        )
+        for doc, verdict, revocation in cases:
+            with self.subTest(doc=doc), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp) / "artifacts"
+                self._write(d, ("compile_verify_meta.json",))
+                (d / "ir_meta.json").write_text(json.dumps(doc), encoding="utf-8")
+                row = diag.summarize_pure_leaf_metas(d, "compile")["verify"]
+                self.assertEqual(row["verdict"], verdict)
+                self.assertEqual(row["revocation"], revocation)
+        # `prior_verification_status` is consulted ONLY under `revoked`: a stale prior beside a
+        # live status must not override it.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "artifacts"
+            self._write(d, ("compile_verify_meta.json",))
+            (d / "ir_meta.json").write_text(json.dumps(
+                {"verification_status": "pass", "prior_verification_status": "fail",
+                 "revocation_reason": "stale"}), encoding="utf-8")
+            row = diag.summarize_pure_leaf_metas(d, "compile")["verify"]
+            self.assertEqual(row["verdict"], "pass")
+            self.assertIsNone(row["revocation"])
+
+    def test_a_pending_compile_projection_reads_pending(self) -> None:
+        """`compile.generate` writes `ir_meta.json` at `pending` before the reviewer runs, so an
+        exhausted `compile.verify` reads `pending` — passed through as the file says, not mapped
+        onto `none` (round 1 of issue #241, F2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "artifacts"
+            self._write(d, ("compile_verify_meta.json",))
+            (d / "ir_meta.json").write_text(json.dumps({"verification_status": "pending"}),
+                                            encoding="utf-8")
+            row = diag.summarize_pure_leaf_metas(d, "compile")["verify"]
+        self.assertEqual(row["verdict"], "pending")
+        self.assertIsNone(row["revocation"])
 
     def test_reviewer_row_without_a_projection_reads_verdict_none(self) -> None:
         """A budget exhaustion writes no projection; the row says so (`None`, rendered
@@ -1051,6 +1109,8 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
             out = diag.summarize_pure_leaf_metas(d, "compile")
             self.assertIn("verdict", out["verify"])
             self.assertIsNone(out["verify"]["verdict"])
+            self.assertIn("revocation", out["verify"])
+            self.assertIsNone(out["verify"]["revocation"])
             (d / "ir_meta.json").write_text("{not json", encoding="utf-8")
             self.assertIsNone(diag.summarize_pure_leaf_metas(d, "compile")["verify"]["verdict"])
             (d / "ir_meta.json").write_text(json.dumps({"verification_status": ""}),

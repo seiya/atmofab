@@ -1214,11 +1214,28 @@ class PureLeafABSummaryTest(unittest.TestCase):
             "usage_total": {"total_tokens": 1}, "models": ["m"],
         }
         lines: list[str] = []
-        _render_pure_leaf_row("verify", {**base, "verdict": "revoked"}, lines)
-        self.assertIn("- `verify`: result=`pass`, verdict=`revoked`, attempts=1", lines[0])
+        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": None}, lines)
+        self.assertIn("- `verify`: result=`pass`, verdict=`fail`, attempts=1", lines[0])
+        self.assertNotIn("revoked", lines[0])
         lines = []
-        _render_pure_leaf_row("verify", {**base, "verdict": None}, lines)
+        _render_pure_leaf_row("verify", {**base, "verdict": None, "revocation": None}, lines)
         self.assertIn("result=`pass`, verdict=`none`, attempts=1", lines[0])
+        # A revocation is rendered beside the reviewer's decision, never in its place: the
+        # reference run's accepted-then-revoked source and rejected-then-revoked IR must read
+        # apart (round 1 of issue #241).
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "pass",
+                                         "revocation": "validate_execute_post_execute_violation"},
+                              lines)
+        self.assertIn("verdict=`pass` (revoked: `validate_execute_post_execute_violation`), "
+                      "attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": "verify_minor"},
+                              lines)
+        self.assertIn("verdict=`fail` (revoked: `verify_minor`), attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "pass", "revocation": ""}, lines)
+        self.assertIn("verdict=`pass` (revoked: `no reason recorded`), attempts=1", lines[0])
         lines = []
         _render_pure_leaf_row("generate", base, lines)
         self.assertIn("- `generate`: result=`pass`, attempts=1", lines[0])
