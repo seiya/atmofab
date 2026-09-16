@@ -579,6 +579,9 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                     self.assertTrue(res.stdout.startswith(expected), res.stdout)
                     if expected == "REFUSED":
                         self.assertIn("carries a mount", res.stdout)
+                        # The refusal names WHICH bind set carried the second name.
+                        self.assertIn("system directory bound read-only" if "/usr/local/src" in label
+                                      else "backend install root", res.stdout, res.stdout)
                     elif argv is exempt_child:
                         # An accepted exempt layout is only right if the rendered profile
                         # then hides the planted dialogs at every name the probe can reach:
