@@ -69,8 +69,9 @@ per-run cost, status and the `violations/` records for a quick read
 
 ## Codex session criteria
 
-For a Codex run, confirm that every leaf launch has a distinct `thread.started` event as its
-first JSONL line, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
+For a Codex run, confirm that every leaf launch has a distinct `thread.started` event (on
+codex-cli 0.154.0 it is the first JSONL line; the conductor requires only that one arrives
+before EOF), and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
 terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing or conflicting
 thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
 place; it is not a Claude-style fork.
