@@ -9086,19 +9086,38 @@ class PhaseCertificationTests(unittest.TestCase):
 
     def test_the_validator_clause_runs_last(self) -> None:
         """Precedence: every earlier refusal keeps its reason, and the (expensive) validator
-        is not consulted for an IR the cheaper clauses already refused."""
+        is not consulted for an IR the cheaper clauses already refused. Three earlier clauses,
+        three probes: the meta (revoked), the hashes, and the 13a freshness comparison — the
+        last one was missing until round 2, and a mutant moving the validator above freshness
+        survived (the reason would then read `ir_rejected_by_current_validator` where the
+        RUNBOOK table sends the operator to `resolution_stale`'s remedy)."""
+        import contextlib
+
+        def _revoked(repo, refs):
+            ort._revoke_stage_meta(repo, repo / refs["ir_meta"], reason="r",
+                                   trigger_agent_run_id="t")
+            return contextlib.nullcontext()
+
+        def _tampered(repo, refs):
+            (repo / refs["ir_ref"] / "spec.ir.yaml").write_text("tampered: yes\n",
+                                                                encoding="utf-8")
+            return contextlib.nullcontext()
+
+        def _stale_freshness(repo, refs):
+            return patch.object(ort, "_dependency_resolution_freshness",
+                                return_value=(False, "closure moved"))
+
         for mutate, expected in (
-            (lambda repo, refs: ort._revoke_stage_meta(
-                repo, repo / refs["ir_meta"], reason="r", trigger_agent_run_id="t"), "revoked"),
-            (lambda repo, refs: (repo / refs["ir_ref"] / "spec.ir.yaml").write_text(
-                "tampered: yes\n", encoding="utf-8"), "artifact_hash_mismatch:"),
+            (_revoked, "revoked"),
+            (_tampered, "artifact_hash_mismatch:"),
+            (_stale_freshness, "resolution_stale:closure moved"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._certified(repo, through="compile")
-                mutate(repo, refs)
-                with patch.object(ort, "_certified_ir_violations",
-                                  side_effect=AssertionError("must not run")):
+                with mutate(repo, refs), \
+                        patch.object(ort, "_certified_ir_violations",
+                                     side_effect=AssertionError("must not run")):
                     self.assertTrue(self._reason(repo, "compile").startswith(expected))
 
     def test_a_validator_exception_is_a_refusal_not_a_raise(self) -> None:
