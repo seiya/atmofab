@@ -137,11 +137,16 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # repo_root, not bwrap's auto-created mountpoint parents (a deleted `--tmpfs`
             # still gives a cwd whose only entry is `workspace`, and a write there still
             # never reaches the host — this line is what tells the two apart).
-            import os
+            # The last matching entry is the visible one for a stacked point; mountinfo
+            # octal-escapes a space / tab / newline / backslash in the path fields, so
+            # decode before comparing (the checkout under `tools/` is hidden here, so this
+            # cannot reuse `_mount_table`'s decoder; it is the same one).
+            import os, re
             fstype = "none"
             for line in open("/proc/self/mountinfo"):
                 fields = line.split()
-                if fields[4] == os.getcwd():
+                point = re.sub(r"\\\\([0-7]{{3}})", lambda m: chr(int(m.group(1), 8)), fields[4])
+                if point == os.getcwd():
                     fstype = fields[fields.index("-") + 1]
             print("CWD_MOUNT:" + fstype, flush=True)
             # tmp scratch (workspace/tmp/<arid>) is bound rw, and so is the profile's tmp_dir
@@ -382,7 +387,8 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             probe = (
                 "from pathlib import Path\\n"
                 "for tag, rel in (('DIALOG', 'workspace/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl'),"
-                " ('TOOLS', 'tools/validate_pipeline_semantics.py')):\\n"
+                " ('TOOLS', 'tools/validate_pipeline_semantics.py'),"
+                " ('UNDER_REPO', 'alias2/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl')):\\n"
                 "    print(tag + ':' + ('READABLE' if Path(rel).exists() else 'HIDDEN'), flush=True)\\n")
             import subprocess
             res = subprocess.run(
@@ -452,8 +458,14 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         walk only sees ancestors), and a bind mount of that tree BELOW a real root
         (`~/tools/alias`). Both printed the planted dialogs before the mount-table
         comparison landed (measured under a nested bwrap). Control: the same root with no
-        mount is accepted. The three EXEMPT-root rows are issue #227's round 1: the same
-        bind below a root the spelling exemption used to skip entirely."""
+        mount is accepted. The EXEMPT-root rows are issue #227's rounds 1 and 2: the same
+        bind below a root the spelling exemption used to skip entirely; then the two
+        layouts that told a rule keyed on the mount point's PATH apart from one keyed on
+        where the checkout APPEARS (a checkout that is a bind of a tree under the root, a
+        foreign mount between the root and the checkout), the bind-of-the-root shape the
+        second rule must still catch, and a stacked mount (`_fs_identity` read the hidden
+        bottom entry). The accepted exempt rows also observe the probe under the rendered
+        profile: the dialogs stay hidden at the checkout's path and under it."""
         with tempfile.TemporaryDirectory() as t:
             d = Path(t).resolve()
             home = d / "home" / "user"
@@ -479,12 +491,30 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # checkout's path is covered by the tmpfs and stays accepted.
             work = home / "work"
             exempt_repo = work / "atmofab"
-            (exempt_repo / "workspace" / "orchestrations").mkdir(parents=True)
+            exempt_dialogs = exempt_repo / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            exempt_dialogs.mkdir(parents=True)
+            (exempt_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
             (work / "alias").mkdir()
+            (work / "innocuous").mkdir()
             (exempt_repo / "alias2").mkdir()
             (work / "npm" / "bin").mkdir(parents=True)
             (work / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
             (work / "npm" / "bin" / "cli-sim").chmod(0o755)
+            # Round 2's two layouts. A checkout that is ITSELF a bind of a tree under the
+            # exempt root (`~/work/src/atmofab` bound at `~/work/atmofab`, the workflow
+            # started from the bind): its physical source sits beside it under the root, and a
+            # rule keyed on the mount point's path accepted it while the rendered profile
+            # exposed the source. And a foreign mount BETWEEN the root and the checkout (a
+            # data disk at `~/work/proj` holding `~/work/proj/atmofab`): the same rule refused
+            # it, although the checkout appears only at its own path there.
+            src_repo = work / "src" / "atmofab"
+            (src_repo / "workspace").mkdir(parents=True)
+            (src_repo / "tools").mkdir()
+            disk = d / "disk"
+            (disk / "atmofab" / "workspace").mkdir(parents=True)
+            (work / "proj").mkdir()
+            proj_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                          str(work / "proj" / "atmofab")]
             exempt_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
                             str(exempt_repo)]
             cases = [
@@ -494,6 +524,19 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 ("no mount (control)", child, [], tools / "bin", "ACCEPTED"),
                 ("exempt root, bind below it outside the checkout", exempt_child,
                  [(exempt_repo / "workspace", work / "alias")], work / "npm" / "bin", "REFUSED"),
+                # Stacked: an innocuous tree first, the hidden tree ON TOP at the same point.
+                # `_fs_identity` used to read the bottom entry (round 2).
+                ("exempt root, hidden tree stacked over an innocuous mount", exempt_child,
+                 [(work / "innocuous", work / "alias"), (exempt_repo / "workspace", work / "alias")],
+                 work / "npm" / "bin", "REFUSED"),
+                ("exempt root, checkout is a bind of a tree under the root", exempt_child,
+                 [(src_repo, exempt_repo)], work / "npm" / "bin", "REFUSED"),
+                ("exempt root, bind of the root itself with the checkout spelled through it",
+                 proj_child, [(work, work / "proj")], work / "npm" / "bin", "REFUSED"),
+                ("exempt root, foreign mount between root and checkout (control)", proj_child,
+                 [(disk, work / "proj")], work / "npm" / "bin", "ACCEPTED"),
+                ("exempt root, checkout bound onto itself (control)", exempt_child,
+                 [(exempt_repo, exempt_repo)], work / "npm" / "bin", "ACCEPTED"),
                 ("exempt root, bind under the checkout's own path (control)", exempt_child,
                  [(exempt_repo / "workspace", exempt_repo / "alias2")], work / "npm" / "bin",
                  "ACCEPTED"),
@@ -509,6 +552,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                     self.assertTrue(res.stdout.startswith(expected), res.stdout)
                     if expected == "REFUSED":
                         self.assertIn("carries a mount", res.stdout)
+                    elif argv is exempt_child:
+                        # An accepted exempt layout is only right if the rendered profile
+                        # then hides the planted dialogs at every name the probe can reach:
+                        # the checkout's own path and the mount under it.
+                        self.assertIn("DIALOG:HIDDEN", res.stdout, res.stdout)
+                        self.assertIn("UNDER_REPO:HIDDEN", res.stdout, res.stdout)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
         self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)

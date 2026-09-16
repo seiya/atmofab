@@ -8050,7 +8050,11 @@ def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple
 
     The mount whose point is the longest prefix of `physical` owns it; a bind mount reports
     the SOURCE subtree it was taken from as its root-within-device, which is what makes two
-    mount points of one subtree comparable. None when no entry covers the path.
+    mount points of one subtree comparable. None when no entry covers the path. Among
+    STACKED mounts at one point the LAST entry wins (`>=`): mountinfo lists them in mount
+    order and the visible one is the most recent — with `>` the comparison read the hidden
+    bottom mount, so a checkout subtree mounted on top of an innocuous one at the same point
+    passed (issue #227 round 2, measured under real bwrap).
     """
     best: tuple[str, Path] | None = None
     best_len = -1
@@ -8058,7 +8062,7 @@ def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple
         point_path = Path(point)
         if not physical.is_relative_to(point_path):
             continue
-        if len(point_path.parts) > best_len:
+        if len(point_path.parts) >= best_len:
             best_len = len(point_path.parts)
             best = (device, Path(root_within) / physical.relative_to(point_path))
     return best
@@ -8095,10 +8099,15 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     accepted control row of `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`).
     It is NOT exempt from the mount table: a bind mount of the checkout's subtree BELOW an
     exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/atmofab`,
-    with the CLI under `~/work`) is carried in by the recursive ro-bind with nothing on top,
-    so only the mount points at or under the checkout's path are skipped for such a root
-    (issue #227 round 1, measured readable before this; pinned by the exempt rows of
-    `test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused`). Same
+    with the CLI under `~/work`) is carried in by the recursive ro-bind with nothing on top
+    (issue #227 round 1, measured readable by the review before the table ran for such
+    roots). The comparison is keyed on WHERE THE CHECKOUT APPEARS through each mount, the
+    root's own identity included, and refuses unless that place is at or under the
+    checkout's path (round 2: a rule keyed on the mount POINT's path both missed a checkout
+    that is itself a bind of a tree under the root — its source exposed beside it — and
+    refused a foreign mount BETWEEN the root and the checkout, which exposes the checkout
+    only at its own path). Pinned by the exempt rows of
+    `test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused`. Same
     shape as the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
@@ -8116,37 +8125,51 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
         return (repo_identity[1].is_relative_to(identity[1])
                 or identity[1].is_relative_to(repo_identity[1]))
 
-    def _refuse_mounts_below(root: str, physical: Path, *, exempt: bool) -> None:
-        # Every mount point strictly below the root (and, for a non-exempt root, the root
-        # itself). For an EXEMPT root — one whose spelling contains the checkout — the root
-        # and every mount point at or under the checkout's own path are skipped: the tmpfs
-        # is emitted at that path and covers them. A mount point below the root and OUTSIDE
-        # the checkout's path that carries the checkout's subtree is a second name the tmpfs
-        # does not cover, exempt root or not (issue #227 round 1: measured readable before
-        # this branch ran for exempt roots).
-        mounts_under = [Path(point) for point, _dev, _root in table
-                        if Path(point).is_relative_to(physical) and Path(point) != physical]
-        if not exempt:
-            mounts_under.insert(0, physical)
+    def _refuse_mounts_below(root: str, spelled: Path, physical: Path) -> None:
+        # The root's own identity and every mount point strictly below it. bwrap binds the
+        # root's SOURCE tree at the root's SPELLED path, recursively, so a subtree found at
+        # host path P under `physical` appears in the sandbox at `spelled / P.relative_to(
+        # physical)`. For each overlapping mount, compute where the CHECKOUT'S OWN subtree
+        # appears through it, and refuse unless that place is at or under `resolved_repo`
+        # — the one path the tmpfs covers. Keyed on where the checkout APPEARS rather than
+        # on where the mount point IS (issue #227 round 2): a mount between the root and the
+        # checkout (a data disk at `~/work/proj` holding `~/work/proj/atmofab`) exposes it
+        # only at its own path and is accepted; a checkout that is itself a bind of a tree
+        # under the root (`~/work/src/atmofab` bound at `~/work/atmofab`) exposes its source
+        # at `~/work/src/atmofab` and is refused; a bind of the root itself below the root,
+        # with the checkout spelled through the bind, exposes it at the root's own path and
+        # is refused. Both directions of overlap: a mount whose subtree CONTAINS the checkout
+        # shows it at `<appears>/<checkout within the subtree>`; a mount whose subtree lies
+        # INSIDE the checkout shows that part at the mount's own place.
+        mounts_under = [physical, *(Path(point) for point, _dev, _root in table
+                                    if Path(point).is_relative_to(physical) and Path(point) != physical)]
         for mounted in mounts_under:
-            if exempt and (mounted == resolved_repo or mounted.is_relative_to(resolved_repo)):
+            identity = _fs_identity(mounted, table)
+            if identity is None or repo_identity is None or not _overlaps(identity):
                 continue
-            if not _overlaps(_fs_identity(mounted, table)):
+            appears_base = spelled / mounted.relative_to(physical)
+            if repo_identity[1].is_relative_to(identity[1]):
+                appears = appears_base / repo_identity[1].relative_to(identity[1])
+            else:
+                appears = appears_base
+            if appears == resolved_repo or appears.is_relative_to(resolved_repo):
                 continue
             raise ValueError(
                 f"backend install root {root!r} carries a mount ({mounted}) of the same "
-                f"filesystem subtree as the checkout {resolved_repo}, under a path the "
-                "sandbox does not overlay (a bind mount gives it the second name); move the "
-                "CLI (or its wrapper) out of that tree, or spell HOME and the PATH entry the "
-                "way the checkout is spelled, so the root's own path contains it"
+                f"filesystem subtree as the checkout {resolved_repo}, through which the "
+                f"checkout appears at {appears} inside the sandbox, a path the tmpfs at "
+                f"{resolved_repo} does not cover (a bind mount gives it the second name); "
+                "move the CLI (or its wrapper) out of that tree, or remove the second name "
+                "(start the workflow from the path the checkout physically lives at, and "
+                "keep no other mount of it under the root)"
             )
 
     for root in backend_ro:
         spelled = Path(os.path.normpath(root))
         if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
             # Exempt from the inode walks (the root IS an ancestor of the checkout, or lies
-            # inside it, by its own spelling), not from the mount table below it.
-            _refuse_mounts_below(root, Path(os.path.realpath(root)), exempt=True)
+            # inside it, by its own spelling), not from the mount table.
+            _refuse_mounts_below(root, spelled, Path(os.path.realpath(root)))
             continue
         try:
             root_stat = os.stat(root)
@@ -8180,7 +8203,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
                 "move the CLI (or its wrapper) out of the checkout, or reach it through the "
                 "checkout's own path"
             )
-        _refuse_mounts_below(root, physical, exempt=False)
+        _refuse_mounts_below(root, spelled, physical)
 
 
 def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]) -> list[str]:
