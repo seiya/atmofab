@@ -8160,14 +8160,16 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
             appears_base = spelled / mounted.relative_to(physical)
             if repo_identity[1].is_relative_to(identity[1]):
                 appears = appears_base / repo_identity[1].relative_to(identity[1])
+                what = "the checkout"
             else:
                 appears = appears_base
+                what = f"the checkout's {identity[1].relative_to(repo_identity[1])}"
             if appears == resolved_repo or appears.is_relative_to(resolved_repo):
                 continue
             raise ValueError(
                 f"{label} {root!r} carries a mount ({mounted}) of the same "
-                f"filesystem subtree as the checkout {resolved_repo}, through which the "
-                f"checkout appears at {appears} inside the sandbox, a path the tmpfs at "
+                f"filesystem subtree as the checkout {resolved_repo}, through which "
+                f"{what} appears at {appears} inside the sandbox, a path the tmpfs at "
                 f"{resolved_repo} does not cover (a bind mount gives it the second name); "
                 "move the CLI (or its wrapper) out of that tree, or remove the second name "
                 "(start the workflow from the path the checkout physically lives at, and "

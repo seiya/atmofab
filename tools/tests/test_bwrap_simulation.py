@@ -366,7 +366,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         from pathlib import Path
         sys.path.insert(0, sys.argv[1])
         import tools.orchestration_runtime as ort
-        d = Path(sys.argv[2]); home = d / "home" / "user"
+        d = Path(sys.argv[2]); home = Path(sys.argv[5]) if len(sys.argv) > 5 else d / "home" / "user"
         repo = Path(sys.argv[3]); path_dir = sys.argv[4]
         os.environ["HOME"] = str(home)
         os.environ["PATH"] = f"{path_dir}:" + os.environ["PATH"]
@@ -513,7 +513,26 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             (src_repo / "workspace").mkdir(parents=True)
             (src_repo / "tools").mkdir()
             disk = d / "disk"
-            (disk / "atmofab" / "workspace").mkdir(parents=True)
+            disk_dialogs = disk / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            disk_dialogs.mkdir(parents=True)
+            (disk_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            # Round 4: the legitimate half of the system-directory rule — a checkout that
+            # physically lives under `/usr/local/src` (with `$HOME` there too) and is started
+            # from that path is exempt by spelling for `/usr`, like any install root, and the
+            # tmpfs covers it. Without this row a mutant that never exempts a system directory
+            # stayed green while refusing that launch with a false remedy.
+            sys_layout = d / "sys_layout"
+            sys_home = sys_layout / "home" / "user"
+            sys_dialogs = sys_home / "work" / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            sys_dialogs.mkdir(parents=True)
+            (sys_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            (sys_home / "work" / "npm" / "bin").mkdir(parents=True)
+            (sys_home / "work" / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (sys_home / "work" / "npm" / "bin" / "cli-sim").chmod(0o755)
+            sys_prefix = Path("/usr/local/src") / "home" / "user"
+            sys_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                         str(sys_prefix / "work" / "atmofab"), str(sys_prefix / "work" / "npm" / "bin"),
+                         str(sys_prefix)]
             (work / "proj").mkdir()
             proj_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
                           str(work / "proj" / "atmofab")]
@@ -568,11 +587,15 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 # this is the row that sees it.
                 ("exempt root, a separate filesystem mounted under it (control)", exempt_child,
                  [], work / "npm" / "bin", "ACCEPTED", [work / "data"]),
+                ("checkout and HOME physically under /usr/local/src, started there (control)",
+                 sys_child, [(sys_layout, Path("/usr/local/src"))], None, "ACCEPTED"),
             ]
             for label, argv, binds, path_dir, expected, *tmpfs in cases:
                 with self.subTest(case=label):
                     outer = self._outer_bwrap(binds, tmpfs[0] if tmpfs else [])
-                    res = subprocess.run([*outer, "--", *argv, str(path_dir)],
+                    # `sys_child` carries its own path_dir and HOME (both under the bind).
+                    tail = [] if path_dir is None else [str(path_dir)]
+                    res = subprocess.run([*outer, "--", *argv, *tail],
                                          capture_output=True, text=True, timeout=120,
                                          check=False)  # the exit code is asserted below
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -582,10 +605,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                         # The refusal names WHICH bind set carried the second name.
                         self.assertIn("system directory bound read-only" if "/usr/local/src" in label
                                       else "backend install root", res.stdout, res.stdout)
-                    elif argv is exempt_child:
-                        # An accepted exempt layout is only right if the rendered profile
-                        # then hides the planted dialogs at every name the probe can reach:
-                        # the checkout's own path and the mount under it.
+                    else:
+                        # An accepted layout is only right if the rendered profile then
+                        # hides the planted dialogs at every name the probe can reach: the
+                        # checkout's own path and the mount under it. (`child`'s own layout
+                        # plants nothing, so its control prints HIDDEN vacuously; every other
+                        # accepted row has `PRODUCER REASONING` planted at the checkout.)
                         self.assertIn("DIALOG:HIDDEN", res.stdout, res.stdout)
                         self.assertIn("UNDER_REPO:HIDDEN", res.stdout, res.stdout)
 

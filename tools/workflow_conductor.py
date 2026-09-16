@@ -3981,8 +3981,9 @@ class Conductor:
                                        timeout_context=timeout_context)
         argv = self.leaf_command(
             entry, session_id=session_id, resume_session_id=resume_session_id)
-        # Wrap the leaf in the bwrap sandbox that record-launch already built (repo
-        # read-only; writes confined to the child's write_roots + workspace/tmp).
+        # Wrap the leaf in the bwrap sandbox that record-launch already built (no checkout
+        # in it at all — an empty tmpfs at repo_root, issue #227 — and only the leaf's own
+        # scratch roots under it writable).
         # record-launch records sandbox_enforced=True for every backend, so applying it
         # here makes that record true (the conductor leaf is otherwise unconfined).
         # Applies to both claude and codex — both get a profile at launch. EVERY leaf now has
