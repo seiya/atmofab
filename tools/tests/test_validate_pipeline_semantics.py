@@ -429,7 +429,6 @@ def _create_minimal_execution_tree(
             "raw_requirements": {
                 "required_evidence": [
                     {"artifact": "metrics_basis.json", "required": True},
-                    {"artifact": "execution_trace.json", "required": True},
                     {
                         "artifact": "state_snapshots",
                         "required": True,
@@ -523,7 +522,6 @@ def _create_minimal_execution_tree(
     if metrics_basis is None:
         metrics_basis = {"basis": 2.0}
     _write_json(raw_dir / "metrics_basis.json", metrics_basis)
-    _write_json(raw_dir / "execution_trace.json", {"trace": ["step1", "step2"]})
     _write_json(
         snapshots_dir / "snapshot_schema.json",
         {
@@ -594,7 +592,7 @@ def _create_minimal_execution_tree(
                 }
             },
             "runner_command": "./simulate",
-            "process_trace_ref": f"workspace/{(raw_dir / 'execution_trace.json').relative_to(workspace).as_posix()}",
+            "process_trace_ref": f"workspace/{log_path.relative_to(workspace).as_posix()}",
             "raw_artifact_refs": [
                 f"workspace/{(raw_dir / 'metrics_basis.json').relative_to(workspace).as_posix()}",
                 f"workspace/{(snapshots_dir / 'snapshot000.json').relative_to(workspace).as_posix()}",
@@ -711,7 +709,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 "runner_ref": f"workspace/{(src_dir / 'shallow_water2d_runner.f90').relative_to(workspace).as_posix()}",
                 "raw_refs": [
                     f"workspace/{(raw_dir / 'metrics_basis.json').relative_to(workspace).as_posix()}",
-                    f"workspace/{(raw_dir / 'execution_trace.json').relative_to(workspace).as_posix()}",
                 ],
             },
             "findings": [],
@@ -1090,7 +1087,6 @@ end program shallow_water2d_runner
             "raw_requirements": {
                 "required_evidence": [
                     {"artifact": "metrics_basis.json", "required": True},
-                    {"artifact": "execution_trace.json", "required": True},
                     {
                         "artifact": "state_snapshots",
                         "required": True,
@@ -1528,14 +1524,14 @@ end program shallow_water2d_runner
             )
             self.assertEqual({"run_test_001"}, {e.exec_dir.name for e in scoped})
 
-    def test_required_raw_evidence_execution_trace_is_ir_driven(self) -> None:
-        """RC1: execution_trace.json must be IR-driven, not a fixed default.
+    def test_required_raw_evidence_set_is_ir_driven_with_metrics_basis_baseline(self) -> None:
+        """The required raw-evidence set is IR-driven; metrics_basis.json is the only baseline.
 
-        When the IR's raw_requirements does not declare execution_trace, it must
-        NOT be required (so a node whose IR is silent about it passes without a
-        spurious "raw/execution_trace.json: missing"). Declaring it required:true
-        in the IR must still re-mandate it. metrics_basis.json stays as the
-        baseline requirement either way.
+        An IR that declares only metrics_basis.json requires nothing else (no fixed
+        minimal set is imposed, phase_04_validate.md "The required composition of the
+        primary evidence"); declaring state_snapshots required:true adds it. Both
+        halves read `_required_raw_evidence` directly, so what is pinned is the set
+        it returns, not the missing-file violation `_validate_raw_evidence` derives.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1565,7 +1561,23 @@ end program shallow_water2d_runner
 
             spec_ir_path = ir_dir / "spec.ir.yaml"
 
-            # IR silent about execution_trace -> not required; baseline kept.
+            # IR declares only the baseline -> nothing beyond metrics_basis.json.
+            _write_json(
+                spec_ir_path,
+                {
+                    "io_contract": {
+                        "raw_requirements": {
+                            "required_evidence": [
+                                {"artifact": "metrics_basis.json", "required": True},
+                            ]
+                        }
+                    }
+                },
+            )
+            required = _required_raw_evidence(repo_root, execution)
+            self.assertEqual({"metrics_basis.json"}, required)
+
+            # IR declares state_snapshots required -> added; baseline kept.
             _write_json(
                 spec_ir_path,
                 {
@@ -1584,25 +1596,7 @@ end program shallow_water2d_runner
                 },
             )
             required = _required_raw_evidence(repo_root, execution)
-            self.assertNotIn("execution_trace.json", required)
-            self.assertIn("metrics_basis.json", required)
-
-            # IR explicitly declares execution_trace required -> re-mandated.
-            _write_json(
-                spec_ir_path,
-                {
-                    "io_contract": {
-                        "raw_requirements": {
-                            "required_evidence": [
-                                {"artifact": "metrics_basis.json", "required": True},
-                                {"artifact": "execution_trace.json", "required": True},
-                            ]
-                        }
-                    }
-                },
-            )
-            required = _required_raw_evidence(repo_root, execution)
-            self.assertIn("execution_trace.json", required)
+            self.assertEqual({"metrics_basis.json", "state_snapshots"}, required)
 
     def test_snapshot_state_variables_scoped_to_per_case_evidence(self) -> None:
         """A state_snapshot file is only required to carry the raw variables its
@@ -8214,7 +8208,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {"artifact": "state_snapshots", "required": False},
                         ]
                     },
@@ -8277,7 +8270,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                         ]
                     },
                 },
@@ -8648,7 +8640,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                         ]
                     },
                 },
@@ -8739,7 +8730,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -8860,7 +8850,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -8939,7 +8928,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -9649,6 +9637,170 @@ end program shallow_water2d_runner
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("must be one of" in v and "ghost_cells" in v for v in violations))
 
+    def test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy(self) -> None:
+        """Issue #235: `execution_trace.json` sat in the `required_evidence[].artifact` enum
+        while no Generate contract produced it, so an IR that chose it passed
+        `Compile.static` and failed closed at `Validate.execute` (`raw/execution_trace.json:
+        missing`) after a full Compile/Generate/Build. The token is retired from the
+        vocabulary: a `required_evidence[]` entry naming it is refused by the enum (its
+        `required` value does not matter), and an `evidence_ref` naming it — an open
+        vocabulary otherwise, so only this retired token is refused there — is refused by
+        name. Each refusal carries the routing remedy the leaf needs to converge on a warm
+        retry. Two pins, in order: the remedy tail read out of the validator's output must
+        equal the expected literal (rewording it in the validator reddens HERE), and that
+        tail — the validator's, not the literal — must occur in the phase contract the leaf
+        reads (`docs/workflow/phases/phase_01_compile.md`; dropping or rewording the sentence
+        there reddens here). The enum-side and `evidence_ref`-side messages each carry the
+        remedy; the split is on the `; ` before it for the enum and on `produces; ` for the
+        ref, so neither pin is satisfied by the other message."""
+        from tools.validate_pipeline_semantics import RAW_EVIDENCE_ARTIFACTS
+
+        self.assertNotIn("execution_trace.json", RAW_EVIDENCE_ARTIFACTS)
+        # Upper case + a backslash separator: the same spelling rule the enum applies.
+        output_token = "RAW\\Execution_Trace.JSON"
+
+        def _violations(required: bool) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text="""module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+""",
+                    runner_text="""program shallow_water2d_runner
+implicit none
+write(*,*) 'diagnostics only'
+end program shallow_water2d_runner
+""",
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                    io_contract={
+                        "inputs": [
+                            {"name": "case_resolved", "evidence_ref": "spec.ir.yaml"},
+                            {"name": "topography_profile", "evidence_ref": "raw/execution_trace.json"},
+                        ],
+                        "outputs": [
+                            {
+                                "name": "metric",
+                                "shape_expr": "scalar",
+                                "evidence_ref": output_token,
+                            }
+                        ],
+                        "semantic_dependency": {"required_sources": []},
+                        "raw_requirements": {
+                            "required_evidence": [
+                                {"artifact": "metrics_basis.json", "required": True},
+                                {"artifact": "execution_trace.json", "required": required},
+                            ]
+                        },
+                    },
+                )
+                return validate(repo_root=repo_root, workspace_root="workspace")
+
+        violations = _violations(required=True)
+        enum_hits = [v for v in violations if "required_evidence[1].artifact 'execution_trace.json' must be one of" in v]
+        self.assertEqual(1, len(enum_hits), violations)
+        self.assertIn("['metrics_basis.json', 'state_snapshots']", enum_hits[0])
+        # The enum message says the members and then the remedy; split on the separator.
+        enum_remedy = enum_hits[0].split("]; ", 1)[1]
+        self.assertEqual(
+            "a per-case runtime value (an enumerated or string input included) is a "
+            "state_snapshots variable with shape_expr: scalar, a per-run aggregate is a "
+            "metrics_basis.json key",
+            enum_remedy,
+        )
+        input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
+        output_hits = [v for v in violations if f"io_contract.outputs[0].evidence_ref {output_token!r} names no raw-evidence artifact the workflow produces; " in v]
+        self.assertEqual(1, len(input_hits), violations)
+        self.assertEqual(1, len(output_hits), violations)
+        for hit in (input_hits[0], output_hits[0]):
+            self.assertEqual(enum_remedy, hit.split("produces; ", 1)[1])
+        # A retired token is refused whatever its `required` value: `required: false` is
+        # not a way to keep naming an artifact the workflow does not produce.
+        self.assertTrue(any("required_evidence[1].artifact 'execution_trace.json' must be one of" in v for v in _violations(required=False)))
+
+        contract = (Path(__file__).resolve().parents[2] / "docs" / "workflow" / "phases" / "phase_01_compile.md").read_text(encoding="utf-8")
+        self.assertIn(enum_remedy, contract)
+        self.assertIn("naming `raw/execution_trace.json` is a `fail`", contract)
+        self.assertIn("or the retired `execution_trace.json` — is a `fail` whatever its `required` value", contract)
+
+    def test_string_valued_scalar_snapshot_variable_passes_post_execute(self) -> None:
+        """The premise behind retiring `execution_trace.json` (issue #235): an enumerated or
+        string runtime input needs no evidence form of its own, because a JSON string is a
+        scalar to the snapshot shape gate. Driven through `_validate_raw_evidence` via the
+        full validator over the default fixture with one string-valued variable added to the
+        IR schema, the on-disk `snapshot_schema.json` and the case file: the tree still
+        validates clean. The control below plants the same variable as a one-element list,
+        which is shape `[1]` and is refused — so a clean result above is the gate passing
+        the string, not the gate not looking."""
+        def _violations(value: object) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text="""module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+""",
+                    runner_text="""program shallow_water2d_runner
+implicit none
+write(*,*) 'diagnostics only'
+end program shallow_water2d_runner
+""",
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                )
+                workspace = repo_root / "workspace"
+                ir_path = (
+                    workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                    / "shallow-water2d_20260415_001" / "spec.ir.yaml"
+                )
+                ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+                entry = next(
+                    e for e in ir_doc["io_contract"]["raw_requirements"]["required_evidence"]
+                    if e["artifact"] == "state_snapshots"
+                )
+                entry["schema"]["variables"].append(
+                    {"name": "topography_profile", "shape_expr": "scalar"}
+                )
+                _write_json(ir_path, ir_doc)
+                snapshots_dir = (
+                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0"
+                    / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                    / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots"
+                )
+                schema_path = snapshots_dir / "snapshot_schema.json"
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                schema["variables"].append({"name": "topography_profile", "shape_expr": "scalar"})
+                _write_json(schema_path, schema)
+                case_path = snapshots_dir / "snapshot000.json"
+                case = json.loads(case_path.read_text(encoding="utf-8"))
+                case["topography_profile"] = value
+                _write_json(case_path, case)
+                return validate(repo_root=repo_root, workspace_root="workspace")
+
+        self.assertEqual([], _violations("flat"))
+        control = _violations(["flat"])
+        self.assertTrue(
+            any("topography_profile shape [1] does not match declared shape_expr scalar" in v for v in control),
+            control,
+        )
+
     def test_detects_snapshot_output_shape_mismatch_inside_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -9688,7 +9840,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -9759,7 +9910,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -10008,7 +10158,6 @@ end program shallow_water2d_runner
                     "raw_requirements": {
                         "required_evidence": [
                             {"artifact": "metrics_basis.json", "required": True},
-                            {"artifact": "execution_trace.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -10865,7 +11014,6 @@ end program shallow_water2d_runner
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {"required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
-                {"artifact": "execution_trace.json", "required": True},
                 {"artifact": "state_snapshots", "required": True, "min_samples": 1,
                  "schema": {"variables": [{"name": "h", "shape_expr": "[2,2]"},
                                           {"name": "hu", "shape_expr": "[2,2]"},

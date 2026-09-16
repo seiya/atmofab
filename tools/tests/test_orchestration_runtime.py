@@ -21630,7 +21630,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # takes that reading. The rule is stated in the form the gate applies, with both refusal
         # messages, and `test_validate_pipeline_semantics.py` pins the document to the gate's
         # own message text.
-        "docs/workflow/phases/phase_01_compile.md": 71960,
+        # Bumped 71960->72250 (issue #235) — measured 72104 with `wc -c` in /home/seiya/atmofab
+        # at the commit that takes this bump, plus this entry's ~150 B slack rule. The enum
+        # LOST a member (`execution_trace.json`, which no Generate contract produced, so an IR
+        # that chose it failed closed at `Validate.execute` after a full Compile/Generate/Build)
+        # and the document grew anyway: the refusal a compile leaf now receives at
+        # `Compile.static` carries a routing remedy, and that remedy is stated here in the
+        # gate's own words so a warm retry converges on it —
+        # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` pins
+        # the two spellings together.
+        "docs/workflow/phases/phase_01_compile.md": 72250,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

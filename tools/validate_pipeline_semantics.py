@@ -56,6 +56,7 @@ try:
         metrics_basis_entries as _metrics_basis_entries,
         metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
+        normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     # PURE_PROMPT_SENTINEL is IMPORTED (not copy-pasted like SLIM_REPAIR_PROMPT_SENTINEL): the
     # Z2 pure sentinel has a single source in tools/pure_leaf so orchestration_runtime, the
@@ -97,6 +98,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         metrics_basis_entries as _metrics_basis_entries,
         metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
+        normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     from tools.pure_leaf import (
         PURE_PROMPT_CONTRACT_VERSION,
@@ -121,9 +123,24 @@ LLM_REVIEW_FILENAME = "semantic_review.json"
 FORTRAN_IDENTIFIER_PATTERN = re.compile(r"[a-z_][a-z0-9_]*")
 RAW_EVIDENCE_ARTIFACTS = {
     "metrics_basis.json",
-    "execution_trace.json",
     "state_snapshots",
 }
+# Where a runtime value goes when an IR reaches for a raw-evidence artifact the
+# workflow does not produce. Stated once here and cited by phase_01_compile.md
+# (`evidence_ref` bullet) so a warm retry converges on the same routing the
+# contract states; `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy`
+# pins the two spellings together.
+RAW_EVIDENCE_ROUTING_REMEDY = (
+    "a per-case runtime value (an enumerated or string input included) is a "
+    "state_snapshots variable with shape_expr: scalar, a per-run aggregate is a "
+    "metrics_basis.json key"
+)
+# The one raw-evidence token an IR used to be able to name that no Generate contract
+# produces (issue #235). `evidence_ref` is an open vocabulary (`raw/diagnostics`,
+# `diagnostics.json`, `perf.json` are all in use), so it is not closed to an enum;
+# only the retired token is refused, by name, so a leaf that reaches for it is
+# redirected at Compile instead of failing closed at Validate.execute.
+RETIRED_RAW_EVIDENCE_ARTIFACTS = {"execution_trace.json"}
 ALGORITHM_EXECUTION_MODES = {"sequence", "conditional", "iterative", "columnwise"}
 # The converse of the `iterative => non-empty iteration_contract` coupling, as a CLOSED set of
 # keys rather than "non-empty under a non-repeating mode". A survey of the 184 spec.ir.yaml in the
@@ -3667,7 +3684,7 @@ def _subtree_has_any_file(root: Path) -> bool:
     output placement — regardless of filename. Detecting content generally
     (rather than a fixed marker set) covers every documented output: diagnostics
     / perf / verdict / summary / semantic_review / trial_meta / quality_check /
-    validate_meta, raw evidence (metrics_basis, execution_trace, state_snapshots,
+    validate_meta, raw evidence (metrics_basis, state_snapshots,
     snapshot_schema), stdout/stderr logs, and command_log — plus any future
     additions. Recursive so legacy nested ``<kind>/<spec>/`` layouts are caught.
     """
@@ -4214,8 +4231,6 @@ def _validate_raw_evidence(
     ]
     if "metrics_basis.json" in required_raw_evidence:
         required.append(execution.node_dir / "raw" / "metrics_basis.json")
-    if "execution_trace.json" in required_raw_evidence:
-        required.append(execution.node_dir / "raw" / "execution_trace.json")
     if state_snapshot_required or "state_snapshots" in required_raw_evidence:
         required.append(execution.node_dir / "raw" / "state_snapshots")
     for path in required:
@@ -7495,15 +7510,27 @@ def _raw_requirements_for_execution(
     return raw_requirements
 
 
+def _retired_raw_evidence_artifact(evidence_ref: str) -> str | None:
+    """The retired artifact name an ``evidence_ref`` points at, or None.
+
+    Reads the token through the spelling rule ``normalize_raw_evidence_artifact``
+    applies to a ``required_evidence[].artifact`` and then drops one leading ``raw/``,
+    so the two gates share one normalizer instead of restating it.
+    """
+    normalized = _normalize_raw_evidence_spelling(evidence_ref).removeprefix("raw/")
+    return normalized if normalized in RETIRED_RAW_EVIDENCE_ARTIFACTS else None
+
+
 def _required_raw_evidence(
     repo_root: Path, execution: NodeExecution
 ) -> set[str]:
-    # execution_trace.json is IR-driven: it is required only when the IR's
-    # raw_requirements.required_evidence explicitly declares it
-    # (artifact=execution_trace, required=true). Per phase_04_validate.md:42 the
-    # IR is the canonical source for raw-evidence and a fixed minimal set must
-    # not be imposed uniformly on every spec, so it is intentionally absent from
-    # this default. metrics_basis.json stays as the baseline raw evidence.
+    # The required set is IR-driven: phase_04_validate.md ("The required
+    # composition of the primary evidence uses ... required_evidence as the
+    # canonical source") forbids imposing a fixed minimal set uniformly, so only
+    # metrics_basis.json is the baseline and state_snapshots is added when the
+    # IR declares it. The vocabulary an entry may name is RAW_EVIDENCE_ALIASES
+    # (tools/raw_evidence_excerpt.py); a token outside it normalizes to None
+    # and is skipped here because Compile.static has already refused it.
     required: set[str] = {"metrics_basis.json"}
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     if not isinstance(raw_requirements, dict):
@@ -7638,6 +7665,12 @@ def _validate_io_contract_file(
                     violations.append(
                         f"{contract_path}:io_contract.inputs[{idx}].evidence_ref must be non-empty string"
                     )
+                elif _retired_raw_evidence_artifact(evidence_ref) is not None:
+                    violations.append(
+                        f"{contract_path}:io_contract.inputs[{idx}].evidence_ref {evidence_ref!r} "
+                        f"names no raw-evidence artifact the workflow produces; "
+                        f"{RAW_EVIDENCE_ROUTING_REMEDY}"
+                    )
                 shape_expr = item.get("shape_expr")
                 if shape_expr is not None and (
                     not isinstance(shape_expr, str) or not shape_expr.strip()
@@ -7671,6 +7704,12 @@ def _validate_io_contract_file(
                 if not isinstance(evidence_ref, str) or not evidence_ref.strip():
                     violations.append(
                         f"{contract_path}:io_contract.outputs[{idx}].evidence_ref must be non-empty string"
+                    )
+                elif _retired_raw_evidence_artifact(evidence_ref) is not None:
+                    violations.append(
+                        f"{contract_path}:io_contract.outputs[{idx}].evidence_ref {evidence_ref!r} "
+                        f"names no raw-evidence artifact the workflow produces; "
+                        f"{RAW_EVIDENCE_ROUTING_REMEDY}"
                     )
                 shape_expr = item.get("shape_expr")
                 if shape_expr is not None and (
@@ -7721,7 +7760,7 @@ def _validate_io_contract_file(
         if artifact is None:
             violations.append(
                 f"{contract_path}:raw_requirements.required_evidence[{idx}].artifact {raw_artifact!r} "
-                f"must be one of {sorted(RAW_EVIDENCE_ARTIFACTS)}"
+                f"must be one of {sorted(RAW_EVIDENCE_ARTIFACTS)}; {RAW_EVIDENCE_ROUTING_REMEDY}"
             )
             continue
 

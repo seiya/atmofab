@@ -53,8 +53,6 @@ RAW_EXCERPT_POLICY_VERSION = 1
 RAW_EVIDENCE_ALIASES = {
     "metrics_basis.json": "metrics_basis.json",
     "raw/metrics_basis.json": "metrics_basis.json",
-    "execution_trace.json": "execution_trace.json",
-    "raw/execution_trace.json": "execution_trace.json",
     "state_snapshots": "state_snapshots",
     "raw/state_snapshots": "state_snapshots",
     "raw/state_snapshots/": "state_snapshots",
@@ -66,10 +64,14 @@ RAW_EVIDENCE_ALIASES = {
 _MAX_TEXT_CHARS = 200
 
 
+def normalize_raw_evidence_spelling(token: str) -> str:
+    """The one spelling rule every raw-evidence token reader applies before lookup."""
+    return token.strip().lower().replace("\\", "/")
+
+
 def normalize_raw_evidence_artifact(token: str) -> str | None:
     """The canonical artifact name for an IR spelling, or None when it names none."""
-    normalized = token.strip().lower().replace("\\", "/")
-    return RAW_EVIDENCE_ALIASES.get(normalized)
+    return RAW_EVIDENCE_ALIASES.get(normalize_raw_evidence_spelling(token))
 
 
 # --------------------------------------------------------------------------------------
