@@ -21621,7 +21621,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # compile prompts and still described the AGENTIC path in the present tense to the leaf
         # reading it ("An agentic leaf writes `ir_meta.json` itself"). Three sentences rewritten
         # to address the one leaf there is, ~170 bytes.
-        "docs/workflow/phases/phase_01_compile.md": 70900,
+        # Bumped 70900->71960 (issue #233) — measured 71813 with `wc -c` in /home/seiya/atmofab
+        # at the commit that takes this bump, plus this entry's ~150 B slack rule. The growth is
+        # the single-resolved-shape rule of §V3, which the document had NAMED since `537475dc`
+        # without stating: a compile leaf reading "each element references `variables[].name`
+        # or `time_variable`" listed both on one output and was refused by a `Compile.static`
+        # rule it had not been told — one billed `compile.generate` re-run per node whose author
+        # takes that reading. The rule is stated in the form the gate applies, with both refusal
+        # messages, and `test_validate_pipeline_semantics.py` pins the document to the gate's
+        # own message text.
+        "docs/workflow/phases/phase_01_compile.md": 71960,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
