@@ -168,7 +168,6 @@ workspace/
               raw/
                 state_snapshots/
                 metrics_basis.json
-                execution_trace.json
               verdict.json
               aggregate_verdict.json
               summary.json

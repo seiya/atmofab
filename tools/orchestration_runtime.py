@@ -7227,7 +7227,6 @@ def _allowed_output_paths_for_launch(
                 "stdout.log",
                 "stderr.log",
                 "metrics_basis.json",
-                "execution_trace.json",
                 # MCP `run_program` / `run_quality_checks` side-effect log
                 # (phase_04_validate.md).
                 "command_log.jsonl",

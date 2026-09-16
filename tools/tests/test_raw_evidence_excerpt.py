@@ -500,7 +500,7 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def test_required_false_is_carried(self):
         contract = _contract(raw_requirements={"required_evidence": [
-            {"artifact": "execution_trace.json", "required": False}]})
+            {"artifact": "metrics_basis.json", "required": False}]})
         self.assertFalse(self._rows(contract)[0]["required"])
 
 

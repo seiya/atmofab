@@ -1703,8 +1703,6 @@ def build_launch_request(
                 for cid in case_ids:
                     outs.append(f"{rundir}/raw/state_snapshots/{cid}.json")
                 outs.append(f"{rundir}/raw/state_snapshots/snapshot_schema.json")
-            if "execution_trace.json" in evidence_artifacts:
-                outs.append(f"{rundir}/raw/execution_trace.json")
             outs += [
                 f"{rundir}/stdout.log",
                 f"{rundir}/stderr.log",
@@ -10359,7 +10357,7 @@ clean:
     @staticmethod
     def _required_evidence_artifacts(ir: dict[str, Any]) -> list[str]:
         """IR-declared required raw-evidence artifact types (closed set:
-        metrics_basis.json / execution_trace.json / state_snapshots)."""
+        metrics_basis.json / state_snapshots)."""
         io = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         rr = (io.get("raw_requirements") or {}) if isinstance(io, dict) else {}
         out: list[str] = []
@@ -10372,7 +10370,7 @@ clean:
                               artifacts: list[str]) -> list[str]:
         """Promote the runner's `run/` output to the canonical run node dir.
         Selective per artifact type (NOT a blind copytree): the runner's auxiliary
-        per-case files (e.g. execution_trace_<case>.json) are deterministically dropped.
+        files under raw/ (a per-case debug dump, a scratch log) are deterministically dropped.
         Returns the repo-relative raw_artifact_refs of what was promoted."""
         node_dir.mkdir(parents=True, exist_ok=True)
         for name in ("diagnostics.json", "perf.json"):
@@ -10394,11 +10392,6 @@ clean:
                 for f in sorted((run_tmp / "raw" / "state_snapshots").glob("*.json")):
                     shutil.copy2(f, sdst / f.name)
                     raw_refs.append(f"{node_ref}/raw/state_snapshots/{f.name}")
-            elif art == "execution_trace.json":
-                src = run_tmp / "raw" / "execution_trace.json"
-                if src.exists():
-                    shutil.copy2(src, raw_dst / "execution_trace.json")
-                    raw_refs.append(f"{node_ref}/raw/execution_trace.json")
         return raw_refs
 
     def _author_snapshot_schema(self, ir: dict[str, Any], node_dir: Path) -> str | None:

@@ -125,8 +125,6 @@ def _evidence_artifacts_from_outputs(paths: list[str]) -> tuple[str, ...]:
     arts = []
     if any("/raw/state_snapshots/" in p for p in paths):
         arts.append("state_snapshots")
-    if any(p.endswith("/raw/execution_trace.json") for p in paths):
-        arts.append("execution_trace.json")
     return tuple(arts) or ("state_snapshots",)
 
 
@@ -12249,7 +12247,7 @@ class SnapshotDeliverableGapTest(unittest.TestCase):
             sdir = Path(tmp) / "raw" / "state_snapshots"
             c = self._conductor(Path(tmp))
             self.assertEqual(
-                c._snapshot_deliverable_gap(sdir, ["l0_pass"], ["execution_trace.json"]),
+                c._snapshot_deliverable_gap(sdir, ["l0_pass"], ["metrics_basis.json"]),
                 "")
             # No case_ids -> nothing to require.
             self.assertEqual(
@@ -18055,13 +18053,14 @@ class ExecutePromoterTest(unittest.TestCase):
         snap_outs = snap["allowed_output_paths"]
         self.assertTrue(any("/raw/state_snapshots/a.json" in p for p in snap_outs))
         self.assertTrue(any("snapshot_schema.json" in p for p in snap_outs))
-        self.assertFalse(any("execution_trace.json" in p for p in snap_outs))
 
-        trace = wc.build_launch_request(
-            refs, evidence_artifacts=("execution_trace.json",), **common)
-        trace_outs = trace["allowed_output_paths"]
-        self.assertTrue(any(p.endswith("/raw/execution_trace.json") for p in trace_outs))
-        self.assertFalse(any("/raw/state_snapshots/" in p for p in trace_outs))
+        # metrics_basis.json alone: it is always an allowed output, and no snapshot
+        # path is added for an IR that does not declare state_snapshots.
+        basis = wc.build_launch_request(
+            refs, evidence_artifacts=("metrics_basis.json",), **common)
+        basis_outs = basis["allowed_output_paths"]
+        self.assertTrue(any(p.endswith("/raw/metrics_basis.json") for p in basis_outs))
+        self.assertFalse(any("/raw/state_snapshots/" in p for p in basis_outs))
 
     def test_required_evidence_artifacts(self) -> None:
         c = self._conductor(Path("/tmp/repo"))
@@ -18091,7 +18090,10 @@ class ExecutePromoterTest(unittest.TestCase):
             self.assertTrue((node / "raw" / "state_snapshots" / "caseB.json").exists())
             self.assertIn("node/raw/metrics_basis.json", refs)
 
-    def test_promote_execution_trace_drops_per_case_aux(self) -> None:
+    def test_promote_is_selective_and_drops_runner_aux_files(self) -> None:
+        """Promotion is per artifact type, not a copytree: a file the runner leaves
+        under raw/ that no artifact type names is dropped, and only metrics_basis.json
+        is promoted for an IR that declares nothing beyond it."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18099,13 +18101,14 @@ class ExecutePromoterTest(unittest.TestCase):
             run = repo / "run"
             self._write(run / "diagnostics.json", {"verdict": {"overall": "pass"}})
             self._write(run / "perf.json", {"case_id": "a"})
-            self._write(run / "raw" / "execution_trace.json", {"trace": []})
-            # auxiliary per-case files the runner also emits -> must be DROPPED
-            self._write(run / "raw" / "execution_trace_caseA.json", {"trace": ["a"]})
+            self._write(run / "raw" / "metrics_basis.json", {"x": 1})
+            # an auxiliary file the runner also emits -> must be DROPPED
+            self._write(run / "raw" / "some_aux.json", {"trace": ["a"]})
             node = repo / "node"
-            c._promote_run_evidence(run, node, ["execution_trace.json"])
-            self.assertTrue((node / "raw" / "execution_trace.json").exists())
-            self.assertFalse((node / "raw" / "execution_trace_caseA.json").exists())
+            refs = c._promote_run_evidence(run, node, ["metrics_basis.json"])
+            self.assertTrue((node / "raw" / "metrics_basis.json").exists())
+            self.assertFalse((node / "raw" / "some_aux.json").exists())
+            self.assertEqual(["node/raw/metrics_basis.json"], refs)
 
     def test_author_snapshot_schema_orders_by_ir_case(self) -> None:
         import tempfile
