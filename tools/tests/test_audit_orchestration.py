@@ -830,6 +830,29 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
 
+    def test_a_revoked_projection_on_disk_reaches_the_markdown(self) -> None:
+        """The diagnostics writer and the renderer agree on three key names (`verdict`,
+        `revocation`, `revoked_by`) that each file's own tests assert independently, so a
+        rename at the writer alone left every audit-side test green while the markdown
+        printed `by arid `unrecorded`` (measured, issue #241 round 3). One row drives the seam
+        from files on disk to the rendered line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            (repo / self.SRC / "source_meta.json").write_text(json.dumps({
+                "verification_status": "revoked", "prior_verification_status": "pass",
+                "revocation_reason": "validate_execute_post_execute_violation",
+                "revoked_by_agent_run_id": "0df29820-other-run",
+            }), encoding="utf-8")
+            md = _render_markdown(audit(repo, self.ORCH))
+        self.assertIn(
+            "- `verify`: result=`pass`, verdict=`pass` "
+            "(revoked: `validate_execute_post_execute_violation` by arid `0df29820-other-run`), "
+            "attempts=1",
+            md,
+        )
+        self.assertNotIn("unrecorded", md)
+
     # -- the Z1 compile half (issue #168) ------------------------------------------
     IR_A = f"workspace/ir/{SAFE}/demo_20260907_001"
     IR_B = f"workspace/ir/{SAFE}/demo_20260907_002"
