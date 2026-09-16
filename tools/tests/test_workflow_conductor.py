@@ -585,7 +585,7 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual((d.action, d.target_phase, d.repair_strategy),
                          ("retry", "generate", "reuse"))
         self.assertEqual(d.reason, "gate_syntax_error+lint_findings")
-        # A stale certified dependency IR is TERMINAL — the leaf cannot repair it, so no warm
+        # The node's own stale certified IR is TERMINAL — the leaf cannot repair it, so no warm
         # retry, and it DOMINATES a co-occurring warm category (reachability note: static runs
         # only when lint+syntax passed, so this multi-category input cannot arise in practice —
         # the test defends the classifier's totality).

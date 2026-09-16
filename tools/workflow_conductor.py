@@ -788,7 +788,7 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
       - empty (a FAIL with no parseable category) -> escalate("gate_fail_no_category")
       - any TERMINAL category present             -> fail_closed (dominates a co-occurring warm
                                                      category; the leaf cannot re-author its way
-                                                     out of a stale certified dependency IR)
+                                                     out of its node's stale certified IR)
       - any UNKNOWN category present              -> escalate (a novel category the tables do not
                                                      cover; the diagnostician decides)
       - all categories known + non-terminal       -> retry ("generate", "reuse")
@@ -800,7 +800,7 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
         return RouteDecision("escalate", reason="gate_fail_no_category")
     reason = "gate_" + "+".join(ordered)
     if any(c in GATE_FAILURE_TERMINAL for c in ordered):
-        # No warm retry: a stale certified dependency IR (or any terminal category) is not
+        # No warm retry: the node's own stale certified IR (or any terminal category) is not
         # repairable by re-authoring source. Fail closed so the operator re-certifies instead of
         # exhausting Generate retries. Terminal dominates any co-occurring warm category.
         return RouteDecision("fail_closed", reason=reason)
@@ -10735,9 +10735,10 @@ clean:
             # a snapshot gap next, quality_check last.
             #
             # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
-            # the same remedy. The stale-IR violation has one emit site
-            # (`_validate_generated_signatures`) and one caller
-            # (`_validate_generate_outputs_for_generation`, post_generate only); the
+            # the same remedy. The stale-IR violation has two emit sites, both on the
+            # post_generate path only — `_validate_generated_signatures` (via
+            # `_validate_generate_outputs_for_generation`) and the io_contract wrap in
+            # `_validate_post_generate_stage_impl` (issue #238); the
             # host-authored wrap has one construction site, in that same post_generate caller —
             # post_execute reaches the runner gates through `_validate_runner_outputs`, which is
             # a different caller and does not wrap (issue #112). Both are wired here anyway so
