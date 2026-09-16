@@ -260,7 +260,21 @@ Two follow-through facts worth keeping beside the rule:
   An exemption keyed on a spelling gets the same treatment as the check.
 - **The instrument has its own unpinned direction.** Dropping the device comparison in the
   mount-table overlap test survived the sweep: it only ever REFUSES more (a same-path prefix on a
-  different device), so no acceptance row can see it. Name it, as `862a581c` does.
+  different device), so no acceptance row could see it — until issue #227's round 3 built one: a
+  nested bwrap `--tmpfs` under the exempt root is a second device with `root_within=/`, and the
+  mutant then refuses that legitimate layout with a false path. An over-refusal direction is
+  pinned by the acceptance row that the mutant turns red, and it took a reviewer's sweep to
+  notice the row was buildable.
+- **The rule was rewritten in three consecutive rounds on issue #227, and each rewrite moved
+  WHAT it was keyed on**: round 1 skipped the spelling-exempt root entirely; round 2 keyed the
+  carve-out on the mount POINT's path (missed a checkout that is itself a bind of a tree under
+  the root; refused a foreign mount between the root and the checkout); round 3 keyed it on
+  WHERE THE CHECKOUT APPEARS in the sandbox and found the same refusal had never run over the
+  SYSTEM directories' recursive binds (`/usr`, `/etc`, …) at all — a checkout under
+  `/usr/local/src` bind-mounted into the working tree rode in through `/usr`. The tell for the
+  last one: every round's prompt said "install root", and so did every docstring. **When a
+  check is over a SET of binds, enumerate the set from the code that emits the binds, not from
+  the name the check was given.**
 
 ## Surface 9-b — a host write outside every child window (issue #177)
 

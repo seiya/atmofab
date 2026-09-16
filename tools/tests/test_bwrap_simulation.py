@@ -398,10 +398,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     """)
 
     @staticmethod
-    def _outer_bwrap(binds: list[tuple[Path, Path]]) -> list[str]:
+    def _outer_bwrap(binds: list[tuple[Path, Path]], tmpfs: list[Path] = ()) -> list[str]:
         argv = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
         for src, dst in binds:
             argv += ["--bind", str(src), str(dst)]
+        for point in tmpfs:
+            argv += ["--tmpfs", str(point)]
         return argv
 
     def test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused(self) -> None:
@@ -515,6 +517,18 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             (work / "proj").mkdir()
             proj_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
                           str(work / "proj" / "atmofab")]
+            # Round 3: the SYSTEM directories are recursive ro-binds too, and the refusal ran
+            # over the install roots alone — a checkout kept under `/usr/local/src` and
+            # bind-mounted into the working tree rode in through `/usr` with nothing on top
+            # (the review measured the dialogs readable there). The outer bwrap puts a
+            # scratch tree at `/usr/local/src` so the row needs no privilege on the host.
+            usrsrc = d / "usrsrc"
+            usrsrc_dialogs = usrsrc / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            usrsrc_dialogs.mkdir(parents=True)
+            (usrsrc_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            (work / "data").mkdir()
+            usrsrc_empty = d / "usrsrc_empty"
+            (usrsrc_empty / "atmofab").mkdir(parents=True)  # a mountpoint the outer bwrap can use
             exempt_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
                             str(exempt_repo)]
             cases = [
@@ -542,10 +556,23 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                  "ACCEPTED"),
                 ("exempt root, no mount (control)", exempt_child, [], work / "npm" / "bin",
                  "ACCEPTED"),
+                ("checkout physically under /usr/local/src, bound into the working tree",
+                 exempt_child, [(usrsrc, Path("/usr/local/src")), (usrsrc / "atmofab", exempt_repo)],
+                 work / "npm" / "bin", "REFUSED"),
+                ("checkout mirrored under /usr/local/src", exempt_child,
+                 [(usrsrc_empty, Path("/usr/local/src")), (exempt_repo, Path("/usr/local/src/atmofab"))],
+                 work / "npm" / "bin", "REFUSED"),
+                # A whole other filesystem under the exempt root (a scratch tmpfs, a data
+                # disk): a different device, `root_within=/`, and the round-3 sweep found
+                # that dropping the DEVICE comparison in `_overlaps` survived every row —
+                # this is the row that sees it.
+                ("exempt root, a separate filesystem mounted under it (control)", exempt_child,
+                 [], work / "npm" / "bin", "ACCEPTED", [work / "data"]),
             ]
-            for label, argv, binds, path_dir, expected in cases:
+            for label, argv, binds, path_dir, expected, *tmpfs in cases:
                 with self.subTest(case=label):
-                    res = subprocess.run([*self._outer_bwrap(binds), "--", *argv, str(path_dir)],
+                    outer = self._outer_bwrap(binds, tmpfs[0] if tmpfs else [])
+                    res = subprocess.run([*outer, "--", *argv, str(path_dir)],
                                          capture_output=True, text=True, timeout=120,
                                          check=False)  # the exit code is asserted below
                     self.assertEqual(res.returncode, 0, res.stderr)

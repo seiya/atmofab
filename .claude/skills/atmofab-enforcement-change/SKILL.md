@@ -439,7 +439,12 @@ recipes are in `references/input-surfaces.md`:
   running → change shape" fired at round 3 there and the shape still needed two more rounds,
   because each identity instrument sees one alias class; enumerate the classes (lexical,
   symlink, bind mount) FIRST and pick the instrument that sees all of them, or state which one
-  it does not see and why. Episode: `references/input-surfaces.md` §Surface 9-c.
+  it does not see and why. **And enumerate the BINDS the check must cover from the code that
+  emits them, not from the check's name**: issue #227 rewrote this rule in three consecutive
+  rounds — keyed on the exempt root, then on the mount point, then on where the checkout
+  APPEARS — and only the third round noticed the check had never run over the system
+  directories' recursive binds at all, because every prompt and docstring said "install
+  root". Episode: `references/input-surfaces.md` §Surface 9-c.
 - **Surface 10 — when a gate delegates its verdict to an external tool, can that tool decline to do
   the work and report SUCCESS?** A gate that reads an exit status is trusting the tool to have
   looked. Tools bound their own effort — a configuration cap, a time or memory limit, a walk that

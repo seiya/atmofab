@@ -8068,8 +8068,9 @@ def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple
     return best
 
 
-def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str]) -> None:
-    """Refuse an install-root bind through which the checkout is reachable under ANOTHER path.
+def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
+                                     system_ro: Sequence[str] = ()) -> None:
+    """Refuse a read-only bind through which the checkout is reachable under ANOTHER path.
 
     `render_bwrap_command` hides the whole checkout with an empty tmpfs at the `repo_root`
     path the caller passes — which every production caller resolves first (`main` and
@@ -8109,6 +8110,15 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     only at its own path). Pinned by the exempt rows of
     `test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused`. Same
     shape as the rw refusal below.
+
+    ``system_ro`` is the OTHER recursive ro-bind set the profile emits — `_runtime_ro_bind_paths`
+    (`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`, the resolv.conf target) — and it takes
+    the same checks (issue #227 round 3: both rounds before it attacked the install root
+    while a checkout kept under `/usr/local/src` and bind-mounted into the working tree, or
+    the mirror, rode in through `/usr` with nothing on top — measured readable under the
+    rendered profile by the review). A system directory is exempt by spelling exactly when
+    the checkout physically lives under it and the workflow was started from there, and
+    then the tmpfs covers it like any other exempt root.
     """
     resolved_repo = repo_root.resolve()
     try:
@@ -8125,7 +8135,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
         return (repo_identity[1].is_relative_to(identity[1])
                 or identity[1].is_relative_to(repo_identity[1]))
 
-    def _refuse_mounts_below(root: str, spelled: Path, physical: Path) -> None:
+    def _refuse_mounts_below(label: str, root: str, spelled: Path, physical: Path) -> None:
         # The root's own identity and every mount point strictly below it. bwrap binds the
         # root's SOURCE tree at the root's SPELLED path, recursively, so a subtree found at
         # host path P under `physical` appears in the sandbox at `spelled / P.relative_to(
@@ -8155,7 +8165,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
             if appears == resolved_repo or appears.is_relative_to(resolved_repo):
                 continue
             raise ValueError(
-                f"backend install root {root!r} carries a mount ({mounted}) of the same "
+                f"{label} {root!r} carries a mount ({mounted}) of the same "
                 f"filesystem subtree as the checkout {resolved_repo}, through which the "
                 f"checkout appears at {appears} inside the sandbox, a path the tmpfs at "
                 f"{resolved_repo} does not cover (a bind mount gives it the second name); "
@@ -8164,12 +8174,14 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
                 "keep no other mount of it under the root)"
             )
 
-    for root in backend_ro:
+    labelled = [*(("backend install root", r) for r in backend_ro),
+                *(("system directory bound read-only", r) for r in system_ro)]
+    for label, root in labelled:
         spelled = Path(os.path.normpath(root))
         if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
             # Exempt from the inode walks (the root IS an ancestor of the checkout, or lies
             # inside it, by its own spelling), not from the mount table.
-            _refuse_mounts_below(root, spelled, Path(os.path.realpath(root)))
+            _refuse_mounts_below(label, root, spelled, Path(os.path.realpath(root)))
             continue
         try:
             root_stat = os.stat(root)
@@ -8182,7 +8194,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
             except OSError:
                 continue
             raise ValueError(
-                f"backend install root {root!r} is the same directory as {ancestor}, which "
+                f"{label} {root!r} is the same directory as {ancestor}, which "
                 f"contains the checkout {resolved_repo} under a path the sandbox does not "
                 "overlay (a symlink or a bind mount gives it the second name); move the CLI "
                 "(or its wrapper) out of the directory that holds the checkout, or spell HOME "
@@ -8198,12 +8210,12 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
             except OSError:
                 continue
             raise ValueError(
-                f"backend install root {root!r} lies inside the checkout {resolved_repo} "
+                f"{label} {root!r} lies inside the checkout {resolved_repo} "
                 f"(it resolves to {physical}) under a path the sandbox does not overlay; "
                 "move the CLI (or its wrapper) out of the checkout, or reach it through the "
                 "checkout's own path"
             )
-        _refuse_mounts_below(root, spelled, physical)
+        _refuse_mounts_below(label, root, spelled, physical)
 
 
 def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]) -> list[str]:
@@ -8295,7 +8307,8 @@ def build_readonly_bwrap_profile(
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
-    _refuse_backend_ro_alias_of_repo(repo_root, backend_ro)
+    system_ro = _runtime_ro_bind_paths()
+    _refuse_backend_ro_alias_of_repo(repo_root, backend_ro, system_ro)
     if backend_rw_override is not None:
         backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
@@ -8309,7 +8322,7 @@ def build_readonly_bwrap_profile(
         "repo_root": str(repo_root),
         "read_roots": [],
         "write_roots": [],
-        "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
+        "runtime_ro_bind_paths": system_ro + backend_ro,
         "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
         "runtime_rw_bind_mappings": [list(pair) for pair in backend_rw_mappings],
         "runtime_rw_bind_paths": backend_rw,
@@ -8455,14 +8468,17 @@ def render_bwrap_command(
     # WHAT THIS DOES NOT CLOSE, named rather than implied (issue #227 round 1, measured under
     # real bwrap with the real CLI): the codex credential home is per ORCHESTRATION, bound rw
     # into every codex leaf of that orchestration, and the CLI writes each launch's whole
-    # rollout — prompt and every response item — under `$CODEX_HOME/sessions/`. A later leaf
+    # rollout — prompt and every response item — under `$CODEX_HOME/sessions/` AND into the
+    # sqlite state at the home's root (`state_*.sqlite-wal`, `thread_history_*.sqlite-wal`;
+    # measured: the marker prompt in all three). A later leaf
     # of the same orchestration (the VERIFY leaf, for the producer it reviews; a repair turn,
     # for the previous verdict) can read it through its own shell tool, inside this profile
     # AND inside codex's own read-only sandbox. That is the `dialogs/` gain under a second
     # name, and it is out of the mount set's reach: the home must stay writable (session
     # state) and shared across the attempts of ONE leaf (warm `exec resume` reads the resumed
     # thread's rollout from it). `TODO.md` carries the entry; the shape that closes it is a
-    # per-lineage `sessions/` rather than a per-orchestration home.
+    # per-lineage home — `sessions/` AND the sqlite state, i.e. everything but what one leaf's
+    # warm resume needs — rather than a per-orchestration one.
     #
     # WHY (issue #227). A CLAUDE pure leaf is tool-free (`--tools ""`) and could read
     # nothing either way. A CODEX pure leaf is `codex exec --sandbox read-only`: tool-BEARING,
@@ -8482,10 +8498,11 @@ def render_bwrap_command(
     # trees, as HIDDEN under real bwrap). The codex launch pays one flag for the empty cwd:
     # `--skip-git-repo-check` (`leaf_command`), measured on codex-cli 0.154.0.
     #
-    # An install root cannot smuggle the checkout back in under another name:
-    # `_refuse_backend_ro_alias_of_repo` refuses a root that is, holds, or lies inside the
-    # checkout by inode and by the mount table, and exempts only a root whose own spelling
-    # contains the checkout — which this tmpfs, emitted later at that spelling, covers.
+    # Neither an install root nor a system directory can smuggle the checkout back in under
+    # another name: `_refuse_backend_ro_alias_of_repo` runs over BOTH recursive ro-bind sets
+    # (`runtime_ro_bind_paths` is the two concatenated) and refuses a root that is, holds, or
+    # lies inside the checkout by inode and by the mount table — keyed on where the checkout
+    # would APPEAR in the sandbox, so the one place the tmpfs covers is the one place accepted.
     cmd.extend(["--tmpfs", repo_root])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
