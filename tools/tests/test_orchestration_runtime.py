@@ -9473,15 +9473,6 @@ class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification
     into its stage meta (both the pure and the agentic path pass through it)."""
 
-    def setUp(self) -> None:
-        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
-        # `spec.ir.yaml` `certify_node` writes does not pass. This class is about the OTHER
-        # clauses, so the validator answers "accepted" here; the rows that pin the validator
-        # clause itself live in `PhaseCertificationTests` and patch the seam on their own.
-        accept_ir = accept_any_certified_ir()
-        accept_ir.start()
-        self.addCleanup(accept_ir.stop)
-
     def test_certifiable_artifact_refs_drops_the_meta_and_the_audit_logs(self) -> None:
         """Build declares `src/command_log.jsonl`, which Validate.execute later APPENDS to —
         hashing it would make every Validate attempt read as a tampered Build."""
