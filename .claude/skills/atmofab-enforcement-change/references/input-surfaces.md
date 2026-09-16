@@ -224,8 +224,10 @@ not.
 The rule is in SKILL.md; this is what it cost. PR #228 replaced a claude-only literal in
 `_backend_runtime_bind_paths` with a shape rule: bind the `$HOME`-child ancestor of the CLI's
 `which` path and of its realpath (`~/.volta`, `~/.local`) read-only, so a volta shim can start.
-The read-only leaf profile hides `workspace/`, the `workspace_*/` archives and `releases/` with
-tmpfs overlays at the checkout's own path, and a bound `$HOME` child is exactly the place a
+The read-only leaf profile hid `workspace/`, the `workspace_*/` archives and `releases/` with
+tmpfs overlays at the checkout's own path (since issue #227 it is one empty tmpfs over the whole
+checkout, at that same path, so `tools/` is on the hidden side too and the exemption below holds
+for the same reason), and a bound `$HOME` child is exactly the place a
 second name for the checkout can sit. Round 0's own sweep and the round-1 reviewers saw none of
 this; round 1's security axis found the first name and every later round found the next, each
 INSIDE the previous round's fix:
@@ -252,13 +254,27 @@ the round-5 instrument unreviewed, disclosed in the PR body.
 Two follow-through facts worth keeping beside the rule:
 
 - **The exemption is a rule too** (3-a): a root whose OWN spelling contains the checkout is safe
-  because the repo bind and the overlays are emitted later at that path and stack on top —
+  because the overlays (now the one tmpfs) are emitted later at that path and stack on top —
   measured, the control row asserts it — and the round-5 security axis found the exemption
   itself taken on the RAW spelling, so a `..` in the spelled root under an unset `HOME` passed it.
   An exemption keyed on a spelling gets the same treatment as the check.
 - **The instrument has its own unpinned direction.** Dropping the device comparison in the
   mount-table overlap test survived the sweep: it only ever REFUSES more (a same-path prefix on a
-  different device), so no acceptance row can see it. Name it, as `862a581c` does.
+  different device), so no acceptance row could see it — until issue #227's round 3 built one: a
+  nested bwrap `--tmpfs` under the exempt root is a second device with `root_within=/`, and the
+  mutant then refuses that legitimate layout with a false path. An over-refusal direction is
+  pinned by the acceptance row that the mutant turns red, and it took a reviewer's sweep to
+  notice the row was buildable.
+- **The rule was rewritten in three consecutive rounds on issue #227, and each rewrite moved
+  WHAT it was keyed on**: round 1 skipped the spelling-exempt root entirely; round 2 keyed the
+  carve-out on the mount POINT's path (missed a checkout that is itself a bind of a tree under
+  the root; refused a foreign mount between the root and the checkout); round 3 keyed it on
+  WHERE THE CHECKOUT APPEARS in the sandbox and found the same refusal had never run over the
+  SYSTEM directories' recursive binds (`/usr`, `/etc`, …) at all — a checkout under
+  `/usr/local/src` bind-mounted into the working tree rode in through `/usr`. The tell for the
+  last one: every round's prompt said "install root", and so did every docstring. **When a
+  check is over a SET of binds, enumerate the set from the code that emits the binds, not from
+  the name the check was given.**
 
 ## Surface 9-b — a host write outside every child window (issue #177)
 

@@ -547,14 +547,18 @@ def _is_claude_roster_probe(args) -> bool:
     return "--tools" in list(args)
 
 
+# Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
+# preflight asserts, plus the stdin-sentinel sentence, re-read on codex-cli 0.154.0 when
+# `--skip-git-repo-check` joined the set (issue #227; both subcommands document it).
 _CODEX_EXEC_HELP = (
     "--model --json --output-schema --sandbox --ignore-rules --config "
+    "--skip-git-repo-check "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
     "Initial instructions for the agent. If not provided as an argument (or if `-` is "
     "used), instructions are read from stdin."
 )
 _CODEX_EXEC_RESUME_HELP = (
-    "--model --json --output-schema --ignore-rules --config "
+    "--model --json --output-schema --ignore-rules --config --skip-git-repo-check "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
     "Prompt to send after resuming the session. If `-` is used, read from stdin."
 )
@@ -1307,6 +1311,49 @@ shell_tool                       stable             true
         self.assertFalse(by_name["codex_exec_output_schema"]["pass"])
         self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
+
+    def test_probe_codex_backend_rejects_an_exec_help_without_skip_git_repo_check(self) -> None:
+        """The pure launch runs from an EMPTY cwd (issue #227: the sandbox holds no checkout),
+        which codex refuses before any API call unless `--skip-git-repo-check` is passed —
+        so a CLI whose `exec --help` does not document the flag fails the isolation-flags
+        check, and the resume check fails on the same flag through
+        `CODEX_EXEC_RESUME_REQUIRED_FLAGS`. Control: the full fixtures pass both."""
+        from tools.orchestration_runtime import _probe_codex_backend
+
+        def _runner(exec_help: str, resume_help: str):  # type: ignore[no-untyped-def]
+            def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+                if cmd[-1] == "--version":
+                    return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+                if cmd[-2:] == ["features", "list"]:
+                    return _FakeCompletedProcess(0, stdout="hooks available true")
+                if cmd[-2:] == ["exec", "--help"]:
+                    return _FakeCompletedProcess(0, stdout=exec_help)
+                if cmd[-3:] == ["exec", "resume", "--help"]:
+                    return _FakeCompletedProcess(0, stdout=resume_help)
+                raise AssertionError(cmd)
+            return runner
+
+        without = {
+            "exec": _CODEX_EXEC_HELP.replace("--skip-git-repo-check ", ""),
+            "resume": _CODEX_EXEC_RESUME_HELP.replace("--skip-git-repo-check ", ""),
+        }
+        for help_text in without.values():
+            self.assertNotIn("--skip-git-repo-check", help_text)
+        checks, _, _, _ = _probe_codex_backend(
+            "codex", "codex", _runner(without["exec"], _CODEX_EXEC_RESUME_HELP))
+        by_name = {check["name"]: check for check in checks}
+        self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
+        self.assertTrue(by_name["codex_exec_resume"]["pass"])
+        checks, _, _, _ = _probe_codex_backend(
+            "codex", "codex", _runner(_CODEX_EXEC_HELP, without["resume"]))
+        by_name = {check["name"]: check for check in checks}
+        self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
+        self.assertFalse(by_name["codex_exec_resume"]["pass"])
+        checks, _, _, _ = _probe_codex_backend(
+            "codex", "codex", _runner(_CODEX_EXEC_HELP, _CODEX_EXEC_RESUME_HELP))
+        by_name = {check["name"]: check for check in checks}
+        self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
+        self.assertTrue(by_name["codex_exec_resume"]["pass"])
 
     def test_probe_codex_backend_rejects_resume_missing_required_flags(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend
@@ -26463,9 +26510,10 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_an_install_root_that_contains_the_checkout_by_its_own_path_is_accepted(self) -> None:
         """The over-refusal probe for the row above: the same layout with a real `$HOME`.
-        `~/work` is bound and contains the checkout AT ITS OWN PATH, where the repo bind and
-        the `workspace/` overlay are emitted later and stack on top (measured under real
-        bwrap: the dialogs stay hidden). Refusing it would fail every operator who keeps the
+        `~/work` is bound and contains the checkout AT ITS OWN PATH, where the tmpfs
+        (issue #227; the repo bind plus the `workspace/` overlay before it) is emitted later
+        and stacks on top (measured under real bwrap: the dialogs stay hidden —
+        `test_bwrap_simulation.py`'s accepted alias row). Refusing it would fail every operator who keeps the
         checkout and a CLI wrapper under one `$HOME` child."""
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)

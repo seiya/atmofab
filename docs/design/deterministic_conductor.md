@@ -74,8 +74,9 @@ to a cold launch when the producer transcript was GC'd. Verified live in a bille
 session and the rotated repair passed.
 
 **Leaf sandboxing (bwrap, unconditionally mandatory; Linux+userns only).**
-`record-launch` builds a per-arid bwrap profile (`sandbox_profiles/<arid>.json`: repo
-read-only; writes confined to the child's `write_roots` + `workspace/tmp`; the backend CLI's
+`record-launch` builds a per-arid bwrap profile (`sandbox_profiles/<arid>.json`: the checkout
+NOT bound — an empty tmpfs at `repo_root` since [issue #227](https://github.com/seiya/atmofab/issues/227),
+with `write_roots: []` and the leaf's own `workspace/tmp/<arid>` + `sandboxes/<arid>/tmp` the only paths under it; the backend CLI's
 install root — for the executable `which` finds and for its realpath, the `$HOME`-child
 directory each lives under, or its parent directory outside `$HOME` (issue #226) — bound
 read-only and its config/credential home — `~/.claude{,.json}` — bound writable for auth +

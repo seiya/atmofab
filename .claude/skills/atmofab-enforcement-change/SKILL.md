@@ -417,8 +417,10 @@ recipes are in `references/input-surfaces.md`:
   of latent.
 - **Surface 9-c — a hide placed AT A PATH is defeated by every SECOND NAME of the thing it hides,
   and the second names are not enumerable by hand.** Surface 9 asks what can MOVE a protected
-  thing; this asks what else the thing is CALLED. `render_bwrap_command` hides the artifact trees
-  with tmpfs overlays at the checkout's path, and issue #226 widened the read-only bind of the
+  thing; this asks what else the thing is CALLED. `render_bwrap_command` hid the artifact trees
+  with tmpfs overlays at the checkout's path (one tmpfs over the WHOLE checkout since issue
+  #227, at the same path — the rule is unchanged, and what a second name now exposes is `tools/`
+  as well), and issue #226 widened the read-only bind of the
   backend CLI's install root from `bin/` to the whole `$HOME` child — so any second name for the
   checkout inside that root exposed the producer's `dialogs/` to a VERIFY leaf with nothing
   overlaid. Five review rounds found five names of the same class, one per round, each fixed by
@@ -437,7 +439,12 @@ recipes are in `references/input-surfaces.md`:
   running → change shape" fired at round 3 there and the shape still needed two more rounds,
   because each identity instrument sees one alias class; enumerate the classes (lexical,
   symlink, bind mount) FIRST and pick the instrument that sees all of them, or state which one
-  it does not see and why. Episode: `references/input-surfaces.md` §Surface 9-c.
+  it does not see and why. **And enumerate the BINDS the check must cover from the code that
+  emits them, not from the check's name**: issue #227 rewrote this rule in three consecutive
+  rounds — keyed on the exempt root, then on the mount point, then on where the checkout
+  APPEARS — and only the third round noticed the check had never run over the system
+  directories' recursive binds at all, because every prompt and docstring said "install
+  root". Episode: `references/input-surfaces.md` §Surface 9-c.
 - **Surface 10 — when a gate delegates its verdict to an external tool, can that tool decline to do
   the work and report SUCCESS?** A gate that reads an exit status is trusting the tool to have
   looked. Tools bound their own effort — a configuration cap, a time or memory limit, a walk that

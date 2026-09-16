@@ -18,14 +18,58 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
     build_readonly_bwrap_profile,
     render_bwrap_command,
 )
+from tools.tests.llm_samples import sample_config_with
+
+
+class _Loopback400:
+    """An HTTP stand-in for the vendor API that answers every request 400 and counts them.
+
+    The unbilled way to observe that a CLI got as far as its first API request: the
+    request never leaves the machine and the CLI stops on the error. The sandbox shares
+    the host's network namespace (no `--unshare-net`), so `127.0.0.1` reaches it.
+    """
+
+    def __init__(self) -> None:
+        hits: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def _answer(self) -> None:
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                hits.append(f"{self.command} {self.path}")
+                body = (b'{"type":"error","error":{"type":"invalid_request_error",'
+                        b'"message":"loopback stand-in"}}')
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_POST = _answer
+            do_GET = _answer
+
+            def log_message(self, *args) -> None:  # BaseHTTPRequestHandler's spelling
+                pass
+
+        self.hits = hits
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
 
 
 def _bwrap_stdout(cmd: list[str], *, timeout: int = 90) -> str:
@@ -71,41 +115,73 @@ def _bwrap_usable() -> bool:
 
 @unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class BwrapReadonlyProfileTests(unittest.TestCase):
-    """P2-4b: the failure diagnostician runs under a read-only bwrap profile
-    (`build_readonly_bwrap_profile`) — no capability, no write_roots. Confirm the
-    rendered sandbox lets the leaf READ the repo and write tmp scratch, but BLOCKS any
-    repo write (no write_roots → repo stays ro), so a read-only reasoning leaf is
-    confined with nothing to attribute (FS-diff trivially empty)."""
+    """Every leaf runs under the one read-only bwrap profile (`build_readonly_bwrap_profile`)
+    — no capability, no write_roots, and since issue #227 NO CHECKOUT: an empty tmpfs sits
+    at `repo_root`. Confirm the rendered sandbox hides the repository from the leaf, keeps
+    the leaf's own `workspace/tmp/<arid>` writable, keeps the network, and leaves the host's
+    copy untouched, so a pure leaf is confined with nothing to read but its launch prompt
+    and nothing to attribute (FS-diff trivially empty)."""
 
-    def _leaf_script(self, arid: str) -> str:
+    def _leaf_script(self, arid: str, tmp_dir: str) -> str:
         return textwrap.dedent(f"""
             import socket
             from pathlib import Path
             def report(tag, ok, e=""):
                 print(f"{{tag}}:{{'OK' if ok else 'FAIL'}}", e, flush=True)
-            # repo is ro-bound -> reading a repo file works
-            try:
-                Path("AGENTS_SIM.md").read_text(); report("READ_REPO", True)
-            except Exception as e:
-                report("READ_REPO", False, repr(e))
-            # tmp scratch (workspace/tmp/<arid>) is bound rw
+            # the checkout is NOT bound -> a repo file is absent, and so is the tree
+            print("READ_REPO:" + ("READABLE" if Path("AGENTS_SIM.md").exists() else "HIDDEN"),
+                  flush=True)
+            print("CWD_ENTRIES:" + ",".join(sorted(p.name for p in Path(".").iterdir())),
+                  flush=True)
+            # What is MOUNTED at the cwd, from the kernel's own table: the tmpfs emitted at
+            # repo_root, not bwrap's auto-created mountpoint parents (a deleted `--tmpfs`
+            # still gives a cwd whose only entry is `workspace`, and a write there still
+            # never reaches the host — this line is what tells the two apart).
+            # The last matching entry is the visible one for a stacked point; mountinfo
+            # octal-escapes a space / tab / newline / backslash in the path fields, so
+            # decode before comparing (the checkout under `tools/` is hidden here, so this
+            # cannot reuse `_mount_table`'s decoder; it is the same one).
+            import os, re
+            fstype = "none"
+            for line in open("/proc/self/mountinfo"):
+                fields = line.split()
+                point = re.sub(r"\\\\([0-7]{{3}})", lambda m: chr(int(m.group(1), 8)), fields[4])
+                if point == os.getcwd():
+                    fstype = fields[fields.index("-") + 1]
+            print("CWD_MOUNT:" + fstype, flush=True)
+            # tmp scratch (workspace/tmp/<arid>) is bound rw, and so is the profile's tmp_dir
             try:
                 Path("workspace/tmp/{arid}/scratch.txt").write_text("x"); report("WRITE_TMP", True)
             except Exception as e:
                 report("WRITE_TMP", False, repr(e))
-            # a repo write must be blocked: no write_roots, repo stays read-only
             try:
-                Path("AGENTS_SIM.md").write_text("mutated")
-                print("WRITE_REPO:ALLOWED", flush=True)   # bad: confinement failed
-            except Exception:
-                print("WRITE_REPO:BLOCKED", flush=True)   # good
+                Path("{tmp_dir}/scratch.txt").write_text("x"); report("WRITE_SANDBOX_TMP", True)
+            except Exception as e:
+                report("WRITE_SANDBOX_TMP", False, repr(e))
+            # a write at the checkout's path lands on the tmpfs, not on the host
+            try:
+                Path("AGENTS_SIM.md").write_text("mutated"); report("WRITE_CWD", True)
+            except Exception as e:
+                report("WRITE_CWD", False, repr(e))
             try:
                 socket.gethostbyname("api.anthropic.com"); report("DNS", True)
             except Exception as e:
                 report("DNS", False, repr(e))
         """)
 
-    def test_readonly_profile_reads_repo_blocks_repo_write(self) -> None:
+    def test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable(self) -> None:
+        """The repository is absent from the sandbox; only the leaf's own tmp root remains.
+
+        `CWD_ENTRIES` is the whole listing of the cwd from inside: exactly `workspace`, the
+        mountpoint bwrap creates for the rw binds of the leaf's two scratch roots
+        (`workspace/tmp/<arid>` and the profile's `tmp_dir` under `sandboxes/`). `CWD_MOUNT`
+        is the filesystem type mounted at the cwd per `/proc/self/mountinfo` — `tmpfs` — and
+        it is the assertion that pins the `--tmpfs` EMISSION: measured (round 1), with the
+        emission deleted outright the listing is still `workspace` (bwrap creates the
+        mountpoint's parents) and the host is still unchanged, so the other tags stay green.
+        A write at the checkout's path succeeds INTO THE TMPFS and the host's file is
+        unchanged — the checkout is not read-only, it is not there.
+        """
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t).resolve()
             orch, arid = "orch_ro", "arid_ro"
@@ -117,17 +193,25 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertTrue(profile.get("readonly"))
             self.assertEqual(profile.get("write_roots"), [])
             cmd = render_bwrap_command(
-                profile=profile, command_argv=["python3", "-c", self._leaf_script(arid)])
+                profile=profile,
+                command_argv=["python3", "-c", self._leaf_script(arid, profile["tmp_dir"])])
             out = _bwrap_stdout(cmd)
-            self.assertIn("READ_REPO:OK", out, out)
+            self.assertIn("READ_REPO:HIDDEN", out, out)
+            self.assertIn("CWD_ENTRIES:workspace\n", out, out)
+            self.assertIn("CWD_MOUNT:tmpfs\n", out, out)
             self.assertIn("WRITE_TMP:OK", out, out)
-            self.assertIn("WRITE_REPO:BLOCKED", out, out)
+            self.assertIn("WRITE_SANDBOX_TMP:OK", out, out)
+            self.assertIn("WRITE_CWD:OK", out, out)
             self.assertIn("DNS:OK", out, out)
-            # the repo file is unchanged on the host
+            # the repo file is unchanged on the host: the write landed on the tmpfs
             self.assertEqual((repo / "AGENTS_SIM.md").read_text(), "orig\n")
+            # ... while the own-scratch writes reached the host through the rw binds.
+            self.assertTrue((repo / "workspace" / "tmp" / arid / "scratch.txt").is_file())
+            self.assertTrue((Path(profile["tmp_dir"]) / "scratch.txt").is_file())
 
     def test_readonly_profile_hides_workspace_from_the_leaf(self) -> None:
-        """A read-only leaf cannot READ another run's records, or the producer's own reasoning.
+        """A read-only leaf cannot READ another run's records, the producer's own reasoning,
+        or the source trees — the checkout is not in the sandbox (issue #227).
 
         FOUND BY THE ROUND-2 CODEX REVIEW (P1) and by the round-1 security axis before it. A
         CLAUDE pure leaf is tool-free and could read nothing anyway; a CODEX pure leaf is
@@ -139,6 +223,19 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         supplied context, which defeats the persona separation `_run_pure_verify_substep` calls
         structural. Past artifacts and sibling certified sources are under here too, and
         `docs/workflow/WORKFLOW_CORE.md` invariants 6-8 forbid referencing them.
+
+        Issue #171 PR-1 hid those trees with per-tree tmpfs overlays and left `tools/`,
+        `docs/` and `spec/` readable — the prompt gives the leaf the gate's RULES, the checkout
+        gave it the CHECKER (`tools/validate_pipeline_semantics.py`), and a leaf that reads
+        the checker can satisfy a presence floor's exact signal without doing the work the
+        floor stands for. Issue #227 replaced the overlays with one tmpfs over the whole
+        checkout, so this row pins the three source trees and `.git/` as HIDDEN beside the
+        artifact trees and keeps each formerly overlaid tree as its own tag (the deletion of
+        `_leaf_hidden_artifact_trees` is covered by these mounts, not by the function). The
+        control against a sandbox in which everything is missing is `OWN_TMP:WRITABLE` — a
+        RELATIVE path, so a wrong `--chdir` or a dead rw bind fails it — plus `_bwrap_stdout`'s
+        own exit-code check; an absolute read of the interpreter's directory was tried as a
+        control and dropped (round 1): it cannot be false while the probe runs.
 
         Driven under REAL bwrap rather than asserted on the rendered argv: what is under test is
         whether the mount actually hides the tree, which an argv comparison cannot answer.
@@ -165,6 +262,14 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             released = repo / "releases" / "component" / "rel_1"
             released.mkdir(parents=True, exist_ok=True)
             (released / "model.f90").write_text("module rel\nend module\n", encoding="utf-8")
+            # The three source trees and the git store: the gate's implementation, the
+            # documents the rules were derived from, the specs of every other node.
+            for rel, body in (("tools/validate_pipeline_semantics.py", "def gate(): ...\n"),
+                              ("docs/x.md", "# rule\n"),
+                              ("spec/x.yaml", "kind: x\n"),
+                              (".git/HEAD", "ref: refs/heads/main\n")):
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text(body, encoding="utf-8")
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="codex")
@@ -174,7 +279,11 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                         ("DIALOG", "workspace/orchestrations/{orch}/agents/producer/dialogs/leaf.stdout.jsonl"),
                         ("SIBLING", "workspace/pipelines/sib/source/s1/src/sib_model.f90"),
                         ("ARCHIVE", "workspace_20260723/orchestrations/old/agents/p/dialogs/leaf.stdout.jsonl"),
-                        ("RELEASES", "releases/component/rel_1/model.f90")):
+                        ("RELEASES", "releases/component/rel_1/model.f90"),
+                        ("TOOLS", "tools/validate_pipeline_semantics.py"),
+                        ("DOCS", "docs/x.md"),
+                        ("SPEC", "spec/x.yaml"),
+                        ("GIT", ".git/HEAD")):
                     print(f"{{tag}}:" + ("READABLE" if Path(rel).exists() else "HIDDEN"), flush=True)
                 # ... while the leaf's OWN tmp root is still there: a codex pure launch needs it
                 # for its `--output-schema` file and its TMPDIR.
@@ -190,9 +299,15 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertIn("SIBLING:HIDDEN", out, out)
             self.assertIn("ARCHIVE:HIDDEN", out, out)
             self.assertIn("RELEASES:HIDDEN", out, out)
+            self.assertIn("TOOLS:HIDDEN", out, out)
+            self.assertIn("DOCS:HIDDEN", out, out)
+            self.assertIn("SPEC:HIDDEN", out, out)
+            self.assertIn("GIT:HIDDEN", out, out)
             self.assertIn("OWN_TMP:WRITABLE", out, out)
             # The host's copies are untouched — this hides, it does not delete.
             self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
+            self.assertEqual((repo / "tools" / "validate_pipeline_semantics.py").read_text(),
+                             "def gate(): ...\n")
 
     # ---- issue #226: the backend CLI itself starts inside the profile rendered for it ----
 
@@ -251,13 +366,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         from pathlib import Path
         sys.path.insert(0, sys.argv[1])
         import tools.orchestration_runtime as ort
-        d = Path(sys.argv[2]); home = d / "home" / "user"
+        d = Path(sys.argv[2]); home = Path(sys.argv[5]) if len(sys.argv) > 5 else d / "home" / "user"
         repo = Path(sys.argv[3]); path_dir = sys.argv[4]
         os.environ["HOME"] = str(home)
         os.environ["PATH"] = f"{path_dir}:" + os.environ["PATH"]
         ort._ensure_orchestration_audit_dirs(repo, "o")
         try:
-            ort.build_readonly_bwrap_profile(
+            profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 backend_rw_override=[str(d / "ch")], env_overrides={"CODEX_HOME": str(d / "ch")})
@@ -265,13 +380,30 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             print("REFUSED", exc)
         else:
             print("ACCEPTED")
+            # An ACCEPTED root is exempt because its spelling contains the checkout and the
+            # tmpfs stacks on top: observe that under the rendered profile (a nested bwrap)
+            # rather than take the docstring's word for it. Both the run artifact and the
+            # gate's implementation are read at the ALIAS the root exposes.
+            probe = (
+                "from pathlib import Path\\n"
+                "for tag, rel in (('DIALOG', 'workspace/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl'),"
+                " ('TOOLS', 'tools/validate_pipeline_semantics.py'),"
+                " ('UNDER_REPO', 'alias2/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl')):\\n"
+                "    print(tag + ':' + ('READABLE' if Path(rel).exists() else 'HIDDEN'), flush=True)\\n")
+            import subprocess
+            res = subprocess.run(
+                ort.render_bwrap_command(profile=profile, command_argv=["python3", "-c", probe]),
+                capture_output=True, text=True, timeout=60, check=False)
+            print(res.stdout.strip() or f"PROBE FAILED rc={res.returncode} {res.stderr.strip()}")
     """)
 
     @staticmethod
-    def _outer_bwrap(binds: list[tuple[Path, Path]]) -> list[str]:
+    def _outer_bwrap(binds: list[tuple[Path, Path]], tmpfs: list[Path] = ()) -> list[str]:
         argv = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
         for src, dst in binds:
             argv += ["--bind", str(src), str(dst)]
+        for point in tmpfs:
+            argv += ["--tmpfs", str(point)]
         return argv
 
     def test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused(self) -> None:
@@ -287,6 +419,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             d = Path(t).resolve()
             data_work = d / "data" / "work"
             (data_work / "atmofab" / "workspace").mkdir(parents=True)
+            # Planted for the accepted row's probe: what the alias would expose.
+            for rel, body in (("workspace/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl",
+                               "PRODUCER REASONING\n"),
+                              ("tools/validate_pipeline_semantics.py", "def gate(): ...\n")):
+                (data_work / "atmofab" / rel).parent.mkdir(parents=True, exist_ok=True)
+                (data_work / "atmofab" / rel).write_text(body, encoding="utf-8")
             bindir = data_work / "npm" / "bin"
             bindir.mkdir(parents=True)
             (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -307,7 +445,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                                       capture_output=True, text=True, timeout=120,
                                       check=False)  # the exit code is asserted below
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            self.assertEqual(accepted.stdout.strip(), "ACCEPTED", accepted.stdout)
+            self.assertEqual(accepted.stdout.split("\n")[0], "ACCEPTED", accepted.stdout)
+            # The exemption holds under the mount: the root `~/work` is ro-bound and the
+            # tmpfs at `~/work/atmofab` stacks on top, so neither the dialogs nor the gate's
+            # implementation is readable at the alias (issue #227 widened the second name's
+            # gain from the artifact trees to `tools/`).
+            self.assertIn("DIALOG:HIDDEN", accepted.stdout, accepted.stdout)
+            self.assertIn("TOOLS:HIDDEN", accepted.stdout, accepted.stdout)
 
     def test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused(self) -> None:
         """Round-5 security finding and the round-3 residual, closed together by the mount
@@ -316,7 +460,14 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         walk only sees ancestors), and a bind mount of that tree BELOW a real root
         (`~/tools/alias`). Both printed the planted dialogs before the mount-table
         comparison landed (measured under a nested bwrap). Control: the same root with no
-        mount is accepted."""
+        mount is accepted. The EXEMPT-root rows are issue #227's rounds 1 and 2: the same
+        bind below a root the spelling exemption used to skip entirely; then the two
+        layouts that told a rule keyed on the mount point's PATH apart from one keyed on
+        where the checkout APPEARS (a checkout that is a bind of a tree under the root, a
+        foreign mount between the root and the checkout), the bind-of-the-root shape the
+        second rule must still catch, and a stacked mount (`_fs_identity` read the hidden
+        bottom entry). The accepted exempt rows also observe the probe under the rendered
+        profile: the dialogs stay hidden at the checkout's path and under it."""
         with tempfile.TemporaryDirectory() as t:
             d = Path(t).resolve()
             home = d / "home" / "user"
@@ -333,21 +484,135 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             (d / "ch").mkdir(mode=0o700)
             repo_root = Path(__file__).resolve().parents[2]
             child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d), str(repo)]
+            # The EXEMPT layout (issue #227 round 1): the CLI under `~/work/npm/bin` and the
+            # checkout at `~/work/atmofab`, so the root `~/work` contains the checkout by its
+            # own spelling and is exempt from the inode walks. A bind mount of the hidden
+            # tree BELOW that root and OUTSIDE the checkout's path (`~/work/alias`) was
+            # carried in by the recursive ro-bind with nothing on top — measured readable
+            # before the mount-table check ran for exempt roots. A mount AT OR UNDER the
+            # checkout's path is covered by the tmpfs and stays accepted.
+            work = home / "work"
+            exempt_repo = work / "atmofab"
+            exempt_dialogs = exempt_repo / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            exempt_dialogs.mkdir(parents=True)
+            (exempt_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            (work / "alias").mkdir()
+            (work / "innocuous").mkdir()
+            (exempt_repo / "alias2").mkdir()
+            (work / "npm" / "bin").mkdir(parents=True)
+            (work / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (work / "npm" / "bin" / "cli-sim").chmod(0o755)
+            # Round 2's two layouts. A checkout that is ITSELF a bind of a tree under the
+            # exempt root (`~/work/src/atmofab` bound at `~/work/atmofab`, the workflow
+            # started from the bind): its physical source sits beside it under the root, and a
+            # rule keyed on the mount point's path accepted it while the rendered profile
+            # exposed the source. And a foreign mount BETWEEN the root and the checkout (a
+            # data disk at `~/work/proj` holding `~/work/proj/atmofab`): the same rule refused
+            # it, although the checkout appears only at its own path there.
+            src_repo = work / "src" / "atmofab"
+            (src_repo / "workspace").mkdir(parents=True)
+            (src_repo / "tools").mkdir()
+            disk = d / "disk"
+            disk_dialogs = disk / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            disk_dialogs.mkdir(parents=True)
+            (disk_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            # Round 4: the legitimate half of the system-directory rule — a checkout that
+            # physically lives under `/usr/local/src` (with `$HOME` there too) and is started
+            # from that path is exempt by spelling for `/usr`, like any install root, and the
+            # tmpfs covers it. Without this row a mutant that never exempts a system directory
+            # stayed green while refusing that launch with a false remedy.
+            sys_layout = d / "sys_layout"
+            sys_home = sys_layout / "home" / "user"
+            sys_dialogs = sys_home / "work" / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            sys_dialogs.mkdir(parents=True)
+            (sys_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            (sys_home / "work" / "npm" / "bin").mkdir(parents=True)
+            (sys_home / "work" / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (sys_home / "work" / "npm" / "bin" / "cli-sim").chmod(0o755)
+            sys_prefix = Path("/usr/local/src") / "home" / "user"
+            sys_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                         str(sys_prefix / "work" / "atmofab"), str(sys_prefix / "work" / "npm" / "bin"),
+                         str(sys_prefix)]
+            (work / "proj").mkdir()
+            proj_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                          str(work / "proj" / "atmofab")]
+            # Round 3: the SYSTEM directories are recursive ro-binds too, and the refusal ran
+            # over the install roots alone — a checkout kept under `/usr/local/src` and
+            # bind-mounted into the working tree rode in through `/usr` with nothing on top
+            # (the review measured the dialogs readable there). The outer bwrap puts a
+            # scratch tree at `/usr/local/src` so the row needs no privilege on the host.
+            usrsrc = d / "usrsrc"
+            usrsrc_dialogs = usrsrc / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            usrsrc_dialogs.mkdir(parents=True)
+            (usrsrc_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
+            (work / "data").mkdir()
+            usrsrc_empty = d / "usrsrc_empty"
+            (usrsrc_empty / "atmofab").mkdir(parents=True)  # a mountpoint the outer bwrap can use
+            exempt_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                            str(exempt_repo)]
             cases = [
-                ("root is the bind", [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
-                ("bind below the root", [(repo / "workspace", tools / "alias")], tools / "bin",
-                 "REFUSED"),
-                ("no mount (control)", [], tools / "bin", "ACCEPTED"),
+                ("root is the bind", child, [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
+                ("bind below the root", child, [(repo / "workspace", tools / "alias")],
+                 tools / "bin", "REFUSED"),
+                ("no mount (control)", child, [], tools / "bin", "ACCEPTED"),
+                ("exempt root, bind below it outside the checkout", exempt_child,
+                 [(exempt_repo / "workspace", work / "alias")], work / "npm" / "bin", "REFUSED"),
+                # Stacked: an innocuous tree first, the hidden tree ON TOP at the same point.
+                # `_fs_identity` used to read the bottom entry (round 2).
+                ("exempt root, hidden tree stacked over an innocuous mount", exempt_child,
+                 [(work / "innocuous", work / "alias"), (exempt_repo / "workspace", work / "alias")],
+                 work / "npm" / "bin", "REFUSED"),
+                ("exempt root, checkout is a bind of a tree under the root", exempt_child,
+                 [(src_repo, exempt_repo)], work / "npm" / "bin", "REFUSED"),
+                ("exempt root, bind of the root itself with the checkout spelled through it",
+                 proj_child, [(work, work / "proj")], work / "npm" / "bin", "REFUSED"),
+                ("exempt root, foreign mount between root and checkout (control)", proj_child,
+                 [(disk, work / "proj")], work / "npm" / "bin", "ACCEPTED"),
+                ("exempt root, checkout bound onto itself (control)", exempt_child,
+                 [(exempt_repo, exempt_repo)], work / "npm" / "bin", "ACCEPTED"),
+                ("exempt root, bind under the checkout's own path (control)", exempt_child,
+                 [(exempt_repo / "workspace", exempt_repo / "alias2")], work / "npm" / "bin",
+                 "ACCEPTED"),
+                ("exempt root, no mount (control)", exempt_child, [], work / "npm" / "bin",
+                 "ACCEPTED"),
+                ("checkout physically under /usr/local/src, bound into the working tree",
+                 exempt_child, [(usrsrc, Path("/usr/local/src")), (usrsrc / "atmofab", exempt_repo)],
+                 work / "npm" / "bin", "REFUSED"),
+                ("checkout mirrored under /usr/local/src", exempt_child,
+                 [(usrsrc_empty, Path("/usr/local/src")), (exempt_repo, Path("/usr/local/src/atmofab"))],
+                 work / "npm" / "bin", "REFUSED"),
+                # A whole other filesystem under the exempt root (a scratch tmpfs, a data
+                # disk): a different device, `root_within=/`, and the round-3 sweep found
+                # that dropping the DEVICE comparison in `_overlaps` survived every row —
+                # this is the row that sees it.
+                ("exempt root, a separate filesystem mounted under it (control)", exempt_child,
+                 [], work / "npm" / "bin", "ACCEPTED", [work / "data"]),
+                ("checkout and HOME physically under /usr/local/src, started there (control)",
+                 sys_child, [(sys_layout, Path("/usr/local/src"))], None, "ACCEPTED"),
             ]
-            for label, binds, path_dir, expected in cases:
+            for label, argv, binds, path_dir, expected, *tmpfs in cases:
                 with self.subTest(case=label):
-                    res = subprocess.run([*self._outer_bwrap(binds), "--", *child, str(path_dir)],
+                    outer = self._outer_bwrap(binds, tmpfs[0] if tmpfs else [])
+                    # `sys_child` carries its own path_dir and HOME (both under the bind).
+                    tail = [] if path_dir is None else [str(path_dir)]
+                    res = subprocess.run([*outer, "--", *argv, *tail],
                                          capture_output=True, text=True, timeout=120,
                                          check=False)  # the exit code is asserted below
                     self.assertEqual(res.returncode, 0, res.stderr)
                     self.assertTrue(res.stdout.startswith(expected), res.stdout)
                     if expected == "REFUSED":
                         self.assertIn("carries a mount", res.stdout)
+                        # The refusal names WHICH bind set carried the second name.
+                        self.assertIn("system directory bound read-only" if "/usr/local/src" in label
+                                      else "backend install root", res.stdout, res.stdout)
+                    else:
+                        # An accepted layout is only right if the rendered profile then
+                        # hides the planted dialogs at every name the probe can reach: the
+                        # checkout's own path and the mount under it. (`child`'s own layout
+                        # plants nothing, so its control prints HIDDEN vacuously; every other
+                        # accepted row has `PRODUCER REASONING` planted at the checkout.)
+                        self.assertIn("DIALOG:HIDDEN", res.stdout, res.stdout)
+                        self.assertIn("UNDER_REPO:HIDDEN", res.stdout, res.stdout)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
         self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
@@ -355,6 +620,114 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     def test_claude_cli_starts_inside_its_own_profile(self) -> None:
         self._assert_backend_cli_starts_inside_its_profile("claude", "claude",
                                                           private_home=False)
+
+    # ---- issue #227: the pure launch reaches its first API request from the EMPTY cwd ----
+
+    def _pure_launch_under_profile(self, backend: str, *, model: str = "",
+                                   private_home: bool) -> tuple[list[str], dict, Path]:
+        """The production argv (`Conductor.leaf_command`) and profile for one pure launch.
+
+        Returns `(argv, profile, repo)`; the caller owns the tempdirs through `addCleanup`.
+        """
+        if shutil.which(backend) is None:
+            self.skipTest("backend CLI not installed on this host")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name).resolve() / "repo"
+        repo.mkdir()
+        # A UUID, as production's child ids are: the claude argv passes it as `--session-id`,
+        # which the CLI validates before anything else.
+        orch, arid = f"orch_{backend}_lb", str(uuid.uuid4())
+        _ensure_orchestration_audit_dirs(repo, orch)
+        conductor = wc.Conductor(
+            repo_root=repo, orchestration_id=orch, orchestration_agent_run_id="ORCH",
+            llm_config=sample_config_with(backend, agent_model=model), env={})
+        argv = conductor.leaf_command(session_id=arid)
+        kwargs: dict = {}
+        if private_home:
+            home = Path(tmp.name).resolve() / "home"
+            home.mkdir(mode=0o700)
+            # What production's private `CODEX_HOME` carries for this checkout: the
+            # untrusted marker, keyed on the same `repo_root` spelling the sandbox chdirs to.
+            (home / "config.toml").write_text(
+                f'[projects."{repo}"]\ntrust_level = "untrusted"\n', encoding="utf-8")
+            kwargs = {"backend_rw_override": [str(home)],
+                      "env_overrides": {"CODEX_HOME": str(home)}}
+        profile = build_readonly_bwrap_profile(
+            repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+            backend_command=backend, backend_type=backend, **kwargs)
+        return argv, profile, repo
+
+    def test_codex_pure_launch_reaches_the_api_from_the_empty_cwd(self) -> None:
+        """UNBILLED measurement of what issue #227 costs the codex launch, under real bwrap.
+
+        The sandbox holds no checkout, so `codex exec` starts in an EMPTY, non-git cwd — which
+        codex refuses before any API call unless `--skip-git-repo-check` is passed (measured
+        on codex-cli 0.154.0: `Not inside a trusted directory and --skip-git-repo-check was
+        not specified.`, rc 1). The production argv carries the flag; this row execs the real
+        CLI with that argv under the rendered profile and observes the request arriving at a
+        loopback stand-in: the CLI got past the git check, read its `--output-schema` file
+        from the tmpfs-mounted `workspace/tmp/<arid>`, and reached the network.
+
+        The redirect is a `--config model_provider` override, NOT `OPENAI_BASE_URL`: measured,
+        the env variable is not honoured by codex-cli 0.154.0 with a private `CODEX_HOME`
+        (the request went to `wss://api.openai.com`), and the profile's env allowlist would
+        refuse the name anyway. A custom provider with no `env_key` sends no credential, so
+        the row needs no `auth.json`.
+
+        CONTROL: the same launch with the flag removed must NOT reach the stand-in and must
+        name the refusal — that is what makes the flag load-bearing rather than decorative,
+        and it is the row a revert of `leaf_command`'s hunk fails.
+        """
+        argv, profile, _repo = self._pure_launch_under_profile(
+            "codex", model="gpt-5.6-sol", private_home=True)
+        server = _Loopback400()
+        self.addCleanup(server.close)
+        overrides = ["--config", 'model_provider="loopback"',
+                     "--config", 'model_providers.loopback.name="loopback"',
+                     "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"',
+                     "--config", 'model_providers.loopback.wire_api="responses"']
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        with_flag = [*argv[:-2], *overrides, *argv[-2:]]
+        self.assertIn("--skip-git-repo-check", with_flag)
+        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=with_flag),
+                             input="Reply with one word.", capture_output=True, text=True,
+                             timeout=180, check=False)  # rc 1 is the 400 turning into turn.failed
+        self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
+        self.assertEqual(server.hits, ["POST /v1/responses"], res.stdout + res.stderr)
+        self.assertNotIn("skip-git-repo-check", res.stderr)
+        without_flag = [tok for tok in with_flag if tok != "--skip-git-repo-check"]
+        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=without_flag),
+                             input="Reply with one word.", capture_output=True, text=True,
+                             timeout=180, check=False)  # the refusal exits 1 before any request
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("--skip-git-repo-check was not specified", res.stderr, res.stdout)
+        self.assertNotIn("thread.started", res.stdout)
+        self.assertEqual(server.hits, ["POST /v1/responses"], "the control must add no hit")
+
+    def test_claude_pure_launch_reaches_the_api_from_the_empty_cwd(self) -> None:
+        """UNBILLED: the claude pure leaf takes the same profile (one profile for both
+        backends — the decision recorded on issue #227), so it too starts from an empty cwd.
+        A tool-free `claude -p --safe-mode --tools ""` needs nothing from the checkout; this
+        row execs the real CLI with the production argv under the rendered profile and
+        observes its first request at a loopback stand-in. `ANTHROPIC_BASE_URL` is set by an
+        `env` prefix INSIDE the sandbox because the profile's env allowlist refuses the name
+        (it is the redirect the allowlist exists to close); `--safe-mode` reads no settings
+        layer, so the env variable is the only redirect available and it is honoured (the
+        repository's `measure_claude_tool.py` pattern).
+        """
+        argv, profile, _repo = self._pure_launch_under_profile("claude", private_home=False)
+        server = _Loopback400()
+        self.addCleanup(server.close)
+        command = ["env", f"ANTHROPIC_BASE_URL={server.base_url}",
+                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+                             input="Reply with one word.", capture_output=True, text=True,
+                             timeout=240, check=False)  # rc 1 is the 400 surfacing as api_error
+        self.assertTrue(server.hits, res.stdout + res.stderr)
+        self.assertTrue(all(hit.startswith("POST /v1/messages") for hit in server.hits),
+                        server.hits)
+        self.assertIn('"terminal_reason":"api_error"', res.stdout, res.stdout + res.stderr)
 
 
 if __name__ == "__main__":

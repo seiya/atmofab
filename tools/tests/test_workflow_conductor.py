@@ -7314,6 +7314,7 @@ class LeafSpawnTest(unittest.TestCase):
         argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="a")
         self.assertEqual(argv[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+        self.assertIn("--skip-git-repo-check", argv)  # issue #227: the sandbox cwd is empty
         self.assertEqual(argv[-2:], ["--json", "-"])
         self.assertNotIn("--dangerously-bypass-hook-trust", argv)
 
@@ -7426,6 +7427,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertNotIn("--sandbox", argv)
         self.assertIn('sandbox_mode="read-only"',
                       [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
+        self.assertIn("--skip-git-repo-check", argv)  # issue #227: the sandbox cwd is empty
 
     def test_codex_leaf_rejects_generic_model_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit model slug"):

@@ -235,7 +235,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 - Each phase of `Compile` / `Generate` / `Validate` runs with the `orchestration agent` launching each `substep`'s `substep agent` independently.
 - The actual processing of each `step` / `substep` must not be proxied by a script.
 - The `step agent` and `substep agent` have a unique `context_id` per `agent_run_id` and require recording `context_isolated=true`.
-- `record-launch` generates `workspace/orchestrations/<orchestration_id>/sandbox_profiles/<agent_run_id>.json` per child process launch, and that is the only document it writes ABOUT the launch's authority — read-only, `write_roots: []`, enforced by `bwrap`. The capability, read manifest and output manifest it wrote beside it are deleted ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2); `docs/ORCHESTRATION.md` §"Capability / Manifest contract (removed in issue #171 PR-2)" is canonical for what replaced them and for the codex read boundary that stays open.
+- `record-launch` generates `workspace/orchestrations/<orchestration_id>/sandbox_profiles/<agent_run_id>.json` per child process launch, and that is the only document it writes ABOUT the launch's authority — read-only, `write_roots: []`, enforced by `bwrap`. The capability, read manifest and output manifest it wrote beside it are deleted ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2); `docs/ORCHESTRATION.md` §"Capability / Manifest contract (removed in issue #171 PR-2)" is canonical for what replaced them; §"The read boundary, closed for both backends" is canonical for what a codex leaf can reach ([issue #227](https://github.com/seiya/atmofab/issues/227)).
 - On completion of each `step` / `substep`, save `agent.result.json` and `agent.summary.txt`.
 - The `orchestration agent` sequentially decides the launch order based on the `topo_level` of the `dependency_graph.json` sidecar and the dependency-satisfaction state.
 - The `orchestration` execution record is saved in `workspace/orchestrations/<orchestration_id>/`, and `orchestration_meta.json`, `agent_graph.json`, and `agent_runs.jsonl` are required.
@@ -521,10 +521,11 @@ paragraph after the list for what that leaves):
   `allowed_read_roots` contained `docs/` and `spec/` unconditionally, so a homes root at
   `<repo>/spec/homes` was readable by every leaf, exposing every earlier leaf's transcript.
   Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted both layers with
-  the agentic leaf; the rule is KEPT because a homes root inside the checkout is still
-  visible to the one leaf that does hold tools — a codex pure leaf, whose read boundary
-  `TODO.md` records as open — and because a tree inside the checkout pollutes the operator's
-  `git status` whatever reads it. (The rule was written for two trees; the other, the dismiss-violation token
+  the agentic leaf, and [issue #227](https://github.com/seiya/atmofab/issues/227) then took
+  the checkout itself out of every leaf's sandbox, so the one leaf that does hold tools — a
+  codex pure leaf — cannot reach a homes root inside the checkout either; the rule is KEPT
+  because a tree inside the checkout pollutes the operator's `git status` whatever reads it,
+  and because it refuses at launch what the mount set would otherwise merely hide. (The rule was written for two trees; the other, the dismiss-violation token
   store, was where it was first measured — a leaf holding that token could approve its own
   `unauthorized_write_violation` — and it went away with issue #176.)
 

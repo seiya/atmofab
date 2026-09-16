@@ -767,6 +767,9 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertIn("--output-schema", argv)
         self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--ignore-rules", argv)
+        # The sandbox holds no checkout (issue #227), and codex refuses an untrusted non-git
+        # cwd before any API call without this flag.
+        self.assertIn("--skip-git-repo-check", argv)
         # `-` is codex's stdin sentinel for the positional prompt, not the prompt itself.
         self.assertEqual(argv[-2:], ["--json", "-"])
 
@@ -789,6 +792,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
                       [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
         self.assertIn("--ignore-rules", argv)
         self.assertIn("--output-schema", argv)
+        self.assertIn("--skip-git-repo-check", argv)  # issue #227; the resume cwd is empty too
         self.assertIn("thread-1", argv)
         self.assertEqual(argv[-2:], ["--json", "-"])
 
