@@ -9708,6 +9708,83 @@ end program shallow_water2d_runner
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("shape_expr must match referenced state_snapshots schema shape" in v for v in violations))
 
+    def test_snapshot_output_listing_field_and_time_variable_is_refused_and_contract_states_it(self) -> None:
+        """Issue #233: `raw_variables: [h, time]` on one snapshot output resolves to two
+        shapes (`[2,2]` and scalar) and is refused by the single-resolved-shape rule. The
+        rule is enforced here and the leaf reads it only from the inlined phase contract
+        (`docs/workflow/phases/phase_01_compile.md`), which named the rule without stating
+        it from `537475dc` until #233 — one billed `compile.generate` re-run per node whose
+        author took the contract's `name or time_variable` wording literally. The pin is
+        DERIVED from the validator's own output (the message tail after the output index),
+        never from a test-local copy, so a reworded refusal reddens the document check
+        rather than letting the two drift apart."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            model_text = """module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+"""
+            runner_text = """program shallow_water2d_runner
+implicit none
+write(*,*) 'diagnostics only'
+end program shallow_water2d_runner
+"""
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=model_text,
+                runner_text=runner_text,
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                io_contract={
+                    "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
+                    "outputs": [
+                        {
+                            "name": "U_np1",
+                            "shape_expr": "[2,2]",
+                            "evidence_ref": "raw/state_snapshots",
+                            "raw_variables": ["h", "time"],
+                        }
+                    ],
+                    "semantic_dependency": {"required_sources": ["h"]},
+                    "raw_requirements": {
+                        "required_evidence": [
+                            {"artifact": "metrics_basis.json", "required": True},
+                            {"artifact": "execution_trace.json", "required": True},
+                            {
+                                "artifact": "state_snapshots",
+                                "required": True,
+                                "min_samples": 1,
+                                "schema": {
+                                    "variables": [
+                                        {"name": "h", "shape_expr": "[2,2]"}
+                                    ],
+                                    "time_variable": "time",
+                                    "time_shape_expr": "scalar",
+                                },
+                            },
+                        ]
+                    },
+                },
+            )
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+        marker = "io_contract.outputs[0]."
+        multi_shape = [v.split(marker, 1)[1] for v in violations if marker in v and "single referenced" in v]
+        self.assertEqual(
+            multi_shape,
+            ["shape_expr must resolve to a single referenced state_snapshots variable/time_variable shape"],
+        )
+        contract = (Path(__file__).resolve().parents[2] / "docs" / "workflow" / "phases" / "phase_01_compile.md").read_text(encoding="utf-8")
+        self.assertIn(multi_shape[0], contract)
+        self.assertIn("shape_expr must match referenced state_snapshots schema shape", contract)
+        self.assertIn("every element of `raw_variables` must resolve to the SAME shape", contract)
+
     def test_snapshot_time_shape_expr_must_be_scalar(self) -> None:
         """C1: the per-snapshot time index is canonically a scalar loop counter; a
         non-scalar `time_shape_expr` (e.g. "[1]") is rejected at the compile io_contract
