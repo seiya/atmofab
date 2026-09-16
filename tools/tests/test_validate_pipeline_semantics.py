@@ -24849,10 +24849,15 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         self.assertNotIn("does not carry the controlled_spec", proc.stdout)
 
     def test_every_io_contract_finding_on_the_certified_ir_is_wrapped(self) -> None:
-        """The wrap is per FINDING. The incident IR carried three io_contract findings; a wrap
-        that marked only the first (rc 4 either way) would strip the marker and the remedy from
-        the others in `gate_meta.failure_excerpt`. Survived the round-0 sweep because every
-        subprocess row seeded exactly one finding (round-1 correctness axis, F5)."""
+        """The wrap is per FINDING and per CLASS. The incident IR carried three io_contract
+        findings of TWO classes (two `evidence_ref` ones and a `required_evidence[].artifact`
+        one); a wrap that marked only the first (rc 4 either way) would strip the marker and
+        the remedy from the others in `gate_meta.failure_excerpt`, and a wrap keyed on the text
+        of one class (`"evidence_ref" in v`) would leave an IR carrying only the other class
+        on rc 1 — the warm Generate retries #238 was opened on. Both mutants survived earlier
+        rounds because every subprocess row seeded one finding of one class (round-1
+        correctness F5, round-2 security F1). Both classes are seeded here, positionally
+        distinct in the message, and each bullet must carry the marker."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             _seed_shape_expr_schema_into(tmp)
@@ -24860,15 +24865,20 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                 tmp, evidence_ref="raw/execution_trace.json")
             ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
             doc = json.loads(ir_path.read_text(encoding="utf-8"))
-            doc["io_contract"]["inputs"].append(
-                {"name": "second", "evidence_ref": "raw/execution_trace.json"})
+            doc["io_contract"]["raw_requirements"]["required_evidence"].append(
+                {"artifact": "execution_trace.json", "required": True})
             ir_path.write_text(json.dumps(doc), encoding="utf-8")
             proc = self._run_cli(tmp, pipeline_dir)
         self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
-        hits = [line for line in proc.stdout.splitlines()
-                if "names no raw-evidence artifact" in line]
-        self.assertEqual(2, len(hits), proc.stdout)
-        for line in hits:
+        ref_hits = [line for line in proc.stdout.splitlines()
+                    if "names no raw-evidence artifact" in line]
+        enum_hits = [line for line in proc.stdout.splitlines()
+                     if "required_evidence[1].artifact 'execution_trace.json' must be one of" in line]
+        self.assertEqual(1, len(ref_hits), proc.stdout)
+        self.assertEqual(1, len(enum_hits), proc.stdout)
+        # The second class does not carry the first class's token, so a lexical wrap fails here.
+        self.assertNotIn("evidence_ref", enum_hits[0].split(vps.STALE_DEPENDENCY_IR_MARKER)[0])
+        for line in ref_hits + enum_hits:
             self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, line)
 
     def test_the_same_io_contract_finding_stays_rc_1_at_compile_stage(self) -> None:
