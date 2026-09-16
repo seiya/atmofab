@@ -279,9 +279,11 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # Gate categories that are TERMINAL (fail_closed), NOT a warm Generate.generate retry: the
 # failing condition is one the Generate leaf cannot repair by re-authoring its source, so retrying is
-# futile. `stale_dependency_ir` — a certified dependency IR predating a carrier contract (e.g. the
-# harness's public_api.module_parameters) reached Generate.gate on a resume that skipped Compile;
-# the fix is a re-certification (a version bump makes dependency freshness re-run it), not a re-author.
+# futile. `stale_dependency_ir` — the node's OWN certified IR predating the current contract (the
+# §5.1 carrier surface, or since issue #238 an io_contract rule) reached Generate.gate on a resume
+# that skipped Compile; the fix is a re-certification, not a re-author. Since #238 readiness
+# (`_ir_certification`) refuses such an IR before Generate is reached, so this category is the
+# gate-side backstop; `--resume` re-derives the IR through Compile.
 # `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
@@ -786,7 +788,7 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
       - empty (a FAIL with no parseable category) -> escalate("gate_fail_no_category")
       - any TERMINAL category present             -> fail_closed (dominates a co-occurring warm
                                                      category; the leaf cannot re-author its way
-                                                     out of a stale certified dependency IR)
+                                                     out of its node's stale certified IR)
       - any UNKNOWN category present              -> escalate (a novel category the tables do not
                                                      cover; the diagnostician decides)
       - all categories known + non-terminal       -> retry ("generate", "reuse")
@@ -798,7 +800,7 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
         return RouteDecision("escalate", reason="gate_fail_no_category")
     reason = "gate_" + "+".join(ordered)
     if any(c in GATE_FAILURE_TERMINAL for c in ordered):
-        # No warm retry: a stale certified dependency IR (or any terminal category) is not
+        # No warm retry: the node's own stale certified IR (or any terminal category) is not
         # repairable by re-authoring source. Fail closed so the operator re-certifies instead of
         # exhausting Generate retries. Terminal dominates any co-occurring warm category.
         return RouteDecision("fail_closed", reason=reason)
@@ -10245,8 +10247,8 @@ clean:
                 )
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
-                # re-authoring its source. `stale_dependency_ir` is a certified dependency IR the
-                # leaf does not own; `static_frontend_unavailable` is an absent parser on the
+                # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
+                # which the leaf does not own; `static_frontend_unavailable` is an absent parser on the
                 # machine running the gate, without which the Fortran gates read NOTHING.
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).
@@ -10733,9 +10735,10 @@ clean:
             # a snapshot gap next, quality_check last.
             #
             # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
-            # the same remedy. The stale-IR violation has one emit site
-            # (`_validate_generated_signatures`) and one caller
-            # (`_validate_generate_outputs_for_generation`, post_generate only); the
+            # the same remedy. The stale-IR violation has two emit sites, both on the
+            # post_generate path only — `_validate_generated_signatures` (via
+            # `_validate_generate_outputs_for_generation`) and the io_contract wrap in
+            # `_validate_post_generate_stage_impl` (issue #238); the
             # host-authored wrap has one construction site, in that same post_generate caller —
             # post_execute reaches the runner gates through `_validate_runner_outputs`, which is
             # a different caller and does not wrap (issue #112). Both are wired here anyway so

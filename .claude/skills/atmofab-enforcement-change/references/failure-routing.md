@@ -193,3 +193,36 @@ over".**
 in question are host-authored and leaf-non-writable, so no leaf gains anything by malforming one. It
 is an availability and reproducibility class — the "loss of reproducibility" fix category in
 `atmofab-review-loop` — which is why it is in scope at all despite no leaf gain.
+
+## A finding whose subject is the certified IR is the rc 4 class whatever rule fired (2026-09-16, issue #238)
+
+§The decision says what the leaf can fix is a content failure and what the IR caused is a
+transport fail_closed. Issue #238 is the case where the routing was decided per RULE rather than
+per SUBJECT: `--stage post_generate` re-reads the node's own certified `spec.ir.yaml` through the
+`--stage compile` io_contract reader, and a finding there was `post_generate_violation` — a warm
+`generate.generate` retry — while the §5.1 surface guard, reading the SAME file at the same gate,
+was already `StaleDependencyIRViolation` → rc 4 → terminal. PR #236 retired an evidence token; the
+next run skipped Compile on an IR certified before that, and the gate spent four launches on source
+that was never the cause (`orch_20260916T081200Z_5139f6c9`).
+
+- **Attribute by what the call site was GIVEN, not by which rule the reader applied.** The
+  post_generate io_contract call is handed nothing but the certified IR, so every finding it returns
+  has the same subject as the §5.1 guard's; it takes the same TYPE (`_as_stale_certified_ir`, a
+  suffix wrap, positional attribution as `HostAuthoredArtifactViolation` documents it). No new exit
+  code, no new category: the `terminal-set` drift guard and all three gate readers were untouched.
+- **The `--stage compile` call of the same reader stays plain.** There the IR IS the artifact under
+  repair, and rc 1 → `compile_static_violation` → warm `compile.generate` is right. Wrapping by
+  reader instead of by call site would have terminalized Compile's own repair loop.
+- **The earliest reliable detection was readiness, not the gate** (§"Once attribution is decided,
+  decide when it should surface"). `_ir_certification` now runs `validate_compile_stage` LAST, on an
+  otherwise-certified IR, and refuses `ir_rejected_by_current_validator:…`; the gate's rc 4 is the
+  backstop for a rule change landing inside one run. The compile-reopen arm the `GATE_FAILURE_TERMINAL`
+  comment defers was again not built: with the readiness clause it is reachable only inside that
+  window, and `dev`'s F1 guard turns any cross-phase reopen into revoke-then-`fail_closed` anyway.
+- **The readiness clause is an evaluator** (§above): a raise from the validator is a refusal
+  `ir_validator_raised:<type>`, never a propagated exception, for the reason issue #153 recorded.
+- **Fixture fallout is the tell that a class moved.** Two exit-code test classes used "an IR with no
+  io_contract" as their source of ORDINARY co-occurring violations; after the wrap those findings are
+  the terminal class, and rc 4 outranks rc 5, so `HostAuthoredArtifactExitCodeTests` answered 4 on
+  every row. The `_exit_code` docstring's "the two terminal shapes cannot co-occur on a real node"
+  was false from that commit on and had to be rewritten with the reason the order still holds.

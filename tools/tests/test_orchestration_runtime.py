@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
 from tools import orchestration_runtime as ort
-from tools.tests.orchestration_fixtures import certify_node
+from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -588,6 +588,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         return checks
 
     def setUp(self) -> None:
+        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
+        # `spec.ir.yaml` `certify_node` writes does not pass. This class is about the OTHER
+        # clauses, so the validator answers "accepted" here; the rows that pin the validator
+        # clause itself live in `PhaseCertificationTests` and patch the seam on their own.
+        accept_ir = accept_any_certified_ir()
+        accept_ir.start()
+        self.addCleanup(accept_ir.stop)
         self._old_live_preflight = os.environ.get("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
         self._old_assume_bwrap = os.environ.get("ATMOFAB_ORCHESTRATION_ASSUME_BWRAP")
         self._old_codex_home = os.environ.get("ATMOFAB_HOME")
@@ -8292,6 +8299,17 @@ class PhaseCertificationTests(unittest.TestCase):
     ledger says a run completed. The predicate reads the same way on a cold run and on a
     resume, so each refusal below is a property of the artifact chain, never of the mode."""
 
+    def setUp(self) -> None:
+        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
+        # `spec.ir.yaml` `certify_node` writes does not pass. Most rows here are about the
+        # OTHER clauses, so the validator answers "accepted" by default; the rows that pin the
+        # validator clause itself (`test_check_phase_certified_refuses_an_ir_the_current_…`,
+        # `test_the_validator_clause_runs_last`, …) re-patch the seam with their own verdict,
+        # and the inner patch wins for their duration.
+        accept_ir = accept_any_certified_ir()
+        accept_ir.start()
+        self.addCleanup(accept_ir.stop)
+
     _NK = "component/spec_x@0.1.0"
 
     def _preflight(self, repo_root: Path, oid: str = "o1",
@@ -8789,6 +8807,15 @@ class PhaseCertificationTests(unittest.TestCase):
             doc["verification_status"] = "fail"
             (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(self._reason(repo, "compile"), "verification_status_not_pass")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="compile")
+            # status, hashes and freshness all pass; the current compile-stage validator does not
+            with patch.object(ort, "_certified_ir_violations", return_value=["a", "b"]):
+                self.assertEqual(self._reason(repo, "compile"),
+                                 "ir_rejected_by_current_validator:2:a")
+            with patch.object(ort, "_certified_ir_violations", side_effect=OSError("io")):
+                self.assertEqual(self._reason(repo, "compile"), "ir_validator_raised:OSError")
 
     def test_check_phase_certified_refuses_a_revoked_artifact_and_reports_last_fail_reason(self) -> None:
         """Revocation is what a re-derivation decision leaves on the ARTIFACT, so it survives
@@ -9019,6 +9046,104 @@ class PhaseCertificationTests(unittest.TestCase):
             ort._revoke_stage_meta(repo, repo / refs["ir_meta"], reason="r",
                                    trigger_agent_run_id="t")
             self.assertIsNone(ort._certified_ir_candidate(repo, self._NK))
+
+    _FINDING = ("/x/spec.ir.yaml:io_contract.inputs[4].evidence_ref 'raw/execution_trace.json' "
+                "names no raw-evidence artifact the workflow produces")
+
+    def test_check_phase_certified_refuses_an_ir_the_current_validator_rejects(self) -> None:
+        """Issue #238: a `spec.ir.yaml` certified before a validator rule change keeps its
+        `pass` status and its hashes, so status + hashes + freshness would skip Compile onto an
+        IR `generate.gate` then rejects on every attempt. The compile clause therefore asks the
+        current `--stage compile` validator; a finding refuses the IR, the phase is NOT recorded
+        `skipped_certified`, the refusal names the finding, and — the chain being cumulative —
+        every downstream phase is refused for the same reason."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            with patch.object(ort, "_certified_ir_violations",
+                              return_value=[self._FINDING]) as seam:
+                out = ort.check_phase_certified(
+                    repo_root=repo, orchestration_id="o1", node_key=self._NK, step="compile")
+                self.assertFalse(out["certified"])
+                self.assertTrue(out["reason"].startswith("ir_rejected_by_current_validator:1:"),
+                                out["reason"])
+                self.assertIn("names no raw-evidence artifact", out["reason"])
+                # The artifact is still named, so the log says WHICH IR was refused.
+                self.assertEqual(out["ir_ref"], refs["ir_ref"])
+                self.assertIsNone(out["phase_state"])
+                log_path = repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+                events = [json.loads(x)["event"] for x in log_path.read_text("utf-8").splitlines()
+                          if x.strip()] if log_path.is_file() else []
+                self.assertNotIn("skip_certified", events)
+                # The seam was asked about THIS IR, not some other path.
+                seam.assert_called_with(repo, refs["ir_ref"])
+                # Downstream: generate stands on the same IR and is refused with it.
+                self.assertTrue(self._reason(repo, "generate").startswith(
+                    "ir_rejected_by_current_validator:1:"))
+            # Same chain, validator satisfied: certified again. The refusal was the verdict's.
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+
+    def test_the_validator_clause_runs_last(self) -> None:
+        """Precedence: every earlier refusal keeps its reason, and the (expensive) validator
+        is not consulted for an IR the cheaper clauses already refused. Three earlier clauses,
+        three probes: the meta (revoked), the hashes, and the 13a freshness comparison — the
+        last one was missing until round 2, and a mutant moving the validator above freshness
+        survived (the reason would then read `ir_rejected_by_current_validator` where the
+        RUNBOOK table sends the operator to `resolution_stale`'s remedy)."""
+        import contextlib
+
+        def _revoked(repo, refs):
+            ort._revoke_stage_meta(repo, repo / refs["ir_meta"], reason="r",
+                                   trigger_agent_run_id="t")
+            return contextlib.nullcontext()
+
+        def _tampered(repo, refs):
+            (repo / refs["ir_ref"] / "spec.ir.yaml").write_text("tampered: yes\n",
+                                                                encoding="utf-8")
+            return contextlib.nullcontext()
+
+        def _stale_freshness(repo, refs):
+            return patch.object(ort, "_dependency_resolution_freshness",
+                                return_value=(False, "closure moved"))
+
+        for mutate, expected in (
+            (_revoked, "revoked"),
+            (_tampered, "artifact_hash_mismatch:"),
+            (_stale_freshness, "resolution_stale:closure moved"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._certified(repo, through="compile")
+                with mutate(repo, refs), \
+                        patch.object(ort, "_certified_ir_violations",
+                                     side_effect=AssertionError("must not run")):
+                    self.assertTrue(self._reason(repo, "compile").startswith(expected))
+
+    def test_a_validator_exception_is_a_refusal_not_a_raise(self) -> None:
+        """`_phase_certified` is an evaluator whose callers hold no handler (the readiness
+        loop in `run_workflow` among them), so a validator defect becomes a named refusal
+        rather than a propagated exception that aborts the conductor."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._certified(repo, through="compile")
+            with patch.object(ort, "_certified_ir_violations",
+                              side_effect=RuntimeError("validator defect")):
+                self.assertEqual(self._reason(repo, "compile"), "ir_validator_raised:RuntimeError")
+
+    def test_a_stale_ir_is_not_adopted_on_a_cold_run(self) -> None:
+        """The cold-run adoption path asks the same clause, so a cold run over an IR the
+        current validator rejects mints a fresh ir_id (Compile re-derives) instead of
+        adopting it — the outcome of a revocation, with no revocation record written."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._certified(repo, through="compile", reserve=False)
+            with patch.object(ort, "_certified_ir_violations", return_value=[self._FINDING]):
+                self.assertIsNone(ort._certified_ir_candidate(repo, self._NK))
+            with patch.object(ort, "_certified_ir_violations", return_value=[]):
+                self.assertEqual(ort._certified_ir_candidate(repo, self._NK), refs["ir_id"])
+            meta = json.loads((repo / refs["ir_meta"]).read_text("utf-8"))
+            self.assertEqual(meta["verification_status"], "pass")
 
     def test_revoke_artifact_refuses_the_phase_afterwards(self) -> None:
         """`revoke-artifact` is the whole of a re-derivation decision that reaches the
@@ -9559,6 +9684,15 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
     What went with the census is what made 17 tombstone call sites necessary — every attempt
     that ended without a step_result had to be exempted by name, or it deadlocked the pass.
     """
+
+    def setUp(self) -> None:
+        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
+        # `spec.ir.yaml` `certify_node` writes does not pass. This class is about the OTHER
+        # clauses, so the validator answers "accepted" here; the rows that pin the validator
+        # clause itself live in `PhaseCertificationTests` and patch the seam on their own.
+        accept_ir = accept_any_certified_ir()
+        accept_ir.start()
+        self.addCleanup(accept_ir.stop)
 
     _NK = "component/spec_x@0.1.0"
 

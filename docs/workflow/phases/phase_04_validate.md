@@ -125,7 +125,7 @@ When the structural check fails, `Validate.execute` records the following keys i
 
 Classification convention for `failure_category` (evaluated in this order). The first two are decided by the **exit code** `validate_pipeline_semantics --stage post_execute` answered with, and they **dominate** any co-occurring symptom, because the condition they name also fails the other inputs and no re-authored source repairs it. Below them a more specific report wins:
 - `static_frontend_unavailable`: exit code 3 — the source-structure front end is not installed on the machine running the gate, so the gates that need it read nothing.
-- `stale_dependency_ir`: exit code 4 — a violation reported a stale or corrupt certified IR. Not reachable from this stage as the gates stand (the stale-IR violation is emitted only on the `post_generate` path); wired so that if a `post_execute` gate ever reports it, it fails closed rather than arriving as a warm retry.
+- `stale_dependency_ir`: exit code 4 — a violation whose subject is the node's own certified IR, predating the current contract. Not reachable from this stage as the gates stand (both emit sites — the §5.1 surface guard and, since issue #238, the io_contract wrap — are on the `post_generate` path; the `post_execute` reader of the same IR schema, `_validate_io_contract_schema`, is deliberately left plain: its finding is `post_execute_violation`, which in `prod` buys one warm `generate.generate` launch and reopens `Compile` on the second failure (`C2_EXECUTE_FAIL_ESCALATION_THRESHOLD`), and in `dev` is a backward cross-phase move that fails closed on the first — one launch at most, against the four the Generate budget spent at `generate.gate`; and readiness now refuses any IR that reader would fail, since it is the same function as `--stage compile`'s); wired so that if a `post_execute` gate ever reports it, it fails closed rather than arriving as a warm retry.
 - `post_execute_violation`: any other non-zero exit of `validate_pipeline_semantics --stage post_execute`.
 - `snapshot_deliverable_gap`: a required `raw/state_snapshots/<case_id>.json` is missing or misnamed.
 - `quality_check_mismatch`: `quality_check.json#status != pass` (the `make test` re-run disagrees with `run_program`).
@@ -133,7 +133,7 @@ Classification convention for `failure_category` (evaluated in this order). The 
 | `failure_category` | `repair_strategy` | basis |
 |---|---|---|
 | `static_frontend_unavailable` | — (terminal) | a machine problem, not a source defect: `classify_failure` fail-closes it before the `Compile`-reopen counter counts it. Recovery is the operator installing the front end, then `--resume` |
-| `stale_dependency_ir` | — (terminal) | the leaf does not own the certified IR; recovery is a re-certification (`run_workflow.py --with-deps`), then `--resume` |
+| `stale_dependency_ir` | — (terminal) | the leaf does not own the certified IR; recovery is `--resume` (readiness refuses an IR the current `--stage compile` validator rejects and `Compile` re-derives it, issue #238); `--with-deps` adds nothing, since a dependency's IR is not re-validated by readiness (`docs/ORCHESTRATION.md` §13c) |
 | `post_execute_violation` | `reuse` | the gate names the offending artifact and shape; a local fix of the emitting code converges |
 | `snapshot_deliverable_gap` | `reuse` | a local fix of the snapshot filename / emission site |
 | `quality_check_mismatch` | `reuse` | a local fix of the `test` target or of nondeterministic runner output |

@@ -44,7 +44,7 @@ the channel design instead of fixing them individually.
 
 **The twin was closed the same way (TODO:269, 2026-08-21) — as v5 of the table above, and the
 follow-through is the part worth copying.** The channel is the violation's TYPE
-(`StaleDependencyIRViolation(str)`, wrapped at the single emit site) mapped by `main()` to a
+(`StaleDependencyIRViolation(str)`, wrapped at what was then the single emit site — issue #238 added a second, `_as_stale_certified_ir`, on the same channel) mapped by `main()` to a
 dedicated exit code: a `str` subclass keeps the message byte-identical, so no existing message
 pin moved. Two things that cost time:
 
