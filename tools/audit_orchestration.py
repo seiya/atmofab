@@ -1221,16 +1221,20 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
     # `result` is the LOOP outcome (a schema-valid document was obtained); a reviewer's
     # decision is a separate field, so a rejecting reviewer no longer reads `result=pass`
     # alone (issue #241). The key is present only on a reviewer row; `None` means the
-    # projection file was not written (budget exhaustion), printed as `none`. A revocation is
-    # rendered BESIDE the verdict, not in its place: the retry route's decision about the
-    # artifact is not the reviewer's decision, and the reference run held one of each under
-    # the same `revoked` status.
+    # projection file was not written (the loop ended with no accepted document), printed as
+    # `none`. A revocation is rendered BESIDE the verdict, not in its place: the retry route's
+    # decision about the artifact is not the reviewer's decision, and the audited runs held one
+    # of each under the same `revoked` status. The revoking arid is printed because it need not
+    # belong to THIS orchestration (see `_projected_verdict`); an operator resolves it against
+    # `agent_runs.jsonl` the way every other arid in this report is resolved.
     verdict_str = ""
     if "verdict" in row:
         verdict_str = f", verdict=`{row.get('verdict') or 'none'}`"
         revocation = row.get("revocation")
         if revocation is not None:
-            verdict_str += f" (revoked: `{revocation or 'no reason recorded'}`)"
+            by = row.get("revoked_by") or "unrecorded"
+            verdict_str += (f" (revoked: `{revocation or 'no reason recorded'}`"
+                            f" by arid `{by}`)")
     lines.append(
         f"- `{label}`: result=`{row.get('result')}`{verdict_str}, "
         f"attempts={row.get('attempts')} "

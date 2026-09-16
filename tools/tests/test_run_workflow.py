@@ -6099,6 +6099,14 @@ class StdoutFormatTests(unittest.TestCase):
                            "certified_by": "", "orchestration_id": "o"})
         self.assertEqual(skipped_blank, "  [phase   ] compile skipped")
         self.assertNotIn("resumed", skipped_blank)
+        # An event with no `certified_by` key at all (the pre-#177 shape, still present in
+        # recorded run logs) renders the same as a blank one.
+        self.assertEqual(
+            f({"status": "info", "event": "phase_complete",
+               "node_key": "n", "phase": "compile", "result": "skipped",
+               "orchestration_id": "o"}),
+            "  [phase   ] compile skipped",
+        )
         self.assertEqual(
             f({"status": "info", "event": "substep_start",
                "node_key": "n", "phase": "validate", "substep": "execute",

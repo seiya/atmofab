@@ -1223,19 +1223,33 @@ class PureLeafABSummaryTest(unittest.TestCase):
         # A revocation is rendered beside the reviewer's decision, never in its place: the
         # reference run's accepted-then-revoked source and rejected-then-revoked IR must read
         # apart (round 1 of issue #241).
+        # The revoking arid is printed with it (round 2): the revocation need not be this
+        # orchestration's, and the arid is what an operator resolves to find out.
         lines = []
         _render_pure_leaf_row("verify", {**base, "verdict": "pass",
-                                         "revocation": "validate_execute_post_execute_violation"},
+                                         "revocation": "validate_execute_post_execute_violation",
+                                         "revoked_by": "0df29820-other"},
                               lines)
-        self.assertIn("verdict=`pass` (revoked: `validate_execute_post_execute_violation`), "
+        self.assertIn("verdict=`pass` (revoked: `validate_execute_post_execute_violation` "
+                      "by arid `0df29820-other`), attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": "verify_minor",
+                                         "revoked_by": "5895a595"},
+                              lines)
+        self.assertIn("verdict=`fail` (revoked: `verify_minor` by arid `5895a595`), attempts=1",
+                      lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "pass", "revocation": "",
+                                         "revoked_by": ""}, lines)
+        self.assertIn("verdict=`pass` (revoked: `no reason recorded` by arid `unrecorded`), "
                       "attempts=1", lines[0])
+        # A revoked file with no prior: the verdict slot says `revoked`, the parenthetical is
+        # still there. Absent from the corpus (`_revoke_stage_meta` always writes the prior);
+        # pinned so the form is a decision rather than an accident.
         lines = []
-        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": "verify_minor"},
-                              lines)
-        self.assertIn("verdict=`fail` (revoked: `verify_minor`), attempts=1", lines[0])
-        lines = []
-        _render_pure_leaf_row("verify", {**base, "verdict": "pass", "revocation": ""}, lines)
-        self.assertIn("verdict=`pass` (revoked: `no reason recorded`), attempts=1", lines[0])
+        _render_pure_leaf_row("verify", {**base, "verdict": "revoked", "revocation": "r",
+                                         "revoked_by": "a"}, lines)
+        self.assertIn("verdict=`revoked` (revoked: `r` by arid `a`), attempts=1", lines[0])
         lines = []
         _render_pure_leaf_row("generate", base, lines)
         self.assertIn("- `generate`: result=`pass`, attempts=1", lines[0])
