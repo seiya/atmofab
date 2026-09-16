@@ -6084,12 +6084,21 @@ class StdoutFormatTests(unittest.TestCase):
                "elapsed_seconds": 12.34, "orchestration_id": "o"}),
             "  [phase   ] generate ok (12.34s)",
         )
-        self.assertIn(
-            "skipped (resumed)",
+        # A skip prints what the event carries — the certifying artifact — whether the run
+        # is cold or resumed: since #177 both are one mechanism, and the old `(resumed)`
+        # label misnamed a cold run's certified skip (issue #241).
+        self.assertEqual(
             f({"status": "info", "event": "phase_complete",
                "node_key": "n", "phase": "compile", "result": "skipped",
-               "orchestration_id": "o"}) or "",
+               "certified_by": "workspace/ir/problem__x__0.1.0/x_001",
+               "orchestration_id": "o"}),
+            "  [phase   ] compile skipped (certified_by=workspace/ir/problem__x__0.1.0/x_001)",
         )
+        skipped_blank = f({"status": "info", "event": "phase_complete",
+                           "node_key": "n", "phase": "compile", "result": "skipped",
+                           "certified_by": "", "orchestration_id": "o"})
+        self.assertEqual(skipped_blank, "  [phase   ] compile skipped")
+        self.assertNotIn("resumed", skipped_blank)
         self.assertEqual(
             f({"status": "info", "event": "substep_start",
                "node_key": "n", "phase": "validate", "substep": "execute",
