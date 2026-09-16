@@ -1839,6 +1839,21 @@ def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, d
     return (True, {**detail, "reason": None, "meta": doc})
 
 
+def _certified_ir_violations(repo_root: Path, ir_ref: str) -> list[str]:
+    """The current `Compile.static` verdict on an already-certified IR: the violations the
+    deterministic compile-stage validator reports against `ir_ref` TODAY, `[]` when it passes.
+
+    This is the SAME function `Conductor._compile_static_inproc` runs through the validator's
+    CLI at the `compile.static` gate, so certification and the gate cannot disagree on the
+    rule: an IR that the gate would reject is not one a skip may stand on. It is a READ of the
+    IR directory only — nothing is written, nothing is revoked. Isolated here so a test can
+    patch one name; the production body is one call. The import runs runtime → validator,
+    the permitted direction (`validate_pipeline_semantics` must not import this module).
+    """
+    from tools.validate_pipeline_semantics import validate_compile_stage
+    return validate_compile_stage(repo_root, "workspace", ir_ref)
+
+
 def _certified_ir_candidate(repo_root: Path, node_key: str) -> str | None:
     """The ir_id of the latest IR under `workspace/ir/<safe>/` when it satisfies the compile
     clause of `_phase_certified`, else `None`.
@@ -1846,6 +1861,8 @@ def _certified_ir_candidate(repo_root: Path, node_key: str) -> str | None:
     Used by the conductor's `prepare_node` on a COLD run to ADOPT an already certified IR
     instead of minting a new ir_id (which would make the reservation not-latest and refuse
     every phase). Takes no orchestration: the artifacts, not this run's records, decide.
+    An IR the current `--stage compile` validator rejects is not adopted (issue #238): the
+    cold run mints a fresh ir_id and Compile re-derives, with no revocation record written.
     """
     ok, detail = _ir_certification(repo_root, node_key, reserved_ir_id=None)
     return detail.get("ir_id") if ok else None
@@ -1861,6 +1878,17 @@ def _ir_certification(
     (`_dependency_resolution_freshness` via `_certified_ir_dir`) evaluate the LATEST ir dir,
     so certifying a non-latest reservation would let the skip and the launch gate disagree
     about which artifact the node is standing on.
+
+    "Certified" also means "passes the CURRENT `--stage compile` validator" (issue #238). A
+    `spec.ir.yaml` certified before a validator rule change keeps its `pass` status and its
+    hashes, so status + hashes + freshness alone would skip Compile onto an IR that
+    `generate.gate` then rejects on every attempt — a verdict the Generate leaf cannot change,
+    charged to its budget. The validator clause runs LAST: every earlier refusal keeps its
+    precedence, and the (measured ~2 s) call is made only on an otherwise-certified IR. A
+    refusal here (`ir_rejected_by_current_validator:…`) is the readiness-side twin of the
+    gate's `compile_static_violation`; a validator exception is a refusal too
+    (`ir_validator_raised:<type>`), never a raise — this is an evaluator whose callers hold
+    no handler.
     """
     try:
         kind, spec_id, version = _parse_node_key_strict(node_key)
@@ -1888,6 +1916,16 @@ def _ir_certification(
     fresh, freshness_detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
     if not fresh:
         return (False, {**detail, "reason": f"resolution_stale:{freshness_detail}"})
+    try:
+        stale = _certified_ir_violations(repo_root, detail["ir_ref"])
+    except Exception as exc:  # evaluator contract: a verdict, never a raise (issue #153 shape)
+        return (False, {**detail, "reason": f"ir_validator_raised:{type(exc).__name__}"})
+    if stale:
+        # The validator spells its subject as an ABSOLUTE path; quote the finding relative to
+        # the checkout so the 200-character head carries the rule and not the prefix.
+        head = str(stale[0]).replace(f"{Path(repo_root).resolve()}/", "", 1)[:200]
+        return (False, {**detail,
+                        "reason": f"ir_rejected_by_current_validator:{len(stale)}:{head}"})
     return (True, detail)
 
 
@@ -1911,7 +1949,8 @@ def _phase_certified(
 
     Reads only this orchestration's reservations and the workspace artifacts. It never reads
     `agent_runs.jsonl`, a step_result or the phase_state: what a run RECORDED about itself is
-    not evidence that the artifact on disk is the one it certified.
+    not evidence that the artifact on disk is the one it certified. For the IR, "certified"
+    includes passing the current `--stage compile` validator (`_ir_certification`, issue #238).
     """
     step_token = step.strip().lower()
     if step_token not in STEP_KEYS_FOR_NODE_STATE:

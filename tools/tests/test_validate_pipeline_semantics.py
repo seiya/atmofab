@@ -11330,6 +11330,70 @@ end program shallow_water2d_runner
             v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
             self.assertEqual(v, [])
 
+    def test_a_certified_ir_the_current_validator_rejects_is_refused_at_readiness(self) -> None:
+        """Issue #238, replayed through the REAL predicate: the production-payload witness for
+        `orchestration_runtime._ir_certification`'s validator clause (its unit rows patch the
+        seam). A tree whose IR passes `--stage compile` is certified: `ir_meta.json` says `pass`
+        and the hash re-computes, and the clause — UNPATCHED, so `validate_compile_stage` really
+        runs — accepts it. Then the IR is edited the way the incident's IR was written (an
+        `evidence_ref` naming the retired `raw/execution_trace.json`) and its hash RE-STAMPED,
+        so status and hash still pass and only the current validator refuses it. Before this
+        clause the second call answered `(True, …)`: Compile skipped, and `generate.gate`
+        charged the finding to four Generate launches.
+
+        Placed here rather than in `test_orchestration_runtime` because the compile-passing
+        tree seeder lives in this module.
+        """
+        from tools import orchestration_runtime as ort
+        from tools.tests.orchestration_fixtures import _sha256
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                      "pass_when": {"all": [
+                          {"ref": "verdict.overall", "op": "eq", "value": "pass"},
+                          {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
+            self.assertEqual(
+                self._compile_with_io_contract(repo, self._io_contract_with_predicates(preds)),
+                [], "the seeded tree must pass --stage compile or the witness observes nothing")
+            ir_ref = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
+            ir_path = repo / ir_ref / "spec.ir.yaml"
+            node_key = "problem/shallow_water2d@0.3.0"
+
+            def _stamp() -> None:
+                _write_json(repo / ir_ref / "ir_meta.json", {
+                    "ir_id": "shallow-water2d_20260415_001", "node_key": node_key,
+                    "attempt_count": 1, "verification_status": "pass",
+                    "last_fail_reason": None, "debug_mode": False, "context_isolated": True,
+                    "artifact_hashes": {f"{ir_ref}/spec.ir.yaml": _sha256(ir_path)},
+                })
+
+            _stamp()
+            ok, detail = ort._ir_certification(repo, node_key, reserved_ir_id=None)
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["ir_ref"], ir_ref)
+
+            doc = json.loads(ir_path.read_text())
+            doc["io_contract"]["inputs"].append(
+                {"name": "topography_profile", "evidence_ref": "raw/execution_trace.json"})
+            ir_path.write_text(json.dumps(doc))
+            _stamp()
+            ok, detail = ort._ir_certification(repo, node_key, reserved_ir_id=None)
+            self.assertFalse(ok, detail)
+            reason = detail["reason"]
+            self.assertTrue(reason.startswith("ir_rejected_by_current_validator:"), reason)
+            self.assertIn("names no raw-evidence artifact", reason)
+            # The refusal is the validator's and nothing else's: status and hash are intact.
+            self.assertEqual(detail["ir_id"], "shallow-water2d_20260415_001")
+            self.assertFalse(detail["revoked"])
+            # The same tree's compile-stage verdict, in-process, is what the reason quotes.
+            direct = validate_compile_stage(repo, "workspace", ir_ref)
+            self.assertTrue(direct, "the edit must be a compile-stage violation")
+            # Quoted relative to the checkout, so the head is the rule and not the tmp prefix.
+            self.assertTrue(reason.startswith(
+                f"ir_rejected_by_current_validator:{len(direct)}:{ir_ref}/spec.ir.yaml:"), reason)
+            self.assertNotIn(str(repo.resolve()), reason)
+
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             io = self._io_contract_with_predicates([])
@@ -24380,9 +24444,12 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     helper-level assertion would stay green while an unwrapped `violations.append` or a list
     rebuild degraded production to exit code 1.
 
-    THE FIXTURE IS DELIBERATELY DIRTY. Its IR carries no `io_contract` / `raw_requirements`, so
-    ordinary leaf-repairable violations ALWAYS co-occur with the host-authored one — which is what
-    makes the precedence rows real rather than hypothetical.
+    THE FIXTURE IS DELIBERATELY DIRTY. Its node authors no `advx_checks.f90` and its IR names no
+    `controlled_spec`, so ordinary leaf-repairable violations ALWAYS co-occur with the
+    host-authored one — which is what makes the precedence rows real rather than hypothetical.
+    Its IR DOES carry a valid `io_contract`: before issue #238 the dirt was a missing one, and
+    #238 made an IR-subject io_contract finding at post_generate the stale-IR class (rc 4, which
+    outranks rc 5), so that dirt would now decide every row here for the wrong reason.
     """
 
     _NODE_KEY = "component/advx@0.1.0"
@@ -24402,6 +24469,7 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
+        _seed_shape_expr_schema_into(tmp)
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": spec_kind, "spec_id": "advx"},
             "impl_defaults": {
@@ -24411,6 +24479,15 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
             "dependency": {
                 "node_key": self._NODE_KEY,
                 "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+            # Valid, so the IR-subject reader contributes nothing (see the class docstring).
+            "io_contract": {
+                "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
+                "outputs": [{"name": "metric", "shape_expr": "scalar",
+                             "evidence_ref": "raw/metrics_basis.json"}],
+                "semantic_dependency": {"required_sources": []},
+                "raw_requirements": {"required_evidence": [
+                    {"artifact": "metrics_basis.json", "required": True}]},
+            },
         })
         pipeline_dir = (tmp / "workspace" / "pipelines" / "component__advx__0.1.0"
                         / "advx_20260415_001")
@@ -24609,7 +24686,7 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     after the marker forged the terminal verdict and burned a billed run. The channel is now the
     process exit code, written by the branch that knows and unwritable by any leaf.
 
-    The three rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
+    The rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
     is carried by the violation's Python TYPE: a helper-level assertion would stay green while an
     unwrapped ``violations.append`` or a list rebuild silently degraded production to exit code 1.
     The two rows about the exit-code CONSTANTS do not — they read module attributes, and
@@ -24618,16 +24695,33 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     in ``test_fortran_structure.py`` had to be renamed for.
     """
 
-    def _seed(self, tmp: Path, *, module_parameters: object | None) -> Path:
-        """A minimal post_generate tree whose model source is faithful to §5.1.
+    #: `_GOOD_SOURCE` with the metrics-basis writer's dummy renamed in header and declaration:
+    #: an ORDINARY Generate.static finding (a drifted pinned interface line) whose subject is the
+    #: leaf's own source, which a warm Generate retry can repair. Used where a row needs an
+    #: ordinary violation to co-occur with, or to stand alone against, the stale-IR class.
+    _DRIFTED_SOURCE = InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE.replace(
+        "  subroutine hx__write_metrics_basis(entries, &\n"
+        "      n)\n"
+        "    type(hx__h_named), intent(in) :: entries(:)\n"
+        "    integer,           intent(in) :: n\n",
+        "  subroutine hx__write_metrics_basis(entries, count)\n"
+        "    type(hx__h_named), intent(in) :: entries(:)\n"
+        "    integer,           intent(in) :: count\n")
 
-        The only thing under the test's control is ``public_api.module_parameters``: pass None for
-        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. ``signatures`` is always
-        seeded faithfully, because issue #153 PR-2 put the signature half under the same stale-IR
-        guard — leaving it empty would make the "healthy IR" row stale for the OTHER reason and turn
-        the exit-code precedence row green for the wrong cause. The IR carries no ``io_contract`` /
-        ``raw_requirements``, so ORDINARY violations always co-occur — which is the point for the
-        exit-code precedence.
+    def _seed(self, tmp: Path, *, module_parameters: object | None,
+              source: str | None = None) -> Path:
+        """A minimal post_generate tree whose model source is faithful to §5.1 by default.
+
+        ``public_api.module_parameters``: pass None for the pre-contract (stale) shape, or the §5.1
+        values for a healthy IR. ``signatures`` is always seeded faithfully, because issue #153
+        PR-2 put the signature half under the same stale-IR guard — leaving it empty would make the
+        "healthy IR" row stale for the OTHER reason and turn the exit-code precedence row green for
+        the wrong cause. The IR carries no ``io_contract`` / ``raw_requirements``, so the
+        io_contract reader always reports against it — and since issue #238 those findings are
+        the stale-IR class too (their subject is the certified IR), so a row that needs an
+        ORDINARY violation passes ``source=self._DRIFTED_SOURCE``, whose finding is about the
+        leaf's source. Before #238 the io_contract findings were the ordinary ones here, which is
+        what made the precedence rows green for a reason that no longer holds.
         """
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
@@ -24650,7 +24744,8 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
         src_dir.mkdir(parents=True)
         (src_dir / "hx_model.f90").write_text(
-            InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE, encoding="utf-8")
+            InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE if source is None else source,
+            encoding="utf-8")
         (pipeline_dir / "lineage.json").write_text(
             json.dumps({"ir_ref": ir_ref, "node_key": "infrastructure/hx@0.2.0",
                         "pipeline_id": "hx_20260415_001"}), encoding="utf-8")
@@ -24674,16 +24769,98 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         # The marker stays in the message for a human reader; it carries no decision.
         self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
 
+    def _seed_io_contract_ir(self, tmp: Path, *, evidence_ref: str,
+                             source: str | None = None) -> tuple[Path, str]:
+        """The issue #238 shape: a healthy §5.1 surface (so the pre-existing stale-IR guard
+        does NOT fire) and an `io_contract` input whose `evidence_ref` is `evidence_ref`.
+        Returns the pipeline dir and the ir_ref. The caller seeds the shape_expr schema."""
+        pipeline_dir = self._seed(
+            tmp,
+            module_parameters=copy.deepcopy(
+                InfrastructurePublicApiGateTests._MODULE_PARAMETERS),
+            source=source)
+        ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
+        doc = json.loads(ir_path.read_text(encoding="utf-8"))
+        doc["io_contract"] = {
+            "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"},
+                       {"name": "topography_profile", "evidence_ref": evidence_ref}],
+            "outputs": [{"name": "metric", "shape_expr": "scalar",
+                         "evidence_ref": "raw/metrics_basis.json"}],
+            "semantic_dependency": {"required_sources": []},
+            "raw_requirements": {"required_evidence": [
+                {"artifact": "metrics_basis.json", "required": True}]},
+        }
+        ir_path.write_text(json.dumps(doc), encoding="utf-8")
+        return pipeline_dir, "workspace/ir/x"
+
+    def test_an_io_contract_finding_on_the_certified_ir_answers_the_stale_ir_exit_code_in_a_real_subprocess(self) -> None:
+        """Issue #238: at `--stage post_generate` the io_contract reader is given nothing but
+        the node's own certified IR, so its findings are the class rc 4 already names — a
+        verdict Compile.static would have given had it run, which no Generate retry can change.
+        A real subprocess, because the channel is the violation's TYPE and any list rebuild
+        between the wrap and `main` degrades it to rc 1 silently."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            _seed_shape_expr_schema_into(tmp)
+            pipeline_dir, _ = self._seed_io_contract_ir(
+                tmp, evidence_ref="raw/execution_trace.json")
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         (proc.stdout, proc.stderr))
+        hits = [line for line in proc.stdout.splitlines()
+                if "names no raw-evidence artifact" in line]
+        self.assertEqual(1, len(hits), proc.stdout)
+        # The original finding text survives (the wrap is a suffix), the marker follows it,
+        # and the remedy names `--resume` before `--with-deps`.
+        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
+        self.assertLess(hits[0].index("names no raw-evidence artifact"),
+                        hits[0].index(vps.STALE_DEPENDENCY_IR_MARKER))
+        self.assertLess(hits[0].index("`--resume`"), hits[0].index("--with-deps"))
+        # No §5.1 guard fired: the rc 4 came from the io_contract wrap alone.
+        self.assertNotIn("does not carry the controlled_spec", proc.stdout)
+
+    def test_the_same_io_contract_finding_stays_rc_1_at_compile_stage(self) -> None:
+        """Decision pinned in both directions: at `--stage compile` the IR is the artifact
+        under repair, so the same finding is a plain violation (rc 1 → `compile_static_violation`
+        → a warm `compile.generate`), never the terminal type."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            _seed_shape_expr_schema_into(tmp)
+            _, ir_ref = self._seed_io_contract_ir(tmp, evidence_ref="raw/execution_trace.json")
+            violations = vps.validate_compile_stage(tmp, "workspace", ir_ref)
+        hits = [v for v in violations if "names no raw-evidence artifact" in v]
+        self.assertEqual(1, len(hits), violations)
+        self.assertFalse(any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations),
+                         violations)
+        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
+
+    def test_a_healthy_io_contract_adds_no_stale_ir_violation_at_post_generate(self) -> None:
+        """The wrap is applied per FINDING, so an IR the reader accepts contributes nothing:
+        wrapping the reader's success as a violation would terminalize every Generate."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            _seed_shape_expr_schema_into(tmp)
+            pipeline_dir, _ = self._seed_io_contract_ir(
+                tmp, evidence_ref="raw/metrics_basis.json")
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertNotEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                            (proc.stdout, proc.stderr))
+        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+
     def test_cooccurring_stale_and_ordinary_violations_answer_the_stale_ir_exit_code(self) -> None:
         """Hoisting `return 1` above the isinstance check would degrade this to 1.
 
-        Ordinary violations always accompany the stale IR here (the fixture IR carries no
-        io_contract), and they are not repairable while the IR is stale either — so the terminal
-        code must win.
+        An ordinary violation (an unparseable `source_meta.json`, a plain-`str` finding)
+        accompanies the stale IR here — so the terminal code must win. The IR's own io_contract
+        findings no longer serve as the ordinary half (issue #238 made them stale-IR class), and
+        a drifted source cannot either: the §5.1 guard returns before the source is compared.
         """
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
+            pipeline_dir = self._seed(tmp, module_parameters=None)
+            (pipeline_dir / "source" / "src_20260415_001" / "source_meta.json").write_text(
+                "{not json", encoding="utf-8")
+            proc = self._run_cli(tmp, pipeline_dir)
         self.assertTrue(
             [line for line in proc.stdout.splitlines()
              if line.startswith("- ") and vps.STALE_DEPENDENCY_IR_MARKER not in line],
@@ -24692,13 +24869,15 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
 
     def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
         """Wrapping more than the stale-IR violation would route ordinary content failures —
-        which a warm Generate retry CAN repair — to a terminal fail_closed."""
+        which a warm Generate retry CAN repair — to a terminal fail_closed. The healthy IR
+        carries a valid io_contract here so the ONLY finding is the drifted source's; with the
+        fixture's default (no io_contract) the IR-subject findings would answer rc 4 by design
+        (issue #238) and this row would observe the wrong thing."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            pipeline_dir = self._seed(
-                tmp,
-                module_parameters=copy.deepcopy(
-                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS))
+            _seed_shape_expr_schema_into(tmp)
+            pipeline_dir, _ = self._seed_io_contract_ir(
+                tmp, evidence_ref="raw/metrics_basis.json", source=self._DRIFTED_SOURCE)
             proc = self._run_cli(tmp, pipeline_dir)
         self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
         self.assertTrue([line for line in proc.stdout.splitlines() if line.startswith("- ")],

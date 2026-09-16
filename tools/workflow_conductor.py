@@ -279,9 +279,11 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # Gate categories that are TERMINAL (fail_closed), NOT a warm Generate.generate retry: the
 # failing condition is one the Generate leaf cannot repair by re-authoring its source, so retrying is
-# futile. `stale_dependency_ir` — a certified dependency IR predating a carrier contract (e.g. the
-# harness's public_api.module_parameters) reached Generate.gate on a resume that skipped Compile;
-# the fix is a re-certification (a version bump makes dependency freshness re-run it), not a re-author.
+# futile. `stale_dependency_ir` — the node's OWN certified IR predating the current contract (the
+# §5.1 carrier surface, or since issue #238 an io_contract rule) reached Generate.gate on a resume
+# that skipped Compile; the fix is a re-certification, not a re-author. Since #238 readiness
+# (`_ir_certification`) refuses such an IR before Generate is reached, so this category is the
+# gate-side backstop; `--resume` re-derives the IR through Compile.
 # `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
@@ -10245,8 +10247,8 @@ clean:
                 )
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
-                # re-authoring its source. `stale_dependency_ir` is a certified dependency IR the
-                # leaf does not own; `static_frontend_unavailable` is an absent parser on the
+                # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
+                # which the leaf does not own; `static_frontend_unavailable` is an absent parser on the
                 # machine running the gate, without which the Fortran gates read NOTHING.
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).

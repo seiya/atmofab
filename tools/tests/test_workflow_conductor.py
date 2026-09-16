@@ -36,7 +36,7 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
 from tools import orchestration_runtime as ort
-from tools.tests.orchestration_fixtures import certify_node
+from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
@@ -1823,6 +1823,46 @@ class ConductRoutingTest(unittest.TestCase):
             "gate_host_rendered_lint_findings")
         self.assertEqual(
             wc.classify_gate_failure(["host_rendered_lint_findings"]).action, "fail_closed")
+
+    def test_ir_subject_static_finding_terminalizes_without_a_second_generate_launch(
+            self) -> None:
+        """ISSUE #238's ACCEPTANCE CRITERION, stated as a launch count — the #112 row above
+        for the other unwritable subject.
+
+        The measured incident (`orch_20260916T081200Z_5139f6c9`) spent FOUR `generate.generate`
+        launches on an io_contract finding whose subject was the node's own certified IR
+        (`evidence_ref 'raw/execution_trace.json'`, retired by PR #236 after the IR was
+        certified), and ended `generate exceeded 3`. The leaf has no write authority over the
+        IR, so no launch after the first could converge. Readiness now refuses such an IR before
+        Generate is reached (`_ir_certification`'s validator clause); this row pins the gate-side
+        BACKSTOP: when the finding does reach `generate.gate`, the validator answers rc 4
+        (`stale_dependency_ir`), and the node fails closed on the first attempt — exactly ONE
+        launch, no `reopen-phase`, no repair findings threaded."""
+        c = self._conductor()
+
+        def status_fn(phase, substep, n):
+            return "fail" if (phase == "generate" and substep == "gate") else "pass"
+
+        c.status_fn = status_fn
+        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+            "fail_closed", reason="gate_stale_dependency_ir")
+        status = c.conduct(self._refs(), "generate")
+        self.assertNotEqual(status, "pass")
+        self.assertEqual([], [cap for s, cap in c.calls if s == "reopen-phase"])
+        gen_launches = [cap["--request-json"] for s, cap in c.calls
+                        if s == "record-launch"
+                        and cap.get("--request-json", {}).get("step") == "generate"
+                        and cap["--request-json"].get("substep") == "generate"]
+        self.assertEqual(len(gen_launches), 1)
+        self.assertNotIn("repair_findings", gen_launches[0])
+        gen_writes = [cap for s, cap in c.calls
+                      if s == "write-step-result" and cap["--step"] == "generate"]
+        self.assertEqual(len(gen_writes), 1)
+        # The reason the classifier actually produces for this category is the one used above.
+        self.assertEqual(
+            wc.classify_gate_failure(["stale_dependency_ir"]).reason, "gate_stale_dependency_ir")
+        self.assertEqual(
+            wc.classify_gate_failure(["stale_dependency_ir"]).action, "fail_closed")
 
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
         # B1 end to end (prod): a structural validate.execute failure cross-phase revokes
@@ -5238,6 +5278,15 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
 class NodeAllocationTest(unittest.TestCase):
     """M5: node resolution + deterministic id allocation + reservation."""
 
+    def setUp(self) -> None:
+        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
+        # `spec.ir.yaml` `certify_node` writes does not pass. This class is about the OTHER
+        # clauses, so the validator answers "accepted" here; the rows that pin the validator
+        # clause itself live in `PhaseCertificationTests` and patch the seam on their own.
+        accept_ir = accept_any_certified_ir()
+        accept_ir.start()
+        self.addCleanup(accept_ir.stop)
+
     def test_slug_of(self) -> None:
         self.assertEqual(wc._slug_of("dynamics_advdiff_flux_1d_upwind_center2"),
                          "dynamics-advdiff-flux-1d-upwind-center2")
@@ -5649,6 +5698,15 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
     host writers — `_write_ir_meta`, `_write_verify_source_meta`, `_write_lineage`, the
     binary_meta shape `_build_inproc` authors, and `phase_required_outputs` — through the real
     `_stamp_certification`, and then asks the real predicate."""
+
+    def setUp(self) -> None:
+        # Issue #238: the compile clause re-runs the compile-stage validator, which the stub
+        # `spec.ir.yaml` `certify_node` writes does not pass. This class is about the OTHER
+        # clauses, so the validator answers "accepted" here; the rows that pin the validator
+        # clause itself live in `PhaseCertificationTests` and patch the seam on their own.
+        accept_ir = accept_any_certified_ir()
+        accept_ir.start()
+        self.addCleanup(accept_ir.stop)
 
     NODE_KEY = "component/spec_x@0.1.0"
 

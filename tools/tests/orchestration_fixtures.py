@@ -19,8 +19,23 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 _PHASE_ORDER = ("compile", "generate", "build", "validate")
+
+
+def accept_any_certified_ir() -> mock._patch:
+    """A patch that makes the compile clause's validator re-check (issue #238) accept the IR.
+
+    The stub `spec.ir.yaml` `certify_node` writes is not a document the compile-stage
+    validator passes, so every test that builds a certified chain here and then asks
+    `_phase_certified` / `_certified_ir_candidate` / the completion vouch would otherwise be
+    refused with `ir_rejected_by_current_validator:…` and prove nothing about the clause it
+    names. Spelled once so the seam name lives in one place; the rows that pin the validator
+    clause itself do NOT use this and patch the seam with a verdict of their own.
+    """
+    from tools import orchestration_runtime
+    return mock.patch.object(orchestration_runtime, "_certified_ir_violations", return_value=[])
 
 
 def _sha256(path: Path) -> str:
