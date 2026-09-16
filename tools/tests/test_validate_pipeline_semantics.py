@@ -9712,9 +9712,10 @@ end program shallow_water2d_runner
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
-            "a per-case runtime value (an enumerated or string input included) is a "
-            "state_snapshots variable with shape_expr: scalar, a per-run aggregate is a "
-            "metrics_basis.json key",
+            "a per-case runtime value is a state_snapshots variable with shape_expr: scalar, "
+            "valued numerically (the snapshot getters return numbers, so an enumerated or string "
+            "input is recorded as a numeric code stated in the variable's description), and "
+            "metrics_basis.json rows are valued from those same variables",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
@@ -9729,18 +9730,21 @@ end program shallow_water2d_runner
 
         contract = (Path(__file__).resolve().parents[2] / "docs" / "workflow" / "phases" / "phase_01_compile.md").read_text(encoding="utf-8")
         self.assertIn(enum_remedy, contract)
-        self.assertIn("naming `raw/execution_trace.json` is a `fail`", contract)
+        self.assertIn("naming `execution_trace.json` (with or without `raw/`, any case) is a `fail`", contract)
         self.assertIn("or the retired `execution_trace.json` — is a `fail` whatever its `required` value", contract)
 
-    def test_string_valued_scalar_snapshot_variable_passes_post_execute(self) -> None:
-        """The premise behind retiring `execution_trace.json` (issue #235): an enumerated or
-        string runtime input needs no evidence form of its own, because a JSON string is a
-        scalar to the snapshot shape gate. Driven through `_validate_raw_evidence` via the
-        full validator over the default fixture with one string-valued variable added to the
-        IR schema, the on-disk `snapshot_schema.json` and the case file: the tree still
-        validates clean. The control below plants the same variable as a one-element list,
-        which is shape `[1]` and is refused — so a clean result above is the gate passing
-        the string, not the gate not looking."""
+    def test_numeric_coded_scalar_snapshot_variable_passes_post_execute(self) -> None:
+        """The premise behind retiring `execution_trace.json` (issue #235): an enumerated
+        runtime input needs no evidence form of its own — it is a numeric-coded `scalar`
+        snapshot variable, which is the form the producer emits (the snapshot getters of
+        `CHECKS_MODULE_CONTRACT.md` return numbers; PR #236 round 1 corrected the remedy
+        from "a string is scalar", which the validator accepts and no runner produces).
+        Driven through `_validate_raw_evidence` via the full validator over the default
+        fixture with one numeric-coded variable added to the IR schema, the on-disk
+        `snapshot_schema.json` and the case file: the tree still validates clean. The
+        control below plants the same variable as a one-element list, which is shape `[1]`
+        and is refused — so a clean result above is the gate passing the code, not the
+        gate not looking."""
         def _violations(value: object) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
@@ -9794,8 +9798,8 @@ end program shallow_water2d_runner
                 _write_json(case_path, case)
                 return validate(repo_root=repo_root, workspace_root="workspace")
 
-        self.assertEqual([], _violations("flat"))
-        control = _violations(["flat"])
+        self.assertEqual([], _violations(1.0))  # e.g. topography_profile: flat -> 1.0
+        control = _violations([1.0])
         self.assertTrue(
             any("topography_profile shape [1] does not match declared shape_expr scalar" in v for v in control),
             control,

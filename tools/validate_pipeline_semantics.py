@@ -129,11 +129,17 @@ RAW_EVIDENCE_ARTIFACTS = {
 # workflow does not produce. Stated once here and cited by phase_01_compile.md
 # (`evidence_ref` bullet) so a warm retry converges on the same routing the
 # contract states; `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy`
-# pins the two spellings together.
+# pins the two spellings together. Stated in the form the PRODUCER supports, not
+# only the form this validator accepts: the snapshot getters of
+# docs/workflow/CHECKS_MODULE_CONTRACT.md return numbers, and a metrics_basis.json
+# row is valued from a test's required_raw_variables, which must be snapshot
+# variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
+# and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
-    "a per-case runtime value (an enumerated or string input included) is a "
-    "state_snapshots variable with shape_expr: scalar, a per-run aggregate is a "
-    "metrics_basis.json key"
+    "a per-case runtime value is a state_snapshots variable with shape_expr: scalar, "
+    "valued numerically (the snapshot getters return numbers, so an enumerated or string "
+    "input is recorded as a numeric code stated in the variable's description), and "
+    "metrics_basis.json rows are valued from those same variables"
 )
 # The one raw-evidence token an IR used to be able to name that no Generate contract
 # produces (issue #235). `evidence_ref` is an open vocabulary (`raw/diagnostics`,
