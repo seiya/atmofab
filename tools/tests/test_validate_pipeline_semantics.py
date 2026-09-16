@@ -24736,6 +24736,17 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         "    type(hx__h_named), intent(in) :: entries(:)\n"
         "    integer,           intent(in) :: count\n")
 
+    #: An io_contract the compile-stage reader accepts, so the IR-subject half of rc 4 stays
+    #: silent unless a row asks for it.
+    _HEALTHY_IO_CONTRACT: dict = {
+        "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
+        "outputs": [{"name": "metric", "shape_expr": "scalar",
+                     "evidence_ref": "raw/metrics_basis.json"}],
+        "semantic_dependency": {"required_sources": []},
+        "raw_requirements": {"required_evidence": [
+            {"artifact": "metrics_basis.json", "required": True}]},
+    }
+
     def _seed(self, tmp: Path, *, module_parameters: object | None,
               source: str | None = None) -> Path:
         """A minimal post_generate tree whose model source is faithful to §5.1 by default.
@@ -24744,16 +24755,19 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         values for a healthy IR. ``signatures`` is always seeded faithfully, because issue #153
         PR-2 put the signature half under the same stale-IR guard — leaving it empty would make the
         "healthy IR" row stale for the OTHER reason and turn the exit-code precedence row green for
-        the wrong cause. The IR carries no ``io_contract`` / ``raw_requirements``, so the
-        io_contract reader always reports against it — and since issue #238 those findings are
-        the stale-IR class too (their subject is the certified IR), so a row that needs an
-        ORDINARY violation passes ``source=self._DRIFTED_SOURCE``, whose finding is about the
-        leaf's source. Before #238 the io_contract findings were the ordinary ones here, which is
-        what made the precedence rows green for a reason that no longer holds.
+        the wrong cause. The IR carries a VALID ``io_contract`` (``_HEALTHY_IO_CONTRACT``): before
+        issue #238 it carried none, and the io_contract reader's findings were the ORDINARY half
+        of every row; #238 made those findings the stale-IR class too (their subject is the
+        certified IR), so a missing io_contract now answers rc 4 on its own and would hide the
+        §5.1 guard's TYPE from every subprocess row (round-3 disclosure: ``str(`` at the guard's
+        emit site stayed green in all 18 rows). A row that needs an ORDINARY violation passes
+        ``source=self._DRIFTED_SOURCE`` or corrupts ``source_meta.json``; a row about the
+        io_contract half rewrites the contract through ``_seed_io_contract_ir``.
         """
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
+        _seed_shape_expr_schema_into(tmp)
         (tmp / "cs.md").write_text(
             "## 5. Public API\nprose.\n"
             + InfrastructureGeneratedSignatureGateTests._FENCE
@@ -24766,7 +24780,8 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": "infrastructure", "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},
-            "public_api": public_api})
+            "public_api": public_api,
+            "io_contract": copy.deepcopy(self._HEALTHY_IO_CONTRACT)})
         pipeline_dir = (
             tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / "hx_20260415_001")
         src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
@@ -24796,6 +24811,13 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                          (proc.stdout, proc.stderr))
         # The marker stays in the message for a human reader; it carries no decision.
         self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+        # rc 4 has exactly ONE source here — the §5.1 guard — so its TYPE is what the exit
+        # code observes. A missing io_contract would answer 4 by itself (issue #238) and hide a
+        # guard demoted to a plain str; the fixture carries a valid one for that reason.
+        marked = [line for line in proc.stdout.splitlines()
+                  if vps.STALE_DEPENDENCY_IR_MARKER in line]
+        self.assertEqual(1, len(marked), proc.stdout)
+        self.assertIn("does not carry the controlled_spec", marked[0])
         # The remedy (issue #238) is `--resume` — readiness refuses the IR and Compile
         # re-derives it — and it says that `--with-deps` is NOT one: the closure driver skips a
         # ready member without re-validating its IR. The round-1 wording sent the operator to
@@ -24812,7 +24834,7 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                              source: str | None = None) -> tuple[Path, str]:
         """The issue #238 shape: a healthy §5.1 surface (so the pre-existing stale-IR guard
         does NOT fire) and an `io_contract` input whose `evidence_ref` is `evidence_ref`.
-        Returns the pipeline dir and the ir_ref. The caller seeds the shape_expr schema."""
+        Returns the pipeline dir and the ir_ref (`_seed` has seeded the shape_expr schema)."""
         pipeline_dir = self._seed(
             tmp,
             module_parameters=copy.deepcopy(
@@ -24940,6 +24962,9 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             [line for line in proc.stdout.splitlines()
              if line.startswith("- ") and vps.STALE_DEPENDENCY_IR_MARKER not in line],
             f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
+        # And exactly one marked bullet, the guard's — the same single-source pin as above.
+        self.assertEqual(1, sum(vps.STALE_DEPENDENCY_IR_MARKER in line
+                                for line in proc.stdout.splitlines()), proc.stdout)
         self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
 
     def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
