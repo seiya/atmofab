@@ -346,3 +346,39 @@ prose a person reads, not a surface a leaf acts on.
 qualifier, a "(defaults to …)", a "…, which is what the gate runs" — sitting beside the
 machine-shaped form you coupled. The machine-shaped form is the one you notice; the sentence is
 the one that stays free.
+
+## Rule 1-d: a premise executed on the accepting layer only (issue #235 / PR #236, 2026-09-16)
+
+`execution_trace.json` sat in the `required_evidence[].artifact` enum with no Generate contract
+producing it, so an IR that chose it passed `Compile.static` and failed closed at
+`Validate.execute` after a full Compile/Generate/Build. The plan retired the token and, following
+rule 1-d, EXECUTED its premise before implementing: "an enumerated string input needs no evidence
+form of its own, because a JSON string is `scalar` to the snapshot shape gate" —
+`_infer_json_shape("flat") == []` and `_shape_matches_expr("scalar", [])`, both true, both run in
+the planning session and written into the plan as verified.
+
+**What the run did not touch.** The premise is about a VALUE moving between two layers, and the
+run drove the layer that ACCEPTS it (the post_execute shape gate) and not the one that PRODUCES it:
+`docs/workflow/CHECKS_MODULE_CONTRACT.md`'s snapshot getters return numbers, the host-rendered
+runner boxes a rank-0 variable through the harness's real emitter, and the harness publishes no
+string emitter. So the remedy the fix appended to the refusal — leaf-read, inlined whole into both
+compile prompts — told the compile leaf to route an enumerated input as a string-valued scalar
+snapshot variable, a shape the validator would accept and no runner could emit. That is the class
+#235 exists to close (a compile-side contract naming a capability with no producer), reintroduced
+by its own fix, in the sentence written for exactly that case. The issue body carried the same
+premise, and rule 1-d already says an issue body is not a source for one; what it did not say is
+that ONE execution is not enough when the premise names two layers.
+
+**How it was found**: round 1's correctness axis, by driving `render_runner` on the hand-routed IR
+and reading the emitted getter — not by any instrument in the loop (the sweep, the census and the
+blank-slate reviewer all compare HEAD against itself and were green). Cost: one round and a
+Medium, plus a second round to un-narrow the corrected sentence (it had then said every per-case
+value IS scalar).
+
+**The rule**: a premise about a value names the layer that produces it and the layer that
+accepts it; running one is not running the premise. Rule 1-c's "enumerate every reader, then open
+each layer" is the same instruction one rule over, and it did not fire because 1-c is written for
+SEVERITY (things that already exist) while this was a plan (1-d) — which is why the bullet now sits
+under 1-d. The producer/consumer pair for the raw-evidence vocabulary is now a row in
+`references/dual-read-pairs.md`.
+
