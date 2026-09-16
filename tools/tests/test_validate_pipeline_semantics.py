@@ -24445,8 +24445,13 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     rebuild degraded production to exit code 1.
 
     THE FIXTURE IS DELIBERATELY DIRTY. Its node authors no `advx_checks.f90` and its IR names no
-    `controlled_spec`, so ordinary leaf-repairable violations ALWAYS co-occur with the
+    `controlled_spec`, so two plain-`str` (rc 1) violations ALWAYS co-occur with the
     host-authored one — which is what makes the precedence rows real rather than hypothetical.
+    Only the first of the two is leaf-repairable; the second (`_fail_closed_if_pinned`: the
+    certified IR names no `controlled_spec`) has the IR as its subject and is left plain — the
+    same subject-not-rule class issue #238 moved for the io_contract reader. It is unreachable
+    on a real node past readiness (the compile-stage validator requires the ref), so it is
+    recorded here rather than wrapped; if it is ever wrapped, every row here answers 4.
     Its IR DOES carry a valid `io_contract`: before issue #238 the dirt was a missing one, and
     #238 made an IR-subject io_contract finding at post_generate the stale-IR class (rc 4, which
     outranks rc 5), so that dirt would now decide every row here for the wrong reason.

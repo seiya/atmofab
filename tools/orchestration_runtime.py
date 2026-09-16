@@ -1884,7 +1884,10 @@ def _ir_certification(
     hashes, so status + hashes + freshness alone would skip Compile onto an IR that
     `generate.gate` then rejects on every attempt — a verdict the Generate leaf cannot change,
     charged to its budget. The validator clause runs LAST: every earlier refusal keeps its
-    precedence, and the (measured ~2 s) call is made only on an otherwise-certified IR. A
+    precedence, and the (measured 1.4–2.6 s) call is made only on an otherwise-certified IR —
+    once per evaluation, and a fully-certified re-run evaluates the node's IR about a dozen
+    times (four `check-phase-certified` in the repair seeding, four in `run_phase`, four in the
+    completion vouch), ~30 s on `shallow_water2d`; measured at issue #238, not memoised. A
     refusal here (`ir_rejected_by_current_validator:…`) is the readiness-side twin of the
     gate's `compile_static_violation`; a validator exception is a refusal too
     (`ir_validator_raised:<type>`), never a raise — this is an evaluator whose callers hold
