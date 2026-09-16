@@ -130,6 +130,15 @@ to **one unbilled observation**).
   strongest evidence a causal argument can have — but the FULL-suite verdict hides it behind the
   known baseline failures, so the whole-tree number is not the place to look. Seconds to run
   (`references/verification.md` §The suite)
+- **Executing the premise on ONE layer is not executing it.** A premise about a VALUE names
+  at least two layers — the one that ACCEPTS it and the one that PRODUCES it — and a run on the
+  accepting side alone answers a different question. Issue #235's plan verified "a string is a
+  scalar to the snapshot shape gate" with one call (`_infer_json_shape("flat") == []`, true) and
+  shipped a leaf-read remedy telling the compile leaf to route an enumerated input as a string
+  scalar — which no runner can emit (the snapshot getters return numbers). The fix reintroduced
+  the class it fixed: a compile-side contract naming a capability with no producer. **Before
+  writing a remedy or a contract sentence, name the layer that PRODUCES the thing and run
+  that one too** (`references/judgment-episodes.md` §Rule 1-d, issue #235)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
