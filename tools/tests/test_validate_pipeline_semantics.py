@@ -9714,12 +9714,13 @@ end program shallow_water2d_runner
         rule is enforced here and the leaf reads it only from the inlined phase contract
         (`docs/workflow/phases/phase_01_compile.md`), which named the rule without stating
         it from `537475dc` until #233 — one billed `compile.generate` re-run per node whose
-        author took the contract's `name or time_variable` wording literally. The multi-shape
-        message is DERIVED from the validator's own output (the message tail after the output
-        index), so rewording that refusal reddens the document check. The sibling `must match`
-        message is a test-local literal here: the validator side of it is pinned by
-        `test_detects_snapshot_output_shape_mismatch_inside_io_contract` above, and this row
-        pins only that the document carries it."""
+        author took the contract's `name or time_variable` wording literally. Two pins, in
+        order: the multi-shape message tail read out of the validator's output must equal the
+        expected literal (rewording the refusal in the validator reddens HERE), and that same
+        tail — the validator's, not the literal — must occur in the document (dropping or
+        rewording the sentence in the document reddens here). The sibling `must match` message
+        is asserted against the document as a literal only; its validator side is pinned by
+        `test_detects_snapshot_output_shape_mismatch_inside_io_contract` above."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
