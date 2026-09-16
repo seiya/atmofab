@@ -1056,6 +1056,13 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
             (d / "ir_meta.json").write_text(json.dumps({"verification_status": ""}),
                                             encoding="utf-8")
             self.assertIsNone(diag.summarize_pure_leaf_metas(d, "compile")["verify"]["verdict"])
+            # A non-string value is not a verdict either: the renderer interpolates the field,
+            # and a truthy non-string (`true`, `1`, a list) would print as one.
+            for value in (True, 1, ["pass"], {"status": "pass"}):
+                (d / "ir_meta.json").write_text(json.dumps({"verification_status": value}),
+                                                encoding="utf-8")
+                self.assertIsNone(
+                    diag.summarize_pure_leaf_metas(d, "compile")["verify"]["verdict"], value)
         # A projection with no meta beside it does not conjure a row.
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "artifacts"
