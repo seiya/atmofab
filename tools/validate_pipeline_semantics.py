@@ -13056,9 +13056,11 @@ FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
 #: the current contract: a `spec.ir.yaml` that `Compile.static` — skipped on this resume — would
 #: reject today (the §5.1 surface guard, and since issue #238 the io_contract rules at
 #: `--stage post_generate`). The fix is a re-certification (readiness refuses such an IR and
-#: Compile re-derives it), never a re-authored model, so the conductor routes it TERMINAL. Despite
-#: the name, neither emit site is about a DEPENDENCY's IR. Distinct from 0/1/2/3, so a caller
-#: tells all five apart without reading the output.
+#: Compile re-derives it on `--resume`), never a re-authored model, so the conductor routes it
+#: TERMINAL. Despite the name, neither emit site is about a DEPENDENCY's IR — and a dependency's
+#: IR is NOT re-validated by readiness (`_dep_ir_meta_passes` reads status + freshness only), so
+#: `--with-deps` is not a remedy for this code. Distinct from 0/1/2/3, so a caller tells all five
+#: apart without reading the output.
 STALE_DEPENDENCY_IR_EXIT_CODE = 4
 
 
@@ -13153,8 +13155,9 @@ def _as_stale_certified_ir(violation: str, ir_path: Path) -> StaleDependencyIRVi
         "which the Generate leaf has no write authority over: Compile.static, skipped on this "
         "resume, would have rejected it under the current contract. Re-running Generate cannot "
         "change this finding. `--resume` the run: check-phase-certified refuses an IR the current "
-        "validator rejects and Compile re-derives it (run_workflow.py --with-deps when the closure "
-        "must be re-certified too).")
+        "validator rejects and Compile re-derives it. (`--with-deps` does NOT re-validate a "
+        "dependency's certified IR: the closure driver re-runs a member only when its status or "
+        "dependency freshness refuses it.)")
 
 
 def _validate_generated_signatures(
@@ -13292,9 +13295,10 @@ def _validate_generated_signatures(
             "empty, null, or drifted public_api.signatures / public_api.module_parameters — a "
             "pre-contract or corrupt IR that Compile.static, skipped on this resume, would have "
             "rejected) — re-certify the node: `--resume` the run (check-phase-certified refuses an "
-            "IR the current validator rejects and Compile re-derives it), or run_workflow.py "
-            "--with-deps when the closure must be re-certified too, so Compile transcribes the "
-            "§5.1 surface into the IR; a certified IR cannot be repaired by re-running Generate"))
+            "IR the current validator rejects and Compile re-derives it) so Compile transcribes "
+            "the §5.1 surface into the IR; a certified IR cannot be repaired by re-running "
+            "Generate, and `--with-deps` re-runs a closure member only when its own status or "
+            "dependency freshness refuses it, never for a validator rule"))
         return
 
     target = model_files[0] if model_files else (repo_root / "<model>")

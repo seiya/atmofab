@@ -133,7 +133,7 @@ Classification convention for `failure_category` (evaluated in this order). The 
 | `failure_category` | `repair_strategy` | basis |
 |---|---|---|
 | `static_frontend_unavailable` | — (terminal) | a machine problem, not a source defect: `classify_failure` fail-closes it before the `Compile`-reopen counter counts it. Recovery is the operator installing the front end, then `--resume` |
-| `stale_dependency_ir` | — (terminal) | the leaf does not own the certified IR; recovery is `--resume` (readiness refuses an IR the current `--stage compile` validator rejects and `Compile` re-derives it, issue #238), or `run_workflow.py --with-deps` when the closure must be re-certified too |
+| `stale_dependency_ir` | — (terminal) | the leaf does not own the certified IR; recovery is `--resume` (readiness refuses an IR the current `--stage compile` validator rejects and `Compile` re-derives it, issue #238); `--with-deps` adds nothing, since a dependency's IR is not re-validated by readiness (`docs/ORCHESTRATION.md` §13c) |
 | `post_execute_violation` | `reuse` | the gate names the offending artifact and shape; a local fix of the emitting code converges |
 | `snapshot_deliverable_gap` | `reuse` | a local fix of the snapshot filename / emission site |
 | `quality_check_mismatch` | `reuse` | a local fix of the `test` target or of nondeterministic runner output |

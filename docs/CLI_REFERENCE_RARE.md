@@ -48,7 +48,7 @@ Each one says which link of the chain refused, so the remedy is "re-derive that 
 | `source_not_bound` / `binary_not_bound` / `verdict_not_bound` | the artifact names a different upstream id than the one standing | re-run that phase against the current upstream |
 | `resolution_stale:<detail>` / `binding_stale:<detail>` | a dependency moved (`docs/ORCHESTRATION.md` §13b); the detail names it | `--with-deps` re-certifies the closure bottom-up |
 | `post_judge_not_recorded` / `post_judge_not_pass` | the Validate gate did not record a pass, whatever the verdict says | re-run Validate |
-| `ir_rejected_by_current_validator:<n>:<first finding>` | the certified IR fails a rule the compile-stage validator applies today (`n` findings; the first is quoted, truncated) — status, hashes and freshness are intact | `--resume`; `Compile` re-derives the IR (`--with-deps` when the closure must be re-certified too). No `revoke-artifact` is needed |
+| `ir_rejected_by_current_validator:<n>:<first finding>` | the certified IR fails a rule the compile-stage validator applies today (`n` findings; the first is quoted, truncated) — status, hashes and freshness are intact | `--resume`; `Compile` re-derives the IR. No `revoke-artifact` is needed, and `--with-deps` adds nothing (a dependency's IR is not re-validated by readiness, `docs/ORCHESTRATION.md` §13c) |
 | `ir_validator_raised:<type>` | the compile-stage validator raised instead of answering | inspect it; this is a defect in the validator or the IR directory, not a stale artifact |
 | `stage_meta_unreadable` / `node_key_invalid` | a malformed record | inspect it; this is a defect, not a stale artifact |
 
