@@ -136,10 +136,11 @@ RAW_EVIDENCE_ARTIFACTS = {
 # variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
 # and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
-    "a per-case runtime value is a state_snapshots variable with shape_expr: scalar, "
-    "valued numerically (the snapshot getters return numbers, so an enumerated or string "
-    "input is recorded as a numeric code stated in the variable's description), and "
-    "metrics_basis.json rows are valued from those same variables"
+    "a per-case runtime value is a state_snapshots variable with the value's shape_expr "
+    "(scalar for an enumerated input), valued numerically (the snapshot getters return "
+    "numbers, so an enumerated or string input is recorded as a numeric code whose meaning "
+    "the IR states in that entry's description), and metrics_basis.json rows are valued "
+    "from those same variables"
 )
 # The one raw-evidence token an IR used to be able to name that no Generate contract
 # produces (issue #235). `evidence_ref` is an open vocabulary (`raw/diagnostics`,

@@ -9712,10 +9712,11 @@ end program shallow_water2d_runner
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
-            "a per-case runtime value is a state_snapshots variable with shape_expr: scalar, "
-            "valued numerically (the snapshot getters return numbers, so an enumerated or string "
-            "input is recorded as a numeric code stated in the variable's description), and "
-            "metrics_basis.json rows are valued from those same variables",
+            "a per-case runtime value is a state_snapshots variable with the value's shape_expr "
+            "(scalar for an enumerated input), valued numerically (the snapshot getters return "
+            "numbers, so an enumerated or string input is recorded as a numeric code whose meaning "
+            "the IR states in that entry's description), and metrics_basis.json rows are valued "
+            "from those same variables",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
