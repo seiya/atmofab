@@ -133,6 +133,17 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                   flush=True)
             print("CWD_ENTRIES:" + ",".join(sorted(p.name for p in Path(".").iterdir())),
                   flush=True)
+            # What is MOUNTED at the cwd, from the kernel's own table: the tmpfs emitted at
+            # repo_root, not bwrap's auto-created mountpoint parents (a deleted `--tmpfs`
+            # still gives a cwd whose only entry is `workspace`, and a write there still
+            # never reaches the host — this line is what tells the two apart).
+            import os
+            fstype = "none"
+            for line in open("/proc/self/mountinfo"):
+                fields = line.split()
+                if fields[4] == os.getcwd():
+                    fstype = fields[fields.index("-") + 1]
+            print("CWD_MOUNT:" + fstype, flush=True)
             # tmp scratch (workspace/tmp/<arid>) is bound rw, and so is the profile's tmp_dir
             try:
                 Path("workspace/tmp/{arid}/scratch.txt").write_text("x"); report("WRITE_TMP", True)
@@ -158,9 +169,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
         `CWD_ENTRIES` is the whole listing of the cwd from inside: exactly `workspace`, the
         mountpoint bwrap creates for the rw binds of the leaf's two scratch roots
-        (`workspace/tmp/<arid>` and the profile's `tmp_dir` under `sandboxes/`). A write at the
-        checkout's path succeeds INTO THE TMPFS and the host's file is unchanged — the
-        checkout is not read-only, it is not there.
+        (`workspace/tmp/<arid>` and the profile's `tmp_dir` under `sandboxes/`). `CWD_MOUNT`
+        is the filesystem type mounted at the cwd per `/proc/self/mountinfo` — `tmpfs` — and
+        it is the assertion that pins the `--tmpfs` EMISSION: measured (round 1), with the
+        emission deleted outright the listing is still `workspace` (bwrap creates the
+        mountpoint's parents) and the host is still unchanged, so the other tags stay green.
+        A write at the checkout's path succeeds INTO THE TMPFS and the host's file is
+        unchanged — the checkout is not read-only, it is not there.
         """
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t).resolve()
@@ -178,6 +193,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             out = _bwrap_stdout(cmd)
             self.assertIn("READ_REPO:HIDDEN", out, out)
             self.assertIn("CWD_ENTRIES:workspace\n", out, out)
+            self.assertIn("CWD_MOUNT:tmpfs\n", out, out)
             self.assertIn("WRITE_TMP:OK", out, out)
             self.assertIn("WRITE_SANDBOX_TMP:OK", out, out)
             self.assertIn("WRITE_CWD:OK", out, out)
@@ -209,10 +225,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         the checker can satisfy a presence floor's exact signal without doing the work the
         floor stands for. Issue #227 replaced the overlays with one tmpfs over the whole
         checkout, so this row pins the three source trees and `.git/` as HIDDEN beside the
-        artifact trees, keeps each formerly overlaid tree as its own tag (the deletion of
-        `_leaf_hidden_artifact_trees` is covered by these mounts, not by the function), and
-        carries a CONTROL that must stay READABLE — the interpreter's own directory — so a
-        sandbox in which everything is missing cannot pass as one that hides the right things.
+        artifact trees and keeps each formerly overlaid tree as its own tag (the deletion of
+        `_leaf_hidden_artifact_trees` is covered by these mounts, not by the function). The
+        control against a sandbox in which everything is missing is `OWN_TMP:WRITABLE` — a
+        RELATIVE path, so a wrong `--chdir` or a dead rw bind fails it — plus `_bwrap_stdout`'s
+        own exit-code check; an absolute read of the interpreter's directory was tried as a
+        control and dropped (round 1): it cannot be false while the probe runs.
 
         Driven under REAL bwrap rather than asserted on the rendered argv: what is under test is
         whether the mount actually hides the tree, which an argv comparison cannot answer.
@@ -250,12 +268,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="codex")
-            # The control's target is derived from the interpreter the leaf script runs
-            # under, which the profile binds for the CLI (a system directory or the
-            # backend's install root): readable by construction, or the script itself
-            # could not have started.
             script = textwrap.dedent(f"""
-                import sys
                 from pathlib import Path
                 for tag, rel in (
                         ("DIALOG", "workspace/orchestrations/{orch}/agents/producer/dialogs/leaf.stdout.jsonl"),
@@ -265,8 +278,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                         ("TOOLS", "tools/validate_pipeline_semantics.py"),
                         ("DOCS", "docs/x.md"),
                         ("SPEC", "spec/x.yaml"),
-                        ("GIT", ".git/HEAD"),
-                        ("RUNTIME", sys.executable)):
+                        ("GIT", ".git/HEAD")):
                     print(f"{{tag}}:" + ("READABLE" if Path(rel).exists() else "HIDDEN"), flush=True)
                 # ... while the leaf's OWN tmp root is still there: a codex pure launch needs it
                 # for its `--output-schema` file and its TMPDIR.
@@ -286,7 +298,6 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertIn("DOCS:HIDDEN", out, out)
             self.assertIn("SPEC:HIDDEN", out, out)
             self.assertIn("GIT:HIDDEN", out, out)
-            self.assertIn("RUNTIME:READABLE", out, out)
             self.assertIn("OWN_TMP:WRITABLE", out, out)
             # The host's copies are untouched — this hides, it does not delete.
             self.assertEqual((dialogs / "leaf.stdout.jsonl").read_text(), "PRODUCER REASONING\n")
@@ -441,7 +452,8 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         walk only sees ancestors), and a bind mount of that tree BELOW a real root
         (`~/tools/alias`). Both printed the planted dialogs before the mount-table
         comparison landed (measured under a nested bwrap). Control: the same root with no
-        mount is accepted."""
+        mount is accepted. The three EXEMPT-root rows are issue #227's round 1: the same
+        bind below a root the spelling exemption used to skip entirely."""
         with tempfile.TemporaryDirectory() as t:
             d = Path(t).resolve()
             home = d / "home" / "user"
@@ -458,15 +470,39 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             (d / "ch").mkdir(mode=0o700)
             repo_root = Path(__file__).resolve().parents[2]
             child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d), str(repo)]
+            # The EXEMPT layout (issue #227 round 1): the CLI under `~/work/npm/bin` and the
+            # checkout at `~/work/atmofab`, so the root `~/work` contains the checkout by its
+            # own spelling and is exempt from the inode walks. A bind mount of the hidden
+            # tree BELOW that root and OUTSIDE the checkout's path (`~/work/alias`) was
+            # carried in by the recursive ro-bind with nothing on top — measured readable
+            # before the mount-table check ran for exempt roots. A mount AT OR UNDER the
+            # checkout's path is covered by the tmpfs and stays accepted.
+            work = home / "work"
+            exempt_repo = work / "atmofab"
+            (exempt_repo / "workspace" / "orchestrations").mkdir(parents=True)
+            (work / "alias").mkdir()
+            (exempt_repo / "alias2").mkdir()
+            (work / "npm" / "bin").mkdir(parents=True)
+            (work / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
+            (work / "npm" / "bin" / "cli-sim").chmod(0o755)
+            exempt_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
+                            str(exempt_repo)]
             cases = [
-                ("root is the bind", [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
-                ("bind below the root", [(repo / "workspace", tools / "alias")], tools / "bin",
-                 "REFUSED"),
-                ("no mount (control)", [], tools / "bin", "ACCEPTED"),
+                ("root is the bind", child, [(repo / "workspace", tools)], tools / "bin", "REFUSED"),
+                ("bind below the root", child, [(repo / "workspace", tools / "alias")],
+                 tools / "bin", "REFUSED"),
+                ("no mount (control)", child, [], tools / "bin", "ACCEPTED"),
+                ("exempt root, bind below it outside the checkout", exempt_child,
+                 [(exempt_repo / "workspace", work / "alias")], work / "npm" / "bin", "REFUSED"),
+                ("exempt root, bind under the checkout's own path (control)", exempt_child,
+                 [(exempt_repo / "workspace", exempt_repo / "alias2")], work / "npm" / "bin",
+                 "ACCEPTED"),
+                ("exempt root, no mount (control)", exempt_child, [], work / "npm" / "bin",
+                 "ACCEPTED"),
             ]
-            for label, binds, path_dir, expected in cases:
+            for label, argv, binds, path_dir, expected in cases:
                 with self.subTest(case=label):
-                    res = subprocess.run([*self._outer_bwrap(binds), "--", *child, str(path_dir)],
+                    res = subprocess.run([*self._outer_bwrap(binds), "--", *argv, str(path_dir)],
                                          capture_output=True, text=True, timeout=120,
                                          check=False)  # the exit code is asserted below
                     self.assertEqual(res.returncode, 0, res.stderr)

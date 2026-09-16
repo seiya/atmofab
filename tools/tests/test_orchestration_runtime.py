@@ -26510,9 +26510,10 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_an_install_root_that_contains_the_checkout_by_its_own_path_is_accepted(self) -> None:
         """The over-refusal probe for the row above: the same layout with a real `$HOME`.
-        `~/work` is bound and contains the checkout AT ITS OWN PATH, where the repo bind and
-        the `workspace/` overlay are emitted later and stack on top (measured under real
-        bwrap: the dialogs stay hidden). Refusing it would fail every operator who keeps the
+        `~/work` is bound and contains the checkout AT ITS OWN PATH, where the tmpfs
+        (issue #227; the repo bind plus the `workspace/` overlay before it) is emitted later
+        and stacks on top (measured under real bwrap: the dialogs stay hidden —
+        `test_bwrap_simulation.py`'s accepted alias row). Refusing it would fail every operator who keeps the
         checkout and a CLI wrapper under one `$HOME` child."""
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)

@@ -8090,10 +8090,16 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
     root itself and for every mount point beneath it — sees a bind mount of a tree inside
     the checkout, and a bind mount BELOW the root, which `realpath` and a single inode
     cannot. A root whose SPELLING (normalised) contains the checkout, or is under it, is
-    exempt: the tmpfs is emitted later at that path and stacks on top (measured under real
-    bwrap: the planted dialogs and `tools/` file stay hidden — the accepted control row of
-    `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`). Same shape as
-    the rw refusal below.
+    exempt from the inode walks: the tmpfs is emitted later at that path and stacks on top
+    (measured under real bwrap: the planted dialogs and `tools/` file stay hidden — the
+    accepted control row of `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`).
+    It is NOT exempt from the mount table: a bind mount of the checkout's subtree BELOW an
+    exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/atmofab`,
+    with the CLI under `~/work`) is carried in by the recursive ro-bind with nothing on top,
+    so only the mount points at or under the checkout's path are skipped for such a root
+    (issue #227 round 1, measured readable before this; pinned by the exempt rows of
+    `test_a_bind_mount_of_a_hidden_tree_at_or_below_the_install_root_is_refused`). Same
+    shape as the rw refusal below.
     """
     resolved_repo = repo_root.resolve()
     try:
@@ -8110,9 +8116,37 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
         return (repo_identity[1].is_relative_to(identity[1])
                 or identity[1].is_relative_to(repo_identity[1]))
 
+    def _refuse_mounts_below(root: str, physical: Path, *, exempt: bool) -> None:
+        # Every mount point strictly below the root (and, for a non-exempt root, the root
+        # itself). For an EXEMPT root — one whose spelling contains the checkout — the root
+        # and every mount point at or under the checkout's own path are skipped: the tmpfs
+        # is emitted at that path and covers them. A mount point below the root and OUTSIDE
+        # the checkout's path that carries the checkout's subtree is a second name the tmpfs
+        # does not cover, exempt root or not (issue #227 round 1: measured readable before
+        # this branch ran for exempt roots).
+        mounts_under = [Path(point) for point, _dev, _root in table
+                        if Path(point).is_relative_to(physical) and Path(point) != physical]
+        if not exempt:
+            mounts_under.insert(0, physical)
+        for mounted in mounts_under:
+            if exempt and (mounted == resolved_repo or mounted.is_relative_to(resolved_repo)):
+                continue
+            if not _overlaps(_fs_identity(mounted, table)):
+                continue
+            raise ValueError(
+                f"backend install root {root!r} carries a mount ({mounted}) of the same "
+                f"filesystem subtree as the checkout {resolved_repo}, under a path the "
+                "sandbox does not overlay (a bind mount gives it the second name); move the "
+                "CLI (or its wrapper) out of that tree, or spell HOME and the PATH entry the "
+                "way the checkout is spelled, so the root's own path contains it"
+            )
+
     for root in backend_ro:
         spelled = Path(os.path.normpath(root))
         if resolved_repo.is_relative_to(spelled) or spelled.is_relative_to(resolved_repo):
+            # Exempt from the inode walks (the root IS an ancestor of the checkout, or lies
+            # inside it, by its own spelling), not from the mount table below it.
+            _refuse_mounts_below(root, Path(os.path.realpath(root)), exempt=True)
             continue
         try:
             root_stat = os.stat(root)
@@ -8146,28 +8180,17 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str])
                 "move the CLI (or its wrapper) out of the checkout, or reach it through the "
                 "checkout's own path"
             )
-        mounts_under = [physical, *(Path(point) for point, _dev, _root in table
-                                    if Path(point).is_relative_to(physical) and Path(point) != physical)]
-        for mounted in mounts_under:
-            if not _overlaps(_fs_identity(mounted, table)):
-                continue
-            raise ValueError(
-                f"backend install root {root!r} carries a mount ({mounted}) of the same "
-                f"filesystem subtree as the checkout {resolved_repo}, under a path the "
-                "sandbox does not overlay (a bind mount gives it the second name); move the "
-                "CLI (or its wrapper) out of that tree, or spell HOME and the PATH entry the "
-                "way the checkout is spelled, so the root's own path contains it"
-            )
+        _refuse_mounts_below(root, physical, exempt=False)
 
 
 def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]) -> list[str]:
     """Validate + materialize the backend config/credential home rw binds.
 
     Each rw bind (the backend's auth/session home) must be ENTIRELY OUTSIDE repo_root.
-    render_bwrap_command emits rw binds after the repo `--ro-bind` (bwrap
+    render_bwrap_command emits rw binds after the `--tmpfs` at repo_root (bwrap
     later-overrides-earlier), so any rw path with a containment relationship to
-    repo_root grants writes that defeat the sandbox: covering repo_root (repo root, ~,
-    /) remounts the whole repo writable, and an in-repo home (e.g.
+    repo_root mounts the host's checkout back over the tmpfs, writable: covering
+    repo_root (repo root, ~, /) exposes the whole repo, and an in-repo home (e.g.
     ATMOFAB_HOME=$repo/workspace) makes that subtree — including other agents'
     artifacts/audit logs — writable beyond the child's declared write_roots. Reject
     both. A missing config *dir* is created (the only file, ~/.claude.json, is
@@ -8227,7 +8250,10 @@ def build_readonly_bwrap_profile(
 
     Nothing inside the repository is reachable EXCEPT those two roots, the leaf's own scratch
     — bound rw below, under the tmpfs, so a codex launch's `--output-schema` file and its
-    `TMPDIR` resolve. Nothing an artifact could be written to is writable, so a leaf has
+    `TMPDIR` resolve. OUTSIDE the repository one shared surface stays: the per-orchestration
+    codex home holds every earlier codex leaf's rollout under `sessions/` (the WHY comment at
+    the `--tmpfs` emission in `render_bwrap_command`, and `TODO.md`). Nothing an artifact
+    could be written to is writable, so a leaf has
     nothing to attribute and the FS-diff is trivially empty; an artifact write it attempts is
     refused by bwrap itself. (The round-2 review caught this sentence claiming the stronger,
     false thing.) The
@@ -8403,6 +8429,18 @@ def render_bwrap_command(
     # it and is gone with the process, never on the host (measured:
     # `test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable`).
     #
+    # WHAT THIS DOES NOT CLOSE, named rather than implied (issue #227 round 1, measured under
+    # real bwrap with the real CLI): the codex credential home is per ORCHESTRATION, bound rw
+    # into every codex leaf of that orchestration, and the CLI writes each launch's whole
+    # rollout — prompt and every response item — under `$CODEX_HOME/sessions/`. A later leaf
+    # of the same orchestration (the VERIFY leaf, for the producer it reviews; a repair turn,
+    # for the previous verdict) can read it through its own shell tool, inside this profile
+    # AND inside codex's own read-only sandbox. That is the `dialogs/` gain under a second
+    # name, and it is out of the mount set's reach: the home must stay writable (session
+    # state) and shared across the attempts of ONE leaf (warm `exec resume` reads the resumed
+    # thread's rollout from it). `TODO.md` carries the entry; the shape that closes it is a
+    # per-lineage `sessions/` rather than a per-orchestration home.
+    #
     # WHY (issue #227). A CLAUDE pure leaf is tool-free (`--tools ""`) and could read
     # nothing either way. A CODEX pure leaf is `codex exec --sandbox read-only`: tool-BEARING,
     # and until Z4 (issue #171) its reads were refused by the leaf hook layer against the
@@ -8454,10 +8492,12 @@ def render_bwrap_command(
             continue
         abs_token = str(abs_path)
         cmd.extend(["--ro-bind", abs_token, abs_token])
-    # Writable runtime binds (backend config/credential home) — emitted AFTER the repo
-    # and read-root ro-binds so a home located INSIDE repo_root (a custom HOME /
-    # ATMOFAB_HOME) stays writable: bwrap applies binds in order, later overriding earlier
-    # overlaps. For a home outside repo_root the order is immaterial.
+    # Writable runtime binds (backend config/credential home) — emitted AFTER the tmpfs
+    # at repo_root and the (unreachable) read-root ro-binds. A home INSIDE repo_root is
+    # refused by `_resolve_backend_rw_binds`, and for a home outside it the order is
+    # immaterial; what the position records is that a later `--bind` wins over an earlier
+    # mount at the same path (bwrap applies binds in order, later overriding earlier
+    # overlaps) — which is why that refusal exists.
     for item in profile.get("runtime_rw_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--bind", item.strip(), item.strip()])
@@ -12027,8 +12067,9 @@ def _validate_orchestration_completion_for_pass(
     # check that can only ever pass would read as coverage of a class nothing covers.
     #
     # THE CLASS ITSELF is what changed, not merely the mechanism: a leaf reaches the filesystem
-    # only through a `bwrap` profile whose repository bind is read-only and whose `write_roots`
-    # is empty, so the write it refused cannot occur from the child window at all. That is a
+    # only through a `bwrap` profile that holds no checkout at all (an empty tmpfs at its path,
+    # issue #227) and whose `write_roots` is empty, so the write it refused cannot occur from
+    # the child window at all. That is a
     # structural closure, not an unaudited hole — and it is the reason the deletion is a
     # narrowing of scope rather than of defense. `docs/ORCHESTRATION.md` §"Capability /
     # Manifest contract (removed in issue #171 PR-2)" is canonical.

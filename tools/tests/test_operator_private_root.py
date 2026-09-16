@@ -201,7 +201,8 @@ class OnePrivateRootTests(unittest.TestCase):
         guarded a leaf-held tool, and a pure leaf holds none: it receives a closed context
         and returns one document, so there is no read for the guard to refuse and nothing
         it could still be coupled to. What keeps the operator's root out of a leaf's reach
-        now is the sandbox profile, which binds the repository and nothing else.
+        now is the sandbox profile, which binds nothing of the repository (an empty tmpfs at
+        its path, issue #227) and nothing under `~` but the backend's own homes.
 
         Driven through the REAL functions, not through the resolvers — pinning at the
         resolver would leave the wiring free to be deleted, which is the failure this
