@@ -604,6 +604,58 @@ PURE_LEAF_META_FILES: dict[str, dict[str, str]] = {
     "validate": {"judge": "judge_meta.json"},
 }
 
+#: Where a REVIEWER substep's verdict is projected, beside its per-attempt record: the file
+#: and the field, keyed like `PURE_LEAF_META_FILES`. A reviewer meta's `result` says only that
+#: the loop obtained a schema-valid document (`docs/WORKSPACE_LAYOUT.md`: "the VERDICT itself is
+#: projected onto `ir_meta.json`; this file records how it was obtained"), and the conductor
+#: writes `result="pass"` on the accepted-document path whatever that document decided. A row
+#: that carried `result` alone printed a rejecting reviewer as `result=pass` (issue #241), so
+#: the verdict is read from its projection and carried as a second field. A producer substep
+#: has no verdict and no entry here.
+PURE_LEAF_VERDICT_FILES: dict[str, dict[str, tuple[str, str]]] = {
+    "generate": {"verify": ("source_meta.json", "verification_status")},
+    "compile": {"verify": ("ir_meta.json", "verification_status")},
+    "validate": {"judge": ("semantic_review.json", "decision")},
+}
+
+
+def _projected_verdict(artifact_dir: Path, basename: str, field: str
+                       ) -> tuple[str | None, str | None, str | None]:
+    """`(verdict, revocation, revoked_by)` for a reviewer substep, read from its projection.
+
+    `verdict` is the REVIEWER's decision. When a retry route has since revoked the artifact
+    (`revoke-artifact` rewrites the field to `revoked` and keeps the decision in
+    `prior_verification_status`), the decision is read from there and `revocation` carries the
+    route's `revocation_reason` — a revocation is a fact about the retry route, not about what
+    the reviewer decided, and the two artifacts under `revoked` in the audited runs of issue
+    #241 were one the reviewer had REJECTED and one it had ACCEPTED. `revocation` is `""` when
+    the file is revoked and records no reason, `None` when it is not revoked. `revoked_by` is
+    the file's `revoked_by_agent_run_id` (`None` unless revoked): the revoking run is not
+    necessarily the audited one — a cold re-run of the same node reads the artifact and revokes
+    it too, and the audit's source-dir discovery lists every attempt under a pipeline the
+    node's orchestrations share — so the arid is what lets a reader place the revocation.
+
+    `verdict` is `None` when no projection was written — the reviewer loop ended without an
+    accepted document, whether by budget exhaustion or by a transport death; the row's
+    `failure_category` says which — for `generate` / `validate`, and the renderer prints that
+    as `verdict=none` rather than guessing. `compile` is the exception — its producer writes
+    `ir_meta.json` at `pending` before the reviewer runs, so the same end on `compile.verify`
+    reads `pending`, which is what the file says. Best-effort like every reader here: a
+    malformed file reads as absent."""
+    doc = _read_json(artifact_dir / basename)
+    if doc is None:
+        return None, None, None
+    value = doc.get(field)
+    value = value if isinstance(value, str) and value else None
+    if value != "revoked":
+        return value, None, None
+    prior = doc.get("prior_verification_status")
+    reason = doc.get("revocation_reason")
+    by = doc.get("revoked_by_agent_run_id")
+    return (prior if isinstance(prior, str) and prior else "revoked",
+            reason if isinstance(reason, str) else "",
+            by if isinstance(by, str) else "")
+
 
 def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """A/B metrics for one phase's pure producer / reviewer leaves in one artifact directory.
@@ -617,7 +669,12 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     rows read `generate` / `verify` exactly as a `generate` node's do, and a `validate` node's
     reads `judge`.
 
-    Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); `found` is true
+    Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); a REVIEWER row
+    additionally carries `verdict`, the decision projected beside the record
+    (`PURE_LEAF_VERDICT_FILES`), because the row's `result` is the loop outcome and says
+    nothing about what the reviewer decided, and `revocation` / `revoked_by` — the retry
+    route's reason and agent run when it has since revoked the artifact, else `None` (see
+    `_projected_verdict`). `found` is true
     when any of the phase's files was present. Best-effort: never raises. An agentic node has neither file and
     yields `found=False`, so the caller can tell a pure node from an agentic one by presence
     alone. The row carries no directory key: the caller passes the directory in and owns how it
@@ -636,6 +693,16 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     """
     rows = {substep: _summarize_one_pure_meta(_read_json(artifact_dir / basename))
             for substep, basename in PURE_LEAF_META_FILES.get(phase, {}).items()}
+    # A reviewer row carries the verdict as well as the loop outcome (issue #241). The keys are
+    # present on every reviewer row that was found — `verdict` is `None` when the projection is
+    # absent, `revocation` / `revoked_by` are `None` unless a retry route revoked the artifact —
+    # and absent from a producer row, so the renderer prints `verdict=` exactly where one exists.
+    for substep, (basename, field) in PURE_LEAF_VERDICT_FILES.get(phase, {}).items():
+        if rows.get(substep, {}).get("found"):
+            verdict, revocation, by = _projected_verdict(artifact_dir, basename, field)
+            rows[substep]["verdict"] = verdict
+            rows[substep]["revocation"] = revocation
+            rows[substep]["revoked_by"] = by
     return {**rows, "found": any(row.get("found") for row in rows.values())}
 
 

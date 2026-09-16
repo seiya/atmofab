@@ -830,6 +830,29 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
 
+    def test_a_revoked_projection_on_disk_reaches_the_markdown(self) -> None:
+        """The diagnostics writer and the renderer agree on three key names (`verdict`,
+        `revocation`, `revoked_by`) that each file's own tests assert independently, so a
+        rename at the writer alone left every audit-side test green while the markdown
+        printed `by arid `unrecorded`` (measured, issue #241 round 3). One row drives the seam
+        from files on disk to the rendered line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo)
+            (repo / self.SRC / "source_meta.json").write_text(json.dumps({
+                "verification_status": "revoked", "prior_verification_status": "pass",
+                "revocation_reason": "validate_execute_post_execute_violation",
+                "revoked_by_agent_run_id": "0df29820-other-run",
+            }), encoding="utf-8")
+            md = _render_markdown(audit(repo, self.ORCH))
+        self.assertIn(
+            "- `verify`: result=`pass`, verdict=`pass` "
+            "(revoked: `validate_execute_post_execute_violation` by arid `0df29820-other-run`), "
+            "attempts=1",
+            md,
+        )
+        self.assertNotIn("unrecorded", md)
+
     # -- the Z1 compile half (issue #168) ------------------------------------------
     IR_A = f"workspace/ir/{SAFE}/demo_20260907_001"
     IR_B = f"workspace/ir/{SAFE}/demo_20260907_002"
@@ -1203,6 +1226,57 @@ class PureLeafABSummaryTest(unittest.TestCase):
         md = "\n".join(lines)
         self.assertIn("model(s): zeta, alpha", md)  # first-seen order, not alphabetical
         self.assertNotIn("alpha, zeta", md)
+
+    def test_render_prints_the_verdict_as_its_own_field(self) -> None:
+        # A rejecting reviewer used to print `result=pass` and nothing else (issue #241):
+        # `result` is the loop outcome. The verdict is a second field, `none` when the
+        # projection was not written, and absent from a producer row.
+        base = {
+            "found": True, "result": "pass", "attempts": 1, "repair_turns": 0,
+            "failure_category": None, "prompt_contract_version": "pure-43",
+            "usage_total": {"total_tokens": 1}, "models": ["m"],
+        }
+        lines: list[str] = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": None}, lines)
+        self.assertIn("- `verify`: result=`pass`, verdict=`fail`, attempts=1", lines[0])
+        self.assertNotIn("revoked", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": None, "revocation": None}, lines)
+        self.assertIn("result=`pass`, verdict=`none`, attempts=1", lines[0])
+        # A revocation is rendered beside the reviewer's decision, never in its place: the
+        # reference run's accepted-then-revoked source and rejected-then-revoked IR must read
+        # apart (round 1 of issue #241).
+        # The revoking arid is printed with it (round 2): the revocation need not be this
+        # orchestration's, and the arid is what an operator resolves to find out.
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "pass",
+                                         "revocation": "validate_execute_post_execute_violation",
+                                         "revoked_by": "0df29820-other"},
+                              lines)
+        self.assertIn("verdict=`pass` (revoked: `validate_execute_post_execute_violation` "
+                      "by arid `0df29820-other`), attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "fail", "revocation": "verify_minor",
+                                         "revoked_by": "5895a595"},
+                              lines)
+        self.assertIn("verdict=`fail` (revoked: `verify_minor` by arid `5895a595`), attempts=1",
+                      lines[0])
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "pass", "revocation": "",
+                                         "revoked_by": ""}, lines)
+        self.assertIn("verdict=`pass` (revoked: `no reason recorded` by arid `unrecorded`), "
+                      "attempts=1", lines[0])
+        # A revoked file with no prior: the verdict slot says `revoked`, the parenthetical is
+        # still there. Absent from the corpus (`_revoke_stage_meta` always writes the prior);
+        # pinned so the form is a decision rather than an accident.
+        lines = []
+        _render_pure_leaf_row("verify", {**base, "verdict": "revoked", "revocation": "r",
+                                         "revoked_by": "a"}, lines)
+        self.assertIn("verdict=`revoked` (revoked: `r` by arid `a`), attempts=1", lines[0])
+        lines = []
+        _render_pure_leaf_row("generate", base, lines)
+        self.assertIn("- `generate`: result=`pass`, attempts=1", lines[0])
+        self.assertNotIn("verdict", lines[0])
 
     def test_no_reservation_reports_discovery_reason(self) -> None:
         # No pipeline reservation at all (prepare_node never ran): the one case where

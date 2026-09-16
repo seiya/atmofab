@@ -2782,7 +2782,12 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         phase = payload.get("phase", "?")
         result = payload.get("result", "?")
         if result == "skipped":
-            return f"  [phase   ] {phase} skipped (resumed)"
+            # A skip is "certified by the artifacts on disk" — on a cold run as much as under
+            # `--resume` since #177 made them one mechanism — so print what the event carries
+            # rather than a label that names only the resumed case (issue #241).
+            cert = payload.get("certified_by")
+            detail = f" (certified_by={cert})" if cert else ""
+            return f"  [phase   ] {phase} skipped{detail}"
         marker = "ok" if result == "pass" else result
         elapsed = payload.get("elapsed_seconds")
         suffix = f" ({elapsed}s)" if elapsed is not None else ""
