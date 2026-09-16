@@ -3728,8 +3728,7 @@ class Conductor:
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
-            # session identity and is registered before a later hook can authorize
-            # a file operation.
+            # session identity, and the warm resume of every repair turn is keyed on it.
             model = self._codex_pinned_model(entry)
             # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
             # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert

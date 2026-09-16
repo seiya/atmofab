@@ -77,9 +77,8 @@ place; it is not a Claude-style fork.
 
 For an M3c node, Codex pure Generate uses `codex exec --json --sandbox read-only` (as do both Codex pure `Compile` leaves, on EVERY node — they carry no M3c condition, so certifying a Codex run against this checklist must exercise them too) with the
 CLI read-only sandbox and the outer read-only bwrap profile. The host validates and writes the
-returned bundle/verdict, so the leaf has no repository write authority. Its recorded isolation
-level is `sandboxed_structured_approximation`; it is not equivalent to Claude
-`closed_tool_free` isolation.
+returned bundle/verdict, so the leaf has no repository write authority. It is a tool-bearing
+CLI inside a read-only sandbox, not the tool-free isolation a Claude pure leaf has.
 
 `codex exec` and `codex exec resume` do **not** accept the same options: `resume` has no
 `--sandbox`. A pure repair turn therefore re-pins the read-only policy with
