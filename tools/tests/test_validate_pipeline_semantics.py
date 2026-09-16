@@ -24768,6 +24768,12 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                          (proc.stdout, proc.stderr))
         # The marker stays in the message for a human reader; it carries no decision.
         self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+        # The remedy is ordered by reachability (issue #238): `--resume` — readiness now
+        # refuses the IR and Compile re-derives it — before the wider `--with-deps`.
+        guard = [line for line in proc.stdout.splitlines()
+                 if "does not carry the controlled_spec" in line]
+        self.assertEqual(1, len(guard), proc.stdout)
+        self.assertLess(guard[0].index("`--resume`"), guard[0].index("--with-deps"), guard[0])
 
     def _seed_io_contract_ir(self, tmp: Path, *, evidence_ref: str,
                              source: str | None = None) -> tuple[Path, str]:
