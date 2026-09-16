@@ -554,3 +554,47 @@ where that defect came from. No Codex launch was spent — a prose/doc-centred d
 cases `SKILL.md` names for a blank-slate subagent instead — so this loop is also a data point that
 the default of round 0 plus three is set by where the Codex launch lands, and a loop that does not
 spend it has no reason to reach five.
+
+## PR #242 / issue #238 — round 0 plus three, class descended, and the disclosure round paid again
+
+Real findings per round: **3 (+2 hygiene), 5 (+1 cost note), 3 (+4 record errors)**; Codex in
+round 2, clean, tests not executed. Stopped at the default budget with class descent and a
+bounded remainder; the security axis was not clean two rounds running, and the PR says so.
+
+The class transitions, one per round, and where each came from:
+
+- **Round 1 — a hole in the PLAN.** Decision 4's premise ("`--with-deps` runs the new clause on
+  every closure node") was never executed and was false; both up-model axes found it by driving
+  the closure driver on the real corpus. The sibling skill's rule 1-d owns the episode
+  (`atmofab-enforcement-change/references/judgment-episodes.md` §Rule 1-d, issue #238). The same
+  round: a §13c sentence written to deny a behaviour the validator has (it reads `tests.md`), and
+  the fixture fallout of the change's own reclassification (below).
+- **Round 2 — holes in the WITNESSES of round 1's fixes.** The per-finding wrap was pinned by
+  COUNT and not by CLASS (`if "evidence_ref" in v` survived three files; the incident IR carries a
+  second class); the clause-order row sampled two of three earlier clauses; the
+  `--resume`-before-`--with-deps` order pins stayed green with the false wording restored and went
+  red on a correct reordering — a pin on token order, not on the fact. Plus a docstring premise
+  that had been false since #153 PR-2 and that round 1's rewrite of the paragraph kept.
+- **Round 3 (disclosure) — a check that still runs and now covers less.** The reworked fixtures'
+  two §5.1 rows kept answering rc 4 from the fixture's remaining dirt, so the §5.1 guard's TYPE
+  no longer reached any subprocess row's exit code; `str(` at that emit site was red on
+  `origin/main` and green in all 18 rows at `aa8618b5`. Found by the "compare against the old
+  revision" brief and by nothing else: the sweep mutates HEAD's code (the guard's hunk is not in
+  the diff), the census counts the rows as witnesses, and the blank-slate axes read HEAD. Also:
+  four record errors across the commit messages (a tally, a misattributed quotation, a wrong
+  "previous commit", an unlisted set of files), corrected in the last commit rather than by
+  rewriting history.
+
+**Two things worth carrying.** First, the reclassification form of "covers less" (SKILL.md's
+disclosure paragraph now names it): a change that moves a finding class from warm to terminal
+changes what every fixture that produced that class as DIRT observes, and the rework that keeps
+those rows green is exactly where the old guarantee leaks out. Second, the round-3 mismatch on the
+round-0 sweep tally — the tool's summary said 5/4/1, a re-run after the pin said 6/4/0, a hand
+per-hunk run at the same commit said 4/5/1, total 10 in all three — was left unreconciled and
+recorded as three measurements rather than resolved into one; the property ("every behavioural
+hunk is pinned") held under all three.
+
+**What ended it**: the budget, with the conditions met that the file names for a change that
+fixes existing machinery — a blank-slate reviewer returning no functional defect in round 3's
+next-maintainer brief after F1, the branch-wide sweep green, the over-refusal probe empty across
+the real corpus twice — and the superior condition not met, which the PR body says in those words.

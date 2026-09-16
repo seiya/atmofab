@@ -1045,6 +1045,15 @@ passed, and stopped seeing a whole class of change. Nothing was removed; a key w
 the axis for "a check that was narrowed away" would have missed it, so ask for **a check that
 still runs and now covers less**, and give the reviewer the old revision to run the old defect
 against: red-then-GREEN is the finding whether the cause was a narrowing, a deletion, or a move.
+**A third form: the change RECLASSIFIES the dirt a fixture relied on.** PR #242 made an IR-subject
+io_contract finding the terminal rc 4 class; two exit-code test classes had used "an IR with no
+io_contract" as their source of ORDINARY co-findings, so the fixtures were reworked — and the two
+rows that pinned the §5.1 guard's TYPE kept answering rc 4 from the fixture's remaining dirt,
+whatever the guard emitted (`str(` at its emit site: red on `origin/main`, green in all 18
+subprocess rows at round 2's HEAD). Nothing was narrowed, nothing moved; the row's exit code
+simply acquired a second source. **Ask the disclosure axis, of every row a fixture rework
+touched, what makes its assertion true NOW and whether that is still the thing the row is named
+for** (`references/class-descent-log.md` §PR #242).
 
 **And "what does a LEAF see" means RENDER THE PROMPT, once per leaf that receives it — WHEN the
 branch changed text a leaf is handed.** That condition is the whole scope: a branch that touches

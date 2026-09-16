@@ -382,3 +382,38 @@ SEVERITY (things that already exist) while this was a plan (1-d) — which is wh
 under 1-d. The producer/consumer pair for the raw-evidence vocabulary is now a row in
 `references/dual-read-pairs.md`.
 
+## Rule 1-d: a premise about a driver's "every node" was a premise about its skip branch (issue #238 / PR #242, 2026-09-16)
+
+Issue #238 re-runs the compile-stage validator inside `_ir_certification`, so a certified IR a
+rule added since certification rejects is refused at readiness instead of burning four Generate
+launches at `generate.gate`. The plan's decision 4 left dependency readiness untouched, on two
+grounds: nothing a consumer reads from a dependency's IR depends on an io_contract rule (true, and
+enumerated by a round-2 reviewer), and "`--with-deps` runs `check-phase-certified` for every
+closure node, where Part 1 applies" — written in the plan as fact, never executed, and false.
+
+**What the run would have shown in one call.** `run_workflow._run_with_dependency_closure` asks
+`_dependency_node_readiness` per member and `continue`s on `ready` without launching a conductor;
+readiness's `ir_ref` stage is `_verify_dep_stage_detail` → `_dep_ir_meta_passes`, which reads
+`verification_status` and applies 13a freshness, and calls no validator. Measured at `8d21f915`:
+`_verify_dep_stage_detail(…, "ir_ref")` answers `(True, None)` on an IR `_ir_certification` refuses,
+and all four members of the `shallow_water2d` closure answer `ready` while every one's latest IR
+fails the current validator (the issue #175 `profiles` sidecar key). So the five remedy texts the
+branch wrote — both rc 4 messages, RUNBOOK, CLI_REFERENCE_RARE, the phase docs — said "`--with-deps`
+when the closure must be re-certified too", and an operator following them would watch the
+dependency get skipped.
+
+**Why 1-d as written did not fire.** Its bullets say to execute the sentence, name the producing
+layer, count success-side traces. The sentence here was about a LOOP, and reading the loop body
+(the per-node conductor launch, where the clause does apply) confirms it; the falsifying case is
+the branch the body is not — the `continue`. A premise of the form "X happens for every member"
+is refuted by one skipped member, and the skipped member is exactly the one the plan's author did
+not picture, because the plan was about the node that runs.
+
+**How it was found**: round 1, both the security and the correctness axis independently, each by
+driving the driver on the real closure — one reproduction each, against a plan that had cost a
+day. Fix: the remedies now say `--with-deps` does not re-validate a dependency's IR, and
+`docs/ORCHESTRATION.md` §13c records the scope line with the measurement, so the next person
+extending the clause to dependencies knows it re-runs every member of today's closures.
+
+**The rule** (SKILL.md, rule 1-d): a premise about what a driver does for every member is a
+premise about the member it skips; name that member and run the driver on it.

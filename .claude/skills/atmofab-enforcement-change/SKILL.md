@@ -139,6 +139,15 @@ to **one unbilled observation**).
   the class it fixed: a compile-side contract naming a capability with no producer. **Before
   writing a remedy or a contract sentence, name the layer that PRODUCES the thing and run
   that one too** (`references/judgment-episodes.md` §Rule 1-d, issue #235)
+- **A premise about what a DRIVER does "for every node" is a claim about that loop's SKIP
+  branch, and the skip branch is the one a read of the loop body does not show you.** Issue
+  #238's plan rested decision 4 on "`--with-deps` runs `check-phase-certified` for every closure
+  node, where the new clause applies"; the closure driver asks `_dependency_node_readiness` first
+  and `continue`s past a ready member without launching a conductor, so the clause never ran on
+  a dependency — and every member of the real closure was ready while failing the current
+  validator. Five remedy texts shipped pointing the operator at a command that skips the thing
+  they were told it re-certifies. **Rule: name the member the driver SKIPS, and run the driver
+  on it** (`references/judgment-episodes.md` §Rule 1-d, issue #238)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
