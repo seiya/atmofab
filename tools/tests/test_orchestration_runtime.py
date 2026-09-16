@@ -550,15 +550,18 @@ def _is_claude_roster_probe(args) -> bool:
 # Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
 # preflight asserts, plus the stdin-sentinel sentence, re-read on codex-cli 0.154.0 when
 # `--skip-git-repo-check` joined the set (issue #227; both subcommands document it).
+# `--output-schema` is deliberately ABSENT although the real help lists it: the preflight
+# stopped certifying it when the pure codex launch dropped the flag (issue #230), and a
+# probe that still required it must fail against this fixture.
 _CODEX_EXEC_HELP = (
-    "--model --json --output-schema --sandbox --ignore-rules --config "
+    "--model --json --sandbox --ignore-rules --config "
     "--skip-git-repo-check "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
     "Initial instructions for the agent. If not provided as an argument (or if `-` is "
     "used), instructions are read from stdin."
 )
 _CODEX_EXEC_RESUME_HELP = (
-    "--model --json --output-schema --ignore-rules --config --skip-git-repo-check "
+    "--model --json --ignore-rules --config --skip-git-repo-check "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
     "Prompt to send after resuming the session. If `-` is used, read from stdin."
 )
@@ -571,7 +574,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "codex_version_available", "pass": True},
             {"name": "codex_features_list_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
@@ -1308,7 +1310,6 @@ shell_tool                       stable             true
         checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
-        self.assertFalse(by_name["codex_exec_output_schema"]["pass"])
         self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
 
@@ -1365,7 +1366,7 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
-                    0, stdout="--json --output-schema --sandbox --ignore-rules "
+                    0, stdout="--json --sandbox --ignore-rules "
                 )
             if cmd[-3:] == ["exec", "resume", "--help"]:
                 return _FakeCompletedProcess(0, stdout="--model --json")
@@ -1472,7 +1473,7 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
-                    0, stdout="--json --output-schema --sandbox --ignore-rules "
+                    0, stdout="--json --sandbox --ignore-rules "
                     "--dangerously-bypass-hook-trust"
                 )
             if cmd[-3:] == ["exec", "resume", "--help"]:
@@ -10426,7 +10427,6 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_bwrap_userns", "pass": True},
             {"name": "sandbox_bwrap_exec", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},

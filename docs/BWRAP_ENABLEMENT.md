@@ -69,17 +69,17 @@ per-run cost, status and the `violations/` records for a quick read
 
 ## Codex session criteria
 
-For a Codex run, confirm that every leaf launch has a distinct `thread.started` event before a
-tool request, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
+For a Codex run, confirm that every leaf launch has a distinct `thread.started` event (on
+codex-cli 0.154.0 it is the first JSONL line; the conductor requires only that one arrives
+before EOF), and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
 terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing or conflicting
 thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
 place; it is not a Claude-style fork.
 
-For an M3c node, Codex pure Generate uses `codex exec --json --output-schema` (as do both Codex pure `Compile` leaves, on EVERY node — they carry no M3c condition, so certifying a Codex run against this checklist must exercise them too) with the
+For an M3c node, Codex pure Generate uses `codex exec --json --sandbox read-only` (as do both Codex pure `Compile` leaves, on EVERY node — they carry no M3c condition, so certifying a Codex run against this checklist must exercise them too) with the
 CLI read-only sandbox and the outer read-only bwrap profile. The host validates and writes the
-returned bundle/verdict, so the leaf has no repository write authority. Its recorded isolation
-level is `sandboxed_structured_approximation`; it is not equivalent to Claude
-`closed_tool_free` isolation.
+returned bundle/verdict, so the leaf has no repository write authority. It is a tool-bearing
+CLI inside a read-only sandbox, not the tool-free isolation a Claude pure leaf has.
 
 `codex exec` and `codex exec resume` do **not** accept the same options: `resume` has no
 `--sandbox`. A pure repair turn therefore re-pins the read-only policy with

@@ -240,7 +240,7 @@ class CodexLeafHasNoHookLayerTests(unittest.TestCase):
     with it three preflight checks, a host-certified feature cache, a hooks file copied into
     the private CODEX_HOME, and `--dangerously-bypass-hook-trust` on both `exec` subcommands.
     What confines the pure codex leaf now is the read-only bwrap profile plus `--sandbox
-    read-only` / `sandbox_mode="read-only"` and `--output-schema`; the private home's
+    read-only` / `sandbox_mode="read-only"`; the private home's
     `config.toml` untrusted marker STAYS, because it is what keeps this checkout's dev-layer
     `.codex/hooks.json` from joining the leaf's hook set at all."""
 

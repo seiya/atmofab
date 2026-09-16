@@ -3683,9 +3683,11 @@ class Conductor:
         `pure=True` (Z2) launches a HOST-MEDIATED PURE FUNCTION rather than an agentic
         session: `tools/pure_leaf.pure_leaf_flags()` disables every tool, MCP server, and
         slash command and selects the JSON result envelope, so the model returns exactly one
-        typed document and holds no write path.  Codex uses its documented structured
-        approximation: an output schema plus a read-only sandbox, while the host retains
-        semantic validation and output publication.
+        typed document and holds no write path.  Codex runs a tool-bearing CLI inside the
+        read-only sandbox (`--sandbox read-only` under the read-only bwrap profile) and the
+        host parses its one reply: semantic validation and output publication stay host-side.
+        `session_id` is used by the claude arm alone (`--session-id`); the codex arm reads
+        it for nothing since issue #230 retired the per-child output-schema file.
         `entry` names THIS leaf's resolved model. It defaults to the `defaults` entry only so a
         caller with genuinely no phase/substep (and the test suite) need not spell it out; every
         production launch passes its own, which
@@ -3726,8 +3728,7 @@ class Conductor:
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
-            # session identity and is registered before a later hook can authorize
-            # a file operation.
+            # session identity, and the warm resume of every repair turn is keyed on it.
             model = self._codex_pinned_model(entry)
             # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
             # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
@@ -3735,20 +3736,24 @@ class Conductor:
             # flag; the reasoning level is a config override on both subcommands.
             effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
                             if entry.effort else [])
-            schema = self._codex_pure_schema_path(session_id)
             # CODEX_HOME is already an orchestration-private directory. Its config.toml marks
             # this checkout untrusted, which is what keeps this repository's DEV-layer
             # `.codex/hooks.json` — written for an operator's own session — out of the leaf's
             # hook set. Since Z4 (issue #171) the leaf brings no hooks of its own: what
-            # confines it is this read-only sandbox plus the output schema.
+            # confines it is this read-only sandbox. No `--output-schema`: codex-cli sends a
+            # schema to the Responses API with `strict: true` hardcoded, strict mode refuses
+            # the only schema the host could author for a free-form document, and every pure
+            # codex turn died at its first request (issue #230). The host's own parse of the
+            # one reply (`extract_json_document` and the per-document validators) is the
+            # shape check.
             # `--skip-git-repo-check`: the sandbox holds no checkout — `render_bwrap_command`
             # puts an empty tmpfs at `repo_root` (issue #227) — and codex refuses an untrusted
             # non-git cwd before any API call without it (measured on codex-cli 0.154.0: `Not
             # inside a trusted directory and --skip-git-repo-check was not specified.`, rc 1).
-            # The cwd stays `repo_root` so the private `CODEX_HOME`'s trust key, the schema
-            # path and `TMPDIR` are unchanged; only the git check is waived.
+            # The cwd stays `repo_root` so the private `CODEX_HOME`'s trust key and `TMPDIR`
+            # are unchanged; only the git check is waived.
             pure_flags = ["--ignore-rules", "--sandbox", "read-only",
-                          "--skip-git-repo-check", "--output-schema", str(schema)]
+                          "--skip-git-repo-check"]
             # `codex exec resume` and `codex exec` do NOT accept the same options: resume has
             # no `--sandbox` (only the never-used
             # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy is
@@ -3758,7 +3763,7 @@ class Conductor:
             # repair a transport death (warm resume is how both pure loops run every repair
             # attempt). `--config`, not the `-c` alias, for the reason above.
             pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
-                                 "--skip-git-repo-check", "--output-schema", str(schema)]
+                                 "--skip-git-repo-check"]
             # `-` is the documented stdin sentinel for the positional prompt on BOTH
             # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
             # when the prompt is absent, but `codex exec resume` documents only the `-`
@@ -3771,34 +3776,6 @@ class Conductor:
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
-
-    def _codex_pure_schema_path(self, child_arid: str | None) -> Path:
-        """Host-author the JSON-object schema for a Codex pure response.
-
-        Semantic CodegenBundle/verdict checks remain host-side.  This CLI schema
-        guarantees the transport response is one object before those checks run.
-
-        The path is keyed by the child's own agent_run_id, so two concurrent launches cannot
-        collide on one filename — which the shared `codex-pure-schema` fallback this replaced
-        allowed. The argument is `leaf_command`'s `session_id`, NOT `spawn_leaf`'s `child_arid`:
-        that parameter is still optional at its own signature and `spawn_leaf` does not thread
-        `child_arid` into it, so the mandatory-`child_arid` change does not reach here and this
-        cannot assume a value. Both production callers pass `session_id=child_arid`; a caller
-        that does not gets a NAMED refusal rather than the `AttributeError` a bare `.strip()`
-        raised, because a pure codex launch with no per-child schema path is a host defect to
-        report, not a shared file to fall back to.
-        """
-        child = (child_arid or "").strip()
-        if not child:
-            raise SandboxEnforcementError(
-                "a pure codex launch needs a per-child output-schema path, and this one was "
-                "given no session id: pass `session_id=<child_arid>` to `leaf_command`. The "
-                "shared fallback filename this replaced let two concurrent launches overwrite "
-                "each other's schema")
-        path = self.repo_root / "workspace" / "tmp" / child / "codex_pure_output.schema.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
-        return path
 
     @staticmethod
     def _feed_prompt_stdin(process: Any, prompt_text: str) -> threading.Thread | None:
@@ -4990,10 +4967,11 @@ class Conductor:
             # Describing it with the argv a leaf WOULD have had is the very thing this field
             # exists to prevent — a record of a launch that did not happen.
             return {}
-        # `session_id=child_arid` because `leaf_command` is not free of side effects on every
-        # branch: a pure CODEX launch writes its output schema, and with no session id it wrote
-        # one into a stray `workspace/tmp/codex-pure-schema/` that nothing owns or cleans.
-        # Passing the id spawn_leaf passes keeps the re-derivation on the production path.
+        # `session_id=child_arid` because the claude argv carries it (`--session-id`), and this
+        # field records the surface of the launch that HAPPENED: re-deriving it with the id
+        # spawn_leaf passes keeps the recorded argv on the production path. `leaf_command` is
+        # side-effect-free on every branch since issue #230 (the codex arm wrote its
+        # per-child output schema here before), so the id is for the argv alone.
         argv = self.leaf_command(entry, session_id=child_arid)
         surface: dict[str, Any] = {}
         if "--tools" in argv:
@@ -7199,8 +7177,8 @@ clean:
                                    dependency_surface: tuple[dict[str, Any], ...] = ()
                                    ) -> "SubstepOutcome":
         """Run a pure-function PRODUCER substep: launch a backend-specific
-        closed-context leaf (Claude tool-free transport or Codex's sandboxed structured-output
-        approximation) that returns ONE JSON document, validate it, repair a violation in a
+        closed-context leaf (Claude tool-free transport or Codex's read-only sandbox) that
+        returns ONE JSON document, validate it, repair a violation in a
         bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row,
         and ONLY THEN write that document's artifacts host-side.
 
@@ -8058,8 +8036,8 @@ clean:
                                    spec: "Conductor._PureReviewerSpec"
                                    ) -> "SubstepOutcome":
         """Run a pure-function REVIEWER substep: launch a backend-specific
-        closed-context reviewer (Claude tool-free transport or Codex's sandboxed structured-output
-        approximation) that returns one verify verdict, validate it, repair a schema violation in a
+        closed-context reviewer (Claude tool-free transport or Codex's read-only sandbox) that
+        returns one verify verdict, validate it, repair a schema violation in a
         bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row, and
         ONLY THEN author the phase's stage meta host-side — `source_meta.json` for `generate`,
         `ir_meta.json` for `compile`; the `spec` decides, and nothing below names either.

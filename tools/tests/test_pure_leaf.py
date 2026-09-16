@@ -709,9 +709,9 @@ class PurePromptConstantsTest(unittest.TestCase):
 
 class LeafCommandPureBranchTest(unittest.TestCase):
     def setUp(self) -> None:
-        # A codex pure launch AUTHORS its output schema under repo_root/workspace/tmp,
-        # so this must be a disposable dir — a shared literal path would leave real
-        # files behind on every run.
+        # A disposable repo_root, so the absence assertions below (`leaf_command` writes
+        # nothing under `workspace/tmp` since issue #230) observe THIS run's tree and not a
+        # shared literal path some other run littered.
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
 
@@ -760,11 +760,21 @@ class LeafCommandPureBranchTest(unittest.TestCase):
             self.assertIn("--system-prompt", argv, msg=str(kwargs))
             self.assertEqual(argv[argv.index("--tools") + 1], "", msg=str(kwargs))
 
-    def test_codex_pure_uses_structured_readonly_approximation(self):
+    def test_codex_pure_uses_the_readonly_sandbox_and_no_output_schema(self):
+        """The codex pure argv is the read-only sandbox alone; `--output-schema` is gone.
+
+        codex-cli sends the schema to the Responses API with `strict: true` hardcoded, and
+        strict mode refuses the only schema the host could author for a free-form document
+        (`{"type": "object"}`: `additionalProperties` must be supplied and false), so every
+        pure codex turn died at its first request (issue #230). The host's own parse of the
+        one reply is the shape check; the argv carries no schema and the call writes no
+        schema file.
+        """
         argv = self._conductor("codex").leaf_command(session_id="arid-1")
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
-        self.assertIn("--output-schema", argv)
+        self.assertNotIn("--output-schema", argv)
+        self.assertFalse((Path(self._tmp.name) / "workspace" / "tmp").exists())
         self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--ignore-rules", argv)
         # The sandbox holds no checkout (issue #227), and codex refuses an untrusted non-git
@@ -791,7 +801,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertIn('sandbox_mode="read-only"',
                       [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
         self.assertIn("--ignore-rules", argv)
-        self.assertIn("--output-schema", argv)
+        self.assertNotIn("--output-schema", argv)  # issue #230
         self.assertIn("--skip-git-repo-check", argv)  # issue #227; the resume cwd is empty too
         self.assertIn("thread-1", argv)
         self.assertEqual(argv[-2:], ["--json", "-"])

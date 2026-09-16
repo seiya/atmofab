@@ -8286,8 +8286,7 @@ def build_readonly_bwrap_profile(
     file pins.
 
     Nothing inside the repository is reachable EXCEPT those two roots, the leaf's own scratch
-    — bound rw below, under the tmpfs, so a codex launch's `--output-schema` file and its
-    `TMPDIR` resolve. OUTSIDE the repository one shared surface stays: the per-orchestration
+    — bound rw below, under the tmpfs, so the leaf's `TMPDIR` resolves. OUTSIDE the repository one shared surface stays: the per-orchestration
     codex home holds every earlier codex leaf's rollout under `sessions/` (the WHY comment at
     the `--tmpfs` emission in `render_bwrap_command`, and `TODO.md`). Nothing an artifact
     could be written to is writable, so a leaf has
@@ -8455,8 +8454,8 @@ def render_bwrap_command(
         if isinstance(item, str) and item.strip():
             cmd.extend(["--ro-bind", item.strip(), item.strip()])
     # THE CHECKOUT IS NOT BOUND. An empty tmpfs sits at `repo_root` — the same path, so
-    # `--chdir`, the private `CODEX_HOME`'s `[projects."<repo>"]` trust key and the
-    # `--output-schema` path under `workspace/tmp/<arid>` are all unchanged — and nothing of
+    # `--chdir` and the private `CODEX_HOME`'s `[projects."<repo>"]` trust key are unchanged
+    # — and nothing of
     # the repository is mounted under it except the leaf's OWN two scratch roots,
     # `workspace/tmp/<arid>` and the profile's `tmp_dir` (`sandboxes/<arid>/tmp`), bound rw
     # further down (bwrap creates each mountpoint under the tmpfs, as it did under the
@@ -8982,7 +8981,7 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available", "codex_features_list_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
-    "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
+    "sandbox_bwrap_exec", "codex_exec_json_streaming",
     "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
 })
 
@@ -9003,7 +9002,7 @@ CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
 # `LeafCommandPureBranchTest.test_codex_resume_argv_options_are_all_preflight_certified`,
 # which asserts the emitted option set equals this one).
 CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
-    "--model", "--json", "--output-schema", "--ignore-rules", "--config",
+    "--model", "--json", "--ignore-rules", "--config",
     # The sandbox holds no checkout (issue #227: an empty tmpfs at `repo_root`), and codex
     # refuses an untrusted non-git cwd before any API call without this flag — measured on
     # codex-cli 0.154.0: `Not inside a trusted directory and --skip-git-repo-check was not
@@ -9549,7 +9548,7 @@ def _is_placeholder_ref(value: str) -> bool:
 _PROMPT_TEMPLATE_DIR = Path(__file__).resolve().parent / "prompt_templates"
 _PROMPT_TEMPLATE_FILES = {
     # Z2 pure-function leaf prompts (host-mediated closed context). Claude's transport is
-    # tool-free; Codex uses a read-only structured-output approximation. One per migrated
+    # tool-free; Codex runs inside a read-only sandbox. One per migrated
     # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure compile.generate": "pure_compile_generate.txt",
@@ -9968,7 +9967,7 @@ def _render_deterministic_launch_prompt(request_payload: dict[str, Any]) -> str:
 
 # --------------------------------------------------------------------------------------
 # Z2 pure-function leaf (host-mediated closed context). Claude uses `claude -p` with tools
-# disabled; Codex uses a read-only structured-output approximation. A pure leaf receives a
+# disabled; Codex runs inside a read-only sandbox. A pure leaf receives a
 # fully closed context and returns ONE JSON document; the host validates and writes it. Its launch
 # prompt has no skill section, no gate runbook, or write-authorization constraints — the leaf has
 # no repository write authority to constrain — so it needs its own renderer, marker set, and
@@ -13710,11 +13709,6 @@ def _probe_codex_backend(
             "detail": exec_help_detail,
         },
         {
-            "name": "codex_exec_output_schema",
-            "pass": exec_help_proc.returncode == 0 and "--output-schema" in exec_help_text,
-            "detail": exec_help_detail,
-        },
-        {
             "name": "codex_exec_pure_isolation_flags",
             "pass": (
                 exec_help_proc.returncode == 0
@@ -14176,8 +14170,8 @@ def probe_execution_platform(
         )
         # The codex hooks FEATURE check, and the committed-hook-file check beside it, went
         # with the leaf's hook layer in Z4 (issue #171). A pure codex leaf is confined by the
-        # read-only bwrap profile plus `--sandbox read-only` / `sandbox_mode="read-only"` and
-        # its output schema; it carries no hooks, so a CLI with the feature off changes
+        # read-only bwrap profile plus `--sandbox read-only` / `sandbox_mode="read-only"`;
+        # it carries no hooks, so a CLI with the feature off changes
         # nothing about it. The home-writable probe stays — the private CODEX_HOME still holds
         # the untrusted marker and the bound credential.
         codex_home_check = _probe_codex_home_writable()
