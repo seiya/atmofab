@@ -9165,8 +9165,9 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(self._reason(repo, "build"), "derivation_key_mismatch:ir")
 
     def test_check_phase_certified_names_the_clause_that_refused(self) -> None:
-        """Every refusal reason the predicate can return, each from the state that produces
-        it. The reason is what the conductor's run log and an operator read to find out WHY a
+        """The stage-meta and not-found refusal reasons, each from the state that produces
+        it (the key reasons — `derivation_key_*`, `spec_ref_unresolved`, `dependency_cycle`
+        — are driven in `DerivationKeyCertificationTests` / `CandidateOrderingAndFilterTests`). The reason is what the conductor's run log and an operator read to find out WHY a
         phase re-derived, so a reason that no state produces (or a state that produces the
         wrong reason) is a false record."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -17627,7 +17628,7 @@ class CertifiedDepVersionTests(unittest.TestCase):
             r2 = mark_dependency_readiness(repo_root=repo_root, orchestration_id="cd")
             self.assertEqual(r2, r1)
 
-    def test_certified_version_regression_invalidates(self) -> None:
+    def test_a_revoked_ir_of_the_certified_version_invalidates(self) -> None:
         """Mirror check: a regression of the CERTIFIED version's artifact — its IR revoked —
         is refused at the gate. (A newer directory that never certified is not a regression
         under the key model: the certified output stands until revoked or superseded by a
@@ -17962,9 +17963,9 @@ class CrossVersionCoherenceTests(unittest.TestCase):
         certify_node(repo_root, "orch_dep", f"component/dep_a@{version}", through=through,
                      ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
 
-    def test_ir_from_v1_pipeline_from_v2_must_not_certify(self) -> None:
+    def test_ir_from_v2_and_pipeline_from_v1_with_a_revoked_ir_must_not_certify(self) -> None:
         """0.2.0 has a certified IR but no pipeline; 0.1.0 has a pipeline + verdict whose
-        IR was revoked afterwards. Under the old `any()` per-stage logic this would set both
+        IR was REVOKED afterwards (the arm this row drives). Under the old `any()` per-stage logic this would set both
         ir_ref_verified=true and pipeline_ref_verified=true. Round 14 F1 requires
         same-version coherence: no single version has both → both must be false."""
         from tools.orchestration_runtime import (
@@ -18487,7 +18488,10 @@ class PostMarkArtifactRegressionTests(unittest.TestCase):
     dep_set_fingerprint includes per-dep latest artifact bytes, so any change
     in the latest artifact content invalidates persisted readiness."""
 
-    def test_newer_failing_ir_meta_invalidates_readiness_at_gate(self) -> None:
+    def test_a_revoked_certified_ir_invalidates_readiness_at_gate(self) -> None:
+        """The certified IR is REVOKED after the mark: the gate's live recompute refuses.
+        (Renamed in round 3: the row tests the revoked arm — a newer FAILING attempt
+        beside the certified one is a record and un-readies nothing, `LaunchGateLiveRecomputeTests`.)"""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _dependency_ready, _load_spec_catalog,
         )
@@ -18700,6 +18704,63 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
             ok, reason = _dependency_ready(repo_root, "fp_gate", step="compile")
             self.assertFalse(ok)
             self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
+
+    def test_the_gate_recomputes_after_the_mark_a_revoked_dependency_build_refuses(self) -> None:
+        """The persisted flags say `true`; the dependency's Build is revoked AFTER the mark.
+        Every launch step whose readiness reads the build (`generate`, `build`, `validate`)
+        is refused by the recompute, and the refusal names the revocation; `compile` (IR
+        readiness only) still passes. A round-3 mutant that returned the persisted
+        execution-readiness flag for a non-compile step survived every test on both sides
+        (disclosure round, next-maintainer F2): the mark → drift → gate shape had lost its
+        end-to-end row with the fingerprint tests. This is that row."""
+        from tools.orchestration_runtime import _dependency_ready, _revoke_stage_meta
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_passing_orch(repo_root)
+            meta = json.loads((repo_root / "workspace/orchestrations/fp_gate/orchestration_meta.json")
+                              .read_text(encoding="utf-8"))
+            self.assertTrue(meta["dependency_readiness"]["direct_dependency_execution_readiness"])
+            bin_meta = (repo_root / "workspace/pipelines/component__dep_a__0.1.0/dep-a_20260511_001"
+                        / "binary/bin_20260101_001/binary_meta.json")
+            _revoke_stage_meta(repo_root, bin_meta, reason="validate_structural_violation_ir",
+                               trigger_agent_run_id="t1")
+            for step in ("generate", "build", "validate"):
+                ok, reason = _dependency_ready(repo_root, "fp_gate", step=step)
+                self.assertFalse(ok, step)
+                self.assertIn("component/dep_a@0.1.0 build: revoked", reason, step)
+            self.assertEqual(_dependency_ready(repo_root, "fp_gate", step="compile"), (True, None))
+
+    def test_a_newer_failed_attempt_of_a_dependency_leaves_it_ready(self) -> None:
+        """A decision this branch REVERSES (Codex round 5 of the readiness work, "a stale pass
+        cannot unblock a new launch"): a newer attempt that FAILED — its meta `fail`, its
+        stamp keys stripped — at the dependency's IR, binary or verdict is a record, not a
+        decision about the standing output; the older eligible output under the key stays
+        selected and the dependency stays ready. Only a REVOCATION un-readies it (13a; the
+        row above). The route: a `--rederive` of the dependency whose forced attempt fails."""
+        from tools.orchestration_runtime import DerivationResolver, _dependency_ready
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_passing_orch(repo_root)
+            pipe = repo_root / "workspace/pipelines/component__dep_a__0.1.0/dep-a_20260511_001"
+            newer = {
+                "compile": (repo_root / "workspace/ir/component__dep_a__0.1.0/dep-a_20260511_002",
+                            "ir_meta.json"),
+                "build": (pipe / "binary/bin_20260101_002", "binary_meta.json"),
+                "validate": (pipe / "runs/run_20260101_002/component__dep_a__0.1.0",
+                             "validate_meta.json"),
+            }
+            for step, (d, name) in newer.items():
+                d.mkdir(parents=True)
+                (d / name).write_text(json.dumps({"verification_status": "fail",
+                                                  "node_key": "component/dep_a@0.1.0"}),
+                                      encoding="utf-8")
+            for step in ("compile", "generate", "build", "validate"):
+                self.assertEqual(_dependency_ready(repo_root, "fp_gate", step=step), (True, None),
+                                 step)
+            resolver = DerivationResolver(repo_root)
+            sel = resolver.select("component/dep_a@0.1.0", "validate")
+            self.assertEqual((sel.ok, sel.ir_id, sel.binary_id, sel.run_id),
+                             (True, "dep-a_20260511_001", "bin_20260101_001", "run_20260101_001"))
 
     def test_a_refusal_names_the_dependency_the_stage_and_the_input_that_moved(self) -> None:
         """The reject path is the operator's only diagnosis: the opaque
@@ -19186,10 +19247,11 @@ class MarkDependencyReadinessTests(unittest.TestCase):
             self.assertFalse(result["detail"]["ir_ref_verified"])
             self.assertFalse(result["direct_dependency_compile_readiness"])
 
-    def test_dependency_regression_clears_stale_pass(self) -> None:
+    def test_a_revocation_clears_a_stale_pass_on_the_next_mark(self) -> None:
         """Codex round 6 F2: a stale ir_ref_verified=true must NOT survive a
-        subsequent mark-dependency-readiness call when the underlying artifact
-        regressed. Every call performs a full overwrite from current artifacts."""
+        subsequent mark-dependency-readiness call when the underlying artifact was
+        REVOKED (the regression the key model recognises; a newer failed attempt is not
+        one). Every call performs a full overwrite from current artifacts."""
         from tools.orchestration_runtime import mark_dependency_readiness, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19390,9 +19452,16 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                              "spec_ref change must invalidate stale true readiness")
             self.assertNotIn("certified_deps", r2)
 
-    def test_deps_yaml_edit_invalidates_readiness(self) -> None:
-        """Editing deps.yaml content (without changing spec_ref) must also
-        invalidate persisted readiness."""
+    def test_a_deps_yaml_edit_naming_an_unbuilt_dependency_is_refused_at_the_gate(self) -> None:
+        """A deps.yaml edit that adds a dependency with no certified output is refused by
+        the launch gate's live recompute (`ir_not_found`), whatever the persisted record says
+        — and the record is NOT invalidated (audit-only; its `true` survives the edit and
+        the next preflight). What this row does NOT pin is the edit itself as an input: an
+        edit whose new dependency IS built leaves readiness `true` (readiness asks the
+        dependencies' chains, not the consumer's key); the `spec.deps` hash sits in the
+        consumer's COMPILE key, pinned by `test_compile_inputs_bind_the_spec_the_profile_and_the_closure_irs`.
+        (Round 3 found the earlier name and docstring — "invalidates persisted readiness" —
+        false against the row's own last assertion.)"""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _load_spec_catalog,
         )
@@ -21993,6 +22062,29 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             ok, detail = self._certified(repo_root, self.USER, "build")
             self.assertEqual((ok, detail["reason"], detail["pipeline_ref"], detail["source_id"]),
                              (False, "binary_not_found", p2, "src_20260102_001"))
+
+    def test_verdict_candidates_across_pipelines_are_ordered_pipeline_first(self) -> None:
+        """Two pipelines holding byte-identical twins of one chain (the twin rule admits the
+        other pipeline's verdict), each with an eligible run of the same validate key: the
+        NEWER PIPELINE's run is selected although its run id is the smaller one — the order
+        token ranks the pipeline before the stage id (`_stage_meta_candidates`). A round-3
+        mutant swapping the two survived once the twin rule made cross-pipeline verdicts
+        candidates again (1aa299a0 had recorded the order as moot; it is not)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            certify_node(repo_root, "orch_user", self.USER, through="validate",
+                         ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                         run_id="run_20260101_002")
+            certify_node(repo_root, "orch_user2", self.USER, through="validate",
+                         ir_id="user_20260101_001", pipeline_id="user_20260102_001",
+                         source_id="src_20260102_001", binary_id="bin_20260102_001",
+                         run_id="run_20260101_001")
+            ok, detail = self._certified(repo_root, self.USER, "validate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(
+                (detail["pipeline_ref"], detail["source_id"], detail["binary_id"], detail["run_id"]),
+                ("workspace/pipelines/component__user__0.1.0/user_20260102_001",
+                 "src_20260102_001", "bin_20260102_001", "run_20260101_001"))
 
     def test_selection_is_memoised_per_evaluation_and_refuses_a_cycle(self) -> None:
         from tools.orchestration_runtime import DerivationResolver
