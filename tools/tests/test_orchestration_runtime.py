@@ -25649,6 +25649,38 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(tools_derivation.first_differing_input(before, after),
                              "dependency_surface")
 
+    def test_build_binds_this_attempts_source_not_the_certified_binarys(self) -> None:
+        """Round-2 mutant: with every fixture's build attempt sitting on the source its
+        certified binary was built from, `source` = the dependency-style selection (the
+        latest binary's source) survived. The route it lies on: Generate re-ran after a
+        `tests.md` edit, Build starts on the NEW source directory — the key's `source` is that
+        directory's output hash, not the old binary's, and on a first build (no binary yet) it
+        resolves at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            newer = repo / refs["pipeline_ref"] / "source" / "src_20260102_002"
+            (newer / "src").mkdir(parents=True)
+            (newer / "src" / "spec_x_model.f90").write_text("module spec_x_model\n! v2\nend module\n",
+                                                           encoding="utf-8")
+            model_ref = f"{refs['pipeline_ref']}/source/src_20260102_002/src/spec_x_model.f90"
+            meta_ref = f"{refs['pipeline_ref']}/source/src_20260102_002/source_meta.json"
+            (newer / "source_meta.json").write_text(json.dumps({
+                "source_id": "src_20260102_002", "node_key": self._NK, "attempt_count": 1,
+                "verification_status": "pass", "last_fail_reason": None, "debug_mode": False,
+                "context_isolated": True, "source_ir_id": refs["ir_id"],
+                "artifact_hashes": {model_ref: _compute_sha256(newer / "src" / "spec_x_model.f90")},
+            }), encoding="utf-8")
+            own = {**self._own(refs), "source_ref": f"{refs['pipeline_ref']}/source/src_20260102_002"}
+            source = ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", **own)["source"]
+            self.assertEqual(source, self._meta_output_hash(repo, meta_ref))
+            self.assertNotEqual(source, self._meta_output_hash(repo, refs["source_meta"]))
+            # A first build: no binary under the pipeline yet, the key still resolves.
+            shutil.rmtree(repo / refs["pipeline_ref"] / "binary")
+            self.assertEqual(
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", **own)["source"],
+                source)
+
     def test_a_dependency_re_certified_with_identical_bytes_moves_nothing(self) -> None:
         """The other half of the same fact: a NEWER certified attempt of `dep_a` whose IR and
         source come out byte-identical binds identically, whatever its ids — the consumer's
