@@ -2782,7 +2782,7 @@ def _resolve_certified_closure_binding(
     `source_id` directory's content is written once and never rewritten), so hashing and
     copying cannot observe different bytes."""
     try:
-        spec_id = _parse_node_key_strict(node_key)[1]
+        _parse_node_key_strict(node_key)
     except Exception:
         return (None, f"unparseable dependency node_key {node_key!r}")
     resolver = resolver or DerivationResolver(repo_root)
@@ -2794,12 +2794,14 @@ def _resolve_certified_closure_binding(
             f"dependency closure first, e.g. run_workflow.py --with-deps"
         )
         return (None, reason)
-    model_src = stage_dir / "src" / f"{spec_id}_model.f90"
-    if not model_src.is_file():
+    # ONE composer of the model-source path (`_certified_model_source`): the file name is
+    # the target stack's and is spelled there once, not repeated here.
+    model_src = _certified_model_source(repo_root, node_key, resolver=resolver)
+    if model_src is None:
         rel = _normalize_rel_posix(stage_dir.relative_to(repo_root).as_posix())
-        return (None, f"cannot resolve the certified model source under {rel} (missing "
-                      f"{spec_id}_model.f90; dependency not built ready — run_workflow.py "
-                      f"--with-deps first)")
+        return (None, f"cannot resolve the certified model source under {rel} (the selected "
+                      f"source carries no model source file; dependency not built ready — "
+                      f"run_workflow.py --with-deps first)")
     try:
         digest = hashlib.sha256(model_src.read_bytes()).hexdigest()
     except Exception as exc:  # noqa: BLE001 - unreadable staged source is a precondition failure
