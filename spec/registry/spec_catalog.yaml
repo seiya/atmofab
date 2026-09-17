@@ -1,5 +1,5 @@
 catalog_version: 0.2.0
-updated_at: 2026-09-09
+updated_at: 2026-09-17
 specs:
   - spec_kind: problem
     spec_id: advdiff1d_linear
@@ -14,7 +14,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d
-    spec_version: 0.4.1
+    spec_version: 0.4.2
     status: controlled_draft
     domain: dynamics
     family: shallow_water
