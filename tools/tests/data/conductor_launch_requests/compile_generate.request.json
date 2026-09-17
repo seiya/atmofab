@@ -64,5 +64,10 @@
   "child_launch_prompt_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/agents/125b58f0-e463-4cde-9e59-28343ad8ab9c/dialogs/child.prompt.txt",
   "_resolved_build_system": "make",
   "_resolved_makefile_host_authored": true,
-  "sandbox_profile_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/sandbox_profiles/125b58f0-e463-4cde-9e59-28343ad8ab9c.json"
+  "sandbox_profile_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/sandbox_profiles/125b58f0-e463-4cde-9e59-28343ad8ab9c.json",
+  "_capture_source": {
+    "path": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/launches/125b58f0-e463-4cde-9e59-28343ad8ab9c.request.json",
+    "bytes": 297582,
+    "sha256": "c164fc244cd71e601d57b04d966cbe990b89fd8023a07e5066aeb10155612ffa"
+  }
 }

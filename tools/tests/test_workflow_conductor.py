@@ -94,7 +94,17 @@ _NON_BUILDER_KEYS = {
     "sandbox_profile_ref",
     "_resolved_build_system",
     "_resolved_makefile_host_authored",
+    # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
+    "_capture_source",
 }
+# The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
+# version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
+# change (fifteen times between 2026-09-03 and 2026-09-12), so pinning the literal would make
+# every bump red and the cheap way to re-green it a hand edit — after which the fixture is no
+# longer a capture. The field is compared as: the builder emits the CURRENT constant, and the
+# capture carries a well-formed version of the same family.
+_HISTORICAL_KEYS = {"prompt_contract_version"}
+_CONTRACT_VERSION_FORM = re.compile(r"^pure-\d+$")
 
 
 def _load_real_requests() -> dict[tuple[str, str | None], dict]:
@@ -183,8 +193,12 @@ class BuildLaunchRequestTest(unittest.TestCase):
     verbatim, and those two carry a size + sha256 placeholder per value, keeping the
     `pure_context` KEY SET (which `_validate_pure_launch_request_payload` requires per pair and
     shape) without the content. The comparison below therefore pins the pure payload's every
-    business field, and its context by key set and not by content — the content is rendered by
-    the runtime from the documents the run names, and is that run's, not this row's, evidence.
+    business field but one (`prompt_contract_version` is the run's own and is compared by form —
+    `_HISTORICAL_KEYS`), and its context by key set and not by content — the content is rendered
+    by the runtime from the documents the run names, and is that run's, not this row's,
+    evidence. **A fixture is never edited by hand**: each carries `_capture_source` (path, byte
+    count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
+    and `cmp`.
 
     What this row does NOT hold: a repair-turn capture (the run's `reuse` turns carry
     `repair_findings` and a slim shape), a `pure_shape` other than the default (this node has
@@ -241,10 +255,17 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 # every field the builder produces must match the real payload
                 for key, value in built.items():
                     self.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
+                    if key in _HISTORICAL_KEYS:
+                        continue
                     self.assertEqual(
                         value, req[key],
                         f"{step}/{substep}: field {key} mismatch",
                     )
+                if req.get("leaf_mode") == "pure":
+                    from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+                    self.assertEqual(built["prompt_contract_version"],
+                                     PURE_PROMPT_CONTRACT_VERSION)
+                    self.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
                 # the builder must cover every real field except record-launch extras
                 real_business_keys = set(req) - _NON_BUILDER_KEYS
                 self.assertEqual(
@@ -288,6 +309,14 @@ class BuildLaunchRequestTest(unittest.TestCase):
         # the input is not mutated, and a request without the two fields passes through
         self.assertEqual(raw["pure_context"]["a_document"], "alpha\n")
         self.assertEqual(mod.redact({"step": "build"}), {"step": "build"})
+        # with a source file, the whole recorded request's provenance is stamped
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "x.request.json"
+            src.write_bytes(b'{"step": "build"}')
+            stamped = mod.redact({"step": "build"}, source=src)
+            self.assertEqual(stamped["_capture_source"],
+                             {"path": str(src), "bytes": 17,
+                              "sha256": hashlib.sha256(b'{"step": "build"}').hexdigest()})
 
         pure_rows = {k: v for k, v in _load_real_requests().items()
                      if v.get("leaf_mode") == "pure"}
@@ -298,6 +327,12 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 for key, value in req["pure_context"].items():
                     self.assertRegex(value, placeholder, f"pure_context[{key}]")
                 self.assertRegex(req["launch_prompt_full"], placeholder)
+                src = req["_capture_source"]
+                self.assertEqual(set(src), {"path", "bytes", "sha256"})
+                self.assertRegex(src["path"], r"^workspace/orchestrations/[^/]+/launches/"
+                                              + re.escape(req["agent_run_id"]) + r"\.request\.json$")
+                self.assertGreater(src["bytes"], 100_000)
+                self.assertRegex(src["sha256"], r"^[0-9a-f]{64}$")
 
     def test_omits_launch_prompt_full(self) -> None:
         # record-launch must render the prompt; the builder must not supply it.

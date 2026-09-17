@@ -25021,8 +25021,15 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # verbatim in a redaction, so the LLM half of the role rule is covered again.
         # `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("leaf_mode") == "pure":
+                # A capture carries the contract version of ITS run and the validator demands
+                # the current one exactly (`_validate_pure_launch_request_payload`); the
+                # substitution is made HERE, in the test, so the tracked fixture stays a capture
+                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`).
+                payload = {**payload, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
                     payload.get("agent_role"),
