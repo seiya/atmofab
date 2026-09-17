@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_baseline`
-- `test_profile_version`: `0.2.0`
+- `test_profile_version`: `0.2.1`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d`
-- `spec_ref.spec_version`: `0.4.1`
+- `spec_ref.spec_version`: `0.4.2`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
@@ -301,7 +301,7 @@ $$
 - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
-  - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is `informational_only`.
+  - The depth-positivity judgment is applied and its real `extrema.h.min` value and status are reported against the threshold $\ge 5.0e{-2}$ (it is never `N/A`; the §5-3 rule does not apply to it). It is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome.
   - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The momentum-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the can-continue-execution evaluation is done before the theoretical-agreement judgment".
