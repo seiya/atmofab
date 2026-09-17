@@ -415,8 +415,8 @@ def _spec_ref_candidates(
     a single element on a healthy registry; more than one when the catalog is AMBIGUOUS.
 
     ``resolve_spec_ref_for`` collapses 0 and >1 both to ``None``; this exposes the
-    distinction so the freshness check can treat an ambiguous entry (a definitive registry
-    defect) as stale while leaving a genuinely-absent one alone. Raises ``SpecCatalogCorruption``
+    distinction so `DerivationResolver.spec_ref` can refuse an ambiguous entry (a definitive
+    registry defect, `spec_ref_unresolved`) while a genuinely-absent one is answered as such. Raises ``SpecCatalogCorruption``
     on a missing/unparseable registry, matching ``resolve_spec_ref_for``."""
     if not (_is_safe_path_token(spec_kind) and _is_safe_path_token(spec_id)):
         return set()
@@ -974,16 +974,16 @@ def _closure_signature(
     `all_nodes − {self} − transitive`.
 
     `via` paths are deliberately excluded: they are derived from the same edges, and the
-    freshness derivation skips computing them (`include_via=False`) because the enumeration
-    is exponential on a wide diamond.
+    compile-key derivation (`_derived_closure_graph`) skips computing them
+    (`include_via=False`) because the enumeration is exponential on a wide diamond.
 
     The signature is injective for the property that matters, not for the whole graph: it pins
     the SUBJECT's own direct-dep set exactly, so any edit to the subject's `deps.yaml` (an edge
     added or removed, a version bump renaming a node_key) always changes it. Two closures can
     still collide by reshaping edges DEEPER in the transitive subgraph while preserving every
     height — but that edit belongs to a deeper node's own `deps.yaml`, and it changes THAT
-    node's signature, which is checked when it is itself the freshness subject (every closure
-    node is, under `--with-deps`).
+    node's signature, which enters THAT node's compile key (every closure node's is
+    recomputed under `--with-deps`).
 
     Sorting on `node_key` alone is total: a graph names each `(kind, spec_id)` at exactly one
     version (`build_dependency_graph.node_key_of`), so node_keys are unique. It also avoids
