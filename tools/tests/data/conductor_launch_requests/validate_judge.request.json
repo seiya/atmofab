@@ -1,0 +1,350 @@
+{
+  "agent_role": "substep",
+  "node_key": "problem/shallow_water2d@0.4.1",
+  "step": "validate",
+  "orchestration_id": "orch_20260916T081200Z_5139f6c9",
+  "agent_run_id": "1916743c-5521-4a2f-9590-2b81b7aa68fa",
+  "parent_agent_run_id": "ca8af47e-1806-423b-afb9-897277c35404",
+  "agent_model": "opus",
+  "workflow_mode": "dev",
+  "ir_ref": "workspace/ir/problem__shallow_water2d__0.4.1/shallow-water2d_20260916_004",
+  "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.4.1/shallow-water2d_20260916_001",
+  "substep": "judge",
+  "runner_host_authored": true,
+  "run_id": "run_20260916_002",
+  "dependency_ref": "workspace/pipelines/problem__shallow_water2d__0.4.1/shallow-water2d_20260916_001",
+  "allowed_output_paths": [],
+  "resolved_dependencies": [
+    {
+      "node_key": "infrastructure/harness_fortran_cpu@0.7.0",
+      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/harness-fortran-cpu_20260724_003",
+      "run_id": "run_20260724_001",
+      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/harness-fortran-cpu_20260724_003/runs/run_20260724_001/infrastructure__harness_fortran_cpu__0.7.0/aggregate_verdict.json"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_boundary_2d_periodic_copy@0.2.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_boundary_2d_periodic_copy__0.2.0/dynamics-shallow-water-boundary-2d-periodic-copy_20260905_001",
+      "run_id": "run_20260905_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_boundary_2d_periodic_copy__0.2.0/dynamics-shallow-water-boundary-2d-periodic-copy_20260905_001/runs/run_20260905_001/component__dynamics_shallow_water_boundary_2d_periodic_copy__0.2.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_boundary_2d_periodic_copy__apply",
+          "interface": "subroutine dynamics_shallow_water_boundary_2d_periodic_copy__apply(nx, ny, ng,  nx_total, ny_total, U_in, U_out, grid_valid)",
+          "argument_order": [
+            "nx",
+            "ny",
+            "ng",
+            "nx_total",
+            "ny_total",
+            "U_in",
+            "U_out",
+            "grid_valid"
+          ],
+          "arguments": [
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ng",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_in",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx_total, ny_total"
+            },
+            {
+              "name": "U_out",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx_total, ny_total"
+            },
+            {
+              "name": "grid_valid",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ]
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_flux_2d_rusanov_p0__0.2.0/dynamics-shallow-water-flux-2d-rusanov-p0_20260905_001",
+      "run_id": "run_20260905_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_flux_2d_rusanov_p0__0.2.0/dynamics-shallow-water-flux-2d-rusanov-p0_20260905_001/runs/run_20260905_001/component__dynamics_shallow_water_flux_2d_rusanov_p0__0.2.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux",
+          "interface": "subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(U_L, U_R, U_B, U_T, g,  F_star, G_star, a_x, a_y, guard_ok)",
+          "argument_order": [
+            "U_L",
+            "U_R",
+            "U_B",
+            "U_T",
+            "g",
+            "F_star",
+            "G_star",
+            "a_x",
+            "a_y",
+            "guard_ok"
+          ],
+          "arguments": [
+            {
+              "name": "U_L",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_R",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_B",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_T",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "g",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "F_star",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "G_star",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "a_x",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "a_y",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "guard_ok",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ]
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_time_update_2d_ssprk2@0.4.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_time_update_2d_ssprk2__0.4.0/dynamics-shallow-water-time-update-2d-ssprk2_20260905_001",
+      "run_id": "run_20260905_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_time_update_2d_ssprk2__0.4.0/dynamics-shallow-water-time-update-2d-ssprk2_20260905_001/runs/run_20260905_001/component__dynamics_shallow_water_time_update_2d_ssprk2__0.4.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_time_update_2d_ssprk2__advance",
+          "interface": "subroutine dynamics_shallow_water_time_update_2d_ssprk2__advance(ncomp, nx, ny, U_n,  L_flux, S_b, z_b, dt, dx, dy, U_np1, guard_pass)",
+          "argument_order": [
+            "ncomp",
+            "nx",
+            "ny",
+            "U_n",
+            "L_flux",
+            "S_b",
+            "z_b",
+            "dt",
+            "dx",
+            "dy",
+            "U_np1",
+            "guard_pass"
+          ],
+          "arguments": [
+            {
+              "name": "ncomp",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_n",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "L_flux",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "S_b",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "z_b",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "dt",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "dx",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "dy",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_np1",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "guard_pass",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ]
+    }
+  ],
+  "issue_severity": "none",
+  "repair_strategy": "none",
+  "repair_target_agent_run_id": "none",
+  "repair_reason": "none",
+  "leaf_mode": "pure",
+  "prompt_contract_version": "pure-43",
+  "skill_name": "",
+  "skill_ref": "",
+  "skill_must_read_refs": "",
+  "pure_context": {
+    "diagnostics_document": "<redacted: 19056 bytes sha256:644b5578d3f52f0aecacfaf8fce2d0f4764db6c1aaad3736d9894bacc39f7437>",
+    "verdict_document": "<redacted: 20364 bytes sha256:55a897d77aafa5bf69d923c525536ecbbd001edf4bd7293f7985b3d247e2470d>",
+    "perf_document": "<redacted: 384 bytes sha256:73626fd3f6872807e020e33d3358aa69eb28f07847cf1db44c7667526e6975fc>",
+    "trial_meta_document": "<redacted: 4732 bytes sha256:cd58c4e9b73959cb58258a50f33eaa26a202e542b4b551bce8bd5869d9ee6ae3>",
+    "quality_check_document": "<redacted: 1117 bytes sha256:49d535113570383b5ffb38eb58671b87f1cdc5bfaa63659f7469b9b6a5432631>",
+    "tests_document": "<redacted: 19086 bytes sha256:0ef0040744762cd6c879e32910ca27cea874448b8fa1ce99e6cba3978ac6a993>",
+    "io_contract_document": "<redacted: 15622 bytes sha256:277da90718d3a24668b6640c05fc0cbc0104fc2fddf80c480322c28a91a7087d>",
+    "runner_output_contract_document": "<redacted: 5597 bytes sha256:1c8909dd52da0e011a15968bcbcf843a637678c0fb781f284458ba48b29855c0>",
+    "binary_meta_document": "<redacted: 4375 bytes sha256:68343827f48be30c9d54f2ee3ca01dd668248e9fe7bcbf7328ba80793da0468a>",
+    "source_meta_document": "<redacted: 758 bytes sha256:a9fcad57e3f748766a19155421c9a0f52a1d277b4d8fbffa6d81ad9a4c167803>",
+    "raw_evidence_excerpt_document": "<redacted: 142442 bytes sha256:2d7a4a4fab4006c795bfc31e371ed312640f79bae3cea369dd023ce211e1f662>"
+  },
+  "launch_prompt_full": "<redacted: 249070 bytes sha256:bffcce9687084b9f9305a844f3ba3b98c2dbe373015445482b87fbb7ce39183b>",
+  "launch_prompt_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/launches/1916743c-5521-4a2f-9590-2b81b7aa68fa.prompt.txt",
+  "child_launch_request_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/agents/1916743c-5521-4a2f-9590-2b81b7aa68fa/dialogs/child.request.json",
+  "child_launch_prompt_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/agents/1916743c-5521-4a2f-9590-2b81b7aa68fa/dialogs/child.prompt.txt",
+  "_resolved_build_system": "make",
+  "_resolved_makefile_host_authored": true,
+  "sandbox_profile_ref": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/sandbox_profiles/1916743c-5521-4a2f-9590-2b81b7aa68fa.json",
+  "_capture_source": {
+    "path": "workspace/orchestrations/orch_20260916T081200Z_5139f6c9/launches/1916743c-5521-4a2f-9590-2b81b7aa68fa.request.json",
+    "bytes": 539316,
+    "sha256": "9789061a7b659c5275f9c3e7d190ca852315e2a7dcc57c35ebd270a813fba1fc"
+  }
+}

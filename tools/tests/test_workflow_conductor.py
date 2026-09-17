@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import errno
 import glob
+import hashlib
 import io
 import json
 import os
@@ -68,14 +69,27 @@ def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
     return isolated_homes_per_test_suite(tests)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Tracked, slim copies of real working launch requests (one per step/substep),
-# captured from orch_20260619T113225Z_f48fe14b. Committed under test data because
-# workspace/ is gitignored — a clean checkout/CI has no live orchestration.
+# Tracked, slim copies of real working launch requests (one per step/substep). Committed
+# under test data because workspace/ is gitignored — a clean checkout/CI has no live
+# orchestration. Two provenances. The two DETERMINISTIC rows were captured from
+# orch_20260619T113225Z_f48fe14b (an advdiff component node), a run no longer on disk, and
+# have been maintained BY HAND since (`git log -- <file>`: four and five edits after capture,
+# the last on 2026-09-12 removing the `skill_must_read_refs` line); they carry no
+# `_capture_source`.
+# The five PURE rows are REDACTED captures from orch_20260916T081200Z_5139f6c9
+# (`shallow_water2d --with-deps`, the Z1/Z3 adoption run, repo `1b3d1edd`), one cold launch per
+# pair — for `compile.verify` and `generate.generate` the run has two cold launches and the
+# later one (the certified lineage) is the capture; `_capture_source.path` names the arid —
+# produced by `data/conductor_launch_requests/redact_launch_request.py`: `pure_context` keeps
+# its KEY SET with each value replaced by a size + sha256 placeholder, `launch_prompt_full`
+# likewise.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-# spec dir for the captured node (derived from the compile request's deps ref).
-_SPEC_PATH = (
-    "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2"
-)
+# spec dir per captured node (the builder reads it only for compile's `dependency_ref`).
+_SPEC_PATH_BY_NODE_KEY = {
+    "component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0":
+        "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2",
+    "problem/shallow_water2d@0.4.1": "spec/problem/dynamics/shallow_water/shallow_water2d",
+}
 
 # Fields record-launch adds/derives; not produced by build_launch_request.
 _NON_BUILDER_KEYS = {
@@ -85,7 +99,28 @@ _NON_BUILDER_KEYS = {
     "child_launch_prompt_ref",
     "sandbox_profile_ref",
     "_resolved_build_system",
+    "_resolved_makefile_host_authored",
+    # record-launch stamps the transport on every HTTP-provider and deterministic launch
+    # (`orchestration_runtime.record_launch`).
+    "leaf_transport",
+    # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
+    "_capture_source",
 }
+# Stamped `""` on EVERY launch by `prepare_launch_request_payload` (which `record_launch` calls),
+# and emitted `""` by the builder on the pure branch only. So on a deterministic capture it is a
+# record-launch extra, and on a pure capture the builder's emission is what the row pins — a
+# builder that stops emitting it must be a red row, which is why the key is exempted per row
+# and not listed above (it was, for one commit, and the omission mutant survived).
+_DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
+# The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
+# version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
+# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`:
+# 20 commits between 2026-09-03 and 2026-09-12, pure-24 -> pure-43), so pinning the literal
+# would make every bump red and the cheap way to re-green it a hand edit — after which the
+# fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
+# constant, and the capture carries a well-formed version of the same family.
+_HISTORICAL_KEYS = {"prompt_contract_version"}
+_CONTRACT_VERSION_FORM = re.compile(r"^pure-\d+$")
 
 
 def _load_real_requests() -> dict[tuple[str, str | None], dict]:
@@ -93,7 +128,10 @@ def _load_real_requests() -> dict[tuple[str, str | None], dict]:
     out: dict[tuple[str, str | None], dict] = {}
     for f in sorted(glob.glob(str(_FIXTURE_DIR / "*.request.json"))):
         d = json.load(open(f, encoding="utf-8"))
-        out[(d.get("step"), d.get("substep"))] = d
+        key = (d.get("step"), d.get("substep"))
+        if key in out:  # a second file for one pair would silently shadow the first
+            raise AssertionError(f"two fixtures for {key}: {f}")
+        out[key] = d
     return out
 
 
@@ -147,9 +185,11 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
     ir_id = req["ir_ref"].rsplit("/", 1)[1]
     pipeline_id = req["pipeline_ref"].rsplit("/", 1)[1]
     must_read = req.get("skill_must_read_refs", "")
+    if req["node_key"] not in _SPEC_PATH_BY_NODE_KEY:
+        raise KeyError(f"{req['node_key']}: add its spec dir to _SPEC_PATH_BY_NODE_KEY")
     return wc.NodeRefs(
         node_key=req["node_key"],
-        spec_path=_SPEC_PATH,
+        spec_path=_SPEC_PATH_BY_NODE_KEY[req["node_key"]],
         ir_id=ir_id,
         pipeline_id=pipeline_id,
         source_id=req.get("source_id") or _source_id_from_must_read(must_read),
@@ -159,81 +199,224 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
     )
 
 
+
+def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
+    """`build_launch_request`, driven with the arguments read off a recorded request, must
+    reproduce it: every field the builder emits matches (but `_HISTORICAL_KEYS`), and every
+    field the record carries is the builder's (but `_NON_BUILDER_KEYS`). Module-level so a
+    request that is NOT a tracked fixture can be put through the same comparison."""
+    step, substep = req["step"], req.get("substep")
+    refs = _refs_from_request(req)
+    built = wc.build_launch_request(
+        refs,
+        step=step,
+        substep=substep,
+        orchestration_id=req["orchestration_id"],
+        orchestration_agent_run_id=req["parent_agent_run_id"],
+        child_agent_run_id=req["agent_run_id"],
+        agent_model=req["agent_model"],
+        workflow_mode=req["workflow_mode"],
+        case_ids=_case_ids_from_outputs(req.get("allowed_output_paths", [])),
+        evidence_artifacts=_evidence_artifacts_from_outputs(
+            req.get("allowed_output_paths", [])),
+        repair={
+            k: req[k]
+            for k in ("issue_severity", "repair_strategy",
+                      "repair_target_agent_run_id", "repair_reason", "repair_findings")
+            if k in req
+        },
+        runner_host_authored=bool(req.get("runner_host_authored")),
+        resolved_dependencies=tuple(req.get("resolved_dependencies", ())),
+        dependency_surface=tuple(req.get("dependency_surface", ())),
+        exemplar=req.get("exemplar"),
+        warm_resume=bool(req.get("warm_resume")),
+        pure_leaf=req.get("leaf_mode") == "pure",
+        pure_context=req.get("pure_context"),
+        pure_shape=req.get("pure_shape", ""),
+    )
+    # every field the builder produces must match the real payload
+    for key, value in built.items():
+        tc.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
+        if key in _HISTORICAL_KEYS:
+            continue
+        tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
+    if req.get("leaf_mode") == "pure":
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        tc.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
+    # the builder must cover every real field except record-launch extras
+    real_business_keys = set(req) - _NON_BUILDER_KEYS
+    if req.get("deterministic"):
+        real_business_keys -= _DETERMINISTIC_ONLY_NON_BUILDER_KEYS
+    tc.assertEqual(real_business_keys - set(built), set(),
+                   f"{step}/{substep}: builder missing fields")
+
+
 class BuildLaunchRequestTest(unittest.TestCase):
     """build_launch_request reproduces real request.json payloads exactly.
 
     The fixtures under `data/conductor_launch_requests/` are CAPTURES of real runs, and that is
     what makes this row evidence rather than a restatement of the builder.
 
-    TWO ROWS, not seven, since Z4 (issue #171) — and the round-1 review is what established
-    that the seven were wrong rather than merely old. The five LLM rows were captures of the
-    AGENTIC launch: a skill ref, a must-read list, and a leaf-authored `allowed_output_paths`.
-    This branch stripped the three skill fields from them and left the rest, which made them a
-    shape production cannot emit and the renderer refuses — `prepare_launch_request_payload`
-    answers "neither deterministic nor pure" for all five — so the strongest anti-drift row on
-    `build_launch_request` was comparing against a dead payload.
+    SEVEN ROWS: two DETERMINISTIC captures and five PURE ones. The pure five were re-captured
+    (a `TODO.md` item filed by issue #171 PR-1's round-1 review and closed by the commit that
+    added them, 9158667e) after Z4 deleted the agentic shape their predecessors recorded; they
+    were deleted rather than hand-converted at the time, because a
+    fixture written from the builder's own output is a tautology. A faithful pure capture is
+    290-526 KB, almost all of it the inlined `pure_context` and the rendered
+    `launch_prompt_full`, so what is tracked is a REDACTION: every field the builder produces is
+    verbatim, and those two carry a size + sha256 placeholder per value, keeping the
+    `pure_context` KEY SET (which `_validate_pure_launch_request_payload` requires per pair and
+    shape) without the content. What the comparison below pins, then: every field the builder
+    DERIVES — the role, the `ir_ref` / `pipeline_ref` layout, `dependency_ref` per step, the
+    deterministic output lists, the pure branch's empty output list and three skill empties,
+    `leaf_mode`, which optional fields are attached to which pair — and the key set in both
+    directions (a field the builder stops emitting, or starts emitting, is red). The
+    identifiers, the model, the repair fields, `resolved_dependencies` / `dependency_surface`
+    / `exemplar` and the `pure_context` values are read OFF the request and handed to the
+    builder, so they are pass-through: the row checks their placement, not their content
+    (a hand edit of one is green here and red only against the workspace, below).
+    `prompt_contract_version` is the run's own and is compared by form (`_HISTORICAL_KEYS`).
+    The `pure_context` key set is pinned by the shape test against the contract table; its
+    content is rendered by the runtime from the documents the run names, and is that run's,
+    not this row's, evidence. **A pure row is never edited by hand**: each carries `_capture_source` (path, byte
+    count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
+    and `cmp`, and the shape test holds every pure row to that stamp. The two deterministic rows
+    are the exception, by history rather than by rule: their run is not on disk, they predate
+    the script, and they have been hand-maintained through five builder changes (the
+    `_FIXTURE_DIR` comment). A builder change that reddens one of them is repaired by hand as
+    before; one that reddens a pure row is repaired by a re-capture.
 
-    They are DELETED rather than converted, deliberately. Converting means writing the pure
-    fields in by hand and emptying `allowed_output_paths`, at which point the fixture is the
-    builder's own output and the comparison is a tautology. A faithful capture is not cheap
-    either: a real pure `generate.generate` request recorded on this machine is 259 KB, 105 KB
-    of it the inlined `pure_context`. What is owed, and is recorded in `TODO.md`, is a REDACTED
-    pure capture (`pure_context` and `launch_prompt_full` replaced by a placeholder) taken from
-    the billed run of this issue's PR-3, restoring the LLM half of this corpus as evidence.
-
-    What is NOT lost meanwhile: the pure builder is driven for every pair and every bundle shape
-    by `test_pure_leaf_wiring._host_built_launch_requests`, and its dispatch by
-    `test_pure_only_leaf_model`. What is lost is "the payload matches a run that really
-    happened", which is this row's own axis, and only for the LLM pairs.
-
-    The two rows that remain are DETERMINISTIC captures and still match production exactly."""
+    What the corpus does NOT hold: a repair-turn capture (the run's `reuse` turns carry
+    `repair_findings` and `warm_resume` and no `pure_context`), an HTTP-provider or codex
+    capture, a row with an `exemplar`, a `pure_shape` other than the default (this node has
+    none), and a `component` / `infrastructure` node's pure pair. The COMPARISON accepts each of
+    those shapes (`_assert_builder_reproduces` was driven on recorded requests of every one at
+    this branch's review; the pull request records the probe). The CORPUS is one row per
+    (step, substep) — `_load_real_requests` refuses a second file for a pair, `expected_keys`
+    below and the count in `test_orchestration_runtime` pin the set, and the script names its
+    output by pair and overwrites — so adding a capture of one of those shapes means either
+    replacing that pair's row or widening the loader's key, and is a test change either way.
+    What is not driven through `build_launch_request` by any capture is driven by
+    `test_pure_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
+    variants, warm and cold repair) and, for the `harness` bundle shape,
+    `test_pure_leaf_producer`; dispatch by `test_pure_only_leaf_model`. This row's own axis is
+    "the payload matches a run that really happened", which those do not have."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
         real = _load_real_requests()
         self.assertTrue(real, "no captured request.json artifacts found")
-        expected_keys = {("build", None), ("validate", "execute")}
+        expected_keys = {
+            ("build", None), ("validate", "execute"),
+            ("compile", "generate"), ("compile", "verify"),
+            ("generate", "generate"), ("generate", "verify"), ("validate", "judge"),
+        }
         self.assertEqual(set(real), expected_keys, "captured fixture set changed")
-        # Both survivors are DETERMINISTIC, and that is asserted rather than assumed: an LLM
-        # pair reappearing here would be an agentic-shaped capture coming back, which is the
-        # thing the docstring above says this corpus no longer holds.
+        # Every row is EITHER deterministic OR pure, asserted rather than assumed: a row that is
+        # neither would be an agentic-shaped capture coming back, which is the thing the
+        # docstring above says this corpus no longer holds.
         for (step, substep), req in real.items():
-            self.assertTrue(req.get("deterministic"), f"{step}/{substep} is not deterministic")
+            self.assertNotEqual(
+                bool(req.get("deterministic")), req.get("leaf_mode") == "pure",
+                f"{step}/{substep} is neither deterministic nor pure, or both")
 
         for (step, substep), req in real.items():
             with self.subTest(step=step, substep=substep):
-                refs = _refs_from_request(req)
-                built = wc.build_launch_request(
-                    refs,
-                    step=step,
-                    substep=substep,
-                    orchestration_id=req["orchestration_id"],
-                    orchestration_agent_run_id=req["parent_agent_run_id"],
-                    child_agent_run_id=req["agent_run_id"],
-                    agent_model=req["agent_model"],
-                    workflow_mode=req["workflow_mode"],
-                    case_ids=_case_ids_from_outputs(req.get("allowed_output_paths", [])),
-                    evidence_artifacts=_evidence_artifacts_from_outputs(
-                        req.get("allowed_output_paths", [])),
-                    repair={
-                        k: req[k]
-                        for k in ("issue_severity", "repair_strategy",
-                                  "repair_target_agent_run_id", "repair_reason")
-                        if k in req
-                    },
-                )
-                # every field the builder produces must match the real payload
-                for key, value in built.items():
-                    self.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
-                    self.assertEqual(
-                        value, req[key],
-                        f"{step}/{substep}: field {key} mismatch",
-                    )
-                # the builder must cover every real field except record-launch extras
-                real_business_keys = set(req) - _NON_BUILDER_KEYS
-                self.assertEqual(
-                    real_business_keys - set(built), set(),
-                    f"{step}/{substep}: builder missing fields",
-                )
+                _assert_builder_reproduces(self, req)
+
+    def test_pure_fixtures_are_redactions_of_the_recorded_shape(self) -> None:
+        """The five pure rows were produced by `data/conductor_launch_requests/
+        redact_launch_request.py`, which is committed review surface: what it keeps and what
+        it replaces is the difference between a fixture that is evidence and one that is not.
+        Driven on a synthetic request here (the recorded originals live in a gitignored
+        `workspace/`), and each tracked pure row is then held to the redacted SHAPE — every
+        `pure_context` value and `launch_prompt_full` a placeholder naming the byte count and
+        sha256 of what it stands for, nothing else touched."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "redact_launch_request", _FIXTURE_DIR / "redact_launch_request.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        placeholder = re.compile(r"^<redacted: (\d+) bytes sha256:([0-9a-f]{64})>$")
+
+        # Non-ASCII on purpose: every recorded original is non-ASCII in `launch_prompt_full`
+        # and in some `pure_context` documents, so a placeholder counting CHARACTERS would be
+        # wrong on the real corpus while an ASCII probe could not tell.
+        raw = {"step": "compile", "substep": "verify", "leaf_mode": "pure",
+               "pure_context": {"a_document": "alpha ü\n", "b_document": "beta — γ"},
+               "launch_prompt_full": "rendered prompt", "resolved_dependencies": [{"k": 1}]}
+        out = mod.redact(raw)
+        # the two content fields are replaced; every other field is verbatim
+        self.assertEqual({k: v for k, v in out.items()
+                          if k not in ("pure_context", "launch_prompt_full")},
+                         {k: v for k, v in raw.items()
+                          if k not in ("pure_context", "launch_prompt_full")})
+        self.assertEqual(set(out["pure_context"]), set(raw["pure_context"]))
+        for key, original in raw["pure_context"].items():
+            m = placeholder.match(out["pure_context"][key])
+            self.assertIsNotNone(m, out["pure_context"][key])
+            self.assertEqual(int(m.group(1)), len(original.encode("utf-8")))
+            self.assertEqual(m.group(2), hashlib.sha256(original.encode("utf-8")).hexdigest())
+        m = placeholder.match(out["launch_prompt_full"])
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), len(b"rendered prompt"))
+        # the input is not mutated, and a request without the two fields passes through
+        self.assertEqual(raw["pure_context"]["a_document"], "alpha ü\n")
+        self.assertNotEqual(len("alpha ü\n"), len("alpha ü\n".encode()))
+        self.assertEqual(mod.redact({"step": "build"}), {"step": "build"})
+        # With a source file, the whole recorded request's provenance is stamped: the bytes ON
+        # DISK, not a re-serialisation — so the probe file is indented, non-ASCII and ends in a
+        # newline, none of which `json.dumps(json.loads(...))` reproduces — and the recorded
+        # path is `shown_as` while the read is of `source`, whatever the working directory.
+        # This probe is also the deterministic shape the docstring describes: no
+        # `pure_context`, and a `launch_prompt_full` that is redacted all the same.
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "x.request.json"
+            on_disk = '{\n  "step": "build",\n  "launch_prompt_full": "prompt ü"\n}\n'.encode()
+            src.write_bytes(on_disk)
+            self.assertNotEqual(len(on_disk), len(on_disk.decode()))
+            self.assertNotEqual(on_disk, json.dumps(json.loads(on_disk)).encode())
+            stamped = mod.redact(json.loads(on_disk), source=src,
+                                 shown_as=Path("workspace/x.request.json"))
+            self.assertEqual(stamped["_capture_source"],
+                             {"path": "workspace/x.request.json", "bytes": len(on_disk),
+                              "sha256": hashlib.sha256(on_disk).hexdigest()})
+            self.assertNotIn("pure_context", stamped)
+            self.assertRegex(stamped["launch_prompt_full"], placeholder)
+            self.assertEqual(int(placeholder.match(stamped["launch_prompt_full"]).group(1)),
+                             len("prompt ü".encode()))
+
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+        pure_rows = {k: v for k, v in _load_real_requests().items()
+                     if v.get("leaf_mode") == "pure"}
+        self.assertEqual(len(pure_rows), 5)
+        for (step, substep), req in pure_rows.items():
+            with self.subTest(step=step, substep=substep):
+                if "pure_context" not in req:
+                    # a warm reuse repair turn omits it (the resumed session holds it)
+                    self.assertTrue(req.get("warm_resume"), "no pure_context on a cold row")
+                    self.assertRegex(req["launch_prompt_full"], placeholder)
+                    continue
+                # Set IDENTITY with the contract table. The runtime validator (driven on these
+                # fixtures by test_orchestration_runtime) checks the required keys are PRESENT
+                # and admits extras, so it alone would not notice a capture carrying a key the
+                # host no longer inlines, or the table growing past what a real run rendered.
+                self.assertEqual(set(req["pure_context"]),
+                                 set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]))
+                for key, value in req["pure_context"].items():
+                    self.assertRegex(value, placeholder, f"pure_context[{key}]")
+                self.assertRegex(req["launch_prompt_full"], placeholder)
+                src = req["_capture_source"]
+                self.assertEqual(set(src), {"path", "bytes", "sha256"})
+                self.assertRegex(src["path"], r"^workspace/orchestrations/[^/]+/launches/"
+                                              + re.escape(req["agent_run_id"]) + r"\.request\.json$")
+                # The source held everything the placeholders stand for, so its byte count is
+                # bounded below by their sum — the one bound the fixture itself can witness.
+                redacted_bytes = sum(
+                    int(placeholder.match(v).group(1))
+                    for v in (*req["pure_context"].values(), req["launch_prompt_full"]))
+                self.assertGreater(src["bytes"], redacted_bytes)
+                self.assertRegex(src["sha256"], r"^[0-9a-f]{64}$")
 
     def test_omits_launch_prompt_full(self) -> None:
         # record-launch must render the prompt; the builder must not supply it.

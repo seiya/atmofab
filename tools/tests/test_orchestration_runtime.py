@@ -25016,13 +25016,20 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # TWO since Z4 (issue #171). The five LLM captures were of the AGENTIC launch and are
-        # deleted — `BuildLaunchRequestTest`'s docstring carries the accounting and `TODO.md`
-        # what is owed. The coverage this row loses is the LLM half of the role rule; the role
-        # itself is still derived from `_required_child_agent_kind` for every step below.
-        self.assertEqual(len(captured), 2, "captured payload set changed; revisit coverage")
+        # SEVEN: two deterministic captures and, since the re-capture that closed the
+        # `TODO.md` item issue #171 PR-1 left, five REDACTED pure ones — the role field is
+        # verbatim in a redaction, so the LLM half of the role rule is covered again.
+        # `BuildLaunchRequestTest`'s docstring carries the provenance.
+        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("leaf_mode") == "pure":
+                # A capture carries the contract version of ITS run and the validator demands
+                # the current one exactly (`_validate_pure_launch_request_payload`); the
+                # substitution is made HERE, in the test, so the tracked fixture stays a capture
+                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`).
+                payload = {**payload, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
                     payload.get("agent_role"),
@@ -25142,9 +25149,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         through prepare."""
         from tools.orchestration_runtime import _validate_launch_request_payload
 
-        # The `compile_generate` capture this used before is deleted with the agentic shape
-        # (Z4, issue #171); `validate_execute` is the surviving SUBSTEP capture, and the role
-        # canonicalization under test is role-shaped rather than substep-specific.
+        # `validate_execute` is a deterministic SUBSTEP capture, and the role canonicalization
+        # under test is role-shaped rather than substep-specific. (This row used the agentic
+        # `compile_generate` capture until Z4, issue #171, deleted that shape; the pure
+        # `compile_generate` capture that replaced it carries a `prompt_contract_version` the
+        # validator would demand re-stamping, so the deterministic row stays the simpler probe.)
         fixture = (
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
             / "validate_execute.request.json"
