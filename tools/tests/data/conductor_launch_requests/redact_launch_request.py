@@ -37,12 +37,15 @@ def placeholder(value: object) -> str:
     return f"<redacted: {len(b)} bytes sha256:{hashlib.sha256(b).hexdigest()}>"
 
 
-def redact(req: dict, source: Path | None = None) -> dict:
+def redact(req: dict, source: Path | None = None, shown_as: Path | None = None) -> dict:
+    """`source` is READ (as given); `shown_as`, when passed, is the path RECORDED in the stamp
+    (the CLI passes the repository-relative spelling). Keeping the two apart is what makes the
+    stamp describe the file that was hashed whatever the working directory is."""
     out = dict(req)
     if source is not None:
         raw = source.read_bytes()
         out["_capture_source"] = {
-            "path": str(source),
+            "path": str(shown_as if shown_as is not None else source),
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
         }
@@ -63,7 +66,7 @@ def main(argv: list[str]) -> int:
     dest = HERE / f"{name}.request.json"
     resolved = source.resolve()
     shown = resolved.relative_to(REPO_ROOT) if resolved.is_relative_to(REPO_ROOT) else source
-    redacted = redact(req, source=shown)
+    redacted = redact(req, source=source, shown_as=shown)
     dest.write_text(json.dumps(redacted, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(dest)
     return 0
