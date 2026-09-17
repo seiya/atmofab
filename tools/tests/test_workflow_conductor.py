@@ -6156,9 +6156,13 @@ class NodeAllocationTest(unittest.TestCase):
                 self.assertEqual(getattr(refs, field), expected)
         # build also re-points source_binary_id (what Validate.execute runs).
         self.assertEqual(refs.source_binary_id, "bin_cert")
-        # The reserved roots are NOT re-pointed: the predicate already refused unless they
-        # are the artifacts it evaluated.
-        self.assertEqual((refs.ir_id, refs.pipeline_id), ("x_1_001", "x_1_001"))
+        # The reserved roots follow the SELECTION too (issue #250 PR-2: the predicate no
+        # longer reads the reservation), and the reservation records are re-written so the
+        # run writes beside what it stands on.
+        self.assertEqual((refs.ir_id, refs.pipeline_id), ("ir_9", "p_9"))
+        reserved = [(captured["--step"], captured["--reserved-id"])
+                    for sub, captured in c.calls if sub == "reserve-phase-root"]
+        self.assertEqual(reserved, [("compile", "ir_9"), ("generate", "p_9")])
 
 
 class ConductorProducedChainCertifiesTest(unittest.TestCase):
@@ -6210,16 +6214,22 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                     "reserved_by_agent_run_id": "ORCH", "status": "reserved"}),
                     encoding="utf-8")
 
-            # --- compile: the host's own ir_meta + the leaf-authored IR document
+            # The spec directory + catalog entry the derivation keys resolve (issue #250 PR-2).
+            from tools.tests.orchestration_fixtures import ensure_spec_entry
+            ensure_spec_entry(root, self.NODE_KEY)
+
+            # --- compile: the host's own ir_meta + the leaf-authored IR document, the
+            # host-authored sidecar and the derivation the conductor computes at phase start
             (root / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (root / refs.ir_ref / "spec.ir.yaml").write_text(
                 "node_key: component/spec_x@0.1.0\n", encoding="utf-8")
+            self.assertIsNone(c._write_dependency_graph(refs))
             c._write_ir_meta(refs, verification_status="pass", last_fail_reason=None,
                              issue_severity=None, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="compile",
                 required_outputs=wc.phase_required_outputs(refs, "compile"),
-                derivation=_FAKE_DERIVATION)
+                derivation=c._phase_derivation(refs, "compile"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile")
             self.assertTrue(ok, detail)
 
@@ -6234,7 +6244,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="generate",
                 required_outputs=wc.phase_required_outputs(refs, "generate"),
-                derivation=_FAKE_DERIVATION)
+                derivation=c._phase_derivation(refs, "generate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate")
             self.assertTrue(ok, detail)
 
@@ -6262,7 +6272,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="build",
                 required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
-                derivation=_FAKE_DERIVATION)
+                derivation=c._phase_derivation(refs, "build"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build")
             self.assertTrue(ok, detail)
             # Validate.execute APPENDS to Build's command log; Build must stay certified.
@@ -6298,6 +6308,14 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 if not path.exists():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("{}", encoding="utf-8")
+            (run_node / "validate_meta.json").write_text(json.dumps({
+                "run_id": refs.run_id, "node_key": self.NODE_KEY,
+                "pipeline_id": refs.pipeline_id, "verification_status": "pass",
+                "attempt_count": 1}), encoding="utf-8")
+            ort._stamp_certification(
+                root, "o1", node_key=self.NODE_KEY, step="validate",
+                required_outputs=wc.phase_required_outputs(refs, "validate"),
+                derivation=c._phase_derivation(refs, "validate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
             self.assertTrue(ok, detail)
             self.assertEqual(
@@ -6309,7 +6327,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             (root / refs.run_node_dir() / "validate_meta.json").unlink()
             ok2, detail2 = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
             self.assertFalse(ok2)
-            self.assertTrue(detail2["reason"].startswith("validate_outputs_missing:"), detail2)
+            self.assertEqual(detail2["reason"], "verdict_not_found")
 
 
 class DiagnosticianTest(unittest.TestCase):
@@ -12423,15 +12441,15 @@ class WriteDependencySurfaceTest(unittest.TestCase):
             "  components: []\n  profiles: []\n", encoding="utf-8")
 
     def _seed_base_ir(self, repo: Path, *, public_api: dict | None) -> None:
-        d = repo / "workspace" / "ir" / "component__base__0.1.0" / "ir_20260601_001"
-        d.mkdir(parents=True)
+        """`base`'s IR, certified (key-stamped) through Compile — the selection the surface
+        reads since issue #250 PR-2."""
         doc: dict = {"meta": {"spec_kind": "component"}}
         if public_api is not None:
             doc["public_api"] = public_api
         # JSON is valid YAML — avoids a yaml import in this test module.
-        (d / "spec.ir.yaml").write_text(json.dumps(doc), encoding="utf-8")
-        (d / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
+        certify_node(repo, "orch_dep", "component/base@0.1.0", through="compile",
+                     ir_id="ir_20260601_001", pipeline_id="ir_20260601_001",
+                     ir_text=json.dumps(doc))
 
     def _refs(self) -> "wc.NodeRefs":
         return wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
@@ -12561,20 +12579,12 @@ class WriteLineageTest(unittest.TestCase):
                 '  direct_deps:\n'
                 '    - node_key: "component/base@0.1.0"\n',
                 encoding="utf-8")
-            # Materialize the dependency's on-disk pipeline (binary pass + bound verdict).
+            # Materialize the dependency's certified chain (issue #250 PR-2: the fact names
+            # the dependency's SELECTED certified Validate output).
             safe = "component__base__0.1.0"
-            pipe = repo / "workspace" / "pipelines" / safe / "base_20260622_003"
-            b = pipe / "binary" / "bin_20260622_001"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            rd = pipe / "runs" / "run_20260622_001" / safe
-            rd.mkdir(parents=True)
-            (rd / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (rd / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260622_001"}), encoding="utf-8")
-
+            certify_node(repo, "orch_dep", "component/base@0.1.0", through="validate",
+                         ir_id="base_20260622_001", pipeline_id="base_20260622_003",
+                         binary_id="bin_20260622_001", run_id="run_20260622_001")
             facts = self._conductor(repo)._write_lineage(refs)
             self.assertEqual(len(facts), 1)
             self.assertEqual(facts[0]["node_key"], "component/base@0.1.0")
@@ -12606,30 +12616,19 @@ class WriteLineageTest(unittest.TestCase):
                 '    - node_key: "component/base@0.1.0"\n'
                 '      operations: ["base__scale"]\n',
                 encoding="utf-8")
-            safe = "component__base__0.1.0"
-            pipe = repo / "workspace" / "pipelines" / safe / "base_20260622_003"
-            b = pipe / "binary" / "bin_20260622_001"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass",
-                            "source_source_id": "src_b_001"}), encoding="utf-8")
-            src_dir = pipe / "source" / "src_b_001" / "src"
-            src_dir.mkdir(parents=True)
-            (src_dir / "base_model.f90").write_text(
-                "module base_model\ncontains\n"
-                "  subroutine base__scale(x, n, y)\n"
-                "    integer, intent(in) :: n\n"
-                "    real(8), intent(in) :: x(n)\n"
-                "    real(8), intent(out) :: y(n)\n"
-                "  end subroutine\n"
-                "end module base_model\n", encoding="utf-8")
-            rd = pipe / "runs" / "run_20260622_001" / safe
-            rd.mkdir(parents=True)
-            (rd / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (rd / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260622_001"}), encoding="utf-8")
-
+            certify_node(
+                repo, "orch_dep", "component/base@0.1.0", through="validate",
+                ir_id="base_20260622_001", pipeline_id="base_20260622_003",
+                source_id="src_20260622_001", binary_id="bin_20260622_001",
+                run_id="run_20260622_001",
+                model_text=(
+                    "module base_model\ncontains\n"
+                    "  subroutine base__scale(x, n, y)\n"
+                    "    integer, intent(in) :: n\n"
+                    "    real(8), intent(in) :: x(n)\n"
+                    "    real(8), intent(out) :: y(n)\n"
+                    "  end subroutine\n"
+                    "end module base_model\n"))
             facts = self._conductor(repo)._write_lineage(refs)
             self.assertEqual(len(facts), 1)
             pub = facts[0]["published_operations"]
@@ -13444,16 +13443,15 @@ class WriteMakefileTest(unittest.TestCase):
         binary_source_id = binary_source_id or source_id
         lineage_source_id = lineage_source_id or source_id
         pipe = repo / "workspace" / "pipelines" / safe / pipeline_id
-        (pipe / "source" / binary_source_id / "src").mkdir(parents=True, exist_ok=True)
-        (pipe / "binary" / binary_id).mkdir(parents=True, exist_ok=True)
-        (pipe / "binary" / binary_id / "binary_meta.json").write_text(
-            wc.json.dumps({"verification_status": "pass",
-                           "source_source_id": binary_source_id}) + "\n", encoding="utf-8")
+        # Since issue #250 PR-2 staging reads the dependency's SELECTED certified Generate
+        # output under its derivation key, so the certified source is a key-stamped chain
+        # (`certify_node`) rather than a `binary_meta.source_source_id` pointer.
+        certify_node(repo, "orch_dep", node_key, through="build",
+                     ir_id=f"{sid}_20260101_001", pipeline_id=pipeline_id,
+                     source_id=binary_source_id, binary_id=binary_id, model_text=body)
         (pipe / "lineage.json").write_text(
             wc.json.dumps({"source_id": lineage_source_id}) + "\n", encoding="utf-8")
-        model = pipe / "source" / binary_source_id / "src" / f"{sid}_model.f90"
-        model.write_text(body, encoding="utf-8")
-        return model
+        return pipe / "source" / binary_source_id / "src" / f"{sid}_model.f90"
 
     def test_stage_dependency_sources_copies_closure_into_objdir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13462,9 +13460,9 @@ class WriteMakefileTest(unittest.TestCase):
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
-                                    "src_base", "module base_model\nend module base_model\n")
+                                    "src_20260101_001", "module base_model\nend module base_model\n")
             self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
-                                    "src_mid", "module mid_model\nend module mid_model\n")
+                                    "src_20260101_001", "module mid_model\nend module mid_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
             # deepest-first (base before mid), matching the Makefile object order
@@ -13480,10 +13478,10 @@ class WriteMakefileTest(unittest.TestCase):
             # canonical src/ of the depending node is never touched (no top model written)
             self.assertFalse((repo / refs.source_dir() / "src").exists())
 
-    def test_stage_dependency_sources_binds_to_certified_binary_source(self) -> None:
+    def test_stage_dependency_sources_binds_to_the_selected_certified_source(self) -> None:
         # Regression (Codex P2): when lineage.json has advanced to a NEWER source than the
-        # certified binary was built from, staging must use the CERTIFIED binary's
-        # source_source_id, not the latest lineage source (which is unverified).
+        # certified one, staging must use the CERTIFIED source (the selection under the
+        # dependency's key), not the latest lineage source (which is unverified).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
@@ -13501,12 +13499,12 @@ class WriteMakefileTest(unittest.TestCase):
             ], transitive_deps=[])
             # certified binary built from src_cert; lineage advanced to src_new (unverified).
             self._seed_dep_pipeline(
-                repo, "component/base@0.1.0", "base_20260101_001", "src_cert",
+                repo, "component/base@0.1.0", "base_20260101_001", "src_20260101_001",
                 "module base_model ! CERTIFIED\nend module base_model\n",
-                lineage_source_id="src_new")
+                lineage_source_id="src_20260101_002")
             # the newer, unverified source the lineage points at — must NOT be staged.
             new_src = (repo / "workspace" / "pipelines" / "component__base__0.1.0"
-                       / "base_20260101_001" / "source" / "src_new" / "src")
+                       / "base_20260101_001" / "source" / "src_20260101_002" / "src")
             new_src.mkdir(parents=True, exist_ok=True)
             (new_src / "base_model.f90").write_text(
                 "module base_model ! NEWER UNVERIFIED\nend module base_model\n", encoding="utf-8")
@@ -13514,8 +13512,8 @@ class WriteMakefileTest(unittest.TestCase):
             staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
             self.assertEqual(len(staged), 1)
             self.assertIn("CERTIFIED", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
-            self.assertIn("src_cert", staged[0]["model_source_ref"])
-            self.assertEqual(staged[0]["source_id"], "src_cert")
+            self.assertIn("/src_20260101_001/", staged[0]["model_source_ref"])
+            self.assertEqual(staged[0]["source_id"], "src_20260101_001")
 
     def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
         """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
@@ -13555,9 +13553,9 @@ class WriteMakefileTest(unittest.TestCase):
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
-                                    "src_base", "module base_model\nend module base_model\n")
+                                    "src_20260101_001", "module base_model\nend module base_model\n")
             self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
-                                    "src_mid", "module mid_model\nend module mid_model\n")
+                                    "src_20260101_001", "module mid_model\nend module mid_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
             self.assertEqual([b["node_key"] for b in staged],
@@ -13569,10 +13567,10 @@ class WriteMakefileTest(unittest.TestCase):
                 self.assertEqual(binding["pipeline_ref"],
                                  f"workspace/pipelines/component__{sid}__0.1.0/"
                                  f"{sid}_20260101_001")
-                self.assertEqual(binding["source_id"], f"src_{sid}")
-                self.assertTrue(binding["binary_id"])
+                self.assertEqual(binding["source_id"], "src_20260101_001")
+                self.assertTrue(binding["output_hash"].startswith("sha256:"))
                 self.assertTrue(
-                    binding["model_source_ref"].endswith(f"src_{sid}/src/{sid}_model.f90"),
+                    binding["model_source_ref"].endswith(f"src_20260101_001/src/{sid}_model.f90"),
                     binding["model_source_ref"])
             # Distinct sources give distinct hashes — the assertion above could not pass by
             # comparing two copies of one file.
@@ -13595,7 +13593,7 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_dep_ir(repo, refs)
             # only base is built; mid is missing -> fail-closed (build precondition)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
-                                    "src_base", "module base_model\nend module base_model\n")
+                                    "src_20260101_001", "module base_model\nend module base_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             with self.assertRaises(RuntimeError):
                 self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
@@ -13633,9 +13631,10 @@ class WriteMakefileTest(unittest.TestCase):
             ], transitive_deps=[])
             # Only base@0.1.0 is built — NOT the pinned 0.2.0.
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
-                                    "src_base", "module base_model\nend module base_model\n")
+                                    "src_20260101_001", "module base_model\nend module base_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            with self.assertRaisesRegex(RuntimeError, "no ready pipeline"):
+            with self.assertRaisesRegex(
+                    RuntimeError, "component/base@0.2.0 has no certified model source to stage"):
                 self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
 
     def test_stage_dependency_sources_noop_for_non_fortran(self) -> None:
@@ -13714,49 +13713,44 @@ class WriteRunnerTest(unittest.TestCase):
             ir_dirname: str = "harness-fortran-cpu_20260707_002",
             ir_meta_status: str | None = "pass", write_ir_meta: bool = True,
             extra_source_meta: dict | None = None, signatures: object = None,
-            no_public_api_signatures: bool = False,
-            binary_source_ir_id: str | None = "harness-fortran-cpu_20260707_002",
-            write_source_ir_id: bool = True) -> None:
-        """Seed a ready certified-harness pipeline + its certified IR dir.
+            no_public_api_signatures: bool = False) -> None:
+        """Seed a certified harness chain (key-stamped through Build, `certify_node`): the
+        certified IR under `ir_dirname` and the certified source the pin reads.
 
-        `source_meta.json` is written CONTRACT-MINIMAL (no `ir_ref`): the pin resolves the IR
-        structurally, never from source_meta. `binary_meta.source_ir_id` (host-authored) binds the
-        certified binary to its origin IR dir under `workspace/ir/<safe>/<binary_source_ir_id>`;
-        `write_source_ir_id=False` omits it to exercise the legacy `_certified_ir_dir` fallback.
-        `ir_dirname` (the seeded IR dir) may diverge from the pipeline dir name (compile reopen
-        re-numbers ir_id independently). `extra_source_meta` merges extra keys into the (still
-        ir_ref-free) source_meta to prove they are ignored."""
+        Since issue #250 PR-2 the pin resolves both through the SELECTION — the harness's
+        selected certified Compile output and its selected certified Generate output, one
+        generation by construction of the generate key — never through
+        `binary_meta.source_ir_id` or a latest-IR fallback. `source_meta.json` stays
+        CONTRACT-MINIMAL (no `ir_ref`); `extra_source_meta` merges extra keys into it to prove
+        they are ignored. `ir_meta_status` / `write_ir_meta` degrade the IR meta AFTER the
+        chain is certified (an uncertified IR is a build precondition failure)."""
         from tools.tests.test_fortran_runner import (
             _HARNESS_STUB, _harness_signatures)
         import yaml as _yaml
-        safe = "infrastructure__harness_fortran_cpu__0.2.0"
-        pipe = repo / "workspace" / "pipelines" / safe / "harness-fortran-cpu_20260707_002"
-        src_dir = pipe / "source" / "src_20260707_002" / "src"
-        src_dir.mkdir(parents=True, exist_ok=True)
         source = _HARNESS_STUB
         if tamper_source:
             source = source.replace(
                 "function harness_fortran_cpu__box(name, json) result(nv)",
                 "function harness_fortran_cpu__box(key, json) result(nv)")
-        (src_dir / "harness_fortran_cpu_model.f90").write_text(source, encoding="utf-8")
-        smeta: dict = dict(extra_source_meta or {})  # contract-minimal: NO ir_ref
-        (src_dir.parent / "source_meta.json").write_text(
-            json.dumps(smeta), encoding="utf-8")
-        (pipe / "binary" / "bin_20260707_001").mkdir(parents=True, exist_ok=True)
-        bmeta: dict = {"source_source_id": "src_20260707_002"}
-        if write_source_ir_id and binary_source_ir_id is not None:
-            bmeta["source_ir_id"] = binary_source_ir_id
-        (pipe / "binary" / "bin_20260707_001" / "binary_meta.json").write_text(
-            json.dumps(bmeta), encoding="utf-8")
-        hir_dir = repo / "workspace" / "ir" / safe / ir_dirname
-        hir_dir.mkdir(parents=True, exist_ok=True)
         sigs = _harness_signatures() if signatures is None else signatures
         pub = {} if no_public_api_signatures else {"signatures": sigs}
-        (hir_dir / "spec.ir.yaml").write_text(
-            _yaml.safe_dump({"public_api": pub}), encoding="utf-8")
-        if write_ir_meta:
-            (hir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": ir_meta_status}), encoding="utf-8")
+        refs = certify_node(
+            repo, "orch_harness", "infrastructure/harness_fortran_cpu@0.2.0", through="build",
+            ir_id=ir_dirname, pipeline_id="harness-fortran-cpu_20260707_002",
+            source_id="src_20260707_002", binary_id="bin_20260707_001",
+            ir_text=_yaml.safe_dump({"public_api": pub}), model_text=source)
+        if extra_source_meta:
+            smeta_path = repo / refs["source_meta"]
+            smeta = json.loads(smeta_path.read_text(encoding="utf-8"))
+            smeta.update(extra_source_meta)
+            smeta_path.write_text(json.dumps(smeta), encoding="utf-8")
+        ir_meta_path = repo / refs["ir_meta"]
+        if not write_ir_meta:
+            ir_meta_path.unlink()
+        elif ir_meta_status != "pass":
+            doc = json.loads(ir_meta_path.read_text(encoding="utf-8"))
+            doc["verification_status"] = ir_meta_status
+            ir_meta_path.write_text(json.dumps(doc), encoding="utf-8")
 
     def test_conductor_authors_runner_truth_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13831,10 +13825,12 @@ class WriteRunnerTest(unittest.TestCase):
             repo = Path(tmp)
             refs = self._refs()
             self._write_consumer_ir(repo, refs, infra=1, language="zz_wr")
-            self._seed_harness_pipeline(repo)
             with mock.patch.dict(sys.modules, {"zz_write_runner_lang": other}), \
                     mock.patch.dict(
                         backend_registry._BACKENDS, {("language", "zz_wr"): record}):
+                # Seeded under the patched registry: the harness's compile key hashes the
+                # admissible-toolchain document, which the synthesised backend changes.
+                self._seed_harness_pipeline(repo)
                 c = self._conductor(repo)
                 self.assertTrue(c._conductor_authors_runner(refs))
                 c._write_runner(refs)
@@ -13872,10 +13868,11 @@ class WriteRunnerTest(unittest.TestCase):
             repo = Path(tmp)
             refs = self._refs()
             self._write_consumer_ir(repo, refs, infra=1, language="zz_hollow")
-            self._seed_harness_pipeline(repo)
             with mock.patch.dict(sys.modules, {"zz_hollow_runner_pkg": hollow}), \
                     mock.patch.dict(
                         backend_registry._BACKENDS, {("language", "zz_hollow"): record}):
+                # Seeded under the patched registry (see the sibling test above).
+                self._seed_harness_pipeline(repo)
                 c = self._conductor(repo)
                 # the authorship predicate approves it — that is the premise, not a bug
                 self.assertTrue(c._conductor_authors_runner(refs))
@@ -13969,153 +13966,35 @@ class WriteRunnerTest(unittest.TestCase):
                 self.assertNotIsInstance(cm.exception, RenderError)
                 self.assertIn("--with-deps", str(cm.exception))
 
-    def test_write_runner_resolves_ir_divergent_from_pipeline_id(self) -> None:
-        # Compile reopen re-numbers ir_id independently of pipeline_id: the certified IR dir
-        # (`_003`, bound by binary_meta.source_ir_id) need not match the pipeline dir name.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            self._seed_harness_pipeline(
-                repo, ir_dirname="harness-fortran-cpu_20260707_003",
-                binary_source_ir_id="harness-fortran-cpu_20260707_003")
-            self._conductor(repo)._write_runner(refs)
-            self.assertTrue(
-                (repo / refs.source_dir() / "src" / f"{self.SID}_runner.f90").is_file())
-
-    def test_write_runner_pins_ir_bound_to_binary_not_latest(self) -> None:
-        # Codex P1 regression: after a same-version compile reopen the globally-LATEST passing IR
-        # can diverge from the IR the certified binary's source was built from. The pin must bind
-        # to binary_meta.source_ir_id (`_002`), NOT the newer `_004` whose TAMPERED signatures
-        # would raise a spurious drift even though source+binary are internally consistent.
+    def test_write_runner_pin_and_source_are_one_generation(self) -> None:
+        """The pinned IR and the linked source come from ONE selection (issue #250 PR-2):
+        the harness's selected certified Generate output binds, in its key, the output hash
+        of the IR it was generated from. A newer certified harness IR with different
+        signatures (same compile key — the harness's inputs did not move) is selected in
+        its place, so the standing source is no longer certified against the selected IR
+        and the pin has nothing to read: a build precondition (re-generate the harness),
+        never a false drift against an IR the source was not generated from."""
         import yaml as _yaml
-        from tools.tests.test_fortran_runner import _harness_signatures
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            # binary bound to _002 (default ir_dirname + default binary_source_ir_id).
-            self._seed_harness_pipeline(repo)
-            # A NEWER passing IR (_004) with corrupt signatures — latest-passing selection would
-            # wrongly pick it; the source_ir_id binding must ignore it.
-            safe = "infrastructure__harness_fortran_cpu__0.2.0"
-            newer = repo / "workspace" / "ir" / safe / "harness-fortran-cpu_20260707_004"
-            newer.mkdir(parents=True, exist_ok=True)
-            bad_sigs = copy.deepcopy(_harness_signatures())
-            bad_sigs[0]["signature"]["name"] = "bogus"
-            (newer / "spec.ir.yaml").write_text(
-                _yaml.safe_dump({"public_api": {"signatures": bad_sigs}}), encoding="utf-8")
-            (newer / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            self._conductor(repo)._write_runner(refs)  # binds to _002 -> renders, no false drift
-            self.assertTrue(
-                (repo / refs.source_dir() / "src" / f"{self.SID}_runner.f90").is_file())
-
-    def test_write_runner_falls_back_to_latest_ir_without_source_ir_id(self) -> None:
-        # A binary predating source_ir_id (legacy / the pending E2E-recovery harness) must still
-        # resolve via _certified_ir_dir (latest certified IR), so the pin keeps working.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            self._seed_harness_pipeline(repo, write_source_ir_id=False)
-            self._conductor(repo)._write_runner(refs)
-            self.assertTrue(
-                (repo / refs.source_dir() / "src" / f"{self.SID}_runner.f90").is_file())
-
-    def test_write_runner_binds_source_and_ir_from_one_binary_snapshot(self) -> None:
-        # TOCTOU guard: the model source (source_source_id) and its provenance (source_ir_id) must
-        # come from ONE latest-binary selection, so a binary published between two selections can't
-        # pair a source with a mismatched IR lineage. Assert the latest-binary meta is selected
-        # exactly once on the bound path (two selections would be the racy pattern).
-        from unittest import mock
-        from tools import orchestration_runtime as ortime
+        from tools.host_render import RenderError
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             self._write_consumer_ir(repo, refs, infra=1)
             self._seed_harness_pipeline(repo)
-            real = ortime._latest_meta_under
-            binary_selects = {"n": 0}
-
-            def counting(root, pattern):
-                if pattern == "binary/*/binary_meta.json":
-                    binary_selects["n"] += 1
-                return real(root, pattern)
-
-            with mock.patch.object(ortime, "_latest_meta_under", counting):
-                self._conductor(repo)._write_runner(refs)
-            self.assertEqual(binary_selects["n"], 1)
-            self.assertTrue(
-                (repo / refs.source_dir() / "src" / f"{self.SID}_runner.f90").is_file())
-
-    def test_write_runner_legacy_fallback_pin_failure_hints_rebuild(self) -> None:
-        # On the legacy-fallback path (no source_ir_id) a pin failure must carry the operator
-        # hint (rebuild --with-deps to stamp source_ir_id) so a contract-violation-window drift
-        # reads as actionable, not a misdiagnosis. Bound (source_ir_id present) failures do not.
-        from tools.host_render import RenderError
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            # legacy binary (no source_ir_id) + tampered source -> genuine pin drift.
-            self._seed_harness_pipeline(repo, tamper_source=True, write_source_ir_id=False)
-            with self.assertRaises(RenderError) as cm:
-                self._conductor(repo)._write_runner(refs)
-            self.assertIn("source_ir_id", str(cm.exception))
-            self.assertIn("--with-deps", str(cm.exception))
-
-    def test_write_runner_bound_pin_failure_has_no_legacy_hint(self) -> None:
-        # The reciprocal: with source_ir_id present the pin drift is NOT annotated with the
-        # legacy-rebuild hint (it is already bound to the exact origin IR).
-        from tools.host_render import RenderError
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            self._seed_harness_pipeline(repo, tamper_source=True)  # bound (default source_ir_id)
-            with self.assertRaises(RenderError) as cm:
-                self._conductor(repo)._write_runner(refs)
-            self.assertNotIn("legacy harness binary", str(cm.exception))
-
-    def test_write_runner_fail_closed_on_unresolvable_source_ir_id(self) -> None:
-        # A PRESENT-but-unresolvable source_ir_id (dangling dir, or an unsafe token) is corrupt
-        # lineage: it must fail closed with RuntimeError, NOT silently fall back to the latest IR
-        # (which would reintroduce the false-drift the binding exists to prevent). The valid IR
-        # dir (`_002`) is seeded to prove the fallback is NOT taken.
-        from tools.host_render import RenderError
-        for bad_id in ("harness-fortran-cpu_20260707_999", "../evil"):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                refs = self._refs()
-                self._write_consumer_ir(repo, refs, infra=1)
-                self._seed_harness_pipeline(repo, binary_source_ir_id=bad_id)
-                with self.assertRaises(RuntimeError) as cm:
-                    self._conductor(repo)._write_runner(refs)
-                self.assertNotIsInstance(cm.exception, RenderError)
-                self.assertIn("source_ir_id", str(cm.exception))
-
-    def test_write_runner_present_null_source_ir_id_is_not_legacy_fallback(self) -> None:
-        # A PRESENT key with an explicit JSON null is NOT a legacy binary (which lacks the key):
-        # it is corrupt lineage and must fail closed, not take the latest-IR fallback. Locks the
-        # presence-keyed branch (a value-is-None check would wrongly fall back here).
-        from tools.host_render import RenderError
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
-            self._seed_harness_pipeline(repo)  # valid _002 IR present (fallback would render)
-            bpath = (repo / "workspace" / "pipelines"
-                     / "infrastructure__harness_fortran_cpu__0.2.0"
-                     / "harness-fortran-cpu_20260707_002" / "binary" / "bin_20260707_001"
-                     / "binary_meta.json")
-            bpath.write_text(
-                json.dumps({"source_source_id": "src_20260707_002", "source_ir_id": None}),
-                encoding="utf-8")
+            self._conductor(repo)._write_runner(refs)  # the standing chain renders
+            certify_node(
+                repo, "orch_harness2", "infrastructure/harness_fortran_cpu@0.2.0",
+                through="compile", ir_id="harness-fortran-cpu_20260707_003",
+                pipeline_id="harness-fortran-cpu_20260707_002",
+                ir_text=_yaml.safe_dump({"public_api": {"signatures": [
+                    {"symbol": "harness_fortran_cpu__box",
+                     "signature": {"kind": "function", "name": "harness_fortran_cpu__box",
+                                   "args": [{"name": "other"}]}}]}}))
             with self.assertRaises(RuntimeError) as cm:
                 self._conductor(repo)._write_runner(refs)
             self.assertNotIsInstance(cm.exception, RenderError)
-            self.assertIn("source_ir_id", str(cm.exception))
+            self.assertIn("derivation_key_mismatch:ir", str(cm.exception))
+            self.assertIn("--with-deps", str(cm.exception))
 
     def test_write_runner_no_signatures_in_certified_ir_fails_closed(self) -> None:
         # Certified IR present + pass, but its public_api carries no USABLE signatures
@@ -14780,17 +14659,13 @@ class DeterministicBuildTest(unittest.TestCase):
                              (expected["compiler"], f"probed {expected['compiler']}"))
 
     def _seed_closure_dep(self, repo: Path, node_key: str, body: str) -> str:
-        """A certified dependency pipeline for `node_key`; returns the sha256 of `body`."""
+        """A certified (key-stamped) dependency chain for `node_key` whose model source is
+        `body`; returns the sha256 of `body`."""
         import hashlib
-        safe, sid = wc.node_key_safe(node_key), wc.spec_id_of(node_key)
-        pipe = repo / "workspace" / "pipelines" / safe / f"{sid}_20260101_001"
-        (pipe / "source" / "src_dep" / "src").mkdir(parents=True, exist_ok=True)
-        (pipe / "source" / "src_dep" / "src" / f"{sid}_model.f90").write_text(
-            body, encoding="utf-8")
-        (pipe / "binary" / "bin_20260101_001").mkdir(parents=True, exist_ok=True)
-        (pipe / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-            json.dumps({"verification_status": "pass", "source_source_id": "src_dep"}) + "\n",
-            encoding="utf-8")
+        sid = wc.spec_id_of(node_key)
+        certify_node(repo, "orch_dep", node_key, through="build",
+                     ir_id=f"{sid}_20260101_001", pipeline_id=f"{sid}_20260101_001",
+                     model_text=body)
         return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
     def test_build_records_closure_bindings_in_binary_meta(self) -> None:
@@ -14845,8 +14720,8 @@ class DeterministicBuildTest(unittest.TestCase):
             bindings = meta["dependency_check"]["closure_bindings"]
             self.assertEqual([b["node_key"] for b in bindings], ["component/depy@0.1.0"])
             self.assertEqual(bindings[0]["model_source_sha256"], sha)
-            self.assertEqual(bindings[0]["source_id"], "src_dep")
-            self.assertEqual(bindings[0]["binary_id"], "bin_20260101_001")
+            self.assertEqual(bindings[0]["source_id"], "src_20260101_001")
+            self.assertTrue(bindings[0]["output_hash"].startswith("sha256:"))
 
     def test_build_records_empty_closure_bindings_for_a_leaf(self) -> None:
         """A leaf records the key with an EMPTY list. The key's PRESENCE is what tells a leaf
@@ -16830,15 +16705,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
                               {"node_key": refs.node_key, "topo_level": 1}],
                 "transitive_deps": [], "generated_by": "conductor",
             }) + "\n", encoding="utf-8")
-            pipe = (repo / "workspace" / "pipelines" / "component__depz__0.1.0"
-                    / "depz_20260101_001")
-            (pipe / "source" / "src_dep" / "src").mkdir(parents=True, exist_ok=True)
-            (pipe / "source" / "src_dep" / "src" / "depz_model.f90").write_text(
-                "module depz_model\nend module depz_model\n", encoding="utf-8")
-            (pipe / "binary" / "bin_20260101_001").mkdir(parents=True, exist_ok=True)
-            (pipe / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass",
-                            "source_source_id": "src_dep"}) + "\n", encoding="utf-8")
+            certify_node(repo, "orch_dep", "component/depz@0.1.0", through="build",
+                         ir_id="depz_20260101_001", pipeline_id="depz_20260101_001",
+                         model_text="module depz_model\nend module depz_model\n")
             c = self._conductor(repo)
             seen: list[dict] = []
 

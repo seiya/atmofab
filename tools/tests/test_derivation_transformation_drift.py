@@ -142,10 +142,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-1": "5f2a2b23cefa67a97a5c3ca493df8fcb37f870de3c2c65076897fd8b544648e1",
 }
 PINNED_RENDER: dict[str, str] = {
-    "render-1": "6f8871b70e7f32114cb7e4c50d13a5145c5426d27d3db798929451263587720e",
+    "render-1": "56eb0953da9e50f1ebc212ce45dbf3cfd7680059cbeffc91017a017e9402f5ee",
 }
 PINNED_BUILD: dict[str, str] = {
-    "build-1": "b9750ec1ef55f08d634fb7bbcad845a36bd2391995a1516b8bc51be1cb17dacf",
+    "build-1": "c5fbb4bc9b9928f024e0030d2bf861673ffcf52ad74cf00da0a749fe84085641",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

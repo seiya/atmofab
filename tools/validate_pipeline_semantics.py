@@ -13062,7 +13062,7 @@ FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
 #: `--stage post_generate`). The fix is a re-certification (readiness refuses such an IR and
 #: Compile re-derives it on `--resume`), never a re-authored model, so the conductor routes it
 #: TERMINAL. Despite the name, neither emit site is about a DEPENDENCY's IR — and a dependency's
-#: IR is NOT re-validated by readiness (`_dep_ir_meta_passes` reads status; `_verify_dep_stage_detail` adds 13a freshness; neither runs the validator), so
+#: IR is NOT re-validated by readiness (`_verify_dep_stage_detail` is the derivation-key lookup alone, `docs/ORCHESTRATION.md` §13a; it runs no validator), so
 #: `--with-deps` is not a remedy for this code. Distinct from 0/1/2/3, so a caller tells all five
 #: apart without reading the output.
 STALE_DEPENDENCY_IR_EXIT_CODE = 4

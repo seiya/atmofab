@@ -1018,25 +1018,20 @@ def _closure_signature(
     # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
     # profile's `spec_version` (its §3 parameter/compatibility constraints are what an adopter's
     # `algorithm` is written to honour, and what `_pure_profile_spec_document` inlines) left
-    # every adopter's signature byte-identical, so R6-lite called it fresh and `--with-deps`
-    # reused a node certified against a policy that had since changed — while its IR's
-    # `profile_selection` went on naming the retired version. Measured on this tree before the
-    # fix: identical signature across a 0.1.1 -> 0.9.0 bump of the adopted profile.
+    # every adopter's signature byte-identical, so the R6-lite comparison this signature was
+    # written for called it fresh — while its IR's `profile_selection` went on naming the
+    # retired version. Measured on this tree before the fix: identical signature across a
+    # 0.1.1 -> 0.9.0 bump of the adopted profile.
     #
-    # ONE LEVEL, and only one: the sidecar records its own node's adoptions, so this term
-    # restales the ADOPTER and does not propagate to the adopter's dependents the way a change
-    # to `all_nodes` does. Before issue #175 it propagated, because the profile was an ordinary
-    # member of every ancestor's `all_nodes` — so this is a real asymmetry the change introduced,
-    # measured, and reachable only when a node that is itself a dependency adopts a profile. No
-    # `spec` here does (both adopters are `problem` specs, which nothing declares as a
-    # dependency), and `--with-deps` evaluates every closure node as a subject in its own right.
-    # `TODO.md` records what closing it would need.
+    # Since issue #250 PR-2 this signature is hashed into the COMPILE DERIVATION KEY of the
+    # target (`dependency_graph`) and compared with nothing else. The one-level asymmetry
+    # issue #175 recorded (a profile bump restaled the adopter but not the adopter's
+    # dependents) is closed by construction there: a dependent's key binds the adopter's
+    # SELECTED IR by output hash, so the bump reaches it through the adopter's re-derivation
+    # exactly when the adopter's IR changed.
     #
-    # A MISSING key normalizes to `[]` rather than to `None`, and that is load-bearing: every
-    # sidecar written before issue #175 lacks it, and treating absence as a distinct value would
-    # restale the whole certified corpus instead of only the nodes whose closure actually moved
-    # (the two adopters, which are stale on `all_nodes` alone anyway). A node adopting no
-    # profile derives `[]` and matches its own older sidecar exactly.
+    # A MISSING key normalizes to `[]` rather than to `None`: a node adopting no profile
+    # derives `[]`, and a sidecar written before issue #175 reads the same way.
     profiles = graph.get("profiles")
     profile_keys: list[str] = []
     if profiles is not None:
@@ -1303,6 +1298,13 @@ class DerivationResolver:
                 sel.revocation_severity = upstream.revocation_severity
                 sel.revocation_repair_strategy = upstream.revocation_repair_strategy
                 return
+        candidates = _stage_meta_candidates(self.repo_root, node_key, step_token)
+        if not candidates:
+            # Nothing was ever produced: say so before computing a key nobody stamped (a
+            # never-derived node's spec files may not even exist yet — that is the closure
+            # driver's ordinary "not built" answer, not a defect of its inputs).
+            sel.reason = _NO_OUTPUT_REASON[step_token]
+            return
         spec_ref = self.spec_ref(node_key)
         if spec_ref is None:
             sel.reason = "spec_ref_unresolved"
@@ -1332,7 +1334,7 @@ class DerivationResolver:
         eligible: list[Candidate] = []
         refused: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         latest: tuple[tuple[Any, ...], Path, Any] | None = None
-        for order, meta_path in _stage_meta_candidates(self.repo_root, node_key, step_token):
+        for order, meta_path in candidates:
             doc = _read_json_or_none(meta_path)
             if latest is None or order > latest[0]:
                 latest = (order, meta_path, doc)
@@ -1363,9 +1365,7 @@ class DerivationResolver:
             sel.revocation_severity = detail.get("revocation_severity")
             sel.revocation_repair_strategy = detail.get("revocation_repair_strategy")
             return
-        if latest is None:
-            sel.reason = _NO_OUTPUT_REASON[step_token]
-            return
+        assert latest is not None  # `candidates` was non-empty
         _order, _path, doc = latest
         if not isinstance(doc, dict):
             sel.reason = "stage_meta_unreadable"
@@ -1722,7 +1722,7 @@ def _validated_derivation_record(derivation: Any, step_token: str) -> dict[str, 
     key, an object of inputs, a non-empty list of version strings. The key is not recomputed
     here — the inputs it was taken over are the phase-START inputs, and recomputing at stamp
     time would answer a different question (see `_stamp_certification`). Type-checked
-    because `_phase_certified` (PR-2) compares the stamped key with a recomputation, and a
+    because `DerivationResolver.select` compares the stamped key with a recomputation, and a
     structurally wrong stamp would read as a stale phase and send the operator hunting for
     an input nobody changed."""
     if not isinstance(derivation, dict):
@@ -2191,7 +2191,7 @@ def _spec_file_hash(repo_root: Path, spec_ref: str, name: str) -> str:
 
 def _derived_closure_graph(repo_root: Path, node_key: str, spec_ref: str) -> dict[str, Any]:
     """The dependency closure of `node_key` as the registry derives it NOW (the same pure
-    builder the compile sidecar and the R6-lite comparison use, without `via` paths). A
+    builder the compile sidecar uses, without `via` paths). A
     closure that does not build is unresolvable: the compile key cannot be computed for a
     node whose `deps.yaml` + catalog yield no valid closure."""
     from tools.dependency_graph import build_dependency_graph
@@ -2630,8 +2630,8 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
 
     Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
     not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
-    readiness comparison (`_dependency_binding_freshness`) cannot disagree on WHICH nodes the
-    closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
+    derivation inputs (`_sidecar_closure`, the `closure[]` of the generate and build keys)
+    cannot disagree on WHICH nodes the closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
     spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
 
     The never-raises contract is load-bearing rather than decorative, and it costs two type tests
@@ -14506,15 +14506,12 @@ def write_preflight(
                     # PyYAML-degraded mode handled above; skip the rest of
                     # the invalidation/refresh logic.
                     pass
-                else:
-                    if not isinstance(existing, dict):
-                        meta["dependency_readiness"] = computed
-                        _write_json(meta_path, meta)
-                    elif existing != computed and (
-                            computed.get("direct_dependency_compile_readiness") is True
-                            or existing.get("certified_deps") == []):
-                        meta["dependency_readiness"] = computed
-                        _write_json(meta_path, meta)
+                elif not isinstance(existing, dict) or (
+                        existing != computed
+                        and (computed.get("direct_dependency_compile_readiness") is True
+                             or existing.get("certified_deps") == [])):
+                    meta["dependency_readiness"] = computed
+                    _write_json(meta_path, meta)
     if _preflight_allows_agent_launch(stored):
         _transition_phase_state(
             repo_root,

@@ -11342,8 +11342,13 @@ end program shallow_water2d_runner
         charged the finding to four Generate launches.
 
         Placed here rather than in `test_orchestration_runtime` because the compile-passing
-        tree seeder lives in this module.
+        tree seeder lives in this module. The SELECTION half of the clause (issue #250 PR-2:
+        the IR must be the selected certified output under the key recomputed now) is
+        answered by a stub here — the seeded tree's dependency carries no key, and the
+        selection is pinned on its own in `DerivationKeyCertificationTests` — so that what
+        this row observes is the validator clause alone, unpatched.
         """
+        from unittest import mock
         from tools import orchestration_runtime as ort
         from tools.tests.orchestration_fixtures import _sha256
 
@@ -11368,8 +11373,16 @@ end program shallow_water2d_runner
                     "artifact_hashes": {f"{ir_ref}/spec.ir.yaml": _sha256(ir_path)},
                 })
 
+            def _selected(self_resolver, nk, step):
+                sel = ort.DerivationSelection(nk, step)
+                sel.ok, sel.ir_ref, sel.ir_id = True, ir_ref, "shallow-water2d_20260415_001"
+                sel.meta_path = repo / ir_ref / "ir_meta.json"
+                return sel
+
             _stamp()
-            ok, detail = ort._ir_certification(repo, node_key, reserved_ir_id=None)
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
             self.assertTrue(ok, detail)
             self.assertEqual(detail["ir_ref"], ir_ref)
 
@@ -11378,7 +11391,9 @@ end program shallow_water2d_runner
                 {"name": "topography_profile", "evidence_ref": "raw/execution_trace.json"})
             ir_path.write_text(json.dumps(doc))
             _stamp()
-            ok, detail = ort._ir_certification(repo, node_key, reserved_ir_id=None)
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
             self.assertFalse(ok, detail)
             reason = detail["reason"]
             self.assertTrue(reason.startswith("ir_rejected_by_current_validator:"), reason)

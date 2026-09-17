@@ -407,7 +407,6 @@ class BuildDependencyGraphTests(unittest.TestCase):
             self.assertIsNone(graph)
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
             self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
-            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
 
     def test_an_unresolvable_profile_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -17350,8 +17350,7 @@ class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
                 "recomputation says false",
             )
             self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
-            # The catalog names dep_a without a spec directory: unresolvable, never certified.
-            self.assertIn("component/dep_a@0.1.0 compile: spec_ref_unresolved", reason)
+            self.assertIn("component/dep_a@0.1.0 compile: ir_not_found", reason)
 
     def test_live_recompute_authoritative_even_when_stored_says_false(self) -> None:
         """Opposite direction: stored booleans=false, artifacts say pass. Gate
@@ -26991,6 +26990,10 @@ class ProfileExpansionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
+            # An (unstamped) IR of `a`, so the resolver has an output to compute a key for
+            # (a node with no output at all is answered `ir_not_found` before its inputs).
+            certify_node(repo, "o", "problem/a@0.1.0", through="compile", ir_id="a_20260101_001",
+                         pipeline_id="a_20260101_001", stamp=False, spec_entry=False)
             sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
             self.assertFalse(sel.ok)
             self.assertIn("derivation_inputs_unresolvable: dependency closure of problem/a@0.1.0 "

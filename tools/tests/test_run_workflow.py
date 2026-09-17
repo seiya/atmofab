@@ -4551,7 +4551,6 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(ordered, [])
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
             self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
-            self.assertIn(err["reason"], ort._UNREADABLE_CLOSURE_REASONS)
 
     def test_a_profile_target_is_refused_at_launch(self) -> None:
         """The launch-time half of the refusal (`resolve_node` keeps the backstop). Detected
@@ -5232,7 +5231,8 @@ class DependencyClosureTests(unittest.TestCase):
             # were never built, and a never-built node is not stale (round 3's disclosure axis
             # found the operator reading the opposite in their own stdout).
             self.assertTrue(
-                all("not_ready=ir_ref:" in ln and "no certified IR" in ln for ln in dep_lines),
+                all("not_ready=ir_ref:" in ln and "compile: ir_not_found" in ln
+                    for ln in dep_lines),
                 dep_lines,
             )
             self.assertFalse(any("stale=" in ln for ln in dep_lines), dep_lines)
@@ -5282,7 +5282,7 @@ class DependencyClosureTests(unittest.TestCase):
             entry = fail["dependency_runs"][-1]
             self.assertFalse(entry["skipped"])
             self.assertEqual(entry["rerun_reason"]["failed_stage"], "ir_ref")
-            self.assertIn("no certified IR", entry["rerun_reason"]["detail"])
+            self.assertIn("compile: ir_not_found", entry["rerun_reason"]["detail"])
             # And the post-run re-verification records the stage that STILL refuses.
             self.assertEqual(entry["readiness"]["failed_stage"], "ir_ref")
             self.assertIn("stage ir_ref:", fail["detail"])
@@ -5342,49 +5342,17 @@ class DependencyClosureTests(unittest.TestCase):
                              {"failed_stage": "pipeline_ref", "detail": "fake: stale binding"})
 
     def _seed_certified_node(self, repo_root: Path, kind: str, sid: str, version: str, *,
-                             closure_bindings: Any, dep_body: str | None = None) -> str:
-        """A fully certified node — IR (with a sidecar), pipeline, certified binary, verdict.
-
-        `closure_bindings` is written verbatim into `binary_meta.dependency_check`; pass a list
-        for a node that links a closure and `[]` for a leaf. When `dep_body` is given, a model
-        source is written under the certified `source_id` and its sha256 returned, so a caller can
-        record a binding against it."""
-        import hashlib
-        safe = f"{kind}__{sid}__{version}"
-        node_key = f"{kind}/{sid}@{version}"
-        ir_dir = repo_root / "workspace" / "ir" / safe / f"{sid}_20260101_001"
-        ir_dir.mkdir(parents=True, exist_ok=True)
-        (ir_dir / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-        recorded = [b["node_key"] for b in closure_bindings] if closure_bindings else []
-        (ir_dir / "dependency_graph.json").write_text(json.dumps({
-            "node_key": node_key,
-            "all_nodes": [{"node_key": nk, "topo_level": 0} for nk in recorded]
-            + [{"node_key": node_key, "topo_level": 1}],
-            "transitive_deps": [], "generated_by": "conductor",
-        }), encoding="utf-8")
-        pipe = repo_root / "workspace" / "pipelines" / safe / f"{sid}_20260101_001"
-        src_dir = pipe / "source" / "src_20260101_001" / "src"
-        src_dir.mkdir(parents=True, exist_ok=True)
-        digest = ""
-        if dep_body is not None:
-            (src_dir / f"{sid}_model.f90").write_text(dep_body, encoding="utf-8")
-            digest = hashlib.sha256(dep_body.encode("utf-8")).hexdigest()
-        bin_dir = pipe / "binary" / "bin_20260101_001"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        (bin_dir / "binary_meta.json").write_text(json.dumps({
-            "binary_id": "bin_20260101_001", "node_key": node_key,
-            "verification_status": "pass", "source_source_id": "src_20260101_001",
-            "dependency_check": {"direct_deps": recorded, "resolved": "match",
-                                 "closure_bindings": closure_bindings},
-        }) + "\n", encoding="utf-8")
-        verdict_dir = pipe / "runs" / "run_20260101_001" / safe
-        verdict_dir.mkdir(parents=True, exist_ok=True)
-        (verdict_dir / "aggregate_verdict.json").write_text(
-            json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-        (verdict_dir / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-        return digest
+                             dep_body: str | None = None) -> dict[str, str]:
+        """A fully certified node — IR (with the real sidecar), pipeline, binary, verdict —
+        key-stamped through `certify_node` (issue #250 PR-2: readiness is a derivation-key
+        lookup, so the fixture asks the same function the predicate asks). `dep_body` is
+        the certified model source. Dependencies must be seeded first: the key binds their
+        selected outputs. Returns the fixture refs."""
+        from tools.tests.orchestration_fixtures import certify_node
+        return certify_node(
+            repo_root, "orch_seed", f"{kind}/{sid}@{version}", through="validate",
+            ir_id=f"{sid}_20260101_001", pipeline_id=f"{sid}_20260101_001",
+            model_text=dep_body, spec_entry=True)
 
     def test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated(self) -> None:
         """The issue #153 route, driven end to end through the REAL readiness machinery.
@@ -5408,19 +5376,9 @@ class DependencyClosureTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
 
             leaf_body = "module c_model\nend module c_model\n"
-            sha = self._seed_certified_node(
-                repo_root, "infrastructure", "c", "0.1.0", closure_bindings=[],
-                dep_body=leaf_body)
-            binding = {
-                "node_key": "infrastructure/c@0.1.0",
-                "pipeline_ref": "workspace/pipelines/infrastructure__c__0.1.0/c_20260101_001",
-                "binary_id": "bin_20260101_001", "source_id": "src_20260101_001",
-                "model_source_ref": ("workspace/pipelines/infrastructure__c__0.1.0/"
-                                     "c_20260101_001/source/src_20260101_001/src/c_model.f90"),
-                "model_source_sha256": sha,
-            }
-            self._seed_certified_node(repo_root, "component", "b", "0.1.0",
-                                      closure_bindings=[binding])
+            self._seed_certified_node(repo_root, "infrastructure", "c", "0.1.0",
+                                      dep_body=leaf_body)
+            self._seed_certified_node(repo_root, "component", "b", "0.1.0")
 
             def drive() -> list[dict[str, Any]]:
                 # The driver hands the summary to the TARGET's `_run_node` as `extra_output`;
@@ -5462,11 +5420,14 @@ class DependencyClosureTests(unittest.TestCase):
                 self.assertTrue(by_ref[ref]["skipped"], runs)
                 self.assertEqual(by_ref[ref]["version"], "0.1.0")
 
-            # `c` regenerates and re-certifies under the SAME spec_version.
-            src = (repo_root / "workspace" / "pipelines" / "infrastructure__c__0.1.0"
-                   / "c_20260101_001" / "source" / "src_20260101_001" / "src" / "c_model.f90")
-            src.write_text("module c_model ! REGENERATED\nend module c_model\n",
-                           encoding="utf-8")
+            # `c` regenerates and re-certifies under the SAME spec_version (a newer attempt,
+            # different source bytes, certified — so the selection moves to it).
+            from tools.tests.orchestration_fixtures import certify_node
+            certify_node(repo_root, "orch_seed2", "infrastructure/c@0.1.0", through="validate",
+                         ir_id="c_20260101_001", pipeline_id="c_20260101_001",
+                         source_id="src_20260101_002", binary_id="bin_20260101_002",
+                         run_id="run_20260101_002",
+                         model_text="module c_model ! REGENERATED\nend module c_model\n")
 
             runs = drive()
             by_ref = {r["spec_ref"]: r for r in runs}
@@ -5477,40 +5438,30 @@ class DependencyClosureTests(unittest.TestCase):
             b = by_ref["spec/component/b"]
             self.assertFalse(b["skipped"], runs)
             self.assertEqual(b["rerun_reason"]["failed_stage"], "pipeline_ref")
-            self.assertIn("was compiled against", b["rerun_reason"]["detail"])
-            self.assertIn("infrastructure/c@0.1.0", b["rerun_reason"]["detail"])
+            self.assertEqual(b["rerun_reason"]["detail"],
+                             "component/b@0.1.0 build: derivation_key_mismatch:closure[0].source")
 
     def test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved(self) -> None:
-        """The R6-lite twin of the test above, driven end to end through the REAL readiness
-        machinery (issue #178 round 0: deleting `_dependency_resolution_freshness` from the
-        primitive was killed by the launch-gate witness and by NOTHING in this file).
+        """The 13a twin of the test above, driven end to end through the REAL readiness
+        machinery (issue #178 round 0: deleting the resolution comparison from the primitive
+        was killed by the launch-gate witness and by NOTHING in this file).
 
-        The shape is R6-lite's own: the consumer `b` was certified when its closure resolved the
-        harness to `c@0.0.9` (that is what its `dependency_graph.json` sidecar records); the
-        registry has since moved `c` to `0.1.0`, which is itself certified. `b`'s binary still
-        links the current source (the binding is fresh), so only the RESOLUTION moved — and the
-        driver must re-run `b`, naming `ir_ref`."""
+        The shape is 13a's own, under the key (issue #250 PR-2): the consumer `b` was
+        certified when its closure resolved the harness to `c@0.1.0`; the registry then
+        publishes `c@0.2.0`, itself certified, which `b`'s `>=0.1.0 <1.0.0` now resolves
+        to. `b`'s own artifacts are untouched — only the RESOLUTION moved — and the driver
+        must re-run `b`, naming `ir_ref` and the closure member that moved."""
         from tools.orchestration_runtime import _load_spec_catalog
+        from tools.tests.orchestration_fixtures import certify_node, ensure_spec_entry
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
-            leaf_body = "module c_model\nend module c_model\n"
-            sha = self._seed_certified_node(
-                repo_root, "infrastructure", "c", "0.1.0", closure_bindings=[],
-                dep_body=leaf_body)
-            binding = {
-                "node_key": "infrastructure/c@0.1.0",
-                "pipeline_ref": "workspace/pipelines/infrastructure__c__0.1.0/c_20260101_001",
-                "binary_id": "bin_20260101_001", "source_id": "src_20260101_001",
-                "model_source_ref": ("workspace/pipelines/infrastructure__c__0.1.0/"
-                                     "c_20260101_001/source/src_20260101_001/src/c_model.f90"),
-                "model_source_sha256": sha,
-            }
-            self._seed_certified_node(repo_root, "component", "b", "0.1.0",
-                                      closure_bindings=[binding])
+            self._seed_certified_node(repo_root, "infrastructure", "c", "0.1.0",
+                                      dep_body="module c_model\nend module c_model\n")
+            self._seed_certified_node(repo_root, "component", "b", "0.1.0")
 
             def drive() -> list[dict[str, Any]]:
                 seen: dict[str, Any] = {}
@@ -5549,24 +5500,23 @@ class DependencyClosureTests(unittest.TestCase):
             for ref in ("spec/component/c", "spec/component/b"):
                 self.assertTrue(by_ref[ref]["skipped"], runs)
 
-            # `b`'s recorded resolution names a harness version the registry no longer derives.
-            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-                       / "dependency_graph.json")
-            graph = json.loads(sidecar.read_text(encoding="utf-8"))
-            graph["all_nodes"] = [
-                {"node_key": "infrastructure/c@0.0.9", "topo_level": 0},
-                {"node_key": "component/b@0.1.0", "topo_level": 1}]
-            sidecar.write_text(json.dumps(graph), encoding="utf-8")
+            # The registry moves: `c@0.2.0` is published (same spec directory) and certified.
+            ensure_spec_entry(repo_root, "infrastructure/c@0.2.0")
+            _load_spec_catalog.cache_clear()
+            certify_node(repo_root, "orch_seed3", "infrastructure/c@0.2.0", through="validate",
+                         ir_id="c_20260101_001", pipeline_id="c_20260101_001",
+                         model_text="module c_model\nend module c_model\n")
 
             runs = drive()
             by_ref = {r["spec_ref"]: r for r in runs}
-            # `c` is a leaf with no recorded resolution to drift; still ready.
+            # `c` resolves to 0.2.0 now, which is certified; still ready.
             self.assertTrue(by_ref["spec/component/c"]["skipped"], runs)
+            self.assertEqual(by_ref["spec/component/c"]["version"], "0.2.0")
             b = by_ref["spec/component/b"]
             self.assertFalse(b["skipped"], runs)
             self.assertEqual(b["rerun_reason"]["failed_stage"], "ir_ref")
-            self.assertIn("infrastructure/c@0.0.9", b["rerun_reason"]["detail"])
-            self.assertIn("infrastructure/c@0.1.0", b["rerun_reason"]["detail"])
+            self.assertEqual(b["rerun_reason"]["detail"],
+                             "component/b@0.1.0 compile: derivation_key_mismatch:closure[0].ir")
 
     def test_driver_stops_when_dependency_not_ready_after_run(self) -> None:
         # A dependency that exits 0 without producing readiness evidence

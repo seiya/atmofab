@@ -5451,7 +5451,7 @@ class Conductor:
         `--resume`), NOT a Generate content retry. Mirrors `_write_makefile` (host-authored,
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
         from tools.host_render import (
-            render_runner, assert_harness_pin, RenderError, RunnerRenderUnavailable)
+            render_runner, assert_harness_pin, RunnerRenderUnavailable)
         from tools.orchestration_runtime import (
             DerivationResolver, _certified_ir_dir, _certified_model_source)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}

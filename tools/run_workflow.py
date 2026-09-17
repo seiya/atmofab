@@ -25,8 +25,8 @@ except ImportError:  # pragma: no cover - non-POSIX; the cold-start claim degrad
     fcntl = None  # type: ignore[assignment]
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 # Direct-CLI import bootstrap. When this script is executed as
