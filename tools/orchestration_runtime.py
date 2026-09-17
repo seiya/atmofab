@@ -2551,9 +2551,16 @@ def check_phase_certified(
     node_key: str,
     step: str,
     agent_run_id: str | None = None,
+    record: bool = True,
 ) -> dict[str, Any]:
     """`_phase_certified` plus its DURABLE record: a certified phase is transitioned to
     `skipped_certified` in `phase_state.json` (event `skip_certified`).
+
+    `record=False` (`--no-record`) answers WITHOUT the transition: the conductor asks that way
+    for a phase named in `--rederive`, which runs although certified — recording it skipped
+    would be a false record (`skip_certified` is "a skipped step carrying the adopted artifact",
+    rule 43), and one that outlives the run when the forced attempt stops before
+    `record_launch` (correctness round 1, F2).
 
     That transition is the durable record that the phase was certified rather than run. It is
     what will let the completion vouch accept a node whose earlier attempt in this same
@@ -2568,7 +2575,7 @@ def check_phase_certified(
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step)
     step_token = step.strip().lower()
-    if certified:
+    if certified and record:
         _transition_node_step_phase_state(
             repo_root,
             orchestration_id,
@@ -17864,6 +17871,11 @@ def main(argv: list[str] | None = None) -> int:
     check_phase_certified_parser.add_argument(
         "--step", required=True, choices=list(STEP_KEYS_FOR_NODE_STATE))
     check_phase_certified_parser.add_argument(
+        "--no-record", action="store_true",
+        help=("Answer only: do not record a certified phase as skipped_certified. The "
+              "conductor passes it for a phase named in --rederive, which runs although "
+              "certified."))
+    check_phase_certified_parser.add_argument(
         "--agent-run-id",
         help="Agent run id recorded on the skip_certified phase-state event (the orchestration arid).",
     )
@@ -18218,6 +18230,7 @@ def main(argv: list[str] | None = None) -> int:
             node_key=args.node_key,
             step=args.step,
             agent_run_id=args.agent_run_id,
+            record=not args.no_record,
         )
     elif args.command == "revoke-artifact":
         try:

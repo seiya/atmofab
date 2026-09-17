@@ -8363,11 +8363,17 @@ clean:
         `skipped_certified`; the call is idempotent, so `conduct` and `run_phase` may both
         ask. Always returns the answer dict (never None): `certified` decides the skip, and
         `revoked` / `last_fail_reason` seed a repair when a prior run rejected the artifact.
+
+        A phase named in `--rederive` is asked with `--no-record`: it runs although certified,
+        so it is not skipped and nothing is adopted — a `skipped_certified` written here would
+        be a false record, and one that outlives the run when the forced attempt stops before
+        `record_launch` overwrites it (correctness round 1, F2).
         """
         out = self.runtime([
             "check-phase-certified", *self._oid_args(),
             "--node-key", node_key, "--step", phase,
             "--agent-run-id", self.orchestration_agent_run_id,
+            *(["--no-record"] if phase in self.rederive else []),
         ])
         return out if isinstance(out, dict) else {"certified": False}
 

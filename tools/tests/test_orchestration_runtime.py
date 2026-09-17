@@ -8800,6 +8800,36 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(payload["phase_state"], "skipped_certified")
             self.assertIsNone(payload["reason"])
 
+    def test_no_record_answers_without_writing_skipped_certified(self) -> None:
+        """`--no-record` (correctness round 1, F2): the conductor's ask for a phase named in
+        `--rederive`. The answer is the same — certified, with the selected ids — and the
+        phase state is NOT moved: no `skipped_certified`, no `skip_certified` event, for a
+        phase that is about to run. Through the CLI, since that is the conductor's route."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="build")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main([
+                    "check-phase-certified", "--repo-root", str(repo),
+                    "--orchestration-id", "o1", "--node-key", self._NK, "--step", "build",
+                    "--agent-run-id", "orch_run_001", "--no-record",
+                ])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["certified"])
+            self.assertEqual(payload["binary_id"], refs["binary_id"])
+            self.assertIsNone(payload["phase_state"])
+            log_path = repo / "workspace/orchestrations/o1/phase_state_log.jsonl"
+            events = [json.loads(x) for x in log_path.read_text("utf-8").splitlines()
+                      if x.strip()] if log_path.is_file() else []
+            self.assertEqual([e for e in events if e.get("event") == "skip_certified"], [])
+            # ... and the recording ask afterwards still records (the flag is per call).
+            out = ort.check_phase_certified(
+                repo_root=repo, orchestration_id="o1", node_key=self._NK, step="build")
+            self.assertEqual(out["phase_state"], "skipped_certified")
+
             # The refusal shape the conductor branches on, over the same CLI.
             ort._revoke_stage_meta(repo, repo / refs["source_meta"], reason="r",
                                    trigger_agent_run_id="t1",

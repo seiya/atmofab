@@ -1956,17 +1956,29 @@ class ConductHappyPathTest(unittest.TestCase):
         everything" or as "force nothing" fails here."""
         c = self._conductor()
         c.rederive = frozenset({"compile"})
-        c.check_phase_certified = (  # type: ignore[method-assign]
-            lambda node_key, phase: {"certified": True, "ir_ref": "workspace/ir/x/ir_1",
-                                     "pipeline_ref": "workspace/pipelines/x/p_1",
-                                     "source_id": "src_1"}
-            if phase in ("compile", "generate") else {"certified": False}
-        )
+        asked: list[list[str]] = []
+        real_runtime = c.runtime
+
+        def _runtime(args, **kw):  # type: ignore[no-untyped-def]
+            if args and args[0] == "check-phase-certified":
+                asked.append(list(args))
+                phase = args[args.index("--step") + 1]
+                if phase in ("compile", "generate"):
+                    return {"certified": True, "ir_ref": "workspace/ir/x/ir_1",
+                            "pipeline_ref": "workspace/pipelines/x/p_1", "source_id": "src_1"}
+                return {"certified": False}
+            return real_runtime(args, **kw)
+
+        c.runtime = _runtime  # type: ignore[method-assign]
         c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
         buf = io.StringIO()
         with redirect_stdout(buf):
             status = c.conduct(self._refs(), "generate")
         self.assertEqual(status, "pass")
+        # The forced phase is asked with `--no-record` (it runs; recording it skipped would be
+        # a false record — correctness round 1, F2); every other phase is asked recording.
+        by_phase = {a[a.index("--step") + 1]: ("--no-record" in a) for a in asked}
+        self.assertEqual(by_phase, {"compile": True, "generate": False})
         events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
         forced = [e for e in events if e["event"] == "phase_rederive_forced"]
         self.assertEqual([(e["phase"], e["certified_by"]) for e in forced],
