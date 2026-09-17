@@ -3506,28 +3506,18 @@ class Conductor:
         if entry.provider == "claude_cli" and self._claude_session_resumable(target):
             return target
         if entry.provider == "codex_cli":
-            from tools.orchestration_runtime import (
-                _prepare_codex_workflow_home,
-                _read_session_run_index_consistent,
-            )
-            # Ensure the isolated home exists before accepting a recorded Codex
-            # thread. If the home vanished, this rotates its generation; every
-            # prior thread is then deliberately cold-fallback only. Since issue #64
-            # the home is durable (`~/.atmofab/homes/<oid>/codex`), so "vanished"
-            # means an operator pruned it or lost the filesystem, not a /tmp sweep —
-            # and the rotated home lands at the SAME path, which is exactly why the
-            # generation is an integer and not a location.
-            try:
-                isolation = _prepare_codex_workflow_home(self.repo_root, self.orchestration_id)
-            except (OSError, ValueError):
-                # Launch-time isolation validation remains authoritative.  At
-                # resume selection, an unavailable home simply means this reuse
-                # cannot be warm-resumed; preserve the established cold fallback.
-                isolation = None
-            if isolation is None:
-                self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
-                return None
-            generation = int(isolation["generation"])
+            from tools.orchestration_runtime import _read_session_run_index_consistent
+            # A recorded Codex thread is resumable only from the LINEAGE home it was
+            # created in (`<container>/<codex_lineage_id>/`, issue #245), so the row must
+            # carry the lineage and the directory must still be there. Nothing is
+            # prepared or created at resume selection: this is an unlocked existence
+            # read, and `record_launch` re-asks the same question under the metadata lock
+            # before any durable LAUNCH mutation (`codex_lineage_home_missing`; the
+            # container and its metadata entry are re-established on every preparation,
+            # a warm one included). Since issue #64
+            # the tree is durable (`~/.atmofab/homes/<oid>/codex/`), so "gone" means an
+            # operator pruned it or lost the filesystem, not a /tmp sweep. A row from a run
+            # recorded before lineage homes has no `codex_lineage_id` and is cold-only.
             index = _read_session_run_index_consistent(
                 self.repo_root, self.orchestration_id
             )
@@ -3535,12 +3525,35 @@ class Conductor:
                 if not isinstance(row, dict) or row.get("agent_run_id") != target:
                     continue
                 session = row.get("agent_session_id")
-                entry_generation = row.get("codex_home_generation")
+                lineage = row.get("codex_lineage_id")
                 if (isinstance(session, str) and session.strip() and session.strip() != target
-                        and entry_generation == generation):
+                        and isinstance(lineage, str) and lineage.strip()
+                        and self._codex_lineage_home_exists(lineage.strip())):
                     return session.strip()
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
+
+    def _codex_lineage_home_exists(self, lineage_id: str) -> bool:
+        """Whether `<orchestration_meta.json#codex_workflow_home>/<lineage_id>` is on disk.
+
+        Deliberately existence-only and deliberately unlocked, in the same spirit as
+        `_orchestration_meta_path_exists`: this decides whether a warm turn is worth
+        BUILDING, and the answer that counts is `record_launch`'s, taken under the
+        metadata lock before any durable launch mutation. A lineage id that is not a plain path
+        token answers False rather than being joined onto a path.
+        """
+        from tools.orchestration_runtime import _is_safe_path_id, _read_json
+        if not _is_safe_path_id(lineage_id):
+            return False
+        meta = _read_json(self.repo_root / "workspace" / "orchestrations"
+                          / self.orchestration_id / "orchestration_meta.json")
+        container = meta.get("codex_workflow_home") if isinstance(meta, dict) else None
+        if not isinstance(container, str) or not container.strip():
+            return False
+        try:
+            return (Path(container) / lineage_id).is_dir()
+        except (OSError, ValueError):
+            return False
 
     def _claude_session_resumable(self, session_id: str) -> bool:
         """True if a claude session transcript for `session_id` still exists under
@@ -3612,15 +3625,17 @@ class Conductor:
                     return value.strip()
         return None
 
-    def _codex_session_home_generation(self, session_id: str | None,
-                                       entry: ResolvedLeafEntry | None = None) -> int | None:
-        """Return the isolated-home generation that owns a Codex thread.
+    def _codex_lineage_for_session(self, session_id: str | None,
+                                   entry: ResolvedLeafEntry | None = None) -> str | None:
+        """Return the lineage id whose isolated home owns a Codex thread, or None.
 
-        A thread is resumable only inside the CODEX_HOME generation in which it
-        was created.  This value is carried to record-launch as a transaction
-        precondition; a rotation there turns the pending launch cold before any
-        child bookkeeping is created.  The generation is compared, never the path:
-        since issue #64 a rotated home is re-created at the same location.
+        A thread is resumable only inside the lineage home it was created in
+        (`<container>/<codex_lineage_id>/`, issue #245). The value is read off the
+        session-index row that recorded the thread and carried to record-launch as a
+        transaction precondition; a missing home there turns the pending launch cold
+        before any child bookkeeping is created. None means the row does not say — a
+        thread recorded before lineage homes existed — and the caller treats that as
+        not resumable rather than launching a warm turn with no precondition at all.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if (entry.provider != "codex_cli" or not isinstance(session_id, str)
@@ -3635,9 +3650,9 @@ class Conductor:
                 continue
             if row.get("agent_session_id") != session_id.strip():
                 continue
-            generation = row.get("codex_home_generation")
-            if isinstance(generation, int) and generation > 0:
-                return generation
+            lineage = row.get("codex_lineage_id")
+            if isinstance(lineage, str) and lineage.strip():
+                return lineage.strip()
         return None
 
     def _codex_pinned_model(self, entry: ResolvedLeafEntry | None = None) -> str:
@@ -4884,7 +4899,7 @@ class Conductor:
 
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
-                      expected_codex_home_generation: int | None = None) -> dict[str, Any]:
+                      codex_lineage_id: str | None = None) -> dict[str, Any]:
         response = {
             "agent_run_id": child_arid,
             "agent_session_id": child_arid,
@@ -4922,8 +4937,8 @@ class Conductor:
             # second thing to keep true.
             "--child-env-from-stdin",
         ]
-        if expected_codex_home_generation is not None:
-            argv += ["--expected-codex-home-generation", str(expected_codex_home_generation)]
+        if codex_lineage_id is not None:
+            argv += ["--codex-lineage-id", codex_lineage_id]
         return self.runtime(argv, input=json.dumps(
             self._child_env(child_arid, entry), ensure_ascii=False))
 
@@ -7019,21 +7034,31 @@ clean:
         (`_run_pure_producer_substep` / `_run_pure_reviewer_substep`) and the escalate
         diagnostician call it.
 
-        Returns None when a warm resume's codex home generation has rotated: the launch
-        was recorded against a session the transport can no longer resume, and the caller
-        retries the turn cold.
+        Returns None when a warm codex resume has no lineage home to run in: the row that
+        recorded the thread names no lineage (a run from before issue #245), or the
+        lineage home it names is gone by the time `record_launch` looks, under the lock.
+        Either way nothing was launched, and the caller retries the turn cold.
         """
         from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
-        expected_generation = (
-            self._codex_session_home_generation(resume_session_id, entry) if warm else None)
-        rec = (self.record_launch(
-            child_arid, request, entry,
-            expected_codex_home_generation=expected_generation)
-               if expected_generation is not None
+        codex_lineage_id: str | None = None
+        if warm and entry.provider == "codex_cli":
+            codex_lineage_id = self._codex_lineage_for_session(resume_session_id, entry)
+            if codex_lineage_id is None:
+                # NOT a warm launch with no precondition: `codex exec resume` against a
+                # home that does not hold the thread fails before its first request
+                # (measured, codex-cli 0.154.0: `no rollout found for thread id`), which
+                # would be a transport death on a turn the loop can still run cold.
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "",
+                          reason="codex_lineage_home_missing")
+                return None
+        rec = (self.record_launch(child_arid, request, entry,
+                                  codex_lineage_id=codex_lineage_id)
+               if codex_lineage_id is not None
                else self.record_launch(child_arid, request, entry))
-        if rec.get("codex_home_generation_mismatch"):
+        if rec.get("codex_lineage_home_missing"):
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                      target=resume_session_id or "", reason="codex_home_generation_rotated")
+                      target=resume_session_id or "", reason="codex_lineage_home_missing")
             return None
         # Called for the per-attempt launch-instant probe it writes beside the child's
         # bookkeeping (an operator's record of when this attempt started). Its RETURN is
@@ -7268,7 +7293,7 @@ clean:
                 # for it — its location is named by the target's OWN launch record, because
                 # `_ensure_fresh_producer_id` has already rotated `refs` to a fresh empty
                 # directory. Resolved for BOTH branches below: a warm turn does not send it, but
-                # the codex home-rotation fallback (`turn is None`) turns a warm seed cold.
+                # the codex lineage-home-missing fallback (`turn is None`) turns a warm seed cold.
                 from tools.orchestration_runtime import _read_launch_request_payload
                 record = _read_launch_request_payload(
                     self.repo_root, self.orchestration_id, agent_run_id=target_arid)
@@ -8044,7 +8069,9 @@ clean:
 
         PERSONA SEPARATION (operator hard rule): the reviewer always spawns a FRESH `--session-id`
         and the only session ever warm-resumed is the reviewer's OWN prior attempt (assigned
-        `resume_session_id = child_arid` inside this loop). It never seeds from an external arid —
+        `resume_session_id = self._session_id_for_child(child_arid, entry)` inside this loop —
+        the child's arid on claude, the thread id its row recorded on codex, whose lineage
+        home is then the reviewer's own). It never seeds from an external arid —
         in particular never from the producer session — so a resumed turn is structurally
         guaranteed to be a verify session, and the generate↔verify context is never shared. (On a
         cross-phase reopen the reviewer is dispatched with repair=None anyway — run_phase hands the

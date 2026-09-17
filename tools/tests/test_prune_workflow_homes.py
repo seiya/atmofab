@@ -583,6 +583,31 @@ class PruneWorkflowHomesTests(unittest.TestCase):
                                             homes_root=self.homes)
                 self.assertIn(expected, rendered)
 
+    def test_a_codex_container_with_lineage_homes_is_one_codex_entry(self) -> None:
+        """The lineage level (issue #245) is below what this tool reads, by design.
+
+        `codex/<codex_lineage_id>/` holds a thread's `CODEX_HOME`; the tool judges an entry
+        by the names directly under `<oid>/`, so the lineage directories neither make the
+        entry `not_a_backend_home` nor appear as backends. Their bytes are in the size, and
+        `--delete` removes the whole tree — a prune is per orchestration, never per thread.
+        """
+        import uuid
+        entry = self._entry("orch_l", status="pass", backends=("codex",))
+        lineage = entry / "codex" / str(uuid.uuid4())
+        (lineage / "sessions" / "2026" / "09" / "17").mkdir(parents=True)
+        rollout = lineage / "sessions" / "2026" / "09" / "17" / "rollout-x.jsonl"
+        rollout.write_text("{}\n" * 64, encoding="utf-8")
+        (lineage / "state_5.sqlite-wal").write_bytes(b"\0" * 256)
+        reports, _ = self._prune(orchestration_ids=["orch_l"])
+        self.assertEqual(reports[0]["backends"], ["codex"])
+        self.assertEqual(reports[0]["verdict"], pwh.VERDICT_DELETABLE)
+        self.assertGreaterEqual(reports[0]["size_bytes"],
+                                rollout.stat().st_size + 256)
+        reports, code = self._prune(orchestration_ids=["orch_l"], delete=True)
+        self.assertTrue(reports[0]["deleted"])
+        self.assertEqual(code, 0)
+        self.assertFalse(entry.exists())
+
     def test_the_preview_names_exactly_what_the_same_flags_would_delete(self) -> None:
         """The report and the delete must read one rule, not two spellings of it.
 

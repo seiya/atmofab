@@ -480,7 +480,8 @@ PINNED: dict[str, str] = {
     # a runner ignores is a `fail` here, as it was before issue #175.
     "pure-39": "6a73aa8bc9f2bc56c18d08d4160e335cecc38f2401e696cb11f343256cdb2a26",
     # issue #209: `pure_bundle_repair.txt` line 0 said "Your prior reply in this resumed session",
-    # which was false on every COLD repair turn — the codex home-rotation fallback and the
+    # which was false on every COLD repair turn — the codex lineage-home-missing fallback (a
+    # home-rotation fallback until issue #245) and the
     # usage-wait retry already reached it, and issue #209 makes it the FIRST turn of an outer
     # `reuse` reopen on a provider without warm resume. The line now names the repair without
     # claiming a resumed session, and holds for warm, cold-with-prior-document and

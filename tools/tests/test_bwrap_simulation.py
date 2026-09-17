@@ -14,6 +14,7 @@ audit — so what is left is the one profile production builds.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,11 +25,13 @@ import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
     build_readonly_bwrap_profile,
+    codex_isolation_profile_kwargs,
     render_bwrap_command,
 )
 from tools.tests.llm_samples import sample_config_with
@@ -715,6 +718,205 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertIn("--skip-git-repo-check was not specified", res.stderr, res.stdout)
         self.assertNotIn("thread.started", res.stdout)
         self.assertEqual(server.hits, ["POST /v1/responses"], "the control must add no hit")
+
+    # ---- issue #245: one codex lineage's rollout is unreachable from another lineage ----
+
+    _LOOPBACK_OVERRIDES = ("--config", 'model_provider="loopback"',
+                           "--config", 'model_providers.loopback.name="loopback"',
+                           "--config", 'model_providers.loopback.wire_api="responses"')
+
+    def _codex_lineage_fixture(self) -> tuple[Path, str, wc.Conductor, _Loopback400]:
+        """A repo whose codex launches go through the REAL preparer, plus a loopback server.
+
+        The homes root is the suite's redirected `ATMOFAB_WORKFLOW_HOMES_ROOT` and the
+        operator credential is this test's own (`seed_codex_auth`), so the container this
+        row walks is the one production would build — not a hand-made home, which is what
+        `_pure_launch_under_profile` uses and which cannot tell a shared home from a
+        per-lineage one.
+        """
+        if shutil.which("codex") is None:
+            self.skipTest("backend CLI not installed on this host")
+        from tools.tests.private_root_fixture import seed_codex_auth
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name).resolve() / "repo"
+        repo.mkdir()
+        orch = "orch_codex_lineage"
+        _ensure_orchestration_audit_dirs(repo, orch)
+        (repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json").write_text(
+            "{}", encoding="utf-8")
+        credential = seed_codex_auth(Path(tmp.name).resolve() / "operator-codex")
+        env_patch = mock.patch.dict(os.environ, {"CODEX_HOME": str(credential)}, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        conductor = wc.Conductor(
+            repo_root=repo, orchestration_id=orch, orchestration_agent_run_id="ORCH",
+            llm_config=sample_config_with("codex", agent_model="gpt-5.6-sol"), env={})
+        server = _Loopback400()
+        self.addCleanup(server.close)
+        return repo, orch, conductor, server
+
+    def _run_codex_in_lineage(self, repo: Path, orch: str, conductor: wc.Conductor,
+                              server: _Loopback400, *, arid: str, isolation: dict,
+                              prompt: str, resume_session_id: str | None = None,
+                              ) -> subprocess.CompletedProcess:
+        """Exec the real CLI with the production argv under the profile a prepared home
+        implies (`codex_isolation_profile_kwargs`, the same spelling `record_launch` uses)."""
+        argv = conductor.leaf_command(session_id=arid, resume_session_id=resume_session_id)
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        overrides = [*self._LOOPBACK_OVERRIDES,
+                     "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"']
+        profile = build_readonly_bwrap_profile(
+            repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+            backend_command="codex", backend_type="codex",
+            **codex_isolation_profile_kwargs(isolation))
+        command = render_bwrap_command(
+            profile=profile, command_argv=[*argv[:-2], *overrides, *argv[-2:]])
+        # The API answers 400, so the turn fails and the CLI exits 1 — the rollout is
+        # written at thread start, before the request (measured on codex-cli 0.154.0).
+        return subprocess.run(command, input=prompt, capture_output=True, text=True,
+                              timeout=180, check=False)
+
+    def test_a_second_codex_leaf_cannot_read_the_first_leafs_rollout_anywhere_under_its_home(
+            self) -> None:
+        """UNBILLED, under real bwrap with the real CLI: the issue #227 finding, closed.
+
+        Leaf A launches through the REAL preparer with a marker in its prompt. Then, on the
+        HOST, the whole container `<homes-root>/<oid>/codex/` is walked: every file the CLI
+        wrote, and every file holding the marker, lies under A's own lineage home. Enumerated
+        by walking, not by name, so a CLI version that adds a fourth rollout location fails
+        this row instead of slipping past it — the marker was measured in THREE files
+        (`sessions/…/rollout-*.jsonl`, `state_*.sqlite-wal`, `thread_history_*.sqlite-wal`),
+        which is why a fix that moved `sessions/` alone would stay red here.
+
+        Then leaf B, a different lineage of the SAME orchestration, runs a probe under the
+        profile production renders for it: a recursive search of its own `$CODEX_HOME` for
+        the marker finds nothing, the container is not listable, and A's rollout file — at
+        its exact host path — is ENOENT. The sibling is not hidden; it is not mounted.
+        """
+        from tools.orchestration_runtime import (
+            _prepare_codex_workflow_home,
+            codex_isolation_profile_kwargs,
+        )
+        repo, orch, conductor, server = self._codex_lineage_fixture()
+        arid_a, arid_b = str(uuid.uuid4()), str(uuid.uuid4())
+        marker = "ATMOFAB_LINEAGE_MARKER_" + uuid.uuid4().hex
+        iso_a = _prepare_codex_workflow_home(repo, orch, arid_a, resume=False)
+        home_a = Path(iso_a["home"])
+        container = home_a.parent
+        self.assertEqual(home_a, container / arid_a)
+        before = {p for p in container.rglob("*")}
+        res = self._run_codex_in_lineage(repo, orch, conductor, server, arid=arid_a,
+                                         isolation=iso_a, prompt=f"Reply with {marker}.")
+        self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
+        self.assertIn("POST /v1/responses", server.hits, res.stdout + res.stderr)
+        written = sorted(p for p in container.rglob("*") if p not in before)
+        holders = sorted(p for p in written
+                         if p.is_file() and marker.encode() in p.read_bytes())
+        self.assertTrue(written, "the CLI wrote nothing under the container")
+        self.assertGreaterEqual(len(holders), 3, holders)
+        for path in written:
+            self.assertTrue(path.is_relative_to(home_a), f"written outside A's lineage: {path}")
+        # The container holds lineage directories and nothing else.
+        self.assertEqual(sorted(p.name for p in container.iterdir()), [arid_a])
+
+        iso_b = _prepare_codex_workflow_home(repo, orch, arid_b, resume=False)
+        home_b = Path(iso_b["home"])
+        self.assertEqual(home_b, container / arid_b)
+        rollout_a = next(p for p in holders if p.suffix == ".jsonl")
+        probe = textwrap.dedent(f"""
+            import os
+            from pathlib import Path
+            home = Path(os.environ["CODEX_HOME"])
+            print("HOME_IS_OWN:" + str(home == Path({str(home_b)!r})), flush=True)
+            hits = [str(p) for p in home.rglob("*")
+                    if p.is_file() and {marker!r}.encode() in p.read_bytes()]
+            print("MARKER_HITS:" + str(len(hits)), flush=True)
+            try:
+                names = sorted(p.name for p in Path({str(container)!r}).iterdir())
+                print("CONTAINER:LISTED:" + ",".join(names), flush=True)
+            except OSError as e:
+                print("CONTAINER:" + type(e).__name__, flush=True)
+            try:
+                Path({str(rollout_a)!r}).read_bytes()
+                print("ROLLOUT_A:READABLE", flush=True)
+            except OSError as e:
+                print("ROLLOUT_A:" + type(e).__name__, flush=True)
+            try:
+                Path({str(home_a)!r}).iterdir().__next__()
+                print("HOME_A:LISTED", flush=True)
+            except StopIteration:
+                print("HOME_A:EMPTY", flush=True)
+            except OSError as e:
+                print("HOME_A:" + type(e).__name__, flush=True)
+        """)
+        profile_b = build_readonly_bwrap_profile(
+            repo_root=repo, orchestration_id=orch, agent_run_id=arid_b,
+            backend_command="codex", backend_type="codex",
+            **codex_isolation_profile_kwargs(iso_b))
+        out = _bwrap_stdout(render_bwrap_command(profile=profile_b,
+                                                 command_argv=["python3", "-c", probe]))
+        self.assertIn("HOME_IS_OWN:True", out, out)
+        self.assertIn("MARKER_HITS:0", out, out)
+        # bwrap creates the mountpoint's parents on its tmpfs, so the container path
+        # exists inside the sandbox as scaffolding: what it must NOT do is list A.
+        self.assertNotIn(arid_a, out.split("CONTAINER:")[1].splitlines()[0], out)
+        self.assertIn("ROLLOUT_A:FileNotFoundError", out, out)
+        self.assertNotIn("HOME_A:LISTED", out, out)
+        # CONTROL for the probe itself: the same probe under A's OWN profile sees the marker,
+        # so a probe that could not read anything would not pass the row above.
+        profile_a = build_readonly_bwrap_profile(
+            repo_root=repo, orchestration_id=orch, agent_run_id=arid_a,
+            backend_command="codex", backend_type="codex",
+            **codex_isolation_profile_kwargs(iso_a))
+        out = _bwrap_stdout(render_bwrap_command(
+            profile=profile_a, command_argv=["python3", "-c", probe.replace(
+                "MARKER_HITS:", "OWN_MARKER_HITS:")]))
+        self.assertIn(f"OWN_MARKER_HITS:{len(holders)}", out, out)
+
+    def test_a_warm_exec_resume_reaches_the_api_from_its_own_lineage_home(self) -> None:
+        """UNBILLED: `codex exec resume <thread>` works from the lineage home and only there.
+
+        Measured before this row was written (codex-cli 0.154.0): a resume from the home
+        holding the thread reaches `POST /v1/responses`; from a home that does not, the CLI
+        fails BEFORE any request with `no rollout found for thread id` (rc 1). That second
+        half is why a missing lineage home must turn the turn cold at `record_launch`
+        (`codex_lineage_home_missing`) rather than be created: a created-empty home would
+        move the same failure past the point where the conductor can still rebuild the
+        turn — and it is why the second attempt of one thread is prepared `resume=True`
+        against the FIRST attempt's lineage, which is what this row drives.
+        """
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+        repo, orch, conductor, server = self._codex_lineage_fixture()
+        arid_a, arid_a2, arid_b = (str(uuid.uuid4()) for _ in range(3))
+        iso_a = _prepare_codex_workflow_home(repo, orch, arid_a, resume=False)
+        res = self._run_codex_in_lineage(repo, orch, conductor, server, arid=arid_a,
+                                         isolation=iso_a, prompt="Reply with one word.")
+        self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
+        thread = json.loads(res.stdout.splitlines()[0])["thread_id"]
+        posts_before = server.hits.count("POST /v1/responses")
+        # Attempt 2 of the same thread: a NEW arid, prepared against A's lineage.
+        iso_a2 = _prepare_codex_workflow_home(repo, orch, arid_a, resume=True)
+        self.assertEqual(iso_a2["home"], iso_a["home"])
+        res = self._run_codex_in_lineage(repo, orch, conductor, server, arid=arid_a2,
+                                         isolation=iso_a2, prompt="Continue.",
+                                         resume_session_id=thread)
+        self.assertIn(f'"thread_id":"{thread}"', res.stdout, res.stdout + res.stderr)
+        self.assertEqual(server.hits.count("POST /v1/responses"), posts_before + 1,
+                         res.stdout + res.stderr)
+        # CONTROL: the same resume from a DIFFERENT lineage's home never reaches the API.
+        iso_b = _prepare_codex_workflow_home(repo, orch, arid_b, resume=False)
+        res = self._run_codex_in_lineage(repo, orch, conductor, server, arid=arid_b,
+                                         isolation=iso_b, prompt="Continue.",
+                                         resume_session_id=thread)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("no rollout found for thread id", res.stderr, res.stdout + res.stderr)
+        self.assertNotIn("thread.started", res.stdout)
+        self.assertEqual(server.hits.count("POST /v1/responses"), posts_before + 1,
+                         "the control must add no request")
+        # And a warm preparation for a lineage nobody started answers the sentinel.
+        self.assertIsNone(_prepare_codex_workflow_home(repo, orch, str(uuid.uuid4()),
+                                                       resume=True))
 
     def test_claude_pure_launch_reaches_the_api_from_the_empty_cwd(self) -> None:
         """UNBILLED: the claude pure leaf takes the same profile (one profile for both

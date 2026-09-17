@@ -3,10 +3,14 @@
 
 Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
-`~/.atmofab/homes` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`). They hold the
-ONLY record of what a leaf actually did — the claude transcript, the codex rollout —
-so **nothing deletes them automatically and nothing ever will**. Retention is
-indefinite, and this tool is the one way a home is removed.
+`~/.atmofab/homes` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`). The `codex`
+entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
+lineage directory beneath it, `codex/<codex_lineage_id>/`, and this tool neither reads
+nor names that level — it judges the entry by its `<orchestration_id>/` children and
+walks the whole tree for the size. They hold the ONLY record of what a leaf actually
+did — the claude transcript, the codex rollout — so **nothing deletes them
+automatically and nothing ever will**. Retention is indefinite, and this tool is the
+one way a home is removed.
 
 The reason is that an automatic rule has to choose between deleting evidence of a run
 someone may still audit and keeping everything, and the second is the only one that

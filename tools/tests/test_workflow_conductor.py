@@ -330,32 +330,143 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
         self.assertIn("resume_session_unavailable", emitted)
 
-    def test_codex_reuse_falls_back_cold_after_home_generation_rotates(self) -> None:
-        """Threads from a tmpfiles-deleted CODEX_HOME are never resumed."""
-        from unittest.mock import patch
+    def _codex_reuse_conductor(self, repo_root: Path) -> tuple[_FakeConductor, list[str]]:
+        c = _FakeConductor(
+            repo_root=repo_root, orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={},
+        )
+        c.calls = []
+        emitted: list[str] = []
+        c.emit = lambda event, **kw: emitted.append(event)  # type: ignore[assignment]
+        meta_dir = repo_root / "workspace" / "orchestrations" / "orch_x"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        container = repo_root / "homes" / "orch_x" / "codex"
+        container.mkdir(parents=True)
+        (meta_dir / "orchestration_meta.json").write_text(
+            json.dumps({"codex_workflow_home": str(container)}), encoding="utf-8")
+        return c, emitted
+
+    def test_codex_reuse_resumes_only_while_the_rows_lineage_home_is_on_disk(self) -> None:
+        """A recorded thread is resumable iff its row's lineage home still exists (issue #245).
+
+        Three rows, one thread each: the lineage home is there -> the thread id; the
+        lineage home was pruned -> cold, with the reason event; the row carries no
+        `codex_lineage_id` at all (a run recorded before lineage homes) -> cold too, rather
+        than a warm launch with no precondition. Nothing is created by the resolver: the
+        container's listing is the same before and after.
+        """
         from tools.orchestration_runtime import _append_session_run_index_entry
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            c = _FakeConductor(
-                repo_root=repo_root, orchestration_id="orch_x",
-                orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={},
-            )
-            c.calls = []
-            emitted: list[str] = []
-            c.emit = lambda event, **kw: emitted.append(event)  # type: ignore[assignment]
-            _append_session_run_index_entry(
-                repo_root, "orch_x", agent_run_id="child-1", agent_session_id="thread-old",
-                context_id="child-1", agent_role="substep", status="pass",
-                codex_home_generation=1,
-            )
-            with patch(
-                "tools.orchestration_runtime._prepare_codex_workflow_home",
-                return_value={"generation": "2"},
-            ):
-                repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
-                self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
-            self.assertIn("resume_session_unavailable", emitted)
+            c, emitted = self._codex_reuse_conductor(repo_root)
+            container = repo_root / "homes" / "orch_x" / "codex"
+            (container / "lineage-live").mkdir()
+            for arid, lineage in (("child-live", "lineage-live"),
+                                  ("child-pruned", "lineage-pruned"),
+                                  ("child-legacy", None)):
+                _append_session_run_index_entry(
+                    repo_root, "orch_x", agent_run_id=arid, agent_session_id=f"thread-{arid}",
+                    context_id=arid, agent_role="substep", status="pass",
+                    codex_lineage_id=lineage,
+                )
+            before = sorted(p.name for p in container.iterdir())
+            repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-live"}
+            self.assertEqual(c._resolve_reuse_resume(repair, "generate", "generate"),
+                             "thread-child-live")
+            self.assertEqual(emitted, [])
+            for target in ("child-pruned", "child-legacy"):
+                with self.subTest(target=target):
+                    # Cleared per subtest: the previous subtest's event would otherwise
+                    # satisfy this one (round 1 found a no-event early return surviving).
+                    emitted.clear()
+                    repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": target}
+                    self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
+                    self.assertEqual(emitted, ["resume_session_unavailable"])
+            self.assertEqual(sorted(p.name for p in container.iterdir()), before)
+            # The per-session reader `_spawn_pure_turn` uses answers the same rows.
+            self.assertEqual(c._codex_lineage_for_session("thread-child-live"), "lineage-live")
+            self.assertEqual(c._codex_lineage_for_session("thread-child-pruned"),
+                             "lineage-pruned")
+            self.assertIsNone(c._codex_lineage_for_session("thread-child-legacy"))
+            # A lineage id that is not a path token is never joined onto the container.
+            self.assertFalse(c._codex_lineage_home_exists("../lineage-live"))
+
+    def test_record_launch_passes_the_lineage_to_the_runtime_argv(self) -> None:
+        """The conductor->runtime handoff of the lineage, which no test observed (round 1).
+
+        Dropping the `--codex-lineage-id` append left every file green, and the
+        consequence is a warm codex turn recorded COLD: `record_launch` then creates a
+        fresh empty lineage, and `codex exec resume` against it dies before its first
+        request. Pinned on the argv the real `Conductor.record_launch` builds, captured at
+        the fake runtime boundary, in both directions.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c, _ = self._codex_reuse_conductor(repo_root)
+            seen: list[list[str]] = []
+            c.runtime = lambda args, *, input=None: (  # type: ignore[assignment]
+                seen.append(list(args)) or {"launch_prompt_text": "PROMPT"})
+            entry = c.entry_for("generate", "generate")
+            c.record_launch("c1", {"agent_role": "substep"}, entry,
+                            codex_lineage_id="lineage-1")
+            self.assertEqual(seen[-1][0], "record-launch")
+            self.assertIn("--codex-lineage-id", seen[-1])
+            self.assertEqual(seen[-1][seen[-1].index("--codex-lineage-id") + 1], "lineage-1")
+            c.record_launch("c2", {"agent_role": "substep"}, entry)
+            self.assertNotIn("--codex-lineage-id", seen[-1])
+
+    def test_a_warm_codex_turn_whose_row_names_no_lineage_is_not_launched(self) -> None:
+        """`_spawn_pure_turn`'s own gate, before `record_launch` (issue #245).
+
+        A warm codex turn is recorded with the lineage its thread's row names. When the
+        row names none — a thread recorded before lineage homes — the turn is NOT launched
+        with no precondition (a `codex exec resume` against a home without the thread's
+        rollout fails before its first request, measured): the loop is told
+        `resume_session_unavailable reason=codex_lineage_home_missing` and gets None, and
+        `record_launch` is never reached. With a lineage on the row, `record_launch` is
+        given it, and the sentinel it may answer produces the same event and None.
+        """
+        from tools.orchestration_runtime import _append_session_run_index_entry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c, _ = self._codex_reuse_conductor(repo_root)
+            events: list[tuple[str, dict]] = []
+            c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
+            for arid, lineage in (("child-old", None), ("child-new", "lineage-new")):
+                _append_session_run_index_entry(
+                    repo_root, "orch_x", agent_run_id=arid, agent_session_id=f"thread-{arid}",
+                    context_id=arid, agent_role="substep", status="pass",
+                    codex_lineage_id=lineage)
+            recorded: list[dict] = []
+
+            def fake_record_launch(child_arid, request, entry=None, *, codex_lineage_id=None):
+                recorded.append({"child": child_arid, "lineage": codex_lineage_id})
+                return {"codex_lineage_home_missing": True, "codex_lineage_id": codex_lineage_id}
+
+            c.record_launch = fake_record_launch  # type: ignore[assignment]
+            entry = c.entry_for("generate", "generate")
+            turn = c._spawn_pure_turn({}, entry, child_arid="c1", phase="generate",
+                                      substep="generate", node_key="n",
+                                      resume_session_id="thread-child-old", warm=True)
+            self.assertIsNone(turn)
+            self.assertEqual(recorded, [], "a warm turn with no lineage must not be recorded")
+            self.assertEqual(events[-1][0], "resume_session_unavailable")
+            self.assertEqual(events[-1][1].get("reason"), "codex_lineage_home_missing")
+            self.assertEqual(events[-1][1].get("target"), "thread-child-old")
+            turn = c._spawn_pure_turn({}, entry, child_arid="c2", phase="generate",
+                                      substep="generate", node_key="n",
+                                      resume_session_id="thread-child-new", warm=True)
+            self.assertIsNone(turn)
+            self.assertEqual(recorded, [{"child": "c2", "lineage": "lineage-new"}])
+            self.assertEqual(events[-1][1].get("reason"), "codex_lineage_home_missing")
+            # A COLD turn passes no lineage: its lineage is its own arid, minted inside
+            # `record_launch`.
+            recorded.clear()
+            c._spawn_pure_turn({}, entry, child_arid="c3", phase="generate",
+                               substep="generate", node_key="n")
+            self.assertEqual(recorded, [{"child": "c3", "lineage": None}])
 
     def test_a_leaf_session_is_looked_for_in_the_operators_home(self) -> None:
         """Warm resume must follow the transcript, and there is ONE place it can be.
@@ -869,8 +980,8 @@ class _FakeConductor(wc.Conductor):
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
             # The resolver already answers "resumable or None" — it consults the provider's
             # `warm_resume` capability and the transcript itself — so its answer is taken as
-            # given here rather than re-checked. The real loop asks `_pure_session_resumable`
-            # a second time for the codex home-generation case, which no fake reaches.
+            # given here rather than re-checked. The real loop asks a second time, under
+            # the lock, for the codex lineage-home case, which no fake reaches.
             resume_session_id = self._resolve_reuse_resume(repair, phase, substep)
         retries = 0
         usage_waits = 0
