@@ -340,7 +340,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertEqual(int(m.group(1)), len(b"rendered prompt"))
         # the input is not mutated, and a request without the two fields passes through
         self.assertEqual(raw["pure_context"]["a_document"], "alpha ü\n")
-        self.assertNotEqual(len("alpha ü\n"), len("alpha ü\n".encode("utf-8")))
+        self.assertNotEqual(len("alpha ü\n"), len("alpha ü\n".encode()))
         self.assertEqual(mod.redact({"step": "build"}), {"step": "build"})
         # with a source file, the whole recorded request's provenance is stamped
         with tempfile.TemporaryDirectory() as td:
