@@ -114,10 +114,15 @@ The whole JSONL event stream of each Codex leaf is kept at
 `agent_message`, so the `.jsonl` file is the sole record of what the leaf actually did and is
 where a failed Codex leaf is diagnosed.
 
-For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
-The original home contributes only `auth.json`, as a read-only bwrap bind. Its `config.toml` marks
-the repository project `untrusted`, so the project hook layer is not loaded. The same isolated home
-is reused by `codex exec resume` for the orchestration's thread state.
+For every Codex THREAD, the host creates an isolated `CODEX_HOME` outside the repository:
+`~/.atmofab/homes/<orchestration_id>/codex/<codex_lineage_id>/`, one per lineage (the cold launch
+that started the thread plus every warm resume of it) since [issue #245](https://github.com/seiya/atmofab/issues/245);
+the orchestration's `codex/` directory above it is a container that is bound into no leaf. The
+original home contributes only `auth.json`, as a read-only bwrap bind. Each lineage home's
+`config.toml` marks the repository project `untrusted`, so the project hook layer is not loaded.
+The same lineage home is reused by `codex exec resume` for that thread's state, and a sibling
+lineage's home is not mounted at all — which is what keeps one leaf's rollout out of another
+leaf's reach (`docs/ORCHESTRATION.md` §"The read boundary, closed for both backends").
 
 It carried one more thing until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)): a
 SHA-256-verified copy of `leaf_config/codex/hooks.json`, the leaf hook source, launched with

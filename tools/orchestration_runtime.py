@@ -4724,10 +4724,10 @@ def _write_json_transaction(
             )
         response["agent_session_id"] = thread_id
         response["session_id"] = thread_id
-        raw_generation = response.get("codex_home_generation")
-        generation = (
-            raw_generation
-            if isinstance(raw_generation, int) and raw_generation > 0
+        raw_lineage = response.get("codex_lineage_id")
+        lineage = (
+            raw_lineage.strip()
+            if isinstance(raw_lineage, str) and raw_lineage.strip()
             else None
         )
         transaction_updates = {
@@ -4742,7 +4742,7 @@ def _write_json_transaction(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_home_generation=generation,
+            codex_lineage_id=lineage,
         )
         transaction_updates[expected_targets[2]] = session_index
         targets = list(expected_targets)
@@ -5473,7 +5473,7 @@ def _append_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_home_generation: int | None = None,
+    codex_lineage_id: str | None = None,
 ) -> None:
     transaction_dir = _orchestration_root(repo_root, orchestration_id)
     with _json_transaction_exclusive_lock(transaction_dir):
@@ -5486,7 +5486,7 @@ def _append_session_run_index_entry(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_home_generation=codex_home_generation,
+            codex_lineage_id=codex_lineage_id,
         )
         _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
 
@@ -5499,7 +5499,7 @@ def _upsert_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_home_generation: int | None = None,
+    codex_lineage_id: str | None = None,
 ) -> None:
     """Update ``doc`` with one normalized session/run binding without writing it."""
     entries_obj = doc.get("entries")
@@ -5519,8 +5519,8 @@ def _upsert_session_run_index_entry(
         item["context_id"] = normalized_context_id
         item["agent_role"] = normalized_role
         item["status"] = normalized_status
-        if codex_home_generation is not None:
-            item["codex_home_generation"] = codex_home_generation
+        if codex_lineage_id is not None:
+            item["codex_lineage_id"] = codex_lineage_id
         item["updated_at"] = _utc_now_iso()
         return
     entry: dict[str, Any] = {
@@ -5532,8 +5532,8 @@ def _upsert_session_run_index_entry(
             "status": normalized_status,
             "recorded_at": _utc_now_iso(),
         }
-    if codex_home_generation is not None:
-        entry["codex_home_generation"] = codex_home_generation
+    if codex_lineage_id is not None:
+        entry["codex_lineage_id"] = codex_lineage_id
     entries.append(entry)
     doc["entries"] = entries
 
@@ -8037,7 +8037,7 @@ def _backend_runtime_bind_paths(
         #
         # SCOPE, since Z4 (issue #171): what this function returns is the DEFAULT rw set,
         # and a caller may pass `backend_rw_override`, which REPLACES it wholesale. A codex
-        # leaf does exactly that — it is bound `{<private home>}` and nothing else. A claude
+        # leaf does exactly that — it is bound `{<its lineage home>}` and nothing else. A claude
         # leaf has no private home any more and takes this default: `~/.claude` writable so
         # the CLI can refresh auth and write the `--session-id` transcript a warm `--resume`
         # reads back. That transcript directory is the one repository-external surface a
@@ -8328,9 +8328,10 @@ def build_readonly_bwrap_profile(
     file pins.
 
     Nothing inside the repository is reachable EXCEPT those two roots, the leaf's own scratch
-    — bound rw below, under the tmpfs, so the leaf's `TMPDIR` resolves. OUTSIDE the repository one shared surface stays: the per-orchestration
-    codex home holds every earlier codex leaf's rollout under `sessions/` (the WHY comment at
-    the `--tmpfs` emission in `render_bwrap_command`, and `TODO.md`). Nothing an artifact
+    — bound rw below, under the tmpfs, so the leaf's `TMPDIR` resolves. OUTSIDE the repository
+    the codex home a leaf is bound is its own thread's LINEAGE home, holding that thread's
+    rollout and nothing of any other thread's (issue #245; the WHY comment at the `--tmpfs`
+    emission in `render_bwrap_command`). Nothing an artifact
     could be written to is writable, so a leaf has
     nothing to attribute and the FS-diff is trivially empty; an artifact write it attempts is
     refused by bwrap itself. (The round-2 review caught this sentence claiming the stronger,
@@ -8508,20 +8509,22 @@ def render_bwrap_command(
     # it and is gone with the process, never on the host (measured:
     # `test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable`).
     #
-    # WHAT THIS DOES NOT CLOSE, named rather than implied (issue #227 round 1, measured under
-    # real bwrap with the real CLI): the codex credential home is per ORCHESTRATION, bound rw
-    # into every codex leaf of that orchestration, and the CLI writes each launch's whole
-    # rollout — prompt and every response item — under `$CODEX_HOME/sessions/` AND into the
-    # sqlite state at the home's root (`state_*.sqlite-wal`, `thread_history_*.sqlite-wal`;
-    # measured: the marker prompt in all three). A later leaf
-    # of the same orchestration (the VERIFY leaf, for the producer it reviews; a repair turn,
-    # for the previous verdict) can read it through its own shell tool, inside this profile
-    # AND inside codex's own read-only sandbox. That is the `dialogs/` gain under a second
-    # name, and it is out of the mount set's reach: the home must stay writable (session
-    # state) and shared across the attempts of ONE leaf (warm `exec resume` reads the resumed
-    # thread's rollout from it). `TODO.md` carries the entry; the shape that closes it is a
-    # per-lineage home — `sessions/` AND the sqlite state, i.e. everything but what one leaf's
-    # warm resume needs — rather than a per-orchestration one.
+    # THE SECOND NAME OF THE SAME GAIN, and how it was closed (issue #227 round 1 found it,
+    # issue #245 closed it; both measured under real bwrap with the real CLI): the codex
+    # credential home is bound rw, and the CLI writes each launch's whole rollout — prompt
+    # and every response item — under `$CODEX_HOME/sessions/` AND into the sqlite state at
+    # the home's root (`state_*.sqlite-wal`, `thread_history_*.sqlite-wal`; measured: the
+    # marker prompt in all three, codex-cli 0.154.0). While that home was per
+    # ORCHESTRATION, a later leaf of the same orchestration (the VERIFY leaf, for the
+    # producer it reviews; a repair turn, for the previous verdict) could read it through
+    # its own shell tool, inside this profile AND inside codex's own read-only sandbox. The
+    # home must stay writable (session state) and shared across the attempts of ONE thread
+    # (warm `exec resume` reads the resumed thread's rollout from `sessions/`), so the
+    # closure is not in the mount set's polarity but in its SUBJECT: the rw bind is the
+    # per-LINEAGE home `<container>/<lineage_id>/` (`_prepare_codex_workflow_home`), one
+    # per thread, and a sibling lineage is not mounted at all — not listable, not readable
+    # (`test_bwrap_simulation.test_a_second_codex_leaf_cannot_read_the_first_leafs_rollout_anywhere_under_its_home`
+    # walks the whole container, so a CLI version that adds a fourth file is caught too).
     #
     # WHY (issue #227). A CLAUDE pure leaf is tool-free (`--tools ""`) and could read
     # nothing either way. A CODEX pure leaf is `codex exec --sandbox read-only`: tool-BEARING,
@@ -13342,10 +13345,12 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
                                owner_dir: Path, label: str) -> None:
     """Record which checkout owns `<homes-root>/<oid>/`, for the prune tool.
 
-    Written in the PARENT of the bound home, which is what makes it tamper-proof against
-    a leaf: the bwrap profile binds `<oid>/<backend>` and nothing above it, and the
-    scaffolding bwrap creates for that bind target lives on the namespace's own tmpfs, so
-    a leaf writing next to its home writes into the sandbox, not onto the host.
+    Written in the PARENT of the backend directory, which is what makes it tamper-proof
+    against a leaf: the bwrap profile binds a codex leaf's LINEAGE home
+    `<oid>/codex/<lineage_id>` (issue #245) and nothing above it — two levels below this
+    file — and the scaffolding bwrap creates for that bind target lives on the namespace's
+    own tmpfs, so a leaf writing next to its home writes into the sandbox, not onto the
+    host.
 
     A LOCATOR, NOT AN AUTHORITY. It answers "which checkout should I ask about this
     orchestration", and the answer to "may this be deleted" comes from that checkout's
@@ -13508,80 +13513,149 @@ def codex_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, An
     }
 
 
-def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
-    """Create the private Codex home for one orchestration.
+def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage_id: str,
+                                 *, resume: bool) -> dict[str, str] | None:
+    """Prepare the private Codex home for ONE THREAD LINEAGE of an orchestration.
 
-    The home is outside the repository and has fresh state/session storage.  It contains a
-    config that marks this checkout untrusted — which is what keeps this repository's DEV-layer
-    `.codex/hooks.json`, written for an operator's own session, out of the leaf's hook set — and
-    a placeholder the bwrap profile binds the operator's real `auth.json` over read-only.
-    Authentication is deliberately *not* copied. The config file is remounted read-only after
-    the writable home bind; only Codex's session/state files remain writable to a leaf.
+    Two levels, and the leaf sees only the lower one:
 
-    Until Z4 (issue #171) it also carried a SHA-pinned copy of `leaf_config/codex/hooks.json`,
-    which was the leaf's own in-sandbox file-access hook layer. The leaf brings no hooks now:
-    it is confined by the read-only bwrap profile and `--sandbox read-only`.
+      * `<homes-root>/<oid>/codex/` is the orchestration's CONTAINER. It is recorded in
+        `orchestration_meta.json#codex_workflow_home`, carries the owner marker in its
+        parent, and is what `tools/prune_workflow_homes.py` removes. It is NOT bound into
+        any leaf and is NOT `CODEX_HOME`.
+      * `<container>/<lineage_id>/` is the LINEAGE HOME — the `CODEX_HOME` of one thread:
+        the cold launch that started it plus every warm `codex exec resume` of it. It is
+        the only directory `codex_isolation_profile_kwargs` binds rw, so what the CLI
+        writes there (measured on codex-cli 0.154.0: the rollout under `sessions/`, the
+        `state_*` / `thread_history_*` / `memories_*` / `logs_*` / `goals_*` / `queue_*`
+        sqlite files with their `-wal`/`-shm`, `installation_id`, `skills/`, `tmp/`,
+        `shell_snapshots/`, `thread-writer-locks/` — the marker prompt in three of them)
+        is reachable by that thread's attempts and by nothing else. A second lineage's
+        leaf cannot list, let alone read, a sibling: the sibling is simply not mounted
+        (`test_bwrap_simulation.test_a_second_codex_leaf_cannot_read_the_first_leafs_rollout_anywhere_under_its_home`).
+        This is what closed the shared per-orchestration home TODO recorded from issue
+        #227 (issue #245): a VERIFY leaf could read the producer's whole rollout, and a
+        repair turn the previous verdict, through its own shell tool.
+
+    `lineage_id` is the `agent_run_id` of the attempt that STARTED the thread — the
+    child's own id on a cold launch, the row's `codex_lineage_id` on a warm one — and it
+    becomes a path segment outside the repository, so it is refused unless it is a plain
+    token (`_is_safe_path_id`), the same wall `_workflow_backend_home_path` puts before the
+    orchestration id. `record_launch` refuses a malformed one first; this is the second wall.
+
+    ``resume`` decides what a lineage directory's presence means:
+
+      * ``resume=False`` (cold): the lineage home is created EXCLUSIVELY. One already
+        there is refused, not adopted — it would hand this launch another thread's
+        rollout, and an `agent_run_id` is minted once, so nothing legitimate creates it
+        twice.
+      * ``resume=True`` (warm): the lineage home must ALREADY exist, and when it does not
+        this returns ``None`` — the sentinel `record_launch` turns into the
+        `codex_lineage_home_missing` cold-fallback answer BEFORE any durable launch
+        mutation. It is never created here: a `codex exec resume` against an empty home
+        fails before its first request (measured: `no rollout found for thread id`), so
+        creating one would only move that failure past the point where the conductor can
+        still rebuild the turn cold. This existence check replaces the integer "home
+        generation" that guarded the same property from issue #64 until issue #245: a
+        vanished home used to be re-created at the same path and threads told apart by a
+        counter; a lineage home is never re-created, so presence IS the precondition, and
+        it is decided under the same lock, at the same position, as the counter was.
+
+    The container part is unchanged from the per-orchestration design: its path is
+    persisted so the same tree is reused across `--resume`, a vanished container (an
+    operator prune, a lost filesystem) is re-created at the same path — with no lineage
+    inside, so every recorded thread is cold-fallback only — and an existing one has its
+    mode, ancestors and owner marker re-asserted on every preparation.
+
+    Each lineage home carries a `config.toml` marking this checkout untrusted — which is
+    what keeps this repository's DEV-layer `.codex/hooks.json`, written for an operator's
+    own session, out of the leaf's hook set — remounted read-only over the writable home
+    bind, and an `auth.json` placeholder the bwrap profile binds the operator's real
+    credential over read-only. Authentication is deliberately *not* copied. Until Z4
+    (issue #171) the home also carried a SHA-pinned copy of `leaf_config/codex/hooks.json`;
+    the leaf brings no hooks now.
     """
+    lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
+    if not _is_safe_path_id(lineage_token):
+        raise ValueError(
+            "isolated Codex home: lineage_id must be a plain [A-Za-z0-9_-] token "
+            f"(got {lineage_id!r})"
+        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
-    # A single 0700 home belongs to an orchestration.  Its path is persisted in
-    # host-authored metadata so warm resume reuses Codex's state.  The name is
-    # DETERMINISTIC since issue #64 (`<homes-root>/<oid>/codex`), not the random
-    # temporary one this comment used to describe: the randomness was a defense for
-    # `/tmp`, which is world-writable, and under a 0700 root owned by this uid the
-    # exclusive `os.mkdir` replaces it.  The metadata lock still serializes concurrent
-    # child launches that would otherwise both reach that creation.
+    # The container is one 0700 directory per orchestration, named DETERMINISTICALLY
+    # since issue #64 (`<homes-root>/<oid>/codex`): the randomness it replaced was a
+    # defense for `/tmp`, which is world-writable, and under a 0700 root owned by this
+    # uid the exclusive `os.mkdir` replaces it. The metadata lock serializes concurrent
+    # child launches that would otherwise both reach that creation — and both reach the
+    # lineage creation below, which is why the whole function runs under it.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
         if not isinstance(meta, dict):
             raise ValueError("orchestration metadata missing while preparing Codex home")
         raw_home = meta.get("codex_workflow_home")
-        raw_generation = meta.get("codex_workflow_home_generation")
-        prior_generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else 0
-        rotate_missing_home = False
+        container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
-            home = Path(raw_home)
+            container = Path(raw_home)
+            try:
+                container.lstat()
+            except FileNotFoundError:
+                # The container is durable, so this is the FAIL-SAFE for one the operator
+                # PRUNED or otherwise lost. It is re-created at the SAME path below, empty:
+                # no lineage survives it, so a warm launch for any recorded thread takes
+                # the `resume=True` missing branch and the conductor goes cold.
+                container = None
+            else:
+                # `tighten=True`: a mode that drifted on the container (a backup restored
+                # without permissions) is established, not refused — see
+                # `_require_secure_backend_home`. The CONTAINER path is what the reuse
+                # re-securing takes: it is keyed on `home.name` being a backend dirname,
+                # and would silently return on a lineage path.
+                _require_secure_backend_home(container, tighten=True)
+                _resecure_workflow_home_on_reuse(
+                    repo_root, orchestration_id, container, "Codex")
+        if container is None:
+            # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for leaf
+            # scratch. This tree holds writable backend-state binds and must never
+            # inherit that value: backend rw binds inside the repository are rejected to
+            # preserve the write-root boundary. `<homes-root>/<oid>/codex` satisfies that
+            # and is durable, which `/tmp` was not — the rollouts it holds are the run's
+            # only leaf-side record.
+            container = _create_workflow_backend_home(
+                repo_root, orchestration_id, "codex", "Codex")
+            meta["codex_workflow_home"] = str(container)
+            _write_json(meta_path, meta)
+        home = container / lineage_token
+        if resume:
             try:
                 home.lstat()
             except FileNotFoundError:
-                # The home is durable since issue #64 (`<homes-root>/<oid>/codex`), so
-                # this is the FAIL-SAFE for a home the operator PRUNED or otherwise
-                # lost, not the tmpfiles-cleanup path it was written for.  Rotation
-                # re-creates the SAME path — the name is deterministic now, so
-                # `codex_workflow_home_rotated_from` may equal the new value.  The guard
-                # against a thread warm-resuming into the re-created home is the INTEGER
-                # generation below (`expected_codex_home_generation` in `record_launch`),
-                # which is path-independent and therefore unaffected.
-                rotate_missing_home = True
-            else:
-                # `tighten=True` for the same reason as the Claude twin above.
-                _require_secure_backend_home(home, tighten=True)
-                _resecure_workflow_home_on_reuse(
-                    repo_root, orchestration_id, home, "Codex")
-        if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
-            # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
-            # leaf scratch.  This home is a writable backend-state bind and must
-            # never inherit that value: backend rw binds inside the repository are
-            # rejected to preserve the write-root boundary.  `<homes-root>/<oid>/codex`
-            # satisfies that and is durable, which `/tmp` was not — the rollout
-            # transcripts it holds are the run's only leaf-side record.
-            home = _create_workflow_backend_home(repo_root, orchestration_id, "codex", "Codex")
-            meta["codex_workflow_home"] = str(home)
-            meta["codex_workflow_home_generation"] = prior_generation + 1
-            if rotate_missing_home:
-                meta["codex_workflow_home_rotated_from"] = raw_home.strip()
-                meta["codex_workflow_home_rotated_at"] = _utc_now_iso()
-            _write_json(meta_path, meta)
-        generation = meta.get("codex_workflow_home_generation")
-        if not isinstance(generation, int) or generation <= 0:
-            # Metadata from before home generations existed: retain its secure
-            # home but treat old thread rows (which lack a generation) as stale.
-            generation = max(1, prior_generation)
-            meta["codex_workflow_home_generation"] = generation
-            _write_json(meta_path, meta)
-        # EVERY file of the home is populated under the same lock as the home itself.
-        # `_secure_backend_home_file` is create-exclusive-then-write, so a concurrent
-        # preparer that observed a created-but-not-yet-written file would take the
-        # content-comparison branch and fail with "differs from its verified source".
+                return None
+            # Same refusals as the container: a symlink or a foreign uid at the lineage
+            # path is a disagreement, and a drifted mode is tightened.
+            _require_secure_backend_home(home, "Codex", tighten=True)
+        else:
+            try:
+                os.mkdir(home, 0o700)
+            except FileExistsError as exc:
+                raise ValueError(
+                    f"isolated Codex lineage home already exists: {home}. A lineage is "
+                    "created once, by the cold launch of the attempt whose agent_run_id "
+                    f"names it ({lineage_token}); a warm resume of that thread must be "
+                    "recorded with `--codex-lineage-id` instead of re-creating it, and a "
+                    "directory that is there before its cold launch belongs to another "
+                    "run's state. Inspect it before removing anything."
+                ) from exc
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot create isolated Codex lineage home {home}: {exc}") from exc
+            os.chmod(home, 0o700)
+            # `tighten` stays False immediately after creation: here the check exists to
+            # catch a chmod that did not take.
+            _require_secure_backend_home(home, "Codex")
+        # EVERY file of the lineage home is populated under the same lock as the home
+        # itself. `_secure_backend_home_file` is create-exclusive-then-write, so a
+        # concurrent preparer that observed a created-but-not-yet-written file would take
+        # the content-comparison branch and fail with "differs from its verified source".
         # TOML basic strings use JSON escaping for these path strings.
         config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
         config_path = home / "config.toml"
@@ -13600,9 +13674,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
         "auth": str(auth.resolve()),
         "auth_destination": str(auth_destination.resolve()),
         "config": str(config_path.resolve()),
-        "generation": str(generation),
+        "lineage_id": lineage_token,
     }
-
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
     """Preflight probe: confirm the host can sandbox a leaf (bwrap present + user
@@ -14708,7 +14781,7 @@ def record_launch(
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     relation_type: str = "launch",
-    expected_codex_home_generation: int | None = None,
+    codex_lineage_id: str | None = None,
     child_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
@@ -14788,25 +14861,32 @@ def record_launch(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
             f"admissible only for a pure leaf; this launch is not pure")
 
-    # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
-    # the home at the beginning of the launch transaction and reject a stale
-    # expectation *before* writing a capability, launch artifacts, or an active
-    # child marker.  This closes the tmpfiles TOCTOU between the conductor's
-    # resume selection and its later record-launch call: the conductor can simply
-    # rebuild a cold request when a vanished home has rotated.
+    # A Codex warm-resume target lives in one LINEAGE HOME — `<container>/<lineage_id>/`,
+    # the `CODEX_HOME` of the thread it resumes (`_prepare_codex_workflow_home`). Prepare
+    # it at the beginning of the launch transaction and answer a missing one *before*
+    # writing launch artifacts, a session-index row or an active child marker: the
+    # conductor then rebuilds the turn cold, exactly as it did for the integer "home
+    # generation" this check replaced (issue #245). The conductor's resume selection
+    # already checked existence unlocked; this is the check that counts, under the
+    # metadata lock, and it is what keeps a `codex exec resume` from ever being launched
+    # against a home with no rollout in it.
     codex_isolation: dict[str, str] | None = None
-    if expected_codex_home_generation is not None and expected_codex_home_generation <= 0:
-        raise ValueError("expected_codex_home_generation must be a positive integer")
-    if expected_codex_home_generation is not None:
+    if codex_lineage_id is not None:
         if backend_token != "codex":
-            raise ValueError("expected_codex_home_generation is valid only for the Codex backend")
-        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
-        actual_generation = int(codex_isolation["generation"])
-        if expected_codex_home_generation != actual_generation:
+            raise ValueError("codex_lineage_id is valid only for the Codex backend")
+        if (not isinstance(codex_lineage_id, str)
+                or not _AGENT_RUN_ID_RE.match(codex_lineage_id.strip())):
+            raise ValueError(
+                f"record-launch: codex_lineage_id contains invalid characters "
+                f"(got {codex_lineage_id!r}); only alphanumerics, hyphens, and underscores "
+                "are allowed")
+        codex_lineage_id = codex_lineage_id.strip()
+        codex_isolation = _prepare_codex_workflow_home(
+            repo_root, orchestration_id, codex_lineage_id, resume=True)
+        if codex_isolation is None:
             return {
-                "codex_home_generation_mismatch": True,
-                "expected_codex_home_generation": expected_codex_home_generation,
-                "codex_home_generation": actual_generation,
+                "codex_lineage_home_missing": True,
+                "codex_lineage_id": codex_lineage_id,
             }
 
     # The Claude backend enforces sequential child launch via the active file.
@@ -15262,13 +15342,21 @@ def record_launch(
                     _resp_backend if isinstance(_resp_backend, str) else "",
                     backend_command)
                 if _backend_family == "codex":
-                    # Prepared before any launch-side durable mutations above.  Do not
-                    # re-prepare here: doing so would reopen the generation race that
-                    # the expected-generation transaction check closes.
+                    # A warm launch prepared its lineage home before any durable
+                    # mutation above and is not re-prepared here (a second preparation
+                    # could not create anything, but it would be a second existence
+                    # answer for one launch). A COLD launch starts a NEW lineage, named by
+                    # the child's own id: the exclusive creation refuses a directory that
+                    # is already there, which an `agent_run_id` minted once never is.
                     if codex_isolation is None:
-                        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                        codex_isolation = _prepare_codex_workflow_home(
+                            repo_root, orchestration_id, child_agent_run_id, resume=False)
+                    # The LINEAGE home — the directory bound as this leaf's `CODEX_HOME` —
+                    # not the orchestration's container. `codex_lineage_id` is what the
+                    # session-index row carries so a later warm resume of this thread
+                    # is recorded against the same home.
                     response_payload["codex_workflow_home"] = codex_isolation["home"]
-                    response_payload["codex_home_generation"] = int(codex_isolation["generation"])
+                    response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
                 # NO claude private home. Issue #63 prepared one for the AGENTIC leaf, which was
                 # the only launch that read a settings layer; Z4 (issue #171) retired that leaf,
                 # and a pure claude leaf takes `--safe-mode` — no settings layer, no tools, no
@@ -17519,9 +17607,9 @@ def _project_terse_result(command: str, result: Any) -> Any:
     fields = _TERSE_RESULT_FIELDS.get(command)
     if fields is None or not isinstance(result, dict):
         return result
-    # A stale Codex HOME generation is not a completed launch: return its
+    # A missing Codex lineage home is not a completed launch: return its
     # transaction sentinel intact so the conductor can rebuild the request cold.
-    if command == "record-launch" and result.get("codex_home_generation_mismatch"):
+    if command == "record-launch" and result.get("codex_lineage_home_missing"):
         return result
     projected: dict[str, Any] = {key: result[key] for key in fields if key in result}
     for key in _TERSE_ALWAYS_KEEP:
@@ -17726,9 +17814,11 @@ def main(argv: list[str] | None = None) -> int:
               "argv: the values would otherwise be readable in `ps` for every process "
               "on the host."))
     launch_parser.add_argument(
-        "--expected-codex-home-generation", type=int,
-        help=("For a Codex warm resume, require this isolated CODEX_HOME generation. "
-              "A rotated home returns a cold-fallback sentinel before recording a launch."),
+        "--codex-lineage-id",
+        help=("For a Codex warm resume, the lineage whose isolated CODEX_HOME the resumed "
+              "thread lives in (the agent_run_id of the attempt that started it, read from "
+              "the session-index row). A missing lineage home returns a cold-fallback "
+              "sentinel before recording a launch; it is never created here."),
     )
 
     run_parser = subparsers.add_parser(
@@ -18211,7 +18301,7 @@ def main(argv: list[str] | None = None) -> int:
                 request_payload=request_payload,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
-                expected_codex_home_generation=args.expected_codex_home_generation,
+                codex_lineage_id=args.codex_lineage_id,
                 child_env=child_env_payload,
             )
         except (ValueError, RuntimeError) as exc:

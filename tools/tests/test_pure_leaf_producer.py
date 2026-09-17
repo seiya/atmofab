@@ -1957,20 +1957,21 @@ class PureProducerExemplarTests(unittest.TestCase):
         self.assertEqual(c.requests[0]["repair_strategy"], "reuse")
         self.assertNotIn("exemplar", c.requests[0])
 
-    def test_a_home_rotation_on_a_warm_seed_falls_back_carrying_the_prior_document(self) -> None:
+    def test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document(self) -> None:
         """The consumer of the seed's WARM-branch prior document, which had no test anywhere.
 
-        `_spawn_pure_turn` returns None when a warm resume's codex home generation has rotated:
-        the launch was recorded against a session the transport can no longer resume, so the loop
-        drops the session, keeps the semantic carriers, and retries the turn COLD. That is why the
-        seed resolves `prior_document` on the warm branch too — a warm seed can become a cold
-        repair before its first leaf ever runs. A round-1 reviewer measured that suppressing the
+        `_spawn_pure_turn` returns None when a warm resume's codex lineage home is missing
+        (issue #245; a "home generation rotation" until then): the launch was recorded against
+        a session the transport can no longer resume, so the loop drops the session, keeps the
+        semantic carriers, and retries the turn COLD. That is why the seed resolves
+        `prior_document` on the warm branch too — a warm seed can become a cold repair before
+        its first leaf ever runs. A round-1 reviewer measured that suppressing the
         warm-branch resolution left the pure test files green, because nothing in the repository
         drove the `turn is None` path at all (re-measured at 648ba90e^ by raising from inside that
         branch: eight pure/conductor files stayed green).
 
-        The rotation is faked rather than produced by rotating a real codex home: what is under
-        test is the LOOP's fallback, and the rotation detection itself is
+        The missing home is faked rather than produced by pruning a real codex home: what is
+        under test is the LOOP's fallback, and the detection itself is
         `_prepare_codex_workflow_home`'s, pinned separately. For the same reason this row runs on
         the CLAUDE fake, where a session id IS the child's arid — so what it does NOT observe is
         the fallback's `cold_repair_target = resume_session_id`, which on codex records a THREAD
@@ -1998,21 +1999,21 @@ class PureProducerExemplarTests(unittest.TestCase):
         c.exemplar_value = self._EXEMPLAR
         c.envelopes = [_envelope(_valid_bundle())]
         # The session IS resumable, so the seed takes the WARM branch — and then the launch finds
-        # the home rotated underneath it. Faked where PRODUCTION detects it: `record_launch`'s
-        # `codex_home_generation_mismatch`, which is read AFTER the launch is recorded and BEFORE
+        # the lineage home gone underneath it. Faked where PRODUCTION detects it: `record_launch`'s
+        # `codex_lineage_home_missing`, which is read AFTER the launch is recorded and BEFORE
         # any leaf is spawned. Stubbing `_spawn_pure_turn` itself would skip the recorded launch
         # and leave nothing to assert the warm turn's shape on.
         real_record = c.record_launch
-        rotated: list[bool] = []
+        vanished: list[bool] = []
 
-        def _rotate_once(*args, **kwargs):
+        def _vanish_once(*args, **kwargs):
             rec = real_record(*args, **kwargs)
-            if not rotated:
-                rotated.append(True)
-                return {**rec, "codex_home_generation_mismatch": True}
+            if not vanished:
+                vanished.append(True)
+                return {**rec, "codex_lineage_home_missing": True}
             return rec
 
-        c.record_launch = _rotate_once  # type: ignore[assignment]
+        c.record_launch = _vanish_once  # type: ignore[assignment]
         events: list[tuple[str, dict]] = []
         c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
         oc = c._run_pure_generate_substep(
@@ -2021,8 +2022,8 @@ class PureProducerExemplarTests(unittest.TestCase):
              "repair_target_agent_run_id": "prior-arid",
              "repair_reason": "gate_static", "repair_findings": excerpt}, ())
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(rotated, [True])
-        # Two requests: the warm one that died to the rotation, then the cold repair.
+        self.assertEqual(vanished, [True])
+        # Two requests: the warm one that died to the missing home, then the cold repair.
         self.assertTrue(c.requests[0].get("warm_resume"))
         self.assertNotIn("prior_document", c.requests[0])   # warm turns do not send it
         self.assertFalse(c.requests[1].get("warm_resume"))
@@ -2033,10 +2034,10 @@ class PureProducerExemplarTests(unittest.TestCase):
         # ... and the leaf that actually ran was handed it.
         self.assertIn("rotated_prior_209", c.prompts[-1])
         self.assertIn(excerpt, c.prompts[-1])
-        # The loop named the rotation rather than degrading silently.
+        # The loop named the missing home rather than degrading silently.
         self.assertTrue(any(
             ev == "resume_session_unavailable"
-            and f.get("reason") == "codex_home_generation_rotated"
+            and f.get("reason") == "codex_lineage_home_missing"
             for ev, f in events), events)
 
     def test_outer_reopen_without_findings_renders_launch_prompt_with_exemplar(self) -> None:

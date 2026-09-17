@@ -302,14 +302,14 @@ class CodexLeafHasNoHookLayerTests(unittest.TestCase):
             prev = os.environ.get("CODEX_HOME")
             os.environ["CODEX_HOME"] = str(codex_home)
             try:
-                iso = _prepare_codex_workflow_home(repo, "orch_z4")
+                iso = _prepare_codex_workflow_home(repo, "orch_z4", "arid-z4", resume=False)
             finally:
                 if prev is None:
                     os.environ.pop("CODEX_HOME", None)
                 else:
                     os.environ["CODEX_HOME"] = prev
             home = Path(iso["home"])
-            self.addCleanup(__import__("shutil").rmtree, home, True)
+            self.addCleanup(__import__("shutil").rmtree, home.parent, True)
             self.assertTrue((home / "config.toml").is_file())
             self.assertIn("untrusted", (home / "config.toml").read_text(encoding="utf-8"))
             self.assertFalse((home / "hooks.json").exists())

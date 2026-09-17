@@ -162,7 +162,7 @@ When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), th
   there is no boundary to carry and nothing to enable. `[features] hooks = true` in an
   operator's own `~/.codex/config.toml` is now a choice about their own session.
 
-- **The credential must exist — and NOTHING CHECKS IT AT PREFLIGHT.** `~/.codex/auth.json` (or the `CODEX_HOME` relocation of it) is bound read-only into the per-orchestration isolated home. Its absence is refused by `_prepare_codex_workflow_home`, which runs when the FIRST codex leaf is prepared, so a missing credential terminalizes part-way into a billed run rather than at the gate. There is no `auth`-named entry in the check set. Run the CLI's own login once before the first run; the failure it prevents is the one the rest of this section is gated to avoid.
+- **The credential must exist — and NOTHING CHECKS IT AT PREFLIGHT.** `~/.codex/auth.json` (or the `CODEX_HOME` relocation of it) is bound read-only into each isolated lineage home. Its absence is refused by `_prepare_codex_workflow_home`, which runs when the FIRST codex leaf is prepared, so a missing credential terminalizes part-way into a billed run rather than at the gate. There is no `auth`-named entry in the check set. Run the CLI's own login once before the first run; the failure it prevents is the one the rest of this section is gated to avoid.
 
 - **The state home must be writable.** `checks.codex_home_writable.pass` resolves `CODEX_HOME`, else the deprecated `ATMOFAB_HOME`, else `~/.codex`, and requires the directory (or its parent, when it does not exist yet) to be writable. `CODEX_HOME` and `ATMOFAB_HOME` set to different paths is a refusal rather than a precedence rule.
 
@@ -479,7 +479,7 @@ read as a third thing the workflow maintains.
 |---|---|---|---|
 | `~/.atmofab/operator_tokens/` | nothing, since issue #176 | nothing | **orphaned.** The `dismiss-violation` token store; its writer and its reader are gone. Nothing creates, reads or prunes it, and `tools/prune_workflow_homes.py` covers `homes/` only. Remove it by hand once: `rm -r ~/.atmofab/operator_tokens`. Listed so a machine that still has it does not read as a third live tree. |
 | `~/.atmofab/start_claims/` (relocatable with `ATMOFAB_START_CLAIM_ROOT`) | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
-| `~/.atmofab/homes/<orchestration_id>/codex/` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`; a `claude/` sibling exists only for a run recorded before Z4, issue #171) | the leaf launcher, for the codex backend — a pure claude leaf is prepared no home at all | `--resume` (warm session lookup); the diagnostician no longer reads the claude side | **indefinite. Nothing deletes these automatically. See below.** |
+| `~/.atmofab/homes/<orchestration_id>/codex/<codex_lineage_id>/` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`; one directory per codex THREAD since issue #245, named by the `agent_run_id` of the attempt that started it, under the orchestration's `codex/` container; a `claude/` sibling of the container exists only for a run recorded before Z4, issue #171) | the leaf launcher, for the codex backend — a pure claude leaf is prepared no home at all | `--resume` (warm session lookup, inside the thread's own lineage home only); the diagnostician no longer reads the claude side | **indefinite. Nothing deletes these automatically. See below.** |
 
 A leaf cannot read any of it, and since Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)) the reason is structural rather than
@@ -623,8 +623,10 @@ python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --de
 
 **What deleting costs**, so it is a decision rather than a discovery:
 
-- `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a leaf's
-  session inside the home; a re-created one has none;
+- `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a codex
+  thread inside its own lineage home (`codex/<codex_lineage_id>/`), and a deleted
+  container is re-created EMPTY — no lineage is ever re-created, so every thread the run
+  had recorded is cold-only from then on;
 - the run stops being auditable at the transcript level. `skills/workflow-timing-audit`
   reads a pre-Z4 agentic claude leaf's transcript from the home; `skills/workflow-audit`
   reads nothing from it and only names it as where a `codex_cli` leaf's rollout is.

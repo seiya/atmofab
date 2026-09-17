@@ -631,7 +631,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertEqual(TERMINAL_STATUSES, {"pass", "fail", "blocked", "timeout", "cancel"})
 
     def test_prepare_codex_home_is_private_deterministic_and_reused_from_metadata(self) -> None:
-        """The home is `<homes-root>/<oid>/codex`, 0700, and reused across preparations.
+        """The container is `<homes-root>/<oid>/codex`, 0700, reused across preparations,
+        and each lineage home is a 0700 child of it named by the lineage id (issue #245).
 
         RENAMED, and one assertion was DELIBERATELY DROPPED. The previous version
         asserted `orch not in home.name` — "the home path must not derive from the
@@ -670,18 +671,33 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 {"CODEX_HOME": str(auth_home), "TMPDIR": str(repo_tmpdir)},
                 clear=False,
             ):
-                first = _prepare_codex_workflow_home(repo_root, orch)
-                second = _prepare_codex_workflow_home(repo_root, orch)
-            home = Path(first["home"])
+                first = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=False)
+                second = _prepare_codex_workflow_home(repo_root, orch, "arid-b", resume=False)
+                # A warm preparation of an existing lineage answers the same home.
+                warm = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=True)
             homes_root = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV])
-            self.assertEqual(first["home"], second["home"])
-            self.assertEqual(home, homes_root / orch / "codex")
-            self.assertFalse(home.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
-            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+            container = homes_root / orch / "codex"
+            home_a, home_b = Path(first["home"]), Path(second["home"])
+            self.assertEqual(home_a, container / "arid-a")
+            self.assertEqual(home_b, container / "arid-b")
+            self.assertEqual(first["lineage_id"], "arid-a")
+            self.assertEqual(warm["home"], first["home"])
+            self.assertFalse(home_a.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
             # Every level this code created is private, not only the leaf.
-            self.assertEqual((homes_root / orch).stat().st_mode & 0o777, 0o700)
+            for level in (homes_root / orch, container, home_a, home_b):
+                self.assertEqual(level.stat().st_mode & 0o777, 0o700, level)
+            # Each lineage carries its own marker and credential placeholder; the
+            # container carries neither (it is not a `CODEX_HOME`).
+            for home in (home_a, home_b):
+                self.assertTrue((home / "config.toml").is_file())
+                self.assertTrue((home / "auth.json").is_file())
+            self.assertFalse((container / "config.toml").exists())
+            self.assertFalse((container / "auth.json").exists())
             recorded = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(recorded["codex_workflow_home"], str(home))
+            # The metadata records the CONTAINER, and no generation counter (issue #245
+            # replaced it with the lineage existence check).
+            self.assertEqual(recorded["codex_workflow_home"], str(container))
+            self.assertNotIn("codex_workflow_home_generation", recorded)
 
     def test_secure_backend_home_file_leaves_no_poison_pill_on_write_failure(self) -> None:
         """A failed write must remove the file, not leave an empty one behind.
@@ -758,7 +774,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 init_orchestration(repo_root=repo_root, orchestration_id=orch)
                 with patch.dict(os.environ, env, clear=False), \
                         self.assertRaises(ValueError) as caught:
-                    _prepare_codex_workflow_home(repo_root, orch)
+                    _prepare_codex_workflow_home(repo_root, orch, "arid-cred", resume=False)
                 message = str(caught.exception)
                 self.assertIn("auth.json not found", message)
                 # The message must name the path it LOOKED AT, or an operator cannot tell which
@@ -785,21 +801,18 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             orch = "orch_with_credential_001"
             init_orchestration(repo_root=repo_root, orchestration_id=orch)
             with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
-                result = _prepare_codex_workflow_home(repo_root, orch)
+                result = _prepare_codex_workflow_home(repo_root, orch, "arid-cred", resume=False)
             self.assertTrue(Path(result["home"]).is_dir())
 
-    def test_prepare_codex_home_rotates_a_vanished_home_at_the_same_path(self) -> None:
-        """A pruned / lost home forces cold resume rather than blocking --resume.
+    def test_prepare_codex_home_recreates_a_vanished_container_with_no_lineage_inside(self) -> None:
+        """A pruned / lost container forces cold resume rather than blocking --resume.
 
-        RENAMED with the location: the home is durable now, so the trigger is an
-        operator running `prune_workflow_homes.py` or losing the filesystem, not a
-        tmpfiles sweep. The path is deterministic, so rotation re-creates the SAME
-        string and `codex_workflow_home_rotated_from` equals the new value — this test
-        asserts that explicitly, because a reader who expects the old behaviour would
-        otherwise read the equality as a bug. What separates the two homes is the
-        INTEGER generation, which is what `record_launch`'s
-        `expected_codex_home_generation` transaction compares; asserting 1 then 2 is the
-        witness that kills a mutant dropping the `prior_generation + 1`.
+        The container is durable, so the trigger is an operator running
+        `prune_workflow_homes.py` or losing the filesystem, not a tmpfiles sweep. It is
+        re-created at the SAME path — and EMPTY: the lineage that held the thread is not
+        re-created with it, so a warm preparation for that lineage answers the sentinel and
+        the conductor goes cold. That existence answer is what replaced the integer home
+        generation issue #64 compared (issue #245); the metadata no longer carries one.
         """
         from tools.orchestration_runtime import _prepare_codex_workflow_home
 
@@ -815,25 +828,94 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             auth_home.mkdir()
             (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
             with patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
-                first = _prepare_codex_workflow_home(repo_root, orch)
-                old_home = Path(first["home"])
-                for child in old_home.iterdir():
-                    child.unlink()
-                old_home.rmdir()
-                second = _prepare_codex_workflow_home(repo_root, orch)
-            self.assertEqual(first["home"], second["home"])
-            self.assertTrue(Path(second["home"]).is_dir())
-            self.assertEqual(first["generation"], "1")
-            self.assertEqual(second["generation"], "2")
+                first = _prepare_codex_workflow_home(repo_root, orch, "arid-1", resume=False)
+                container = Path(first["home"]).parent
+                shutil.rmtree(container)
+                warm = _prepare_codex_workflow_home(repo_root, orch, "arid-1", resume=True)
+                cold = _prepare_codex_workflow_home(repo_root, orch, "arid-2", resume=False)
+            self.assertIsNone(warm)
+            self.assertTrue(container.is_dir())
+            self.assertFalse((container / "arid-1").exists(), "a lineage is never re-created")
+            self.assertEqual(Path(cold["home"]), container / "arid-2")
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta["codex_workflow_home_rotated_from"], first["home"])
-            self.assertEqual(meta["codex_workflow_home_generation"], 2)
+            self.assertEqual(meta["codex_workflow_home"], str(container))
+            for key in ("codex_workflow_home_generation", "codex_workflow_home_rotated_from",
+                        "codex_workflow_home_rotated_at"):
+                self.assertNotIn(key, meta)
 
-    def test_record_launch_rejects_stale_codex_home_generation_before_launch_state(self) -> None:
-        """A rotation after resume selection returns a cold-fallback sentinel.
+    def test_prepare_codex_home_refuses_a_cold_launch_into_an_existing_lineage(self) -> None:
+        """`resume=False` creates EXCLUSIVELY: a lineage directory already there is refused.
+
+        An `agent_run_id` is minted once, so nothing legitimate reaches this; a directory
+        at the path before its cold launch is another run's state, and adopting it would
+        hand this thread that state. The refusal names the lineage, not the container
+        (the container message is `_create_workflow_backend_home`'s and still stands).
+        """
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            orch = "orch_codex_lineage_exclusive"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            codex_home = seed_codex_auth(root / "operator-codex")
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+                first = _prepare_codex_workflow_home(repo_root, orch, "arid-x", resume=False)
+                with self.assertRaisesRegex(ValueError, "lineage home already exists") as caught:
+                    _prepare_codex_workflow_home(repo_root, orch, "arid-x", resume=False)
+                # The refused call neither removed nor rewrote the existing lineage.
+                self.assertTrue((Path(first["home"]) / "config.toml").is_file())
+                self.assertIn("arid-x", str(caught.exception))
+                # A lineage id that is not a plain path token is refused before any
+                # path is joined — the second wall behind `record_launch`'s regex.
+                for bad in ("../escape", "a/b", "", " ", "x y"):
+                    with self.subTest(lineage=bad), self.assertRaisesRegex(
+                            ValueError, "lineage_id must be a plain"):
+                        _prepare_codex_workflow_home(repo_root, orch, bad, resume=False)
+
+    def test_prepare_codex_home_warm_answers_the_sentinel_and_creates_nothing(self) -> None:
+        """`resume=True` for a lineage that is not there returns None and leaves no trace.
+
+        Creating the lineage on a warm request would only move `codex exec resume`'s own
+        failure (`no rollout found for thread id`, measured) past the point where the
+        conductor can rebuild the turn cold. The container's own re-securing still runs on
+        the warm path — its marker is refreshed — because that is about the state the tree
+        is FOUND in, not about the lineage.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME,
+            _prepare_codex_workflow_home,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            orch = "orch_codex_lineage_sentinel"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            codex_home = seed_codex_auth(root / "operator-codex")
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+                first = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=False)
+                container = Path(first["home"]).parent
+                marker = container.parent / WORKFLOW_HOME_OWNER_FILENAME
+                marker.unlink()
+                before = sorted(p.relative_to(container) for p in container.rglob("*"))
+                self.assertIsNone(
+                    _prepare_codex_workflow_home(repo_root, orch, "arid-never", resume=True))
+                after = sorted(p.relative_to(container) for p in container.rglob("*"))
+            self.assertEqual(before, after)
+            self.assertFalse((container / "arid-never").exists())
+            self.assertTrue(marker.is_file(), "the container re-securing ran on the warm path")
+
+    def test_record_launch_answers_a_missing_lineage_home_before_launch_state(self) -> None:
+        """A lineage home gone after resume selection returns a cold-fallback sentinel.
 
         This must happen before capability/launch artifacts are written, otherwise
-        the conductor cannot safely discard the warm request and rebuild it cold.
+        the conductor cannot safely discard the warm request and rebuild it cold. The
+        preparer is driven with `resume=True` and the lineage it was handed — pinned on
+        the mock's call, because a preparer called with `resume=False` here would CREATE
+        the lineage instead of answering whether it exists.
         """
         from tools.orchestration_runtime import record_launch
 
@@ -844,28 +926,65 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 return_value={"backend": "codex"},
             ), patch(
                 "tools.orchestration_runtime._prepare_codex_workflow_home",
-                return_value={"generation": "2"},
-            ):
+                return_value=None,
+            ) as prepare:
                 result = record_launch(
-                    repo_root, "orch_generation_race",
+                    repo_root, "orch_lineage_race",
                     parent_agent_run_id="parent", child_agent_run_id="child",
                     request_payload={}, response_payload={},
-                    expected_codex_home_generation=1,
+                    codex_lineage_id="lineage-1",
                 )
-            self.assertTrue(result["codex_home_generation_mismatch"])
-            self.assertEqual(result["codex_home_generation"], 2)
+            self.assertTrue(result["codex_lineage_home_missing"])
+            self.assertEqual(result["codex_lineage_id"], "lineage-1")
+            prepare.assert_called_once_with(
+                repo_root, "orch_lineage_race", "lineage-1", resume=True)
             self.assertFalse((repo_root / "workspace" / "orchestrations" /
-                              "orch_generation_race" / "launches").exists())
+                              "orch_lineage_race" / "launches").exists())
+            self.assertFalse((repo_root / "workspace" / "orchestrations" /
+                              "orch_lineage_race" / "session_run_index.json").exists())
 
-    def test_terse_record_launch_preserves_codex_generation_mismatch(self) -> None:
+    def test_record_launch_refuses_a_lineage_id_off_codex_or_malformed(self) -> None:
+        """`--codex-lineage-id` becomes a path segment outside the repository.
+
+        Refused for a non-codex backend (it names a home that backend has none of) and
+        for anything but a plain token, BEFORE the preparer is reached — the preparer's
+        own check is the second wall, and a call here would be a path join on the value.
+        """
+        from tools.orchestration_runtime import record_launch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            with patch(
+                "tools.orchestration_runtime._prepare_codex_workflow_home",
+            ) as prepare:
+                with patch("tools.orchestration_runtime._require_preflight_launchable",
+                           return_value={"backend": "claude"}), \
+                        self.assertRaisesRegex(ValueError, "only for the Codex backend"):
+                    record_launch(
+                        repo_root, "orch_lineage_refuse",
+                        parent_agent_run_id="parent", child_agent_run_id="child",
+                        request_payload={}, response_payload={},
+                        codex_lineage_id="lineage-1")
+                for bad in ("../x", "a/b", "", "x y"):
+                    with self.subTest(lineage=bad), \
+                            patch("tools.orchestration_runtime._require_preflight_launchable",
+                                  return_value={"backend": "codex"}), \
+                            self.assertRaisesRegex(ValueError, "codex_lineage_id contains"):
+                        record_launch(
+                            repo_root, "orch_lineage_refuse",
+                            parent_agent_run_id="parent", child_agent_run_id="child",
+                            request_payload={}, response_payload={},
+                            codex_lineage_id=bad)
+            prepare.assert_not_called()
+
+    def test_terse_record_launch_preserves_codex_lineage_home_missing(self) -> None:
         """The conductor must see the sentinel rather than an empty terse response."""
         result = _project_terse_result("record-launch", {
-            "codex_home_generation_mismatch": True,
-            "expected_codex_home_generation": 1,
-            "codex_home_generation": 2,
+            "codex_lineage_home_missing": True,
+            "codex_lineage_id": "lineage-1",
         })
-        self.assertEqual(result["expected_codex_home_generation"], 1)
-        self.assertEqual(result["codex_home_generation"], 2)
+        self.assertTrue(result["codex_lineage_home_missing"])
+        self.assertEqual(result["codex_lineage_id"], "lineage-1")
 
     def test_effective_pass_substep_run_ids_uses_violation_file_without_nameerror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1995,6 +2114,131 @@ shell_tool                       stable             true
             forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                 _allowed_output_paths_for_launch(request_payload=forged)
+
+    def test_a_codex_cold_launch_starts_its_own_lineage_and_a_warm_one_reuses_it(self) -> None:
+        """End to end through `record_launch`, the registration transaction and the index.
+
+        COLD: the response and the launch record name `codex_workflow_home` as a directory
+        named by the child's own arid under the orchestration's container, and
+        `codex_lineage_id == child_agent_run_id`; the thread registration copies the
+        lineage onto the session-index row. WARM: a second attempt of that thread, recorded
+        with `--codex-lineage-id` = the row's value, is bound the SAME home and its own row
+        carries the same lineage; a warm launch naming a lineage nobody started answers the
+        sentinel and writes nothing. A second COLD launch is a sibling lineage.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOMES_ROOT_ENV,
+            _read_session_run_index_consistent,
+            _write_json_transaction,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_lineage_e2e"
+            init_orchestration(
+                repo_root=repo_root,
+                orchestration_id=orch,
+                spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
+                source_dependency_ref="spec/problem/shallow_water2d/deps.yaml",
+            )
+            _seed_node_reservation(repo_root, orch, "problem/shallow_water2d@0.3.0",
+                                   ir_id="shallow-water2d_20260415_001",
+                                   pipeline_id="shallow-water2d_20260415_001",
+                                   until_phase="build")
+            _mark_dependencies_ready(repo_root, orch)
+            write_preflight(
+                repo_root=repo_root,
+                orchestration_id=orch,
+                payload={
+                    "status": "pass",
+                    "backend": "codex",
+                    "sandbox_runtime": "bwrap",
+                    "sandbox_enforced": True,
+                    "can_launch_step_agents": True,
+                    "can_launch_substep_agents": True,
+                    "feature_states": {"multi_agent": True, "hooks": True},
+                    "checks": self._codex_launch_checks(),
+                },
+            )
+
+            def _launch(arid: str, **kwargs):
+                return record_launch(
+                    repo_root=repo_root,
+                    orchestration_id=orch,
+                    parent_agent_run_id="orch_run_001",
+                    child_agent_run_id=arid,
+                    request_payload={
+                        "agent_model": "gpt-5-codex",
+                        "agent_run_id": arid,
+                        "agent_role": "substep",
+                        "node_key": "problem/shallow_water2d@0.3.0",
+                        "step": "compile",
+                        "substep": "generate",
+                        **_PURE_GENERATE_OVERRIDE,
+                        "pure_context": _PURE_COMPILE_CONTEXT,
+                        "orchestration_id": orch,
+                        "parent_agent_run_id": "orch_run_001",
+                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
+                        "launch_prompt_full": _pure_compile_generate_prompt(arid),
+                    },
+                    response_payload={"agent_run_id": arid, "backend": "codex",
+                                      **_spawn_response_payload(arid)},
+                    **kwargs,
+                )
+
+            container = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV]) / orch / "codex"
+            cold = _launch("arid-cold-a")
+            response = json.loads((repo_root / cold["launch_response_ref"]).read_text())
+            self.assertEqual(response["codex_lineage_id"], "arid-cold-a")
+            self.assertEqual(Path(response["codex_workflow_home"]), container / "arid-cold-a")
+            self.assertTrue((container / "arid-cold-a" / "config.toml").is_file())
+            profile = json.loads(
+                (repo_root / "workspace" / "orchestrations" / orch / "sandbox_profiles"
+                 / "arid-cold-a.json").read_text())
+            self.assertEqual(profile["runtime_rw_bind_paths"],
+                             [str(container / "arid-cold-a")])
+            self.assertEqual(profile["env"]["CODEX_HOME"], str(container / "arid-cold-a"))
+            # The thread registration carries the lineage onto the row.
+            _write_json_transaction(
+                transaction_dir=repo_root / "workspace" / "orchestrations" / orch,
+                agent_run_id="arid-cold-a", thread_id="thread-a", context_id="arid-cold-a",
+                agent_role="substep", status="running")
+            rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
+                repo_root, orch)["entries"]}
+            self.assertEqual(rows["arid-cold-a"]["agent_session_id"], "thread-a")
+            self.assertEqual(rows["arid-cold-a"]["codex_lineage_id"], "arid-cold-a")
+
+            # WARM: attempt 2 of thread-a, against the row's lineage.
+            warm = _launch("arid-warm-a2", codex_lineage_id=rows["arid-cold-a"]["codex_lineage_id"])
+            response = json.loads((repo_root / warm["launch_response_ref"]).read_text())
+            self.assertEqual(response["codex_lineage_id"], "arid-cold-a")
+            self.assertEqual(Path(response["codex_workflow_home"]), container / "arid-cold-a")
+            _write_json_transaction(
+                transaction_dir=repo_root / "workspace" / "orchestrations" / orch,
+                agent_run_id="arid-warm-a2", thread_id="thread-a", context_id="arid-warm-a2",
+                agent_role="substep", status="running")
+            rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
+                repo_root, orch)["entries"]}
+            self.assertEqual(rows["arid-warm-a2"]["codex_lineage_id"], "arid-cold-a")
+            self.assertFalse((container / "arid-warm-a2").exists())
+
+            # A second COLD launch is a sibling lineage, and the container holds only lineages.
+            _launch("arid-cold-b")
+            self.assertEqual(sorted(p.name for p in container.iterdir()),
+                             ["arid-cold-a", "arid-cold-b"])
+
+            # WARM against a lineage nobody started: the sentinel, and no launch record.
+            missing = _launch("arid-warm-x", codex_lineage_id="arid-never")
+            self.assertEqual(missing, {"codex_lineage_home_missing": True,
+                                       "codex_lineage_id": "arid-never"})
+            self.assertFalse((repo_root / "workspace" / "orchestrations" / orch / "launches"
+                              / "arid-warm-x.request.json").exists())
+            self.assertFalse((container / "arid-never").exists())
+            self.assertNotIn("arid-warm-x", {
+                r["agent_run_id"] for r in _read_session_run_index_consistent(
+                    repo_root, orch)["entries"]})
 
     def test_writes_orchestration_artifacts_in_canonical_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14266,6 +14510,47 @@ class RecordTimeoutTests(unittest.TestCase):
                 ])
         self.assertIsNone(seen.get("child_env"))
 
+    def test_the_cli_hands_the_lineage_id_to_record_launch_and_prints_the_sentinel(self) -> None:
+        """The `--codex-lineage-id` flag and its dispatch, pinned on the boundary the
+        conductor crosses: the conductor spawns this CLI, so a flag that parses and a
+        dispatch that forwards it are the two hunks nothing else observes (both survived a
+        hunk-level sweep at round 0). The sentinel is asserted on STDOUT under the default
+        terse projection, because that is the only channel the conductor reads it from."""
+        from tools.orchestration_runtime import main as runtime_main
+        seen: dict = {}
+
+        def fake_record_launch(**kwargs):
+            seen.update(kwargs)
+            return {"codex_lineage_home_missing": True,
+                    "codex_lineage_id": kwargs.get("codex_lineage_id")}
+
+        response = json.dumps({"agent_run_id": "c", "agent_session_id": "c",
+                               "started_at": "2026-08-20T00:00:00Z", "backend": "codex"})
+        buf = io.StringIO()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with redirect_stdout(buf):
+                rc = runtime_main([
+                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                    "--request-json", "{}", "--response-json", response,
+                    "--codex-lineage-id", "lineage-1",
+                ])
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertEqual(seen.get("codex_lineage_id"), "lineage-1")
+        printed = json.loads(buf.getvalue())
+        self.assertEqual(printed, {"codex_lineage_home_missing": True,
+                                   "codex_lineage_id": "lineage-1"})
+        # Control: without the flag the parameter is None.
+        seen.clear()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with redirect_stdout(io.StringIO()):
+                runtime_main([
+                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                    "--request-json", "{}", "--response-json", response,
+                ])
+        self.assertIsNone(seen.get("codex_lineage_id"))
+
     def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
         """The `child_env=None` path (a conductor-less caller) must not be a way back in:
         it filters `os.environ` through the same owner constant. Sibling of the assertion
@@ -24987,12 +25272,15 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         (auth / "auth.json").write_text("{}\n", encoding="utf-8")
         return root
 
-    def _prepare_home(self, repo_root: Path, orchestration_id: str = "orch_d") -> dict:
-        """Prepare THE private backend home, with the operator credential resolved beside the
+    def _prepare_home(self, repo_root: Path, orchestration_id: str = "orch_d",
+                      lineage_id: str = "lineage-d", *, resume: bool = False) -> dict:
+        """Prepare a private backend home, with the operator credential resolved beside the
         repo. The backend is codex because it is the only one with a private home now; what
-        every row here is about is the SHARED creation
+        every row here is about is the SHARED creation of the CONTAINER
         (`_create_workflow_backend_home` / `_require_secure_backend_home` /
-        `_resecure_workflow_home_on_reuse`), which is backend-independent."""
+        `_resecure_workflow_home_on_reuse`), which is backend-independent. The returned
+        `home` is the lineage home one level below it (issue #245); rows that are about
+        the container take `Path(iso["home"]).parent`."""
         from tools.orchestration_runtime import _prepare_codex_workflow_home
         repo_root = Path(repo_root)
         # `_claude_repo` puts the credential INSIDE the fixture root it returns; `_codex_repo`
@@ -25005,7 +25293,8 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         else:
             raise AssertionError(f"no operator codex credential beside {repo_root}")
         with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth)}, clear=False):
-            return _prepare_codex_workflow_home(repo_root, orchestration_id)
+            return _prepare_codex_workflow_home(
+                repo_root, orchestration_id, lineage_id, resume=resume)
 
     def _codex_repo(self, td: str, orchestration_id: str = "orch_d") -> tuple[Path, Path]:
         """A repo with this repository's real hook source, plus an operator codex home."""
@@ -25061,7 +25350,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo_root, auth_home = self._codex_repo(td)
             with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
-                codex = Path(self._prepare_home(repo_root, "orch_d")["home"])
+                codex = Path(self._prepare_home(repo_root, "orch_d")["home"]).parent
                 claude = _create_workflow_backend_home(
                     repo_root, "orch_d", "claude", "Claude")
             owner_dir = self._homes_root() / "orch_d"
@@ -25098,7 +25387,8 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 iso = self._prepare_home(root, "orch_d")
                 secret_root = operator_secret_root()
-            self.assertEqual(Path(iso["home"]), secret_root / "homes" / "orch_d" / "codex")
+            self.assertEqual(Path(iso["home"]),
+                             secret_root / "homes" / "orch_d" / "codex" / "lineage-d")
             self.assertTrue(Path(iso["home"]).is_relative_to(secret_root))
             # `~/.atmofab` itself is NOT forced to 0700 (the operator-token writer has
             # created it best-effort since long before this change, so requiring a mode
@@ -25109,14 +25399,16 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 (secret_root / "homes" / "orch_d").stat().st_mode & 0o777, 0o700)
 
     def test_a_home_recorded_at_an_old_location_is_reused_rather_than_migrated(self) -> None:
-        """No migration code, on purpose: a live pre-issue-#64 home keeps being used.
+        """No migration code, on purpose: a live pre-issue-#64 container keeps being used.
 
         A run started before this change recorded a `/tmp` home in its metadata. The
         reuse branch reads that path and, while the directory is still there, prepares
-        into it — so `--resume` across the upgrade finds the same transcripts. Only a
-        home that has VANISHED rotates, and rotation lands at the new deterministic
-        location. The bwrap side survives the same way: the rw bind for the home is
-        emitted after `--tmpfs /tmp`, so a `/tmp` path is still mountable.
+        into it — a new lineage lands UNDER it (issue #245) — so `--resume` across the
+        upgrade keeps the tree in one place. Only a container that has VANISHED is
+        re-created, at the new deterministic location. The bwrap side survives the same
+        way: the rw bind for the home is emitted after `--tmpfs /tmp`, so a `/tmp` path is
+        still mountable. A stale `codex_workflow_home_generation` key in such metadata is
+        left as it stands and read by nothing.
         """
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
@@ -25129,8 +25421,8 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 json.dumps({"codex_workflow_home": str(legacy),
                             "codex_workflow_home_generation": 3}), encoding="utf-8")
             iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), legacy)
-            self.assertEqual(iso["generation"], "3")
+            self.assertEqual(Path(iso["home"]), legacy / "lineage-d")
+            self.assertNotIn("generation", iso)
             self.assertFalse((self._homes_root() / "orch_d").exists())
 
     def test_an_unrecorded_existing_home_is_refused_rather_than_adopted(self) -> None:
@@ -25417,10 +25709,19 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo_root, auth_home = self._codex_repo(td)
             with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
-                home = Path(self._prepare_home(repo_root, "orch_d")["home"])
-                os.chmod(home, 0o755)
-                self._prepare_home(repo_root, "orch_d")
-                self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+                lineage = Path(self._prepare_home(repo_root, "orch_d")["home"])
+                container = lineage.parent
+                # Both levels drift; a warm preparation of the same lineage re-asserts
+                # both (the container through the reuse branch, the lineage through its
+                # own `tighten=True`), and a cold one for a new lineage the container.
+                os.chmod(container, 0o755)
+                os.chmod(lineage, 0o755)
+                self._prepare_home(repo_root, "orch_d", resume=True)
+                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(lineage.stat().st_mode & 0o777, 0o700)
+                os.chmod(container, 0o755)
+                self._prepare_home(repo_root, "orch_d", "lineage-e")
+                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
 
     def test_a_reuse_tightening_that_does_not_take_is_refused(self) -> None:
         """The re-read after the home's own tightening, which nothing observed.
@@ -25433,12 +25734,17 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
-            home = Path(self._prepare_home(root, "orch_d")["home"])
-            os.chmod(home, 0o755)
-            with mock.patch("os.fchmod"):  # succeeds, changes nothing
-                with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
-                    self._prepare_home(root, "orch_d")
-            os.chmod(home, 0o700)
+            lineage = Path(self._prepare_home(root, "orch_d")["home"])
+            container = lineage.parent
+            for drifted, kwargs in ((container, {"lineage_id": "lineage-e"}),
+                                    (lineage, {"resume": True})):
+                with self.subTest(level=drifted.name):
+                    os.chmod(drifted, 0o755)
+                    with mock.patch("os.fchmod"):  # succeeds, changes nothing
+                        with self.assertRaisesRegex(ValueError,
+                                                    "still not mode 0700 after chmod"):
+                            self._prepare_home(root, "orch_d", **kwargs)
+                    os.chmod(drifted, 0o700)
 
     def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
         """Two checkouts, one explicit orchestration id, and the second inherited the
@@ -25532,13 +25838,13 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
             moved = root / "checkout_moved"
             shutil.move(str(repo), str(moved))
-            # The codex home's `config.toml` records the checkout path (the untrusted
+            # The lineage home's `config.toml` records the checkout path (the untrusted
             # marker), so a moved checkout legitimately produces different bytes and the
             # verified-source comparison refuses the stale copy. Removing it is what a real
-            # resume from a moved checkout does — the preparer re-authors it. The marker
-            # refresh, which is this row's subject, runs either way.
-            (self._homes_root() / "orch_d" / "codex" / "config.toml").unlink()
-            self._prepare_home(moved, "orch_d")
+            # warm resume from a moved checkout does — the preparer re-authors it. The
+            # marker refresh, which is this row's subject, runs either way.
+            (self._homes_root() / "orch_d" / "codex" / "lineage-d" / "config.toml").unlink()
+            self._prepare_home(moved, "orch_d", resume=True)
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
                              str(moved.resolve()),
                              "a resume from the moved checkout left the marker stale")
@@ -25579,7 +25885,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
              / "orchestration_meta.json").write_text(
                 json.dumps({"codex_workflow_home": str(legacy)}), encoding="utf-8")
             iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), legacy)
+            self.assertEqual(Path(iso["home"]), legacy / "lineage-d")
             self.assertFalse((legacy_parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written beside a pre-branch home")
 
@@ -25595,7 +25901,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
              / "orchestration_meta.json").write_text(
                 json.dumps({"codex_workflow_home": str(elsewhere)}), encoding="utf-8")
             iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), elsewhere)
+            self.assertEqual(Path(iso["home"]), elsewhere / "lineage-d")
             self.assertFalse((elsewhere.parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written into a homes tree that is not the "
                              "one this launch resolves")
@@ -25821,19 +26127,23 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         false and the drift persisted until an unrelated new orchestration rebuilt the
         path.
 
-        All three levels are asserted, because the home's own tightening already had a
-        witness and would have carried a two-level assertion on its own.
+        All four levels are asserted, because the container's own tightening already
+        had a witness and would have carried a two-level assertion on its own; the
+        lineage home (issue #245) is the fourth, tightened by the warm branch's own
+        `tighten=True`.
         """
         with tempfile.TemporaryDirectory() as td:
             repo = self._claude_repo(td)
             homes = self._homes_root()
-            home = Path(self._prepare_home(repo, "orch_d")["home"])
+            lineage = Path(self._prepare_home(repo, "orch_d")["home"])
+            container = lineage.parent
             for target, label in ((homes, "homes root"),
-                                  (home.parent, "orchestration dir"),
-                                  (home, "the home")):
+                                  (container.parent, "orchestration dir"),
+                                  (container, "the container"),
+                                  (lineage, "the lineage home")):
                 with self.subTest(level=label):
                     os.chmod(target, 0o755)
-                    self._prepare_home(repo, "orch_d")
+                    self._prepare_home(repo, "orch_d", resume=True)
                     self.assertEqual(target.stat().st_mode & 0o777, 0o700,
                                      f"{label} stayed loose across a warm reuse")
 
