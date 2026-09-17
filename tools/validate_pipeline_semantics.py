@@ -10908,6 +10908,32 @@ def _validate_orchestration_hierarchy(
             violations.append(f"{steps_root}: missing")
             continue
 
+        # A phase this orchestration SKIPPED as certified wrote no step_result here: the
+        # artifact it stands on was certified by another run, and `check-phase-certified`
+        # recorded the skip as `skipped_certified` in `phase_state.json` (docs/ORCHESTRATION.md
+        # §43) — a host record no leaf writes. The completion vouch reads the same state to
+        # exempt the phase from its latest-attempt clause; this census reads it for the same
+        # reason, or a run whose Compile / Generate stood certified while Validate ran (a
+        # `--rederive build`, a cold run over a node certified through Build) would refuse its
+        # own pre_judge for step_results it correctly never wrote.
+        skipped_certified: set[tuple[str, str]] = set()
+        try:
+            phase_state = json.loads(
+                (orchestration_dir / "phase_state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            phase_state = None
+        node_states = phase_state.get("node_states") if isinstance(phase_state, dict) else None
+        if isinstance(node_states, dict):
+            for ns, states in node_states.items():
+                if not isinstance(states, dict):
+                    continue
+                for st, value in states.items():
+                    if value == "skipped_certified":
+                        skipped_certified.add((str(ns), str(st)))
+        for key in skipped_certified:
+            if key in step_coverage:
+                step_coverage[key] = True
+
         for node_safe in node_safes:
             for step in REQUIRED_WORKFLOW_STEPS:
                 step_dir = steps_root / node_safe / step
@@ -13062,7 +13088,7 @@ FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
 #: `--stage post_generate`). The fix is a re-certification (readiness refuses such an IR and
 #: Compile re-derives it on `--resume`), never a re-authored model, so the conductor routes it
 #: TERMINAL. Despite the name, neither emit site is about a DEPENDENCY's IR — and a dependency's
-#: IR is NOT re-validated by readiness (`_dep_ir_meta_passes` reads status; `_verify_dep_stage_detail` adds 13a freshness; neither runs the validator), so
+#: IR is NOT re-validated by readiness (`_verify_dep_stage_detail` is the derivation-key lookup alone, `docs/ORCHESTRATION.md` §13a; it runs no validator), so
 #: `--with-deps` is not a remedy for this code. Distinct from 0/1/2/3, so a caller tells all five
 #: apart without reading the output.
 STALE_DEPENDENCY_IR_EXIT_CODE = 4

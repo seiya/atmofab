@@ -11,6 +11,15 @@ The hashes are computed here from the bytes written, exactly as `_stamp_certific
 computes them — deliberately not copied from the implementation, so a change to the stamp's
 recorded shape shows up as a failing certification rather than as a fixture that agrees with
 the code by construction.
+
+Since issue #250 PR-2 "certified" is decided by the DERIVATION KEY, so the chain also
+carries, per phase, the `derivation_key` / `derivation_inputs` / `derivation_transformation`
+/ `output_hash` the stamp writes (`stamp=True`, the default). The key is what the production
+resolver recomputes (`phase_derivation` over the fixture's own spec files, catalog entry and
+upstream outputs) — the fixture cannot invent it, and does not try: it asks the same function
+the predicate asks, so a test that then edits one input observes exactly the mismatch a real
+edit produces. `ensure_spec_entry` writes the minimal spec directory + catalog entry the key
+needs; `certify_node` calls it unless told the caller owns the registry.
 """
 
 from __future__ import annotations
@@ -22,6 +31,131 @@ from typing import Any
 from unittest import mock
 
 _PHASE_ORDER = ("compile", "generate", "build", "validate")
+
+#: The canonical empty `deps.yaml` (`_deps_yaml_bytes_are_canonical_empty` recognizes it).
+EMPTY_DEPS_YAML = "dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n"
+
+
+def spec_ref_of(node_key: str) -> str:
+    """The spec directory `ensure_spec_entry` writes for `node_key`: `spec/<kind>/<spec_id>`."""
+    kind, rest = node_key.split("/", 1)
+    return f"spec/{kind}/{rest.split('@', 1)[0]}"
+
+
+def ensure_spec_entry(
+    repo_root: Path,
+    node_key: str,
+    *,
+    deps_yaml: str | None = None,
+    controlled_spec: str | None = None,
+    tests_md: str | None = None,
+) -> str:
+    """Write the minimal spec directory (`controlled_spec.md`, `tests.md`, `deps.yaml`) and
+    the `spec_catalog.yaml` entry that resolve `node_key`'s spec_ref and version, keeping
+    whatever the catalog already holds. A catalog that already resolves `(kind, spec_id)`
+    to a directory keeps that directory (a test that seeded its own registry layout); the
+    default layout is `spec/<kind>/<spec_id>`. Existing spec files are left as they are
+    unless a body is passed. Returns the spec_ref."""
+    import yaml
+
+    kind, rest = node_key.split("/", 1)
+    spec_id, version = rest.split("@", 1)
+    catalog_path = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+    doc: dict[str, Any] = {}
+    if catalog_path.is_file():
+        loaded = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+        doc = loaded if isinstance(loaded, dict) else {}
+    specs = doc.get("specs")
+    if not isinstance(specs, list):
+        specs = []
+    spec_ref = spec_ref_of(node_key)
+    for e in specs:
+        if not (isinstance(e, dict) and e.get("spec_kind") == kind and e.get("spec_id") == spec_id):
+            continue
+        ref_source = e.get("deps_path") or e.get("controlled_spec_path")
+        if isinstance(ref_source, str) and ref_source.strip():
+            spec_ref = str(Path(ref_source.strip()).parent).strip("/")
+            break
+    spec_dir = repo_root / spec_ref
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    for name, body, default in (
+        ("controlled_spec.md", controlled_spec, f"# {spec_id}\n\nversion {version}\n"),
+        ("tests.md", tests_md, f"# tests for {spec_id}\n"),
+        ("deps.yaml", deps_yaml, EMPTY_DEPS_YAML),
+    ):
+        path = spec_dir / name
+        if body is not None or not path.is_file():
+            path.write_text(body if body is not None else default, encoding="utf-8")
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "spec_kind": kind, "spec_id": spec_id, "spec_version": version,
+        "status": "controlled_draft",
+        "controlled_spec_path": f"{spec_ref}/controlled_spec.md",
+        "tests_path": f"{spec_ref}/tests.md",
+        "deps_path": f"{spec_ref}/deps.yaml",
+    }
+    existing = [e for e in specs if isinstance(e, dict) and e.get("spec_kind") == kind
+                and e.get("spec_id") == spec_id and e.get("spec_version") == version]
+    if not existing:
+        specs.append(entry)
+    for e in existing:
+        # An entry a test wrote without paths (the older fixtures' shape): give it the
+        # paths that resolve it, keeping whatever else it carries.
+        if not (e.get("deps_path") or e.get("controlled_spec_path")):
+            e.update({k: entry[k] for k in ("controlled_spec_path", "tests_path", "deps_path")})
+    doc.setdefault("catalog_version", "0.2.0")
+    doc.setdefault("updated_at", "2026-01-01")
+    doc["specs"] = specs
+    catalog_path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return spec_ref
+
+
+def write_dependency_graph_sidecar(repo_root: Path, node_key: str, ir_ref: str,
+                                   *, spec_ref: str | None = None) -> dict[str, Any]:
+    """Author `<ir_ref>/dependency_graph.json` the way the conductor does at Compile start
+    (`Conductor._write_dependency_graph`: the real builder over deps.yaml + the catalog), so
+    the closure the generate / build keys read is the one the registry derives. Raises when
+    the closure does not build — a fixture whose dependencies are not in the catalog yet."""
+    from tools.dependency_graph import build_dependency_graph
+
+    from tools.orchestration_runtime import DerivationResolver
+
+    if spec_ref is None:
+        spec_ref = DerivationResolver(repo_root).spec_ref(node_key) or spec_ref_of(node_key)
+    graph, err = build_dependency_graph(
+        repo_root, target_spec_ref=spec_ref, target_node_key=node_key)
+    if err is not None:
+        raise RuntimeError(f"dependency graph of {node_key} does not build: {err}")
+    _write_json(repo_root / ir_ref / "dependency_graph.json", graph)
+    return graph
+
+
+def stamp_derivation(
+    repo_root: Path, node_key: str, step: str, meta_ref: str, *,
+    spec_ref: str | None = None, ir_ref: str | None = None,
+    source_ref: str | None = None, binary_ref: str | None = None,
+) -> dict[str, Any]:
+    """Stamp the derivation record and `output_hash` of ONE phase into its certifying meta at
+    `meta_ref` (repo-relative), computed the way the stamp computes them: the key over
+    `phase_derivation`'s inputs NOW, the output hash over the meta's own `artifact_hashes`.
+    Returns the stamped document."""
+    from tools.derivation import output_hash
+    from tools.orchestration_runtime import DerivationResolver, phase_derivation
+
+    if spec_ref is None:
+        spec_ref = DerivationResolver(repo_root).spec_ref(node_key) or spec_ref_of(node_key)
+    record = phase_derivation(
+        repo_root, node_key=node_key, step=step,
+        spec_ref=spec_ref, ir_ref=ir_ref,
+        source_ref=source_ref, binary_ref=binary_ref)
+    path = repo_root / meta_ref
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["derivation_key"] = record["derivation_key"]
+    doc["derivation_inputs"] = record["derivation_inputs"]
+    doc["derivation_transformation"] = record["transformation"]
+    doc["output_hash"] = output_hash(doc["artifact_hashes"], stage_dir=meta_ref.rsplit("/", 1)[0])
+    _write_json(path, doc)
+    return doc
 
 
 def accept_any_certified_ir() -> mock._patch:
@@ -69,17 +203,31 @@ def certify_node(
     binary_id: str = "bin_20260101_001",
     run_id: str = "run_20260101_001",
     reserve: bool = True,
+    stamp: bool = True,
+    spec_entry: bool = True,
+    model_text: str | None = None,
+    ir_text: str | None = None,
+    exe_bytes: bytes | None = None,
 ) -> dict[str, str]:
     """Write the certified artifact chain for `node_key` up to and including `through`.
 
     Returns the refs a test needs to reach into what it built (`ir_ref`, `pipeline_ref`,
     the per-stage meta paths and the ids). Every meta carries the `artifact_hashes` of its
-    own deliverables and the binding to the stage above it, so the chain satisfies
-    `_phase_certified` end to end; a test that wants a refusal mutates exactly one link.
+    own deliverables, the binding to the stage above it and (`stamp`) the derivation record
+    the key lookup selects by, so the chain satisfies `_phase_certified` end to end; a test
+    that wants a refusal mutates exactly one link. `spec_entry` writes the spec directory
+    and catalog entry the key resolves (`ensure_spec_entry`); pass `False` when the test
+    owns the registry and has already written an entry for this node.
     """
     safe = node_safe(node_key)
     spec_id = spec_id_of(node_key)
     idx = _PHASE_ORDER.index(through)
+    if spec_entry:
+        ensure_spec_entry(repo_root, node_key)
+
+    def _stamp(step: str, meta_ref: str, **refs: str | None) -> None:
+        if stamp:
+            stamp_derivation(repo_root, node_key, step, meta_ref, **refs)
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     ir_dir = repo_root / "workspace" / "ir" / safe / ir_id
     pipe_dir = repo_root / "workspace" / "pipelines" / safe / pipeline_id
@@ -95,7 +243,8 @@ def certify_node(
 
     ir_dir.mkdir(parents=True, exist_ok=True)
     spec_ir = ir_dir / "spec.ir.yaml"
-    spec_ir.write_text(f"node_key: {node_key}\n", encoding="utf-8")
+    spec_ir.write_text(ir_text if ir_text is not None else f"node_key: {node_key}\n",
+                       encoding="utf-8")
     _write_json(ir_dir / "ir_meta.json", {
         "ir_id": ir_id, "node_key": node_key, "attempt_count": 1,
         "verification_status": "pass", "last_fail_reason": None,
@@ -104,13 +253,17 @@ def certify_node(
     })
     refs = {"safe": safe, "ir_id": ir_id, "ir_ref": ir_ref,
             "ir_meta": f"{ir_ref}/ir_meta.json"}
+    if stamp:
+        write_dependency_graph_sidecar(repo_root, node_key, ir_ref)
+    _stamp("compile", refs["ir_meta"])
     if idx == 0:
         return refs
 
     src_dir = pipe_dir / "source" / source_id / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     model = src_dir / f"{spec_id}_model.f90"
-    model.write_text(f"module {spec_id}_model\nend module\n", encoding="utf-8")
+    model.write_text(model_text if model_text is not None
+                     else f"module {spec_id}_model\nend module\n", encoding="utf-8")
     model_ref = f"{pipe_ref}/source/{source_id}/src/{spec_id}_model.f90"
     _write_json(pipe_dir / "source" / source_id / "source_meta.json", {
         "source_id": source_id, "node_key": node_key, "attempt_count": 1,
@@ -128,13 +281,14 @@ def certify_node(
     refs |= {"pipeline_id": pipeline_id, "pipeline_ref": pipe_ref, "source_id": source_id,
              "source_meta": f"{pipe_ref}/source/{source_id}/source_meta.json",
              "model_ref": model_ref}
+    _stamp("generate", refs["source_meta"], ir_ref=ir_ref)
     if idx == 1:
         return refs
 
     bin_dir = pipe_dir / "binary" / binary_id / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     exe = bin_dir / f"{spec_id}_runner"
-    exe.write_bytes(b"\x7fELF-fixture")
+    exe.write_bytes(exe_bytes if exe_bytes is not None else b"\x7fELF-fixture")
     exe_ref = f"{pipe_ref}/binary/{binary_id}/bin/{spec_id}_runner"
     _write_json(pipe_dir / "binary" / binary_id / "binary_meta.json", {
         "binary_id": binary_id, "node_key": node_key, "pipeline_id": pipeline_id,
@@ -148,6 +302,8 @@ def certify_node(
     refs |= {"binary_id": binary_id,
              "binary_meta": f"{pipe_ref}/binary/{binary_id}/binary_meta.json",
              "exe_ref": exe_ref}
+    _stamp("build", refs["binary_meta"], ir_ref=ir_ref,
+           source_ref=f"{pipe_ref}/source/{source_id}")
     if idx == 2:
         return refs
 
@@ -167,11 +323,9 @@ def certify_node(
         "status": "pass", "validation_stage": "pre_judge", "failure_category": None,
         "failure_excerpt": None, "violations": [], "disposition": None,
     })
-    # The rest of Validate's declared deliverables. `_phase_certified` requires all of them:
-    # it does not read Validate's `artifact_hashes` stamp until issue #250 PR-2, so their
-    # presence is what stands between "the chain reads as complete" and "the attempt actually
-    # finished writing". (The fixture's `validate_meta.json` carries no stamp: PR-1 stamps it
-    # only through `write_step_result`, and the rows that need one drive that.)
+    # The rest of Validate's declared deliverables, hashed into `validate_meta.json`'s
+    # `artifact_hashes` the way `write_step_result` stamps them (Validate certifies its meta
+    # since issue #250 PR-1, and the key lookup reads it since PR-2).
     _write_json(run_node / "verdict.json", {
         "node_key": node_key, "run_id": run_id, "self_verdict": "pass", "failure_class": None,
     })
@@ -181,12 +335,23 @@ def certify_node(
     _write_json(run_node / "semantic_review.json", {
         "decision": "pass", "findings": [],
     })
+    run_ref = f"{pipe_ref}/runs/{run_id}/{safe}"
     _write_json(run_node / "validate_meta.json", {
         "run_id": run_id, "node_key": node_key, "pipeline_id": pipeline_id,
         "verification_status": "pass", "attempt_count": 1,
+        # Exactly the declared deliverables minus the meta itself
+        # (`phase_required_outputs(..., "validate")`); `trial_meta.json` and
+        # `post_judge_meta.json` are host records outside the declared set.
+        "artifact_hashes": {
+            f"{run_ref}/{name}": _sha256(run_node / name)
+            for name in ("aggregate_verdict.json", "verdict.json", "summary.json",
+                         "semantic_review.json")},
     })
     refs |= {"run_id": run_id,
-             "aggregate_verdict": f"{pipe_ref}/runs/{run_id}/{safe}/aggregate_verdict.json",
-             "post_judge_meta": f"{pipe_ref}/runs/{run_id}/{safe}/post_judge_meta.json",
-             "run_node_dir": f"{pipe_ref}/runs/{run_id}/{safe}"}
+             "aggregate_verdict": f"{run_ref}/aggregate_verdict.json",
+             "post_judge_meta": f"{run_ref}/post_judge_meta.json",
+             "validate_meta": f"{run_ref}/validate_meta.json",
+             "run_node_dir": run_ref}
+    _stamp("validate", refs["validate_meta"], ir_ref=ir_ref,
+           binary_ref=f"{pipe_ref}/binary/{binary_id}")
     return refs

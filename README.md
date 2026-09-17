@@ -67,6 +67,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 | `--resume` | continue the latest (or `--orchestration-id`) orchestration from its checkpoint, recovering `spec_ref` / `until_phase` / the launched configuration |
 | `--mode` | `dev` (default): a `major` / `critical` verify finding terminalizes the run. `prod`: it is routed to the diagnostician, which decides how far back to recover |
 | `--wait-usage-reset` | sleep out a provider usage limit in place and re-launch the dead substep, instead of terminalizing (bounded; opt-in per invocation) |
+| `--rederive PHASE[,PHASE]` | run the named phase(s) of the target although they are certified; the previous output stays eligible, and later phases re-derive only if the forced phase changed its output (`docs/RUNBOOK.md` §Updating a shared dependency spec) |
 
 `docs/RUNBOOK.md` is the canonical operational procedure: preflight requirements per backend, the minimal loop, the failure-to-phase routing table, and the recovery procedures. On the Claude backend, preflight requires `build-runtime` to be enabled in the committed `.claude/settings.json` and permission-granted to the child agent session (`docs/RUNBOOK.md` §0-2).
 

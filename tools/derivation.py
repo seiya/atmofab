@@ -202,11 +202,41 @@ def first_differing_input(recorded: Mapping[str, Any], current: Mapping[str, Any
     return walk(recorded, current, "")
 
 
+def differing_inputs(recorded: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """EVERY dotted path at which `recorded` and `current` differ, in the order
+    `first_differing_input` walks (so its first element is that function's answer). The
+    count is what picks WHICH stamped output a mismatch is diagnosed against: the one closest
+    to today's inputs names what actually moved, where a stale sibling would name what
+    separates it from the standing output instead."""
+    out: list[str] = []
+
+    def walk(a: Any, b: Any, path: str) -> None:
+        if isinstance(a, Mapping) and isinstance(b, Mapping):
+            for k in sorted(set(a) | set(b), key=str):
+                sub = f"{path}.{k}" if path else str(k)
+                if k not in a or k not in b:
+                    out.append(sub)
+                else:
+                    walk(a[k], b[k], sub)
+            return
+        if isinstance(a, Sequence) and isinstance(b, Sequence) and not isinstance(a, str) and not isinstance(b, str):
+            if len(a) != len(b):
+                out.append(path or "<root>")
+                return
+            for i, (x, y) in enumerate(zip(a, b)):
+                walk(x, y, f"{path}[{i}]")
+            return
+        if a != b:
+            out.append(path or "<root>")
+    walk(recorded, current, "")
+    return out
+
+
 class Candidate(NamedTuple):
     """One certified output of a derivation key, as `select_eligible` sees it: the attempt
     that produced it (its `agent_run_id`, or the stage directory's id when no attempt is
     recorded), the ordering token the runtime gives it (a `(date, seq)` tuple from the stage
-    id today — the same order `_latest_meta_under` uses), its output hash, and the stage
+    id today — the order `_stage_meta_candidates` assigns), its output hash, and the stage
     directory it lives in (opaque to this module; handed back to the caller)."""
     attempt_id: str
     order: tuple[Any, ...]

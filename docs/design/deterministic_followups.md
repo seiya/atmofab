@@ -2025,7 +2025,9 @@ in whether `c` is a direct or a transitive dependency of `a` — precisely the `
 exponential part. So the builder's flag became `include_via=False` — membership is a set difference, and only the
 path enumeration is skipped.
 
-## R6-lite — dependency-freshness readiness: a dependency spec update regenerates its dependents (IMPLEMENTED 2026-07-10)
+## R6-lite — dependency-freshness readiness: a dependency spec update regenerates its dependents (IMPLEMENTED 2026-07-10; SUPERSEDED 2026-09-18)
+
+> **Superseded by the derivation key ([issue #250](https://github.com/seiya/atmofab/issues/250) Z5 PR-2).** The sidecar node-set comparison (`_dependency_resolution_freshness`) and the closure-binding comparison of issue #153 below (`_dependency_binding_freshness`) are deleted; both are projections of the compile / build derivation keys, and readiness is one lookup of the key (`docs/ORCHESTRATION.md` §13a). The text below is the record of what these mechanisms were and why.
 
 **The problem R3-core surfaced.** Bumping `harness_fortran_cpu` to 0.3.0 must re-certify the five nodes that depend
 on it. The obvious lever — bump each dependent's `spec_version` so its artifacts miss — was rejected: their content
@@ -3523,7 +3525,7 @@ cross-scanner parity test (`test_cross_scanner_parity_with_runtime`) dropped its
 restriction and now runs over the pathological inputs the restriction existed to exclude, asserting per case that the
 scanners agree on something rather than agreeing on nothing.
 
-## Issue #153 — content-granular closure bindings (R6 proper, closure-source half) and the `component` ABI pinned in §5.1 (PR-1 and PR-2 both LANDED 2026-09-04)
+## Issue #153 — content-granular closure bindings (R6 proper, closure-source half) and the `component` ABI pinned in §5.1 (PR-1 and PR-2 both LANDED 2026-09-04; the binding comparison SUPERSEDED 2026-09-18 by issue #250 PR-2 — see the R6-lite note above; the §5.1 pin stands)
 
 **The instance.** `orch_20260903T215814Z_663512a0` (`advdiff1d_linear validate --with-deps`) re-ran the boundary
 `component` alone. `profile/dynamics_advdiff_profile_1d_upwind_center2_euler1@0.1.0` was recorded

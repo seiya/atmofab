@@ -49,9 +49,9 @@ def build_dependency_graph(
     ``include_via=False`` returns the same ``all_nodes`` and the same ``transitive_deps``
     membership, but leaves each ``via`` an empty list. Only the sidecar author needs the
     ``via`` paths, and ``via_for`` enumerates every simple path — exponential on a wide
-    diamond closure. The R6-lite freshness comparison
-    (``orchestration_runtime._dependency_resolution_freshness``) needs the node sets but not
-    the paths, so skipping ``via`` keeps readiness linear in the closure size.
+    diamond closure. The compile derivation key's closure signature
+    (``orchestration_runtime._derived_closure_graph`` -> ``_closure_signature``) needs the node
+    sets but not the paths, so skipping ``via`` keeps readiness linear in the closure size.
 
     Returns ``(graph, error)``:
       - ``graph``: on success, the sidecar dict
