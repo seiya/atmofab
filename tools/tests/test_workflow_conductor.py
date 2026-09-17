@@ -288,8 +288,11 @@ class BuildLaunchRequestTest(unittest.TestCase):
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         placeholder = re.compile(r"^<redacted: (\d+) bytes sha256:([0-9a-f]{64})>$")
 
+        # Non-ASCII on purpose: every recorded original is non-ASCII in `launch_prompt_full`
+        # and in some `pure_context` documents, so a placeholder counting CHARACTERS would be
+        # wrong on the real corpus while an ASCII probe could not tell.
         raw = {"step": "compile", "substep": "verify", "leaf_mode": "pure",
-               "pure_context": {"a_document": "alpha\n", "b_document": "beta"},
+               "pure_context": {"a_document": "alpha ü\n", "b_document": "beta — γ"},
                "launch_prompt_full": "rendered prompt", "resolved_dependencies": [{"k": 1}]}
         out = mod.redact(raw)
         # the two content fields are replaced; every other field is verbatim
@@ -307,7 +310,8 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(int(m.group(1)), len(b"rendered prompt"))
         # the input is not mutated, and a request without the two fields passes through
-        self.assertEqual(raw["pure_context"]["a_document"], "alpha\n")
+        self.assertEqual(raw["pure_context"]["a_document"], "alpha ü\n")
+        self.assertNotEqual(len("alpha ü\n"), len("alpha ü\n".encode("utf-8")))
         self.assertEqual(mod.redact({"step": "build"}), {"step": "build"})
         # with a source file, the whole recorded request's provenance is stamped
         with tempfile.TemporaryDirectory() as td:
@@ -318,12 +322,18 @@ class BuildLaunchRequestTest(unittest.TestCase):
                              {"path": str(src), "bytes": 17,
                               "sha256": hashlib.sha256(b'{"step": "build"}').hexdigest()})
 
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         pure_rows = {k: v for k, v in _load_real_requests().items()
                      if v.get("leaf_mode") == "pure"}
         self.assertEqual(len(pure_rows), 5)
         for (step, substep), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
-                self.assertTrue(req["pure_context"], "empty pure_context")
+                # Set IDENTITY with the contract table. The runtime validator (driven on these
+                # fixtures by test_orchestration_runtime) checks the required keys are PRESENT
+                # and admits extras, so it alone would not notice a capture carrying a key the
+                # host no longer inlines, or the table growing past what a real run rendered.
+                self.assertEqual(set(req["pure_context"]),
+                                 set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]))
                 for key, value in req["pure_context"].items():
                     self.assertRegex(value, placeholder, f"pure_context[{key}]")
                 self.assertRegex(req["launch_prompt_full"], placeholder)
