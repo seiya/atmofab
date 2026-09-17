@@ -121,13 +121,17 @@ def execute_tuple() -> dict[str, str]:
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
+        "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
     }
 
 
 def verdict_tuple() -> dict[str, str]:
-    """The verdict: the predicate evaluator and the derived-artifact author."""
+    """The verdict: the predicate evaluator, the per-test verdict author (`verdict.json`, a
+    Validate deliverable — a round-1 census found it in no tuple) and the derived-artifact
+    author."""
     return {
         "tools/verdict_evaluator.py": _file_digest("tools/verdict_evaluator.py"),
+        "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
     }
@@ -144,10 +148,10 @@ PINNED_BUILD: dict[str, str] = {
     "build-1": "b9750ec1ef55f08d634fb7bbcad845a36bd2391995a1516b8bc51be1cb17dacf",
 }
 PINNED_EXECUTE: dict[str, str] = {
-    "execute-1": "afea413b93681ca38c13f5d1dcb350badfbafca09aca58510321ae1f22daf131",
+    "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
 }
 PINNED_VERDICT: dict[str, str] = {
-    "verdict-1": "d900f1c9007e651384cc7de0f8cbd1e6f22ede0de25d9bfca92ee64f7ada30d7",
+    "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
 }
 
 
