@@ -21841,6 +21841,36 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             # And with the revocation on an OLDER output only, the newer eligible one stands.
             self.assertTrue(self._certified(repo_root, self.USER, "generate")[0])
 
+    def test_a_mismatch_is_diagnosed_off_the_latest_keyed_output_not_a_failed_attempt(self) -> None:
+        """Correctness round 1, F6. A spec edit moves the compile key; the re-run's Compile
+        attempt FAILS (its stamp keys stripped, as `write-step-result` does on a non-pass) and
+        is the latest IR directory. The refusal must still say WHAT moved
+        (`derivation_key_mismatch:spec.controlled_spec`), read off the latest output that
+        carries a key — not `derivation_key_missing`, which names the legacy corpus and would
+        send the operator after a stamp that was never the problem."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            spec = repo_root / "spec" / "component" / "user" / "controlled_spec.md"
+            spec.write_text(spec.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            failed = certify_node(repo_root, "orch_user2", self.USER, through="compile",
+                                  ir_id="user_20260102_001", pipeline_id="user_20260102_001",
+                                  stamp=False)
+            fpath = repo_root / failed["ir_meta"]
+            fdoc = json.loads(fpath.read_text(encoding="utf-8"))
+            fdoc["verification_status"] = "fail"
+            for k in ort._CERTIFICATION_STAMP_KEYS:
+                fdoc.pop(k, None)
+            fpath.write_text(json.dumps(fdoc), encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertEqual((ok, detail["reason"]),
+                             (False, "derivation_key_mismatch:spec.controlled_spec"))
+            # With NO keyed output at all, the answer is the legacy one.
+            shutil.rmtree(repo_root / "workspace" / "ir" / "component__user__0.1.0"
+                          / "user_20260101_001")
+            self.assertEqual(self._certified(repo_root, self.USER, "compile")[1]["reason"],
+                             "derivation_key_missing")
+
     def test_a_moved_deliverable_is_not_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
