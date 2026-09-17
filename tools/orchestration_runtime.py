@@ -2554,9 +2554,10 @@ def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path 
     or `None` when there is none. PR-1's selection is the chain the readiness stages and the
     build staging already use, so a key stamped now names the artifacts a run actually
     consumed: `compile` → the latest IR (`_certified_ir_dir`); `generate` → the source the
-    latest pipeline's certified binary was built from (`_resolve_certified_closure_binding`);
-    `build` → that binary (`_certified_binary_meta`). Whether the meta IS certified is the
-    caller's question (`_certified_output_hash`)."""
+    latest pipeline's certified binary was built from (`_resolve_certified_closure_binding`),
+    NOT the latest source directory (a failed generate retry after the certified build is a
+    newer directory Build never linked). Whether the meta IS certified is the caller's
+    question (`_dependency_output_hash`)."""
     step_token = step.strip().lower()
     try:
         kind, spec_id, version = _parse_node_key_strict(node_key)
@@ -2574,9 +2575,9 @@ def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path 
         if binding is None:
             return None
         return pipe_dir / "source" / binding["source_id"] / "source_meta.json"
-    if step_token == "build":
-        sel = _certified_binary_meta(pipe_dir)
-        return None if sel is None else sel[0]
+    # No consumer key binds a dependency's BUILD or VALIDATE output (PR-1 of issue #250); a
+    # `build` arm — the certified binary, `_certified_binary_meta` — is added with its first
+    # reader rather than kept unread (a round-1 census found it vacuous).
     return None
 
 
@@ -2593,12 +2594,18 @@ def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> st
 
       * `sha256:<hex>` — the meta is certified in full (pass, not revoked, hashes intact);
       * `unstamped:<stage_id>` — pass, but no `artifact_hashes` (a pre-#177 meta);
-      * `unverified:<stage_id>` — pass, but a deliverable no longer hashes to the stamp.
+      * `unverified:<stage_id>` — pass, but a deliverable no longer hashes to the stamp;
+      * `uncertified:<stage_id>` — a GENERATE output whose `source_meta.json` is revoked or
+        not `pass` while the binary built from it and that binary's verdict stand: readiness
+        reads the dependency's IR meta, binary meta and verdict and never its source meta, so
+        an operator's `revoke-artifact --step generate` on a dependency leaves it `ready` and
+        its consumers are still run against that source (round-1 review, issue #250).
 
-    The two labelled forms are honest about what the consumer was bound to and can never equal
-    a recomputation over a stamped dependency, so a key taken over one re-derives once the
+    The labelled forms are honest about what the consumer was bound to and can never equal a
+    recomputation over a stamped dependency, so a key taken over one re-derives once the
     dependency is (PR-2's legacy blast radius, by design). A dependency with NO certified
-    output, or one whose meta is not `pass`, is unresolvable — readiness refuses it too."""
+    output, or whose IR or binary meta is not `pass`, is unresolvable — readiness refuses it
+    too."""
     meta_path = _selected_certified_meta(repo_root, dep_node_key, step)
     if meta_path is None:
         raise DerivationInputsUnresolvable(
@@ -2615,6 +2622,8 @@ def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> st
         return f"unstamped:{stage_id}"
     if reason.startswith("artifact_hash_mismatch:"):
         return f"unverified:{stage_id}"
+    if step == "generate" and reason in ("revoked", "verification_status_not_pass"):
+        return f"uncertified:{stage_id}"
     raise DerivationInputsUnresolvable(
         f"derivation_inputs_unresolvable: dependency {dep_node_key} {step}: {meta_ref} is not "
         f"certified ({reason})")

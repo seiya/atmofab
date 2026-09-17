@@ -25496,6 +25496,27 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(validate["spec"], {"tests": _compute_sha256(
                 repo / self._spec_dir("problem", "spec_x") / "tests.md")})
 
+    def test_toolchain_and_run_policy_read_the_irs_own_values(self) -> None:
+        """Round-1 census: with every IR in the corpus and this fixture at the defaults
+        (`fortran` / `f2008` / `make` / `openmp` / `cpu`), a resolver that ignored the IR
+        survived. Non-default values in the IR reach the build toolchain and the validate run
+        policy — the four toolchain fields are the only way the IR's toolchain enters the
+        build key (it has no `ir` member)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._reir(repo, refs, self._IR_TEXT
+                       .replace("language: fortran", "language: cpp")
+                       .replace("standard: f2008", "standard: c++17")
+                       .replace("build_system: make", "build_system: cmake")
+                       .replace("backend: openmp", "backend: cuda")
+                       .replace("class: cpu", "class: gpu"))
+            tc = self._inputs(repo, refs, "build")["toolchain"]
+            self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
+                             ("cpp", "c++17", "cmake", "cuda"))
+            self.assertEqual(self._inputs(repo, refs, "validate")["run_policy"]["target_class"],
+                             "gpu")
+
     def test_build_toolchain_takes_the_ir_pin_else_the_server_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -25653,6 +25674,63 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertTrue(gen2["closure"][0]["ir"].startswith("sha256:"))
             self.assertTrue(gen2["closure"][0]["source"].startswith("sha256:"))
 
+    def test_a_revoked_dependency_source_readiness_still_accepts_binds_by_label(self) -> None:
+        """Round-1 review (issue #250 PR-1): `revoke-artifact --step generate` run by hand on a
+        DEPENDENCY leaves its binary and verdict standing, and readiness never reads a
+        dependency's `source_meta.json` — so the consumer is still run against that source.
+        The branch's first cut refused the run (`derivation_inputs_unresolvable`); it now
+        binds by `uncertified:<source_id>`, the honest record of what was linked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            dep = certify_node(repo, "o-read", self._DEP, through="validate")
+            for status in ("revoked", "fail"):
+                doc = json.loads((repo / dep["source_meta"]).read_text(encoding="utf-8"))
+                doc["verification_status"] = status
+                (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+                self.assertEqual(
+                    ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0",
+                                                 "pipeline_ref")[0], True)
+                self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"],
+                                 f"uncertified:{dep['source_id']}")
+                self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"],
+                                 f"uncertified:{dep['source_id']}")
+            # The IR arm keeps refusing: readiness refuses a non-pass dependency IR too.
+            doc = json.loads((repo / dep["ir_meta"]).read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertFalse(ort._dep_ir_meta_passes(repo, "component", "dep_a", "0.1.0"))
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "compile: .*revoked"):
+                self._inputs(repo, refs, "compile")
+
+    def test_generate_binds_the_source_the_certified_binary_linked_not_the_latest(self) -> None:
+        """Round-1 census: with the corpus's every pipeline having binding == latest source,
+        `_selected_certified_meta("generate")` = latest `source_meta.json` survived. The route
+        it matters on: a dependency whose generate retry produced a NEWER source directory
+        after its certified build. Build staged the binary's source; the key binds that."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            dep = certify_node(repo, "o-read", self._DEP, through="validate")
+            before = self._inputs(repo, refs, "generate")["closure"][0]["source"]
+            newer = repo / dep["pipeline_ref"] / "source" / "src_20260102_009"
+            (newer / "src").mkdir(parents=True)
+            (newer / "src" / "dep_a_model.f90").write_text("module dep_a_model\n! retry\nend module\n",
+                                                          encoding="utf-8")
+            model_ref = f"{dep['pipeline_ref']}/source/src_20260102_009/src/dep_a_model.f90"
+            (newer / "source_meta.json").write_text(json.dumps({
+                "source_id": "src_20260102_009", "node_key": self._DEP, "attempt_count": 1,
+                "verification_status": "pass", "last_fail_reason": None, "debug_mode": False,
+                "context_isolated": True, "source_ir_id": dep["ir_id"],
+                "artifact_hashes": {model_ref: _compute_sha256(newer / "src" / "dep_a_model.f90")},
+            }), encoding="utf-8")
+            self.assertEqual(
+                ort._selected_certified_meta(repo, self._DEP, "generate").parent.name,
+                dep["source_id"])
+            self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"], before)
+            self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"], before)
+            self.assertIsNone(ort._selected_certified_meta(repo, self._DEP, "build"))
+
     def test_a_dependency_without_a_certified_output_is_unresolvable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -25721,6 +25799,16 @@ class DerivationInputsTests(unittest.TestCase):
                 "compile", record["derivation_inputs"]))
             self.assertEqual(record["transformation"],
                              list(tools_derivation.transformation_versions()["compile"]))
+            # The recorded tuple is the STEP's own, for every step (round-1 mutant: compile's
+            # tuple recorded on every step survived — the key stayed right, the record lied).
+            full_repo = Path(tempfile.mkdtemp(dir=tmp))
+            full = self._seed(full_repo)
+            for step in ("generate", "build", "validate"):
+                with self.subTest(step=step):
+                    rec = ort.phase_derivation(full_repo, node_key=self._NK, step=step,
+                                               **self._own(full))
+                    self.assertEqual(rec["transformation"],
+                                     list(tools_derivation.transformation_versions()[step]))
             doc = ort._stamp_certification(
                 repo, "o1", node_key=self._NK, step="compile",
                 required_outputs=[f"{refs['ir_ref']}/spec.ir.yaml", refs["ir_meta"]],
