@@ -73,8 +73,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # under test data because workspace/ is gitignored — a clean checkout/CI has no live
 # orchestration. Two provenances. The two DETERMINISTIC rows were captured from
 # orch_20260619T113225Z_f48fe14b (an advdiff component node), a run no longer on disk, and
-# have been maintained BY HAND since (`git log -- <file>`: five edits after capture, the last
-# on 2026-09-12 removing the `skill_must_read_refs` line); they carry no `_capture_source`.
+# have been maintained BY HAND since (`git log -- <file>`: four and five edits after capture,
+# the last on 2026-09-12 removing the `skill_must_read_refs` line); they carry no
+# `_capture_source`.
 # The five PURE rows are REDACTED captures from orch_20260916T081200Z_5139f6c9
 # (`shallow_water2d --with-deps`, the Z1/Z3 adoption run, repo `1b3d1edd`), one cold launch per
 # pair — for `compile.verify` and `generate.generate` the run has two cold launches and the
@@ -266,11 +267,19 @@ class BuildLaunchRequestTest(unittest.TestCase):
     `launch_prompt_full`, so what is tracked is a REDACTION: every field the builder produces is
     verbatim, and those two carry a size + sha256 placeholder per value, keeping the
     `pure_context` KEY SET (which `_validate_pure_launch_request_payload` requires per pair and
-    shape) without the content. The comparison below therefore pins the pure payload's every
-    business field but one (`prompt_contract_version` is the run's own and is compared by form —
-    `_HISTORICAL_KEYS`), and its context by key set and not by content — the content is rendered
-    by the runtime from the documents the run names, and is that run's, not this row's,
-    evidence. **A pure row is never edited by hand**: each carries `_capture_source` (path, byte
+    shape) without the content. What the comparison below pins, then: every field the builder
+    DERIVES — the role, the `ir_ref` / `pipeline_ref` layout, `dependency_ref` per step, the
+    deterministic output lists, the pure branch's empty output list and three skill empties,
+    `leaf_mode`, which optional fields are attached to which pair — and the key set in both
+    directions (a field the builder stops emitting, or starts emitting, is red). The
+    identifiers, the model, the repair fields, `resolved_dependencies` / `dependency_surface`
+    / `exemplar` and the `pure_context` values are read OFF the request and handed to the
+    builder, so they are pass-through: the row checks their placement, not their content
+    (a hand edit of one is green here and red only against the workspace, below).
+    `prompt_contract_version` is the run's own and is compared by form (`_HISTORICAL_KEYS`).
+    The `pure_context` key set is pinned by the shape test against the contract table; its
+    content is rendered by the runtime from the documents the run names, and is that run's,
+    not this row's, evidence. **A pure row is never edited by hand**: each carries `_capture_source` (path, byte
     count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
     and `cmp`, and the shape test holds every pure row to that stamp. The two deterministic rows
     are the exception, by history rather than by rule: their run is not on disk, they predate
@@ -355,14 +364,27 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertEqual(raw["pure_context"]["a_document"], "alpha ü\n")
         self.assertNotEqual(len("alpha ü\n"), len("alpha ü\n".encode()))
         self.assertEqual(mod.redact({"step": "build"}), {"step": "build"})
-        # with a source file, the whole recorded request's provenance is stamped
+        # With a source file, the whole recorded request's provenance is stamped: the bytes ON
+        # DISK, not a re-serialisation — so the probe file is indented, non-ASCII and ends in a
+        # newline, none of which `json.dumps(json.loads(...))` reproduces — and the recorded
+        # path is `shown_as` while the read is of `source`, whatever the working directory.
+        # This probe is also the deterministic shape the docstring describes: no
+        # `pure_context`, and a `launch_prompt_full` that is redacted all the same.
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "x.request.json"
-            src.write_bytes(b'{"step": "build"}')
-            stamped = mod.redact({"step": "build"}, source=src)
+            on_disk = '{\n  "step": "build",\n  "launch_prompt_full": "prompt ü"\n}\n'.encode()
+            src.write_bytes(on_disk)
+            self.assertNotEqual(len(on_disk), len(on_disk.decode()))
+            self.assertNotEqual(on_disk, json.dumps(json.loads(on_disk)).encode())
+            stamped = mod.redact(json.loads(on_disk), source=src,
+                                 shown_as=Path("workspace/x.request.json"))
             self.assertEqual(stamped["_capture_source"],
-                             {"path": str(src), "bytes": 17,
-                              "sha256": hashlib.sha256(b'{"step": "build"}').hexdigest()})
+                             {"path": "workspace/x.request.json", "bytes": len(on_disk),
+                              "sha256": hashlib.sha256(on_disk).hexdigest()})
+            self.assertNotIn("pure_context", stamped)
+            self.assertRegex(stamped["launch_prompt_full"], placeholder)
+            self.assertEqual(int(placeholder.match(stamped["launch_prompt_full"]).group(1)),
+                             len("prompt ü".encode()))
 
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         pure_rows = {k: v for k, v in _load_real_requests().items()
@@ -388,7 +410,12 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 self.assertEqual(set(src), {"path", "bytes", "sha256"})
                 self.assertRegex(src["path"], r"^workspace/orchestrations/[^/]+/launches/"
                                               + re.escape(req["agent_run_id"]) + r"\.request\.json$")
-                self.assertGreater(src["bytes"], 100_000)
+                # The source held everything the placeholders stand for, so its byte count is
+                # bounded below by their sum — the one bound the fixture itself can witness.
+                redacted_bytes = sum(
+                    int(placeholder.match(v).group(1))
+                    for v in (*req["pure_context"].values(), req["launch_prompt_full"]))
+                self.assertGreater(src["bytes"], redacted_bytes)
                 self.assertRegex(src["sha256"], r"^[0-9a-f]{64}$")
 
     def test_omits_launch_prompt_full(self) -> None:
