@@ -25406,7 +25406,8 @@ class DerivationInputsTests(unittest.TestCase):
             repo = Path(tmp)
             refs = self._seed(repo)
             expected = {
-                "compile": {"spec", "profiles", "dependency_graph", "closure", "toolchain_document"},
+                "compile": {"spec", "profiles", "dependency_graph", "closure", "dependency_surface",
+                            "toolchain_document"},
                 "generate": {"ir", "spec", "harness", "closure"},
                 "build": {"source", "closure", "toolchain"},
                 "validate": {"binary", "ir", "spec", "run_policy"},
@@ -25456,6 +25457,10 @@ class DerivationInputsTests(unittest.TestCase):
             ])
             self.assertEqual(inputs["toolchain_document"], tools_derivation.sha256_hex(
                 ort.admissible_toolchains_document(self._NK).encode("utf-8")))
+            self.assertEqual(inputs["dependency_surface"], tools_derivation.sha256_hex(
+                tools_derivation.canonical_json_bytes(ort._resolve_component_dep_surface(
+                    repo, self._NK, json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
+                                               .read_text(encoding="utf-8"))))))
             # The graph signature is the canonical form the R6-lite comparison reads.
             from tools.dependency_graph import build_dependency_graph
             graph, _ = build_dependency_graph(repo, target_spec_ref=spec, target_node_key=self._NK,
@@ -25528,6 +25533,12 @@ class DerivationInputsTests(unittest.TestCase):
                              server._syntax_compiler_version((tc["compiler"], "--version")))
             self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
                              ("fortran", "f2008", "make", "openmp"))
+            # An IR that declares none of the four fields records None for each (no host
+            # default is restated here — the default is the renderer's, under RENDER_VERSION).
+            bare = ort._ir_toolchain_identity({})
+            self.assertEqual((bare["language"], bare["standard"], bare["build_system"],
+                              bare["backend"]), (None, None, None, None))
+            self.assertEqual(bare["compiler"], server.MANDATORY_SYNTAX_COMPILER)
             # An IR that pins a compiler is read as pinned; an unprobeable one records None
             # rather than refusing (the version is a record of the host, not a gate).
             self._reir(repo, refs, self._IR_TEXT.replace(
@@ -25608,6 +25619,35 @@ class DerivationInputsTests(unittest.TestCase):
                              "closure[0].source")
             # The harness entry did not move: the diff is exactly dep_a's.
             self.assertEqual(before["build"]["closure"][1], after["build"]["closure"][1])
+
+    def test_a_legacy_dependencys_source_surface_moves_the_compile_key(self) -> None:
+        """Codex, round 2: a `component` dependency whose certified IR has no `public_api` has
+        its published operations read off its certified SOURCE, so a re-certified source
+        with different public subroutines changes what the compile producer is shown while
+        the closure's `ir` entry stands. The resolved surface is a key input of its own."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            dep = certify_node(repo, "o-read", self._DEP, through="validate")
+            model = repo / dep["model_ref"]
+            model.write_text("module dep_a_model\ncontains\nsubroutine dep_a__op1(x)\n"
+                             "  real :: x\nend subroutine\nend module\n", encoding="utf-8")
+            doc = json.loads((repo / dep["source_meta"]).read_text(encoding="utf-8"))
+            doc["artifact_hashes"][dep["model_ref"]] = _compute_sha256(model)
+            (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            before = self._inputs(repo, refs, "compile")
+            self.assertEqual([e["source"] for e in ort._resolve_component_dep_surface(
+                repo, self._NK, json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
+                                           .read_text(encoding="utf-8")))],
+                             ["certified_source"])
+            model.write_text(model.read_text(encoding="utf-8").replace("dep_a__op1", "dep_a__op2"),
+                             encoding="utf-8")
+            doc["artifact_hashes"][dep["model_ref"]] = _compute_sha256(model)
+            (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            after = self._inputs(repo, refs, "compile")
+            self.assertEqual(before["closure"], after["closure"])
+            self.assertEqual(tools_derivation.first_differing_input(before, after),
+                             "dependency_surface")
 
     def test_a_dependency_re_certified_with_identical_bytes_moves_nothing(self) -> None:
         """The other half of the same fact: a NEWER certified attempt of `dep_a` whose IR and

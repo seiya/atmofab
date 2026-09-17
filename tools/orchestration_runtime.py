@@ -2385,7 +2385,10 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
 #               set, heights, direct/transitive split and the adopted profile set);
 #             closure[] — every closure node's certified COMPILE output hash (its IR is what
-#               the producer's dependency surface and the reviewer's facts come from);
+#               the reviewer's facts come from);
+#             dependency_surface — the resolved published-operation surface of the component
+#               direct deps as the producer is shown it (`_resolve_component_dep_surface`;
+#               read off a dependency's certified SOURCE when its IR has no `public_api`);
 #             toolchain_document — the admissible-toolchain document the producer is shown.
 #   generate  ir — this node's certified compile output hash (`spec.ir.yaml`; carries the
 #               target profile, the case set and every `impl_defaults` knob);
@@ -2493,13 +2496,23 @@ def admissible_toolchains_document(node_key: str) -> str:
 
 
 def _ir_toolchain_identity(ir: Any) -> dict[str, Any]:
-    """The build toolchain identity read off an IR's `impl_defaults`: the fields the host-side
-    authors share (`Conductor._read_toolchain` reads the same keys with the same defaults),
-    plus the compiler the control-file writer would pin when the IR pins none — asked of the
-    build-runtime server, which owns the compiler adapters and whose
-    `MANDATORY_SYNTAX_COMPILER` the conductor's `DEFAULT_COMPILER` is pinned equal to
-    (`tools/tests/test_host_prerequisites.py`) — and the first line of that compiler's
-    `--version` (`None` when it cannot be probed, which is recorded rather than refused)."""
+    """The build toolchain identity read off an IR's `impl_defaults`, for the build key and for
+    `binary_meta.json`: `language` / `standard` / `build_system` / `backend` AS THE IR DECLARES
+    THEM — `None` where it declares nothing — plus the compiler and its `--version` line.
+
+    No default is filled in here for the four declared fields. The defaults the host applies
+    to an IR that pins nothing (`Conductor._read_toolchain`, the control-file writer) are the
+    host's TRANSFORMATION, which `RENDER_VERSION`'s drift pin watches; spelling them again in
+    this module would be a second statement of a backend fact in the `neutral core`, which the
+    boundary check refuses (a round-2 review measured the growth). "Declares nothing" is the
+    honest identity of such an IR, and it changes exactly when the IR does.
+
+    The compiler is the one exception, because its VERSION must be probed from an executable:
+    the IR's pin, else the build-runtime server's `MANDATORY_SYNTAX_COMPILER` — asked of the
+    server, which owns the compiler adapters and whose value the conductor's `DEFAULT_COMPILER`
+    is pinned equal to (`tools/tests/test_host_prerequisites.py`). `compiler_version` is the
+    first line of `<compiler> --version`, `None` when it cannot be probed (recorded, not
+    refused)."""
     impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
     tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
     tc = tc if isinstance(tc, dict) else {}
@@ -2507,11 +2520,16 @@ def _ir_toolchain_identity(ir: Any) -> dict[str, Any]:
     target = target if isinstance(target, dict) else {}
     server = _build_runtime_server_module()
     compiler = str(tc.get("compiler") or "").strip() or str(server.MANDATORY_SYNTAX_COMPILER)
+
+    def declared(mapping: dict[str, Any], key: str) -> str | None:
+        value = mapping.get(key)
+        return str(value).strip().lower() if isinstance(value, str) and value.strip() else None
+
     return {
-        "language": str(tc.get("language") or "fortran").lower(),
-        "standard": str(tc.get("standard") or "f2008").lower(),
-        "build_system": str(tc.get("build_system") or "make").lower(),
-        "backend": str(target.get("backend") or "").lower(),
+        "language": declared(tc, "language"),
+        "standard": declared(tc, "standard"),
+        "build_system": declared(tc, "build_system"),
+        "backend": declared(target, "backend"),
         "compiler": compiler,
         "compiler_version": server._syntax_compiler_version((compiler, "--version")),
     }
@@ -2748,6 +2766,14 @@ def phase_derivation_inputs(
             "closure": [
                 {"node_key": nk, "ir": _dependency_output_hash(repo_root, nk, "compile")}
                 for nk in closure],
+            # The published-operation surface the producer is SHOWN (`dependency_surface.json`,
+            # rendered through `<dependency_facts>`): for a dependency whose certified IR has no
+            # `public_api` it is read off the certified SOURCE, which can change while the IR
+            # stands (a Codex review found the closure's `ir` entries blind to that). Hashed as
+            # the resolved document itself — unresolved entries included — because that is what
+            # both the producer and the membership gate read.
+            "dependency_surface": _sha256_hex(_canonical_json_bytes(
+                _resolve_component_dep_surface(repo_root, node_key, graph))),
             "toolchain_document": _sha256_hex(
                 admissible_toolchains_document(node_key).encode("utf-8")),
         }
