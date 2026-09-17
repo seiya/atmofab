@@ -5,7 +5,8 @@ Usage:
         workspace/orchestrations/<oid>/launches/<arid>.request.json
 
 Writes `<step>_<substep>.request.json` (`<step>_step` for a step-level request) beside this
-script. A faithful pure request is a few hundred KB, almost all of it the inlined `pure_context`
+script, overwriting an existing fixture of that pair — the tracked corpus holds one row per
+pair. A faithful pure request is a few hundred KB, almost all of it the inlined `pure_context`
 documents and the rendered `launch_prompt_full`; both are replaced by a placeholder that keeps
 the byte count and the sha256 of the original, so the KEY SET of `pure_context` (which the pure
 validator requires per shape) survives while the content — reproducible from the run it names —
@@ -15,9 +16,9 @@ deterministic request has no `pure_context`; its `launch_prompt_full` is redacte
 
 The output also carries `_capture_source`: the source path, byte count and sha256 of the WHOLE
 recorded request, so that anyone holding the workspace can check a tracked fixture is this
-script's output and not a hand edit. **A fixture is never edited by hand** — including
-`prompt_contract_version`, which is the contract at capture time and is read as historical by
-the tests; a bump of `PURE_PROMPT_CONTRACT_VERSION` obliges no re-capture.
+script's output and not a hand edit. **This script's output is never edited by hand** —
+including `prompt_contract_version`, which is the contract at capture time and is read as
+historical by the tests; a bump of `PURE_PROMPT_CONTRACT_VERSION` obliges no re-capture.
 """
 from __future__ import annotations
 

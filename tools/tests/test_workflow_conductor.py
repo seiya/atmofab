@@ -71,12 +71,17 @@ def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep). Committed
 # under test data because workspace/ is gitignored — a clean checkout/CI has no live
-# orchestration. Two provenances: the two DETERMINISTIC rows were captured from
-# orch_20260619T113225Z_f48fe14b (an advdiff component node); the five PURE rows are REDACTED
-# captures from orch_20260916T081200Z_5139f6c9 (`shallow_water2d --with-deps`, the Z1/Z3
-# adoption run, repo `1b3d1edd`), the cold launch of each pair, produced by
-# `data/conductor_launch_requests/redact_launch_request.py`: `pure_context` keeps its KEY SET
-# with each value replaced by a size + sha256 placeholder, `launch_prompt_full` likewise.
+# orchestration. Two provenances. The two DETERMINISTIC rows were captured from
+# orch_20260619T113225Z_f48fe14b (an advdiff component node), a run no longer on disk, and
+# have been maintained BY HAND since (`git log -- <file>`: five edits after capture, the last
+# on 2026-09-12 removing the `skill_must_read_refs` line); they carry no `_capture_source`.
+# The five PURE rows are REDACTED captures from orch_20260916T081200Z_5139f6c9
+# (`shallow_water2d --with-deps`, the Z1/Z3 adoption run, repo `1b3d1edd`), one cold launch per
+# pair — for `compile.verify` and `generate.generate` the run has two cold launches and the
+# later one (the certified lineage) is the capture; `_capture_source.path` names the arid —
+# produced by `data/conductor_launch_requests/redact_launch_request.py`: `pure_context` keeps
+# its KEY SET with each value replaced by a size + sha256 placeholder, `launch_prompt_full`
+# likewise.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
 # spec dir per captured node (the builder reads it only for compile's `dependency_ref`).
 _SPEC_PATH_BY_NODE_KEY = {
@@ -108,10 +113,11 @@ _NON_BUILDER_KEYS = {
 _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
 # version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
-# change (fifteen times between 2026-09-03 and 2026-09-12), so pinning the literal would make
-# every bump red and the cheap way to re-green it a hand edit — after which the fixture is no
-# longer a capture. The field is compared as: the builder emits the CURRENT constant, and the
-# capture carries a well-formed version of the same family.
+# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`:
+# 20 commits between 2026-09-03 and 2026-09-12, pure-24 -> pure-43), so pinning the literal
+# would make every bump red and the cheap way to re-green it a hand edit — after which the
+# fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
+# constant, and the capture carries a well-formed version of the same family.
 _HISTORICAL_KEYS = {"prompt_contract_version"}
 _CONTRACT_VERSION_FORM = re.compile(r"^pure-\d+$")
 
@@ -252,8 +258,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
     what makes this row evidence rather than a restatement of the builder.
 
     SEVEN ROWS: two DETERMINISTIC captures and five PURE ones. The pure five were re-captured
-    (issue #171 PR-1's round-1 review, `TODO.md`) after Z4 deleted the agentic shape their
-    predecessors recorded; they were deleted rather than hand-converted at the time, because a
+    (a `TODO.md` item filed by issue #171 PR-1's round-1 review and closed by the commit that
+    added them, 9158667e) after Z4 deleted the agentic shape their predecessors recorded; they
+    were deleted rather than hand-converted at the time, because a
     fixture written from the builder's own output is a tautology. A faithful pure capture is
     290-526 KB, almost all of it the inlined `pure_context` and the rendered
     `launch_prompt_full`, so what is tracked is a REDACTION: every field the builder produces is
@@ -263,19 +270,25 @@ class BuildLaunchRequestTest(unittest.TestCase):
     business field but one (`prompt_contract_version` is the run's own and is compared by form —
     `_HISTORICAL_KEYS`), and its context by key set and not by content — the content is rendered
     by the runtime from the documents the run names, and is that run's, not this row's,
-    evidence. **A fixture is never edited by hand**: each carries `_capture_source` (path, byte
+    evidence. **A pure row is never edited by hand**: each carries `_capture_source` (path, byte
     count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
-    and `cmp`.
+    and `cmp`, and the shape test holds every pure row to that stamp. The two deterministic rows
+    are the exception, by history rather than by rule: their run is not on disk, they predate
+    the script, and they have been hand-maintained through five builder changes (the
+    `_FIXTURE_DIR` comment). A builder change that reddens one of them is repaired by hand as
+    before; one that reddens a pure row is repaired by a re-capture.
 
     What the corpus does NOT hold: a repair-turn capture (the run's `reuse` turns carry
     `repair_findings` and `warm_resume` and no `pure_context`), an HTTP-provider or codex
     capture, a row with an `exemplar`, a `pure_shape` other than the default (this node has
-    none), and a `component` / `infrastructure` node's pure pair. The comparison ACCEPTS each
-    of those shapes — probed at round 1 of this branch's review on recorded requests of
-    `orch_20260807T002410Z_acf2b996` (kimi-k3, `leaf_transport`), `orch_20260905T022548Z_97e85927`
-    (component, `exemplar`) and this run's warm `reuse` turns and deterministic launches — so a
-    later re-capture of one is a fixture drop-in plus its `_SPEC_PATH_BY_NODE_KEY` entry, not a
-    test change. What is not driven through `build_launch_request` by any capture is driven by
+    none), and a `component` / `infrastructure` node's pure pair. The COMPARISON accepts each of
+    those shapes (`_assert_builder_reproduces` was driven on recorded requests of every one at
+    this branch's review; the pull request records the probe). The CORPUS is one row per
+    (step, substep) — `_load_real_requests` refuses a second file for a pair, `expected_keys`
+    below and the count in `test_orchestration_runtime` pin the set, and the script names its
+    output by pair and overwrites — so adding a capture of one of those shapes means either
+    replacing that pair's row or widening the loader's key, and is a test change either way.
+    What is not driven through `build_launch_request` by any capture is driven by
     `test_pure_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
     variants, warm and cold repair) and, for the `harness` bundle shape,
     `test_pure_leaf_producer`; dispatch by `test_pure_only_leaf_model`. This row's own axis is
