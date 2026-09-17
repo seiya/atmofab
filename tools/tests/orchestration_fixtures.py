@@ -168,8 +168,10 @@ def certify_node(
         "failure_excerpt": None, "violations": [], "disposition": None,
     })
     # The rest of Validate's declared deliverables. `_phase_certified` requires all of them:
-    # Validate carries no `artifact_hashes` stamp, so their presence is the only thing standing
-    # between "the chain reads as complete" and "the attempt actually finished writing".
+    # it does not read Validate's `artifact_hashes` stamp until issue #250 PR-2, so their
+    # presence is what stands between "the chain reads as complete" and "the attempt actually
+    # finished writing". (The fixture's `validate_meta.json` carries no stamp: PR-1 stamps it
+    # only through `write_step_result`, and the rows that need one drive that.)
     _write_json(run_node / "verdict.json", {
         "node_key": node_key, "run_id": run_id, "self_verdict": "pass", "failure_class": None,
     })

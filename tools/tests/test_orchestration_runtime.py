@@ -9263,10 +9263,11 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(self._reason(repo, "validate"), "post_judge_not_recorded")
 
     def test_validate_is_not_certified_on_a_half_written_run_directory(self) -> None:
-        """Validate is the ONE phase with no entry in `CERTIFYING_META_FILENAME_BY_STEP`, so it
-        gets no `artifact_hashes` byte-pin, no child-window certification strip and no revocable
-        meta. The other three phases refuse a missing deliverable for free — it cannot re-hash —
-        and Validate had nothing playing that part.
+        """Until issue #250 Validate was the ONE phase with no entry in
+        `CERTIFYING_META_FILENAME_BY_STEP`, so it got no `artifact_hashes` byte-pin and no
+        revocable meta; it has both now, but `_phase_certified` does not read them until PR-2 of
+        that issue, so this presence check is still what plays the part the byte-pin plays for
+        the other three phases (a missing deliverable cannot re-hash).
 
         The consequence is not a missing file; it is a false `pass`. `aggregate_verdict.json`
         and `post_judge_meta.json` are written BEFORE the rest, so an attempt that died between

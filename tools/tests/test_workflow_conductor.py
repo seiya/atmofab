@@ -1347,9 +1347,9 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
 
     def test_a_noop_over_a_phase_that_is_not_certified_is_only_reported(self) -> None:
-        """The legitimate half of the same word: validate certifies no meta, and a phase that
-        never produced one has nothing to revoke. Neither is a failure — but both are still
-        EMITTED, because `noop` is the one answer that looks identical in the good case and the
+        """The legitimate half of the same word: a phase that never produced a meta has
+        nothing to revoke (until issue #250 Validate certified no meta and was the standing
+        example). Not a failure — but still EMITTED, because `noop` is the one answer that looks identical in the good case and the
         bad one, and a run log that never mentions it cannot be read back either way."""
         c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta",
                              "still_certified": False})
