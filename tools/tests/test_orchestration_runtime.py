@@ -24041,6 +24041,21 @@ class DerivationInputsTests(unittest.TestCase):
                         ort.DerivationInputsUnresolvable,
                         r"problem/spec_x@0.1.0 compile: .*ir_meta.json is not certified \(artifact_hash_mismatch"):
                     self._inputs(repo, refs, step)
+        # The other two ways an own upstream is not certified — its status, and a revocation —
+        # refuse the same way (a round-1 mutant returning the hash regardless of status
+        # survived: only the hash-mismatch arm above was pinned).
+        for status, reason in (("fail", "verification_status_not_pass"), ("revoked", "revoked")):
+            with tempfile.TemporaryDirectory() as tmp, self.subTest(status=status):
+                repo = Path(tmp)
+                refs = self._seed(repo)
+                meta = repo / refs["ir_ref"] / "ir_meta.json"
+                doc = json.loads(meta.read_text(encoding="utf-8"))
+                doc["verification_status"] = status
+                meta.write_text(json.dumps(doc), encoding="utf-8")
+                with self.assertRaisesRegex(
+                        ort.DerivationInputsUnresolvable,
+                        rf"problem/spec_x@0.1.0 compile: .*ir_meta.json is not certified \({reason}\)"):
+                    self._inputs(repo, refs, "generate")
 
     def test_a_missing_ref_or_spec_file_is_unresolvable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
