@@ -25016,11 +25016,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # TWO since Z4 (issue #171). The five LLM captures were of the AGENTIC launch and are
-        # deleted — `BuildLaunchRequestTest`'s docstring carries the accounting and `TODO.md`
-        # what is owed. The coverage this row loses is the LLM half of the role rule; the role
-        # itself is still derived from `_required_child_agent_kind` for every step below.
-        self.assertEqual(len(captured), 2, "captured payload set changed; revisit coverage")
+        # SEVEN: two deterministic captures and, since the re-capture that closed the
+        # `TODO.md` item issue #171 PR-1 left, five REDACTED pure ones — the role field is
+        # verbatim in a redaction, so the LLM half of the role rule is covered again.
+        # `BuildLaunchRequestTest`'s docstring carries the provenance.
+        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
             with self.subTest(fixture=path.name):
