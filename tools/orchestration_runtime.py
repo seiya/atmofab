@@ -16379,10 +16379,13 @@ def record_timeout(
         payload["forced_reason"] = forced_reason_text
     if parent_value is not None:
         payload["parent_agent_run_id"] = parent_value
-    for field in ("node_key", "step", "substep", "agent_model", "derivation_key"):
+    for field in ("node_key", "step", "substep", "agent_model"):
         val = req_doc.get(field)
         if isinstance(val, str) and val.strip():
             payload[field] = val.strip()
+    # `derivation_key` (issue #250) is NOT copied here: `record_agent_run` below backfills it
+    # from the same launch request for every step / substep row, so a timeout row carries it
+    # through the one reader rather than two (a hunk sweep measured the copy here inert).
 
     result = record_agent_run(
         repo_root=repo_root,
