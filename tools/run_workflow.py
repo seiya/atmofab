@@ -2662,6 +2662,7 @@ def _run_main(
             resume=True,
             prior_orch_by_spec=prior_map,
             raw_argv=raw_argv,
+            rederive=rederive,
         )
 
     # `--with-deps` runs the target's transitive dependency closure bottom-up

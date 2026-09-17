@@ -3264,6 +3264,14 @@ class RunWorkflowTests(unittest.TestCase):
                 closure_kwargs["prior_orch_by_spec"],
                 {"spec/component/c": "orch_target"},
             )
+            # Codex round 2 (P2): `--rederive` reaches the closure driver on THIS path too —
+            # the resume of a `--with-deps` run — or the phase named is silently skipped.
+            self.assertEqual(closure_kwargs["rederive"], frozenset())
+            code, closure_kwargs, _ = self._run_main_with_closure_spy(
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor",
+                 "--rederive", "build"])
+            self.assertEqual(code, 0)
+            self.assertEqual(closure_kwargs["rederive"], frozenset({"build"}))
 
     def test_resume_without_closure_uses_single_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
