@@ -1348,6 +1348,18 @@ class DerivationResolver:
                     output_hash=_meta_output_hash(detail["meta"], meta_ref), ref=meta_ref))
             else:
                 refused.append((order, {**detail, "meta_path": meta_path}))
+        # A REVOCATION shadows every older eligible output of the key. `revoke-artifact` is a
+        # decision that the derivation must run again (a judge's `structural_violation`, a
+        # verify's `ir_inconsistency` — findings no input carries), taken against the output
+        # that was standing; an older output of the same key produced under the same inputs
+        # is not an answer to it, and selecting it would let the decision fall through to a
+        # skip. A newer FAILED attempt shadows nothing (a failed attempt is a record, never a
+        # cache hit, and never a decision); an output produced AFTER the revocation — the
+        # re-derivation it asked for — is selected as usual.
+        revoked_orders = [order for order, detail in refused if detail.get("revoked")]
+        if revoked_orders:
+            newest_revoked = max(revoked_orders)
+            eligible = [c for c in eligible if c.order > newest_revoked]
         chosen = select_eligible(eligible)
         if chosen is not None:
             sel.ok = True
@@ -1356,9 +1368,11 @@ class DerivationResolver:
             _selection_refs_from_meta(sel, sel.meta_path, self.repo_root)
             return
         if refused:
-            # An output of THIS key exists and is not eligible: say why, from the latest one,
-            # and carry the repair seed a revoked meta holds.
-            _order, detail = max(refused, key=lambda item: item[0])
+            # An output of THIS key exists and is not eligible: say why — from the newest
+            # revoked one when there is one (its repair seed is what the conductor needs),
+            # else from the latest refused one.
+            revoked = [item for item in refused if item[1].get("revoked")]
+            _order, detail = max(revoked or refused, key=lambda item: item[0])
             sel.reason = str(detail.get("reason"))
             sel.revoked = bool(detail.get("revoked"))
             sel.last_fail_reason = detail.get("last_fail_reason")

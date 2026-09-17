@@ -21744,6 +21744,46 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             self.assertEqual(self._certified(repo_root, self.USER, "validate")[1]["reason"],
                              "revoked")
 
+    def test_a_revocation_shadows_older_eligible_outputs_of_the_key(self) -> None:
+        """`revoke-artifact` is a decision that the derivation must run again — a finding no
+        input carries — so with TWO eligible outputs of one key (after a `--rederive`),
+        revoking the newer one must not fall through to the older one and skip. A newer
+        FAILED attempt shadows nothing; an output produced after the revocation is selected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            newer = certify_node(repo_root, "orch_user2", self.USER, through="generate",
+                                 ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                                 source_id="src_20260101_002",
+                                 model_text="module user_model\n! rederived\nend module\n")
+            self.assertEqual(self._certified(repo_root, self.USER, "generate")[1]["source_id"],
+                             "src_20260101_002")
+            path = repo_root / newer["source_meta"]
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc.update({"verification_status": "revoked", "last_fail_reason": "L3: judge"})
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertEqual((ok, detail["reason"], detail["last_fail_reason"]),
+                             (False, "revoked", "L3: judge"))
+            # A failed attempt newer than both shadows nothing: the revocation still decides.
+            failed = certify_node(repo_root, "orch_user3", self.USER, through="generate",
+                                  ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                                  source_id="src_20260101_003")
+            fpath = repo_root / failed["source_meta"]
+            fdoc = json.loads(fpath.read_text(encoding="utf-8"))
+            fdoc["verification_status"] = "fail"
+            fpath.write_text(json.dumps(fdoc), encoding="utf-8")
+            self.assertEqual(self._certified(repo_root, self.USER, "generate")[1]["reason"],
+                             "revoked")
+            # The re-derivation the revocation asked for, once it passes, is selected.
+            certify_node(repo_root, "orch_user4", self.USER, through="generate",
+                         ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                         source_id="src_20260101_004")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertEqual((ok, detail["source_id"]), (True, "src_20260101_004"))
+            # And with the revocation on an OLDER output only, the newer eligible one stands.
+            self.assertTrue(self._certified(repo_root, self.USER, "generate")[0])
+
     def test_a_moved_deliverable_is_not_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
