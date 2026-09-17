@@ -1299,6 +1299,17 @@ class DerivationResolver:
                 sel.revocation_repair_strategy = upstream.revocation_repair_strategy
                 return
         candidates = _stage_meta_candidates(self.repo_root, node_key, step_token)
+        if step_token in ("build", "validate") and sel.pipeline_ref:
+            # A pipeline is ONE chain: a build is selected from the pipeline of the source it
+            # was built from, and a verdict from the pipeline of its binary. The key alone
+            # would also accept a byte-identical build in another pipeline (the build key
+            # binds the source's OUTPUT hash, not its pipeline), and adopting that one would
+            # hand the run a `pipeline_ref` from one pipeline and a `source_id` from another —
+            # a lineage naming a source directory that is not there, a Validate reading it,
+            # a Generate revocation resolving to a meta that does not exist (correctness
+            # round 1, F1). The cost is one build re-run in that rare case.
+            pipe_dir = self.repo_root / sel.pipeline_ref
+            candidates = [c for c in candidates if c[1].is_relative_to(pipe_dir)]
         if not candidates:
             # Nothing was ever produced: say so before computing a key nobody stamped (a
             # never-derived node's spec files may not even exist yet — that is the closure

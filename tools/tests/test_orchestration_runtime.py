@@ -21852,6 +21852,40 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                              "workspace/pipelines/component__user__0.1.0/user_20260102_001")
             self.assertEqual(detail["source_id"], "src_20260101_001")
 
+    def test_a_build_is_selected_only_from_the_pipeline_of_its_selected_source(self) -> None:
+        """Correctness round 1, F1. The USER's IR is re-derived to DIFFERENT bytes (a fresh
+        pipeline P2 follows, since P1's lineage binds the old IR) and its Generate then
+        reproduces the source byte for byte. The build key binds the source's OUTPUT hash, so
+        P1's build carries the same key — but it is not selected: a build is selected from
+        the pipeline of the selected source, or the run would adopt `pipeline_ref` from P1
+        beside a `source_id` that exists only in P2 (a lineage naming a missing source
+        directory, a Validate reading it, a Generate revocation resolving to no meta). The
+        cost is one build re-run; the certification of P1's chain is not touched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            p1 = "workspace/pipelines/component__user__0.1.0/user_20260101_001"
+            certify_node(repo_root, "orch_user2", self.USER, through="generate",
+                         ir_id="user_20260102_001", pipeline_id="user_20260102_001",
+                         ir_text=f"node_key: {self.USER}\n# re-derived\n",
+                         model_text="module user_model\nend module\n")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["pipeline_ref"], p1.replace("0101", "0102"))
+            ok, detail = self._certified(repo_root, self.USER, "build")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "binary_not_found")
+            # The refs a run adopts are one chain: every id under the selected pipeline.
+            self.assertEqual((detail["pipeline_ref"], detail["source_id"], detail["binary_id"]),
+                             (p1.replace("0101", "0102"), "src_20260101_001", None))
+            # P1's own chain still certifies once its IR is the selected one again — nothing
+            # was revoked or hidden by the restriction.
+            shutil.rmtree(repo_root / "workspace" / "ir" / "component__user__0.1.0"
+                          / "user_20260102_001")
+            ok, detail = self._certified(repo_root, self.USER, "validate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["pipeline_ref"], p1)
+
     def test_selection_is_memoised_per_evaluation_and_refuses_a_cycle(self) -> None:
         from tools.orchestration_runtime import DerivationResolver
         with tempfile.TemporaryDirectory() as tmp:
