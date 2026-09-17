@@ -16736,107 +16736,115 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
             )
 
 
-class FreshnessKeyParsedIdOrderingTests(unittest.TestCase):
-    """Codex round 23 F1+F2: ordering must be by parsed `(date, seq)` from the
-    canonical id suffix, not by raw path lex. Non-canonical directory names
-    (stray `zzz/`, etc.) must be filtered out before selection so they
-    cannot impersonate a runtime-issued id."""
+class CandidateOrderingAndFilterTests(unittest.TestCase):
+    """The candidate set and its order (`_stage_meta_candidates`, issue #250 PR-2), driven
+    through the predicate on key-stamped artifacts — the predecessor of this class
+    (`FreshnessKeyParsedIdOrderingTests`, Codex round 23 F1/F2) built a catalog without
+    paths and refused for `spec_ref_unresolved` in every row, so it pinned nothing
+    (correctness round 1, F3). What is pinned: the order is the parsed `(date, seq)` of the
+    id, not its slug; a directory whose name is not a canonical runtime id is NOT a
+    candidate at the IR root nor at the pipeline root (it cannot impersonate an output,
+    whatever it contains); a refused output that is not revoked shadows nothing; an
+    ambiguous catalog entry cannot be resolved to a spec directory."""
 
-    def _build(self, repo_root: Path) -> None:
-        (repo_root / "spec" / "registry").mkdir(parents=True)
-        (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
+    NK = "component/dep_a@0.1.0"
 
-    def test_newer_by_date_with_smaller_slug_wins(self) -> None:
-        """Round 23 F1: `a_20260601_001` (newer date, smaller slug) must beat
-        `z_20260501_001` (older date, larger slug). Pure lex-on-path would
-        pick `z_...`; parsing date+seq gives the correct order."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+    def _certified(self, repo_root: Path, step: str) -> tuple[bool, dict[str, Any]]:
+        with accept_any_certified_ir():
+            return ort._phase_certified(repo_root, "o", self.NK, step)
+
+    def test_the_newer_date_wins_over_the_larger_slug(self) -> None:
+        """`a_20260601_001` (newer date, smaller slug) beats `z_20260501_001`: two eligible
+        IR outputs of one key, and the selection reads the date, not the path order."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            older_larger_slug = repo_root / "workspace" / "ir" / safe / "z_20260501_001"
-            newer_smaller_slug = repo_root / "workspace" / "ir" / safe / "a_20260601_001"
-            older_larger_slug.mkdir(parents=True)
-            newer_smaller_slug.mkdir(parents=True)
-            (older_larger_slug / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            (newer_smaller_slug / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref"),
-                "newer-by-date (smaller slug) must override older-by-date "
-                "(larger slug) — date+seq parsing decouples ordering from slug",
-            )
+            certify_node(repo_root, "o", self.NK, through="compile", ir_id="z_20260501_001",
+                         pipeline_id="z_20260501_001", ir_text=f"node_key: {self.NK}\n# z\n")
+            certify_node(repo_root, "o", self.NK, through="compile", ir_id="a_20260601_001",
+                         pipeline_id="a_20260601_001", ir_text=f"node_key: {self.NK}\n# a\n")
+            ok, detail = self._certified(repo_root, "compile")
+            self.assertEqual((ok, detail["ir_id"]), (True, "a_20260601_001"))
 
-    def test_non_canonical_directory_filtered_out(self) -> None:
-        """Round 23 F2: a stray `zzz/` with passing ir_meta.json must NOT
-        win over a legitimate canonical-id directory with failing
-        ir_meta.json. Non-canonical names are filtered before selection."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+    def test_a_non_canonical_ir_directory_is_not_a_candidate(self) -> None:
+        """A `zzz/` copy of an eligible IR (same key, same bytes, same stamp) beside a
+        canonical directory whose deliverable was then edited: the canonical one refuses
+        (`artifact_hash_mismatch`) and the copy does not stand in — and alone, it is
+        `ir_not_found`."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            canonical = repo_root / "workspace" / "ir" / safe / "dep-a_20260601_001"
-            stray = repo_root / "workspace" / "ir" / safe / "zzz"
-            canonical.mkdir(parents=True)
-            stray.mkdir(parents=True)
-            (canonical / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            (stray / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref"),
-                "stray `zzz/` must be filtered out; the canonical-id failing "
-                "artifact must drive the gate decision",
-            )
+            refs = certify_node(repo_root, "o", self.NK, through="compile",
+                                ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
+            root = repo_root / "workspace" / "ir" / "component__dep_a__0.1.0"
+            shutil.copytree(root / "dep-a_20260601_001", root / "zzz")
+            (repo_root / refs["ir_ref"] / "spec.ir.yaml").write_text("edited: true\n",
+                                                                 encoding="utf-8")
+            ok, detail = self._certified(repo_root, "compile")
+            self.assertFalse(ok)
+            self.assertTrue(str(detail["reason"]).startswith("artifact_hash_mismatch:"),
+                            detail)
+            shutil.rmtree(root / "dep-a_20260601_001")
+            self.assertEqual(self._certified(repo_root, "compile")[1]["reason"],
+                             "ir_not_found")
 
-    def test_only_non_canonical_present_yields_false(self) -> None:
-        """If ALL artifacts in the dep tree are non-canonical, the selector
-        must filter them all out and return None → stage fails closed."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+    def test_a_non_canonical_pipeline_directory_is_not_a_candidate(self) -> None:
+        """The same at the pipeline root: a `zzz/` copy of an eligible pipeline is not a
+        Generate candidate."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            stray = repo_root / "workspace" / "ir" / safe / "zzz"
-            stray.mkdir(parents=True)
-            (stray / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref"),
-                "no canonical id present → stage fail-closed",
-            )
+            refs = certify_node(repo_root, "o", self.NK, through="generate",
+                                ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
+            root = repo_root / "workspace" / "pipelines" / "component__dep_a__0.1.0"
+            shutil.copytree(root / "dep-a_20260601_001", root / "zzz")
+            (repo_root / refs["model_ref"]).write_text("! edited\n", encoding="utf-8")
+            ok, detail = self._certified(repo_root, "generate")
+            self.assertFalse(ok)
+            self.assertTrue(str(detail["reason"]).startswith("artifact_hash_mismatch:"),
+                            detail)
+            shutil.rmtree(root / "dep-a_20260601_001")
+            self.assertEqual(self._certified(repo_root, "generate")[1]["reason"],
+                             "source_not_found")
 
-    def test_non_canonical_pipeline_dir_filtered_out(self) -> None:
-        """Same filter applies to pipeline_dir selection (binary_meta path)."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+    def test_a_refused_output_that_is_not_revoked_shadows_nothing(self) -> None:
+        """Only a REVOCATION shadows older eligible outputs (13a). A newer output of the same
+        key whose deliverable was edited after the stamp (`artifact_hash_mismatch`) is
+        simply not eligible: the older eligible one is selected (security round 1, M17)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            canonical = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            stray = repo_root / "workspace" / "pipelines" / safe / "zzz"
-            for d in (canonical / "binary" / "bin_20260101_001",
-                      stray / "binary" / "bin_20260101_001"):
-                d.mkdir(parents=True)
-            (canonical / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            (stray / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref"),
-                "stray pipeline_dir must not bypass the canonical filter",
-            )
+            certify_node(repo_root, "o", self.NK, through="generate",
+                         ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001",
+                         source_id="src_20260601_001")
+            newer = certify_node(repo_root, "o", self.NK, through="generate",
+                                 ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001",
+                                 source_id="src_20260601_002",
+                                 model_text="module dep_a_model\n! newer\nend module\n")
+            (repo_root / newer["model_ref"]).write_text("! edited\n", encoding="utf-8")
+            ok, detail = self._certified(repo_root, "generate")
+            self.assertEqual((ok, detail["source_id"]), (True, "src_20260601_001"))
+
+    def test_an_ambiguous_catalog_entry_resolves_no_spec_directory(self) -> None:
+        """Two catalog entries for one `(kind, id, version)` at different directories: the
+        resolver refuses `spec_ref_unresolved` rather than picking one (security round 1,
+        M7) — the key would otherwise be computed over whichever spec text came first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            certify_node(repo_root, "o", self.NK, through="compile",
+                         ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
+            self.assertTrue(self._certified(repo_root, "compile")[0])
+            cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+            doc = ort._require_yaml().safe_load(cat.read_text(encoding="utf-8"))
+            entry = dict(next(e for e in doc["specs"] if e.get("spec_id") == "dep_a"))
+            other = "spec/component/elsewhere/dep_a"
+            (repo_root / other).mkdir(parents=True)
+            for f in ("controlled_spec.md", "tests.md", "deps.yaml"):
+                shutil.copy(repo_root / entry["controlled_spec_path"].rsplit("/", 1)[0] / f,
+                            repo_root / other / f)
+            entry.update({"controlled_spec_path": f"{other}/controlled_spec.md",
+                          "tests_path": f"{other}/tests.md", "deps_path": f"{other}/deps.yaml"})
+            doc["specs"].append(entry)
+            cat.write_text(ort._require_yaml().safe_dump(doc), encoding="utf-8")
+            ort._load_spec_catalog.cache_clear()
+            self.assertEqual(self._certified(repo_root, "compile")[1]["reason"],
+                             "spec_ref_unresolved")
 
 
 class BareStringDepEntryRejectionTests(unittest.TestCase):
