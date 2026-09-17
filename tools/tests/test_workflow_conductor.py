@@ -94,6 +94,10 @@ _NON_BUILDER_KEYS = {
     "sandbox_profile_ref",
     "_resolved_build_system",
     "_resolved_makefile_host_authored",
+    # record-launch stamps the transport on every HTTP-provider and deterministic launch, and
+    # an empty must-read list on a deterministic one (`orchestration_runtime.record_launch`).
+    "leaf_transport",
+    "skill_must_read_refs",
     # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
     "_capture_source",
 }
@@ -166,6 +170,8 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
     ir_id = req["ir_ref"].rsplit("/", 1)[1]
     pipeline_id = req["pipeline_ref"].rsplit("/", 1)[1]
     must_read = req.get("skill_must_read_refs", "")
+    if req["node_key"] not in _SPEC_PATH_BY_NODE_KEY:
+        raise KeyError(f"{req['node_key']}: add its spec dir to _SPEC_PATH_BY_NODE_KEY")
     return wc.NodeRefs(
         node_key=req["node_key"],
         spec_path=_SPEC_PATH_BY_NODE_KEY[req["node_key"]],
@@ -176,6 +182,57 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
         run_id=req.get("run_id"),
         source_binary_id=req.get("source_binary_id"),
     )
+
+
+
+def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
+    """`build_launch_request`, driven with the arguments read off a recorded request, must
+    reproduce it: every field the builder emits matches (but `_HISTORICAL_KEYS`), and every
+    field the record carries is the builder's (but `_NON_BUILDER_KEYS`). Module-level so a
+    request that is NOT a tracked fixture can be put through the same comparison."""
+    step, substep = req["step"], req.get("substep")
+    refs = _refs_from_request(req)
+    built = wc.build_launch_request(
+        refs,
+        step=step,
+        substep=substep,
+        orchestration_id=req["orchestration_id"],
+        orchestration_agent_run_id=req["parent_agent_run_id"],
+        child_agent_run_id=req["agent_run_id"],
+        agent_model=req["agent_model"],
+        workflow_mode=req["workflow_mode"],
+        case_ids=_case_ids_from_outputs(req.get("allowed_output_paths", [])),
+        evidence_artifacts=_evidence_artifacts_from_outputs(
+            req.get("allowed_output_paths", [])),
+        repair={
+            k: req[k]
+            for k in ("issue_severity", "repair_strategy",
+                      "repair_target_agent_run_id", "repair_reason", "repair_findings")
+            if k in req
+        },
+        runner_host_authored=bool(req.get("runner_host_authored")),
+        resolved_dependencies=tuple(req.get("resolved_dependencies", ())),
+        dependency_surface=tuple(req.get("dependency_surface", ())),
+        exemplar=req.get("exemplar"),
+        warm_resume=bool(req.get("warm_resume")),
+        pure_leaf=req.get("leaf_mode") == "pure",
+        pure_context=req.get("pure_context"),
+        pure_shape=req.get("pure_shape", ""),
+    )
+    # every field the builder produces must match the real payload
+    for key, value in built.items():
+        tc.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
+        if key in _HISTORICAL_KEYS:
+            continue
+        tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
+    if req.get("leaf_mode") == "pure":
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        tc.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
+    # the builder must cover every real field except record-launch extras
+    real_business_keys = set(req) - _NON_BUILDER_KEYS
+    tc.assertEqual(real_business_keys - set(built), set(),
+                   f"{step}/{substep}: builder missing fields")
 
 
 class BuildLaunchRequestTest(unittest.TestCase):
@@ -200,12 +257,19 @@ class BuildLaunchRequestTest(unittest.TestCase):
     count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
     and `cmp`.
 
-    What this row does NOT hold: a repair-turn capture (the run's `reuse` turns carry
-    `repair_findings` and a slim shape), a `pure_shape` other than the default (this node has
-    none), and a `component` / `infrastructure` node's pure pair. The pure builder is driven for
-    every pair and every bundle shape by `test_pure_leaf_wiring._host_built_launch_requests`,
-    and its dispatch by `test_pure_only_leaf_model`; this row's own axis is "the payload matches
-    a run that really happened", which those do not have."""
+    What the corpus does NOT hold: a repair-turn capture (the run's `reuse` turns carry
+    `repair_findings` and `warm_resume` and no `pure_context`), an HTTP-provider or codex
+    capture, a row with an `exemplar`, a `pure_shape` other than the default (this node has
+    none), and a `component` / `infrastructure` node's pure pair. The comparison ACCEPTS each
+    of those shapes — probed at round 1 of this branch's review on recorded requests of
+    `orch_20260807T002410Z_acf2b996` (kimi-k3, `leaf_transport`), `orch_20260905T022548Z_97e85927`
+    (component, `exemplar`) and this run's warm `reuse` turns and deterministic launches — so a
+    later re-capture of one is a fixture drop-in plus its `_SPEC_PATH_BY_NODE_KEY` entry, not a
+    test change. What is not driven through `build_launch_request` by any capture is driven by
+    `test_pure_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
+    variants, warm and cold repair) and, for the `harness` bundle shape,
+    `test_pure_leaf_producer`; dispatch by `test_pure_only_leaf_model`. This row's own axis is
+    "the payload matches a run that really happened", which those do not have."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
         real = _load_real_requests()
@@ -226,52 +290,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
 
         for (step, substep), req in real.items():
             with self.subTest(step=step, substep=substep):
-                refs = _refs_from_request(req)
-                built = wc.build_launch_request(
-                    refs,
-                    step=step,
-                    substep=substep,
-                    orchestration_id=req["orchestration_id"],
-                    orchestration_agent_run_id=req["parent_agent_run_id"],
-                    child_agent_run_id=req["agent_run_id"],
-                    agent_model=req["agent_model"],
-                    workflow_mode=req["workflow_mode"],
-                    case_ids=_case_ids_from_outputs(req.get("allowed_output_paths", [])),
-                    evidence_artifacts=_evidence_artifacts_from_outputs(
-                        req.get("allowed_output_paths", [])),
-                    repair={
-                        k: req[k]
-                        for k in ("issue_severity", "repair_strategy",
-                                  "repair_target_agent_run_id", "repair_reason")
-                        if k in req
-                    },
-                    runner_host_authored=bool(req.get("runner_host_authored")),
-                    resolved_dependencies=tuple(req.get("resolved_dependencies", ())),
-                    dependency_surface=tuple(req.get("dependency_surface", ())),
-                    pure_leaf=req.get("leaf_mode") == "pure",
-                    pure_context=req.get("pure_context"),
-                    pure_shape=req.get("pure_shape", ""),
-                )
-                # every field the builder produces must match the real payload
-                for key, value in built.items():
-                    self.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
-                    if key in _HISTORICAL_KEYS:
-                        continue
-                    self.assertEqual(
-                        value, req[key],
-                        f"{step}/{substep}: field {key} mismatch",
-                    )
-                if req.get("leaf_mode") == "pure":
-                    from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-                    self.assertEqual(built["prompt_contract_version"],
-                                     PURE_PROMPT_CONTRACT_VERSION)
-                    self.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
-                # the builder must cover every real field except record-launch extras
-                real_business_keys = set(req) - _NON_BUILDER_KEYS
-                self.assertEqual(
-                    real_business_keys - set(built), set(),
-                    f"{step}/{substep}: builder missing fields",
-                )
+                _assert_builder_reproduces(self, req)
 
     def test_pure_fixtures_are_redactions_of_the_recorded_shape(self) -> None:
         """The five pure rows were produced by `data/conductor_launch_requests/
@@ -328,6 +347,11 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertEqual(len(pure_rows), 5)
         for (step, substep), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
+                if "pure_context" not in req:
+                    # a warm reuse repair turn omits it (the resumed session holds it)
+                    self.assertTrue(req.get("warm_resume"), "no pure_context on a cold row")
+                    self.assertRegex(req["launch_prompt_full"], placeholder)
+                    continue
                 # Set IDENTITY with the contract table. The runtime validator (driven on these
                 # fixtures by test_orchestration_runtime) checks the required keys are PRESENT
                 # and admits extras, so it alone would not notice a capture carrying a key the
