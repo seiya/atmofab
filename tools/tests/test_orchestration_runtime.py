@@ -28,6 +28,7 @@ from unittest import mock
 from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
+from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.llm_config import config_sha256 as lc_config_sha256
@@ -75,6 +76,17 @@ from tools.orchestration_runtime import (
 )
 
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+
+# The derivation record a PASS step_result must carry (issue #250): what the conductor computes
+# at phase start (`phase_derivation`) and `write_step_result` stamps into the certifying meta.
+# The stamp checks the SHAPE only — the key is not recomputed at stamp time — so a synthetic
+# record is what every fixture here that passes a phase needs; `DerivationRecordStampTests`
+# drives the shape refusals and the real resolvers.
+_DERIVATION_RECORD = {
+    "derivation_key": "sha256:" + "0" * 64,
+    "derivation_inputs": {"fixture": "sha256:" + "1" * 64},
+    "transformation": ["fixture-1"],
+}
 
 # The host-inlined context a PURE `generate.generate` launch carries. The key SET is what the
 # launch validator requires for that pair; the bodies are only documents, so they are the
@@ -2446,6 +2458,7 @@ shell_tool                       stable             true
                         agent_run_id=wrong_arid,
                         payload={
                             "status": "pass",
+                            "derivation": _DERIVATION_RECORD,
                             "required_outputs": [
                                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -2468,6 +2481,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "required_outputs": [
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -2489,6 +2503,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_build",
                         "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
@@ -2504,6 +2519,7 @@ shell_tool                       stable             true
                 agent_run_id="step_run_build_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "validation_stage": "post_build",
                     "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
@@ -4900,6 +4916,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [
                             "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json"
                         ],
@@ -6705,6 +6722,7 @@ shell_tool                       stable             true
                     agent_run_id="step_run_build_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_build",
                         "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
@@ -6925,6 +6943,7 @@ shell_tool                       stable             true
                     agent_run_id="step_run_build_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
                         ],
@@ -6981,6 +7000,7 @@ shell_tool                       stable             true
                 agent_run_id="step_run_build_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "validation_stage": "post_build",
                     "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
@@ -7152,6 +7172,7 @@ shell_tool                       stable             true
                     agent_run_id="step_run_validate_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/runs/run_20260101_001/results.json"
                         ],
@@ -7203,6 +7224,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "required_outputs": [
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -7250,6 +7272,7 @@ shell_tool                       stable             true
     def _passing_compile_payload() -> dict:
         return {
             "status": "pass",
+            "derivation": _DERIVATION_RECORD,
             "required_outputs": [
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -7663,6 +7686,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
@@ -7705,6 +7729,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": [],
@@ -7751,6 +7776,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": [],
@@ -7795,6 +7821,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "validation_stage": "post_generate",
                     "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                     "failed_substeps": [],
@@ -7841,6 +7868,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": [src_ref],
                         "failed_substeps": [],
@@ -7881,6 +7909,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [meta_ref],
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_plan_generate_001"],
@@ -7925,6 +7954,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [meta_ref],
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_plan_generate_001"],
@@ -7969,6 +7999,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "required_outputs": [meta_ref],
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_plan_generate_001"],
@@ -8012,6 +8043,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "validation_stage": "post_generate",
                     "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                     "failed_substeps": [],
@@ -8073,6 +8105,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
+                    "derivation": _DERIVATION_RECORD,
                     "validation_stage": "post_generate",
                     "required_outputs": _seed_generate_pass_outputs(repo_root, new_meta_ref),
                     "failed_substeps": ["substep_run_gen_generate_001"],
@@ -8128,6 +8161,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": _seed_generate_pass_outputs(repo_root, meta_ref),
                         "failed_substeps": ["substep_run_gen_generate_001"],
@@ -8189,6 +8223,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": [new_meta_ref],
                         "failed_substeps": [],
@@ -8262,6 +8297,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
+                        "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": [old_meta_ref],
                         "failed_substeps": ["substep_run_gen_generate_001"],
@@ -9443,17 +9479,22 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(detail["reason"], "revoked")
             self.assertEqual(detail["last_fail_reason"], "predicate p1 failed")
 
-            # A phase that certifies no meta, and one whose meta was never written, are
-            # `noop` — there is nothing to revoke, which is not an error. The two are
-            # DIFFERENT noops and only one can ever be a failure: `validate` certifies no meta
-            # by design, so it is always unrevocable AND (when it has passed) still certified.
-            # Answering that with `still_certified` made the documented RUNBOOK §3-1 recipe
-            # exit 1 on the one phase whose `noop` the docstring calls legitimate.
-            validate_noop = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="validate",
-                                                reason="r", trigger_agent_run_id="t")
-            self.assertEqual(validate_noop["status"], "noop")
-            self.assertEqual(validate_noop["reason"], "step_certifies_no_meta")
-            self.assertFalse(validate_noop["still_certified"])
+            # Validate certifies `validate_meta.json` since issue #250 (PR-1), resolved through
+            # `lineage.json#run_id` under the run NODE dir, so `--step validate` revokes an
+            # artifact like the other three phases instead of answering the
+            # `step_certifies_no_meta` noop it used to (until #250 validate was the one phase
+            # that was always unrevocable and, when passed, still certified).
+            validate_revoked = ort.revoke_artifact(
+                repo, "o1", node_key=self._NK, step="validate",
+                reason="r", trigger_agent_run_id="t")
+            self.assertEqual(validate_revoked["status"], "revoked")
+            self.assertEqual(validate_revoked["meta_ref"],
+                             f"{refs['run_node_dir']}/validate_meta.json")
+            self.assertEqual(validate_revoked["prior_verification_status"], "pass")
+            self.assertEqual(
+                json.loads((repo / refs["run_node_dir"] / "validate_meta.json")
+                           .read_text(encoding="utf-8"))["verification_status"],
+                "revoked")
 
     def test_the_cli_accepts_a_validate_revocation(self) -> None:
         """The over-refusal, driven through the route the RUNBOOK recipe uses. `revoke-artifact
@@ -9781,6 +9822,7 @@ class CertificationStampTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
                 agent_run_id="orch_run_001",
                 payload={"status": "pass", "validation_stage": "post_generate",
+                         "derivation": _DERIVATION_RECORD,
                          "required_outputs": [model_ref, log_ref, meta_ref],
                          "failed_substeps": [],
                          "substep_agent_run_ids": ["substep_gen_verify_001"]},
@@ -9853,26 +9895,44 @@ class CertificationStampTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"], refs["source_meta"], second])
+                    required_outputs=[refs["model_ref"], refs["source_meta"], second], derivation=_DERIVATION_RECORD)
             with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"]])
+                    required_outputs=[refs["model_ref"]], derivation=_DERIVATION_RECORD)
 
-    def test_write_step_result_pass_for_validate_certifies_no_meta(self) -> None:
-        """Validate declares no certifying meta, so the stamp returns without writing one —
-        and a passing validate `write-step-result` must not raise. Nothing on the branch drove
-        that path at all (witness census), and it is the one every real run takes."""
-        self.assertIsNone(ort.CERTIFYING_META_FILENAME_BY_STEP.get("validate"))
+    def test_validate_pass_stamps_validate_meta_like_the_other_phases(self) -> None:
+        """Validate certifies `validate_meta.json` since issue #250 (PR-1): the stamp
+        byte-pins every declared run deliverable but the meta itself, writes the output hash
+        and the derivation record, and the non-pass strip removes exactly those keys — one
+        certification shape for all four phases, where until #250 the stamp returned `None`
+        for validate and every real run took that path."""
+        self.assertEqual(ort.CERTIFYING_META_FILENAME_BY_STEP.get("validate"),
+                         "validate_meta.json")
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = certify_node(repo, "o1", through="validate")
-            outs = [refs["aggregate_verdict"]]
-            self.assertIsNone(ort._stamp_certification(
+            node_dir = refs["run_node_dir"]
+            meta_ref = f"{node_dir}/validate_meta.json"
+            outs = [refs["aggregate_verdict"], f"{node_dir}/verdict.json",
+                    f"{node_dir}/summary.json", f"{node_dir}/semantic_review.json", meta_ref]
+            doc = ort._stamp_certification(
                 repo, "o1", node_key="component/spec_x@0.1.0", step="validate",
-                required_outputs=outs))
-            self.assertIsNone(ort._strip_certification(
-                repo, step="validate", required_outputs=outs))
+                required_outputs=outs, derivation=_DERIVATION_RECORD)
+            self.assertIsNotNone(doc)
+            self.assertEqual(sorted(doc["artifact_hashes"]), sorted(outs[:-1]))
+            self.assertEqual(doc["output_hash"],
+                             tools_derivation.output_hash(doc["artifact_hashes"]))
+            self.assertEqual(doc["derivation_key"], _DERIVATION_RECORD["derivation_key"])
+            self.assertNotIn("source_ir_id", doc)   # validate binds through trial_meta
+            on_disk = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["artifact_hashes"], doc["artifact_hashes"])
+            self.assertEqual(ort._strip_certification(
+                repo, step="validate", required_outputs=outs), meta_ref)
+            stripped = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
+            for key in ort._CERTIFICATION_STAMP_KEYS:
+                self.assertNotIn(key, stripped)
+            self.assertEqual(stripped["verification_status"], "pass")
 
     def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
         """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
@@ -9887,12 +9947,12 @@ class CertificationStampTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "cannot read .*binary_meta.json"):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
             (repo / refs["binary_meta"]).write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "is not a JSON object"):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]])
+                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
 
     def test_stamp_refuses_a_phase_declaring_only_its_own_meta(self) -> None:
         """A phase whose `required_outputs` carry no hashable deliverable would be stamped
@@ -9904,7 +9964,7 @@ class CertificationStampTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no hashable deliverable"):
                 ort._stamp_certification(
                     repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
-                    required_outputs=[refs["ir_meta"]])
+                    required_outputs=[refs["ir_meta"]], derivation=_DERIVATION_RECORD)
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
@@ -9921,6 +9981,7 @@ class CertificationStampTests(unittest.TestCase):
                     repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
                     agent_run_id="orch_run_001",
                     payload={"status": "pass", "validation_stage": "post_generate",
+                             "derivation": _DERIVATION_RECORD,
                              "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
                              "substep_agent_run_ids": ["substep_gen_verify_001"]},
                 )
@@ -9941,6 +10002,7 @@ class CertificationStampTests(unittest.TestCase):
                     repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
                     agent_run_id="orch_run_001",
                     payload={"status": "pass", "validation_stage": "post_generate",
+                             "derivation": _DERIVATION_RECORD,
                              "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
                              "substep_agent_run_ids": ["substep_gen_verify_001"]},
                 )

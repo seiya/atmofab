@@ -6710,6 +6710,15 @@ class SubstepEventTests(unittest.TestCase):
             def _judge_pre_spawn_dag_block(self, *_a, **_k):
                 return None
 
+            # `__init__` is bypassed, so the derivation stash and the phase-start record
+            # (issue #250) are supplied directly; the real resolvers need artifacts this
+            # stub has none of.
+            _phase_derivations: dict = {}
+
+            def _phase_derivation(self, refs, phase):
+                return {"derivation_key": "sha256:" + "0" * 64,
+                        "derivation_inputs": {}, "transformation": ["stub-1"]}
+
             def run_substep(self, refs, phase, substep, repair=None,
                             resolved_dependencies=(), dependency_surface=()):
                 return wc.SubstepOutcome(
@@ -6782,6 +6791,12 @@ class SubstepEventTests(unittest.TestCase):
 
             def _conductor_authors_makefile(self, *_a, **_k):
                 return False
+
+            _phase_derivations: dict = {}
+
+            def _phase_derivation(self, refs, phase):
+                return {"derivation_key": "sha256:" + "0" * 64,
+                        "derivation_inputs": {}, "transformation": ["stub-1"]}
 
             def run_substep(self, refs, phase, substep, repair=None,
                             resolved_dependencies=(), dependency_surface=()):

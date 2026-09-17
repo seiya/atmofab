@@ -20,6 +20,12 @@ CERTIFYING_META_FILENAME_BY_STEP: dict[str, str] = {
     "compile": "ir_meta.json",
     "generate": "source_meta.json",
     "build": "binary_meta.json",
+    # Validate certifies a meta too since issue #250 (PR-1): `validate_meta.json`, the
+    # host-authored run-node record `_author_derived_validate_artifacts` writes, carries the
+    # byte-pin of the run's deliverables and the derivation key like the other three, so the
+    # four phases have one certification shape and `revoke-artifact --step validate` reaches
+    # an artifact instead of answering `step_certifies_no_meta`.
+    "validate": "validate_meta.json",
 }
 
 
@@ -122,4 +128,19 @@ def stage_meta_type_violations(meta_data: dict[str, Any], *, step_token: str) ->
         source_ir_id = meta_data.get("source_ir_id")
         if not isinstance(source_ir_id, str) or not source_ir_id.strip():
             violations.append("source_ir_id must be non-empty string")
+    # The derivation record (issue #250). Same reason as `artifact_hashes` above: a stamp the
+    # key lookup cannot read would report a certified phase as stale.
+    for key in ("output_hash", "derivation_key"):
+        if key in meta_data:
+            value = meta_data.get(key)
+            if not (isinstance(value, str) and value.startswith("sha256:")
+                    and len(value) > len("sha256:")):
+                violations.append(f"{key} must be 'sha256:<hex>'")
+    if "derivation_inputs" in meta_data and not isinstance(meta_data.get("derivation_inputs"), dict):
+        violations.append("derivation_inputs must be an object")
+    if "derivation_transformation" in meta_data:
+        transformation = meta_data.get("derivation_transformation")
+        if (not isinstance(transformation, list) or not transformation
+                or not all(isinstance(v, str) and v.strip() for v in transformation)):
+            violations.append("derivation_transformation must be a non-empty list of strings")
     return violations

@@ -213,6 +213,13 @@ SUBSTEP_AWARE_PHASES: frozenset[str] = frozenset({"compile", "generate", "valida
 # in the runtime (`AUDIT_LOG_BASENAMES`) because the certification stamp excludes the same
 # basenames from the hashes it records; one definition, two readers.
 from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_BASENAMES
+# The derivation record of a phase attempt (issue #250): computed by the runtime from the
+# same resolvers the certification predicate will read, stamped by this conductor on every
+# launch and step_result of the attempt.
+from tools.orchestration_runtime import (
+    DerivationInputsUnresolvable,
+    phase_derivation,
+)
 
 # Deterministic in-process build/run capture limit. The canonical per-step
 # stdout/stderr log files must be FULL (untrimmed); the MCP `_run_command` trims its
@@ -3375,6 +3382,11 @@ class Conductor:
     # identity left to reconstruct one from, and a conductor that quietly invented a
     # configuration would launch models nobody chose.
     llm_config: LlmConfig | None = None
+    #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
+    #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
+    #: attempt is stamped with.
+    _phase_derivations: dict[tuple[str, str], dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.llm_config is None:
@@ -4900,6 +4912,15 @@ class Conductor:
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
                       codex_lineage_id: str | None = None) -> dict[str, Any]:
+        # The derivation key of the phase attempt this launch belongs to (issue #250), stamped
+        # here — the ONE funnel every launch passes through — rather than in
+        # `build_launch_request`, so the request builder stays a pure function of `refs` and
+        # the recorded request names the key of the attempt in flight. `record_agent_run`
+        # copies it onto the terminal row. Absent (not `None`) when no phase is in flight.
+        key = self._phase_derivation_key(str(request.get("node_key") or ""),
+                                         str(request.get("step") or ""))
+        if key is not None:
+            request.setdefault("derivation_key", key)
         response = {
             "agent_run_id": child_arid,
             "agent_session_id": child_arid,
@@ -5396,14 +5417,11 @@ class Conductor:
 
     @staticmethod
     def _infra_direct_deps(ir: dict[str, Any]) -> list[str]:
-        """The `infrastructure/...` direct-dependency node_keys of an IR (the harness deps)."""
-        dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
-        out: list[str] = []
-        for d in (dep.get("direct_deps") or []) if isinstance(dep, dict) else []:
-            nk = d.get("node_key") if isinstance(d, dict) else (d if isinstance(d, str) else None)
-            if isinstance(nk, str) and nk.strip() and nk.split("/", 1)[0].strip() == "infrastructure":
-                out.append(nk.strip())
-        return out
+        """The `infrastructure/...` direct-dependency node_keys of an IR (the harness deps).
+        The definition lives in the runtime (`_infrastructure_direct_deps`), which the
+        generate derivation inputs read too; this is the conductor's name for it."""
+        from tools.orchestration_runtime import _infrastructure_direct_deps
+        return _infrastructure_direct_deps(ir)
 
     def _write_runner(self, refs: NodeRefs) -> None:
         """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`).
@@ -5813,11 +5831,13 @@ clean:
         is on the GENERATE side, where `_pure_leaf_substep` requires a bundle shape — so an
         `m3c` node here has exactly one infra dep by construction. None is the fail-closed answer
         for anything else, including an `infrastructure` node no manifest declares (an undeclared
-        harness provides nothing, so every requirement is unsatisfied)."""
-        if node_key.split("/", 1)[0].strip() == "infrastructure":
-            return node_key
-        infra = self._infra_direct_deps(ir)
-        return infra[0] if len(infra) == 1 else None
+        harness provides nothing, so every requirement is unsatisfied).
+
+        The resolution itself lives in the runtime (`harness_node_key_for`) since issue #250,
+        because the generate derivation inputs name the same harness — a third reader of one
+        rule, so it is one definition."""
+        from tools.orchestration_runtime import harness_node_key_for
+        return harness_node_key_for(ir, node_key)
 
     def _build_pure_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
@@ -6382,41 +6402,13 @@ clean:
         return "\n\n".join(sections)
 
     def _pure_toolchain_document(self, refs: NodeRefs) -> str:
-        """The toolchain combinations the HOST can build and render for, as JSON.
-
-        The single reason this key exists: the pure prompt must tell the producer which toolchain
-        to author WITHOUT naming a target-stack technology in a `neutral core` file
-        (`docs/BACKEND_BOUNDARY.md`). So the pairs are derived from the backend registry at render
-        time and travel as data, and the template says only "copy the values from this document".
-
-        The capabilities asked are exactly the ones the deterministic gate
-        (`validate_pipeline_semantics._toolchain_capability_clauses`) asks of a node of this kind,
-        so a pair offered here is by construction a pair that gate accepts — an `infrastructure`
-        node needs only its build system to be executable, every other kind additionally needs the
-        host to author the control file and render the runner. An empty result RAISES: shipping a
-        prompt whose admissible set is `[]` would ask the producer to invent a value, which is the
-        blindness this document removes."""
-        from tools.backends import registry as backend_registry
-        kind = refs.node_key.partition("@")[0].partition("/")[0].strip()
-        is_infrastructure = kind == "infrastructure"
-        build_systems = [
-            b for b in backend_registry.implemented_backend_ids("build_system")
-            if backend_registry.provides("build_system", b, "build_execute")
-            and (is_infrastructure
-                 or backend_registry.provides("build_system", b, "control_file"))
-        ]
-        languages = [
-            l for l in backend_registry.implemented_backend_ids("language")
-            if is_infrastructure
-            or (backend_registry.provides("language", l, "control_file")
-                and backend_registry.provides("language", l, "runner_render"))
-        ]
-        pairs = [{"language": l, "build_system": b} for l in languages for b in build_systems]
-        if not pairs:
-            raise RuntimeError(
-                "pure_toolchain_document_unresolvable: the backend registry declares no "
-                f"(language, build_system) pair the host can serve for a {kind!r} node")
-        return json.dumps({"admissible_toolchains": pairs}, indent=2, ensure_ascii=False)
+        """The toolchain combinations the HOST can build and render for, as JSON — the runtime's
+        `admissible_toolchains_document`, which is also a compile derivation input (issue #250),
+        so the document the producer is shown and the one the key hashes are one value. Its
+        docstring carries the rationale (registry-derived so no `neutral core` file names a
+        technology; the capabilities asked are the deterministic gate's; an empty set RAISES)."""
+        from tools.orchestration_runtime import admissible_toolchains_document
+        return admissible_toolchains_document(refs.node_key)
 
     def _build_pure_compile_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.generate` producer sees, each value a plain
@@ -7389,7 +7381,13 @@ clean:
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
-                "agent_run_id": child_arid, "model": model, "usage": usage}
+                "agent_run_id": child_arid, "model": model, "usage": usage,
+                # The exemplar THIS attempt was shown, or None (a repair turn renders none; a
+                # node with no certified sibling gets none). An advisory input, recorded per
+                # attempt and never part of the derivation key (issue #250).
+                "exemplar_ref": (exemplar.get("source_ref")
+                                 if renders_launch_prompt and isinstance(exemplar, dict)
+                                 else None)}
             per_attempt.append(attempt_record)
 
             infra_error: tuple[str, str] | None = None
@@ -8493,7 +8491,7 @@ clean:
 
         The revocation's answer is READ, not discarded. `revoke-artifact` answers `noop` when it
         can resolve no meta, and that answer has two very different causes wearing one word: the
-        legitimate one (validate certifies no meta; the phase never produced one) and the
+        legitimate one (the phase never produced a meta) and the
         failure this whole PR exists to prevent (the decision did not reach the artifact, so the
         next `--resume` finds the phase still `certified` and skips straight past it). The
         runtime tells them apart and reports `still_certified` on the `noop`.
@@ -9269,6 +9267,8 @@ clean:
         # BEFORE the compile, so a failing build records them too: the binding describes what
         # was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir)
+        from tools.orchestration_runtime import _ir_toolchain_identity
+        toolchain_identity = _ir_toolchain_identity(ir)
 
         result = tool_compile_project({
             "project_dir": str(src_dir),
@@ -9337,7 +9337,13 @@ clean:
             # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
-            "compiler": result.get("compiler") or "",
+            # The compiler the control file pins (the IR's, else the host default) and the
+            # first line of its `--version`: the toolchain identity the build derivation key
+            # hashes (issue #250), recorded on the binary it built. `compile_project` itself
+            # answers neither — make picks the compiler — so this is resolved the way the key
+            # resolves it, from the IR through the runtime's one reader.
+            "compiler": toolchain_identity["compiler"],
+            "compiler_version": toolchain_identity["compiler_version"],
             "binary_artifact_ref": f"binary/{refs.binary_id}/bin/{exe}",
             "command_id": result.get("command_id"),
             "command_log_ref": command_log_ref,
@@ -10705,6 +10711,10 @@ clean:
                 "backend": str(toolchain.get("backend") or "openmp"),
                 "threads_per_rank": threads,
                 "openmp_env": {"OMP_NUM_THREADS": str(threads), "OMP_THREAD_LIMIT": str(threads)},
+                # The host this evidence was produced on (issue #250): RECORDED, not keyed —
+                # no verdict predicate depends on the machine yet, and the day a perf or
+                # cross-target predicate does, the execute inputs gain one line and read this.
+                "platform": _host_platform_record(),
             },
             "status": "pass" if qc_status == "pass" else "fail",
         }
@@ -11147,6 +11157,25 @@ clean:
         return "; ".join(parts)
 
     # -- phase + conduct ------------------------------------------------------
+
+    def _phase_derivation(self, refs: NodeRefs, phase: str) -> dict[str, Any]:
+        """The derivation record of `(refs.node_key, phase)` NOW — `phase_derivation` over
+        this attempt's own upstream refs. The refs name what this run is standing on: the
+        reserved / adopted IR, the source Generate produced (or adopted), the binary Validate
+        runs (`source_binary_id`). Raises `DerivationInputsUnresolvable`."""
+        return phase_derivation(
+            self.repo_root, node_key=refs.node_key, step=phase,
+            spec_ref=refs.spec_path,
+            ir_ref=refs.ir_ref,
+            source_ref=refs.source_dir() if refs.source_id else None,
+            binary_ref=(refs.binary_dir(refs.source_binary_id or refs.binary_id)
+                        if (refs.source_binary_id or refs.binary_id) else None))
+
+    def _phase_derivation_key(self, node_key: str, phase: str) -> str | None:
+        """The key of the phase attempt in flight for `(node_key, phase)`, or None when no
+        `run_phase` has computed one (the orchestration row, a launch outside a phase)."""
+        record = self._phase_derivations.get((node_key, phase))
+        return str(record["derivation_key"]) if isinstance(record, dict) else None
 
     @staticmethod
     def _adopt_certified_refs(refs: NodeRefs, phase: str, cert: dict[str, Any]) -> None:
@@ -11880,6 +11909,27 @@ clean:
             # inert where the surface is unresolved.
             dep_surface = tuple(self._write_dependency_surface(refs))
 
+        # The DERIVATION this attempt runs under (issue #250): the phase's contract inputs
+        # as they are NOW, and the key over them. Computed once, at phase start, BEFORE any
+        # substep — the inputs a leaf is about to be shown, not the inputs at stamp time —
+        # and recorded three times from this one value: on every launch of the phase
+        # (`record_launch`, so each attempt row in `agent_runs.jsonl` names its key), on the
+        # terminal step_result, and by `write_step_result` into the certifying stage meta on a
+        # pass. Placed after the host pre-authoring above because the compile graph sidecar
+        # and the generate runner are what the resolvers read for the upstream bindings, and
+        # after `_ensure_fresh_producer_id` because `refs` must name THIS attempt's ids. An
+        # unresolvable input — an upstream that is not certified, a dependency with no
+        # certified output — is a precondition failure the leaf cannot repair, routed like an
+        # unassemblable pure context: transport fail_closed, no leaf spawned.
+        try:
+            derivation = self._phase_derivation(refs, phase)
+        except DerivationInputsUnresolvable as exc:
+            self.emit("derivation_inputs_unresolvable", node_key=node_key, phase=phase,
+                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+            return PhaseOutcome(phase, "fail", decision=RouteDecision(
+                "fail_closed", reason="derivation_inputs_unresolvable"))
+        self._phase_derivations[(node_key, phase)] = derivation
+
         outcomes: list[SubstepOutcome] = []
         for i, substep in enumerate(SUBSTEPS[phase]):
             # Surface substep activity on the host stdout event stream so an
@@ -11930,13 +11980,15 @@ clean:
             "required_outputs": phase_required_outputs(
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
-                makefile_required=not (phase == "generate" and self._conductor_authors_makefile(refs)),
                 runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs))),
             "executor_agent_run_id": executor,
             "substep_agent_run_ids": substep_arids,
             "failed_substeps": failed,
             "retry_decisions": None,
             "validation_stage": PHASE_VALIDATION_STAGE[phase],
+            # The derivation this attempt ran under, pass or fail: `write_step_result` stamps
+            # it into the certifying meta on a pass, and a failed attempt keeps it here.
+            "derivation": derivation,
         }
         # Every terminal Validate step_result (pass OR fail) must carry a launch_request_ref
         # so the pre_phase_complete judge hook can resolve the execution dir. Point it at the
@@ -12905,27 +12957,47 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 }
 
 
+def _host_platform_record() -> dict[str, str | None]:
+    """The machine a Validate run executed on, for `trial_meta.json#environment.platform`:
+    `platform.machine()`, `platform.node()`, and the CPU model name from `/proc/cpuinfo` when
+    that file is readable (`None` otherwise — a record, never a refusal)."""
+    import platform as _platform
+    cpu_model: str | None = None
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("model name"):
+                cpu_model = line.split(":", 1)[1].strip() or None
+                break
+    except OSError:
+        cpu_model = None
+    return {"machine": _platform.machine(), "node": _platform.node(), "cpu_model": cpu_model}
+
+
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
-                           *, makefile_required: bool = True,
-                           runner_host_authored: bool = False) -> list[str]:
+                           *, runner_host_authored: bool = False) -> list[str]:
+    """The deliverables a phase's terminal step_result declares — and, on a pass, the set
+    `_stamp_certification` byte-pins into the certifying meta and hashes into the phase's
+    output hash (issue #250). So this is the definition of what a phase's OUTPUT is."""
     if phase == "compile":
         return [f"{refs.ir_ref}/spec.ir.yaml", f"{refs.ir_ref}/ir_meta.json"]
     if phase == "generate":
         src = refs.source_dir()
-        # lineage.json is authored host-side by the conductor (_write_lineage), not a leaf
-        # output_ref, so it is NOT a step required_output (which must be covered by the
-        # producer leaf's output_refs). post_generate still verifies it independently. For a
-        # leaf node src/Makefile is likewise conductor-authored (_write_makefile), so it is
-        # excluded when makefile_required is False (same rationale as lineage). On an M3c node
-        # the runner is conductor-rendered (_write_runner) and the leaf authors _checks.f90
-        # instead — swap it symmetrically (same rationale as the Makefile).
-        make_entry = [f"{src}/src/Makefile"] if makefile_required else []
-        runner_or_checks = (f"{src}/src/{refs.spec_id}_checks.f90" if runner_host_authored
-                            else f"{src}/src/{refs.spec_id}_runner.f90")
+        # Every source Build compiles is a Generate deliverable, whoever wrote it: the model,
+        # the checks module (on an M3c node, where the host renders the runner) and the runner
+        # itself, and the build control file. Until issue #250 the host-authored runner and
+        # `src/Makefile` were left out because a required output had to be covered by a
+        # leaf's `output_refs`; every generate leaf is pure now and the phase's outputs are
+        # vouched by on-disk existence (`_validate_step_result_payload`), and leaving them out
+        # meant the generate output hash — what Build's derivation key binds to — did not see
+        # the glue and the control file Build actually compiles. lineage.json stays out: it is
+        # a pipeline-root record, not a source.
+        checks_entry = ([f"{src}/src/{refs.spec_id}_checks.f90"] if runner_host_authored
+                        else [])
         return [
             f"{src}/src/{refs.spec_id}_model.f90",
-            runner_or_checks,
-            *make_entry,
+            *checks_entry,
+            f"{src}/src/{refs.spec_id}_runner.f90",
+            f"{src}/src/{Conductor.CONTROL_FILE_BASENAME}",
             f"{src}/source_meta.json",
         ]
     if phase == "build":

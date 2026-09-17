@@ -105,6 +105,9 @@ _NON_BUILDER_KEYS = {
     "leaf_transport",
     # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
     "_capture_source",
+    # The conductor's `record_launch` wrapper stamps the phase attempt's derivation key on every
+    # launch it records (issue #250); the builder stays a pure function of `refs`.
+    "derivation_key",
 }
 # Stamped `""` on EVERY launch by `prepare_launch_request_payload` (which `record_launch` calls),
 # and emitted `""` by the builder on the pure branch only. So on a deterministic capture it is a
@@ -1016,6 +1019,14 @@ def _pure_leaf_tail() -> list[str]:
     return [*pure_leaf_flags(), "-p"]
 
 
+# The derivation record a pass stamp requires (issue #250), in the shape `write_step_result`
+# validates. `_FakeConductor._phase_derivation` returns the same shape; the real resolvers are
+# `test_orchestration_runtime.DerivationInputsTests`' subject.
+_FAKE_DERIVATION = {"derivation_key": "sha256:" + "f" * 64,
+                    "derivation_inputs": {"fake": "fixture"},
+                    "transformation": ["fake-1"]}
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
@@ -1121,6 +1132,16 @@ class _FakeConductor(wc.Conductor):
 
     def read_case_ids(self, refs):  # type: ignore[override]
         return ()
+
+    def _phase_derivation(self, refs, phase):  # type: ignore[override]
+        """The derivation record `run_phase` computes at phase start (issue #250), faked: the
+        real resolvers read certified upstream metas and spec files these fixtures do not
+        carry. The shape is the one `write_step_result` validates; the resolvers themselves
+        are driven by `test_orchestration_runtime.DerivationInputsTests` and the wiring by
+        `PhaseDerivationWiringTest` here."""
+        return {"derivation_key": "sha256:" + "f" * 64,
+                "derivation_inputs": {"fake": phase},
+                "transformation": ["fake-1"]}
 
     # --- the LLM leaf, faked at the loop rather than at the process -------------------
     #
@@ -5918,7 +5939,7 @@ class NodeAllocationTest(unittest.TestCase):
         for phase in ("compile", "generate", "build", "validate"):
             with self.subTest(phase=phase):
                 declared = wc.phase_required_outputs(
-                    refs, phase, exe_name="spec_x_runner", makefile_required=True)
+                    refs, phase, exe_name="spec_x_runner")
                 ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
                 self.assertIn(ref, declared)
 
@@ -6038,7 +6059,8 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                              issue_severity=None, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="compile",
-                required_outputs=wc.phase_required_outputs(refs, "compile"))
+                required_outputs=wc.phase_required_outputs(refs, "compile"),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile")
             self.assertTrue(ok, detail)
 
@@ -6052,7 +6074,8 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="generate",
-                required_outputs=wc.phase_required_outputs(refs, "generate"))
+                required_outputs=wc.phase_required_outputs(refs, "generate"),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate")
             self.assertTrue(ok, detail)
 
@@ -6080,7 +6103,8 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="build",
-                required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe))
+                required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build")
             self.assertTrue(ok, detail)
             # Validate.execute APPENDS to Build's command log; Build must stay certified.
@@ -14024,14 +14048,23 @@ class WriteRunnerTest(unittest.TestCase):
                       leaf_authored["allowed_output_paths"])
 
     def test_phase_required_outputs_symmetry(self) -> None:
+        """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
+        and the control file Generate deliverables — they are what Build compiles and what
+        the generate output hash must cover): an M3c node declares model + checks + runner +
+        Makefile, a runner-authoring node model + runner + Makefile. The checks module is
+        the one entry that follows the shape."""
         refs = self._refs()
-        m3c = wc.phase_required_outputs(refs, "generate", makefile_required=False,
-                                        runner_host_authored=True)
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_checks.f90", m3c)
-        self.assertNotIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", m3c)
-        # Runner-authoring node (the infrastructure self-test) still requires the runner.
+        src = refs.source_dir()
+        m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True)
+        self.assertEqual(m3c, [
+            f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_checks.f90",
+            f"{src}/src/{self.SID}_runner.f90", f"{src}/src/Makefile",
+            f"{src}/source_meta.json"])
+        # Runner-authoring node (the infrastructure self-test): no checks module.
         leaf_authored = wc.phase_required_outputs(refs, "generate")
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", leaf_authored)
+        self.assertEqual(leaf_authored, [
+            f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_runner.f90",
+            f"{src}/src/Makefile", f"{src}/source_meta.json"])
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -14325,11 +14358,15 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         ver = self._launch(refs, "verify", host_authored=False)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
 
-    def test_phase_required_outputs_leaf_omits_makefile(self) -> None:
+    def test_phase_required_outputs_always_declares_the_control_file(self) -> None:
+        """Whoever authors it, the control file is a Generate DELIVERABLE (issue #250): Build
+        compiles with it, so the generate output hash Build's key binds to must cover it. The
+        LAUNCH request above still omits it from a pure leaf's output set — that is the leaf's
+        write authority, which is empty; this is the phase's output."""
         refs = self._refs()
         mk = f"{refs.source_dir()}/src/Makefile"
-        self.assertNotIn(mk, wc.phase_required_outputs(refs, "generate", makefile_required=False))
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", makefile_required=True))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate"))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True))
 
 
 class DeterministicBuildTest(unittest.TestCase):
