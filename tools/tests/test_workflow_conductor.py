@@ -94,13 +94,18 @@ _NON_BUILDER_KEYS = {
     "sandbox_profile_ref",
     "_resolved_build_system",
     "_resolved_makefile_host_authored",
-    # record-launch stamps the transport on every HTTP-provider and deterministic launch, and
-    # an empty must-read list on a deterministic one (`orchestration_runtime.record_launch`).
+    # record-launch stamps the transport on every HTTP-provider and deterministic launch
+    # (`orchestration_runtime.record_launch`).
     "leaf_transport",
-    "skill_must_read_refs",
     # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
     "_capture_source",
 }
+# Stamped `""` on EVERY launch by `prepare_launch_request_payload` (which `record_launch` calls),
+# and emitted `""` by the builder on the pure branch only. So on a deterministic capture it is a
+# record-launch extra, and on a pure capture the builder's emission is what the row pins — a
+# builder that stops emitting it must be a red row, which is why the key is exempted per row
+# and not listed above (it was, for one commit, and the omission mutant survived).
+_DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
 # version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
 # change (fifteen times between 2026-09-03 and 2026-09-12), so pinning the literal would make
@@ -234,6 +239,8 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         tc.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
     # the builder must cover every real field except record-launch extras
     real_business_keys = set(req) - _NON_BUILDER_KEYS
+    if req.get("deterministic"):
+        real_business_keys -= _DETERMINISTIC_ONLY_NON_BUILDER_KEYS
     tc.assertEqual(real_business_keys - set(built), set(),
                    f"{step}/{substep}: builder missing fields")
 
