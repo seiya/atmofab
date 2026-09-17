@@ -1734,6 +1734,32 @@ class PhaseDerivationWiringTest(unittest.TestCase):
                    for s, cap in c.calls if s == "write-step-result"]
         self.assertEqual(results, ["sha256:" + "1" * 64, "sha256:" + "2" * 64])
 
+    def test_run_phase_declares_the_accepted_bundles_files_as_generate_outputs(self) -> None:
+        """The one production call that threads the accepted bundle into the phase's declared
+        deliverables (round-2 mutant on both axes: `bundle_sources=()` at that call survived
+        while the pure function and the reader were each pinned alone). A Generate whose
+        bundle carries a `helper` declares it, so the stamp hashes it."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _FakeConductor(repo_root=repo, orchestration_id="orch_x",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            # The real producer writes the bundle INTO the attempt's (rotated) source dir; the
+            # fake writes nothing, so pin the id and plant the document where it would land.
+            c._ensure_fresh_producer_id = lambda refs, phase: None  # type: ignore[method-assign]
+            refs = self._refs()
+            bundle = repo / refs.source_dir() / "codegen_bundle.json"
+            bundle.parent.mkdir(parents=True, exist_ok=True)
+            bundle.write_text(json.dumps({"files": [
+                {"logical_path": "spec_x_model.f90", "role": "model"},
+                {"logical_path": "sw_private_helpers.f90", "role": "helper"}]}), encoding="utf-8")
+            self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+            result = next(cap["--result-json"] for s, cap in c.calls if s == "write-step-result")
+            src = refs.source_dir()
+            self.assertIn(f"{src}/src/sw_private_helpers.f90", result["required_outputs"])
+            self.assertEqual(result["required_outputs"].count(f"{src}/src/spec_x_model.f90"), 1)
+
     def test_unresolvable_inputs_fail_closed_before_any_substep(self) -> None:
         c = self._conductor()
 
