@@ -1,6 +1,6 @@
 # Simplification program
 
-Status: **decided** (2026-09-06). The operator's premise statements below are in force. The work is tracked by issue #167 and the open issues it lists; this note is the in-repository record, so that the decisions do not depend on the issue tracker being read.
+Status: **complete** (2026-09-17). Decided 2026-09-06; every issue in the table below is closed or was declined by the operator with a comment, and `docs/design/zero_base_architecture.md` records Z1, Z3 and Z4 as landed. The last to close was #177, on its criterion-2 leg 1 run `orch_20260917T075748Z_54edb32a` (a driver killed in Validate, resumed with compile / generate / build `skipped certified_by=…` and no producer launch; record on the issue). The operator's premise statements below stay in force; this note is the in-repository record, so that the decisions do not depend on the issue tracker being read.
 
 ## Purpose
 
