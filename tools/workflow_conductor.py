@@ -11933,9 +11933,11 @@ clean:
         # and recorded three times from this one value: on every launch of the phase
         # (`record_launch`, so each attempt row in `agent_runs.jsonl` names its key), on the
         # terminal step_result, and by `write_step_result` into the certifying stage meta on a
-        # pass. Placed after the host pre-authoring above because the compile graph sidecar
-        # and the generate runner are what the resolvers read for the upstream bindings, and
-        # after `_ensure_fresh_producer_id` because `refs` must name THIS attempt's ids. An
+        # pass. Placed after the host pre-authoring above so that a pre-authoring failure
+        # (a graph that does not build, a runner that does not render) keeps its own
+        # fail_closed reason — the resolvers read the registry and the certified upstream
+        # artifacts, never the runner or the control file — and after
+        # `_ensure_fresh_producer_id` because `refs` must name THIS attempt's ids. An
         # unresolvable input — an upstream that is not certified, a dependency with no
         # certified output — is a precondition failure the leaf cannot repair, routed like an
         # unassemblable pure context: transport fail_closed, no leaf spawned.

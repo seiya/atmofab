@@ -2317,12 +2317,12 @@ def _strip_certification(
     Best effort by design: an absent or unreadable meta is the ordinary shape of a failed
     phase (nothing was authored), and there is nothing to strip.
 
-    This is the SECOND of two strips and covers only phases that reach here. The phase that
-    fail-closes without writing a step_result at all (a leaf transport error, a validate gate
-    failure) is covered by the FIRST one, at the child's own terminalization in
-    `record_agent_run` — every child window terminalizes, and the keys are erased there from
-    whatever stage meta the child changed. Between them, the keys exist only where a passing `write-step-result` stamped
-    them.
+    This is the ONE strip: `write_step_result` is its only caller (the strip at the child's
+    own terminalization went with the FS-diff window in Z4, issue #171 PR-2; a pure leaf
+    authors no meta, so there is nothing of a child's to erase). A phase that fail-closes
+    without writing a step_result at all leaves its meta as the host last wrote it — never
+    stamped, since the stamp is written only here on a pass — so the keys exist only where a
+    passing `write-step-result` put them.
     """
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step.strip().lower())
     if meta_filename is None:

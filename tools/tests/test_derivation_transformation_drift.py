@@ -229,7 +229,10 @@ class TransformationDriftTests(unittest.TestCase):
 #: `test_pure_prompt_contract_drift._contract_tuple` under `PURE_PROMPT_CONTRACT_VERSION`;
 #: `compile-docs`: pinned above under `COMPILE_INLINED_DOCUMENTS_VERSION`; `derived`: a
 #: host-computed value that is a function of `input` members and the transformation version
-#: (not hashed on its own); `diagnosis`: the escalate diagnostician's, which certifies nothing.
+#: (not hashed on its own); `same-phase`: an artifact an EARLIER substep of the same phase
+#: produced, which the phase's reviewer or judge reads — not a key input of that phase (the
+#: key was taken at phase start, before it existed), covered by the phase's own stamp and
+#: output hash; `diagnosis`: the escalate diagnostician's, which certifies nothing.
 INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "controlled_spec_document": "input",
     "tests_document": "input",
@@ -238,17 +241,17 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "dependency_graph_document": "input",      # the derived closure signature is hashed
     "dependency_surface_document": "derived",  # from the closure members' certified IRs
     "ir_document": "input",                    # the compile output hash
-    "bundle_document": "input",                # the generate output (the reviewer's subject)
+    "bundle_document": "same-phase",           # the producer's bundle (the reviewer's subject)
     "harness_capabilities": "input",           # `harness.manifest`
     "target_profile": "input",                 # inside the IR
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs
     "toolchain_document": "input",
     "io_contract_document": "input",           # inside the IR
-    "diagnostics_document": "input",           # execute output, under the validate stamp
-    "verdict_document": "input",
-    "perf_document": "input",
-    "trial_meta_document": "input",
-    "quality_check_document": "input",
+    "diagnostics_document": "same-phase",      # execute output, under the validate stamp
+    "verdict_document": "same-phase",
+    "perf_document": "same-phase",
+    "trial_meta_document": "same-phase",
+    "quality_check_document": "same-phase",
     "binary_meta_document": "input",           # the build output hash
     "source_meta_document": "input",           # the generate output hash
     "raw_evidence_excerpt_document": "derived",  # RAW_EXCERPT_POLICY_VERSION over raw/
@@ -278,7 +281,8 @@ class InlinedDocumentCensusTests(unittest.TestCase):
             "row in INLINED_DOCUMENT_CLASS — decide whether it is node input data, a pinned "
             "contract document, a compile-inlined document, or derived, before a leaf sees it")
         self.assertEqual(set(INLINED_DOCUMENT_CLASS.values()),
-                         {"input", "contract", "compile-docs", "derived", "diagnosis"})
+                         {"input", "contract", "compile-docs", "derived", "same-phase",
+                          "diagnosis"})
 
     def test_the_contract_rows_are_members_of_the_prompt_drift_tuple(self) -> None:
         """A key classified `contract` must be pinned by the prompt drift test's tuple — read

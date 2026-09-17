@@ -24,11 +24,15 @@ each decision):
   per-attempt record. Advisory inputs — the exemplar above all — are excluded on A1's own
   rule. The execution environment is recorded (`trial_meta.json#environment`) and not
   keyed, because no verdict predicate depends on it yet.
-* The static documents the host inlines into a pure prompt are a property of the
-  TRANSFORMATION, not of the node: they enter through the version tuple, which the drift
-  tests pin (`tools/tests/test_pure_prompt_contract_drift.py`,
+* The static documents the host inlines into a pure prompt — the same bytes for every node
+  — are a property of the TRANSFORMATION, not of the node: they enter through the version
+  tuple, which the drift tests pin (`tools/tests/test_pure_prompt_contract_drift.py`,
   `tools/tests/test_derivation_transformation_drift.py`), so a maintainer decides once —
-  bump or re-pin — instead of a typo fix invalidating every certified node.
+  bump or re-pin — instead of a typo fix invalidating every certified node. A host-derived
+  document that VARIES by node — the harness capability manifest of the node's harness, the
+  admissible-toolchain document of the node's kind — is a node input and is hashed as one;
+  an edit to the manifest table re-derives the Generate of every node on that harness, a
+  registry change the Compile of every node.
 
 `DERIVATION_KEY_VERSION` is the version of the KEY'S OWN construction (which inputs a phase
 hashes, in which shape). Changing that rule changes every key at once, which is the intended

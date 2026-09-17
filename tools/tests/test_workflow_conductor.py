@@ -1698,7 +1698,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
 
         c._phase_derivation = spy  # type: ignore[method-assign]
         self.assertEqual(c.conduct(self._refs(), "validate"), "pass")
-        # Once per phase, in phase order — never per substep, never on a skip.
+        # Once per phase, in phase order — never per substep.
         self.assertEqual(seen, [("component/spec_x@0.1.0", p)
                                 for p in ("compile", "generate", "build", "validate")])
         launches = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"]
@@ -6255,10 +6255,9 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 "dependency_check": {"direct_deps": [], "resolved": "match",
                                      "closure_bindings": []},
             }), encoding="utf-8")
-            # `_build_inproc` writes that meta INSIDE the build child's window, so the child's
-            # terminalization strips the certification keys from it before the host stamps
-            # (the strip itself is pinned in test_orchestration_runtime; what is checked here
-            # is that the stamp puts back what the predicate reads).
+            # `_build_inproc` writes that meta without the stamp keys (the host stamps them at
+            # `write-step-result`); strip here to model a meta the stamp has not reached, and
+            # check that the stamp puts in what the predicate reads.
             ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="build",
