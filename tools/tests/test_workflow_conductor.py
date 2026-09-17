@@ -377,9 +377,12 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
             self.assertEqual(emitted, [])
             for target in ("child-pruned", "child-legacy"):
                 with self.subTest(target=target):
+                    # Cleared per subtest: the previous subtest's event would otherwise
+                    # satisfy this one (round 1 found a no-event early return surviving).
+                    emitted.clear()
                     repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": target}
                     self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
-                    self.assertIn("resume_session_unavailable", emitted)
+                    self.assertEqual(emitted, ["resume_session_unavailable"])
             self.assertEqual(sorted(p.name for p in container.iterdir()), before)
             # The per-session reader `_spawn_pure_turn` uses answers the same rows.
             self.assertEqual(c._codex_lineage_for_session("thread-child-live"), "lineage-live")
@@ -388,6 +391,30 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
             self.assertIsNone(c._codex_lineage_for_session("thread-child-legacy"))
             # A lineage id that is not a path token is never joined onto the container.
             self.assertFalse(c._codex_lineage_home_exists("../lineage-live"))
+
+    def test_record_launch_passes_the_lineage_to_the_runtime_argv(self) -> None:
+        """The conductor->runtime handoff of the lineage, which no test observed (round 1).
+
+        Dropping the `--codex-lineage-id` append left every file green, and the
+        consequence is a warm codex turn recorded COLD: `record_launch` then creates a
+        fresh empty lineage, and `codex exec resume` against it dies before its first
+        request. Pinned on the argv the real `Conductor.record_launch` builds, captured at
+        the fake runtime boundary, in both directions.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c, _ = self._codex_reuse_conductor(repo_root)
+            seen: list[list[str]] = []
+            c.runtime = lambda args, *, input=None: (  # type: ignore[assignment]
+                seen.append(list(args)) or {"launch_prompt_text": "PROMPT"})
+            entry = c.entry_for("generate", "generate")
+            c.record_launch("c1", {"agent_role": "substep"}, entry,
+                            codex_lineage_id="lineage-1")
+            self.assertEqual(seen[-1][0], "record-launch")
+            self.assertIn("--codex-lineage-id", seen[-1])
+            self.assertEqual(seen[-1][seen[-1].index("--codex-lineage-id") + 1], "lineage-1")
+            c.record_launch("c2", {"agent_role": "substep"}, entry)
+            self.assertNotIn("--codex-lineage-id", seen[-1])
 
     def test_a_warm_codex_turn_whose_row_names_no_lineage_is_not_launched(self) -> None:
         """`_spawn_pure_turn`'s own gate, before `record_launch` (issue #245).

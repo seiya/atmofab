@@ -13526,11 +13526,14 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
       * `<container>/<lineage_id>/` is the LINEAGE HOME — the `CODEX_HOME` of one thread:
         the cold launch that started it plus every warm `codex exec resume` of it. It is
         the only directory `codex_isolation_profile_kwargs` binds rw, so what the CLI
-        writes there (measured on codex-cli 0.154.0: the rollout under `sessions/`, the
-        `state_*` / `thread_history_*` / `memories_*` / `logs_*` / `goals_*` / `queue_*`
-        sqlite files with their `-wal`/`-shm`, `installation_id`, `skills/`, `tmp/`,
-        `shell_snapshots/`, `thread-writer-locks/` — the marker prompt in three of them)
-        is reachable by that thread's attempts and by nothing else. A second lineage's
+        writes there (measured on codex-cli 0.154.0 with an unbilled loopback launch: the
+        rollout under `sessions/`, the `state_*` / `thread_history_*` / `memories_*` /
+        `logs_*` / `goals_*` / `queue_*` sqlite files with their `-wal`/`-shm`,
+        `installation_id`, `skills/`, `tmp/`, `shell_snapshots/`, `thread-writer-locks/` —
+        the marker prompt in three of them; a billed launch on this host additionally
+        left `cache/`, `plugins/` and `models_cache.json`, which is why the bind is the
+        whole directory and nothing is enumerated by name) is reachable by that thread's
+        attempts and by nothing else. A second lineage's
         leaf cannot list, let alone read, a sibling: the sibling is simply not mounted
         (`test_bwrap_simulation.test_a_second_codex_leaf_cannot_read_the_first_leafs_rollout_anywhere_under_its_home`).
         This is what closed the shared per-orchestration home TODO recorded from issue

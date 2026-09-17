@@ -139,7 +139,7 @@ point rather than growing the item here.
   Z1 change did was route two more `substep`s through them. Reverting each of these leaves the
   suite green: (a) `usage_waits += 1` in both pure loops, which is the `MAX_USAGE_LIMIT_WAITS`
   counter — without it a leaf waits out quota resets without bound; (b) the
-  `codex_lineage_home_missing` fallback (`codex_home_generation_mismatch` until issue #245), including `cold_repair_target = resume_session_id`,
+  `codex_lineage_home_missing` fallback (`codex_home_generation_mismatch` until issue #245) in the REVIEWER loop, including `cold_repair_target = resume_session_id` — the producer loop's copy is witnessed since issue #209 by `test_pure_leaf_producer.py::test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document` (measured at issue #245's round 1: `cold_repair_target = None` there is red, in the reviewer loop it is green) —
   whose own comment says it exists to keep the repair findings and `prior_document` a dropped
   transport session would otherwise lose; (c) the repair-budget boundary
   (`attempt < MAX_BUNDLE_REPAIR_TURNS` widened to `<=` costs one extra billed leaf launch per
