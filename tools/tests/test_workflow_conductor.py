@@ -6261,6 +6261,37 @@ class NodeAllocationTest(unittest.TestCase):
                     for sub, captured in c.calls if sub == "reserve-phase-root"]
         self.assertEqual(reserved, [("compile", "ir_9"), ("generate", "p_9")])
 
+    def test_run_phase_skip_adopts_the_whole_chain_of_a_selection_in_another_pipeline(self) -> None:
+        """A build selected from another pipeline arrives with that pipeline's byte-identical
+        source twin (the selection re-pointed to it, correctness round 2): Build's adoption
+        takes the pipeline, the source AND the binary, superseding the source Generate's
+        adoption took from the pipeline the source was selected in — so `refs` is one chain
+        and the lineage this run writes names a source that is under its pipeline."""
+        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                           orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        certs = {
+            "generate": {"certified": True, "ir_ref": "workspace/ir/s/ir_9",
+                         "pipeline_ref": "workspace/pipelines/s/p_2", "source_id": "src_p2"},
+            "build": {"certified": True, "ir_ref": "workspace/ir/s/ir_9",
+                      "pipeline_ref": "workspace/pipelines/s/p_1", "source_id": "src_p1",
+                      "binary_id": "bin_p1"},
+        }
+        c.check_phase_certified = lambda nk, phase: certs.get(  # type: ignore[method-assign]
+            phase, {"certified": False})
+        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                           ir_id="ir_9", pipeline_id="p_2", source_id="src_fresh",
+                           binary_id="bin_fresh", run_id="run_fresh",
+                           source_binary_id="bin_fresh")
+        self.assertTrue(c.run_phase(refs, "generate").skipped)
+        self.assertEqual((refs.pipeline_id, refs.source_id), ("p_2", "src_p2"))
+        self.assertTrue(c.run_phase(refs, "build").skipped)
+        self.assertEqual((refs.pipeline_id, refs.source_id, refs.binary_id, refs.source_binary_id),
+                         ("p_1", "src_p1", "bin_p1", "bin_p1"))
+        reserved = [(captured["--step"], captured["--reserved-id"])
+                    for sub, captured in c.calls if sub == "reserve-phase-root"]
+        self.assertEqual(reserved, [("generate", "p_1")])
+
 
 class ConductorProducedChainCertifiesTest(unittest.TestCase):
     """The branch's central claim, checked against what the CONDUCTOR writes rather than

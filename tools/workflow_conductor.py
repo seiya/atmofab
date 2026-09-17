@@ -11165,12 +11165,18 @@ clean:
                 refs.pipeline_id = pipeline_id
                 self.reserve_root(refs.node_key, "generate", refs.pipeline_id,
                                   self.orchestration_agent_run_id)
-        if phase == "generate" and cert.get("source_id"):
+        # Every id of the chain up to `phase`, not only the phase's own: a build or a
+        # verdict selected from ANOTHER pipeline comes with that pipeline's byte-identical
+        # twins of the source (and binary) — the selection re-pointed to them so the refs are
+        # one chain — and an earlier phase's adoption, taken from the pipeline the source was
+        # selected in, is superseded by them (correctness round 2).
+        order = ("compile", "generate", "build", "validate").index(phase)
+        if order >= 1 and cert.get("source_id"):
             refs.source_id = str(cert["source_id"])
-        elif phase == "build" and cert.get("binary_id"):
+        if order >= 2 and cert.get("binary_id"):
             refs.binary_id = str(cert["binary_id"])
             refs.source_binary_id = str(cert["binary_id"])
-        elif phase == "validate" and cert.get("run_id"):
+        if phase == "validate" and cert.get("run_id"):
             refs.run_id = str(cert["run_id"])
 
     @staticmethod

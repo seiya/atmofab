@@ -1220,6 +1220,30 @@ def _selection_refs_from_meta(sel: DerivationSelection, meta_path: Path, repo_ro
     sel.pipeline_ref = _normalize_rel_posix(str(pipe_dir.relative_to(repo_root)))
 
 
+def _twin_in_pipeline(repo_root: Path, pipe_dir: Path, stage: str, output_hash: str | None
+                      ) -> str | None:
+    """The id of a certified `stage` output under `pipe_dir` whose output hash is
+    `output_hash` — the byte-identical twin of a selected output that lives in another
+    pipeline — or None. Newest first, so two twins answer the newer."""
+    if not output_hash:
+        return None
+    meta_name = "source_meta.json" if stage == "source" else "binary_meta.json"
+    root = pipe_dir / stage
+    found: list[tuple[tuple[str, int], str]] = []
+    for d in (root.iterdir() if root.is_dir() else ()):
+        key = _freshness_key_from_id(d.name)
+        meta_path = d / meta_name
+        if key is None or not meta_path.is_file():
+            continue
+        ok, detail = _stage_meta_certification(repo_root, meta_path)
+        if not ok:
+            continue
+        meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
+        if _meta_output_hash(detail["meta"], meta_ref) == output_hash:
+            found.append((key, d.name))
+    return max(found)[1] if found else None
+
+
 class DerivationResolver:
     """ONE evaluation's memo of certified selections over the workspace.
 
@@ -1299,17 +1323,39 @@ class DerivationResolver:
                 sel.revocation_repair_strategy = upstream.revocation_repair_strategy
                 return
         candidates = _stage_meta_candidates(self.repo_root, node_key, step_token)
+        # A pipeline is ONE chain. The build key binds the source's OUTPUT hash, not its
+        # pipeline, so a byte-identical source in another pipeline carries the same build
+        # key — and the same holds for a verdict over a byte-identical binary. Such an
+        # output is selectable ONLY when its own pipeline holds the whole upstream chain as
+        # byte-identical twins (a certified source with the selected source's output hash;
+        # for a verdict, a certified binary with the selected binary's too): the selection
+        # then re-points to that pipeline's twins, so the refs a run adopts are one chain.
+        # Without the twins the output is not a candidate: adopting it would hand the run a
+        # `pipeline_ref` from one pipeline beside a `source_id` from another — a lineage
+        # naming a source directory that is not there, a Validate reading it, a Generate
+        # revocation resolving to a meta that does not exist (correctness round 1, F1).
+        # With them, a `--rederive` whose attempts reproduce their outputs into a fresh
+        # pipeline leaves Build and Validate certified, as 13a says (correctness round 2).
+        twins: dict[Path, dict[str, str]] = {}
         if step_token in ("build", "validate") and sel.pipeline_ref:
-            # A pipeline is ONE chain: a build is selected from the pipeline of the source it
-            # was built from, and a verdict from the pipeline of its binary. The key alone
-            # would also accept a byte-identical build in another pipeline (the build key
-            # binds the source's OUTPUT hash, not its pipeline), and adopting that one would
-            # hand the run a `pipeline_ref` from one pipeline and a `source_id` from another —
-            # a lineage naming a source directory that is not there, a Validate reading it,
-            # a Generate revocation resolving to a meta that does not exist (correctness
-            # round 1, F1). The cost is one build re-run in that rare case.
-            pipe_dir = self.repo_root / sel.pipeline_ref
-            candidates = [c for c in candidates if c[1].is_relative_to(pipe_dir)]
+            home = self.repo_root / sel.pipeline_ref
+            wanted = {"source": self.select(node_key, "generate").output_hash}
+            if step_token == "validate":
+                wanted["binary"] = upstream.output_hash
+            kept: list[tuple[tuple[Any, ...], Path]] = []
+            for order, meta_path in candidates:
+                pipe_dir = meta_path.parents[3 if step_token == "validate" else 2]
+                if pipe_dir == home:
+                    kept.append((order, meta_path))
+                    continue
+                if pipe_dir not in twins:
+                    found = {stage: _twin_in_pipeline(self.repo_root, pipe_dir, stage, h)
+                             for stage, h in wanted.items()}
+                    twins[pipe_dir] = ({k: v for k, v in found.items() if v is not None}
+                                       if all(found.values()) else {})
+                if twins[pipe_dir]:
+                    kept.append((order, meta_path))
+            candidates = kept
         if not candidates:
             # Nothing was ever produced: say so before computing a key nobody stamped (a
             # never-derived node's spec files may not even exist yet — that is the closure
@@ -1385,6 +1431,8 @@ class DerivationResolver:
             sel.meta_path = self.repo_root / chosen.ref
             sel.output_hash = chosen.output_hash
             _selection_refs_from_meta(sel, sel.meta_path, self.repo_root)
+            for stage, stage_id in twins.get(self.repo_root / str(sel.pipeline_ref), {}).items():
+                setattr(sel, "source_id" if stage == "source" else "binary_id", stage_id)
             return
         if refused:
             # An output of THIS key exists and is not eligible: say why — from the newest
