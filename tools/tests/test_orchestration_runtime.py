@@ -14552,14 +14552,14 @@ class RecordTimeoutTests(unittest.TestCase):
         response = json.dumps({"agent_run_id": "c", "agent_session_id": "c",
                                "started_at": "2026-08-20T00:00:00Z", "backend": "codex"})
         buf = io.StringIO()
-        with mock.patch.object(ort, "record_launch", fake_record_launch):
-            with redirect_stdout(buf):
-                rc = runtime_main([
-                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
-                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
-                    "--request-json", "{}", "--response-json", response,
-                    "--codex-lineage-id", "lineage-1",
-                ])
+        with mock.patch.object(ort, "record_launch", fake_record_launch), \
+                redirect_stdout(buf):
+            rc = runtime_main([
+                "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                "--request-json", "{}", "--response-json", response,
+                "--codex-lineage-id", "lineage-1",
+            ])
         self.assertEqual(rc, 0, buf.getvalue())
         self.assertEqual(seen.get("codex_lineage_id"), "lineage-1")
         printed = json.loads(buf.getvalue())
@@ -14567,13 +14567,13 @@ class RecordTimeoutTests(unittest.TestCase):
                                    "codex_lineage_id": "lineage-1"})
         # Control: without the flag the parameter is None.
         seen.clear()
-        with mock.patch.object(ort, "record_launch", fake_record_launch):
-            with redirect_stdout(io.StringIO()):
-                runtime_main([
-                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
-                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
-                    "--request-json", "{}", "--response-json", response,
-                ])
+        with mock.patch.object(ort, "record_launch", fake_record_launch), \
+                redirect_stdout(io.StringIO()):
+            runtime_main([
+                "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                "--request-json", "{}", "--response-json", response,
+            ])
         self.assertIsNone(seen.get("codex_lineage_id"))
 
     def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
@@ -25765,10 +25765,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                                     (lineage, {"resume": True})):
                 with self.subTest(level=drifted.name):
                     os.chmod(drifted, 0o755)
-                    with mock.patch("os.fchmod"):  # succeeds, changes nothing
-                        with self.assertRaisesRegex(ValueError,
-                                                    "still not mode 0700 after chmod"):
-                            self._prepare_home(root, "orch_d", **kwargs)
+                    with mock.patch("os.fchmod"), \
+                            self.assertRaisesRegex(ValueError,
+                                                   "still not mode 0700 after chmod"):
+                        # fchmod succeeds and changes nothing
+                        self._prepare_home(root, "orch_d", **kwargs)
                     os.chmod(drifted, 0o700)
 
     def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
@@ -25865,9 +25866,12 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             shutil.move(str(repo), str(moved))
             # The lineage home's `config.toml` records the checkout path (the untrusted
             # marker), so a moved checkout legitimately produces different bytes and the
-            # verified-source comparison refuses the stale copy. Removing it is what a real
-            # warm resume from a moved checkout does — the preparer re-authors it. The
-            # marker refresh, which is this row's subject, runs either way.
+            # verified-source comparison refuses the stale copy. NOTHING in production
+            # removes or re-authors it: a warm codex resume from a moved checkout is
+            # refused with "differs from its verified source" (the rough edge `TODO.md`
+            # records from issue #245's round 3; a cold launch from the moved checkout
+            # works, its lineage being new). It is removed BY HAND here so the row can
+            # reach its subject, the marker refresh, on the warm path.
             (self._homes_root() / "orch_d" / "codex" / "lineage-d" / "config.toml").unlink()
             self._prepare_home(moved, "orch_d", resume=True)
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["repo_root"],

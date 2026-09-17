@@ -13521,8 +13521,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
 
       * `<homes-root>/<oid>/codex/` is the orchestration's CONTAINER. It is recorded in
         `orchestration_meta.json#codex_workflow_home`, carries the owner marker in its
-        parent, and is what `tools/prune_workflow_homes.py` removes. It is NOT bound into
-        any leaf and is NOT `CODEX_HOME`.
+        parent, and goes with the whole `<oid>/` entry when `tools/prune_workflow_homes.py`
+        removes one. It is NOT bound into any leaf and is NOT `CODEX_HOME`.
       * `<container>/<lineage_id>/` is the LINEAGE HOME — the `CODEX_HOME` of one thread:
         the cold launch that started it plus every warm `codex exec resume` of it. It is
         the only directory `codex_isolation_profile_kwargs` binds rw, so what the CLI
@@ -13643,10 +13643,12 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
                 raise ValueError(
                     f"isolated Codex lineage home already exists: {home}. A lineage is "
                     "created once, by the cold launch of the attempt whose agent_run_id "
-                    f"names it ({lineage_token}); a warm resume of that thread must be "
-                    "recorded with `--codex-lineage-id` instead of re-creating it, and a "
-                    "directory that is there before its cold launch belongs to another "
-                    "run's state. Inspect it before removing anything."
+                    f"names it ({lineage_token}), and the conductor never launches an "
+                    "agent_run_id twice, so a directory already there was made by hand or "
+                    "left by a run that crashed between creating it and recording the "
+                    "launch. Inspect it; if it is debris, remove that one directory (the "
+                    "orchestration's other lineages are not involved) and re-run — the "
+                    "conductor mints a fresh agent_run_id, whose lineage does not exist yet."
                 ) from exc
             except OSError as exc:
                 raise ValueError(
@@ -14871,8 +14873,13 @@ def record_launch(
     # conductor then rebuilds the turn cold, exactly as it did for the integer "home
     # generation" this check replaced (issue #245). The conductor's resume selection
     # already checked existence unlocked; this is the check that counts, under the
-    # metadata lock, and it is what keeps a `codex exec resume` from ever being launched
-    # against a home with no rollout in it.
+    # metadata lock. What it establishes is that the lineage home the HOST created for
+    # that thread is still there — a lineage is never re-created by this code, so a
+    # directory at that path is the one the thread was started in. A directory an
+    # operator put there by hand (an empty `mkdir` after a prune) passes it, and the
+    # resume then dies inside the CLI (`no rollout found for thread id`, measured) rather
+    # than going cold here; the container is bound into no leaf, so nothing but the
+    # operator can make that directory.
     codex_isolation: dict[str, str] | None = None
     if codex_lineage_id is not None:
         if backend_token != "codex":

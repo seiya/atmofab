@@ -3512,7 +3512,9 @@ class Conductor:
             # carry the lineage and the directory must still be there. Nothing is
             # prepared or created at resume selection: this is an unlocked existence
             # read, and `record_launch` re-asks the same question under the metadata lock
-            # before any durable mutation (`codex_lineage_home_missing`). Since issue #64
+            # before any durable LAUNCH mutation (`codex_lineage_home_missing`; the
+            # container and its metadata entry are re-established on every preparation,
+            # a warm one included). Since issue #64
             # the tree is durable (`~/.atmofab/homes/<oid>/codex/`), so "gone" means an
             # operator pruned it or lost the filesystem, not a /tmp sweep. A row from a run
             # recorded before lineage homes has no `codex_lineage_id` and is cold-only.
@@ -3537,7 +3539,7 @@ class Conductor:
         Deliberately existence-only and deliberately unlocked, in the same spirit as
         `_orchestration_meta_path_exists`: this decides whether a warm turn is worth
         BUILDING, and the answer that counts is `record_launch`'s, taken under the
-        metadata lock before any durable mutation. A lineage id that is not a plain path
+        metadata lock before any durable launch mutation. A lineage id that is not a plain path
         token answers False rather than being joined onto a path.
         """
         from tools.orchestration_runtime import _is_safe_path_id, _read_json
@@ -7291,7 +7293,7 @@ clean:
                 # for it — its location is named by the target's OWN launch record, because
                 # `_ensure_fresh_producer_id` has already rotated `refs` to a fresh empty
                 # directory. Resolved for BOTH branches below: a warm turn does not send it, but
-                # the codex home-rotation fallback (`turn is None`) turns a warm seed cold.
+                # the codex lineage-home-missing fallback (`turn is None`) turns a warm seed cold.
                 from tools.orchestration_runtime import _read_launch_request_payload
                 record = _read_launch_request_payload(
                     self.repo_root, self.orchestration_id, agent_run_id=target_arid)
