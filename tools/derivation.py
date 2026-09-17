@@ -236,7 +236,7 @@ class Candidate(NamedTuple):
     """One certified output of a derivation key, as `select_eligible` sees it: the attempt
     that produced it (its `agent_run_id`, or the stage directory's id when no attempt is
     recorded), the ordering token the runtime gives it (a `(date, seq)` tuple from the stage
-    id today — the same order `_latest_meta_under` uses), its output hash, and the stage
+    id today — the order `_stage_meta_candidates` assigns), its output hash, and the stage
     directory it lives in (opaque to this module; handed back to the caller)."""
     attempt_id: str
     order: tuple[Any, ...]
