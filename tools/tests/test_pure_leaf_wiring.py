@@ -215,7 +215,6 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
             "pipeline_ref_verified": True,
             "aggregate_verdict_verified": True,
         },
-        "dep_set_fingerprint": ort._dependency_set_fingerprint(repo_root, meta.get("spec_ref")),
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

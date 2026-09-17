@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+import yaml
+
 # Codex round 20 F1: unit tests use `_mark_dependencies_ready` to inject
 # all-true readiness without setting up a real deps.yaml on disk. Production
 # `_dependency_ready` now fails closed when live recompute cannot run; tests
@@ -30,7 +32,8 @@ from unittest.mock import patch
 from mcp_servers.build_runtime_server import tool_compile_project
 from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
-from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
+from tools.tests.orchestration_fixtures import (
+    accept_any_certified_ir, certify_node, ensure_spec_entry)
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -87,6 +90,43 @@ _DERIVATION_RECORD = {
     "derivation_inputs": {"fixture": "sha256:" + "1" * 64},
     "transformation": ["fixture-1"],
 }
+
+
+def _restamp_fixture_chain(repo_root: Path, until_phase: str) -> None:
+    """Re-stamp the derivation of every phase of the `shallow_water2d@0.3.0` fixture up to
+    `until_phase` from the artifacts NOW on disk — what a run whose Compile / Build the test
+    drove through `write-step-result` and whose other phases were certified consistently
+    would leave. (`certify_node` stamped them against the stub IR; a test that then plants
+    a different `spec.ir.yaml` has moved the compile output hash every downstream key
+    binds.)"""
+    from tools.tests.orchestration_fixtures import _PHASE_ORDER, stamp_derivation
+    metas = {
+        "compile": f"{_FIX_IR_REF}/ir_meta.json",
+        "generate": f"{_FIX_PIPE_REF}/source/src_20260101_001/source_meta.json",
+        "build": f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json",
+        "validate": (f"{_FIX_PIPE_REF}/runs/run_20260101_001/problem__shallow_water2d__0.3.0"
+                     "/validate_meta.json"),
+    }
+    for step in _PHASE_ORDER[: _PHASE_ORDER.index(until_phase) + 1]:
+        if (repo_root / metas[step]).is_file():
+            stamp_derivation(
+                repo_root, "problem/shallow_water2d@0.3.0", step, metas[step],
+                spec_ref="spec/problem/shallow_water2d", ir_ref=_FIX_IR_REF,
+                source_ref=f"{_FIX_PIPE_REF}/source/src_20260101_001",
+                binary_ref=f"{_FIX_PIPE_REF}/binary/bin_20260101_001")
+
+
+def _fixture_derivation(repo_root: Path, step: str) -> dict:
+    """The REAL derivation record of the `shallow_water2d@0.3.0` fixture's `step` — what
+    a pass step_result must carry for the phase to certify under the key lookup (issue
+    #250 PR-2): `phase_derivation` over the fixture's spec files, IR and stage outputs
+    (`_FIX_IR_REF`, `_FIX_PIPE_REF`, `src_20260101_001`, `bin_20260101_001`)."""
+    from tools.orchestration_runtime import phase_derivation
+    return phase_derivation(
+        repo_root, node_key="problem/shallow_water2d@0.3.0", step=step,
+        spec_ref="spec/problem/shallow_water2d", ir_ref=_FIX_IR_REF,
+        source_ref=f"{_FIX_PIPE_REF}/source/src_20260101_001",
+        binary_ref=f"{_FIX_PIPE_REF}/binary/bin_20260101_001")
 
 # The host-inlined context a PURE `generate.generate` launch carries. The key SET is what the
 # launch validator requires for that pair; the bodies are only documents, so they are the
@@ -307,12 +347,9 @@ def _fixture_generate_downstream_ready(repo_root: Path, *, source_id: str = "src
 
 
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
-    """Inject `dependency_readiness` so `_dependency_ready` accepts the launch.
-
-    Includes `dep_set_fingerprint` matching the current `spec_ref` + deps.yaml
-    so a subsequent `write_preflight` call does not invalidate this state.
-    """
-    from tools.orchestration_runtime import _dependency_set_fingerprint
+    """Inject `dependency_readiness` so `_dependency_ready` accepts the launch (under the
+    suite's `ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
+    deps.yaml falls back to these persisted booleans)."""
     meta_path = (
         repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
     )
@@ -327,7 +364,6 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
             "pipeline_ref_verified": True,
             "aggregate_verdict_verified": True,
         },
-        "dep_set_fingerprint": _dependency_set_fingerprint(repo_root, meta.get("spec_ref")),
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -2463,7 +2499,7 @@ shell_tool                       stable             true
                         agent_run_id=wrong_arid,
                         payload={
                             "status": "pass",
-                            "derivation": _DERIVATION_RECORD,
+                            "derivation": _fixture_derivation(repo_root, "compile"),
                             "required_outputs": [
                                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -2486,7 +2522,7 @@ shell_tool                       stable             true
                 agent_run_id="orch_run_001",
                 payload={
                     "status": "pass",
-                    "derivation": _DERIVATION_RECORD,
+                    "derivation": _fixture_derivation(repo_root, "compile"),
                     "required_outputs": [
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
@@ -2508,7 +2544,7 @@ shell_tool                       stable             true
                     agent_run_id="orch_run_001",
                     payload={
                         "status": "pass",
-                        "derivation": _DERIVATION_RECORD,
+                        "derivation": _fixture_derivation(repo_root, "build"),
                         "validation_stage": "post_build",
                         "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
@@ -2524,7 +2560,7 @@ shell_tool                       stable             true
                 agent_run_id="step_run_build_001",
                 payload={
                     "status": "pass",
-                    "derivation": _DERIVATION_RECORD,
+                    "derivation": _fixture_derivation(repo_root, "build"),
                     "validation_stage": "post_build",
                     "required_outputs": _seed_build_pass_outputs(repo_root),
                     "failed_substeps": [],
@@ -2532,6 +2568,7 @@ shell_tool                       stable             true
                     "executor_agent_run_id": "step_run_build_001",
                 },
             )
+            _restamp_fixture_chain(repo_root, "build")
             update_orchestration_status(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -6727,13 +6764,14 @@ shell_tool                       stable             true
                     agent_run_id="step_run_build_001",
                     payload={
                         "status": "pass",
-                        "derivation": _DERIVATION_RECORD,
+                        "derivation": _fixture_derivation(repo_root, "build"),
                         "validation_stage": "post_build",
                         "required_outputs": _seed_build_pass_outputs(repo_root),
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
                     },
                 )
+                _restamp_fixture_chain(repo_root, "validate")
                 update_orchestration_status(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -8998,7 +9036,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self._preflight(repo)
             self._certified(repo, through="build")   # validate never ran
             with self.assertRaisesRegex(
-                    RuntimeError, r"validate is not certified: verdict_not_bound"):
+                    RuntimeError, r"validate is not certified: verdict_not_found"):
                 update_orchestration_status(
                     repo_root=repo, orchestration_id="o1", status="pass")
 
@@ -9065,18 +9103,29 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertTrue(ok, detail)
             self.assertEqual(detail["source_id"], refs["source_id"])
 
-    def test_check_phase_certified_refuses_a_binary_bound_to_a_different_ir(self) -> None:
-        """The binary binding has TWO halves and only the source half was pinned (round-1
-        mutant M16). A binary built from the same source but a different IR lineage — what a
-        Compile reopen under an unchanged pipeline produces — is not bound either."""
+    def test_the_chain_binds_by_output_hash_not_by_id(self) -> None:
+        """`source_ir_id` / `source_source_id` are RECORDS since issue #250 PR-2 — editing
+        them changes nothing, because the binding is the upstream output hash inside the key.
+        What DOES move the chain is the upstream output: a re-certified IR with different
+        bytes makes Generate's key (`ir`) mismatch, and Build's / Validate's fall with it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._certified(repo, through="build")
-            path = repo / refs["binary_meta"]
-            doc = json.loads(path.read_text("utf-8"))
-            doc["source_ir_id"] = "some-other-ir_20250101_001"
-            path.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(self._reason(repo, "build"), "binary_not_bound")
+            for meta_ref, field in ((refs["source_meta"], "source_ir_id"),
+                                    (refs["binary_meta"], "source_source_id"),
+                                    (refs["binary_meta"], "source_ir_id")):
+                path = repo / meta_ref
+                doc = json.loads(path.read_text("utf-8"))
+                doc[field] = "some-other_20250101_099"
+                path.write_text(json.dumps(doc), encoding="utf-8")
+            for step in ("compile", "generate", "build"):
+                self.assertTrue(ort._phase_certified(repo, "o1", self._NK, step)[0], step)
+            certify_node(repo, "o1", self._NK, through="compile", ir_id="spec-x_20260101_002",
+                         ir_text=f"node_key: {self._NK}\n# re-derived\n", reserve=False)
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            self.assertEqual((ok, detail["ir_id"]), (True, "spec-x_20260101_002"))
+            self.assertEqual(self._reason(repo, "generate"), "derivation_key_mismatch:ir")
+            self.assertEqual(self._reason(repo, "build"), "derivation_key_mismatch:ir")
 
     def test_check_phase_certified_names_the_clause_that_refused(self) -> None:
         """Every refusal reason the predicate can return, each from the state that produces
@@ -9096,15 +9145,11 @@ class PhaseCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._certified(repo, through="generate")
-            # compile reserved, generate not
-            (repo / "workspace/orchestrations/o1/reservations" / refs["safe"]
-             / "generate.json").unlink()
-            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_reserved")
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._certified(repo, through="generate")
             shutil.rmtree(repo / refs["pipeline_ref"])
-            self.assertEqual(self._reason(repo, "generate"), "pipeline_not_found")
+            self.assertEqual(self._reason(repo, "generate"), "source_not_found")
+            self._certified(repo, through="build")
+            shutil.rmtree(repo / refs["pipeline_ref"] / "binary")
+            self.assertEqual(self._reason(repo, "build"), "binary_not_found")
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._certified(repo, through="compile")
@@ -9181,93 +9226,82 @@ class PhaseCertificationTests(unittest.TestCase):
             path.write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(self._reason(repo, "compile"), "artifact_hashes_missing")
 
-    def test_check_phase_certified_refuses_a_source_bound_to_a_different_ir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._certified(repo, through="generate")
-            path = repo / refs["source_meta"]
-            doc = json.loads(path.read_text("utf-8"))
-            doc["source_ir_id"] = "some-other-ir_20250101_001"
-            path.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(self._reason(repo, "generate"), "source_not_bound")
-            # ... and compile, which does not depend on it, still certifies.
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
-
-    def test_check_phase_certified_refuses_a_build_bound_to_a_different_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._certified(repo, through="build")
-            path = repo / refs["binary_meta"]
-            doc = json.loads(path.read_text("utf-8"))
-            doc["source_source_id"] = "src_20250101_099"
-            path.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(self._reason(repo, "build"), "binary_not_bound")
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
-
-    def test_check_phase_certified_refuses_when_the_reserved_ir_is_not_the_latest(self) -> None:
-        """Decision 15: the readiness stages evaluate the LATEST ir dir, so certifying a
-        reservation that is no longer latest would let the skip and the launch gate stand on
-        different artifacts."""
+    def test_a_newer_eligible_output_is_selected_whichever_id_was_reserved(self) -> None:
+        """Decision 15 reversed by issue #250 PR-2: the predicate no longer refuses a
+        reservation that is not the latest artifact (`ir_not_latest` / `pipeline_not_latest`
+        are gone), because it no longer reads the reservation at all — the SELECTION among
+        the eligible outputs of the key decides, and the conductor adopts what it selects
+        (`_adopt_certified_refs` re-reserves). A newer certified IR under the same root is
+        selected; a newer certified pipeline likewise."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._certified(repo, through="compile")
-            # A newer IR appears under the same root (a concurrent/serial later run).
             certify_node(repo, "o1", self._NK, through="compile",
                          ir_id="spec-x_20260101_002", reserve=False)
-            self.assertEqual(self._reason(repo, "compile"), "ir_not_latest")
-
-    def test_check_phase_certified_refuses_when_the_pipeline_is_not_the_latest(self) -> None:
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            self.assertTrue(ok)
+            self.assertEqual(detail["ir_id"], "spec-x_20260101_002")
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._certified(repo, through="build")
             certify_node(repo, "o1", self._NK, through="build",
                          pipeline_id="spec-x_20260101_002", reserve=False)
-            self.assertEqual(self._reason(repo, "build"), "pipeline_not_latest")
-            # generate does not carry the latest-pipeline clause: its binding is the ir_id.
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build")
+            self.assertTrue(ok)
+            self.assertTrue(detail["pipeline_ref"].endswith("/spec-x_20260101_002"))
 
     def test_check_phase_certified_binds_validate_to_the_certified_binary(self) -> None:
         """A passing verdict for an OLDER binary does not certify validate for the binary the
-        chain actually selected."""
+        chain actually selected: the validate key binds the selected build's output hash, so a
+        newer certified binary with different bytes moves it. (`trial_meta.source_binary_id`
+        is a record, not the binding — the id chain went with PR-2 of issue #250.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._certified(repo, through="validate")
-            trial = (repo / refs["pipeline_ref"] / "runs" / refs["run_id"] / refs["safe"]
-                     / "trial_meta.json")
-            doc = json.loads(trial.read_text("utf-8"))
-            doc["source_binary_id"] = "bin_20250101_099"
-            trial.write_text(json.dumps(doc), encoding="utf-8")
-            self.assertEqual(self._reason(repo, "validate"), "verdict_not_bound")
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
+            certify_node(repo, "o1", self._NK, through="build", binary_id="bin_20260101_002",
+                         reserve=False)
+            exe = repo / refs["pipeline_ref"] / "binary" / "bin_20260101_002" / "bin" / "spec_x_runner"
+            exe.write_bytes(b"\x7fELF-fixture-v2")
+            from tools.tests.orchestration_fixtures import _sha256, stamp_derivation
+            meta_ref = f"{refs['pipeline_ref']}/binary/bin_20260101_002/binary_meta.json"
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            doc["artifact_hashes"] = {f"{refs['pipeline_ref']}/binary/bin_20260101_002/bin/spec_x_runner": _sha256(exe)}
+            (repo / meta_ref).write_text(json.dumps(doc), encoding="utf-8")
+            stamp_derivation(repo, self._NK, "build", meta_ref, ir_ref=refs["ir_ref"],
+                             source_ref=f"{refs['pipeline_ref']}/source/{refs['source_id']}")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build")
+            self.assertTrue(ok)
+            self.assertEqual(detail["binary_id"], "bin_20260101_002")
+            self.assertEqual(self._reason(repo, "validate"), "derivation_key_mismatch:binary")
 
-    def test_check_phase_certified_refuses_a_validate_whose_gate_failed(self) -> None:
+    def test_check_phase_certified_refuses_a_validate_that_never_passed_write_step_result(self) -> None:
         """The conductor authors `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate
         (the gate re-validates the host's own summary, so the order cannot be swapped), and a
         `fail_closed` disposition returns WITHOUT writing a step_result. A passing verdict is
-        therefore left on disk for a phase that terminated fail-closed, and the verdict alone
-        must not certify it — `post_judge_meta.json`, the host record of the gate's own
-        outcome, is what says the phase completed."""
+        therefore left on disk for a phase that terminated fail-closed — and what says the
+        phase completed is the STAMP a passing `write-step-result` puts on
+        `validate_meta.json` (issue #250: `artifact_hashes` and the key), which no other
+        writer produces. The verdict alone is not read."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._certified(repo, through="validate")
-            path = repo / refs["post_judge_meta"]
-            gate_fail = json.loads(path.read_text("utf-8"))
-            gate_fail.update({"status": "fail", "disposition": "fail_closed",
-                              "failure_category": "static_frontend_unavailable"})
-            path.write_text(json.dumps(gate_fail), encoding="utf-8")
-            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_pass")
+            path = repo / refs["validate_meta"]
+            doc = json.loads(path.read_text("utf-8"))
+            for key in ort._CERTIFICATION_STAMP_KEYS:
+                doc.pop(key, None)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._reason(repo, "validate"), "derivation_key_missing")
             # Build, which the gate says nothing about, is unaffected.
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
-            # A phase that never reached post_judge at all leaves no record: also refused.
+            # A phase that never wrote its meta at all: also refused.
             path.unlink()
-            self.assertEqual(self._reason(repo, "validate"), "post_judge_not_recorded")
+            self.assertEqual(self._reason(repo, "validate"), "verdict_not_found")
 
     def test_validate_is_not_certified_on_a_half_written_run_directory(self) -> None:
         """Until issue #250 Validate was the ONE phase with no entry in
         `CERTIFYING_META_FILENAME_BY_STEP`, so it got no `artifact_hashes` byte-pin and no
-        revocable meta; it has both now, but `_phase_certified` does not read them until PR-2 of
-        that issue, so this presence check is still what plays the part the byte-pin plays for
-        the other three phases (a missing deliverable cannot re-hash).
+        revocable meta; it has both now, and the predicate reads the stamp (PR-2), so a
+        missing deliverable cannot re-hash — the same property the other three phases get.
 
         The consequence is not a missing file; it is a false `pass`. `aggregate_verdict.json`
         and `post_judge_meta.json` are written BEFORE the rest, so an attempt that died between
@@ -9287,10 +9321,11 @@ class PhaseCertificationTests(unittest.TestCase):
                     path.unlink()
                     ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate")
                     self.assertFalse(ok)
-                    # aggregate_verdict is caught earlier, by the binding lookup; the rest by
-                    # the deliverable check. Either way the phase is not certified.
-                    self.assertIn(detail["reason"].split(":")[0],
-                                  {"validate_outputs_missing", "verdict_not_bound"})
+                    # The meta itself missing is "no output"; every other deliverable is
+                    # caught by the byte-pin.
+                    expected = ("verdict_not_found" if name == "validate_meta.json"
+                                else f"artifact_hash_mismatch:{refs['run_node_dir']}/{name}")
+                    self.assertEqual(detail["reason"], expected)
                     path.write_text(body, encoding="utf-8")
             # restored
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate")[0])
@@ -9307,41 +9342,6 @@ class PhaseCertificationTests(unittest.TestCase):
         declared = {ref.rsplit("/", 1)[-1]
                     for ref in phase_required_outputs(refs, "validate")}
         self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
-
-    def test_check_phase_certified_refuses_a_non_certifying_verdict(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._certified(repo, through="validate")
-            path = repo / refs["aggregate_verdict"]
-            for verdict, certified in (("fail", False), ("xfail", True), ("pass", True)):
-                with self.subTest(verdict=verdict):
-                    path.write_text(json.dumps({"aggregate_verdict": verdict}), encoding="utf-8")
-                    ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate")
-                    self.assertEqual(ok, certified, detail)
-                    if not certified:
-                        self.assertEqual(detail["reason"], "verdict_not_pass")
-
-    def test_check_phase_certified_refuses_without_a_reservation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._certified(repo, through="compile", reserve=False)
-            self.assertEqual(self._reason(repo, "compile"), "ir_not_reserved")
-
-    def test_check_phase_certified_applies_resolution_and_binding_freshness(self) -> None:
-        """The predicate does not re-implement dependency freshness — it calls the SAME two
-        functions the readiness stages do, so a stale node is refused by the one definition."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._certified(repo, through="build")
-            with patch.object(ort, "_dependency_resolution_freshness",
-                              return_value=(False, "closure moved")):
-                self.assertEqual(self._reason(repo, "compile"), "resolution_stale:closure moved")
-            with patch.object(ort, "_dependency_binding_freshness",
-                              return_value=(False, "dep source regenerated")):
-                self.assertEqual(self._reason(repo, "build"),
-                                 "binding_stale:dep source regenerated")
-                # The stale clause belongs to build; generate is unaffected.
-                self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
 
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -9398,10 +9398,11 @@ class PhaseCertificationTests(unittest.TestCase):
     def test_the_validator_clause_runs_last(self) -> None:
         """Precedence: every earlier refusal keeps its reason, and the (expensive) validator
         is not consulted for an IR the cheaper clauses already refused. Three earlier clauses,
-        three probes: the meta (revoked), the hashes, and the 13a freshness comparison — the
-        last one was missing until round 2, and a mutant moving the validator above freshness
-        survived (the reason would then read `ir_rejected_by_current_validator` where the
-        RUNBOOK table sends the operator to `resolution_stale`'s remedy)."""
+        three probes: the meta (revoked), the hashes, and a moved key input (the 13a
+        comparison's successor since issue #250 PR-2: the spec text) — the last one was
+        missing until round 2, and a mutant moving the validator above freshness survived
+        (the reason would then read `ir_rejected_by_current_validator` where the RUNBOOK
+        table sends the operator to the stale key's remedy)."""
         import contextlib
 
         def _revoked(repo, refs):
@@ -9414,14 +9415,15 @@ class PhaseCertificationTests(unittest.TestCase):
                                                                 encoding="utf-8")
             return contextlib.nullcontext()
 
-        def _stale_freshness(repo, refs):
-            return patch.object(ort, "_dependency_resolution_freshness",
-                                return_value=(False, "closure moved"))
+        def _moved_input(repo, refs):
+            spec = repo / "spec" / "component" / "spec_x" / "tests.md"
+            spec.write_text("moved\n", encoding="utf-8")
+            return contextlib.nullcontext()
 
         for mutate, expected in (
             (_revoked, "revoked"),
             (_tampered, "artifact_hash_mismatch:"),
-            (_stale_freshness, "resolution_stale:closure moved"),
+            (_moved_input, "derivation_key_mismatch:spec.tests"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
@@ -12918,8 +12920,9 @@ class SignatureDriftCanaryTests(unittest.TestCase):
 
 
 class ResolveDependencyFactsTests(unittest.TestCase):
-    """_resolve_dependency_facts mirrors _verify_dep_stage's pipeline/binary/verdict
-    selection and is best-effort (never raises; leaf / unresolved → [])."""
+    """_resolve_dependency_facts mirrors _verify_dep_stage's selection — since issue #250
+    PR-2 the dependency's SELECTED certified outputs under its derivation key — and is
+    best-effort (never raises; leaf / unresolved → [])."""
 
     def _write_ir(
         self, repo_root: Path, ir_ref: str, direct_deps: list[dict],
@@ -12936,28 +12939,20 @@ class ResolveDependencyFactsTests(unittest.TestCase):
     def _write_dep_pipeline(
         self, repo_root: Path, safe: str, pipe_id: str, binary_id: str, run_id: str,
         *, source_id: str | None = None, spec_id: str | None = None,
-        model_text: str | None = None,
+        model_text: str | None = None, ir_text: str | None = None,
+        exe_bytes: bytes | None = None,
     ) -> tuple[str, str]:
-        pipe = repo_root / "workspace" / "pipelines" / safe / pipe_id
-        b = pipe / "binary" / binary_id
-        b.mkdir(parents=True)
-        binary_meta: dict = {"verification_status": "pass"}
-        if source_id is not None:
-            binary_meta["source_source_id"] = source_id
-        (b / "binary_meta.json").write_text(json.dumps(binary_meta), encoding="utf-8")
-        if source_id is not None and spec_id is not None and model_text is not None:
-            src_dir = pipe / "source" / source_id / "src"
-            src_dir.mkdir(parents=True)
-            (src_dir / f"{spec_id}_model.f90").write_text(model_text, encoding="utf-8")
-        run_dir = pipe / "runs" / run_id / safe
-        run_dir.mkdir(parents=True)
-        (run_dir / "aggregate_verdict.json").write_text(
-            json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-        (run_dir / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": binary_id}), encoding="utf-8")
-        pipe_ref = f"workspace/pipelines/{safe}/{pipe_id}"
-        verdict_ref = f"{pipe_ref}/runs/{run_id}/{safe}/aggregate_verdict.json"
-        return pipe_ref, verdict_ref
+        """A dependency certified through Validate (`certify_node`, key-stamped) under the
+        given ids; `model_text` is its certified model source, `ir_text` its IR."""
+        kind, rest = safe.split("__", 1)
+        sid, version = rest.rsplit("__", 1)
+        node_key = f"{kind}/{sid}@{version}"
+        refs = certify_node(
+            repo_root, "orch_dep", node_key, through="validate",
+            ir_id=f"{sid.replace('_', '-')}_20260101_001", pipeline_id=pipe_id,
+            source_id=source_id or "src_20260101_001", binary_id=binary_id, run_id=run_id,
+            model_text=model_text, ir_text=ir_text, exe_bytes=exe_bytes)
+        return refs["pipeline_ref"], refs["aggregate_verdict"]
 
     def test_resolves_on_disk_selection(self) -> None:
         from tools.orchestration_runtime import (
@@ -12986,21 +12981,17 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
                                   "aggregate_verdict"))
 
-    def _write_dep_ir_signature(self, repo_root: Path, safe: str, ir_id: str,
-                                symbol: str, args: list[dict]) -> None:
-        """A certified dependency IR pinning ONE published signature, the shape `Compile.static`
-        transcribes from §5.1 since issue #153 PR-2."""
+    @staticmethod
+    def _dep_ir_signature(symbol: str, args: list[dict]) -> str:
+        """A dependency IR pinning ONE published signature, the shape `Compile.static`
+        transcribes from §5.1 since issue #153 PR-2 (the `ir_text` of its certification)."""
         import yaml as _yaml
-        d = repo_root / "workspace" / "ir" / safe / ir_id
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-        (d / "spec.ir.yaml").write_text(_yaml.safe_dump({
+        return _yaml.safe_dump({
             "public_api": {"signatures": [
                 {"symbol": symbol,
                  "signature": {"kind": "subroutine", "name": symbol, "args": args}},
             ]},
-        }), encoding="utf-8")
+        })
 
     _DRIFT_SOURCE = (
         "module dep_base_model\n"
@@ -13017,9 +13008,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         safe = "component__dep_base__0.1.0"
         self._write_dep_pipeline(
             repo_root, safe, "p_20260101_001", "bin_20260101_001", "run_20260101_001",
-            source_id="src_20260101_001", spec_id="dep_base", model_text=self._DRIFT_SOURCE)
-        self._write_dep_ir_signature(
-            repo_root, safe, "d_20260101_001", "dep_base__scale", pinned_args)
+            source_id="src_20260101_001", spec_id="dep_base", model_text=self._DRIFT_SOURCE,
+            ir_text=self._dep_ir_signature("dep_base__scale", pinned_args))
         self._write_ir(
             repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
             [{"node_key": "component/dep_base@0.1.0", "kind": "component",
@@ -13108,23 +13098,15 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             safe = "component__dep_base__0.1.0"
-            pipe = repo_root / "workspace" / "pipelines" / safe / "p_20260101_001"
             # Older binary + matching verdict.
-            old_bin = pipe / "binary" / "bin_20260101_001"
-            old_bin.mkdir(parents=True)
-            (old_bin / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            rd = pipe / "runs" / "run_20260101_001" / safe
-            rd.mkdir(parents=True)
-            (rd / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (rd / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            # Newer binary with NO verdict — the one the selection chooses.
-            new_bin = pipe / "binary" / "bin_20260601_001"
-            new_bin.mkdir(parents=True)
-            (new_bin / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            self._write_dep_pipeline(
+                repo_root, safe, "p_20260101_001", "bin_20260101_001", "run_20260101_001")
+            # Newer binary with DIFFERENT bytes and NO verdict — the one the selection
+            # chooses (a byte-identical rebuild would be the same output, and the older
+            # verdict would still bind it).
+            certify_node(repo_root, "orch_dep", "component/dep_base@0.1.0", through="build",
+                         ir_id="dep-base_20260101_001", pipeline_id="p_20260101_001",
+                         binary_id="bin_20260601_001", exe_bytes=b"\x7fELF-rebuilt")
             self._write_ir(
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
                 [{"node_key": "component/dep_base@0.1.0"}])
@@ -13579,30 +13561,19 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
 
     def _write_dep_ir(
         self, repo_root: Path, kind: str, spec_id: str, version: str, ir_id: str,
-        *, public_api: dict | None = None,
+        *, public_api: dict | None = None, model_text: str | None = None,
     ) -> None:
+        """A dependency certified (key-stamped) through Compile — or through Generate when
+        `model_text` is given, the certified source the legacy fallback reads."""
         import yaml as _yaml
-        d = repo_root / "workspace" / "ir" / f"{kind}__{spec_id}__{version}" / ir_id
-        d.mkdir(parents=True)
         doc: dict = {"meta": {"spec_kind": kind}}
         if public_api is not None:
             doc["public_api"] = public_api
-        (d / "spec.ir.yaml").write_text(_yaml.safe_dump(doc), encoding="utf-8")
-        (d / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-
-    def _write_dep_source(
-        self, repo_root: Path, safe: str, spec_id: str, model_text: str,
-    ) -> None:
-        pipe = repo_root / "workspace" / "pipelines" / safe / "p_20260601_002"
-        b = pipe / "binary" / "bin_20260601_002"
-        b.mkdir(parents=True)
-        (b / "binary_meta.json").write_text(
-            json.dumps({"verification_status": "pass",
-                        "source_source_id": "src_20260601_001"}), encoding="utf-8")
-        src = pipe / "source" / "src_20260601_001" / "src"
-        src.mkdir(parents=True)
-        (src / f"{spec_id}_model.f90").write_text(model_text, encoding="utf-8")
+        certify_node(
+            repo_root, "orch_dep", f"{kind}/{spec_id}@{version}",
+            through="generate" if model_text is not None else "compile",
+            ir_id=ir_id, pipeline_id="p_20260601_002", source_id="src_20260601_001",
+            ir_text=_yaml.safe_dump(doc), model_text=model_text)
 
     _MODEL = (
         "module dep_base_model\ncontains\n"
@@ -13636,9 +13607,8 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_dep_ir(
-                repo_root, "component", "dep_base", "0.1.0", "ir_20260601_001")
-            self._write_dep_source(
-                repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
+                repo_root, "component", "dep_base", "0.1.0", "ir_20260601_001",
+                model_text=self._MODEL)
             graph = self._graph(
                 "problem/top@0.1.0",
                 [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
@@ -13657,9 +13627,7 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._write_dep_ir(
                 repo_root, "component", "dep_base", "0.1.0", "ir_20260601_001",
-                public_api={"published_operations": []})
-            self._write_dep_source(
-                repo_root, "component__dep_base__0.1.0", "dep_base", self._MODEL)
+                public_api={"published_operations": []}, model_text=self._MODEL)
             graph = self._graph(
                 "problem/top@0.1.0",
                 [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
@@ -13861,38 +13829,37 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
 
 
 class CertifiedModelSourceTests(unittest.TestCase):
-    """_certified_model_source binds to the CERTIFIED binary's source_source_id (the exact
-    source Build stages), never raising — the single-sourced selection shared by the
-    Generate-time interface hint and Build staging."""
+    """_certified_model_source resolves the dependency's SELECTED certified Generate output
+    under its derivation key (the exact source Build stages), never raising — the
+    single-sourced selection shared by the Generate-time interface hint, the compile-time
+    published surface, the harness pin and Build staging."""
 
     def test_resolves_certified_source_path(self) -> None:
         from tools.orchestration_runtime import _certified_model_source
         with tempfile.TemporaryDirectory() as tmp:
-            pipe = Path(tmp) / "pipe"
-            b = pipe / "binary" / "bin_20260601_002"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"source_source_id": "src_20260601_001"}), encoding="utf-8")
-            src_dir = pipe / "source" / "src_20260601_001" / "src"
-            src_dir.mkdir(parents=True)
-            model = src_dir / "dep_base_model.f90"
-            model.write_text("subroutine dep_base__scale(x, n, y)\nend subroutine\n",
-                             encoding="utf-8")
-            self.assertEqual(_certified_model_source(pipe, "dep_base"), model)
+            repo_root = Path(tmp)
+            refs = certify_node(
+                repo_root, "orch_dep", "component/dep_base@0.1.0", through="generate",
+                ir_id="dep-base_20260601_001", pipeline_id="p_20260601_002",
+                source_id="src_20260601_001",
+                model_text="subroutine dep_base__scale(x, n, y)\nend subroutine\n")
+            self.assertEqual(
+                _certified_model_source(repo_root, "component/dep_base@0.1.0"),
+                repo_root / refs["model_ref"])
 
     def test_returns_none_on_missing_artifacts(self) -> None:
         from tools.orchestration_runtime import _certified_model_source
         with tempfile.TemporaryDirectory() as tmp:
-            pipe = Path(tmp) / "pipe"
-            pipe.mkdir(parents=True)
-            self.assertIsNone(_certified_model_source(pipe, "dep_base"))  # no binary
-            b = pipe / "binary" / "bin_x"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(json.dumps({}), encoding="utf-8")
-            self.assertIsNone(_certified_model_source(pipe, "dep_base"))  # no source_source_id
-            (b / "binary_meta.json").write_text(
-                json.dumps({"source_source_id": "src_1"}), encoding="utf-8")
-            self.assertIsNone(_certified_model_source(pipe, "dep_base"))  # source file absent
+            repo_root = Path(tmp)
+            # no catalog / no workspace at all
+            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0"))
+            self.assertIsNone(_certified_model_source(repo_root, "not a node key"))
+            refs = certify_node(
+                repo_root, "orch_dep", "component/dep_base@0.1.0", through="generate",
+                ir_id="dep-base_20260601_001", pipeline_id="p_20260601_002")
+            # the certified source file itself absent
+            (repo_root / refs["model_ref"]).unlink()
+            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0"))
 
 
 class ExtractSubroutineInterfaceTests(unittest.TestCase):
@@ -16555,59 +16522,44 @@ def _setup_verified_dep(
     ir_pass: bool = True,
     binary_pass: bool = True,
     verdict_present: bool = True,
+    through: str | None = None,
+    keep_catalog: bool = False,
 ) -> None:
-    """Create spec_catalog entry + workspace artifacts so artifact verification
-    sees passing state for `dep_id` at the given version. Used by F2 tests."""
+    """Create the spec_catalog entry + workspace artifacts so artifact verification sees
+    passing state for `dep_id` at the given version — since issue #250 PR-2 a CERTIFIED
+    chain (`certify_node`: key-stamped, through Validate, or through Build when
+    `verdict_present` is false, or through `through`), with the IR / binary meta then set
+    to `fail` when asked. The catalog is REWRITTEN with this one entry unless
+    `keep_catalog` (the callers that need more write their own afterwards, as before).
+    Used by F2 tests."""
     catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-    catalog.parent.mkdir(parents=True, exist_ok=True)
-    catalog.write_text(
-        "catalog_version: 0.2.0\nupdated_at: 2026-05-11\nspecs:\n"
-        f"  - spec_kind: {dep_kind}\n"
-        f"    spec_id: {dep_id}\n"
-        f"    spec_version: {dep_version}\n"
-        "    status: controlled_draft\n",
-        encoding="utf-8",
-    )
+    if catalog.is_file() and not keep_catalog:
+        catalog.unlink()
+    node_key = f"{dep_kind}/{dep_id}@{dep_version}"
     safe = f"{dep_kind}__{dep_id}__{dep_version}"
-    # Codex round 31 F2: the freshness reader now anchors to the strict
-    # `_SLUG_DATE_SEQ3_PATTERN` (lowercase, hyphen-separated slug). If
-    # `dep_id` carries internal underscores (e.g. `dep_a`), convert them
-    # to hyphens for the *directory* slug so the artifact is visible to
-    # the freshness selector. The catalog spec_id itself keeps its
-    # original underscored form to match real deps.yaml conventions.
+    # Codex round 31 F2: the freshness reader anchors to the strict `_SLUG_DATE_SEQ3_PATTERN`
+    # (lowercase, hyphen-separated slug), so an underscored `dep_id` takes a hyphenated slug
+    # for the directory ids; the catalog spec_id keeps its underscored form.
     slug = dep_id.replace("_", "-")
-    ir_dir = repo_root / "workspace" / "ir" / safe / f"{slug}_20260511_001"
-    ir_dir.mkdir(parents=True)
-    (ir_dir / "ir_meta.json").write_text(
-        json.dumps({"verification_status": "pass" if ir_pass else "fail"}),
-        encoding="utf-8",
-    )
-    pipe_dir = (
-        repo_root / "workspace" / "pipelines" / safe / f"{slug}_20260511_001"
-    )
-    binary_dir = pipe_dir / "binary" / "bin_20260101_001"
-    binary_dir.mkdir(parents=True)
-    (binary_dir / "binary_meta.json").write_text(
-        json.dumps({"verification_status": "pass" if binary_pass else "fail"}),
-        encoding="utf-8",
-    )
-    if verdict_present:
-        verdict_dir = pipe_dir / "runs" / "run_20260101_001" / safe
-        verdict_dir.mkdir(parents=True)
-        (verdict_dir / "aggregate_verdict.json").write_text(
-            json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8",
-        )
-        (verdict_dir / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-        # Codex round 24: verdict must record the source_binary_id it validated.
-        (verdict_dir / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8",
-        )
+    refs = certify_node(
+        repo_root, "orch_dep", node_key,
+        through=through or ("validate" if verdict_present else "build"),
+        ir_id=f"{slug}_20260511_001", pipeline_id=f"{slug}_20260511_001",
+        binary_id="bin_20260101_001", run_id="run_20260101_001")
+    for flag, meta_ref in ((ir_pass, refs["ir_meta"]),
+                           (binary_pass, refs.get("binary_meta"))):
+        if flag or meta_ref is None:
+            continue
+        path = repo_root / meta_ref
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["verification_status"] = "fail"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    assert (repo_root / "workspace" / "ir" / safe).is_dir()
 
 
 class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
     """Codex round 25 F2: `_dependency_ready` must propagate the SPECIFIC
-    `fail_reason` from `_compute_dep_readiness_and_fingerprint` instead of
+    `fail_reason` from `_compute_dep_readiness` instead of
     collapsing every "cannot recompute" case into the generic
     `deps_yaml_missing_or_unparseable`. Distinct reasons let observability
     tooling differentiate "fix the spec" from "create the file" recovery
@@ -16617,10 +16569,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
         """When deps.yaml exists but has malformed schema (unknown key under
         `dependencies`), the gate must return `deps_yaml_malformed_schema`,
         not the generic `deps_yaml_missing_or_unparseable`."""
-        from tools.orchestration_runtime import (
-            _dependency_ready, _load_spec_catalog,
-            _dependency_set_fingerprint,
-        )
+        from tools.orchestration_runtime import _dependency_ready, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "spec" / "registry").mkdir(parents=True)
@@ -16657,9 +16606,6 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                     "pipeline_ref_verified": False,
                     "aggregate_verdict_verified": False,
                 },
-                "dep_set_fingerprint": _dependency_set_fingerprint(
-                    repo_root, "spec/component/broken",
-                ),
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             # Disable persisted-boolean fallback for this assertion: we want
@@ -16675,9 +16621,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
     def test_missing_deps_yaml_propagates_missing_reason(self) -> None:
         """When deps.yaml does not exist on disk, the gate returns
         `deps_yaml_missing_or_unparseable`."""
-        from tools.orchestration_runtime import (
-            _dependency_ready, _dependency_set_fingerprint,
-        )
+        from tools.orchestration_runtime import _dependency_ready
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(
@@ -16701,9 +16645,6 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                     "pipeline_ref_verified": False,
                     "aggregate_verdict_verified": False,
                 },
-                "dep_set_fingerprint": _dependency_set_fingerprint(
-                    repo_root, "spec/component/nonexistent",
-                ),
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
@@ -16755,136 +16696,6 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
                 "0.2.0",
                 "content-keyed cache must observe the new contents even though "
                 "mtime is unchanged",
-            )
-
-
-class AggregateVerdictBoundToBinaryTests(unittest.TestCase):
-    """Codex round 24: aggregate_verdict_verified requires that the chosen
-    verdict's `trial_meta.source_binary_id` matches the binary the
-    pipeline_ref stage would select. A passing verdict for an OLDER binary
-    cannot satisfy execution readiness when a NEWER (un-validated) binary
-    is selected for pipeline_ref."""
-
-    def _build_catalog(self, repo_root: Path) -> None:
-        (repo_root / "spec" / "registry").mkdir(parents=True)
-        (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
-
-    def test_newer_binary_with_only_older_verdict_fails(self) -> None:
-        """One pipeline contains an OLDER binary `bin_20260101_001` (pass) with
-        a passing verdict bound to it, AND a NEWER binary `bin_20260601_001`
-        (pass) that has NO verdict. Latest pipeline_ref selects the newer
-        binary; aggregate_verdict must NOT use the older binary's verdict."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_catalog(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            pipe = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            # Older binary + matching verdict.
-            old_bin = pipe / "binary" / "bin_20260101_001"
-            old_bin.mkdir(parents=True)
-            (old_bin / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            old_verdict_dir = pipe / "runs" / "run_20260101_001" / safe
-            old_verdict_dir.mkdir(parents=True)
-            (old_verdict_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (old_verdict_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            # Newer binary (no verdict).
-            new_bin = pipe / "binary" / "bin_20260601_001"
-            new_bin.mkdir(parents=True)
-            (new_bin / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            # pipeline_ref → newer binary (pass) → True
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref"),
-                "newer binary passes verification_status check"
-            )
-            # aggregate_verdict → must be bound to bin_20260601_001 which has
-            # no verdict → False (cannot borrow older bin_20260101_001's verdict).
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "verdict for older binary must NOT satisfy aggregate_verdict "
-                "when newer un-validated binary is the chosen pipeline_ref",
-            )
-
-    def test_verdict_for_matching_binary_satisfies(self) -> None:
-        """Sanity: when both binary and matching verdict exist, gate passes."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_catalog(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            pipe = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            b = pipe / "binary" / "bin_20260101_001"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v = pipe / "runs" / "run_20260101_001" / safe
-            v.mkdir(parents=True)
-            (v / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict")
-            )
-
-    def test_verdict_missing_trial_meta_is_excluded(self) -> None:
-        """A verdict whose sibling trial_meta.json is missing (or lacks
-        `source_binary_id`) is unbound and must be excluded."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_catalog(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            pipe = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            b = pipe / "binary" / "bin_20260101_001"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v = pipe / "runs" / "run_20260101_001" / safe
-            v.mkdir(parents=True)
-            (v / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            # NO trial_meta.json — verdict is unbound.
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "unbound verdict (no trial_meta.source_binary_id) must be excluded",
-            )
-
-    def test_verdict_with_mismatched_source_binary_id_is_excluded(self) -> None:
-        """Verdict whose source_binary_id doesn't match the chosen binary is
-        excluded even if the verdict itself is passing."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_catalog(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            pipe = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            b = pipe / "binary" / "bin_20260601_001"
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v = pipe / "runs" / "run_20260101_001" / safe
-            v.mkdir(parents=True)
-            (v / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v / "trial_meta.json").write_text(
-                # Mismatch: chosen binary is bin_20260601_001 but verdict points to ...0101_001.
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "verdict bound to a different binary must be excluded",
             )
 
 
@@ -17160,20 +16971,13 @@ class UnrelatedCatalogChurnIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_orch(repo_root, "iso_a")
-            safe = "component__dep_a__0.1.0"
-            ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            # A certified (key-stamped) Compile of dep_a; the catalog entry comes with it.
+            _setup_verified_dep(repo_root, dep_id="dep_a", through="compile")
             _load_spec_catalog.cache_clear()
             mark_dependency_readiness(repo_root=repo_root, orchestration_id="iso_a")
             # Publish an UNRELATED spec to the catalog. dep_a is unchanged.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: totally_unrelated\n    spec_version: 1.0.0\n",
-                encoding="utf-8",
-            )
+            from tools.tests.orchestration_fixtures import ensure_spec_entry
+            ensure_spec_entry(repo_root, "component/totally_unrelated@1.0.0")
             _load_spec_catalog.cache_clear()
             ok, reason = _dependency_ready(repo_root, "iso_a", step="compile")
             self.assertTrue(
@@ -17182,155 +16986,28 @@ class UnrelatedCatalogChurnIsolationTests(unittest.TestCase):
                 f"reason={reason}",
             )
 
-    def test_relevant_catalog_addition_does_invalidate(self) -> None:
-        """Mirror check: adding a new version FOR dep_a (the dep we use)
-        must invalidate (because the matching set / certified version may
-        change)."""
+    def test_relevant_catalog_edit_is_seen_by_the_gate(self) -> None:
+        """Mirror check: a catalog edit FOR dep_a (the dep we use) is seen by the live
+        recompute — here its entry is withdrawn, so nothing matches and the gate refuses.
+        (Publishing an additional version with no artifacts does not refuse: any matching
+        version with a certified chain satisfies readiness.)"""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _dependency_ready, _load_spec_catalog,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_orch(repo_root, "rel")
-            safe = "component__dep_a__0.1.0"
-            ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            # A certified (key-stamped) Compile of dep_a; the catalog entry comes with it.
+            _setup_verified_dep(repo_root, dep_id="dep_a", through="compile")
             _load_spec_catalog.cache_clear()
             mark_dependency_readiness(repo_root=repo_root, orchestration_id="rel")
+            self.assertEqual(_dependency_ready(repo_root, "rel", step="compile"), (True, None))
             (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.2.0\n",
-                encoding="utf-8",
-            )
+                "catalog_version: 0.2.0\nspecs: []\n", encoding="utf-8")
             _load_spec_catalog.cache_clear()
             ok, reason = _dependency_ready(repo_root, "rel", step="compile")
             self.assertFalse(ok)
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
-
-
-class CertifiedVersionIdentityInFingerprintTests(unittest.TestCase):
-    """Codex round 19 F2: even when artifact bytes happen to be identical,
-    a switch in certified version must invalidate the fingerprint. The
-    fingerprint prefixes each artifact's bytes with its
-    `(spec_kind, spec_id, spec_version, stage)` identity, so identity drift
-    cannot survive byte equality."""
-
-    def test_identity_prefix_in_fingerprint(self) -> None:
-        """Two on-disk states with identical artifact bytes but DIFFERENT
-        certified versions must produce different fingerprints."""
-        from tools.orchestration_runtime import (
-            _dependency_set_fingerprint, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            spec_dir = repo_root / "spec" / "component" / "user"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "spec_id: user\nspec_kind: component\n"
-                "dependencies:\n  components:\n"
-                "    - component_id: dep_a\n      version_constraint: \">=0.1.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            # State A: only 0.1.0 in catalog + artifacts.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            safe_010 = "component__dep_a__0.1.0"
-            ir_010 = repo_root / "workspace" / "ir" / safe_010 / "dep-a_20260101_001"
-            ir_010.mkdir(parents=True)
-            (ir_010 / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            fp_a = _dependency_set_fingerprint(repo_root, "spec/component/user")
-            # State B: 0.2.0 added to catalog AND has IDENTICAL artifact bytes.
-            # Certified version flips from 0.1.0 to 0.2.0.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.2.0\n",
-                encoding="utf-8",
-            )
-            safe_020 = "component__dep_a__0.2.0"
-            ir_020 = repo_root / "workspace" / "ir" / safe_020 / "dep-a_20260101_001"
-            ir_020.mkdir(parents=True)
-            # Identical bytes to 0.1.0's artifact.
-            (ir_020 / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            fp_b = _dependency_set_fingerprint(repo_root, "spec/component/user")
-            self.assertNotEqual(
-                fp_a, fp_b,
-                "certified version drift with identical bytes must change fingerprint",
-            )
-
-    def test_gate_rejects_when_certified_version_drifts(self) -> None:
-        """End-to-end: mark certifies 0.1.0. Then 0.2.0 is published with
-        identical artifact bytes. Gate must reject (fingerprint mismatch)
-        rather than trust the persisted certified_deps that still says 0.1.0."""
-        from tools.orchestration_runtime import (
-            mark_dependency_readiness, _dependency_ready, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            spec_dir = repo_root / "spec" / "component" / "user"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "spec_id: user\nspec_kind: component\n"
-                "dependencies:\n  components:\n"
-                "    - component_id: dep_a\n      version_constraint: \">=0.1.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="drift",
-                spec_ref="spec/component/user",
-            )
-            write_preflight(
-                repo_root=repo_root, orchestration_id="drift",
-                payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-            )
-            for ver in ("0.1.0",):
-                safe = f"component__dep_a__{ver}"
-                ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-                ir.mkdir(parents=True)
-                (ir / "ir_meta.json").write_text(
-                    json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            r = mark_dependency_readiness(repo_root=repo_root, orchestration_id="drift")
-            self.assertEqual(r["certified_deps"][0]["spec_version"], "0.1.0")
-            # Publish 0.2.0 with bit-identical artifact bytes.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.2.0\n",
-                encoding="utf-8",
-            )
-            safe_020 = "component__dep_a__0.2.0"
-            ir_020 = repo_root / "workspace" / "ir" / safe_020 / "dep-a_20260101_001"
-            ir_020.mkdir(parents=True)
-            (ir_020 / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            ok, reason = _dependency_ready(repo_root, "drift", step="compile")
-            self.assertFalse(
-                ok,
-                "certified version drift (0.1.0 → 0.2.0) with identical bytes "
-                "must invalidate the gate via fingerprint mismatch",
-            )
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
+            self.assertEqual(reason, "direct_dependency_compile_readiness_not_pass")
 
 
 class SetStatusAuditEventReflectsCommittedMetaTests(unittest.TestCase):
@@ -17645,9 +17322,7 @@ class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
         `orchestration_meta.dependency_readiness` to all-true with a
         fingerprint matching the (no-artifact) current state. Gate must
         still reject because LIVE recomputation says false."""
-        from tools.orchestration_runtime import (
-            _dependency_ready, _dependency_set_fingerprint, _load_spec_catalog,
-        )
+        from tools.orchestration_runtime import _dependency_ready, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build(repo_root)
@@ -17657,7 +17332,7 @@ class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
                 / "orchestration_meta.json"
             )
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            # Forge: all true + matching fingerprint, but NO artifacts on disk.
+            # Forge: all true, but NO artifacts on disk.
             meta["dependency_readiness"] = {
                 "direct_dependency_compile_readiness": True,
                 "direct_dependency_execution_readiness": True,
@@ -17666,9 +17341,6 @@ class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
                     "pipeline_ref_verified": True,
                     "aggregate_verdict_verified": True,
                 },
-                "dep_set_fingerprint": _dependency_set_fingerprint(
-                    repo_root, "spec/component/user",
-                ),
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             ok, reason = _dependency_ready(repo_root, "frg", step="compile")
@@ -17677,23 +17349,21 @@ class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
                 "forged true booleans must not bypass the gate when live "
                 "recomputation says false",
             )
-            self.assertEqual(reason, "direct_dependency_compile_readiness_not_pass")
+            self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
+            # The catalog names dep_a without a spec directory: unresolvable, never certified.
+            self.assertIn("component/dep_a@0.1.0 compile: spec_ref_unresolved", reason)
 
     def test_live_recompute_authoritative_even_when_stored_says_false(self) -> None:
         """Opposite direction: stored booleans=false, artifacts say pass. Gate
         uses live recompute → pass."""
         from tools.orchestration_runtime import (
-            _dependency_ready, _dependency_set_fingerprint,
-            mark_dependency_readiness, _load_spec_catalog,
+            _dependency_ready, mark_dependency_readiness, _load_spec_catalog,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build(repo_root, "live")
-            safe = "component__dep_a__0.1.0"
-            ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
+            # A certified (key-stamped) Compile of dep_a; the catalog entry comes with it.
+            _setup_verified_dep(repo_root, dep_id="dep_a", through="compile")
             _load_spec_catalog.cache_clear()
             # Mark, then tamper the persisted booleans to false (without
             # mutating fingerprint).
@@ -17841,23 +17511,10 @@ class CertifiedDepVersionTests(unittest.TestCase):
         )
 
     def _write_full_chain(self, repo_root: Path, version: str) -> None:
-        safe = f"component__dep_a__{version}"
-        ir = repo_root / "workspace" / "ir" / safe / f"dep-a_20260101_001"
-        ir.mkdir(parents=True)
-        (ir / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-        bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                   / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-        bin_dir.mkdir(parents=True)
-        (bin_dir / "binary_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-        v_dir = (repo_root / "workspace" / "pipelines" / safe
-                 / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-        v_dir.mkdir(parents=True)
-        (v_dir / "aggregate_verdict.json").write_text(
-            json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-        (v_dir / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+        """`dep_a@<version>` certified (key-stamped) through Validate. The catalog entries
+        `_build` wrote carry no spec path; `certify_node` adds the path and spec files."""
+        certify_node(repo_root, "orch_dep", f"component/dep_a@{version}", through="validate",
+                     ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
 
     def test_certified_deps_persisted_in_meta(self) -> None:
         """After mark, dependency_readiness.certified_deps records the
@@ -17896,59 +17553,10 @@ class CertifiedDepVersionTests(unittest.TestCase):
             self.assertEqual(certified[0]["spec_version"], "0.2.0",
                              "certified_deps must prefer highest version when both qualify")
 
-    def test_the_fingerprint_hashes_the_certified_versions_own_bytes(self) -> None:
-        """Issue #178 round 1: with two fully certified versions, `_write_full_chain` writes
-        byte-identical artifacts for both, so hashing the LOWER version's files under the
-        certified version's label was invisible to every row in this class (the mutant
-        `best_paths = paths` of the last version iterated survived). Here 0.2.0's artifacts
-        differ from 0.1.0's by one field per file, and the rows the gate hands to the hash
-        must be 0.2.0's own bytes — and a rewrite of 0.1.0's certified chain, the version
-        NOT certified, must leave the fingerprint alone."""
-        from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _compute_dep_readiness_and_fingerprint,
-            _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            self._write_full_chain(repo_root, "0.1.0")
-            self._write_full_chain(repo_root, "0.2.0")
-            safe_02 = "component__dep_a__0.2.0"
-            pipe_02 = repo_root / "workspace" / "pipelines" / safe_02 / "pipe_20260101_001"
-            files_02 = {
-                "ir_ref": (repo_root / "workspace" / "ir" / safe_02 / "dep-a_20260101_001"
-                           / "ir_meta.json"),
-                "pipeline_ref": pipe_02 / "binary" / "bin_20260101_001" / "binary_meta.json",
-                "aggregate_verdict": (pipe_02 / "runs" / "run_20260101_001" / safe_02
-                                      / "aggregate_verdict.json"),
-            }
-            for stage, path in files_02.items():
-                doc = json.loads(path.read_text(encoding="utf-8"))
-                doc["marker"] = f"0.2.0-{stage}"
-                path.write_text(json.dumps(doc), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
-            self.assertEqual(snap["certified_entries"], [("component", "dep_a", "0.2.0", 3)])
-            rows = snap["artifact_bytes_in_order"]
-            self.assertEqual([(r[0], r[3]) for r in rows],
-                             [(stage, "0.2.0") for stage in files_02])
-            for stage, _kind, _sid, _version, raw in rows:
-                self.assertEqual(raw, files_02[stage].read_bytes(), stage)
-                # Self-test that the two versions' bytes really differ on this file.
-                self.assertIn(f"0.2.0-{stage}".encode(), raw)
-            fp_before = _compute_dep_readiness_and_fingerprint(repo_root, "spec/component/user")[1]
-            # Rewriting the NOT-certified version's chain changes nothing hashed.
-            safe_01 = "component__dep_a__0.1.0"
-            (repo_root / "workspace" / "ir" / safe_01 / "dep-a_20260101_001"
-             / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass", "marker": "churn"}), encoding="utf-8")
-            fp_after = _compute_dep_readiness_and_fingerprint(repo_root, "spec/component/user")[1]
-            self.assertEqual(fp_after, fp_before)
-
     def test_unrelated_version_artifact_churn_does_not_invalidate(self) -> None:
-        """Codex round 17 F2 core test: only 0.1.0 is certified; touching
-        0.2.0's artifacts must NOT change the persisted fingerprint, so the
-        launch gate does NOT reject as stale."""
+        """Codex round 17 F2 core test: only 0.1.0 is certified; touching 0.2.0's
+        artifacts must NOT change the gate's answer, and re-marking on the same state
+        reproduces the same record."""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _dependency_ready, _load_spec_catalog,
         )
@@ -17959,9 +17567,8 @@ class CertifiedDepVersionTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             r1 = mark_dependency_readiness(repo_root=repo_root, orchestration_id="cd")
             self.assertTrue(r1["direct_dependency_compile_readiness"])
-            fp1 = r1["dep_set_fingerprint"]
-            # Touch 0.2.0's directory with random partial artifact — fingerprint
-            # of 0.1.0's certified chain must be unaffected.
+            # Touch 0.2.0's directory with a partial artifact — the 0.1.0-certified chain
+            # is unaffected.
             safe_02 = "component__dep_a__0.2.0"
             ir_02 = repo_root / "workspace" / "ir" / safe_02 / "dep_a_0.2.0_999"
             ir_02.mkdir(parents=True)
@@ -17973,148 +17580,32 @@ class CertifiedDepVersionTests(unittest.TestCase):
                 f"unrelated version 0.2.0 artifact churn must not invalidate "
                 f"the 0.1.0-certified readiness; reason={reason}",
             )
-            # Re-marking on the same state must reproduce the same fingerprint.
             r2 = mark_dependency_readiness(repo_root=repo_root, orchestration_id="cd")
-            self.assertEqual(r2["dep_set_fingerprint"], fp1)
+            self.assertEqual(r2, r1)
 
     def test_certified_version_regression_invalidates(self) -> None:
-        """Mirror check: a regression of the CERTIFIED version's artifact
-        must still invalidate (fingerprint mismatch)."""
+        """Mirror check: a regression of the CERTIFIED version's artifact — its IR revoked —
+        is refused at the gate. (A newer directory that never certified is not a regression
+        under the key model: the certified output stands until revoked or superseded by a
+        certified one.)"""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _dependency_ready, _load_spec_catalog,
         )
-        import time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build(repo_root)
             self._write_full_chain(repo_root, "0.1.0")
             _load_spec_catalog.cache_clear()
             mark_dependency_readiness(repo_root=repo_root, orchestration_id="cd")
-            # Regress 0.1.0's ir (the certified version).
-            time.sleep(0.01)
+            self.assertEqual(_dependency_ready(repo_root, "cd", step="compile"), (True, None))
             safe = "component__dep_a__0.1.0"
-            newer = repo_root / "workspace" / "ir" / safe / "dep-a_20260901_001"
-            newer.mkdir()
-            (newer / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
+            ir_meta = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001" / "ir_meta.json"
+            doc = json.loads(ir_meta.read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            ir_meta.write_text(json.dumps(doc), encoding="utf-8")
             ok, reason = _dependency_ready(repo_root, "cd", step="compile")
-            self.assertFalse(ok,
-                             "certified version regression must invalidate "
-                             "via dep_set_fingerprint_stale")
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
-
-
-class WithinMarkArtifactConsistencyTests(unittest.TestCase):
-    """Codex round 16 F1: a single mark-dependency-readiness call must use the
-    SAME artifact byte snapshot for both verification booleans and the
-    persisted fingerprint. Otherwise a producer mutation between the two
-    reads would persist a fingerprint that matches the post-mutation state
-    while the booleans reflect the pre-mutation state, letting the gate
-    trust outdated readiness."""
-
-    def test_persisted_fingerprint_matches_subsequent_fingerprint_for_same_state(self) -> None:
-        """End-to-end: after mark, computing the fingerprint independently must
-        equal the persisted one (assuming no mutation in between)."""
-        from tools.orchestration_runtime import (
-            mark_dependency_readiness, _dependency_set_fingerprint, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            spec_dir = repo_root / "spec" / "component" / "user"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "spec_id: user\nspec_kind: component\n"
-                "dependencies:\n  components:\n"
-                "    - component_id: dep_a\n      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="wmc",
-                spec_ref="spec/component/user",
-            )
-            write_preflight(
-                repo_root=repo_root, orchestration_id="wmc",
-                payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-            )
-            safe = "component__dep_a__0.1.0"
-            ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                       / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v_dir = (repo_root / "workspace" / "pipelines" / safe
-                     / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-            v_dir.mkdir(parents=True)
-            (v_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            result = mark_dependency_readiness(repo_root=repo_root, orchestration_id="wmc")
-            persisted_fp = result["dep_set_fingerprint"]
-            recomputed_fp = _dependency_set_fingerprint(
-                repo_root, "spec/component/user",
-            )
-            self.assertEqual(persisted_fp, recomputed_fp,
-                             "single-pass mark must produce fingerprint identical "
-                             "to a fresh _dependency_set_fingerprint() call")
-
-    def test_combined_helper_yields_consistent_state(self) -> None:
-        """Direct unit test on the single-pass helper: verification booleans
-        and the returned fingerprint always derive from the same artifact
-        bytes read in one pass."""
-        from tools.orchestration_runtime import (
-            _compute_dep_readiness_and_fingerprint,
-            _dependency_set_fingerprint, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            spec_dir = repo_root / "spec" / "component" / "user"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "spec_id: user\nspec_kind: component\n"
-                "dependencies:\n  components:\n"
-                "    - component_id: dep_a\n      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            safe = "component__dep_a__0.1.0"
-            ir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            booleans, fp, certified, fail_reason = _compute_dep_readiness_and_fingerprint(
-                repo_root, "spec/component/user",
-            )
-            self.assertIsNone(fail_reason)
-            self.assertIsNotNone(booleans)
-            self.assertTrue(booleans["ir_ref_verified"])
-            self.assertEqual(
-                certified,
-                [{"spec_kind": "component", "spec_id": "dep_a", "spec_version": "0.1.0"}],
-            )
-            # The fingerprint must equal what _dependency_set_fingerprint
-            # computes on the same state — both share the walker.
-            self.assertEqual(fp, _dependency_set_fingerprint(
-                repo_root, "spec/component/user"))
+            self.assertFalse(ok)
+            self.assertIn("component/dep_a@0.1.0 compile: revoked", reason)
 
 
 class BuildVariantAmbiguityRejectionTests(unittest.TestCase):
@@ -18230,8 +17721,7 @@ class SetStatusPassReplayIdempotencyTests(unittest.TestCase):
         without re-running `_require_preflight_launchable` /
         `_validate_orchestration_completion_for_pass`."""
         from tools.orchestration_runtime import (
-            _dependency_set_fingerprint, _cleanup_committed_marker_path,
-            _cleanup_committed_dir,
+            _cleanup_committed_marker_path, _cleanup_committed_dir,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -18258,9 +17748,6 @@ class SetStatusPassReplayIdempotencyTests(unittest.TestCase):
                     "pipeline_ref_verified": True,
                     "aggregate_verdict_verified": True,
                 },
-                "dep_set_fingerprint": _dependency_set_fingerprint(
-                    repo_root, meta.get("spec_ref"),
-                ),
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             # Stage the cleanup_committed marker so the replay hits the no-op
@@ -18426,46 +17913,29 @@ class CrossVersionCoherenceTests(unittest.TestCase):
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
         )
 
-    def _write_ir(self, repo_root: Path, version: str, *, status: str) -> None:
-        safe = f"component__dep_a__{version}"
-        d = repo_root / "workspace" / "ir" / safe / f"dep-a_20260101_001"
-        d.mkdir(parents=True)
-        (d / "ir_meta.json").write_text(
-            json.dumps({"verification_status": status}), encoding="utf-8")
-
-    def _write_binary(self, repo_root: Path, version: str, *, status: str) -> None:
-        safe = f"component__dep_a__{version}"
-        d = (repo_root / "workspace" / "pipelines" / safe
-             / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-        d.mkdir(parents=True)
-        (d / "binary_meta.json").write_text(
-            json.dumps({"verification_status": status}), encoding="utf-8")
-
-    def _write_verdict(self, repo_root: Path, version: str, *, verdict: str) -> None:
-        safe = f"component__dep_a__{version}"
-        d = (repo_root / "workspace" / "pipelines" / safe
-             / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-        d.mkdir(parents=True)
-        (d / "aggregate_verdict.json").write_text(
-            json.dumps({"aggregate_verdict": verdict}), encoding="utf-8")
-        (d / "trial_meta.json").write_text(
-            json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+    def _certify(self, repo_root: Path, version: str, *, through: str) -> None:
+        """`dep_a@<version>` certified (key-stamped) through `through`."""
+        certify_node(repo_root, "orch_dep", f"component/dep_a@{version}", through=through,
+                     ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
 
     def test_ir_from_v1_pipeline_from_v2_must_not_certify(self) -> None:
-        """0.2.0 has ir=pass but no pipeline; 0.1.0 has pipeline+verdict=pass
-        but no ir. Under the old `any()` per-stage logic this would set both
-        ir_ref_verified=true and pipeline_ref_verified=true. Round 14 F1
-        requires same-version coherence: no single version has both → both
-        must be false."""
+        """0.2.0 has a certified IR but no pipeline; 0.1.0 has a pipeline + verdict whose
+        IR was revoked afterwards. Under the old `any()` per-stage logic this would set both
+        ir_ref_verified=true and pipeline_ref_verified=true. Round 14 F1 requires
+        same-version coherence: no single version has both → both must be false."""
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _load_spec_catalog,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_orch(repo_root, "xv")
-            self._write_ir(repo_root, "0.2.0", status="pass")
-            self._write_binary(repo_root, "0.1.0", status="pass")
-            self._write_verdict(repo_root, "0.1.0", verdict="pass")
+            self._certify(repo_root, "0.2.0", through="compile")
+            self._certify(repo_root, "0.1.0", through="validate")
+            ir_meta = (repo_root / "workspace" / "ir" / "component__dep_a__0.1.0"
+                       / "dep-a_20260101_001" / "ir_meta.json")
+            doc = json.loads(ir_meta.read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            ir_meta.write_text(json.dumps(doc), encoding="utf-8")
             _load_spec_catalog.cache_clear()
             r = mark_dependency_readiness(repo_root=repo_root, orchestration_id="xv")
             self.assertFalse(
@@ -18487,10 +17957,8 @@ class CrossVersionCoherenceTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._build_orch(repo_root, "full")
             # 0.1.0: complete chain. 0.2.0: only ir.
-            self._write_ir(repo_root, "0.1.0", status="pass")
-            self._write_binary(repo_root, "0.1.0", status="pass")
-            self._write_verdict(repo_root, "0.1.0", verdict="pass")
-            self._write_ir(repo_root, "0.2.0", status="pass")
+            self._certify(repo_root, "0.1.0", through="validate")
+            self._certify(repo_root, "0.2.0", through="compile")
             _load_spec_catalog.cache_clear()
             r = mark_dependency_readiness(repo_root=repo_root, orchestration_id="full")
             self.assertTrue(r["direct_dependency_compile_readiness"])
@@ -18505,7 +17973,7 @@ class CrossVersionCoherenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_orch(repo_root, "ironly")
-            self._write_ir(repo_root, "0.1.0", status="pass")
+            self._certify(repo_root, "0.1.0", through="compile")
             _load_spec_catalog.cache_clear()
             r = mark_dependency_readiness(repo_root=repo_root, orchestration_id="ironly")
             self.assertTrue(r["direct_dependency_compile_readiness"])
@@ -18617,25 +18085,10 @@ class NewVersionPublishNoOutageTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="nv",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
-            # Passing artifacts at 0.1.0 only. 0.2.0 published in catalog but
+            # A certified chain at 0.1.0 only. 0.2.0 published in catalog but
             # has NO workspace artifacts.
-            safe_010 = "component__dep_a__0.1.0"
-            ir_dir = repo_root / "workspace" / "ir" / safe_010 / "dep-a_20260101_001"
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            bin_dir = (repo_root / "workspace" / "pipelines" / safe_010
-                       / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v_dir = (repo_root / "workspace" / "pipelines" / safe_010
-                     / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe_010)
-            v_dir.mkdir(parents=True)
-            (v_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+            certify_node(repo_root, "orch_dep", "component/dep_a@0.1.0", through="validate",
+                         ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
             _load_spec_catalog.cache_clear()
             result = mark_dependency_readiness(
                 repo_root=repo_root, orchestration_id="nv",
@@ -18861,89 +18314,6 @@ class DepsYamlSchemaStrictnessTests(unittest.TestCase):
             self.assertTrue(result["direct_dependency_compile_readiness"])
 
 
-class CrossPipelineRunMixingTests(unittest.TestCase):
-    """Codex round 11 F2: execution readiness must bind binary_meta and
-    aggregate_verdict to the SAME pipeline run. Selecting them independently
-    would let a newer incomplete run's passing binary be combined with an
-    older run's passing verdict — readiness would erroneously pass.
-    """
-
-    def _build(self, repo_root: Path) -> None:
-        (repo_root / "spec" / "registry").mkdir(parents=True)
-        (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
-
-    def test_incomplete_newer_run_must_not_borrow_older_verdict(self) -> None:
-        """pipe_001 (older): binary_meta=pass + aggregate_verdict=pass (complete).
-        pipe_002 (newer): binary_meta=pass only — no aggregate_verdict yet.
-        execution_readiness must NOT pass via cross-run mixing.
-        """
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        import time
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            # pipe_001: complete pipeline, written first.
-            p1 = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            b1 = p1 / "binary" / "bin_20260101_001"
-            b1.mkdir(parents=True)
-            (b1 / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v1 = p1 / "runs" / "run_20260101_001" / safe
-            v1.mkdir(parents=True)
-            (v1 / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v1 / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            # pipe_002: newer, binary done, no verdict yet.
-            time.sleep(0.01)
-            p2 = repo_root / "workspace" / "pipelines" / safe / "pipe_20260601_001"
-            b2 = p2 / "binary" / "bin_20260101_001"
-            b2.mkdir(parents=True)
-            (b2 / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            # pipeline_ref must read pipe_002's binary (newer) → pass.
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref"),
-                "pipeline_ref of newer pipe_002 should be pass",
-            )
-            # aggregate_verdict must read pipe_002 (which has none) → fail.
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "aggregate_verdict must not borrow older pipe_001 verdict when "
-                "current pipe_002 has no verdict yet",
-            )
-
-    def test_failing_newer_binary_in_same_pipeline_forces_fail(self) -> None:
-        """A newer run with binary_meta=fail must reject pipeline_ref even if
-        an older pipeline has binary_meta=pass."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        import time
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            p1 = repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-            (p1 / "binary" / "bin_20260101_001").mkdir(parents=True)
-            (p1 / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            time.sleep(0.01)
-            p2 = repo_root / "workspace" / "pipelines" / safe / "pipe_20260601_001"
-            (p2 / "binary" / "bin_20260101_001").mkdir(parents=True)
-            (p2 / "binary" / "bin_20260101_001" / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref"),
-                "newer-pipeline failing binary must take precedence over older passing one",
-            )
-
-
 class WritePreflightConcurrencyTests(unittest.TestCase):
     """Codex round 11 F1: write_preflight's orchestration_meta read-check-write
     must acquire the same _orchestration_meta_exclusive_lock as
@@ -18997,23 +18367,8 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="cc",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
-            safe = "component__dep_a__0.1.0"
-            ir_dir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                       / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v_dir = (repo_root / "workspace" / "pipelines" / safe
-                     / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-            v_dir.mkdir(parents=True)
-            (v_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+            certify_node(repo_root, "orch_dep", "component/dep_a@0.1.0", through="validate",
+                         ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
             _load_spec_catalog.cache_clear()
             errors: list[BaseException] = []
             def call_mark() -> None:
@@ -19043,109 +18398,6 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
             readiness = meta.get("dependency_readiness") or {}
             self.assertTrue(readiness.get("direct_dependency_compile_readiness"),
                             "concurrent preflight must not clobber verified readiness")
-
-
-class ArtifactFreshnessTieBreakerTests(unittest.TestCase):
-    """Codex round 10 F1: artifact freshness selection must be deterministic
-    even when two files share the same mtime (coarse-resolution filesystems or
-    fast back-to-back writes). `_artifact_freshness_key` uses
-    (st_mtime_ns, path_str) — path_str breaks mtime ties so a newer-by-name
-    failing artifact wins over a stale-by-name passing one even on collision.
-    """
-
-    def test_latest_meta_under_breaks_mtime_ties_by_path(self) -> None:
-        from tools.orchestration_runtime import _latest_meta_under
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            a_dir = root / "dep-a_20260101_001"
-            b_dir = root / "dep-a_20260901_001"
-            a_dir.mkdir()
-            b_dir.mkdir()
-            a = a_dir / "ir_meta.json"
-            b = b_dir / "ir_meta.json"
-            a.write_text("OLD_PASS", encoding="utf-8")
-            b.write_text("NEW_FAIL", encoding="utf-8")
-            # Force identical mtimes (coarse filesystem / fast burst write).
-            ts_ns = 1_700_000_000_000_000_000
-            os.utime(a, ns=(ts_ns, ts_ns))
-            os.utime(b, ns=(ts_ns, ts_ns))
-            latest = _latest_meta_under(root, "*/ir_meta.json")
-            self.assertIsNotNone(latest)
-            self.assertEqual(latest.name, "ir_meta.json")
-            # Path tiebreaker: lex-greater path wins. The lex-larger directory
-            # name (`20260901_001`) is also chronologically newer per the
-            # canonical naming scheme. Deterministic across runs.
-            self.assertEqual(latest.parent.name, "dep-a_20260901_001",
-                             "mtime tie must be broken deterministically by path")
-
-    def test_verify_dep_stage_with_tied_mtimes_picks_newer_fail(self) -> None:
-        """When pass artifact (older name) and fail artifact (newer name) share
-        the same mtime, _verify_dep_stage must select the newer-by-name (fail)
-        and return False — not silently accept the stale pass."""
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            old = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            new = repo_root / "workspace" / "ir" / safe / "dep-a_20260901_001"
-            old.mkdir(parents=True)
-            new.mkdir(parents=True)
-            (old / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            (new / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            ts_ns = 1_700_000_000_000_000_000
-            os.utime(old / "ir_meta.json", ns=(ts_ns, ts_ns))
-            os.utime(new / "ir_meta.json", ns=(ts_ns, ts_ns))
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref"),
-                "tied mtimes must not let a stale pass beat a newer fail",
-            )
-
-    def test_aggregate_verdict_tied_mtimes_picks_newer_fail(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            old = (repo_root / "workspace" / "pipelines" / safe
-                   / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-            new = (repo_root / "workspace" / "pipelines" / safe
-                   / "pipe_20260601_002" / "runs" / "run_20260601_002" / safe)
-            old.mkdir(parents=True)
-            new.mkdir(parents=True)
-            (old / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (old / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            (new / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
-            (new / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            ts_ns = 1_700_000_000_000_000_000
-            os.utime(old / "aggregate_verdict.json", ns=(ts_ns, ts_ns))
-            os.utime(new / "aggregate_verdict.json", ns=(ts_ns, ts_ns))
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "tied aggregate_verdict mtimes must route through the same helper "
-                "and reject stale pass",
-            )
 
 
 class SetStatusReplayE2ETests(unittest.TestCase):
@@ -19222,38 +18474,24 @@ class PostMarkArtifactRegressionTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="reg",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
-            # Passing artifacts for dep_a.
+            # A certified chain for dep_a.
             safe = "component__dep_a__0.1.0"
-            ir_dir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                       / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            verdict_dir = (repo_root / "workspace" / "pipelines" / safe
-                           / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-            verdict_dir.mkdir(parents=True)
-            (verdict_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (verdict_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+            certify_node(repo_root, "orch_dep", "component/dep_a@0.1.0", through="validate",
+                         ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
             _load_spec_catalog.cache_clear()
             mark_dependency_readiness(repo_root=repo_root, orchestration_id="reg")
             ok, _ = _dependency_ready(repo_root, "reg", step="compile")
             self.assertTrue(ok, "baseline must pass after marking")
-            # Now create a newer ir_meta.json with verification_status=fail.
-            # deps.yaml and catalog are unchanged — only the artifact regressed.
-            time.sleep(0.01)
-            newer = repo_root / "workspace" / "ir" / safe / "dep-a_20260901_001"
-            newer.mkdir(parents=True)
-            (newer / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
+            # Now the certified IR is revoked. deps.yaml and catalog are unchanged — only
+            # the artifact regressed. (A newer directory that never certified is not a
+            # regression under the key model: the certified output stands until revoked.)
+            ir_meta = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001" / "ir_meta.json"
+            doc = json.loads(ir_meta.read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            ir_meta.write_text(json.dumps(doc), encoding="utf-8")
             ok2, reason = _dependency_ready(repo_root, "reg", step="compile")
             self.assertFalse(ok2, "post-mark artifact regression must invalidate gate")
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
+            self.assertIn("component/dep_a@0.1.0 compile: revoked", reason)
 
 
 class CatalogCacheInvalidationTests(unittest.TestCase):
@@ -19332,24 +18570,9 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="cci",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
-            # Passing artifacts at 0.1.0.
-            safe = "component__dep_a__0.1.0"
-            ir_dir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                       / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v_dir = (repo_root / "workspace" / "pipelines" / safe
-                     / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-            v_dir.mkdir(parents=True)
-            (v_dir / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (v_dir / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+            # A certified chain at 0.1.0.
+            certify_node(repo_root, "orch_dep", "component/dep_a@0.1.0", through="validate",
+                         ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
             # First mark: 0.1.0 unique → passing.
             r1 = mark_dependency_readiness(repo_root=repo_root, orchestration_id="cci")
             self.assertTrue(r1["direct_dependency_compile_readiness"])
@@ -19371,21 +18594,14 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
             )
 
 
-class LaunchGateFingerprintCheckTests(unittest.TestCase):
-    """Codex round 8 F1: _dependency_ready must reject when stored fingerprint
-    no longer matches current (spec_ref + deps.yaml + spec_catalog.yaml) state.
-    Without this, out-of-band edits between mark-dependency-readiness and
-    workflow-launch-check would let stale `true` flags pass the gate.
-    """
+class LaunchGateLiveRecomputeTests(unittest.TestCase):
+    """Codex round 8 F1, under the key model (issue #250 PR-2): `_dependency_ready` decides
+    from a LIVE recompute of the dependency set, so an out-of-band edit between
+    mark-dependency-readiness and workflow-launch-check is refused at the gate — the
+    `dep_set_fingerprint` that used to detect it is gone, and the persisted `true` flags
+    are never what the gate reads."""
 
     def _setup_passing_orch(self, repo_root: Path, orch: str = "fp_gate") -> None:
-        cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-        cat.parent.mkdir(parents=True, exist_ok=True)
-        cat.write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
         spec_dir = repo_root / "spec" / "component" / "src"
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "deps.yaml").write_text(
@@ -19395,6 +18611,8 @@ class LaunchGateFingerprintCheckTests(unittest.TestCase):
             "  profiles: []\n",
             encoding="utf-8",
         )
+        # Populate certified artifacts (and the catalog) first, then the orchestration.
+        _setup_verified_dep(repo_root, dep_id="dep_a", dep_version="0.1.0")
         init_orchestration(
             repo_root=repo_root, orchestration_id=orch,
             spec_ref="spec/component/src",
@@ -19403,24 +18621,14 @@ class LaunchGateFingerprintCheckTests(unittest.TestCase):
             repo_root=repo_root, orchestration_id=orch,
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
         )
-        # Populate passing artifacts and mark readiness so the gate would
-        # otherwise pass.
-        _setup_verified_dep(repo_root, dep_id="dep_a", dep_version="0.1.0")
-        # _setup_verified_dep overwrites catalog; restore the single-version form
-        # so the constraint resolves uniquely.
-        cat.write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
         from tools.orchestration_runtime import (
             mark_dependency_readiness, _load_spec_catalog,
         )
         _load_spec_catalog.cache_clear()
         mark_dependency_readiness(repo_root=repo_root, orchestration_id=orch)
 
-    def test_gate_passes_when_fingerprint_matches(self) -> None:
-        from tools.orchestration_runtime import _dependency_ready, _load_spec_catalog
+    def test_gate_passes_on_a_certified_dependency(self) -> None:
+        from tools.orchestration_runtime import _dependency_ready
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_passing_orch(repo_root)
@@ -19435,7 +18643,7 @@ class LaunchGateFingerprintCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_passing_orch(repo_root)
-            # Edit deps.yaml.
+            # Edit deps.yaml: a second dependency that has never been derived.
             (repo_root / "spec" / "component" / "src" / "deps.yaml").write_text(
                 "spec_id: src\nspec_kind: component\n"
                 "dependencies:\n  components:\n"
@@ -19447,25 +18655,23 @@ class LaunchGateFingerprintCheckTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             ok, reason = _dependency_ready(repo_root, "fp_gate", step="compile")
             self.assertFalse(ok)
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
+            self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
 
     def test_gate_rejects_when_catalog_changes_after_marking(self) -> None:
-        """An out-of-band catalog edit between mark and gate must reject."""
+        """An out-of-band catalog edit between mark and gate is seen by the recompute: the
+        dependency's entry withdrawn, nothing matches the constraint and the gate refuses.
+        (A newly published version with no artifacts does NOT reject — any matching version
+        with a certified chain satisfies readiness, `NewVersionPublishNoOutageTests`.)"""
         from tools.orchestration_runtime import _dependency_ready, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_passing_orch(repo_root)
-            # Edit catalog: add another version that makes constraint ambiguous.
             (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.2.0\n",
-                encoding="utf-8",
-            )
+                "catalog_version: 0.2.0\nspecs: []\n", encoding="utf-8")
             _load_spec_catalog.cache_clear()
             ok, reason = _dependency_ready(repo_root, "fp_gate", step="compile")
             self.assertFalse(ok)
-            self.assertEqual(reason, "dep_set_fingerprint_stale")
+            self.assertEqual(reason, "direct_dependency_compile_readiness_not_pass")
 
 
 class MarkDependencyReadinessErrorPathTests(unittest.TestCase):
@@ -19507,11 +18713,6 @@ class MarkDependencyReadinessErrorPathTests(unittest.TestCase):
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
             _setup_verified_dep(repo_root, dep_id="dep_a")
-            cat.write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
             _load_spec_catalog.cache_clear()
             first = mark_dependency_readiness(
                 repo_root=repo_root, orchestration_id="err_path",
@@ -19675,174 +18876,6 @@ class CatalogDriftInvalidationTests(unittest.TestCase):
         )
         return meta.get("dependency_readiness") or {}
 
-    def test_catalog_edit_invalidates_persisted_readiness(self) -> None:
-        from tools.orchestration_runtime import (
-            mark_dependency_readiness, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._make_orch_with_nonleaf(repo_root, catalog_versions=["0.1.0"])
-            _setup_verified_dep(repo_root, dep_id="dep_a", dep_version="0.1.0")
-            # Re-write catalog because _setup_verified_dep overwrote it; ensure
-            # only 0.1.0 entry exists so constraint resolves uniquely.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            r1 = mark_dependency_readiness(
-                repo_root=repo_root, orchestration_id="drift",
-            )
-            self.assertTrue(r1["direct_dependency_compile_readiness"])
-            fp1 = r1["dep_set_fingerprint"]
-            # Add a second matching catalog version → constraint now ambiguous.
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.2.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            # Re-running preflight must invalidate the persisted true readiness
-            # because the catalog hash changed.
-            write_preflight(
-                repo_root=repo_root, orchestration_id="drift",
-                payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-            )
-            r2 = self._readiness(repo_root, "drift")
-            self.assertFalse(r2["direct_dependency_compile_readiness"],
-                             "catalog drift must invalidate stale true readiness")
-            self.assertNotEqual(r2["dep_set_fingerprint"], fp1)
-
-
-class DependencyArtifactBindingTests(unittest.TestCase):
-    """F1 (Codex round 5): _verify_dep_stage must bind to the CURRENT (latest by
-    mtime) artifact, not "any historical passing artifact". A stale older pass
-    must not satisfy the gate when a newer fail exists."""
-
-    def _build(self, repo_root: Path) -> None:
-        # Catalog entry for dep_a@0.1.0.
-        cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-        cat.parent.mkdir(parents=True, exist_ok=True)
-        cat.write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-            encoding="utf-8",
-        )
-
-    def test_stale_passing_ir_is_overridden_by_newer_failing_ir(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        import time
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            base = repo_root / "workspace" / "ir" / safe
-            (base / "dep-a_20260101_001").mkdir(parents=True)
-            (base / "dep-a_20260101_001" / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            time.sleep(0.01)
-            (base / "dep-a_20260601_001").mkdir(parents=True)
-            (base / "dep-a_20260601_001" / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            result = _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref")
-            self.assertFalse(result,
-                             "latest artifact is fail; stale pass must NOT satisfy the gate")
-
-    def test_aggregate_verdict_fail_is_rejected(self) -> None:
-        """File existence is no longer sufficient; aggregate_verdict must be
-        pass or xfail per docs/GLOSSARY.md.
-
-        The verdict predicate is reached only when a binary the verdict binds to exists; until
-        issue #178's round 1 this test seeded none, so it refused for "no binary_meta.json" and
-        the `{"pass", "xfail"}` membership itself had no witness (a mutant admitting `fail`
-        survived). The detail assertion is the self-test that the predicate was reached."""
-        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            b = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-                 / "binary" / "bin_20260101_001")
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-                 / "runs" / "run_20260101_001" / safe)
-            v.mkdir(parents=True)
-            (v / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
-            (v / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict")
-            self.assertFalse(ok, "aggregate_verdict=fail must not satisfy the gate")
-            self.assertIn("is 'fail'", detail)
-            self.assertEqual(selected, v / "aggregate_verdict.json")
-
-    def test_aggregate_verdict_xfail_is_accepted(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            # Codex round 24: verdict binding requires a binary in the same pipeline
-            # whose id matches trial_meta.source_binary_id.
-            b = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-                 / "binary" / "bin_20260101_001")
-            b.mkdir(parents=True)
-            (b / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            v = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-                 / "runs" / "run_20260101_001" / safe)
-            v.mkdir(parents=True)
-            (v / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "xfail"}), encoding="utf-8")
-            (v / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict"),
-                "aggregate_verdict=xfail must satisfy the gate (per glossary)")
-
-    def test_stale_passing_verdict_overridden_by_newer_failing_verdict(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
-        import time
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build(repo_root)
-            _load_spec_catalog.cache_clear()
-            safe = "component__dep_a__0.1.0"
-            old = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260101_001"
-                   / "runs" / "run_20260101_001" / safe)
-            old.mkdir(parents=True)
-            (old / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-            (old / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            time.sleep(0.01)
-            new = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260601_002"
-                   / "runs" / "run_20260601_002" / safe)
-            new.mkdir(parents=True)
-            (new / "aggregate_verdict.json").write_text(
-                json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
-            (new / "trial_meta.json").write_text(
-                json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
-            # The newer pipeline needs the binary its verdict binds to, or the stage refuses
-            # for "no binary_meta.json" before it ever compares verdicts (issue #178 round 1).
-            nb = (repo_root / "workspace" / "pipelines" / safe / "pipe_20260601_002"
-                  / "binary" / "bin_20260101_001")
-            nb.mkdir(parents=True)
-            (nb / "binary_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            ok, detail, _selected = _verify_dep_stage_detail(
-                repo_root, "component", "dep_a", "0.1.0", "aggregate_verdict")
-            self.assertFalse(ok, "newer verdict=fail must override older verdict=pass")
-            self.assertIn("is 'fail'", detail)
-
 
 class VersionConstraintResolutionTests(unittest.TestCase):
     """F2 (Codex round 5): version_constraint must drive catalog resolution,
@@ -19900,26 +18933,11 @@ class VersionConstraintResolutionTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="rng",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
-            # Publish 0.2.0 (newer release) + passing artifacts at 0.2.0.
+            # Publish 0.2.0 (newer release) + a certified chain at both versions.
             self._catalog_with_versions(repo_root, ["0.1.0", "0.2.0"])
             for v in ("0.1.0", "0.2.0"):
-                safe = f"component__dep_a__{v}"
-                ir_dir = repo_root / "workspace" / "ir" / safe / "dep-a_20260101_001"
-                ir_dir.mkdir(parents=True)
-                (ir_dir / "ir_meta.json").write_text(
-                    json.dumps({"verification_status": "pass"}), encoding="utf-8")
-                bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                           / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-                bin_dir.mkdir(parents=True)
-                (bin_dir / "binary_meta.json").write_text(
-                    json.dumps({"verification_status": "pass"}), encoding="utf-8")
-                v_dir = (repo_root / "workspace" / "pipelines" / safe
-                         / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-                v_dir.mkdir(parents=True)
-                (v_dir / "aggregate_verdict.json").write_text(
-                    json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
-                (v_dir / "trial_meta.json").write_text(
-                    json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+                certify_node(repo_root, "orch_dep", f"component/dep_a@{v}", through="validate",
+                             ir_id="dep-a_20260101_001", pipeline_id="pipe_20260101_001")
             _load_spec_catalog.cache_clear()
             result = mark_dependency_readiness(
                 repo_root=repo_root, orchestration_id="rng",
@@ -19967,26 +18985,15 @@ class VersionConstraintResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._catalog_with_versions(repo_root, ["0.1.0", "0.2.0"])
-            # 0.1.0 has passing artifacts; 0.2.0 has failing ones. Constraint
+            # 0.1.0 has a certified chain; 0.2.0's IR is revoked. Constraint
             # >=0.1.0 <0.2.0 must resolve to 0.1.0 → readiness should be true.
-            for v, ir_status in (("0.1.0", "pass"), ("0.2.0", "fail")):
-                safe = f"component__dep_a__{v}"
-                ir_dir = repo_root / "workspace" / "ir" / safe / f"dep-a_20260101_001"
-                ir_dir.mkdir(parents=True)
-                (ir_dir / "ir_meta.json").write_text(
-                    json.dumps({"verification_status": ir_status}), encoding="utf-8")
-                bin_dir = (repo_root / "workspace" / "pipelines" / safe
-                           / "pipe_20260101_001" / "binary" / "bin_20260101_001")
-                bin_dir.mkdir(parents=True)
-                (bin_dir / "binary_meta.json").write_text(
-                    json.dumps({"verification_status": ir_status}), encoding="utf-8")
-                v_dir = (repo_root / "workspace" / "pipelines" / safe
-                         / "pipe_20260101_001" / "runs" / "run_20260101_001" / safe)
-                v_dir.mkdir(parents=True)
-                (v_dir / "aggregate_verdict.json").write_text(
-                    json.dumps({"aggregate_verdict": ir_status}), encoding="utf-8")
-                (v_dir / "trial_meta.json").write_text(
-                    json.dumps({"source_binary_id": "bin_20260101_001"}), encoding="utf-8")
+            for v, ir_status in (("0.1.0", "pass"), ("0.2.0", "revoked")):
+                refs = certify_node(repo_root, "orch_dep", f"component/dep_a@{v}",
+                                    through="validate", ir_id="dep-a_20260101_001",
+                                    pipeline_id="pipe_20260101_001")
+                doc = json.loads((repo_root / refs["ir_meta"]).read_text(encoding="utf-8"))
+                doc["verification_status"] = ir_status
+                (repo_root / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
             spec_dir = repo_root / "spec" / "component" / "compound"
             spec_dir.mkdir(parents=True)
             (spec_dir / "deps.yaml").write_text(
@@ -20130,14 +19137,13 @@ class MarkDependencyReadinessTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="mdr_reg",
             )
             self.assertTrue(full["detail"]["ir_ref_verified"])
-            # Simulate ir regression: newer ir_meta has verification_status=fail.
-            import time
+            # Simulate ir regression: the certified IR is revoked (a newer directory that
+            # never certified would leave the selection — and readiness — untouched).
             safe = "component__dep_a__0.1.0"
-            time.sleep(0.01)
-            new_ir = (repo_root / "workspace" / "ir" / safe / "dep-a_20260901_001")
-            new_ir.mkdir(parents=True)
-            (new_ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
+            ir_meta = repo_root / "workspace" / "ir" / safe / "dep-a_20260511_001" / "ir_meta.json"
+            doc = json.loads(ir_meta.read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            ir_meta.write_text(json.dumps(doc), encoding="utf-8")
             # Even though we don't "request" ir_ref re-verification, every call
             # must full-recompute. The stale ir_ref_verified=true must clear.
             second = mark_dependency_readiness(
@@ -20265,10 +19271,10 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
             self.assertTrue(r2["direct_dependency_compile_readiness"],
                             "leaf node must refresh out of stale fail-closed on re-preflight")
 
-    def test_dep_set_fingerprint_change_invalidates_readiness(self) -> None:
-        """Codex round 6 F1: when spec_ref repoints or deps.yaml content changes,
-        previously persisted true flags MUST be reset — they refer to a stale
-        dependency set."""
+    def test_a_spec_ref_repointed_to_a_non_leaf_resets_the_leaf_record(self) -> None:
+        """Codex round 6 F1, kept for the shape it still governs: a LEAF's trivial-true
+        record follows the current deps.yaml, so a spec_ref repointed to a non-leaf resets it
+        to fail-closed at the next preflight. (The launch gate recomputes live either way.)"""
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -20288,8 +19294,7 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                             payload=self._PAYLOAD)
             r1 = self._readiness(repo_root, "fp_invalidate")
             self.assertTrue(r1["direct_dependency_compile_readiness"])
-            original_fp = r1["dep_set_fingerprint"]
-            self.assertTrue(original_fp)
+            self.assertEqual(r1["certified_deps"], [])
             # Repoint spec_ref to a non-leaf spec.
             spec2 = repo_root / "spec" / "component" / "compoundB"
             spec2.mkdir(parents=True)
@@ -20309,19 +19314,17 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             # Codex round 34 F2: non-leaf preflight requires a present
             # spec_catalog.yaml (missing now raises SpecCatalogCorruption).
-            # Write an empty-but-valid stub so the fingerprint comparison
-            # can run; mismatch invalidation is what this test asserts.
             cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
             cat.parent.mkdir(parents=True, exist_ok=True)
             cat.write_text("catalog_version: 0.2.0\nspecs: []\n", encoding="utf-8")
             _load_spec_catalog.cache_clear()
-            # Preflight again: fingerprint mismatch must reset to fail-closed.
+            # Preflight again: the leaf record is reset to the non-leaf's fail-closed.
             write_preflight(repo_root=repo_root, orchestration_id="fp_invalidate",
                             payload=self._PAYLOAD)
             r2 = self._readiness(repo_root, "fp_invalidate")
             self.assertFalse(r2["direct_dependency_compile_readiness"],
                              "spec_ref change must invalidate stale true readiness")
-            self.assertNotEqual(r2["dep_set_fingerprint"], original_fp)
+            self.assertNotIn("certified_deps", r2)
 
     def test_deps_yaml_edit_invalidates_readiness(self) -> None:
         """Editing deps.yaml content (without changing spec_ref) must also
@@ -20352,7 +19355,8 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="fp_edits",
             )
             self.assertTrue(r1["direct_dependency_compile_readiness"])
-            fp1 = r1["dep_set_fingerprint"]
+            from tools.orchestration_runtime import _dependency_ready
+            self.assertEqual(_dependency_ready(repo_root, "fp_edits", step="compile"), (True, None))
             # Edit deps.yaml to add a new dep (now references an unbuilt dep_b).
             (spec_dir / "deps.yaml").write_text(
                 "spec_id: edits\nspec_kind: component\n"
@@ -20362,12 +19366,17 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                 "  profiles: []\n",
                 encoding="utf-8",
             )
+            # The GATE decides from a live recompute, so the edit is refused at launch —
+            # whatever the persisted record says (since issue #250 PR-2 a preflight no longer
+            # resets a CLI-verified record: the `dep_set_fingerprint` that used to detect the
+            # edit is gone, and the record is audit-only).
+            ok, reason = _dependency_ready(repo_root, "fp_edits", step="compile")
+            self.assertFalse(ok)
+            self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
             write_preflight(repo_root=repo_root, orchestration_id="fp_edits",
                             payload=self._PAYLOAD)
             r2 = self._readiness(repo_root, "fp_edits")
-            self.assertFalse(r2["direct_dependency_compile_readiness"],
-                             "deps.yaml edit must invalidate stale true readiness")
-            self.assertNotEqual(r2["dep_set_fingerprint"], fp1)
+            self.assertTrue(r2["direct_dependency_compile_readiness"])
 
     def test_nonleaf_preserves_verified_values_across_preflight(self) -> None:
         """For non-leaf nodes, values flipped to true by mark-dependency-readiness
@@ -20466,7 +19475,7 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
 
     def test_dependency_ready_returns_pyyaml_unavailable_not_crash(self) -> None:
         """Codex round 28 F1: `_dependency_ready` MUST convert a missing-
-        PyYAML `RuntimeError` from `_compute_dep_readiness_and_fingerprint`
+        PyYAML `RuntimeError` from `_compute_dep_readiness`
         into a deterministic gate result (`pyyaml_unavailable`) instead of
         letting it escape as an unhandled exception. Without this conversion
         `workflow-launch-check` looks like an infrastructure outage rather
@@ -20495,13 +19504,12 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
                 "direct_dependency_compile_readiness": False,
                 "direct_dependency_execution_readiness": False,
                 "detail": {},
-                "dep_set_fingerprint": "seed",
             }
             meta_path.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
+            with patch.object(_rt, "_compute_dep_readiness", _raise):
                 ok, reason = _dependency_ready(
                     repo_root, "orch_noyaml", step="compile",
                 )
@@ -20572,7 +19580,7 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
         """When `_require_yaml` raises (PyYAML missing), `_read_deps_yaml`
         must propagate the RuntimeError to its caller instead of swallowing
         it into the "deps.yaml unparseable → None" branch. Caller code
-        (mark_dependency_readiness, _compute_dep_readiness_and_fingerprint)
+        (mark_dependency_readiness, _compute_dep_readiness)
         is responsible for surfacing the install hint."""
         import tools.orchestration_runtime as _rt
         from tools.orchestration_runtime import _read_deps_yaml
@@ -20626,7 +19634,7 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         self.assertEqual(entries, ["orch_locked"])
 
     def test_dependency_ready_holds_lock_during_recompute(self) -> None:
-        """The lock must wrap BOTH the meta read AND the fingerprint
+        """The lock must wrap BOTH the meta read AND the readiness
         recompute — releasing between read and recompute would let a
         concurrent `mark_dependency_readiness` swap certified_deps under
         the gate and produce a torn comparison. We verify by capturing the
@@ -20644,7 +19652,7 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
             finally:
                 events.append("lock_exited")
 
-        orig_compute = _rt._compute_dep_readiness_and_fingerprint
+        orig_compute = _rt._compute_dep_readiness
 
         def _tracking_compute(repo_root: Path, spec_ref: Any):  # type: ignore[no-untyped-def]
             events.append("compute_called")
@@ -20672,14 +19680,13 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
                     "pipeline_ref_verified": True,
                     "aggregate_verdict_verified": True,
                 },
-                "dep_set_fingerprint": "seed",
             }
             meta_path.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
             with patch.object(_rt, "_orchestration_meta_exclusive_lock", _ordering_lock), \
-                 patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _tracking_compute):
+                 patch.object(_rt, "_compute_dep_readiness", _tracking_compute):
                 _dependency_ready(repo_root, "orch_ordering", step="compile")
 
         # Lock entered before compute, still held during compute,
@@ -20695,21 +19702,16 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         self.assertLess(compute_idx, exit_idx)
 
 
-class LeafLaunchWithoutPyYAMLTests(unittest.TestCase):
-    """Codex round 29 F1: a leaf orchestration with no dependencies
-    (`certified_deps == []` + all detail flags True) MUST remain launchable
-    when PyYAML is unavailable. Round 28 made the recompute path raise
-    `pyyaml_unavailable` even for trivially-leaf nodes that need no YAML
-    parse to verify."""
+class LaunchWithoutPyYAMLTests(unittest.TestCase):
+    """Codex round 28 F1, as issue #250 PR-2 leaves it: when PyYAML is unavailable the
+    launch gate answers `pyyaml_unavailable` for EVERY node — the persisted record is never
+    what it decides from, and the no-deps-leaf shortcut of rounds 29–31 (trust a persisted
+    `certified_deps == []` bound to a byte fingerprint of deps.yaml) went with the
+    fingerprint. No production launch reaches this state: `run_workflow.py` reads the
+    catalog through PyYAML (`resolve_node`) before any orchestration exists."""
 
     def _seed_persisted_leaf(self, repo_root: Path, orch_id: str) -> Path:
-        from tools.orchestration_runtime import _no_deps_leaf_fingerprint
         spec_ref = "spec/component/leaf"
-        # A real leaf has deps.yaml on disk with no entries. The round-30
-        # byte-level fingerprint binds the persisted "no deps" claim to
-        # these bytes; without a real file the fingerprint would still
-        # match (both empty), but using a concrete file mirrors the
-        # production setup.
         spec_dir = repo_root / spec_ref
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "deps.yaml").write_text(
@@ -20732,7 +19734,6 @@ class LeafLaunchWithoutPyYAMLTests(unittest.TestCase):
                 "pipeline_ref_verified": True,
                 "aggregate_verdict_verified": True,
             },
-            "dep_set_fingerprint": _no_deps_leaf_fingerprint(repo_root, spec_ref),
             "certified_deps": [],
         }
         meta_path.write_text(
@@ -20741,7 +19742,7 @@ class LeafLaunchWithoutPyYAMLTests(unittest.TestCase):
         )
         return meta_path
 
-    def test_leaf_launchable_when_pyyaml_missing(self) -> None:
+    def test_every_node_fails_closed_when_pyyaml_is_missing(self) -> None:
         import tools.orchestration_runtime as _rt
         from tools.orchestration_runtime import _dependency_ready
 
@@ -20750,138 +19751,20 @@ class LeafLaunchWithoutPyYAMLTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._seed_persisted_leaf(repo_root, "orch_leaf")
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_leaf", step="compile",
-                )
-            self.assertTrue(ok, msg=f"leaf launch blocked: {reason!r}")
-            self.assertIsNone(reason)
-
-    def test_pyyaml_missing_rejects_when_deps_yaml_mutated_since_mark(self) -> None:
-        """Codex round 30 F1: the leaf shortcut must NOT trust persisted
-        meta alone — it must verify the byte-level fingerprint binds the
-        claim to the current `deps.yaml` bytes. Mutating deps.yaml after
-        mark (e.g. adding a dep) MUST flip the gate to fail-closed even
-        though persisted `certified_deps == []` would otherwise authorize
-        launch. This guards against fail-open during a degraded control
-        plane (PyYAML missing) when the dependency set has actually
-        changed under the orchestration."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_persisted_leaf(repo_root, "orch_mutated")
-            # Mutate deps.yaml to add a real dep AFTER mark wrote the
-            # fingerprint. Bytes now differ; the persisted fingerprint no
-            # longer matches the byte-level recomputation.
-            (repo_root / "spec" / "component" / "leaf" / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - component_id: dep_a\n"
-                "      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_mutated", step="compile",
-                )
-            self.assertFalse(ok)
-            self.assertEqual(reason, "pyyaml_unavailable")
-
-    def test_pyyaml_missing_rejects_forged_empty_certified_deps(self) -> None:
-        """Adversarial: a direct edit that empties `certified_deps` and
-        flips detail flags to True must still be rejected because the
-        forger cannot reconstruct the byte fingerprint matching a real
-        no-deps deps.yaml unless they ALSO replace deps.yaml — and even
-        then the forgery would be self-consistent only against the
-        current (real-empty) bytes, which would also pass live recompute
-        when PyYAML returns. Here we forge against a real-deps.yaml so
-        the fingerprint check fails."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Real-deps spec on disk (NOT a leaf).
-            spec_dir = repo_root / "spec" / "component" / "real"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - spec_id: dep_x\n"
-                "      version_constraint: \"^0.1.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_forged",
-                spec_ref="spec/component/real",
-            )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_forged"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_readiness"] = {
-                "direct_dependency_compile_readiness": True,
-                "direct_dependency_execution_readiness": True,
-                "detail": {
-                    "ir_ref_verified": True,
-                    "pipeline_ref_verified": True,
-                    "aggregate_verdict_verified": True,
-                },
-                # Forger sets certified_deps=[] and an arbitrary fingerprint;
-                # neither matches the real-deps byte-level recomputation.
-                "dep_set_fingerprint": "forged_anything",
-                "certified_deps": [],
-            }
-            meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_forged", step="compile",
-                )
-            self.assertFalse(ok)
-            self.assertEqual(reason, "pyyaml_unavailable")
-
-    def test_non_leaf_still_fail_closed_when_pyyaml_missing(self) -> None:
-        """Guard: when persisted `certified_deps` has entries, PyYAML
-        absence still fails closed — we cannot re-verify the artifact
-        chain without parsing the catalog."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._seed_persisted_leaf(repo_root, "orch_nonleaf")
+            meta_path = self._seed_persisted_leaf(repo_root, "orch_leaf")
+            with patch.object(_rt, "_compute_dep_readiness", _raise):
+                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
+                                 (False, "pyyaml_unavailable"))
+            # A persisted record that names dependencies: the same answer.
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["dependency_readiness"]["certified_deps"] = [
                 {"spec_kind": "component", "spec_id": "dep_a", "spec_version": "0.1.0"},
             ]
-            meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_nonleaf", step="compile",
-                )
-            self.assertFalse(ok)
-            self.assertEqual(reason, "pyyaml_unavailable")
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+                                 encoding="utf-8")
+            with patch.object(_rt, "_compute_dep_readiness", _raise):
+                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
+                                 (False, "pyyaml_unavailable"))
 
 
 class CanonicalIdEnforcementTests(unittest.TestCase):
@@ -21084,46 +19967,6 @@ class InitialLeafReadinessCertifiedDepsTests(unittest.TestCase):
             self.assertEqual(readiness.get("certified_deps"), [])
             self.assertTrue(readiness.get("direct_dependency_compile_readiness"))
 
-    def test_fresh_init_preflight_leaf_launchable_without_pyyaml(self) -> None:
-        """End-to-end: `init` + `preflight` only (no
-        `mark-dependency-readiness`) for a no-deps spec MUST satisfy the
-        PyYAML-missing leaf shortcut. Round 31 F1 made this work without
-        requiring a verifier run after preflight."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            spec_dir = repo_root / "spec" / "component" / "freshleaf"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n  components: []\n  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_fresh",
-                spec_ref="spec/component/freshleaf",
-            )
-            write_preflight(
-                repo_root=repo_root, orchestration_id="orch_fresh",
-                payload=_launchable_preflight_dict(checked_at="2026-05-12T00:00:00Z"),
-            )
-            with patch.object(_rt, "_compute_dep_readiness_and_fingerprint", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_fresh", step="compile",
-                )
-            self.assertTrue(
-                ok,
-                msg=(
-                    "fresh leaf init+preflight must satisfy PyYAML-missing "
-                    f"shortcut; reason={reason!r}"
-                ),
-            )
-
-
 class PreflightSurvivesMissingPyYAMLTests(unittest.TestCase):
     """Codex round 32 F1: `write_preflight` must not crash when PyYAML
     is missing — it must compute a degraded `dependency_readiness`
@@ -21294,11 +20137,6 @@ class PreflightPreservesVerifiedOnPyYAMLOutageTests(unittest.TestCase):
                 payload=_launchable_preflight_dict(checked_at="2026-05-12T00:00:00Z"),
             )
             _setup_verified_dep(repo_root, dep_id="dep_a")
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
             from tools.orchestration_runtime import (
                 mark_dependency_readiness, _load_spec_catalog,
             )
@@ -21483,41 +20321,6 @@ class FreshLeafLaunchableWithoutPyYAMLTests(unittest.TestCase):
         for sample in bad:
             self.assertFalse(_deps_yaml_bytes_are_canonical_empty(sample), sample)
 
-    def test_fresh_leaf_init_launchable_under_pyyaml_outage(self) -> None:
-        """End-to-end: `init → preflight → workflow-launch-check` on a
-        canonical-empty-deps spec must succeed when PyYAML is missing."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise():  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._canonical_leaf(repo_root)
-            with patch.object(_rt, "_require_yaml", _raise):
-                init_orchestration(
-                    repo_root=repo_root, orchestration_id="orch_fresh_outage",
-                    spec_ref="spec/component/freshcanon",
-                )
-                write_preflight(
-                    repo_root=repo_root, orchestration_id="orch_fresh_outage",
-                    payload=_launchable_preflight_dict(
-                        checked_at="2026-05-12T00:00:00Z",
-                    ),
-                )
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_fresh_outage", step="compile",
-                )
-            self.assertTrue(
-                ok,
-                msg=(
-                    "round-34 F1: fresh canonical-leaf init + preflight must "
-                    f"launch under PyYAML outage; reason={reason!r}"
-                ),
-            )
-
-
 class SpecCatalogMissingHardFailureTests(unittest.TestCase):
     """Codex round 34 F2: a missing `spec_catalog.yaml` is a HARD
     failure when dependency resolution is required, not an ordinary
@@ -21569,78 +20372,6 @@ class SpecCatalogMissingHardFailureTests(unittest.TestCase):
                 / "phase_state_log.jsonl"
             ).read_text(encoding="utf-8")
             self.assertIn("spec_catalog_corrupt", log)
-
-
-class FreshnessIdCollisionTests(unittest.TestCase):
-    """Codex round 35 F1: when two distinct canonical IDs share the same
-    `(date, seq)` the freshness selector must fail closed instead of
-    using slug as a silent tiebreaker. `reserve_phase_root` only
-    validates id format, not global `(date, seq)` uniqueness across
-    orchestrations — so a concurrent or retried run could mint a
-    colliding id whose slug sorts later and win selection."""
-
-    def test_selector_returns_none_on_same_date_seq_different_slug(self) -> None:
-        from tools.orchestration_runtime import _select_max_by_id_extracted
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            # Two distinct canonical IDs at the same (date, seq).
-            a = root / "alpha_20260101_001"
-            b = root / "zulu_20260101_001"
-            a.mkdir()
-            b.mkdir()
-            result = _select_max_by_id_extracted(
-                [a, b], lambda p: p.name,
-            )
-            self.assertIsNone(
-                result,
-                msg=(
-                    "round-35 F1: same-(date,seq) collision must fail "
-                    f"closed; selector returned {result!r}"
-                ),
-            )
-
-    def test_selector_picks_unique_max_when_no_collision(self) -> None:
-        from tools.orchestration_runtime import _select_max_by_id_extracted
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            older = root / "alpha_20260101_001"
-            newer = root / "alpha_20260201_001"
-            same_date_lower_seq = root / "alpha_20260201_000"
-            for d in (older, newer, same_date_lower_seq):
-                d.mkdir()
-            result = _select_max_by_id_extracted(
-                [older, newer, same_date_lower_seq], lambda p: p.name,
-            )
-            self.assertEqual(result, newer)
-
-    def test_dependency_readiness_fails_closed_on_ir_id_collision(self) -> None:
-        """End-to-end: planting two distinct ir_ids with the same
-        (date, seq) under the dep's safe directory must make
-        ir_ref_verified=False (selector returns None → fail-closed),
-        not silently pick the lex-larger slug."""
-        from tools.orchestration_runtime import (
-            _verify_dep_stage, _load_spec_catalog,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            safe = "component__dep_a__0.1.0"
-            ir_root = repo_root / "workspace" / "ir" / safe
-            ir_root.mkdir(parents=True)
-            for slug in ("alpha", "zulu"):
-                d = ir_root / f"{slug}_20260101_001"
-                d.mkdir()
-                (d / "ir_meta.json").write_text(
-                    json.dumps({"verification_status": "pass"}),
-                    encoding="utf-8",
-                )
-            _load_spec_catalog.cache_clear()
-            ok = _verify_dep_stage(
-                repo_root, "component", "dep_a", "0.1.0", "ir_ref",
-            )
-            self.assertFalse(
-                ok,
-                msg="collision must fail closed; got True via slug tiebreaker",
-            )
 
 
 class SpecCatalogZeroByteCorruptionTests(unittest.TestCase):
@@ -22435,16 +21166,15 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         slug = sid.replace("_", "-")
         pipe = repo / "workspace" / "pipelines" / safe / f"{slug}_{date}_001"
         bin_id, src_id, run_id = f"bin_{date}_001", f"src_{date}_001", f"run_{date}_001"
-        self._write(pipe / "binary" / bin_id / "binary_meta.json",
-                    json.dumps({"source_source_id": src_id, "verification_status": "pass"}))
-        node_safe = safe
-        run_node = pipe / "runs" / run_id / node_safe
-        self._write(run_node / "aggregate_verdict.json",
-                    json.dumps({"aggregate_verdict": "pass" if certified else "fail"}))
-        self._write(run_node / "trial_meta.json",
-                    json.dumps({"source_binary_id": bin_id}))
+        # A sibling certified (key-stamped) through Validate — or, when not `certified`,
+        # through Build only: built, never validated, so no exemplar. The catalog written by
+        # `_catalog` names the spec directory; `certify_node` fills it in.
+        certify_node(repo, "orch_sib", f"{kind}/{sid}@{ver}",
+                     through="validate" if certified else "build",
+                     ir_id=f"{slug}_{date}_001", pipeline_id=f"{slug}_{date}_001",
+                     source_id=src_id, binary_id=bin_id, run_id=run_id,
+                     model_text=f"! model for {sid}\nmodule {sid}\nend module\n")
         src = pipe / "source" / src_id / "src"
-        self._write(src / f"{sid}_model.f90", f"! model for {sid}\nmodule {sid}\nend module\n")
         self._write(src / f"{sid}_runner.f90", f"! runner for {sid}\nprogram {sid}_r\nend program\n")
         if with_checks:
             self._write(src / f"{sid}_checks.f90",
@@ -22720,1181 +21450,475 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
                     self.assertFalse(hasattr(spec, "wants_exemplar"))
 
 
-class DependencyFreshnessTests(unittest.TestCase):
-    """R6-lite: a certified node whose RECORDED dependency resolution no longer matches the
-    one the registry derives is stale — not ready — so `--with-deps` re-certifies it.
+class DerivationKeyCertificationTests(unittest.TestCase):
+    """Certification and dependency readiness are decided by the DERIVATION KEY (issue #250
+    PR-2): a phase output stands when its stamped `derivation_key` equals the key recomputed
+    now over the phase's contract inputs, and the selection among the eligible outputs of one
+    key is what every consumer binds to. These rows replace `DependencyFreshnessTests` (13a,
+    the node_key set of the sidecar) and `DependencyBindingFreshnessTests` (13b, the staged
+    source bytes), each of which is now a projection of the key.
 
-    This is what makes "a dependency spec was updated, so its dependents are regenerated" a
-    mechanism instead of an operator ritual, and it is why a content-free `spec_version` bump
-    of the dependents is never needed.
-    """
+    WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned, by driving the production predicate on
+    key-stamped artifacts (`certify_node` asks `phase_derivation` for the stamp; nothing here
+    computes a key by hand): the 13a property (a registry that resolves the closure
+    differently moves the compile key — `dependency_graph`), the 13b property (a dependency
+    regenerated within its version moves the consumer's generate and build keys —
+    `closure[].source` — while a byte-identical re-certification moves nothing), the spec
+    text (an edit with no version bump moves the compile key), the legacy corpus (a meta
+    with no key is not eligible), revocation and a moved deliverable (not eligible under a
+    matching key, with the repair seed carried), the selection policy (the newer of two
+    eligible outputs of one key wins and the downstream key follows it), and that the
+    launch gate, the closure driver's readiness and the Build stager all read ONE selection.
+    Sampled: the refusal wording of the unresolvable-dependency message."""
 
-    def _seed(self, repo_root: Path, *, dep_version: str, recorded_dep_version: str | None,
-              sidecar: bool = True) -> None:
-        """`b@0.1.0` depends on `c`; the catalog offers `c@<dep_version>`.
+    DEP = "component/dep_a@0.1.0"
+    DEP_B = "component/dep_b@0.1.0"
+    USER = "component/user@0.1.0"
 
-        `recorded_dep_version` is what b's certified `dependency_graph.json` sidecar says it
-        was built against (None → write no sidecar)."""
-        from tools.orchestration_runtime import _load_spec_catalog
-        (repo_root / "spec" / "registry").mkdir(parents=True, exist_ok=True)
-        (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-            "catalog_version: 0.2.0\nspecs:\n"
-            "  - spec_kind: component\n    spec_id: b\n    spec_version: 0.1.0\n"
-            "    deps_path: spec/component/b/deps.yaml\n"
-            f"  - spec_kind: component\n    spec_id: c\n    spec_version: {dep_version}\n"
-            "    deps_path: spec/component/c/deps.yaml\n",
-            encoding="utf-8",
-        )
-        for ref, body in (
-            ("spec/component/b", "spec_id: b\nspec_kind: component\ndependencies:\n"
-                                 "  components:\n    - component_id: c\n"
-                                 '      version_constraint: ">=0.1.0 <1.0.0"\n'
-                                 "  profiles: []\n"),
-            ("spec/component/c", "spec_id: c\nspec_kind: component\ndependencies:\n"
-                                 "  components: []\n  profiles: []\n"),
-        ):
-            d = repo_root / ref
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "deps.yaml").write_text(body, encoding="utf-8")
+    @staticmethod
+    def _deps_yaml(*component_ids: str) -> str:
+        entries = "".join(f"    - component_id: {cid}\n      version_constraint: '>=0.1.0'\n"
+                          for cid in component_ids)
+        return (f"dependencies:\n  components:\n{entries}  profiles: []\n"
+                "  infrastructure: []\n")
 
-        ir_dir = repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-        ir_dir.mkdir(parents=True, exist_ok=True)
-        (ir_dir / "ir_meta.json").write_text(
-            json.dumps({"verification_status": "pass"}), encoding="utf-8")
-        if sidecar and recorded_dep_version is not None:
-            (ir_dir / "dependency_graph.json").write_text(json.dumps({
-                "node_key": "component/b@0.1.0",
-                "all_nodes": [
-                    {"node_key": f"component/c@{recorded_dep_version}", "topo_level": 0},
-                    {"node_key": "component/b@0.1.0", "topo_level": 1},
-                ],
-                "transitive_deps": [],
-                "generated_by": "conductor",
-            }), encoding="utf-8")
-        _load_spec_catalog.cache_clear()
+    def _seed(self, repo_root: Path, *, through: str = "validate") -> dict[str, str]:
+        """`user` depends on `dep_a` and on `dep_b`, which depends on `dep_a`; all three
+        certified through `through` bottom-up, keys stamped."""
+        certify_node(repo_root, "orch_dep", self.DEP, through=through,
+                     ir_id="dep-a_20260101_001", pipeline_id="dep-a_20260101_001")
+        ensure_spec_entry(repo_root, self.DEP_B, deps_yaml=self._deps_yaml("dep_a"))
+        certify_node(repo_root, "orch_dep_b", self.DEP_B, through=through,
+                     ir_id="dep-b_20260101_001", pipeline_id="dep-b_20260101_001")
+        ensure_spec_entry(repo_root, self.USER, deps_yaml=self._deps_yaml("dep_a", "dep_b"))
+        return certify_node(repo_root, "orch_user", self.USER, through=through,
+                            ir_id="user_20260101_001", pipeline_id="user_20260101_001")
 
-    def test_matching_resolution_is_fresh_and_ready(self) -> None:
+    def _recertify_dep(self, repo_root: Path, *, model_text: str,
+                       seq: str = "002") -> dict[str, str]:
+        """A newer certification of `dep_a` in the same pipeline, from `model_text`."""
+        return certify_node(
+            repo_root, "orch_dep2", self.DEP, ir_id="dep-a_20260101_001",
+            pipeline_id="dep-a_20260101_001", source_id=f"src_20260101_{seq}",
+            binary_id=f"bin_20260101_{seq}", run_id=f"run_20260101_{seq}",
+            model_text=model_text)
+
+    def _certified(self, repo_root: Path, node_key: str, step: str) -> tuple[bool, dict[str, Any]]:
+        from tools.orchestration_runtime import _phase_certified
+        with accept_any_certified_ir():
+            return _phase_certified(repo_root, "orch_user", node_key, step)
+
+    def _ready(self, repo_root: Path, stage: str) -> tuple[bool, str | None]:
+        from tools.orchestration_runtime import _verify_dep_stage_detail
+        return _verify_dep_stage_detail(repo_root, "component", "user", "0.1.0", stage)
+
+    # --- the matching case, and the three stages of readiness ---------------------------
+
+    def test_matching_keys_certify_every_phase_and_every_readiness_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            for step in ("compile", "generate", "build", "validate"):
+                ok, detail = self._certified(repo_root, self.USER, step)
+                self.assertTrue(ok, (step, detail))
+                self.assertIsNone(detail["reason"])
+            for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
+                self.assertEqual(self._ready(repo_root, stage), (True, None), stage)
+            # The chain is cumulative: a dependency certified through Build only is ready
+            # for `pipeline_ref` and refused for `aggregate_verdict`, and the refusal names
+            # the missing phase, not a stale one.
+            self._seed(repo_root := Path(tempfile.mkdtemp()), through="build")
+            self.assertEqual(self._ready(repo_root, "pipeline_ref"), (True, None))
+            ok, why = self._ready(repo_root, "aggregate_verdict")
+            self.assertFalse(ok)
+            self.assertEqual(why, f"{self.USER} validate: verdict_not_found")
+
+    def test_the_predicate_reads_no_run_record(self) -> None:
+        """Inherited from issue #177: certification is a property of the artifacts. No
+        `agent_runs.jsonl`, step_result, phase_state or reservation is consulted — the
+        orchestration passed to the predicate does not even exist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.rmtree(repo_root / "workspace" / "orchestrations")
+            from tools.orchestration_runtime import _phase_certified
+            with accept_any_certified_ir():
+                ok, detail = _phase_certified(repo_root, "orch_never_existed", self.USER, "validate")
+            self.assertTrue(ok, detail)
+            self.assertEqual(detail["run_id"], "run_20260101_001")
+
+    # --- 13a: the registry-derived closure ----------------------------------------------
+
+    def test_an_edge_moved_between_direct_and_transitive_moves_the_compile_key(self) -> None:
+        """13a's property, isolated: the consumer's `deps.yaml` drops its direct edge to
+        `dep_a`, which it still reaches through `dep_b`. Same node SET (the `closure[]`
+        members and their hashes are unchanged), different SHAPE — and the compile key's
+        `dependency_graph` (the closure signature: node set, heights, direct/transitive
+        split, adopted profiles) no longer matches. Removing `dependency_graph` from the
+        compile inputs leaves this row red."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            ensure_spec_entry(repo_root, self.USER, deps_yaml=self._deps_yaml("dep_b"))
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertFalse(ok)
+            # `spec.deps` moved too (the file was edited), but the graph sorts first; the
+            # refusal names the first differing input in sorted-key order.
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:dependency_graph")
+            ok, why = self._ready(repo_root, "ir_ref")
+            self.assertEqual((ok, why), (False, f"{self.USER} compile: "
+                                                "derivation_key_mismatch:dependency_graph"))
+
+    def test_a_catalog_version_bump_of_a_dependency_re_resolves_the_closure(self) -> None:
+        """Publishing `dep_a@0.2.0` makes every `>=0.1.0` edge resolve to it: the consumer's
+        closure now names a node with no certified output, and the consumer is refused as
+        unresolvable — the node to derive first is named. (Once `dep_a@0.2.0` is certified,
+        the consumer's `closure[]` and `dependency_graph` differ from the stamp and it
+        re-derives: the `--with-deps` mechanism.)"""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            ensure_spec_entry(repo_root, "component/dep_a@0.2.0")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertFalse(ok)
+            self.assertEqual(
+                detail["reason"],
+                "derivation_inputs_unresolvable: dependency component/dep_a@0.2.0 has no "
+                "certified compile output (ir_not_found); build the dependency closure first, "
+                "e.g. run_workflow.py --with-deps")
+
+    def test_an_unresolvable_closure_is_an_unresolvable_input(self) -> None:
+        """A registry that yields no valid closure for the consumer — the dependency's catalog
+        entry withdrawn — cannot produce a compile key at all: refused as an unresolvable
+        input, never guessed fresh."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+            doc = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+            doc["specs"] = [e for e in doc["specs"] if e["spec_id"] != "dep_a"]
+            catalog.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertFalse(ok)
+            self.assertTrue(detail["reason"].startswith(
+                "derivation_inputs_unresolvable: dependency closure of"), detail["reason"])
+
+    # --- 13b: the dependency's certified source ------------------------------------------
+
+    def test_a_regenerated_dependency_source_moves_the_consumer_keys(self) -> None:
+        """13b's property. `dep_a` re-certified from DIFFERENT bytes under the same version:
+        the selection moves to the newer output, so `dep_b`'s generate and build keys
+        (`closure[].source`) no longer match and it is not ready for `pipeline_ref`, while
+        its Compile — which binds `dep_a`'s IR and published surface, both unchanged — still
+        stands. One level up, `user` is refused at Compile already: its `dependency_surface`
+        is read off `dep_b`'s certified source, which no longer exists. Removing `closure`
+        from the generate / build inputs leaves this row red."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._recertify_dep(repo_root, model_text="module dep_a_model\n! v2\nend module\n")
+            self.assertTrue(self._certified(repo_root, self.DEP_B, "compile")[0])
+            ok, detail = self._certified(repo_root, self.DEP_B, "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:closure[0].source")
+            from tools.orchestration_runtime import _verify_dep_stage_detail
+            self.assertEqual(
+                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "ir_ref"),
+                (True, None))
+            self.assertEqual(
+                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "pipeline_ref"),
+                (False, f"{self.DEP_B} build: derivation_key_mismatch:closure[0].source"))
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertEqual((ok, detail["reason"]),
+                             (False, "derivation_key_mismatch:dependency_surface"))
+
+    def test_an_identical_source_under_a_new_certification_moves_nothing(self) -> None:
+        """The other direction: a re-certification of `dep_a` that reproduces its source byte
+        for byte (a new source_id, binary_id and run_id) is the SAME output — the output hash
+        is stage-relative — so every consumer key still matches and nothing re-derives."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._recertify_dep(repo_root, model_text="module dep_a_model\nend module\n")
+            for step in ("compile", "generate", "build", "validate"):
+                self.assertTrue(self._certified(repo_root, self.USER, step)[0], step)
+            self.assertEqual(self._ready(repo_root, "aggregate_verdict"), (True, None))
+
+    def test_a_dependency_with_no_certified_output_is_an_unresolvable_input(self) -> None:
+        """A consumer whose dependency has never been derived cannot compute its key: refused
+        with the dependency named and the remedy, and readiness refuses it the same way."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.rmtree(repo_root / "workspace" / "ir" / "component__dep_a__0.1.0")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertFalse(ok)
+            self.assertEqual(
+                detail["reason"],
+                f"derivation_inputs_unresolvable: dependency {self.DEP} has no certified "
+                "compile output (ir_not_found); build the dependency closure first, e.g. "
+                "run_workflow.py --with-deps")
+            ok, why = self._ready(repo_root, "ir_ref")
+            self.assertFalse(ok)
+            self.assertIn("has no certified compile output (ir_not_found)", why)
+
+    # --- the inputs 13a / 13b could not see ---------------------------------------------
+
+    def test_a_spec_edit_without_a_version_bump_moves_the_compile_key(self) -> None:
+        """The respec discipline is no longer load-bearing: the spec text is hashed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            spec = repo_root / "spec" / "component" / "user" / "controlled_spec.md"
+            spec.write_text(spec.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:spec.controlled_spec")
+            # And the closure driver's readiness reports the same input for the same node.
+            ok, why = self._ready(repo_root, "ir_ref")
+            self.assertEqual((ok, why), (False, f"{self.USER} compile: "
+                                                "derivation_key_mismatch:spec.controlled_spec"))
+
+    def test_a_transformation_version_bump_moves_every_key_of_that_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            from tools import derivation
+            with mock.patch.object(derivation, "BUILD_VERSION", "build-999"):
+                self.assertTrue(self._certified(repo_root, self.USER, "generate")[0])
+                ok, detail = self._certified(repo_root, self.USER, "build")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:transformation")
+
+    # --- eligibility ------------------------------------------------------------------
+
+    def test_a_meta_without_a_key_is_not_eligible(self) -> None:
+        """The legacy corpus (every meta stamped before issue #250 PR-1): `pass`, hashes
+        intact, no key — not certified, no backfill (decision 6 of the plan)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = self._seed(repo_root)
+            meta_path = repo_root / refs["binary_meta"]
+            doc = json.loads(meta_path.read_text(encoding="utf-8"))
+            for key in ("derivation_key", "derivation_inputs", "derivation_transformation"):
+                doc.pop(key)
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertTrue(self._certified(repo_root, self.USER, "generate")[0])
+            ok, detail = self._certified(repo_root, self.USER, "build")
+            self.assertEqual((ok, detail["reason"]), (False, "derivation_key_missing"))
+            ok, why = self._ready(repo_root, "pipeline_ref")
+            self.assertEqual((ok, why), (False, f"{self.USER} build: derivation_key_missing"))
+
+    def test_a_key_that_is_compared_and_not_merely_present(self) -> None:
+        """Mutation row: a stamped key of the right SHAPE but the wrong value is a mismatch.
+        Replacing the equality with a presence test leaves this row red."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = self._seed(repo_root)
+            meta_path = repo_root / refs["source_meta"]
+            doc = json.loads(meta_path.read_text(encoding="utf-8"))
+            doc["derivation_key"] = "sha256:" + "0" * 64
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertFalse(ok)
+            # The inputs still agree, so the diff names the record that cannot be the cause.
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:key_version")
+
+    def test_a_revoked_output_under_a_matching_key_carries_the_repair_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = self._seed(repo_root)
+            meta_path = repo_root / refs["source_meta"]
+            doc = json.loads(meta_path.read_text(encoding="utf-8"))
+            doc.update({"verification_status": "revoked", "last_fail_reason": "L12: bad",
+                        "revocation_severity": "critical",
+                        "revocation_repair_strategy": "restart"})
+            meta_path.write_text(json.dumps(doc), encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertFalse(ok)
+            self.assertEqual(detail["reason"], "revoked")
+            self.assertTrue(detail["revoked"])
+            self.assertEqual(detail["last_fail_reason"], "L12: bad")
+            self.assertEqual(detail["revocation_severity"], "critical")
+            self.assertEqual(detail["revocation_repair_strategy"], "restart")
+            # Build and Validate fall with it: the chain is cumulative.
+            self.assertEqual(self._certified(repo_root, self.USER, "validate")[1]["reason"],
+                             "revoked")
+
+    def test_a_moved_deliverable_is_not_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = self._seed(repo_root)
+            (repo_root / refs["model_ref"]).write_text("! edited\n", encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertEqual((ok, detail["reason"]),
+                             (False, f"artifact_hash_mismatch:{refs['model_ref']}"))
+
+    # --- selection --------------------------------------------------------------------
+
+    def test_the_newer_of_two_eligible_outputs_is_selected_and_downstream_follows(self) -> None:
+        """A1's completion condition 4: two certified outputs of ONE key (a `--rederive` that
+        produced a different source); the policy selects the newer, and the build key, which
+        binds the selected output hash, re-derives — while the older build's key no longer
+        matches. A byte-identical second output would have changed nothing
+        (`test_an_identical_source_under_a_new_certification_moves_nothing`)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            # A second Generate output of the USER, same key (same inputs), different bytes.
+            certify_node(repo_root, "orch_user2", self.USER, through="generate",
+                         ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                         source_id="src_20260101_002",
+                         model_text="module user_model\n! rederived\nend module\n")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertTrue(ok)
+            self.assertEqual(detail["source_id"], "src_20260101_002")
+            ok, detail = self._certified(repo_root, self.USER, "build")
+            self.assertEqual((ok, detail["reason"]), (False, "derivation_key_mismatch:source"))
+            # Across pipelines too: the ordering token ranks the pipeline first, so a
+            # `src_20260101_001` in a NEWER pipeline outranks the `..._002` above.
+            certify_node(repo_root, "orch_user3", self.USER, through="generate",
+                         ir_id="user_20260101_001", pipeline_id="user_20260102_001",
+                         model_text="module user_model\n! pipeline 2\nend module\n")
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertTrue(ok)
+            self.assertEqual(detail["pipeline_ref"],
+                             "workspace/pipelines/component__user__0.1.0/user_20260102_001")
+            self.assertEqual(detail["source_id"], "src_20260101_001")
+
+    def test_selection_is_memoised_per_evaluation_and_refuses_a_cycle(self) -> None:
+        from tools.orchestration_runtime import DerivationResolver
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            resolver = DerivationResolver(repo_root)
+            first = resolver.select(self.USER, "validate")
+            self.assertTrue(first.ok)
+            self.assertIs(resolver.select(self.USER, "validate"), first)
+            self.assertIs(resolver.select(self.DEP, "compile"),
+                          resolver.select(self.DEP, "compile"))
+            # A malformed sidecar naming the consumer inside its own closure must terminate.
+            refs = certify_node(repo_root, "orch_user", self.USER, through="compile",
+                                ir_id="user_20260101_001", pipeline_id="user_20260101_001",
+                                stamp=False)
+            sidecar = repo_root / refs["ir_ref"] / "dependency_graph.json"
+            sidecar.write_text(json.dumps({
+                "node_key": self.USER,
+                "all_nodes": [{"node_key": self.USER, "topo_level": 0}],
+                "transitive_deps": []}), encoding="utf-8")
+            resolver = DerivationResolver(repo_root)
+            resolver._in_progress.add((self.USER, "generate"))
+            sel = resolver.select(self.USER, "generate")
+            self.assertEqual((sel.ok, sel.reason), (False, "dependency_cycle"))
+
+    # --- one selection for every reader --------------------------------------------------
+
+    def test_the_launch_gate_and_the_stager_read_the_selection(self) -> None:
+        """`_certify_and_collect_dep_artifacts` (the launch gate) levels a dependency by the
+        same stages, and `Conductor._stage_dependency_sources` copies the SELECTED source —
+        the newer certification, not the older directory — with the recorded hash equal to
+        the bytes that landed in the build dir."""
+        import tools.workflow_conductor as wc
         from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _verify_dep_stage)
+            _certify_and_collect_dep_artifacts, _resolve_certified_closure_binding)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertTrue(fresh)
-            self.assertIsNone(detail)
-            self.assertTrue(_verify_dep_stage(repo_root, "component", "b", "0.1.0", "ir_ref"))
-
-    def test_catalog_version_bump_makes_the_dependent_stale(self) -> None:
-        # The harness-0.3.0 scenario: b certified against c@0.1.0, catalog now offers c@0.2.0
-        # (which the `>=0.1.0` constraint still matches, so the resolution moves to it).
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("component/c@0.1.0", detail)
-            self.assertIn("component/c@0.2.0", detail)
-            # The single choke point: readiness fails, so `--with-deps` re-runs the node.
-            self.assertFalse(_verify_dep_stage(repo_root, "component", "b", "0.1.0", "ir_ref"))
-
-    def test_dependent_ready_check_mirrors_verify_dep_stage(self) -> None:
-        import tools.run_workflow as run_workflow
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
-            node = {"spec_kind": "component", "spec_id": "b", "spec_versions": ["0.1.0"]}
-            self.assertFalse(
-                run_workflow._dependency_node_readiness(repo_root, node, ["ir_ref"])["ready"])
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            self.assertTrue(
-                run_workflow._dependency_node_readiness(repo_root, node, ["ir_ref"])["ready"])
-
-    def test_an_edge_moved_between_direct_and_transitive_is_stale(self) -> None:
-        """Same nodes, same topo_levels, different SHAPE. `a` is certified against
-        `a->b, a->c (+ b->c)`; its deps.yaml then drops the direct `a->c` edge, leaving `c`
-        reachable only through `b`. Heights are 2/1/0 in both shapes, so `all_nodes` alone
-        cannot tell them apart — but `a`'s recorded resolution is no longer reproducible and
-        its IR's `direct_deps` no longer match, so it must re-certify."""
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog, _verify_dep_stage)
-        from tools.dependency_graph import build_dependency_graph
-
-        def seed(root: Path, a_deps: list[str]) -> None:
-            reg = root / "spec" / "registry"
-            reg.mkdir(parents=True, exist_ok=True)
-            reg.joinpath("spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n" + "".join(
-                    f"  - spec_kind: component\n    spec_id: {s}\n    spec_version: 0.1.0\n"
-                    f"    deps_path: spec/component/{s}/deps.yaml\n" for s in ("a", "b", "c")),
-                encoding="utf-8")
-            for spec_id, kids in {"a": a_deps, "b": ["c"], "c": []}.items():
-                d = root / "spec" / "component" / spec_id
-                d.mkdir(parents=True, exist_ok=True)
-                comp = "  components: []\n" if not kids else "  components:\n" + "".join(
-                    f"    - component_id: {k}\n"
-                    '      version_constraint: ">=0.1.0 <1.0.0"\n' for k in kids)
-                (d / "deps.yaml").write_text(
-                    f"spec_id: {spec_id}\nspec_kind: component\ndependencies:\n{comp}"
-                    "  profiles: []\n", encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            seed(repo_root, ["b", "c"])
-            graph, err = build_dependency_graph(
-                repo_root, target_spec_ref="spec/component/a",
-                target_node_key="component/a@0.1.0")
+            refs = self._seed(repo_root)
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
+            self.assertEqual(snap["certified_entries"],
+                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 3)])
+            self._recertify_dep(repo_root, model_text="module dep_a_model\n! v2\nend module\n")
+            # `dep_a` re-certified: level 3 still; `dep_b`, which binds `dep_a`'s source,
+            # is demoted to level 1 (its Compile stands, its Build's key moved).
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
+            self.assertEqual(snap["certified_entries"],
+                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 1)])
+            # A Build of `dep_b` (closure: `dep_a`) stages the SELECTED source of `dep_a`.
+            node_refs = wc.NodeRefs(
+                node_key=self.DEP_B, spec_path="spec/component/dep_b",
+                ir_id="dep-b_20260101_001", pipeline_id="dep-b_20260101_001",
+                source_id="src_20260101_001", binary_id="bin_20260101_001")
+            (repo_root / node_refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                f'dependency:\n  node_key: "{self.DEP_B}"\n'
+                f'  direct_deps:\n    - node_key: "{self.DEP}"\n', encoding="utf-8")
+            conductor = wc.Conductor.__new__(wc.Conductor)
+            conductor.repo_root = repo_root
+            obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
+            staged = conductor._stage_dependency_sources(node_refs, obj_dir)
+            resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP)
             self.assertIsNone(err)
-            ir_dir = repo_root / "workspace" / "ir" / "component__a__0.1.0" / "a_20260101_001"
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            (ir_dir / "dependency_graph.json").write_text(json.dumps(graph), encoding="utf-8")
+            self.assertEqual(staged, [resolved])
+            self.assertEqual(resolved["source_id"], "src_20260101_002")
             self.assertEqual(
-                _dependency_resolution_freshness(repo_root, "component", "a", "0.1.0"),
-                (True, None))
+                resolved["model_source_sha256"],
+                hashlib.sha256((obj_dir / "dep_a_model.f90").read_bytes()).hexdigest())
+            self.assertIn("! v2", (obj_dir / "dep_a_model.f90").read_text(encoding="utf-8"))
 
-            seed(repo_root, ["b"])  # move a->c from a direct edge to a transitive one
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "a", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("same nodes but a different shape", detail)
-            self.assertIn("component/c@0.1.0", detail)
-            self.assertFalse(_verify_dep_stage(repo_root, "component", "a", "0.1.0", "ir_ref"))
-
-    def test_missing_sidecar_on_a_node_with_dependencies_is_stale(self) -> None:
-        from tools.orchestration_runtime import _dependency_resolution_freshness
+    def test_the_stager_refuses_a_dependency_with_no_certified_source(self) -> None:
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version=None)
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("records no dependency_graph.json sidecar", detail)
+            self._seed(repo_root, through="compile")
+            binding, err = _resolve_certified_closure_binding(repo_root, self.DEP)
+            self.assertIsNone(binding)
+            self.assertIn(f"{self.DEP} has no certified model source to stage "
+                          "(source_not_found)", err)
+            self.assertIn("--with-deps", err)
+            self.assertEqual(
+                _resolve_certified_closure_binding(repo_root, "not a node key"),
+                (None, "unparseable dependency node_key 'not a node key'"))
 
-    def test_malformed_sidecar_is_stale(self) -> None:
-        from tools.orchestration_runtime import _dependency_resolution_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-             / "dependency_graph.json").write_text("{ not json", encoding="utf-8")
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("unreadable or malformed", detail)
-
-    def test_a_leaf_is_fresh_without_a_sidecar(self) -> None:
-        # `c` has no dependencies, so it records no resolution that could drift. Demanding a
-        # sidecar of it would make every leaf permanently stale.
-        from tools.orchestration_runtime import _dependency_resolution_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "c", "0.1.0")
-            self.assertTrue(fresh)
-            self.assertIsNone(detail)
-
-    def test_unreadable_closure_is_not_reported_stale(self) -> None:
-        # An unreadable deps.yaml fails closed in its OWN gate. Freshness is a comparison;
-        # with no derivable right-hand side, claiming staleness would mask the real defect.
-        from tools.orchestration_runtime import _dependency_resolution_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            (repo_root / "spec" / "component" / "c" / "deps.yaml").unlink()
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertTrue(fresh)
-            self.assertIsNone(detail)
-
-    def test_irreconcilable_closure_is_stale(self) -> None:
-        # The registry WAS read and yields no valid closure: b's `>=0.1.0` edge to c matches
-        # nothing once the catalog only offers c@0.0.9. b's recorded resolution provably cannot
-        # be reproduced, so it is stale — not "fresh because we could not compare".
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.0.9", recorded_dep_version="0.1.0")
-            _load_spec_catalog.cache_clear()
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("no longer resolves", detail)
-            self.assertIn("dependency_unresolvable", detail)
-            self.assertFalse(_verify_dep_stage(repo_root, "component", "b", "0.1.0", "ir_ref"))
-
-    def test_a_cyclic_closure_is_stale(self) -> None:
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            (repo_root / "spec" / "component" / "c" / "deps.yaml").write_text(
-                "spec_id: c\nspec_kind: component\ndependencies:\n"
-                "  components:\n    - component_id: b\n"
-                '      version_constraint: ">=0.1.0 <1.0.0"\n'
-                "  profiles: []\n", encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("dependency_cycle", detail)
-
-    def _seed_consumer_a(self, repo_root: Path) -> None:
-        """`a` (problem) depends on the component `b` seeded by `_seed`."""
-        from tools.orchestration_runtime import _load_spec_catalog
-        catalog_path = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-        catalog_path.write_text(
-            catalog_path.read_text(encoding="utf-8")
-            + "  - spec_kind: problem\n    spec_id: a\n    spec_version: 0.1.0\n"
-              "    deps_path: spec/problem/a/deps.yaml\n",
-            encoding="utf-8")
-        a_dir = repo_root / "spec" / "problem" / "a"
-        a_dir.mkdir(parents=True, exist_ok=True)
-        (a_dir / "deps.yaml").write_text(
-            "spec_id: a\nspec_kind: problem\ndependencies:\n"
-            "  components:\n    - component_id: b\n"
-            '      version_constraint: ">=0.1.0 <1.0.0"\n'
-            "  profiles: []\n", encoding="utf-8")
-        _load_spec_catalog.cache_clear()
-
-    def test_stale_details_names_the_drifted_dependency_of_a_consumer(self) -> None:
-        # `a` depends on `b`; `b` is certified but stale. The launch gate turns the opaque
-        # readiness failure into a message naming `b` and the remedy.
+    def test_stale_details_name_the_node_the_stage_and_the_input(self) -> None:
         from tools.orchestration_runtime import _stale_dependency_details
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
-            self._seed_consumer_a(repo_root)
-            details = _stale_dependency_details(repo_root, "spec/problem/a")
-            self.assertEqual(len(details), 1, details)
-            self.assertIn("component/b@0.1.0 was certified against", details[0])
-
-    def test_stale_details_ignores_a_dependency_that_never_certified(self) -> None:
-        # An unbuilt dep is "not ready", a distinct condition with a distinct remedy — so it
-        # must not be reported as stale even though its recorded resolution has drifted.
-        from tools.orchestration_runtime import _stale_dependency_details
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
-            self._seed_consumer_a(repo_root)
-            (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-             / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "fail"}), encoding="utf-8")
-            self.assertEqual(_stale_dependency_details(repo_root, "spec/problem/a"), [])
-
-    def test_recursion_error_does_not_crash_readiness(self) -> None:
-        # `build_dependency_graph`'s DFS is recursive. Readiness previously built no graph at
-        # all, so a pathologically deep closure must not turn `_certify_and_collect_dep_artifacts`
-        # (the launch gate's own recomputation) into an uncaught RecursionError.
-        import tools.dependency_graph as dg
-        from tools.orchestration_runtime import _dependency_resolution_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-
-            def _boom(*_a, **_k):
-                raise RecursionError("maximum recursion depth exceeded")
-
-            with patch.object(dg, "build_dependency_graph", _boom):
-                self.assertEqual(
-                    _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0"),
-                    (True, None))
-
-    def test_ambiguous_catalog_entry_is_stale_not_fresh(self) -> None:
-        # A duplicate catalog entry for one (kind, spec_id)@version pointing at two dirs makes
-        # `resolve_spec_ref_for` return None. Freshness must report that STALE (the registry was
-        # read but resolves no unique dir — a definitive defect the closure driver already
-        # fail-closes on with `dependency_spec_ref_unresolved`), never fresh — else the launch
-        # gate calls the dependency ready while `--with-deps` refuses to run on the same registry.
-        from tools.orchestration_runtime import (
-            _compute_dep_readiness_and_fingerprint, _dependency_resolution_freshness,
-            _load_spec_catalog, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(json.dumps({
-                "specs": [
-                    {"spec_kind": "component", "spec_id": "foo", "spec_version": "1.0.0",
-                     "controlled_spec_path": "spec/a/foo/controlled_spec.md"},
-                    {"spec_kind": "component", "spec_id": "foo", "spec_version": "1.0.0",
-                     "controlled_spec_path": "spec/b/foo/controlled_spec.md"},
-                ]}), encoding="utf-8")
-            parent = repo_root / "spec" / "parent"
-            parent.mkdir(parents=True)
-            (parent / "deps.yaml").write_text(json.dumps({"dependencies": {
-                "components": [{"component_id": "foo", "version_constraint": "==1.0.0"}],
-                "profiles": []}}), encoding="utf-8")
-            ir = repo_root / "workspace" / "ir" / "component__foo__1.0.0" / "foo_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
-
-            fresh, detail = _dependency_resolution_freshness(repo_root, "component", "foo", "1.0.0")
-            self.assertFalse(fresh)
-            self.assertIn("more than one spec directory", detail)
-            self.assertFalse(_verify_dep_stage(repo_root, "component", "foo", "1.0.0", "ir_ref"))
-            self.assertFalse(
-                _compute_dep_readiness_and_fingerprint(repo_root, "spec/parent")[0][
-                    "ir_ref_verified"])
-
-    def test_pathless_catalog_entry_stays_fresh(self) -> None:
-        # A version-only catalog entry (no deps_path / controlled_spec_path) resolves to ZERO
-        # spec dirs. That is absence, not ambiguity: there is no closure to compare, and it is a
-        # different defect its own gates own — so freshness must NOT manufacture staleness (which
-        # would false fail-close, exactly what broke 24 tests when the two were conflated).
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(json.dumps({
-                "specs": [{"spec_kind": "component", "spec_id": "bar", "spec_version": "1.0.0"}]}),
-                encoding="utf-8")
-            ir = repo_root / "workspace" / "ir" / "component__bar__1.0.0" / "bar_20260101_001"
-            ir.mkdir(parents=True)
-            (ir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            _load_spec_catalog.cache_clear()
+            self._seed(repo_root)
+            self.assertEqual(_stale_dependency_details(repo_root, "spec/component/user"), [])
+            spec = repo_root / "spec" / "component" / "dep_a" / "tests.md"
+            spec.write_text("changed\n", encoding="utf-8")
+            # `dep_a`'s own key moved; `dep_b`'s compile key binds `dep_a`'s IR, which is
+            # no longer certified, so it is unresolvable — each named with its cause.
             self.assertEqual(
-                _dependency_resolution_freshness(repo_root, "component", "bar", "1.0.0"),
-                (True, None))
+                _stale_dependency_details(repo_root, "spec/component/user"),
+                [f"{self.DEP} compile: derivation_key_mismatch:spec.tests",
+                 f"{self.DEP_B} compile: derivation_inputs_unresolvable: dependency {self.DEP} "
+                 "has no certified compile output (derivation_key_mismatch:spec.tests); build "
+                 "the dependency closure first, e.g. run_workflow.py --with-deps"])
 
-    def test_launch_gate_certification_demotes_a_stale_dependency(self) -> None:
-        # The launch gate recomputes readiness through `_certify_and_collect_dep_artifacts`,
-        # which routes through `_verify_dep_stage_detail` since issue #178; kept as the
-        # launch-gate witness that the primitive's R6-lite demotion reaches the gate, else a
-        # stale dep would pass `workflow-launch-check` on a single-node run.
-        from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
+    def test_an_unsafe_identifier_token_is_refused_before_any_path(self) -> None:
+        from tools.orchestration_runtime import _verify_dep_stage_detail
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, dep_version="0.1.0", recorded_dep_version="0.1.0")
-            self._seed_consumer_a(repo_root)
-            fresh_level = _certify_and_collect_dep_artifacts(
-                repo_root, "spec/problem/a")["certified_entries"][0][3]
-            self.assertGreaterEqual(fresh_level, 1)
+            ok, why = _verify_dep_stage_detail(Path(tmp), "component", "../x", "0.1.0", "ir_ref")
+            self.assertEqual((ok, why), (False, "component/../x@0.1.0: unsafe identifier token"))
+            with self.assertRaises(ValueError):
+                _verify_dep_stage_detail(Path(tmp), "component", "x", "0.1.0", "no_such_stage")
 
-            self._seed(repo_root, dep_version="0.2.0", recorded_dep_version="0.1.0")
-            self._seed_consumer_a(repo_root)
-            stale_level = _certify_and_collect_dep_artifacts(
-                repo_root, "spec/problem/a")["certified_entries"][0][3]
-            self.assertEqual(stale_level, 0)
-
-
-class DependencyBindingFreshnessTests(unittest.TestCase):
-    """R6 proper, the closure-source half (CONTENT granularity): a certified binary whose
-    dependency SOURCES have been regenerated since it was compiled is stale — not ready — so
-    `--with-deps` re-certifies the closure bottom-up instead of linking drifted code into a
-    certified consumer (issue #153).
-
-    `DependencyFreshnessTests` above covers the version-granularity half, which compares node_key
-    SETS and is blind to a dependency re-certified WITHIN one `spec_version` — exactly the shape
-    that let a 07-25 profile binary be skipped as ready and then fail closed against a 09-03
-    boundary source.
-
-    WHAT IS PINNED HERE, AND WHAT IS SAMPLED. Pinned: that the comparison is over the source
-    BYTES (`test_identical_source_under_a_new_certification_stays_fresh` is the other direction of
-    `test_a_regenerated_dependency_source_makes_the_consumer_stale`), that the one readiness
-    primitive carries it and the launch gate reaches it, that a legacy binary fails closed while
-    a leaf does not, and that the
-    selection Build stages from is the selection readiness compares
-    (`test_binding_resolution_mirrors_build_staging` drives the production stager). Sampled: the
-    malformed shapes — the entry validation rejects more shapes than the one probed."""
-
-    def _write(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-
-    def _seed_dep(self, repo_root: Path, node_key: str, *, pipeline_id: str, source_id: str,
-                  binary_id: str, body: str, status: str = "pass") -> str:
-        """A certified pipeline for `node_key` whose binary was built from `source_id`.
-
-        Returns the sha256 of the staged source body — what a consumer compiled against it must
-        record."""
-        import hashlib
-        from tools.orchestration_runtime import _node_key_to_safe, _parse_node_key_strict
-        safe = _node_key_to_safe(node_key)
-        sid = _parse_node_key_strict(node_key)[1]
-        pipe = repo_root / "workspace" / "pipelines" / safe / pipeline_id
-        self._write(pipe / "source" / source_id / "src" / f"{sid}_model.f90", body)
-        self._write(pipe / "binary" / binary_id / "binary_meta.json", json.dumps({
-            "binary_id": binary_id, "node_key": node_key, "pipeline_id": pipeline_id,
-            "verification_status": status, "source_source_id": source_id,
-            "dependency_check": {"direct_deps": [], "resolved": "match",
-                                 "closure_bindings": []},
-        }) + "\n")
-        return hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-    def _seed(self, repo_root: Path, *, dep_body: str = "module c_model\nend module c_model\n",
-              recorded_sha: str | None = None, bindings: Any = "auto",
-              recorded_closure: list[str] | None = None,
-              consumer_binary_status: str = "pass") -> None:
-        """`b@0.1.0` (a component) depends on `c@0.1.0`; the problem `a@0.1.0` depends on `b`.
-
-        `c` is certified from `dep_body`. `b` is certified with a binary whose
-        `dependency_check.closure_bindings` records `recorded_closure` (default: just `c`) at
-        `recorded_sha` (default: the sha of `dep_body`, i.e. FRESH). `bindings` overrides the
-        recorded list wholesale — pass `None` to omit the key (a legacy binary) or any other
-        value to write it verbatim (a malformed record)."""
-        from tools.orchestration_runtime import _load_spec_catalog
-        self._write(repo_root / "spec" / "registry" / "spec_catalog.yaml",
-                    "catalog_version: 0.2.0\nspecs:\n"
-                    "  - spec_kind: component\n    spec_id: b\n    spec_version: 0.1.0\n"
-                    "    deps_path: spec/component/b/deps.yaml\n"
-                    "  - spec_kind: component\n    spec_id: c\n    spec_version: 0.1.0\n"
-                    "    deps_path: spec/component/c/deps.yaml\n"
-                    "  - spec_kind: problem\n    spec_id: a\n    spec_version: 0.1.0\n"
-                    "    deps_path: spec/problem/a/deps.yaml\n")
-        self._write(repo_root / "spec" / "component" / "b" / "deps.yaml",
-                    "spec_id: b\nspec_kind: component\ndependencies:\n"
-                    "  components:\n    - component_id: c\n"
-                    '      version_constraint: ">=0.1.0 <1.0.0"\n'
-                    "  profiles: []\n")
-        self._write(repo_root / "spec" / "component" / "c" / "deps.yaml",
-                    "spec_id: c\nspec_kind: component\ndependencies:\n"
-                    "  components: []\n  profiles: []\n")
-        self._write(repo_root / "spec" / "problem" / "a" / "deps.yaml",
-                    "spec_id: a\nspec_kind: problem\ndependencies:\n"
-                    "  components:\n    - component_id: b\n"
-                    '      version_constraint: ">=0.1.0 <1.0.0"\n'
-                    "  profiles: []\n")
-
-        dep_sha = self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                                 source_id="src_20260725_001", binary_id="bin_20260725_001",
-                                 body=dep_body)
-
-        closure = ["component/c@0.1.0"] if recorded_closure is None else recorded_closure
-        ir_dir = repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-        self._write(ir_dir / "ir_meta.json", json.dumps({"verification_status": "pass"}))
-        self._write(ir_dir / "dependency_graph.json", json.dumps({
-            "node_key": "component/b@0.1.0",
-            "all_nodes": [{"node_key": "component/c@0.1.0", "topo_level": 0},
-                          {"node_key": "component/b@0.1.0", "topo_level": 1}],
-            "transitive_deps": [], "generated_by": "conductor",
-        }))
-
-        if bindings == "auto":
-            bindings = [{
-                "node_key": nk,
-                "pipeline_ref": "workspace/pipelines/component__c__0.1.0/c_20260101_001",
-                "binary_id": "bin_20260725_001", "source_id": "src_20260725_001",
-                "model_source_ref": ("workspace/pipelines/component__c__0.1.0/c_20260101_001"
-                                     "/source/src_20260725_001/src/c_model.f90"),
-                "model_source_sha256": recorded_sha if recorded_sha is not None else dep_sha,
-            } for nk in closure]
-        dep_check: dict[str, Any] = {"direct_deps": ["component/c@0.1.0"], "resolved": "match"}
-        if bindings is not None:
-            dep_check["closure_bindings"] = bindings
-        b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                  / "b_20260101_001")
-        self._write(b_pipe / "source" / "src_20260725_001" / "src" / "b_model.f90",
-                    "module b_model\nend module b_model\n")
-        self._write(b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json", json.dumps({
-            "binary_id": "bin_20260725_001", "node_key": "component/b@0.1.0",
-            "pipeline_id": "b_20260101_001",
-            "verification_status": consumer_binary_status,
-            "source_source_id": "src_20260725_001",
-            "dependency_check": dep_check,
-        }) + "\n")
-        # `runs/<run_id>/<node>/` — `_latest_aggregate_verdict_under` requires the canonical
-        # depth AND a sibling trial_meta.json binding the verdict to the certified binary.
-        verdict_dir = b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
-        self._write(verdict_dir / "aggregate_verdict.json",
-                    json.dumps({"aggregate_verdict": "pass"}))
-        self._write(verdict_dir / "trial_meta.json",
-                    json.dumps({"source_binary_id": "bin_20260725_001"}))
-        _load_spec_catalog.cache_clear()
-
-    # ---- the closure derivation the two readers share -------------------------------------
+    # --- `_closure_nodes_from_graph` (kept from the replaced class: its subject survives) ---
 
     def test_closure_nodes_from_graph_orders_deepest_first_and_drops_self(self) -> None:
         from tools.orchestration_runtime import _closure_nodes_from_graph
         graph = {"all_nodes": [
-            {"node_key": "component/mid@0.1.0", "topo_level": 1},
-            {"node_key": "component/top@0.1.0", "topo_level": 2},
-            {"node_key": "component/base@0.1.0", "topo_level": 0},
-            {"node_key": " component/mid@0.1.0 ", "topo_level": 9},   # duplicate after strip
-            {"node_key": "", "topo_level": 0},                        # empty
-            "not-a-dict",
-            {"topo_level": 0},                                        # no node_key
+            {"node_key": "problem/a@0.1.0", "topo_level": 2},
+            {"node_key": "component/b@0.1.0", "topo_level": 1},
+            {"node_key": "component/c@0.1.0", "topo_level": 0},
+            {"node_key": "component/b@0.1.0", "topo_level": 1},  # duplicate: dropped
+            {"node_key": "", "topo_level": 0},                    # blank: dropped
         ]}
-        self.assertEqual(
-            _closure_nodes_from_graph(graph, "component/top@0.1.0"),
-            ["component/base@0.1.0", "component/mid@0.1.0"])
-        # An unusable document yields no closure rather than raising: both readers treat "no
-        # sidecar" as a leaf, and a raise here would break `_dependency_binding_freshness`'s
-        # never-raises contract and crash the conductor's staging with an attribution error.
-        #
-        # The family deliberately spans BOTH iterability classes. An earlier version of this test
-        # listed six members that were every one of them iterable, so it could not have failed:
-        # `for n in all_nodes or []` raises `TypeError` on a non-iterable, and round 1 of the
-        # review found that by construction rather than from this list.
-        for bad in (None, [], "x", {}, {"all_nodes": None}, {"all_nodes": "x"},
-                    {"all_nodes": 5}, {"all_nodes": 3.5}, {"all_nodes": True},
-                    {"all_nodes": {"component/base@0.1.0": 0}}):
-            self.assertEqual(_closure_nodes_from_graph(bad, "component/top@0.1.0"), [], bad)
-        # Self-test of the family: at least one member is NOT iterable, and at least one IS — a
-        # family in which every member falls on one side answers for one side.
-        nodes = [b.get("all_nodes") if isinstance(b, dict) else b
-                 for b in ({"all_nodes": 5}, {"all_nodes": "x"})]
-        iterability = []
-        for value in nodes:
-            try:
-                iter(value)
-                iterability.append(True)
-            except TypeError:
-                iterability.append(False)
-        self.assertEqual(sorted(iterability), [False, True])
-
-    def test_resolve_certified_closure_binding_refusals(self) -> None:
-        """The three reasons the selection can fail, each returned as `(None, reason)` rather than
-        raised — the conductor re-raises the reason verbatim as a transport `fail_closed`, and the
-        readiness comparison folds it into a stale detail. Round 1 found all three unwitnessed."""
-        from tools.orchestration_runtime import _resolve_certified_closure_binding
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            # (a) an unparseable node_key never reaches a path composition.
-            for bad_key in ("component/c", "c@0.1.0", "", "component/c@0.1.0@extra",
-                            "component/../c@0.1.0"):
-                binding, err = _resolve_certified_closure_binding(repo_root, bad_key)
-                self.assertIsNone(binding, bad_key)
-                self.assertIn("unparseable dependency node_key", err or "", bad_key)
-            # (b) no pipeline at all.
-            binding, err = _resolve_certified_closure_binding(
-                repo_root, "component/absent@0.1.0")
-            self.assertIsNone(binding)
-            self.assertIn("no ready pipeline under workspace/pipelines/", err)
-            self.assertIn("--with-deps", err)
-            # (c) a pipeline whose certified binary cannot name a source file.
-            meta = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
-                    / "c_20260101_001" / "binary" / "bin_20260725_001" / "binary_meta.json")
-            doc = json.loads(meta.read_text(encoding="utf-8"))
-            del doc["source_source_id"]
-            meta.write_text(json.dumps(doc) + "\n", encoding="utf-8")
-            binding, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
-            self.assertIsNone(binding)
-            self.assertIn("cannot resolve the certified model source under", err)
-            self.assertIn("component__c__0.1.0/c_20260101_001", err)
-
-    def test_an_unsafe_identifier_token_is_stale_not_ready(self) -> None:
-        """The defence-in-depth guard at the head of both new evaluators. It sits behind
-        `_verify_dep_stage_detail`'s identical guard, so it decides nothing today — which is
-        exactly why it needs its own probe rather than being inferred from the caller's."""
-        from tools.orchestration_runtime import (
-            _dep_binary_meta_passes, _dependency_binding_freshness, _verify_dep_stage_detail)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            for kind, sid, version in (("../component", "b", "0.1.0"),
-                                       ("component", "b/../c", "0.1.0"),
-                                       ("component", "b", "0.1.0/.."),
-                                       ("component", "b", "")):
-                fresh, detail = _dependency_binding_freshness(repo_root, kind, sid, version)
-                self.assertFalse(fresh, (kind, sid, version))
-                self.assertIn("unsafe identifier token", detail)
-                self.assertFalse(_dep_binary_meta_passes(repo_root, kind, sid, version))
-                for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
-                    ok, why, selected = _verify_dep_stage_detail(
-                        repo_root, kind, sid, version, stage)
-                    self.assertFalse(ok, (kind, sid, version, stage))
-                    self.assertIn("unsafe identifier token", why)
-                    # An unsafe token composes no path, so nothing was selected to hash.
-                    self.assertIsNone(selected)
-
-    def test_the_resolver_prefers_the_certified_source_over_a_newer_uncertified_one(self) -> None:
-        """The selection rule the whole comparison rests on, asserted from the READINESS side.
-        `test_stage_dependency_sources_binds_to_certified_binary_source` pins it from the
-        conductor's side only, so replacing the chain with "the latest source dir" left this
-        module entirely green (round 1, security axis M18) while re-opening the fail-open the
-        docstring warns about: staging a source a Generate retry produced but no Build certified."""
-        from tools.orchestration_runtime import (
-            _dependency_binding_freshness, _resolve_certified_closure_binding)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            pipe = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
-                    / "c_20260101_001")
-            # A LATER source_id with no binary certifying it — a Generate retry not yet built.
-            later = pipe / "source" / "src_20260903_001" / "src"
-            later.mkdir(parents=True, exist_ok=True)
-            (later / "c_model.f90").write_text(
-                "module c_model ! UNCERTIFIED\nend module c_model\n", encoding="utf-8")
-            (pipe / "lineage.json").write_text(
-                json.dumps({"source_id": "src_20260903_001"}) + "\n", encoding="utf-8")
-            binding, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
-            self.assertIsNone(err)
-            self.assertEqual(binding["source_id"], "src_20260725_001")
-            self.assertNotIn(
-                "UNCERTIFIED",
-                (repo_root / binding["model_source_ref"]).read_text(encoding="utf-8"))
-            # ... and the consumer stays FRESH, because nothing it linked has moved.
-            self.assertEqual(
-                _dependency_binding_freshness(repo_root, "component", "b", "0.1.0"), (True, None))
+        self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
+                         ["component/c@0.1.0", "component/b@0.1.0"])
+        self.assertEqual(_closure_nodes_from_graph(None, "problem/a@0.1.0"), [])
+        self.assertEqual(_closure_nodes_from_graph({"all_nodes": "not a list"}, "x"), [])
 
     def test_a_malformed_topo_level_does_not_raise(self) -> None:
-        """`topo_level` decides a SORT KEY, and the sidecar is host-authored but not
-        schema-checked here. Reading it as `level or 0` — which is what the conductor's inlined
-        version did before this derivation was single-sourced — puts a `str` into the key and
-        `list.sort` then raises `TypeError` comparing it with an `int`. That is now a crash
-        inside a readiness evaluator whose contract is that it never raises, so a non-`int`
-        (and `bool`, which `isinstance(x, int)` alone accepts) falls to 0."""
-        from tools.orchestration_runtime import (
-            _closure_nodes_from_graph, _dependency_binding_freshness)
+        from tools.orchestration_runtime import _closure_nodes_from_graph
         graph = {"all_nodes": [
-            {"node_key": "component/a@0.1.0", "topo_level": "1"},
-            {"node_key": "component/b@0.1.0", "topo_level": 0},
+            {"node_key": "component/b@0.1.0", "topo_level": "0"},
             {"node_key": "component/c@0.1.0", "topo_level": True},
-            {"node_key": "component/d@0.1.0"},
-            {"node_key": "component/top@0.1.0", "topo_level": 9},
+            {"node_key": "component/d@0.1.0", "topo_level": 1},
         ]}
-        # Assert the ORDER, not `sorted()`. The claim this test exists for is about the SORT
-        # KEY, and `sorted()` is insensitive to it: with `and not isinstance(level, bool)`
-        # dropped, `topo_level: True` sorts as 1 and `c` moves behind `d`, which a sorted
-        # comparison cannot see (round 2). Every level here falls to 0, so the order is the
-        # document's own — `list.sort` is stable.
-        got = _closure_nodes_from_graph(graph, "component/top@0.1.0")
-        self.assertEqual(got, ["component/a@0.1.0", "component/b@0.1.0",
-                               "component/c@0.1.0", "component/d@0.1.0"])
-        # The same document reached through the readiness evaluator: a verdict, not a traceback.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0"
-                       / "b_20260101_001" / "dependency_graph.json")
-            sidecar.write_text(json.dumps(graph), encoding="utf-8")
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)          # the recorded closure no longer matches
-            self.assertIsInstance(detail, str)
-
-    # ---- the invariant itself -------------------------------------------------------------
-
-    def test_matching_binding_is_fresh_and_ready(self) -> None:
-        from tools.orchestration_runtime import (
-            _dependency_binding_freshness, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertTrue(fresh, detail)
-            self.assertIsNone(detail)
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
-
-    def test_a_regenerated_dependency_source_makes_the_consumer_stale(self) -> None:
-        """The issue #153 witness. `b` was compiled against `c`'s 07-25 source; `c` is
-        regenerated and re-certified under the SAME `spec_version`, so R6-lite sees nothing —
-        the node_key set is unchanged — and the old `b` binary would be skipped as ready and
-        then link code whose interface has moved."""
-        from tools.orchestration_runtime import (
-            _dependency_binding_freshness, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            # R6-lite is green on this tree: the recorded and derived closures agree.
-            from tools.orchestration_runtime import _dependency_resolution_freshness
-            self.assertTrue(
-                _dependency_resolution_freshness(repo_root, "component", "b", "0.1.0")[0])
-            # `c` regenerates: a new source + a new certified binary under the same version.
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("src_20260725_001", detail)
-            self.assertIn("src_20260903_001", detail)
-            self.assertIn("--with-deps", detail)
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
-            # The IR is untouched, so the resolution stage stays green — the binding is what moved.
-            self.assertTrue(_verify_dep_stage(repo_root, "component", "b", "0.1.0", "ir_ref"))
-
-    def test_identical_source_under_a_new_certification_stays_fresh(self) -> None:
-        """CONTENT, not identity: re-certifying a dependency whose source bytes are unchanged
-        must not invalidate its consumers, however many new source/binary ids it produced."""
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            body = "module c_model\nend module c_model\n"
-            self._seed(repo_root, dep_body=body)
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body=body)
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertTrue(fresh, detail)
-
-    # ---- the legacy / leaf asymmetry ------------------------------------------------------
-
-    def test_missing_bindings_on_a_binary_with_a_closure_is_stale(self) -> None:
-        from tools.orchestration_runtime import (
-            _dependency_binding_freshness, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, bindings=None)
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("records no dependency_check.closure_bindings", detail)
-            self.assertIn("component/c@0.1.0", detail)
-            self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "b", "0.1.0", "pipeline_ref"))
-
-    def test_a_leaf_binary_is_fresh_without_bindings(self) -> None:
-        """A leaf's closure is empty, so a legacy leaf binary has nothing that could have
-        drifted — the same asymmetry the R6-lite sidecar rule uses. Without this, the harness
-        (every closure's leaf) would be re-run on every `--with-deps` forever."""
-        from tools.orchestration_runtime import (
-            _dependency_binding_freshness, _verify_dep_stage)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            # `c` is the leaf: its own binary records `closure_bindings: []`. Strip the key to
-            # make it a LEGACY leaf binary, which must still be fresh.
-            meta = (repo_root / "workspace" / "pipelines" / "component__c__0.1.0"
-                    / "c_20260101_001" / "binary" / "bin_20260725_001" / "binary_meta.json")
-            doc = json.loads(meta.read_text(encoding="utf-8"))
-            del doc["dependency_check"]["closure_bindings"]
-            meta.write_text(json.dumps(doc) + "\n", encoding="utf-8")
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "c", "0.1.0")
-            self.assertTrue(fresh, detail)
-            self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "c", "0.1.0", "pipeline_ref"))
-
-    def test_a_node_whose_leaf_owns_its_dependency_build_is_refused(self) -> None:
-        """The declared availability limit (see `_dependency_binding_freshness`'s docstring): the
-        conductor stages — and so records bindings — only for a node whose control file the
-        neutral core authors. A node with dependencies that records `[]` is therefore refused
-        rather than special-cased. No such node can be certified today; this pins the behaviour
-        so extending that scope trips a red test instead of silently locking the node out."""
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, bindings=[])
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("compiled against closure []", detail)
-
-    def test_malformed_bindings_are_stale(self) -> None:
-        """The record is refused rather than believed, over BOTH clauses of the guard.
-
-        The family spans both iterability classes on purpose. An earlier version listed one
-        non-list member, the string `"not-a-list"`, which is ITERABLE — so `all(... for b in
-        bindings)` walked it character by character and the stale verdict arrived through the
-        second clause. Deleting `not isinstance(bindings, list) or` then left all three suites
-        byte-identically green while `closure_bindings: 5` raised
-        `TypeError: 'int' object is not iterable` inside `_verify_dep_stage_detail`, whose
-        contract is that it returns a verdict. Round 2 found that; it is the same blind spot
-        `test_a_malformed_topo_level_does_not_raise` was written for one function up, reproduced
-        in the sibling family written in the same change."""
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        non_iterable = (5, 3.5, True)
-        iterable = ("not-a-list", {"component/c@0.1.0": "deadbeef"},
-                    [{"node_key": "component/c@0.1.0"}],
-                    [{"model_source_sha256": "deadbeef"}],
-                    [{"node_key": "component/c@0.1.0", "model_source_sha256": ""}],
-                    [{"node_key": "", "model_source_sha256": "deadbeef"}],
-                    ["component/c@0.1.0"])
-        # Self-test of the family: the two halves really are on opposite sides of `iter()`, so
-        # neither clause of the guard can be deleted without a member noticing.
-        for value in non_iterable:
-            with self.assertRaises(TypeError):
-                iter(value)
-        for value in iterable:
-            iter(value)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for shape in non_iterable + iterable:
-                self._seed(repo_root, bindings=shape)
-                fresh, detail = _dependency_binding_freshness(
-                    repo_root, "component", "b", "0.1.0")
-                self.assertFalse(fresh, shape)
-                self.assertIn("closure_bindings is malformed", detail)
-
-    def test_a_binding_whose_dependency_is_no_longer_certified_is_stale(self) -> None:
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__c__0.1.0")
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("no longer has a certified staged source", detail)
-
-    def test_recorded_closure_must_equal_the_certified_ir_closure(self) -> None:
-        """A binary that predates its node's current IR: the IR now declares a closure member
-        the binary never linked. R6-lite cannot see it — the sidecar it compares IS the current
-        IR's, and it agrees with the registry."""
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, recorded_closure=["component/gone@0.1.0"])
-            fresh, detail = _dependency_binding_freshness(repo_root, "component", "b", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("component/gone@0.1.0", detail)
-            self.assertIn("component/c@0.1.0", detail)
-
-    def test_absence_of_a_pipeline_is_not_staleness(self) -> None:
-        """A dep with no pipeline / no certified binary is answered by the `pipeline_ref` stage
-        itself; manufacturing staleness here would mask that verdict."""
-        from tools.orchestration_runtime import _dependency_binding_freshness
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
-            self.assertEqual(
-                _dependency_binding_freshness(repo_root, "component", "b", "0.1.0"), (True, None))
-
-    # ---- the launch gate through the primitive, and the reporting ------------------------
-
-    def test_launch_gate_certification_demotes_a_stale_binding_to_ir_level(self) -> None:
-        """The launch gate recomputes readiness through `_certify_and_collect_dep_artifacts`,
-        which routes through `_verify_dep_stage_detail` since issue #178; kept as the
-        launch-gate witness that the primitive's demotion reaches the gate. A drifted binding
-        demotes the dep to level 1 (its IR still certifies), so `workflow-launch-check` refuses
-        a single-node run
-        on the same tree `--with-deps` would re-certify. Twin of
-        `DependencyFreshnessTests::test_launch_gate_certification_demotes_a_stale_dependency`,
-        which demotes to level 0 because the IR itself is what went stale there."""
-        from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _compute_dep_readiness_and_fingerprint)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            fresh_level = _certify_and_collect_dep_artifacts(
-                repo_root, "spec/problem/a")["certified_entries"][0][3]
-            self.assertGreaterEqual(fresh_level, 2)
-
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            stale_level = _certify_and_collect_dep_artifacts(
-                repo_root, "spec/problem/a")["certified_entries"][0][3]
-            # The LEVEL itself, not only its downstream flags: the demotion's threshold
-            # (`level >= 2`) and its target (`1`) are both decisions, and round 1 found that
-            # widening the threshold to `>= 3` left this module green when only the flags were
-            # asserted, because this fixture seeds a level-3 dep.
-            self.assertEqual(stale_level, 1)
-            readiness = _compute_dep_readiness_and_fingerprint(repo_root, "spec/problem/a")[0]
-            self.assertTrue(readiness["ir_ref_verified"])
-            self.assertFalse(readiness["pipeline_ref_verified"])
-
-            # A dep at level exactly 2 — ir + pipeline certify, no aggregate_verdict — is the
-            # version the threshold decides. It must demote too.
-            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                          / "b_20260101_001" / "runs")
-            self.assertEqual(
-                _certify_and_collect_dep_artifacts(
-                    repo_root, "spec/problem/a")["certified_entries"][0][3],
-                1)
-            readiness = _compute_dep_readiness_and_fingerprint(repo_root, "spec/problem/a")[0]
-            self.assertTrue(readiness["ir_ref_verified"])
-            self.assertFalse(readiness["pipeline_ref_verified"])
-
-    def test_launch_gate_judges_through_the_primitive(self) -> None:
-        """Issue #178: the launch gate holds no predicate of its own. Every `(dep, version)`
-        candidate is judged by `_verify_dep_stage_detail`, and EVERY stage is asked even after
-        one refuses — the gate does not short-circuit — because the files of the stages AFTER
-        the first refusal are still hashed into the fingerprint
-        (`..._hashes_the_selected_artifact_...` below pins that half)."""
-        import tools.orchestration_runtime as rt
-        asked: list[tuple[str, str, str, str]] = []
-        real = rt._verify_dep_stage_detail
-
-        def spy(repo_root: Path, kind: str, sid: str, version: str, stage: str):
-            asked.append((kind, sid, version, stage))
-            return real(repo_root, kind, sid, version, stage)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            # Drift the binding so `pipeline_ref` refuses: a short-circuiting gate would stop
-            # asking after it.
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            with mock.patch.object(rt, "_verify_dep_stage_detail", side_effect=spy):
-                snap = rt._certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
-            self.assertEqual(
-                asked,
-                [("component", "b", "0.1.0", stage) for stage in rt._DEPENDENCY_READINESS_STAGES])
-            # The verdict was the primitive's, not a second predicate's: make the primitive
-            # refuse `ir_ref` and the gate's level follows it to 0 with the artifacts untouched.
-            with mock.patch.object(
-                    rt, "_verify_dep_stage_detail",
-                    side_effect=lambda r, k, s, v, st: (
-                        (False, "spy", None) if st == "ir_ref" else real(r, k, s, v, st))):
-                snap = rt._certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 0)])
-
-    def test_launch_gate_hashes_the_selected_artifact_of_a_demoted_dep(self) -> None:
-        """The fingerprint half of the issue #178 contract: a dep demoted to level 1 by a
-        binding drift still contributes the `binary_meta.json` (and the verdict) the refused
-        stages selected, byte-for-byte, so the `dep_set_fingerprint` recorded before the refactor
-        is the one recorded after it — and so a change to a demoted dep's artifacts still
-        invalidates the recorded readiness."""
-        from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
-            by_stage = {stage: (kind, sid, version, raw)
-                        for stage, kind, sid, version, raw in snap["artifact_bytes_in_order"]}
-            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                      / "b_20260101_001")
-            binary_meta = b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json"
-            verdict = (b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
-                       / "aggregate_verdict.json")
-            self.assertEqual(
-                [row[0] for row in snap["artifact_bytes_in_order"]],
-                ["ir_ref", "pipeline_ref", "aggregate_verdict"])
-            self.assertEqual(by_stage["pipeline_ref"],
-                             ("component", "b", "0.1.0", binary_meta.read_bytes()))
-            self.assertEqual(by_stage["aggregate_verdict"],
-                             ("component", "b", "0.1.0", verdict.read_bytes()))
-            # Self-test that the bytes are the DEMOTED dep's: the refused stage's file is the
-            # one hashed, not an empty placeholder.
-            self.assertIn(b"bin_20260725_001", by_stage["pipeline_ref"][3])
-
-    def test_a_malformed_stage_artifact_is_refused_and_still_selected(self) -> None:
-        """The unreadable / not-an-object branches of `pipeline_ref` and `aggregate_verdict`
-        (round 0 of issue #178 found the first unpinned). Each refuses with its own cause AND
-        returns the file it could not parse, and the launch gate hashes those bytes exactly as
-        it did when it read every candidate file without parsing — so a malformed artifact
-        still changes the recorded `dep_set_fingerprint` rather than dropping out of it."""
-        from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _verify_dep_stage_detail)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                      / "b_20260101_001")
-            binary_meta = b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json"
-            verdict = (b_pipe / "runs" / "run_20260101_001" / "component__b__0.1.0"
-                       / "aggregate_verdict.json")
-            # (a) a verdict that is JSON but not an object.
-            verdict.write_text("[]", encoding="utf-8")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "aggregate_verdict")
-            self.assertEqual((ok, selected), (False, verdict))
-            self.assertIn("not an object", detail)
-            # (b) a verdict that is not JSON at all.
-            verdict.write_text("{not json", encoding="utf-8")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "aggregate_verdict")
-            self.assertEqual((ok, selected), (False, verdict))
-            self.assertIn("unreadable or malformed", detail)
-            # (c) a binary_meta.json that is not JSON.
-            binary_meta.write_text("{not json", encoding="utf-8")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "pipeline_ref")
-            self.assertEqual((ok, selected), (False, binary_meta))
-            self.assertIn("unreadable or malformed", detail)
-            # The gate: level 1 (ir certifies, pipeline_ref refuses), and BOTH malformed files
-            # are in the fingerprint input byte-for-byte.
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 1)])
-            by_stage = {row[0]: row[4] for row in snap["artifact_bytes_in_order"]}
-            self.assertEqual(by_stage["pipeline_ref"], b"{not json")
-            self.assertEqual(by_stage["aggregate_verdict"], b"{not json")
-
-    def test_a_refused_stage_still_selects_its_artifact_on_every_refusal_branch(self) -> None:
-        """The `selected_path` contract, branch by branch (issue #178 round 1: the plain
-        `verification_status: fail` branches of `ir_ref` and `pipeline_ref`, the `fail` verdict
-        branch, the R6-lite stale branch and the unreadable `ir_meta.json` branch were all
-        unpinned — withholding the path on any of them survived the suite). Each refusal names
-        its own cause AND returns the file it judged, and the gate hashes that file, so a
-        rewrite of a refused artifact still moves the recorded `dep_set_fingerprint`.
-
-        One row per branch, each REMOVING the pass condition on one file with the rest of the
-        fixture intact, so a row can only be satisfied by the branch it names."""
-        from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _verify_dep_stage_detail)
-
-        def gate_bytes(repo_root: Path) -> dict[str, bytes]:
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            return {row[0]: row[4] for row in snap["artifact_bytes_in_order"]}
-
-        def paths(repo_root: Path) -> dict[str, Path]:
-            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                      / "b_20260101_001")
-            return {
-                "ir_ref": (repo_root / "workspace" / "ir" / "component__b__0.1.0"
-                           / "b_20260101_001" / "ir_meta.json"),
-                "pipeline_ref": b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json",
-                "aggregate_verdict": (b_pipe / "runs" / "run_20260101_001"
-                                      / "component__b__0.1.0" / "aggregate_verdict.json"),
-            }
-
-        # (stage, how the pass condition is removed, the cause the refusal must name, the
-        # level the gate must report).
-        rows = [
-            ("ir_ref", lambda f: f.write_text(json.dumps({"verification_status": "fail"})),
-             "no certified IR", 0),
-            ("ir_ref", lambda f: f.write_text("{not json"), "no certified IR", 0),
-            ("pipeline_ref", lambda f: f.write_text(json.dumps({
-                **json.loads(f.read_text()), "verification_status": "fail"})),
-             "verification_status='fail'", 1),
-            ("aggregate_verdict", lambda f: f.write_text(json.dumps({"aggregate_verdict": "fail"})),
-             "is 'fail'", 2),
-        ]
-        for stage, spoil, cause, level in rows:
-            with self.subTest(stage=stage, cause=cause):
-                with tempfile.TemporaryDirectory() as tmp:
-                    repo_root = Path(tmp)
-                    self._seed(repo_root)
-                    target = paths(repo_root)[stage]
-                    spoil(target)
-                    ok, detail, selected = _verify_dep_stage_detail(
-                        repo_root, "component", "b", "0.1.0", stage)
-                    self.assertFalse(ok)
-                    self.assertIn(cause, detail)
-                    self.assertEqual(selected, target)
-                    snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-                    self.assertEqual(snap["certified_entries"],
-                                     [("component", "b", "0.1.0", level)])
-                    self.assertEqual(gate_bytes(repo_root)[stage], target.read_bytes())
-        # The R6-lite stale branch: the IR passes and the resolution moved, so the refusal
-        # comes from `_dependency_resolution_freshness` and the path is still the ir_meta.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            sidecar = (repo_root / "workspace" / "ir" / "component__b__0.1.0" / "b_20260101_001"
-                       / "dependency_graph.json")
-            graph = json.loads(sidecar.read_text(encoding="utf-8"))
-            graph["all_nodes"] = [{"node_key": "component/c@0.0.9", "topo_level": 0},
-                                  {"node_key": "component/b@0.1.0", "topo_level": 1}]
-            sidecar.write_text(json.dumps(graph), encoding="utf-8")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "ir_ref")
-            self.assertFalse(ok)
-            self.assertIn("component/c@0.0.9", detail)
-            self.assertEqual(selected, paths(repo_root)["ir_ref"])
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/problem/a")
-            self.assertEqual(snap["certified_entries"], [("component", "b", "0.1.0", 0)])
-            self.assertEqual(gate_bytes(repo_root)["ir_ref"],
-                             paths(repo_root)["ir_ref"].read_bytes())
-
-    def test_stale_details_names_the_stale_binding_of_a_consumer(self) -> None:
-        from tools.orchestration_runtime import _stale_dependency_details
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            self.assertEqual(_stale_dependency_details(repo_root, "spec/problem/a"), [])
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            details = _stale_dependency_details(repo_root, "spec/problem/a")
-            self.assertEqual(len(details), 1, details)
-            self.assertIn("src_20260903_001", details[0])
-
-    def test_stale_details_ignores_a_binding_whose_consumer_never_built(self) -> None:
-        """An unbuilt dep is "not ready", a distinct condition with a distinct remedy, so its
-        binding must not be reported as stale — the twin of the `_dep_ir_meta_passes` guard."""
-        from tools.orchestration_runtime import _stale_dependency_details
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root, consumer_binary_status="fail")
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            self.assertEqual(_stale_dependency_details(repo_root, "spec/problem/a"), [])
-
-    def test_verify_dep_stage_detail_names_the_failing_stage(self) -> None:
-        """The grounds the closure driver records. Each stage's own refusal reaches the caller
-        instead of an opaque boolean."""
-        from tools.orchestration_runtime import _verify_dep_stage_detail
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            b_pipe = (repo_root / "workspace" / "pipelines" / "component__b__0.1.0"
-                      / "b_20260101_001")
-            expected_selected = {
-                "ir_ref": (repo_root / "workspace" / "ir" / "component__b__0.1.0"
-                           / "b_20260101_001" / "ir_meta.json"),
-                "pipeline_ref": b_pipe / "binary" / "bin_20260725_001" / "binary_meta.json",
-                "aggregate_verdict": (b_pipe / "runs" / "run_20260101_001"
-                                      / "component__b__0.1.0" / "aggregate_verdict.json"),
-            }
-            for stage in ("ir_ref", "pipeline_ref", "aggregate_verdict"):
-                self.assertEqual(
-                    _verify_dep_stage_detail(repo_root, "component", "b", "0.1.0", stage),
-                    (True, None, expected_selected[stage]), stage)
-            # A binding drift refuses `pipeline_ref` and names both sources — and STILL returns
-            # the binary_meta.json it judged, because the launch gate hashes a demoted dep's
-            # selected artifacts (issue #178).
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "pipeline_ref")
-            self.assertFalse(ok)
-            self.assertIn("src_20260903_001", detail)
-            self.assertEqual(selected, expected_selected["pipeline_ref"])
-            # A missing IR refuses `ir_ref` by name, and selects nothing.
-            shutil.rmtree(repo_root / "workspace" / "ir" / "component__b__0.1.0")
-            ok, detail, selected = _verify_dep_stage_detail(
-                repo_root, "component", "b", "0.1.0", "ir_ref")
-            self.assertFalse(ok)
-            self.assertIn("no certified IR", detail)
-            self.assertIsNone(selected)
-            # A pipeline with no binary refuses `pipeline_ref` / `aggregate_verdict` by name
-            # and selects nothing for either (the verdict cannot be bound to a binary that
-            # does not exist).
-            shutil.rmtree(b_pipe / "binary")
-            for stage in ("pipeline_ref", "aggregate_verdict"):
-                ok, detail, selected = _verify_dep_stage_detail(
-                    repo_root, "component", "b", "0.1.0", stage)
-                self.assertFalse(ok)
-                self.assertIn("no binary_meta.json", detail)
-                self.assertIsNone(selected)
-            # A missing pipeline refuses `pipeline_ref` / `aggregate_verdict` by name.
-            shutil.rmtree(repo_root / "workspace" / "pipelines" / "component__b__0.1.0")
-            for stage in ("pipeline_ref", "aggregate_verdict"):
-                ok, detail, selected = _verify_dep_stage_detail(
-                    repo_root, "component", "b", "0.1.0", stage)
-                self.assertFalse(ok)
-                self.assertIn("no pipeline", detail)
-                self.assertIsNone(selected)
-
-    def test_binding_resolution_mirrors_build_staging(self) -> None:
-        """The parity that makes CERTIFIED-AGAINST == STAGED-NOW true rather than intended: the
-        readiness comparison and the deterministic Build stage must resolve the same artifact.
-        This drives the PRODUCTION stager (`Conductor._stage_dependency_sources`), not a
-        reconstruction of it, so a divergence between the two selections cannot hide."""
-        import tools.workflow_conductor as wc
-        from tools.orchestration_runtime import _resolve_certified_closure_binding
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            # A second, NEWER certification of `c` — the case where a naive selection diverges.
-            self._seed_dep(repo_root, "component/c@0.1.0", pipeline_id="c_20260101_001",
-                           source_id="src_20260903_001", binary_id="bin_20260903_001",
-                           body="module c_model ! REGENERATED\nend module c_model\n")
-            refs = wc.NodeRefs(node_key="component/b@0.1.0", spec_path="spec/component/b",
-                               ir_id="b_20260101_001", pipeline_id="b_20260101_001",
-                               source_id="src_x", binary_id="bin_x")
-            (repo_root / refs.ir_ref).mkdir(parents=True, exist_ok=True)
-            (repo_root / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n"
-                "    build_system: make\n"
-                'dependency:\n  node_key: "component/b@0.1.0"\n'
-                '  direct_deps:\n    - node_key: "component/c@0.1.0"\n',
-                encoding="utf-8")
-            conductor = wc.Conductor.__new__(wc.Conductor)
-            conductor.repo_root = repo_root
-            obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
-            staged = conductor._stage_dependency_sources(refs, obj_dir)
-            resolved, err = _resolve_certified_closure_binding(repo_root, "component/c@0.1.0")
-            self.assertIsNone(err)
-            self.assertEqual(staged, [resolved])
-            # And the recorded hash is the hash of the bytes that landed in the build dir.
-            import hashlib
-            self.assertEqual(
-                resolved["model_source_sha256"],
-                hashlib.sha256((obj_dir / "c_model.f90").read_bytes()).hexdigest())
+        self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
+                         ["component/b@0.1.0", "component/c@0.1.0", "component/d@0.1.0"])
 
 
 class HostPycacheRedirectExemptionTest(unittest.TestCase):
@@ -25612,19 +23636,13 @@ class DerivationInputsTests(unittest.TestCase):
             repo = Path(tmp)
             refs = self._seed(repo)
             before = {s: self._inputs(repo, refs, s) for s in ("compile", "generate", "build")}
-            # A later attempt of dep_a: new ids, different bytes.
-            new = certify_node(repo, "o2", self._DEP, through="validate",
-                               ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260102_001",
-                               source_id="src_20260102_001", binary_id="bin_20260102_001",
-                               run_id="run_20260102_001")
-            for ref, extra in ((f"{new['ir_ref']}/spec.ir.yaml", "# v2\n"),
-                               (new["model_ref"], "! v2\n")):
-                p = repo / ref
-                p.write_text(p.read_text(encoding="utf-8") + extra, encoding="utf-8")
-                meta_ref = new["ir_meta"] if ref.endswith("spec.ir.yaml") else new["source_meta"]
-                doc = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
-                doc["artifact_hashes"][ref] = _compute_sha256(p)
-                (repo / meta_ref).write_text(json.dumps(doc), encoding="utf-8")
+            # A later attempt of dep_a: new ids, different bytes, certified as such.
+            certify_node(repo, "o2", self._DEP, through="validate",
+                         ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260102_001",
+                         source_id="src_20260102_001", binary_id="bin_20260102_001",
+                         run_id="run_20260102_001",
+                         ir_text=f"node_key: {self._DEP}\n# v2\n",
+                         model_text="module dep_a_model\n! v2\nend module\n")
             after = {s: self._inputs(repo, refs, s) for s in ("compile", "generate", "build")}
             self.assertEqual(tools_derivation.first_differing_input(before["compile"], after["compile"]),
                              "closure[0].ir")
@@ -25712,7 +23730,7 @@ class DerivationInputsTests(unittest.TestCase):
                          run_id="run_20260102_001")
             # The selection did move to the new ids ...
             self.assertEqual(
-                ort._selected_certified_meta(repo, self._DEP, "compile").parent.name,
+                ort.DerivationResolver(repo).select(self._DEP, "compile").ir_id,
                 "dep-a_20260102_001")
             # ... and every key stayed.
             after = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, **self._own(refs))
@@ -25721,13 +23739,14 @@ class DerivationInputsTests(unittest.TestCase):
 
     # --- refusals ---------------------------------------------------------------------
 
-    def test_a_dependency_readiness_accepts_without_a_hash_binds_by_labelled_identity(self) -> None:
-        """Measured at `06bf4c73`: every closure member of the real `shallow_water2d` carries a
-        pre-#177 IR meta with no `artifact_hashes`, and `_verify_dep_stage_detail` accepts it
-        on `verification_status` alone. PR-1 refuses no run the gates admit, so such an output
-        binds by `unstamped:<stage_id>`; one whose stamp no longer matches its bytes (readiness
-        does not re-hash a dependency) binds by `unverified:<stage_id>`. Neither can equal a
-        hash, so a key over either re-derives once the dependency is stamped (PR-2)."""
+    def test_a_dependency_output_readiness_cannot_hash_is_unresolvable(self) -> None:
+        """Measured at `06bf4c73`: every closure member of the real `shallow_water2d` carried a
+        pre-#177 IR meta with no `artifact_hashes`. PR-1 bound such an output by a label
+        (`unstamped:` / `unverified:<stage_id>`) because readiness then accepted it on status
+        alone; PR-2's readiness is the same key lookup the consumer's inputs make, so an
+        output with no hashes, or whose bytes moved after the stamp, is not eligible for
+        either — the consumer's key is unresolvable and readiness refuses the dependency for
+        the same reason. Restoring the stamp / the bytes makes both hashes again."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25738,63 +23757,62 @@ class DerivationInputsTests(unittest.TestCase):
             model = repo / dep["model_ref"]
             model.write_text(model.read_text(encoding="utf-8") + "! edited after the stamp\n",
                              encoding="utf-8")
-            # The readiness stages still call both READY (status alone, no re-hash).
-            self.assertTrue(ort._dep_ir_meta_passes(repo, "component", "dep_a", "0.1.0"))
-            self.assertTrue(ort._dep_binary_meta_passes(repo, "component", "dep_a", "0.1.0"))
-            gen = self._inputs(repo, refs, "generate")
-            self.assertEqual(gen["closure"][0], {
-                "node_key": self._DEP,
-                "ir": f"unstamped:{dep['ir_id']}",
-                "source": f"unverified:{dep['source_id']}"})
-            self.assertEqual(self._inputs(repo, refs, "compile")["closure"][0]["ir"],
-                             f"unstamped:{dep['ir_id']}")
-            self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"],
-                             f"unverified:{dep['source_id']}")
-            # Restoring the stamp / the bytes turns both back into hashes — the labelled
-            # forms are what an accepted-but-unhashable output binds by, nothing more.
+            self.assertEqual(
+                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref"),
+                (False, f"{self._DEP} compile: artifact_hashes_missing"))
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                        r"no certified compile output \(artifact_hashes_missing\)"):
+                self._inputs(repo, refs, "compile")
             doc["artifact_hashes"] = {f"{dep['ir_ref']}/spec.ir.yaml": _compute_sha256(
                 repo / dep["ir_ref"] / "spec.ir.yaml")}
             (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(
+                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "pipeline_ref"),
+                (False, f"{self._DEP} build: artifact_hash_mismatch:{dep['model_ref']}"))
+            with self.assertRaisesRegex(
+                    ort.DerivationInputsUnresolvable,
+                    r"no certified generate output \(artifact_hash_mismatch:"):
+                self._inputs(repo, refs, "generate")
             model.write_text(model.read_text(encoding="utf-8").replace(
                 "! edited after the stamp\n", ""), encoding="utf-8")
             gen2 = self._inputs(repo, refs, "generate")
             self.assertTrue(gen2["closure"][0]["ir"].startswith("sha256:"))
             self.assertTrue(gen2["closure"][0]["source"].startswith("sha256:"))
 
-    def test_a_revoked_dependency_source_readiness_still_accepts_binds_by_label(self) -> None:
-        """Round-1 review (issue #250 PR-1): `revoke-artifact --step generate` run by hand on a
-        DEPENDENCY leaves its binary and verdict standing, and readiness never reads a
-        dependency's `source_meta.json` — so the consumer is still run against that source.
-        The branch's first cut refused the run (`derivation_inputs_unresolvable`); it now
-        binds by `uncertified:<source_id>`, the honest record of what was linked."""
+    def test_a_revoked_dependency_source_refuses_readiness_and_the_consumer(self) -> None:
+        """Round-1 review of PR-1 found `revoke-artifact --step generate` run by hand on a
+        DEPENDENCY left it `ready` (readiness never read a dependency's `source_meta.json`)
+        and bound the consumer by `uncertified:<source_id>`. PR-2 closes it: the dependency's
+        Build selection requires its Generate selection, so `pipeline_ref` refuses with the
+        source meta's own reason and the consumer's generate / build keys are unresolvable."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
             dep = certify_node(repo, "o-read", self._DEP, through="validate")
-            for status in ("revoked", "fail"):
+            for status, reason in (("revoked", "revoked"), ("fail", "verification_status_not_pass")):
                 doc = json.loads((repo / dep["source_meta"]).read_text(encoding="utf-8"))
                 doc["verification_status"] = status
                 (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
                 self.assertEqual(
+                    ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref"),
+                    (True, None))
+                self.assertEqual(
                     ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0",
-                                                 "pipeline_ref")[0], True)
-                self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"],
-                                 f"uncertified:{dep['source_id']}")
-                self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"],
-                                 f"uncertified:{dep['source_id']}")
-            # The IR arm keeps refusing: readiness refuses a non-pass dependency IR too.
-            doc = json.loads((repo / dep["ir_meta"]).read_text(encoding="utf-8"))
-            doc["verification_status"] = "revoked"
-            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
-            self.assertFalse(ort._dep_ir_meta_passes(repo, "component", "dep_a", "0.1.0"))
-            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "compile: .*revoked"):
+                                                 "pipeline_ref"),
+                    (False, f"{self._DEP} build: {reason}"))
+                for step in ("generate", "build"):
+                    with self.subTest(status=status, step=step), self.assertRaisesRegex(
+                            ort.DerivationInputsUnresolvable,
+                            rf"no certified generate output \({reason}\)"):
+                        self._inputs(repo, refs, step)
+                # Compile binds the dependency's IR alone, which stands.
                 self._inputs(repo, refs, "compile")
 
-    def test_generate_binds_the_source_the_certified_binary_linked_not_the_latest(self) -> None:
-        """Round-1 census: with the corpus's every pipeline having binding == latest source,
-        `_selected_certified_meta("generate")` = latest `source_meta.json` survived. The route
-        it matters on: a dependency whose generate retry produced a NEWER source directory
-        after its certified build. Build staged the binary's source; the key binds that."""
+    def test_generate_binds_the_selected_source_not_the_latest_directory(self) -> None:
+        """The route it matters on: a dependency whose generate retry produced a NEWER source
+        directory that never certified (a `pass` meta with hashes and no key — the shape a
+        retry that died before `write-step-result` leaves, and the shape of every pre-PR-1
+        meta). The selection is by key, so the consumer keeps binding the certified source."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25812,11 +23830,10 @@ class DerivationInputsTests(unittest.TestCase):
                 "artifact_hashes": {model_ref: _compute_sha256(newer / "src" / "dep_a_model.f90")},
             }), encoding="utf-8")
             self.assertEqual(
-                ort._selected_certified_meta(repo, self._DEP, "generate").parent.name,
+                ort.DerivationResolver(repo).select(self._DEP, "generate").source_id,
                 dep["source_id"])
             self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"], before)
             self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"], before)
-            self.assertIsNone(ort._selected_certified_meta(repo, self._DEP, "build"))
 
     def test_a_dependency_without_a_certified_output_is_unresolvable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -25829,14 +23846,20 @@ class DerivationInputsTests(unittest.TestCase):
             for step in ("compile", "generate"):
                 with self.subTest(step=step), self.assertRaisesRegex(
                         ort.DerivationInputsUnresolvable,
-                        r"derivation_inputs_unresolvable: dependency component/dep_a@0.1.0 compile: .*revoked"):
+                        r"derivation_inputs_unresolvable: dependency component/dep_a@0.1.0 has "
+                        r"no certified compile output \(revoked\)"):
                     self._inputs(repo, refs, step)
-            # Build binds the dep's SOURCE, which is still certified: the revoked IR is not
-            # its business (the readiness stages are, in PR-2).
-            self._inputs(repo, refs, "build")
+            # Build binds the dep's SOURCE, whose selection requires the dep's compile to
+            # stand (the chain is cumulative): the revoked IR refuses it too.
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                        r"no certified generate output \(revoked\)"):
+                self._inputs(repo, refs, "build")
+            doc["verification_status"] = "pass"
+            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
             shutil.rmtree(repo / "workspace" / "pipelines" / "component__dep_a__0.1.0")
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
-                                        r"dependency component/dep_a@0.1.0 has no certified generate output"):
+                                        r"dependency component/dep_a@0.1.0 has no certified "
+                                        r"generate output \(source_not_found\)"):
                 self._inputs(repo, refs, "build")
 
     def test_an_uncertified_own_upstream_is_unresolvable(self) -> None:
@@ -28670,21 +26693,21 @@ class ProfileExpansionTests(unittest.TestCase):
                 self.assertEqual(set(component), {"component_id", "version_constraint"})
 
     def test_readiness_asks_about_the_selected_components_and_never_the_profile(self) -> None:
-        # Driven through the launch gate's readiness (`_compute_dep_readiness_and_fingerprint`),
+        # Driven through the launch gate's readiness (`_compute_dep_readiness`),
         # the one production evaluator since issue #178, with the primitive spied.
-        from tools.orchestration_runtime import _compute_dep_readiness_and_fingerprint
+        from tools.orchestration_runtime import _compute_dep_readiness
         import tools.orchestration_runtime as ort
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo)
             asked: list[tuple[str, str]] = []
 
-            def _spy(_repo, kind, spec_id, _v, _stage):
+            def _spy(_repo, kind, spec_id, _v, _stage, *, resolver=None):
                 asked.append((kind, spec_id))
-                return (False, "spy", None)
+                return (False, "spy")
 
             with mock.patch.object(ort, "_verify_dep_stage_detail", _spy):
-                result = _compute_dep_readiness_and_fingerprint(repo, "spec/problem/a")[0]
+                result = _compute_dep_readiness(repo, "spec/problem/a")[0]
             self.assertEqual(result, {f"{s}_verified": False
                                       for s in ort._DEPENDENCY_READINESS_STAGES})
             self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
@@ -28695,35 +26718,14 @@ class ProfileExpansionTests(unittest.TestCase):
         # readiness must not degrade to vacuous true. The gate reports it the way it reports a
         # malformed schema — `verified is None` with the schema fail_reason — which
         # `mark_dependency_readiness` persists as a hard verification failure.
-        from tools.orchestration_runtime import _compute_dep_readiness_and_fingerprint
+        from tools.orchestration_runtime import _compute_dep_readiness
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            verified, _fp, certified, fail_reason = _compute_dep_readiness_and_fingerprint(
-                repo, "spec/problem/a")
+            verified, certified, fail_reason = _compute_dep_readiness(repo, "spec/problem/a")
             self.assertIsNone(verified)
             self.assertEqual(certified, [])
             self.assertEqual(fail_reason, "deps_yaml_malformed_schema")
-
-    def test_the_catalog_subset_covers_the_profile_and_what_it_selects(self) -> None:
-        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._seed(repo)
-            payload = json.loads(_relevant_catalog_subset_bytes(repo, "spec/problem/a"))
-            pairs = {(kind, sid) for kind, sid, _versions in payload}
-            # The components the profile selects contribute as themselves, and the profile
-            # contributes as itself — so a catalog edit to EITHER resets the readiness flags.
-            self.assertEqual(pairs, {
-                ("component", "own"), ("component", "c1"), ("component", "c2"),
-                ("infrastructure", self.HARNESS), ("profile", "pr")})
-
-    def test_the_catalog_subset_is_empty_when_the_expansion_fails(self) -> None:
-        from tools.orchestration_runtime import _relevant_catalog_subset_bytes
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._seed(repo, profile_infra=True)
-            self.assertEqual(_relevant_catalog_subset_bytes(repo, "spec/problem/a"), b"")
 
     def test_the_launch_gate_snapshot_fails_closed_when_the_expansion_does(self) -> None:
         from tools.orchestration_runtime import _certify_and_collect_dep_artifacts
@@ -28805,100 +26807,37 @@ class ProfileExpansionTests(unittest.TestCase):
                 _closure_signature(adopter),
                 _closure_signature({k: v for k, v in adopter.items() if k != "profiles"}))
 
-    def test_a_profile_only_drift_is_reported_as_a_profile_drift(self) -> None:
-        # The message has to name the part that moved. A profile-only drift has an identical
-        # node set AND identical transitive deps, so the "same nodes, different shape" branch
-        # would print two identical transitive lists and read as though nothing had changed.
-        from tools.dependency_graph import build_dependency_graph
-        from tools.orchestration_runtime import (
-            _dependency_resolution_freshness, _load_spec_catalog, _node_key_to_safe)
+    def test_a_profile_only_drift_moves_the_compile_key(self) -> None:
+        """Issue #175's asymmetry, closed by the key: the adopted profile set is part of the
+        compile key (`dependency_graph`, the closure signature, and `profiles[]`), so a
+        profile version bump in the catalog re-derives the adopter although its node SET is
+        unchanged. Every closure member is certified through Compile first, so the refusal is
+        about the profile and not about a missing dependency output."""
+        from tools.orchestration_runtime import DerivationResolver, _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo)
-            recorded, err = build_dependency_graph(
-                repo, target_spec_ref="spec/problem/a",
-                target_node_key="problem/a@0.1.0", include_via=False)
-            self.assertIsNone(err)
-            ir_dir = (repo / "workspace" / "ir" / _node_key_to_safe("problem/a@0.1.0")
-                      / "a_20260101_001")
-            ir_dir.mkdir(parents=True)
-            (ir_dir / "dependency_graph.json").write_text(
-                json.dumps(recorded), encoding="utf-8")
-            (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"verification_status": "pass"}), encoding="utf-8")
-            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
-            self.assertTrue(fresh, detail)
-            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
-            catalog.write_text(
-                catalog.read_text(encoding="utf-8").replace(
-                    "spec_id: pr\n    spec_version: \"0.1.0\"",
-                    "spec_id: pr\n    spec_version: \"0.9.0\""),
-                encoding="utf-8")
+            # The profile's spec files (its `controlled_spec.md` is a compile input).
+            from tools.tests.orchestration_fixtures import ensure_spec_entry
+            ensure_spec_entry(repo, "profile/pr@0.1.0")
+            for nk in (f"infrastructure/{self.HARNESS}@0.1.0", "component/c1@0.2.0",
+                       "component/c2@0.3.0", "component/own@0.1.0", "problem/a@0.1.0"):
+                certify_node(repo, "orch", nk, through="compile",
+                             ir_id=f"{nk.split('/', 1)[1].split('@')[0]}_20260101_001",
+                             pipeline_id=f"{nk.split('/', 1)[1].split('@')[0]}_20260101_001")
             _load_spec_catalog.cache_clear()
-            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("adopted profile set", detail)
-            self.assertIn("profile/pr@0.1.0", detail)
-            self.assertIn("profile/pr@0.9.0", detail)
-            self.assertNotIn("different shape", detail)
-
-    def test_a_same_node_set_drift_names_the_part_that_actually_moved(self) -> None:
-        """Three things can move with the node SET intact — the direct/transitive split, the
-        topological levels, and the adopted profile set — and `recorded_keys` drops the levels,
-        so a branch that tests only two of them prints two identical lists for the third.
-        Round-2 finding: the round-1 fix tested `transitive` and let a HEIGHT-only drift fall
-        through to the profile message, naming profiles on a node that adopts none."""
-        import tools.orchestration_runtime as ort
-        from tools.orchestration_runtime import _dependency_resolution_freshness
-
-        base = {
-            "node_key": "problem/t@1.0.0",
-            "all_nodes": [{"node_key": "component/x@1.0.0", "topo_level": 0},
-                          {"node_key": "component/y@1.0.0", "topo_level": 1},
-                          {"node_key": "problem/t@1.0.0", "topo_level": 2}],
-            "transitive_deps": [{"node_key": "component/x@1.0.0", "via": []}],
-            "profiles": [],
-        }
-
-        def _drive(recorded, derived, tmpdir):
-            ir_dir = Path(tmpdir) / "ir"
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "dependency_graph.json").write_text(
-                json.dumps(recorded), encoding="utf-8")
-            with mock.patch.object(ort, "_spec_ref_candidates",
-                                   lambda *_a, **_k: {"spec/problem/t"}), \
-                 mock.patch.object(ort, "_certified_ir_dir", lambda *_a, **_k: ir_dir), \
-                 mock.patch("tools.dependency_graph.build_dependency_graph",
-                            lambda *_a, **_k: (derived, None)):
-                return _dependency_resolution_freshness(repo_root, "problem", "t", "1.0.0")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # (a) heights moved, nothing else.
-            levels = json.loads(json.dumps(base))
-            levels["all_nodes"][1]["topo_level"] = 5
-            fresh, detail = _drive(base, levels, tmp)
-            self.assertFalse(fresh)
-            self.assertIn("different topological levels", detail)
-            self.assertNotIn("adopted profile set", detail)
-            # (b) the direct/transitive split moved.
-            split = json.loads(json.dumps(base))
-            split["transitive_deps"] = []
-            fresh, detail = _drive(base, split, tmp)
-            self.assertFalse(fresh)
-            self.assertIn("different shape", detail)
-            self.assertNotIn("adopted profile set", detail)
-            # (c) only the adopted profile set moved.
-            prof = json.loads(json.dumps(base))
-            prof["profiles"] = [{"node_key": "profile/pr@0.2.0"}]
-            fresh, detail = _drive(base, prof, tmp)
-            self.assertFalse(fresh)
-            self.assertIn("adopted profile set", detail)
-            self.assertIn("profile/pr@0.2.0", detail)
-            self.assertNotIn("different shape", detail)
-            # Control: identical graphs are fresh, so the three rows above are not passing on
-            # a comparison that always disagrees.
-            self.assertEqual(_drive(base, json.loads(json.dumps(base)), tmp), (True, None))
+            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            self.assertTrue(sel.ok, sel.reason)
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            doc = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+            bumped = [e for e in doc["specs"] if e["spec_id"] == "pr"]
+            self.assertEqual(len(bumped), 1)
+            bumped[0]["spec_version"] = "0.9.0"
+            catalog.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            self.assertFalse(sel.ok)
+            self.assertEqual(sel.reason, "derivation_key_mismatch:dependency_graph")
 
     def test_the_profile_term_is_order_insensitive_and_shape_validated(self) -> None:
         """Two rows the round-2 sweeps found unpinned, and they pull in opposite directions.
@@ -28966,14 +26905,13 @@ class ProfileExpansionTests(unittest.TestCase):
             ort._profile_expansion_failure("not_a_declared_reason", "x")
 
     def test_a_registry_outage_inside_the_expansion_is_not_a_profile_reason(self) -> None:
-        """`spec_catalog_corrupt` is the ONE error the expansion can return that belongs to
-        `_UNREADABLE_CLOSURE_REASONS` — the registry could not be READ, so no comparison is
-        possible and the freshness disposition is the opposite of every `profile_*` reason.
-        It therefore must NOT go through `_profile_expansion_failure`, which would raise on it;
-        round 1's sweep showed that routing it back through the guard changed no test."""
+        """`spec_catalog_corrupt` is the ONE error the expansion can return that is not a
+        profile reason — the registry could not be READ — and it is reported under the name
+        every other catalog reader uses. It therefore must NOT go through
+        `_profile_expansion_failure`, which would raise on it; round 1's sweep showed that
+        routing it back through the guard changed no test."""
         import tools.orchestration_runtime as ort
-        from tools.orchestration_runtime import (
-            SpecCatalogCorruption, _UNREADABLE_CLOSURE_REASONS, expand_profile_dependencies)
+        from tools.orchestration_runtime import SpecCatalogCorruption, expand_profile_dependencies
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo)
@@ -28986,7 +26924,6 @@ class ProfileExpansionTests(unittest.TestCase):
                 expanded, record, err = expand_profile_dependencies(
                     repo, "spec/problem/a", entries, catalog)
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertIn("spec_catalog_corrupt", _UNREADABLE_CLOSURE_REASONS)
             self.assertNotIn("spec_catalog_corrupt", ort._PROFILE_EXPANSION_REASONS)
             self.assertEqual((expanded, record), ([], []))
 
@@ -29044,26 +26981,23 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertEqual(record[0]["profile_version"], "0.4.0")
             self.assertEqual(record[0]["node_key"], "profile/pr@0.4.0")
 
-    def test_a_profile_expansion_failure_is_classified_stale_not_fresh(self) -> None:
-        """The R6-lite freshness reader splits builder errors into "the registry could not be
-        READ" (no comparison possible → fresh) and everything else (the recorded resolution
-        provably cannot be reproduced → stale). Every `profile_*` reason belongs to the second
-        set: the registry WAS read, and the declared closure does not resolve."""
-        from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, _UNREADABLE_CLOSURE_REASONS,
-            _dependency_resolution_freshness)
-        self.assertEqual(_PROFILE_EXPANSION_REASONS & _UNREADABLE_CLOSURE_REASONS, frozenset())
+    def test_a_profile_expansion_failure_is_an_unresolvable_compile_input(self) -> None:
+        """Every `profile_*` reason means the registry WAS read and the declared closure does
+        not resolve. The compile key cannot be computed over such a closure
+        (`_derived_closure_graph`), so the node is refused as an unresolvable input — never
+        judged fresh by an absent comparison, which is what the R6-lite reader this replaced
+        (issue #250 PR-2) did for the registry-read failures."""
+        from tools.orchestration_runtime import DerivationResolver
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            fresh, detail = _dependency_resolution_freshness(repo, "problem", "a", "0.1.0")
-            self.assertFalse(fresh)
-            self.assertIn("no longer resolves", detail)
-            self.assertIn("profile_declares_infrastructure", detail)
+            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            self.assertFalse(sel.ok)
+            self.assertIn("derivation_inputs_unresolvable: dependency closure of problem/a@0.1.0 "
+                          "does not resolve", sel.reason)
+            self.assertIn("profile_declares_infrastructure", sel.reason)
             # ...and with a well-formed profile the same node no longer takes this branch at
-            # all (it is judged on the recorded-vs-derived COMPARISON, which this fixture seeds
-            # no artifacts for), so the assertion above could have come out the other way.
+            # all (its closure builds; the refusal is then about its members' outputs).
             self._seed(repo, profile_infra=False)
-            _fresh_ok, detail_ok = _dependency_resolution_freshness(
-                repo, "problem", "a", "0.1.0")
-            self.assertNotIn("no longer resolves", detail_ok or "")
+            sel_ok = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            self.assertNotIn("does not resolve", sel_ok.reason or "")

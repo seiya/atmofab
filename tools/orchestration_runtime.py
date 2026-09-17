@@ -259,11 +259,9 @@ def _load_spec_catalog_from_bytes(
 
     Codex round 26 F1: cache keyed on FILE CONTENT bytes (not mtime).
     Restore/copy workflows that preserve mtime while changing content
-    previously left the cache returning the OLD parsed dict even though
-    `_dependency_set_fingerprint` always reads current bytes — letting
-    readiness be persisted from stale catalog with a fingerprint derived
-    from the new bytes. Keying on content makes cache hits semantic:
-    same bytes → same parsed dict, no drift possible.
+    previously left the cache returning the OLD parsed dict while every
+    other reader of the file saw the new bytes. Keying on content makes
+    cache hits semantic: same bytes → same parsed dict, no drift possible.
     """
     # Codex round 35 F2: zero-byte catalog is corruption, not "no specs
     # yet". The previous lenient early-return collapsed a truncated or
@@ -342,8 +340,8 @@ def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, .
     could be bypassed by edits that preserve mtime (restore-from-cache,
     `cp -p`, etc.). Hashing on content (via the bytes themselves as the
     `lru_cache` key) guarantees a cache hit only when the file contents
-    are byte-identical, so dependency resolution and `_dependency_set_fingerprint`
-    cannot diverge.
+    are byte-identical, so dependency resolution and the derivation key's own
+    read of the registry (`_derived_closure_graph`) cannot diverge.
     """
     # Codex round 34 F2: missing / unreadable catalog is now a HARD failure
     # (`SpecCatalogCorruption`). Previously it returned `{}` which downstream
@@ -623,8 +621,8 @@ def _resolve_dep_version(
     constraint: str | None,
 ) -> str | None:
     """Return the highest matching version, or None if no version matches.
-    Kept for callers that need a single representative version (e.g. for
-    fingerprint pinning); readiness verification uses `_matching_dep_versions`."""
+    Kept for callers that need a single representative version; readiness
+    verification uses `_matching_dep_versions`."""
     matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
     return matched[0] if matched else None
 
@@ -650,7 +648,7 @@ _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
 # `spec_id`, `spec_version` containing path separators or traversal sequences
 # would let the verifier walk out of the dependency subtree and treat
 # unrelated files as readiness evidence. Reject anything outside this strict
-# safe-token grammar before path construction or fingerprint inclusion.
+# safe-token grammar before path construction.
 _SAFE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
@@ -741,9 +739,10 @@ def _parse_dep_entries(
 
 # The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means
 # the registry WAS read and the declared closure does not resolve — a spec-author defect no leaf
-# can repair — so none of them belongs in `_UNREADABLE_CLOSURE_REASONS` (the reasons that mean
-# "no comparison was possible"). `spec_catalog_corrupt`, which the expansion can also surface, is
-# the registry-read failure and IS in that set.
+# can repair. `spec_catalog_corrupt`, which the expansion can also surface, is the registry-read
+# failure and is reported as itself. (Until issue #250 PR-2 the two classes had opposite
+# freshness dispositions; the derivation key refuses every one of them the same way, as an
+# unresolvable compile input.)
 _PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
     "profile_unresolvable",
     "profile_spec_ref_unresolved",
@@ -760,19 +759,15 @@ def _profile_expansion_failure(reason: str, detail: str) -> dict[str, str]:
     """The ONLY constructor of an `expand_profile_dependencies` error, so that
     `_PROFILE_EXPANSION_REASONS` is the source of these strings rather than a list beside them.
 
-    That membership is not decoration: `_dependency_resolution_freshness` splits builder errors
-    into "the registry could not be READ" (`_UNREADABLE_CLOSURE_REASONS` -> fresh) and everything
-    else (-> stale), and every reason here belongs to the second set. Renaming one to a member of
-    the first — `dependency_spec_ref_unresolved` is one keystroke from
-    `profile_spec_ref_unresolved` — would silently flip a stale node to fresh, and before this
-    helper existed that rename changed no test. Raising on an undeclared reason can only ever fire
-    on a coding error, never on spec input.
+    That membership is not decoration: `ProfileExpansionTests` pins the set, and the reason a
+    caller reads decides its message (`_derived_closure_graph` names it in the unresolvable
+    compile input; the launch-time closure resolver reports it to the operator). Raising on an
+    undeclared reason can only ever fire on a coding error, never on spec input.
     """
     if reason not in _PROFILE_EXPANSION_REASONS:
         raise AssertionError(
             f"{reason!r} is not a declared profile-expansion reason; add it to "
-            f"_PROFILE_EXPANSION_REASONS (and confirm it belongs on the STALE side of "
-            f"_dependency_resolution_freshness) before emitting it")
+            f"_PROFILE_EXPANSION_REASONS before emitting it")
     return {"reason": reason, "detail": detail}
 
 
@@ -850,8 +845,7 @@ def expand_profile_dependencies(
             profile_ref = resolve_spec_ref_for(repo_root, "profile", sid)
         except SpecCatalogCorruption as exc:
             # NOT a `_PROFILE_EXPANSION_REASONS` member on purpose: this one IS the
-            # registry-read failure, so it belongs to `_UNREADABLE_CLOSURE_REASONS` and its
-            # freshness disposition is the opposite of every reason above.
+            # registry-read failure, reported under the name every other catalog reader uses.
             return [], [], {"reason": "spec_catalog_corrupt", "detail": str(exc)}
         if not profile_ref:
             return _fail(
@@ -949,17 +943,11 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
     return an ordering key `(date_str, seq_int)`. None when the name does
     not match the strict canonical grammar.
 
-    Codex round 35 F1: the ordering key no longer includes the slug. The
-    earlier `(date, seq, name)` tuple meant that two artifacts with the
-    same `<YYYYMMDD>_<seq3>` but different slugs were silently ranked by
-    slug, picking the lex-larger one. Because `reserve_phase_root` does
-    NOT enforce global `(date, seq)` uniqueness across orchestrations, a
-    concurrent or retried run could mint a colliding id whose slug
-    happens to sort later and become the chosen artifact for downstream
-    dependency_readiness — driving the gate with the wrong evidence.
-    Round 35 makes such a collision an explicit ambiguity (the selector
-    returns None and a `freshness_id_collision` reason); callers fail
-    closed with no silent slug-tiebreaker.
+    The ordering key does not include the slug (Codex round 35 F1): two artifacts with the
+    same `<YYYYMMDD>_<seq3>` under one node root are ordered by the selection policy's
+    tie-breaker (`select_eligible`, the meta ref), never silently by slug. Since issue #250
+    PR-2 this is the ordering token of `_stage_meta_candidates`, and the "latest" it used
+    to pick is no longer what certifies — the derivation key is.
 
     Codex round 31 F2: the matcher uses the same grammar as the writer
     (`_SLUG_DATE_SEQ3_PATTERN`).
@@ -968,180 +956,6 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
     if m is None:
         return None
     return (m.group(1), int(m.group(2)))
-
-
-def _select_max_by_id_extracted(
-    candidates: list[Path], id_extractor: Callable[[Path], str | None]
-) -> Path | None:
-    """Filter `candidates` to those whose extracted id matches the canonical
-    grammar, then return the candidate whose id has the greatest
-    `(date, seq)` ordering. None if no canonical candidate exists OR if
-    two or more candidates share the maximum `(date, seq)` — the latter
-    is a "collision ambiguity" that must fail closed because the
-    runtime cannot pick the "right" artifact when distinct IDs claim the
-    same canonical position (Codex round 35 F1).
-    """
-    scored: list[tuple[tuple[str, int], Path]] = []
-    for p in candidates:
-        id_name = id_extractor(p)
-        if id_name is None:
-            continue
-        key = _freshness_key_from_id(id_name)
-        if key is None:
-            continue
-        scored.append((key, p))
-    if not scored:
-        return None
-    max_key = max(kv[0] for kv in scored)
-    tied = [p for k, p in scored if k == max_key]
-    if len(tied) > 1:
-        # Ambiguous: ≥2 distinct canonical IDs claim the same (date, seq).
-        # Emit a stderr diagnostic so operators see WHICH paths collided
-        # and return None so callers fail closed. Logging via stderr (not
-        # phase_state_log) keeps this helper free of orchestration_id
-        # context; the upstream `_compute_dep_readiness_and_fingerprint`
-        # path surfaces the gate-level fail_reason.
-        try:
-            collisions = ", ".join(sorted(str(t) for t in tied))
-            print(
-                f"freshness_id_collision at (date={max_key[0]}, seq={max_key[1]}): "
-                f"{collisions}",
-                file=sys.stderr,
-            )
-        except Exception:
-            pass
-        return None
-    return tied[0]
-
-
-def _latest_meta_under(
-    root: Path,
-    glob_pattern: str,
-    *,
-    predicate: Callable[[dict[str, Any]], bool] | None = None,
-) -> Path | None:
-    """Return the latest meta file under `root` matching `glob_pattern`,
-    selected by parsed canonical id `(date, seq)` from the enclosing
-    directory name. Both `*/ir_meta.json` (ir_id parent) and
-    `binary/*/binary_meta.json` (binary_id parent) put the runtime-issued
-    id directly above the file. Non-canonical enclosing names are filtered
-    out (defense against stray `zzz/` directories).
-
-    `predicate`, when given, narrows the candidate set BEFORE the latest-id
-    selection, by the parsed meta document. `_phase_certified` uses it to ask
-    for "the latest source_meta bound to THIS ir_id" — narrowing after the
-    selection would instead answer "the latest source, if it happens to be
-    bound", which reports a stale generate as certified whenever a newer
-    unrelated source exists. A meta that is missing, unreadable or not an
-    object is dropped by the predicate path (it cannot be shown to satisfy it).
-    """
-    candidates = [p for p in root.glob(glob_pattern) if p.is_file()]
-    if predicate is not None:
-        kept: list[Path] = []
-        for path in candidates:
-            try:
-                doc = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if isinstance(doc, dict) and predicate(doc):
-                kept.append(path)
-        candidates = kept
-    return _select_max_by_id_extracted(candidates, lambda p: p.parent.name)
-
-
-def _latest_aggregate_verdict_under(
-    pipe_root: Path, *, bound_to_binary_id: str | None = None
-) -> Path | None:
-    """Return the latest aggregate_verdict.json under `pipe_root` ordered
-    by parsed canonical `run_id`. Non-canonical run_ids are filtered out.
-
-    Codex round 24: when `bound_to_binary_id` is provided, restrict
-    candidates to verdicts whose sibling `trial_meta.json` records
-    `source_binary_id == bound_to_binary_id`. This binds the chosen verdict
-    to the specific binary `pipeline_ref` certified, preventing a passing
-    verdict for an OLDER binary from satisfying execution readiness while
-    a NEWER (un-validated) binary is selected for pipeline_ref. Verdicts
-    missing the sibling trial_meta.json (or its `source_binary_id` field)
-    are treated as unbound and excluded.
-    """
-    def _run_id_of(p: Path) -> str | None:
-        try:
-            parts = p.relative_to(pipe_root).parts
-        except ValueError:
-            return None
-        if len(parts) >= 4 and parts[0] == "runs":
-            return parts[1]
-        return None
-    candidates: list[Path] = []
-    for p in pipe_root.rglob("aggregate_verdict.json"):
-        if not p.is_file():
-            continue
-        if bound_to_binary_id is not None:
-            trial_meta = p.parent / "trial_meta.json"
-            if not trial_meta.is_file():
-                continue
-            try:
-                trial_doc = json.loads(trial_meta.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(trial_doc, dict):
-                continue
-            src_bin = trial_doc.get("source_binary_id")
-            if not (isinstance(src_bin, str) and src_bin.strip() == bound_to_binary_id):
-                continue
-        candidates.append(p)
-    return _select_max_by_id_extracted(candidates, _run_id_of)
-
-
-def _latest_pipeline_dir(safe_root: Path) -> Path | None:
-    """Return the latest pipeline_id directory under
-    `workspace/pipelines/<safe>/`, ordered by parsed `(date, seq)` from
-    the canonical id suffix. Non-canonical pipeline directory names are
-    filtered out (Codex round 23 F2).
-
-    Codex round 11 F2 (still in effect): both pipeline_ref and
-    aggregate_verdict are bound to the SAME selected pipeline dir to
-    eliminate cross-run mixing.
-    """
-    if not safe_root.is_dir():
-        return None
-    candidates = [p for p in safe_root.iterdir() if p.is_dir()]
-    return _select_max_by_id_extracted(candidates, lambda d: d.name)
-
-
-def _certified_ir_dir(repo_root: Path, kind: str, spec_id: str, version: str) -> Path | None:
-    """The IR phase-root directory of the CURRENT certified IR for `(kind, id, version)` —
-    the one `_verify_dep_stage`'s `ir_ref` stage evaluates (latest `*/ir_meta.json` by parsed
-    canonical `(date, seq)` from the enclosing ir_id dir name, via `_latest_meta_under`).
-    `None` when the versioned workspace root or the meta is absent."""
-    if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
-    ):
-        return None
-    root = repo_root / "workspace" / "ir" / f"{kind}__{spec_id}__{version}"
-    if not root.is_dir():
-        return None
-    latest = _latest_meta_under(root, "*/ir_meta.json")
-    return None if latest is None else latest.parent
-
-
-def _dep_ir_meta_passes(repo_root: Path, kind: str, spec_id: str, version: str) -> bool:
-    """The artifact half of the `ir_ref` readiness stage: the current `ir_meta.json` records
-    `verification_status: pass`. Split out from `_verify_dep_stage` so the R6-lite freshness
-    reporter can ask "did this dep ever certify?" without re-triggering the freshness compare."""
-    ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
-    if ir_dir is None:
-        return False
-    try:
-        doc = json.loads((ir_dir / "ir_meta.json").read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return (
-        isinstance(doc, dict)
-        and str(doc.get("verification_status", "")).strip().lower() == "pass"
-    )
 
 
 def _closure_signature(
@@ -1239,356 +1053,421 @@ def _closure_signature(
     return (out, trans, profile_keys)
 
 
-# `build_dependency_graph` error reasons that mean "the registry could not be READ" — they carry
-# no information about the recorded dependency resolution, so they are not evidence of staleness
-# (the gates that surface the read failure own them). Every OTHER reason the builder returns
-# (`dependency_unresolvable` / `dependency_version_conflict` / `dependency_identity_conflict` /
-# `dependency_cycle`, and every `_PROFILE_EXPANSION_REASONS` member — issue #175) means the
-# registry WAS read and yields no valid closure — the recorded resolution provably cannot be
-# reproduced today, which is exactly staleness. The profile reasons reach the default branch
-# rather than being enumerated here; `ProfileExpansionTests` pins that classification, so a
-# later reader that reads this set as the whole taxonomy is red rather than silently wrong.
-_UNREADABLE_CLOSURE_REASONS: frozenset[str] = frozenset({
-    "dependency_deps_unreadable",
-    "dependency_deps_malformed",
-    "dependency_spec_ref_unresolved",
-    "spec_catalog_corrupt",
-})
-# `dependency_spec_ref_unresolved` stays here (→ fresh) because `build_dependency_graph` conflates
-# a TRANSITIVE node's absence (a path-less catalog entry, benign) with its ambiguity (a real
-# defect) into one reason, and its error string cannot tell them apart — so marking it stale would
-# false fail-close a valid closure. The precise ambiguity check lives at the SUBJECT node instead
-# (the `_spec_ref_candidates` length test above), and every closure node is a subject in turn under
-# `--with-deps`, so a genuine ambiguity is still caught where it can be distinguished from absence.
+# --- derivation-key certification (issue #250 PR-2) -----------------------------------
+#
+# "Certified" is decided by the DERIVATION KEY (`tools/derivation.py`): a phase output of
+# `(node_key, step)` is ELIGIBLE when its certifying stage meta records `verification_status:
+# pass`, is not revoked, still hashes to what the certifying run stamped (`artifact_hashes`),
+# and carries a `derivation_key` EQUAL to the key recomputed NOW over the phase's contract
+# inputs (`phase_derivation_inputs`). Among the eligible outputs of one key the selection
+# policy (`select_eligible`, v1 = the latest attempt) chooses ONE, and every consumer binds to
+# that output's `output_hash` — the node's own next phase and every dependent node alike.
+#
+# The recomputation is recursive by construction: the compile key of a node hashes the
+# compile output hash of every closure member, the generate key the compile and generate
+# outputs, the build key the generate outputs, so a dependency re-derived within its version
+# changes every consumer's key with no bookkeeping, and a dependency re-derived to
+# byte-identical output changes nobody's (`output_hash` is stage-relative). One
+# `DerivationResolver` memoises the selections of ONE evaluation, because nothing on disk
+# changes during it and the closure is a DAG in which the same member is reached many times.
+#
+# What the key does NOT decide is kept beside it and stated where it applies: the current
+# `--stage compile` validator's verdict on the selected IR (`_ir_certification`, issue #238,
+# a rule-drift defense the key cannot carry because the rule is not an input), and the
+# reservation, which says where THIS orchestration writes and is no longer consulted for
+# whether an artifact is certified (`ir_not_latest` / `pipeline_not_latest` are gone with it).
+#
+# What this replaced (PR-2 of issue #250): the three comparisons of `docs/ORCHESTRATION.md`
+# 13a / 13b — `_dependency_resolution_freshness` (the node_key set of the sidecar against the
+# registry), `_dependency_binding_freshness` (`closure_bindings[].model_source_sha256` against
+# the staged selection) — and the id chain of `_phase_certified` (`source_ir_id`,
+# `source_source_id`, `trial_meta.source_binary_id`, "latest under the root"). Each of them
+# is a projection of the key: the sidecar signature is `dependency_graph`, the binding is
+# `closure[].source`, the id chain is the upstream `output_hash`. A meta with no key — every
+# meta stamped before PR-1 — is not eligible (`derivation_key_missing`), by decision 6 of the
+# plan: no backfill, the corpus re-derives once.
+
+#: The certifying phase each phase binds to, in the node's own chain.
+_UPSTREAM_STEP: dict[str, str | None] = {
+    "compile": None, "generate": "compile", "build": "generate", "validate": "build"}
+
+#: The refusal reason when a phase has NO output at all (no stage directory carries its
+#: certifying meta), per phase.
+_NO_OUTPUT_REASON: dict[str, str] = {
+    "compile": "ir_not_found", "generate": "source_not_found",
+    "build": "binary_not_found", "validate": "verdict_not_found"}
 
 
-def _dependency_resolution_freshness(
-    repo_root: Path, kind: str, spec_id: str, version: str
+class DerivationSelection:
+    """The answer of `DerivationResolver.select` for ONE `(node_key, step)`: whether a
+    certified output stands under the key recomputed now, which one, and — cumulatively —
+    the ids of every upstream phase's selected output (`ir_ref` for all, `pipeline_ref` /
+    `source_id` from generate, `binary_id` from build, `run_id` from validate).
+
+    `reason` is `None` when `ok`, else the FIRST clause that refused, spelled like the
+    predicate's other reasons: an upstream's reason when the chain stops above this phase,
+    `derivation_inputs_unresolvable:<input>` when the key cannot be computed,
+    `<step>_not_found` when nothing was ever produced, `derivation_key_missing` when the
+    latest output carries no key, `derivation_key_mismatch:<first differing input>` when it
+    carries another, and the stage meta's own reason (`revoked`,
+    `verification_status_not_pass`, `artifact_hash_mismatch:<ref>`) when an output carries
+    THIS key but is not eligible — read off the latest such output, with its `revoked` /
+    `last_fail_reason` / `revocation_severity` / `revocation_repair_strategy`, which the
+    conductor seeds a repair from."""
+
+    __slots__ = ("binary_id", "derivation_inputs", "derivation_key", "ir_id", "ir_ref",
+                 "last_fail_reason", "meta_path", "node_key", "ok", "output_hash",
+                 "pipeline_ref", "reason", "revocation_repair_strategy",
+                 "revocation_severity", "revoked", "run_id", "source_id", "step")
+
+    def __init__(self, node_key: str, step: str) -> None:
+        self.ok = False
+        self.reason: str | None = None
+        self.node_key = node_key
+        self.step = step
+        self.derivation_key: str | None = None
+        self.derivation_inputs: dict[str, Any] | None = None
+        self.meta_path: Path | None = None
+        self.output_hash: str | None = None
+        self.ir_ref: str | None = None
+        self.ir_id: str | None = None
+        self.pipeline_ref: str | None = None
+        self.source_id: str | None = None
+        self.binary_id: str | None = None
+        self.run_id: str | None = None
+        self.revoked = False
+        self.last_fail_reason: str | None = None
+        self.revocation_severity: str | None = None
+        self.revocation_repair_strategy: str | None = None
+
+    def inherit(self, upstream: DerivationSelection) -> None:
+        for name in ("ir_ref", "ir_id", "pipeline_ref", "source_id", "binary_id", "run_id"):
+            setattr(self, name, getattr(upstream, name))
+
+    def stage_dir(self) -> Path | None:
+        return None if self.meta_path is None else self.meta_path.parent
+
+    def detail(self) -> dict[str, Any]:
+        """The `detail` mapping `_phase_certified` returns (and `check-phase-certified`
+        prints): the reason, the resolved refs, and the repair-seed fields."""
+        return {
+            "reason": self.reason, "ir_ref": self.ir_ref, "ir_id": self.ir_id,
+            "pipeline_ref": self.pipeline_ref, "source_id": self.source_id,
+            "binary_id": self.binary_id, "run_id": self.run_id,
+            "derivation_key": self.derivation_key, "output_hash": self.output_hash,
+            "revoked": self.revoked, "last_fail_reason": self.last_fail_reason,
+            "revocation_severity": self.revocation_severity,
+            "revocation_repair_strategy": self.revocation_repair_strategy,
+        }
+
+
+def _stage_meta_candidates(
+    repo_root: Path, node_key: str, step: str
+) -> list[tuple[tuple[Any, ...], Path]]:
+    """Every certifying stage meta of `(node_key, step)` in the workspace, each with the
+    ordering token the selection policy ranks by: the canonical `(date, seq)` of the stage
+    id, preceded by the pipeline's for a pipeline stage — so outputs are ordered across
+    pipelines too, and a `src_<date>_<seq>` that repeats in two pipelines of one node is
+    not a tie. A directory whose name is not a canonical runtime id is not a candidate
+    (the same rule `_select_max_by_id_extracted` applied)."""
+    safe = _node_key_to_safe(node_key)
+    meta_name = CERTIFYING_META_FILENAME_BY_STEP[step]
+    out: list[tuple[tuple[Any, ...], Path]] = []
+    if step == "compile":
+        root = repo_root / "workspace" / "ir" / safe
+        if root.is_dir():
+            for d in root.iterdir():
+                key = _freshness_key_from_id(d.name)
+                if key is not None and (d / meta_name).is_file():
+                    out.append(((key,), d / meta_name))
+        return out
+    pipes = repo_root / "workspace" / "pipelines" / safe
+    if not pipes.is_dir():
+        return out
+    for pipe in pipes.iterdir():
+        pkey = _freshness_key_from_id(pipe.name)
+        if pkey is None or not pipe.is_dir():
+            continue
+        if step == "validate":
+            runs = pipe / "runs"
+            for run in (runs.iterdir() if runs.is_dir() else ()):
+                rkey = _freshness_key_from_id(run.name)
+                meta = run / safe / meta_name
+                if rkey is not None and meta.is_file():
+                    out.append(((pkey, rkey), meta))
+            continue
+        sub = pipe / ("source" if step == "generate" else "binary")
+        for d in (sub.iterdir() if sub.is_dir() else ()):
+            skey = _freshness_key_from_id(d.name)
+            if skey is not None and (d / meta_name).is_file():
+                out.append(((pkey, skey), d / meta_name))
+    return out
+
+
+def _selection_refs_from_meta(sel: DerivationSelection, meta_path: Path, repo_root: Path) -> None:
+    """Fill the ids of the SELECTED output into `sel` from where its meta lives:
+    `workspace/ir/<safe>/<ir_id>/ir_meta.json`, `<pipeline>/source/<source_id>/...`,
+    `<pipeline>/binary/<binary_id>/...`, `<pipeline>/runs/<run_id>/<safe>/...`."""
+    rel = _normalize_rel_posix(str(meta_path.parent.relative_to(repo_root)))
+    if sel.step == "compile":
+        sel.ir_ref = rel
+        sel.ir_id = meta_path.parent.name
+        return
+    if sel.step == "validate":
+        pipe_dir = meta_path.parent.parent.parent.parent
+        sel.run_id = meta_path.parent.parent.name
+    else:
+        pipe_dir = meta_path.parent.parent.parent
+        if sel.step == "generate":
+            sel.source_id = meta_path.parent.name
+        else:
+            sel.binary_id = meta_path.parent.name
+    sel.pipeline_ref = _normalize_rel_posix(str(pipe_dir.relative_to(repo_root)))
+
+
+class DerivationResolver:
+    """ONE evaluation's memo of certified selections over the workspace.
+
+    `select(node_key, step)` answers `DerivationSelection` for the node's chain up to
+    `step`, recursing through the node's own upstream phases and — inside
+    `phase_derivation_inputs` — through every closure member's selections. Memoised per
+    `(node_key, step)`; a resolver is created per predicate evaluation and never outlives
+    it, so a later write to the workspace is seen by the next evaluation. `spec_refs` pins
+    the spec directory of a node the caller already resolved (the subject of a run, whose
+    `spec_ref` the conductor holds); every other node's is read from the catalog, which
+    must resolve it to exactly one directory."""
+
+    def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None) -> None:
+        self.repo_root = Path(repo_root)
+        self._memo: dict[tuple[str, str], DerivationSelection] = {}
+        self._in_progress: set[tuple[str, str]] = set()
+        self._spec_refs: dict[str, str] = {
+            str(k).strip(): _normalize_rel_posix(str(v).strip())
+            for k, v in (spec_refs or {}).items() if isinstance(v, str) and v.strip()}
+
+    def spec_ref(self, node_key: str) -> str | None:
+        node_key = node_key.strip()
+        if node_key in self._spec_refs:
+            return self._spec_refs[node_key]
+        try:
+            kind, spec_id, _version = _parse_node_key_strict(node_key)
+            candidates = _spec_ref_candidates(self.repo_root, kind, spec_id)
+        except (ValueError, SpecCatalogCorruption):
+            return None
+        if len(candidates) != 1:
+            return None
+        ref = _normalize_rel_posix(next(iter(candidates)))
+        self._spec_refs[node_key] = ref
+        return ref
+
+    def select(self, node_key: str, step: str) -> DerivationSelection:
+        node_key = node_key.strip()
+        step_token = step.strip().lower()
+        memo_key = (node_key, step_token)
+        cached = self._memo.get(memo_key)
+        if cached is not None:
+            return cached
+        sel = DerivationSelection(node_key, step_token)
+        if memo_key in self._in_progress:
+            # A closure that reaches itself. `build_dependency_graph` refuses a cycle before
+            # any key is computed, so this is a guard against a malformed sidecar rather than
+            # a path a healthy registry reaches; it must not recurse without bound.
+            sel.reason = "dependency_cycle"
+            return sel
+        self._in_progress.add(memo_key)
+        try:
+            self._select_into(sel)
+        finally:
+            self._in_progress.discard(memo_key)
+        self._memo[memo_key] = sel
+        return sel
+
+    def _select_into(self, sel: DerivationSelection) -> None:
+        node_key, step_token = sel.node_key, sel.step
+        if step_token not in DERIVATION_STEPS:
+            sel.reason = f"unsupported_step:{step_token}"
+            return
+        try:
+            _parse_node_key_strict(node_key)
+        except ValueError:
+            sel.reason = "node_key_invalid"
+            return
+        upstream_step = _UPSTREAM_STEP[step_token]
+        if upstream_step is not None:
+            upstream = self.select(node_key, upstream_step)
+            sel.inherit(upstream)
+            if not upstream.ok:
+                sel.reason = upstream.reason
+                sel.revoked = upstream.revoked
+                sel.last_fail_reason = upstream.last_fail_reason
+                sel.revocation_severity = upstream.revocation_severity
+                sel.revocation_repair_strategy = upstream.revocation_repair_strategy
+                return
+        spec_ref = self.spec_ref(node_key)
+        if spec_ref is None:
+            sel.reason = "spec_ref_unresolved"
+            return
+        source_ref = (f"{sel.pipeline_ref}/source/{sel.source_id}"
+                      if sel.pipeline_ref and sel.source_id else None)
+        binary_ref = (f"{sel.pipeline_ref}/binary/{sel.binary_id}"
+                      if sel.pipeline_ref and sel.binary_id else None)
+        try:
+            inputs = phase_derivation_inputs(
+                self.repo_root, node_key=node_key, step=step_token, spec_ref=spec_ref,
+                ir_ref=sel.ir_ref, source_ref=source_ref, binary_ref=binary_ref,
+                resolver=self)
+        except DerivationInputsUnresolvable as exc:
+            sel.reason = str(exc)
+            return
+        key = _derivation_key(step_token, inputs)
+        sel.derivation_key = key
+        sel.derivation_inputs = inputs
+
+        from tools.derivation import (
+            Candidate,
+            first_differing_input,
+            select_eligible,
+            transformation_versions,
+        )
+        eligible: list[Candidate] = []
+        refused: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        latest: tuple[tuple[Any, ...], Path, Any] | None = None
+        for order, meta_path in _stage_meta_candidates(self.repo_root, node_key, step_token):
+            doc = _read_json_or_none(meta_path)
+            if latest is None or order > latest[0]:
+                latest = (order, meta_path, doc)
+            if not isinstance(doc, dict) or doc.get("derivation_key") != key:
+                continue
+            ok, detail = _stage_meta_certification(self.repo_root, meta_path)
+            if ok:
+                meta_ref = _normalize_rel_posix(str(meta_path.relative_to(self.repo_root)))
+                eligible.append(Candidate(
+                    attempt_id=meta_ref, order=order,
+                    output_hash=_meta_output_hash(detail["meta"], meta_ref), ref=meta_ref))
+            else:
+                refused.append((order, {**detail, "meta_path": meta_path}))
+        chosen = select_eligible(eligible)
+        if chosen is not None:
+            sel.ok = True
+            sel.meta_path = self.repo_root / chosen.ref
+            sel.output_hash = chosen.output_hash
+            _selection_refs_from_meta(sel, sel.meta_path, self.repo_root)
+            return
+        if refused:
+            # An output of THIS key exists and is not eligible: say why, from the latest one,
+            # and carry the repair seed a revoked meta holds.
+            _order, detail = max(refused, key=lambda item: item[0])
+            sel.reason = str(detail.get("reason"))
+            sel.revoked = bool(detail.get("revoked"))
+            sel.last_fail_reason = detail.get("last_fail_reason")
+            sel.revocation_severity = detail.get("revocation_severity")
+            sel.revocation_repair_strategy = detail.get("revocation_repair_strategy")
+            return
+        if latest is None:
+            sel.reason = _NO_OUTPUT_REASON[step_token]
+            return
+        _order, _path, doc = latest
+        if not isinstance(doc, dict):
+            sel.reason = "stage_meta_unreadable"
+            return
+        if "derivation_key" not in doc:
+            sel.reason = "derivation_key_missing"
+            return
+        recorded = doc.get("derivation_inputs")
+        differing = (first_differing_input(recorded, inputs)
+                     if isinstance(recorded, dict) else "derivation_inputs")
+        if differing is None:
+            recorded_tf = doc.get("derivation_transformation")
+            differing = ("transformation"
+                         if recorded_tf != list(transformation_versions()[step_token])
+                         else "key_version")
+        sel.reason = f"derivation_key_mismatch:{differing}"
+
+
+def _certified_ir_dir(
+    repo_root: Path, kind: str, spec_id: str, version: str,
+    *, resolver: DerivationResolver | None = None,
+) -> Path | None:
+    """The IR directory of the SELECTED certified Compile output of `(kind, id, version)` —
+    the IR every reader of a dependency's IR binds to (its published surface, its signature
+    pins, the harness pin). `None` when no Compile output is eligible under the key
+    recomputed now. Before issue #250 PR-2 this was the LATEST ir dir regardless of status."""
+    if not (
+        _is_safe_path_token(kind)
+        and _is_safe_path_token(spec_id)
+        and _is_safe_path_token(version)
+    ):
+        return None
+    resolver = resolver or DerivationResolver(repo_root)
+    sel = resolver.select(f"{kind}/{spec_id}@{version}", "compile")
+    return sel.stage_dir() if sel.ok else None
+
+
+def _verify_dep_stage(
+    repo_root: Path, kind: str, spec_id: str, version: str, stage: str
+) -> bool:
+    """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
+    completion. The boolean face of `_verify_dep_stage_detail`, which is the primitive — see
+    there for what each stage requires and why."""
+    return _verify_dep_stage_detail(repo_root, kind, spec_id, version, stage)[0]
+
+
+#: The certifying phase each dependency-readiness stage asks of a dependency.
+_READINESS_STAGE_STEP: dict[str, str] = {
+    "ir_ref": "compile", "pipeline_ref": "build", "aggregate_verdict": "validate"}
+
+
+def _verify_dep_stage_detail(
+    repo_root: Path, kind: str, spec_id: str, version: str, stage: str,
+    *, resolver: DerivationResolver | None = None,
 ) -> tuple[bool, str | None]:
-    """R6-lite incremental recertification (version granularity): is the dependency
-    resolution a certified node was built against still the one the registry derives TODAY?
+    """Whether a dependency `(kind, id, version)` evidences `stage` completion, WITH the
+    reason when it does not.
 
-    A certified node records its resolved dependency closure in the conductor-authored
-    `<ir_ref>/dependency_graph.json` sidecar (G7) — each `all_nodes[]` entry is a
-    `kind/spec_id@version` node_key. Re-deriving that closure from the current
-    `deps.yaml` + `spec_catalog.yaml` (the SAME pure builder, `tools/dependency_graph.py`)
-    and comparing is how "a dependency spec was updated, so its dependents must be
-    regenerated" becomes a mechanism instead of an operator ritual: bumping the harness to
-    0.3.0 in the catalog makes every node certified against 0.2.1 resolve differently, so
-    each one goes stale and `--with-deps` re-certifies the closure in one run. No
-    content-free version bump of the dependents is needed (that is R6 proper: content-hash
-    invalidation within one version; this is version granularity only, which the respec
-    discipline "content change ⇒ spec_version bump" makes sufficient).
+    This is the ONE primitive that decides whether a dependency stage certifies (issue
+    #178). The launch gate (`_certify_and_collect_dep_artifacts`) and the closure driver
+    (`run_workflow._dependency_node_readiness`) both go through it; neither re-derives the
+    judgment.
 
-    Returns `(fresh, detail)`; `detail` is an actionable message when stale.
+    Since issue #250 PR-2 each stage is a derivation-key question of the dependency's own
+    chain (`DerivationResolver.select`): `ir_ref` — its Compile has an eligible output under
+    the key recomputed now; `pipeline_ref` — its Build has (which requires its Generate and
+    Compile to); `aggregate_verdict` — its Validate has. The key carries what the readiness
+    stages used to compare beside the status — the dependency resolution (13a, now the
+    compile key's `dependency_graph` and `closure[]`), the staged sources (13b, now the build
+    key's `closure[].source`) — and what they could not see: the spec text, the IR content,
+    the toolchain, the transformation version. A dependency whose Validate meta was written
+    before PR-1 carries no key and is not ready (`derivation_key_missing`); the closure
+    re-derives it once.
 
-    A node whose derived closure is only ITSELF (a leaf) has no recorded resolution that
-    could drift, so it is fresh by construction — and needs no sidecar.
-
-    When the closure does not build, the reason decides. A registry the derivation could not
-    READ (`_UNREADABLE_CLOSURE_REASONS`, plus a `RecursionError` from the builder's DFS) says
-    nothing about the recorded resolution: freshness is a comparison, and manufacturing
-    staleness from a missing right-hand side would mask the real defect — those inputs fail
-    closed in their own gates (`_resolve_dependency_closure`,
-    `_validate_compile_dependency_consistency`). Every other reason means the registry WAS read
-    and yields no valid closure (the constraint now matches nothing, two edges conflict, an edge
-    became a cycle) — a definitive statement that the recorded resolution is not reproducible
-    today. That IS staleness, and reporting it routes the node to a re-run whose own closure
-    resolution names the underlying registry defect precisely.
+    `detail` is `None` when ready and the selection's reason otherwise, prefixed with the
+    node_key so `_stale_dependency_details`'s reader — the launch gate's reject message and
+    the closure driver's `dependency_node_begin.detail` — names the node.
     """
-    from tools.dependency_graph import build_dependency_graph
-
     if not (
         _is_safe_path_token(kind)
         and _is_safe_path_token(spec_id)
         and _is_safe_path_token(version)
     ):
         return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token")
+    step = _READINESS_STAGE_STEP.get(stage)
+    if step is None:
+        raise ValueError(f"unknown readiness stage: {stage!r}")
     node_key = f"{kind}/{spec_id}@{version}"
-    try:
-        candidates = _spec_ref_candidates(repo_root, kind, spec_id)
-    except SpecCatalogCorruption:
-        # The catalog FILE is missing/unparseable — unreadable, no comparison possible.
+    resolver = resolver or DerivationResolver(repo_root)
+    sel = resolver.select(node_key, step)
+    if sel.ok:
         return (True, None)
-    if len(candidates) > 1:
-        # The catalog was read but resolves this node to MORE THAN ONE spec directory (two
-        # entries for `(kind, spec_id)` point at different dirs). That is a definitive registry
-        # defect — exactly what `_resolve_dependency_closure` fail-closes on with
-        # `dependency_spec_ref_unresolved` — so the recorded resolution cannot be reproduced.
-        # Report STALE, or the launch gate would call the dependency ready while `--with-deps`
-        # refuses to run on the same registry.
-        return (
-            False,
-            f"{node_key} resolves to more than one spec directory in the current "
-            f"spec_catalog.yaml ({sorted(candidates)}); the ambiguous catalog entry means the "
-            "resolution it was certified against cannot be reproduced",
-        )
-    if not candidates:
-        # No catalog entry with a usable path resolves this node. Unlike ambiguity, this carries
-        # no comparison — there is no closure to derive — so it is not evidence of staleness (a
-        # genuinely absent/path-less entry is a different defect its own gates own). Fresh.
-        return (True, None)
-    spec_ref = next(iter(candidates))
-    try:
-        # `include_via=False`: the node sets are compared, never the `via` paths — and the
-        # path enumeration the sidecar author needs is exponential on a wide diamond closure.
-        graph, error = build_dependency_graph(
-            repo_root, target_spec_ref=spec_ref, target_node_key=node_key,
-            include_via=False,
-        )
-    except RecursionError:
-        # The builder's DFS is recursive. A pathologically deep closure would otherwise turn
-        # readiness — which previously built no graph at all — into a crash inside
-        # `_certify_and_collect_dep_artifacts` / the launch gate. Read failure, not evidence.
-        return (True, None)
-    if error is not None:
-        reason = str(error.get("reason") or "")
-        if reason in _UNREADABLE_CLOSURE_REASONS:
-            # No comparison is possible; do not manufacture staleness from a missing rhs.
-            return (True, None)
-        # Irreconcilable — or a reason neither set knows, meaning the builder grew a failure
-        # mode this function has not been taught. Fail closed: a re-run reports the underlying
-        # registry defect precisely, whereas silently passing readiness would hide it.
-        return (
-            False,
-            f"{node_key} was certified against a dependency closure that no longer resolves "
-            f"from deps.yaml + spec_catalog.yaml ({reason}: {error.get('detail')})",
-        )
-    derived = _closure_signature(graph)
-    if derived is None:
-        return (True, None)
-    if len(derived[0]) <= 1:
-        return (True, None)  # leaf: its closure is only itself, so nothing can drift
-
-    ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
-    sidecar = None if ir_dir is None else ir_dir / "dependency_graph.json"
-    if sidecar is None or not sidecar.is_file():
-        return (
-            False,
-            f"{node_key} has dependencies but its certified IR records no "
-            "dependency_graph.json sidecar, so the resolution it was certified against "
-            "cannot be compared with the current deps.yaml + spec_catalog.yaml",
-        )
-    try:
-        recorded = _closure_signature(json.loads(sidecar.read_text(encoding="utf-8")))
-    except Exception:
-        recorded = None
-    if recorded is None:
-        return (False, f"{node_key}: dependency_graph.json sidecar is unreadable or malformed")
-    if recorded != derived:
-        recorded_keys = [item[0] for item in recorded[0]]
-        derived_keys = [item[0] for item in derived[0]]
-        if recorded_keys == derived_keys:
-            # Same node SET, so something else moved — and there are THREE candidates, because
-            # `recorded_keys` drops the `topo_level` the signature's first term carries: a node
-            # moved between direct and transitive; the heights moved with the node set intact;
-            # or (issue #175) the adopted `profile` set moved, which is never in `all_nodes` at
-            # all. Test each in turn and name the one that actually differs. An earlier version
-            # of this branch tested only `transitive` and let everything else fall through to
-            # the profile message, which printed two IDENTICAL profile lists for a
-            # height-only drift and named a cause the node may have nothing to do with.
-            if recorded[2] != derived[2]:
-                return (
-                    False,
-                    f"{node_key} was certified against the same dependency closure but a "
-                    f"different adopted profile set: profiles were {recorded[2]}, deps.yaml + "
-                    f"spec_catalog.yaml now derive {derived[2]}",
-                )
-            if recorded[1] != derived[1]:
-                return (
-                    False,
-                    f"{node_key} was certified against a dependency closure with the same nodes "
-                    f"but a different shape: transitive deps were {recorded[1]}, deps.yaml + "
-                    f"spec_catalog.yaml now derive {derived[1]}",
-                )
-            return (
-                False,
-                f"{node_key} was certified against a dependency closure with the same nodes and "
-                f"the same direct/transitive split but different topological levels: levels were "
-                f"{recorded[0]}, deps.yaml + spec_catalog.yaml now derive {derived[0]}",
-            )
-        return (
-            False,
-            f"{node_key} was certified against dependency closure {recorded_keys} but "
-            f"deps.yaml + spec_catalog.yaml now resolve {derived_keys}",
-        )
-    return (True, None)
+    return (False, f"{node_key} {step}: {sel.reason}")
 
 
-def _dep_binary_meta_passes(repo_root: Path, kind: str, spec_id: str, version: str) -> bool:
-    """The artifact half of the `pipeline_ref` readiness stage: the certified binary of the
-    latest pipeline records `verification_status: pass`. The twin of `_dep_ir_meta_passes`, and
-    split out for the same reason — `_stale_dependency_details` must be able to ask "did this
-    dep ever BUILD?" before reporting a binding as stale, because a dep that never built is
-    "not ready", a distinct and already-reported condition."""
-    if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
-    ):
-        return False
-    safe = f"{kind}__{spec_id}__{version}"
-    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
-    if pipe_dir is None:
-        return False
-    sel = _certified_binary_meta(pipe_dir)
-    if sel is None:
-        return False
-    return str(sel[1].get("verification_status", "")).strip().lower() == "pass"
-
-
-def _dependency_binding_freshness(
-    repo_root: Path, kind: str, spec_id: str, version: str
-) -> tuple[bool, str | None]:
-    """R6 proper, the closure-source half (CONTENT granularity): was the certified binary of
-    `(kind, id, version)` compiled against the same dependency sources a build would stage for
-    it TODAY?
-
-    `_dependency_resolution_freshness` above compares node_key SETS, which is version
-    granularity: it cannot see a dependency that was re-certified WITHIN one version, because
-    the closure it derives and the closure the sidecar records are then identical. That is the
-    hole this closes. Build records, in the certified binary's
-    `dependency_check.closure_bindings[]`, the identity AND the `sha256` of every closure source
-    it staged (`workflow_conductor._build_inproc`); this re-resolves each of those nodes through
-    the SAME selection the stage uses (`_resolve_certified_closure_binding`) and compares the
-    hashes. So a dependency regenerated and re-certified under an unchanged `spec_version` makes
-    every consumer certified against its old source report stale, and `--with-deps` re-certifies
-    the closure bottom-up instead of linking a drifted dependency into a certified consumer.
-
-    Returns `(fresh, detail)`; `detail` is an actionable message when stale.
-
-    The comparison is over CONTENT, not identity: re-certifying a dependency whose source bytes
-    are unchanged does not make a consumer stale, however many new `source_id` / `binary_id`
-    directories it produced. The identity fields exist for the message and the audit trail.
-
-    Absence is NOT staleness — a dep with no pipeline or no certified binary is answered by the
-    `pipeline_ref` stage itself, and manufacturing staleness from a missing right-hand side
-    would mask that verdict (the same rule `_dependency_resolution_freshness` follows for an
-    unreadable registry).
-
-    A binary whose `dependency_check` records NO `closure_bindings` key at all is legacy — it
-    was certified before the binding was recorded — and fails CLOSED when its certified IR
-    declares a non-empty closure: there is no record of what it linked, so the comparison cannot
-    be made, and the consequence of guessing is exactly the wrong certification this function
-    exists to prevent. A closure that is empty (a leaf) has nothing to compare and is fresh,
-    which is the same asymmetry the R6-lite sidecar rule uses. The test is the KEY's presence, so
-    a leaf certified after this contract landed records `[]` explicitly and is told apart from a
-    legacy binary that records nothing.
-
-    ONE DECLARED LIMIT, and it is an availability limit rather than a hole. The conductor stages
-    a closure — and therefore records bindings — only for a node whose build control file the
-    neutral core authors. A node
-    with dependencies whose leaf owns its own dependency build instead would record `[]` while its
-    certified IR declares a non-empty closure, and this function reports it stale forever. No such
-    node exists in this tree and none can be certified today: the compile toolchain gate admits
-    only the `(build_system, language)` pair the core writes a control file for on a physics node
-    (`Conductor._core_authors_control_file`, which asks the registry),
-    and the one `spec_kind` that may differ, `infrastructure`, is a leaf. So the case is refused
-    rather than special-cased; `test_a_node_whose_leaf_owns_its_dependency_build_is_refused` pins
-    the behaviour so extending that scope trips a red test instead of silently locking the node out
-    of readiness."""
-    if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
-    ):
-        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token")
-    node_key = f"{kind}/{spec_id}@{version}"
-    safe = f"{kind}__{spec_id}__{version}"
-    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
-    if pipe_dir is None:
-        return (True, None)
-    sel = _certified_binary_meta(pipe_dir)
-    if sel is None:
-        return (True, None)
-    binary_meta_path, binary_meta = sel
-    binary_id = binary_meta_path.parent.name
-
-    ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
-    graph: Any = None
-    if ir_dir is not None:
-        sidecar = ir_dir / "dependency_graph.json"
-        if sidecar.is_file():
-            try:
-                graph = json.loads(sidecar.read_text(encoding="utf-8"))
-            except Exception:
-                graph = None
-    closure = _closure_nodes_from_graph(graph, node_key)
-
-    check = binary_meta.get("dependency_check")
-    check = check if isinstance(check, dict) else {}
-    if "closure_bindings" not in check:
-        if not closure:
-            return (True, None)
-        detail = (
-            f"{node_key} certified binary `{binary_id}` records no "
-            f"dependency_check.closure_bindings, so the dependency sources it was compiled "
-            f"against cannot be compared with the ones Build would stage now "
-            f"(closure: {closure}); re-run with `--with-deps` (re-certifies the closure "
-            f"bottom-up), or re-run `{node_key}` alone to Validate"
-        )
-        return (False, detail)
-    bindings = check.get("closure_bindings")
-    if not isinstance(bindings, list) or not all(
-        isinstance(b, dict)
-        and isinstance(b.get("node_key"), str)
-        and b["node_key"].strip()
-        and isinstance(b.get("model_source_sha256"), str)
-        and b["model_source_sha256"].strip()
-        for b in bindings
-    ):
-        detail = (
-            f"{node_key} certified binary `{binary_id}`: "
-            f"dependency_check.closure_bindings is malformed (expected a list of entries "
-            f"carrying node_key + model_source_sha256), so what it was compiled against "
-            f"cannot be compared with what Build would stage now"
-        )
-        return (False, detail)
-    recorded_keys = sorted(b["node_key"].strip() for b in bindings)
-    if recorded_keys != sorted(closure):
-        # The certified IR's closure moved while this binary stayed. R6-lite cannot see this
-        # when the registry and the latest sidecar already agree — the sidecar is the CURRENT
-        # IR's, and this binary may predate it.
-        detail = (
-            f"{node_key} certified binary `{binary_id}` was compiled against closure "
-            f"{recorded_keys} but its certified IR now declares {sorted(closure)}"
-        )
-        return (False, detail)
-    source_id = str(binary_meta.get("source_source_id") or "").strip()
-    for recorded in bindings:
-        dep_key = recorded["node_key"].strip()
-        current, err = _resolve_certified_closure_binding(repo_root, dep_key)
-        if err is not None or current is None:
-            detail = (
-                f"{node_key} certified binary `{binary_id}` was compiled against "
-                f"`{dep_key}`, which no longer has a certified staged source: {err}"
-            )
-            return (False, detail)
-        if current["model_source_sha256"] != recorded["model_source_sha256"].strip():
-            detail = (
-                f"{node_key} certified binary `{binary_id}` (source "
-                f"`{source_id}`) was compiled against `{dep_key}` source "
-                f"`{recorded.get('source_id')}` "
-                f"(`{recorded.get('pipeline_ref')}`, sha256 "
-                f"`{recorded['model_source_sha256'].strip()}`) but the certified selection now "
-                f"stages `{current['source_id']}` (`{current['pipeline_ref']}`, sha256 "
-                f"`{current['model_source_sha256']}`); re-run with `--with-deps` (re-certifies "
-                f"the closure bottom-up), or re-run `{node_key}` alone to Validate"
-            )
-            return (False, detail)
-    return (True, None)
-
-
-def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
-    """Actionable staleness reports for the direct dependencies of `spec_ref` — both
-    granularities: R6-lite resolution drift (the closure's node_key set moved) and R6 proper
-    closure-source drift (a dependency source was regenerated within its version).
-
-    Only a dependency that DID certify can be stale — an un-built one is merely "not ready", a
-    distinct and already-reported condition. Each granularity is guarded on the artifact its
-    comparison needs: resolution drift on the current `ir_meta.json` passing, binding drift on
-    the certified binary passing. Used to turn an opaque
-    `direct_dependency_*_readiness_not_pass` into a message that names the drifted node and the
+def _stale_dependency_details(
+    repo_root: Path, spec_ref: Any, *, resolver: DerivationResolver | None = None,
+) -> list[str]:
+    """Actionable readiness reports for the direct dependencies of `spec_ref`: for each one
+    the FIRST readiness stage that refuses it and why (a key that moved names the input that
+    moved: `derivation_key_mismatch:<input>`). Used to turn an opaque
+    `direct_dependency_*_readiness_not_pass` into a message that names the node and the
     remedy."""
     deps_doc = _read_deps_yaml(repo_root, spec_ref)
     if not isinstance(deps_doc, dict):
@@ -1601,179 +1480,26 @@ def _stale_dependency_details(repo_root: Path, spec_ref: Any) -> list[str]:
     except SpecCatalogCorruption:
         return []
     # Issue #175: `profile` entries are policies, not dependency nodes — expand them into the
-    # components they select so the staleness report is about the nodes readiness actually
-    # verifies. An expansion failure is reported as a detail rather than dropped: readiness
-    # itself fails closed on it, and this line is what names the offending profile to the
-    # operator instead of an opaque `direct_dependency_*_readiness_not_pass`.
+    # components they select so the report is about the nodes readiness actually verifies.
+    # An expansion failure is reported as a detail rather than dropped: readiness itself
+    # fails closed on it, and this line is what names the offending profile to the operator.
     entries, _profiles_record, expand_error = expand_profile_dependencies(
         repo_root, spec_ref, entries, catalog
     )
     if expand_error is not None:
         return [f"{spec_ref}: {expand_error['reason']}: {expand_error['detail']}"]
+    resolver = resolver or DerivationResolver(repo_root)
     details: list[str] = []
     for kind, spec_id, constraint in entries:
         for version in _matching_dep_versions(catalog, kind, spec_id, constraint):
-            if not _dep_ir_meta_passes(repo_root, kind, spec_id, version):
-                continue
-            fresh, detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
-            if not fresh and detail:
-                details.append(detail)
-            # R6 proper (closure-source half). Guarded on the dep having BUILT for the same
-            # reason the IR guard above exists: a dep with no certified binary is "not ready",
-            # not stale, and reporting a binding for it would name the wrong remedy.
-            if not _dep_binary_meta_passes(repo_root, kind, spec_id, version):
-                continue
-            fresh, detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
-            if not fresh and detail:
-                details.append(detail)
+            for stage in _DEPENDENCY_READINESS_STAGES:
+                ok, detail = _verify_dep_stage_detail(
+                    repo_root, kind, spec_id, version, stage, resolver=resolver)
+                if not ok:
+                    if detail:
+                        details.append(detail)
+                    break
     return details
-
-
-def _verify_dep_stage(
-    repo_root: Path, kind: str, spec_id: str, version: str, stage: str
-) -> bool:
-    """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion. The boolean face of `_verify_dep_stage_detail`, which is the primitive — see
-    there for what each stage requires and why."""
-    return _verify_dep_stage_detail(repo_root, kind, spec_id, version, stage)[0]
-
-
-def _verify_dep_stage_detail(
-    repo_root: Path, kind: str, spec_id: str, version: str, stage: str
-) -> tuple[bool, str | None, Path | None]:
-    """Whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion, WITH the reason when it does not, AND the artifact file that was judged.
-
-    This is the ONE primitive that reads a dependency stage artifact and decides whether it
-    certifies (issue #178). The launch gate (`_certify_and_collect_dep_artifacts`) and the
-    closure driver (`run_workflow._dependency_node_readiness`) both go through it; neither
-    re-derives the judgment from the bytes.
-
-    "Current" = the latest artifact under the versioned workspace directory, selected by parsed
-    canonical id (not mtime). Historical artifacts from earlier passing runs do NOT satisfy the
-    gate (Codex round 5 fix): a stale pass cannot unblock a new launch.
-
-    stage ∈ {"ir_ref", "pipeline_ref", "aggregate_verdict"}:
-
-    - ir_ref: latest `workspace/ir/<safe>/*/ir_meta.json` has verification_status=pass,
-      AND (R6-lite) the dependency resolution that IR was certified against still matches
-      the one the current deps.yaml + spec_catalog.yaml derive
-      (`_dependency_resolution_freshness`). Anchoring resolution freshness on the `ir_ref` stage
-      makes it a single choke point: every readiness caller — `_certify_and_collect_dep_artifacts`
-      and `run_workflow._dependency_node_readiness` — requires `ir_ref` first.
-    - pipeline_ref: latest `workspace/pipelines/<safe>/*/binary/*/binary_meta.json`
-      has verification_status=pass, AND (R6 proper, closure-source half) the dependency sources
-      that binary was compiled against are still the ones a build would stage for it today
-      (`_dependency_binding_freshness`). This stage is where the binding lives because a binding
-      is a property of a BINARY: the IR is unaffected by a dependency's regeneration, so anchoring
-      it on `ir_ref` would report a node stale whose IR is perfectly current.
-    - aggregate_verdict: latest `workspace/pipelines/<safe>/**/aggregate_verdict.json`
-      has its top-level `aggregate_verdict` field set to `pass` or `xfail`
-      (per docs/GLOSSARY.md), bound to the same binary `pipeline_ref` selects.
-
-    `detail` is `None` when fresh and an actionable one-line cause otherwise. It exists so
-    `_stale_dependency_details` and the closure driver can say WHICH stage refused and why,
-    instead of reporting an opaque `..._readiness_not_pass`.
-
-    `selected_path` is the file this stage SELECTED and judged — `ir_meta.json`,
-    `binary_meta.json`, or `aggregate_verdict.json` — and it is set whenever a file was selected,
-    INCLUDING when the verdict is `False` (unreadable, not `pass`, stale). It is `None` only when
-    nothing was selected (unsafe token, no workspace root, no pipeline, no binary, no bound
-    verdict). The launch gate hashes `selected_path`'s bytes into `dep_set_fingerprint`, and a
-    demoted dep's artifacts (a level-1 dep's `binary_meta.json`) are part of that hash, so the
-    path must not be withheld on failure.
-    """
-    # Defensive: every caller validates upstream, but recheck before
-    # composing a filesystem path (Codex round 15 F2 defense-in-depth).
-    if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
-    ):
-        return (False, f"{kind}/{spec_id}@{version}: unsafe identifier token", None)
-    safe = f"{kind}__{spec_id}__{version}"
-    node_key = f"{kind}/{spec_id}@{version}"
-    if stage == "ir_ref":
-        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
-        ir_meta = None if ir_dir is None else ir_dir / "ir_meta.json"
-        if not _dep_ir_meta_passes(repo_root, kind, spec_id, version):
-            detail = (
-                f"{node_key} has no certified IR with verification_status=pass under "
-                f"workspace/ir/{safe}"
-            )
-            return (False, detail, ir_meta)
-        fresh, detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
-        return (fresh, detail, ir_meta)
-    if stage in {"pipeline_ref", "aggregate_verdict"}:
-        # Codex round 11 F2: both pipeline_ref and aggregate_verdict are
-        # evaluated against the SAME selected pipeline run (latest pipeline_id
-        # under workspace/pipelines/<safe>/). Selecting them independently
-        # would let a newer incomplete run's passing binary be combined with
-        # an older run's passing verdict — execution readiness would erroneously
-        # pass even though no single run was end-to-end pass.
-        safe_root = repo_root / "workspace" / "pipelines" / safe
-        pipe_dir = _latest_pipeline_dir(safe_root)
-        if pipe_dir is None:
-            return (False, f"{node_key} has no pipeline under workspace/pipelines/{safe}", None)
-        if stage == "pipeline_ref":
-            latest = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-            if latest is None:
-                return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}", None)
-            try:
-                doc = json.loads(latest.read_text(encoding="utf-8"))
-            except Exception:
-                detail = (
-                    f"{node_key}: binary_meta.json of `{latest.parent.name}` is unreadable "
-                    f"or malformed"
-                )
-                return (False, detail, latest)
-            if not (
-                isinstance(doc, dict)
-                and str(doc.get("verification_status", "")).strip().lower() == "pass"
-            ):
-                status = doc.get("verification_status") if isinstance(doc, dict) else None
-                detail = (
-                    f"{node_key}: latest binary `{latest.parent.name}` has "
-                    f"verification_status={status!r}"
-                )
-                return (False, detail, latest)
-            # R6 proper (closure-source half): a passing binary is not ready if the dependency
-            # sources it links have been regenerated since it was certified.
-            fresh, detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
-            return (fresh, detail, latest)
-        # stage == "aggregate_verdict"
-        # Codex round 24: bind the verdict to the SAME binary that
-        # pipeline_ref would select; reject verdicts produced for a
-        # different (older) binary even when newer binaries lack verdicts.
-        latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-        if latest_binary is None:
-            return (False, f"{node_key} has no binary_meta.json under {pipe_dir.name}", None)
-        chosen_binary_id = latest_binary.parent.name
-        latest = _latest_aggregate_verdict_under(
-            pipe_dir, bound_to_binary_id=chosen_binary_id,
-        )
-        if latest is None:
-            detail = (
-                f"{node_key} has no aggregate_verdict.json bound to binary "
-                f"`{chosen_binary_id}`"
-            )
-            return (False, detail, None)
-        try:
-            doc = json.loads(latest.read_text(encoding="utf-8"))
-        except Exception:
-            return (False, f"{node_key}: aggregate_verdict.json is unreadable or malformed", latest)
-        if not isinstance(doc, dict):
-            return (False, f"{node_key}: aggregate_verdict.json is not an object", latest)
-        verdict = str(doc.get("aggregate_verdict", "")).strip().lower()
-        # docs/GLOSSARY.md: "a state in which the latest aggregate_verdict is `pass` or `xfail`"
-        if verdict in {"pass", "xfail"}:
-            return (True, None, latest)
-        detail = (
-            f"{node_key}: aggregate_verdict bound to binary `{chosen_binary_id}` is "
-            f"{verdict!r}"
-        )
-        return (False, detail, latest)
-    raise ValueError(f"unknown readiness stage: {stage!r}")
 
 
 # --- phase certification (issue #177) -------------------------------------------------
@@ -1868,74 +1594,49 @@ def _certified_ir_violations(repo_root: Path, ir_ref: str) -> list[str]:
     return validate_compile_stage(repo_root, "workspace", ir_ref)
 
 
-def _certified_ir_candidate(repo_root: Path, node_key: str) -> str | None:
-    """The ir_id of the latest IR under `workspace/ir/<safe>/` when it satisfies the compile
-    clause of `_phase_certified`, else `None`.
+def _certified_ir_candidate(
+    repo_root: Path, node_key: str, *, spec_ref: str | None = None,
+) -> str | None:
+    """The ir_id of the SELECTED certified IR of `node_key` when it satisfies the compile
+    clause of `_phase_certified` (the key recomputed now, and the current `--stage compile`
+    validator), else `None`.
 
-    Used by the conductor's `prepare_node` on a COLD run to ADOPT an already certified IR
-    instead of minting a new ir_id (which would make the reservation not-latest and refuse
-    every phase). Takes no orchestration: the artifacts, not this run's records, decide.
-    An IR the current `--stage compile` validator rejects is not adopted (issue #238): the
-    cold run mints a fresh ir_id and Compile re-derives, with no revocation record written.
-    """
-    ok, detail = _ir_certification(repo_root, node_key, reserved_ir_id=None)
+    Used by the conductor's `prepare_node` on a COLD run to ADOPT the standing IR instead of
+    minting a new ir_id. Takes no orchestration: the artifacts, not this run's records,
+    decide. An IR the current validator rejects is not adopted (issue #238): the cold run
+    mints a fresh ir_id and Compile re-derives, with no revocation record written.
+    `spec_ref` pins the subject's spec directory when the caller holds it."""
+    resolver = DerivationResolver(
+        repo_root, spec_refs={node_key: spec_ref} if spec_ref else None)
+    ok, detail = _ir_certification(repo_root, node_key, resolver=resolver)
     return detail.get("ir_id") if ok else None
 
 
 def _ir_certification(
-    repo_root: Path, node_key: str, *, reserved_ir_id: str | None
+    repo_root: Path, node_key: str, *, resolver: DerivationResolver,
 ) -> tuple[bool, dict[str, Any]]:
-    """The compile clause. `reserved_ir_id` pins the answer to the id this orchestration
-    reserved; `None` asks the same question of whatever IR is latest (the adoption path).
+    """The compile clause: the selected Compile output under the key recomputed now
+    (`DerivationResolver.select`), AND that IR passing the CURRENT `--stage compile`
+    validator (issue #238).
 
-    `ir_not_latest` is a refusal and not a redirect (decision 15): the readiness stages
-    (`_dependency_resolution_freshness` via `_certified_ir_dir`) evaluate the LATEST ir dir,
-    so certifying a non-latest reservation would let the skip and the launch gate disagree
-    about which artifact the node is standing on.
-
-    "Certified" also means "passes the CURRENT `--stage compile` validator" (issue #238). A
-    `spec.ir.yaml` certified before a validator rule change keeps its `pass` status and its
-    hashes, so status + hashes + freshness alone would skip Compile onto an IR that
-    `generate.gate` then rejects on every attempt — a verdict the Generate leaf cannot change,
-    charged to its budget. The validator clause runs LAST: every earlier refusal keeps its
-    precedence, and the (measured 1.4–2.9 s) call is made only on an otherwise-certified IR —
-    once per evaluation, and a cold all-skip run to `validate` evaluates the node's IR eleven
-    times (one cold-run adoption in `run_workflow`, two `check-phase-certified` in the repair
-    seeding — its loop is over `compile` and `generate` — four in `run_phase`, four in the
-    completion vouch): 25.7 s of validator time in a 33.3 s wall on `shallow_water2d`, counted
-    at issue #238 with a shim on `validate_compile_stage`; not memoised. A refusal here (`ir_rejected_by_current_validator:…`) is the readiness-side twin of the
-    gate's `compile_static_violation`; a validator exception is a refusal too
+    The validator clause is the one thing the key cannot carry: a `spec.ir.yaml` certified
+    before a validator rule change keeps its `pass` status, its hashes and its key — the
+    rule is not an input — so key + hashes alone would skip Compile onto an IR that
+    `generate.gate` then rejects on every attempt, a verdict the Generate leaf cannot
+    change, charged to its budget. It runs LAST, only on an otherwise-certified IR, once per
+    evaluation (measured 1.4–2.9 s at issue #238, not memoised). A refusal here
+    (`ir_rejected_by_current_validator:…`) is the readiness-side twin of the gate's
+    `compile_static_violation`; a validator exception is a refusal too
     (`ir_validator_raised:<type>`), never a raise — this is an evaluator whose callers hold
-    no handler.
+    no handler. A refused IR re-derives under the SAME key, and the selection policy then
+    prefers the newer attempt.
     """
-    try:
-        kind, spec_id, version = _parse_node_key_strict(node_key)
-    except ValueError:
-        return (False, {"reason": "node_key_invalid", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None,
-                        "revocation_repair_strategy": None})
-    safe = f"{kind}__{spec_id}__{version}"
-    root = repo_root / "workspace" / "ir" / safe
-    latest = _latest_meta_under(root, "*/ir_meta.json") if root.is_dir() else None
-    if latest is None:
-        return (False, {"reason": "ir_not_found", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None,
-                        "revocation_repair_strategy": None})
-    ir_id = latest.parent.name
-    if reserved_ir_id is not None and ir_id != reserved_ir_id.strip():
-        return (False, {"reason": "ir_not_latest", "revoked": False, "last_fail_reason": None,
-                        "revocation_severity": None,
-                        "revocation_repair_strategy": None})
-    ok, detail = _stage_meta_certification(repo_root, latest)
-    detail["ir_id"] = ir_id
-    detail["ir_ref"] = _normalize_rel_posix(str(latest.parent.relative_to(repo_root)))
-    if not ok:
+    sel = resolver.select(node_key, "compile")
+    detail = sel.detail()
+    if not sel.ok:
         return (False, detail)
-    fresh, freshness_detail = _dependency_resolution_freshness(repo_root, kind, spec_id, version)
-    if not fresh:
-        return (False, {**detail, "reason": f"resolution_stale:{freshness_detail}"})
     try:
-        stale = _certified_ir_violations(repo_root, detail["ir_ref"])
+        stale = _certified_ir_violations(repo_root, str(sel.ir_ref))
     except Exception as exc:  # evaluator contract: a verdict, never a raise (issue #153 shape)
         return (False, {**detail, "reason": f"ir_validator_raised:{type(exc).__name__}"})
     if stale:
@@ -1952,161 +1653,46 @@ def _phase_certified(
     orchestration_id: str,
     node_key: str,
     step: str,
+    *,
+    spec_ref: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
-    """Is `(node_key, step)` certified for this orchestration? Returns `(certified, detail)`.
+    """Is `(node_key, step)` certified? Returns `(certified, detail)`.
 
     `detail` always carries `reason` (the FIRST clause that refused, `None` on success), the
-    refs that did resolve (`ir_ref` / `pipeline_ref` / `source_id` / `binary_id` / `run_id`,
-    each `None` when the chain stopped before it), and `revoked` / `last_fail_reason` read
-    from the deepest meta the chain reached — the conductor seeds a repair from those.
+    refs of the SELECTED outputs that did resolve (`ir_ref` / `pipeline_ref` / `source_id`
+    / `binary_id` / `run_id`, each `None` when the chain stopped before it), the key the
+    phase was asked under, and `revoked` / `last_fail_reason` / `revocation_severity` /
+    `revocation_repair_strategy` read from the deepest meta the chain reached — the
+    conductor seeds a repair from those.
 
-    The chain is cumulative: `build` is certified only if `generate` is, which is certified
-    only if `compile` is. Each link binds to the id of the link above (`source_ir_id`,
-    `source_source_id`, `trial_meta.source_binary_id`), so re-deriving one phase invalidates
-    everything downstream without any downstream bookkeeping.
+    The chain is cumulative by construction of the key: `build` is certified only if
+    `generate` is (the build key binds the selected generate's `output_hash`), which is
+    certified only if `compile` is. Re-deriving one phase to a different output changes
+    every downstream key with no downstream bookkeeping; re-deriving it to a byte-identical
+    output changes none.
 
-    Reads only this orchestration's reservations and the workspace artifacts. It never reads
-    `agent_runs.jsonl`, a step_result or the phase_state: what a run RECORDED about itself is
-    not evidence that the artifact on disk is the one it certified. For the IR, "certified"
-    includes passing the current `--stage compile` validator (`_ir_certification`, issue #238).
+    Reads only the workspace artifacts. It never reads `agent_runs.jsonl`, a step_result,
+    the phase_state or — since issue #250 PR-2 — this orchestration's reservation: what a
+    run RECORDED about itself is not evidence that the artifact on disk is the one it
+    certified, and where THIS run writes is not what makes an artifact certified. The
+    `orchestration_id` is kept for the callers that record the answer per orchestration
+    (`check_phase_certified`). For the IR, "certified" includes passing the current
+    `--stage compile` validator (`_ir_certification`, issue #238). `spec_ref` pins the
+    subject's spec directory when the caller holds it (the conductor does; `--with-deps`'s
+    readiness reads the catalog).
     """
     step_token = step.strip().lower()
     if step_token not in STEP_KEYS_FOR_NODE_STATE:
         raise ValueError(f"unsupported step for certification: {step!r}")
-    detail: dict[str, Any] = {
-        "reason": None, "ir_ref": None, "pipeline_ref": None,
-        "source_id": None, "binary_id": None, "run_id": None,
-        "revoked": False, "last_fail_reason": None, "revocation_severity": None,
-        "revocation_repair_strategy": None,
-    }
-    try:
-        kind, spec_id, version = _parse_node_key_strict(node_key)
-    except ValueError:
-        return (False, {**detail, "reason": "node_key_invalid"})
-    safe = f"{kind}__{spec_id}__{version}"
-    res_dir = _orchestration_root(repo_root, orchestration_id) / "reservations" / safe
-    reserved_ir_id = _reserved_id(res_dir, "compile")
-    if reserved_ir_id is None:
-        return (False, {**detail, "reason": "ir_not_reserved"})
-
-    ok, ir_detail = _ir_certification(repo_root, node_key, reserved_ir_id=reserved_ir_id)
-    detail["ir_ref"] = ir_detail.get("ir_ref")
-    detail["revoked"] = bool(ir_detail.get("revoked"))
-    detail["last_fail_reason"] = ir_detail.get("last_fail_reason")
-    detail["revocation_severity"] = ir_detail.get("revocation_severity")
-    detail["revocation_repair_strategy"] = ir_detail.get("revocation_repair_strategy")
+    resolver = DerivationResolver(
+        repo_root, spec_refs={node_key.strip(): spec_ref} if spec_ref else None)
+    ok, detail = _ir_certification(repo_root, node_key.strip(), resolver=resolver)
     if not ok:
-        return (False, {**detail, "reason": ir_detail.get("reason")})
-    ir_id = str(ir_detail["ir_id"])
+        return (False, detail)
     if step_token == "compile":
         return (True, detail)
-
-    reserved_pipeline_id = _reserved_id(res_dir, "generate")
-    if reserved_pipeline_id is None:
-        return (False, {**detail, "reason": "pipeline_not_reserved"})
-    safe_root = repo_root / "workspace" / "pipelines" / safe
-    pipe_dir = safe_root / reserved_pipeline_id
-    detail["pipeline_ref"] = _normalize_rel_posix(
-        f"workspace/pipelines/{safe}/{reserved_pipeline_id}")
-    if not pipe_dir.is_dir():
-        return (False, {**detail, "reason": "pipeline_not_found"})
-
-    # The generate binding: the latest source that names THIS ir_id as the document it was
-    # generated from. `source_meta.json` carried no IR binding before issue #177 — an
-    # unstamped source is `source_not_bound`, which re-runs generate rather than adopting a
-    # source whose provenance cannot be established.
-    source_meta_path = _latest_meta_under(
-        pipe_dir, "source/*/source_meta.json",
-        predicate=lambda doc: str(doc.get("source_ir_id") or "").strip() == ir_id,
-    )
-    if source_meta_path is None:
-        return (False, {**detail, "reason": "source_not_bound"})
-    ok, src_detail = _stage_meta_certification(repo_root, source_meta_path)
-    detail["revoked"] = bool(src_detail.get("revoked"))
-    detail["last_fail_reason"] = src_detail.get("last_fail_reason")
-    detail["revocation_severity"] = src_detail.get("revocation_severity")
-    detail["revocation_repair_strategy"] = src_detail.get("revocation_repair_strategy")
-    source_id = source_meta_path.parent.name
-    detail["source_id"] = source_id
-    if not ok:
-        return (False, {**detail, "reason": src_detail.get("reason")})
-    if step_token == "generate":
-        return (True, detail)
-
-    # Build additionally requires the pipeline itself to be the latest one, for the same
-    # reason compile requires the latest ir dir: `_dependency_binding_freshness` and the
-    # readiness stages both evaluate `_latest_pipeline_dir`.
-    latest_pipe = _latest_pipeline_dir(safe_root)
-    if latest_pipe is None or latest_pipe != pipe_dir:
-        return (False, {**detail, "reason": "pipeline_not_latest"})
-    binary_meta_path = _latest_meta_under(
-        pipe_dir, "binary/*/binary_meta.json",
-        predicate=lambda doc: (
-            str(doc.get("source_source_id") or "").strip() == source_id
-            and str(doc.get("source_ir_id") or "").strip() == ir_id
-        ),
-    )
-    if binary_meta_path is None:
-        return (False, {**detail, "reason": "binary_not_bound"})
-    ok, bin_detail = _stage_meta_certification(repo_root, binary_meta_path)
-    detail["revoked"] = bool(bin_detail.get("revoked"))
-    detail["last_fail_reason"] = bin_detail.get("last_fail_reason")
-    detail["revocation_severity"] = bin_detail.get("revocation_severity")
-    detail["revocation_repair_strategy"] = bin_detail.get("revocation_repair_strategy")
-    detail["binary_id"] = binary_meta_path.parent.name
-    if not ok:
-        return (False, {**detail, "reason": bin_detail.get("reason")})
-    fresh, freshness_detail = _dependency_binding_freshness(repo_root, kind, spec_id, version)
-    if not fresh:
-        return (False, {**detail, "reason": f"binding_stale:{freshness_detail}"})
-    if step_token == "build":
-        return (True, detail)
-
-    verdict_path = _latest_aggregate_verdict_under(
-        pipe_dir, bound_to_binary_id=str(detail["binary_id"]))
-    if verdict_path is None:
-        return (False, {**detail, "reason": "verdict_not_bound"})
-    # `runs/<run_id>/<node_safe>/aggregate_verdict.json`: the run_id is the SECOND segment,
-    # not the parent dir (which is the node), and `_latest_aggregate_verdict_under` selects by
-    # that same segment.
-    detail["run_id"] = verdict_path.relative_to(pipe_dir).parts[1]
-    try:
-        verdict_doc = json.loads(verdict_path.read_text(encoding="utf-8"))
-    except Exception:
-        return (False, {**detail, "reason": "verdict_not_pass"})
-    verdict = (str(verdict_doc.get("aggregate_verdict", "")).strip().lower()
-               if isinstance(verdict_doc, dict) else "")
-    # docs/GLOSSARY.md: an `xfail` aggregate is a certifying outcome, like `pass`.
-    if verdict not in {"pass", "xfail"}:
-        return (False, {**detail, "reason": "verdict_not_pass"})
-    # The verdict alone does NOT certify Validate. The conductor authors
-    # `aggregate_verdict.json` BEFORE the `--stage pre_judge` gate runs (the gate
-    # re-validates the host's own summary, so the order cannot be swapped), and a
-    # `fail_closed` disposition returns without writing a step_result — leaving a passing
-    # verdict on disk for a phase that terminated fail-closed. `post_judge_meta.json` is the
-    # host record of the gate's own outcome (written in the deterministic post_judge substep;
-    # no `LLM` leaf has it in its write_roots — the judge's is `semantic_review.json` alone),
-    # so it is what says the phase actually completed.
-    gate_meta_path = verdict_path.parent / "post_judge_meta.json"
-    try:
-        gate_doc = json.loads(gate_meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return (False, {**detail, "reason": "post_judge_not_recorded"})
-    if not isinstance(gate_doc, dict):
-        return (False, {**detail, "reason": "post_judge_not_recorded"})
-    if str(gate_doc.get("status", "")).strip().lower() != "pass":
-        return (False, {**detail, "reason": "post_judge_not_pass"})
-    # And every declared deliverable is on disk. The other three phases get this for free from
-    # `artifact_hashes` — a missing deliverable cannot re-hash — and Validate has that stamp
-    # too since issue #250 PR-1, but this branch is not yet read through it (PR-2 does that);
-    # without this an attempt that died after `post_judge_meta.json` and before the rest
-    # certifies on a half-written run directory.
-    missing = [name for name in VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES
-               if not (verdict_path.parent / name).is_file()]
-    if missing:
-        return (False, {**detail,
-                        "reason": f"validate_outputs_missing:{','.join(missing)}"})
-    return (True, detail)
+    sel = resolver.select(node_key.strip(), step_token)
+    return (sel.ok, sel.detail())
 
 
 def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -> list[str]:
@@ -2368,13 +1954,14 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 # --- derivation keys (Z5, issue #250) -------------------------------------------------
 #
 # The per-phase CONTRACT INPUTS of a node, resolved from disk, and the derivation key over
-# them (`tools/derivation.py` hashes; this section says what each phase hashes). PR-1 of
-# issue #250 RECORDS the key — in the certifying stage meta on a pass (`_stamp_certification`),
-# on every launch row (`agent_runs.jsonl`) and on every terminal step_result — and decides
-# nothing from it: `_phase_certified` still reads the id chain, 13a and 13b. PR-2 replaces the
-# predicate with a lookup of this key. Every resolver here therefore answers the question the
-# predicate will ask ("what are the inputs NOW"), and the conductor asks the same function at
-# phase start, so the stamp and the later recomputation are one rule.
+# them (`tools/derivation.py` hashes; this section says what each phase hashes). The key is
+# RECORDED — in the certifying stage meta on a pass (`_stamp_certification`), on every launch
+# row (`agent_runs.jsonl`) and on every terminal step_result (PR-1 of issue #250) — and it
+# DECIDES: `_phase_certified` and the dependency-readiness stages select a certified output by
+# comparing its stamped key with the one recomputed here (PR-2, `DerivationResolver`). Every
+# resolver here therefore answers the question the predicate asks ("what are the inputs NOW"),
+# and the conductor asks the same function at phase start, so the stamp and the later
+# recomputation are one rule.
 #
 # What each phase hashes (`inputs`; hashes and identifiers only, no bodies):
 #
@@ -2417,12 +2004,13 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #
 # An UPSTREAM output hash is always the `output_hash` of the SELECTED certified output —
 # never a derivation key — so that when the selection among several certified outputs of one
-# key changes, every downstream key changes with it (A1's completion condition 4). In PR-1 the
-# selection is today's: the reserved / adopted id for this node's own upstream phases, and
-# `_selected_certified_meta`'s chain (the latest pipeline's certified binary and the source it
-# was built from) for a dependency. A dependency output today's readiness accepts without a
-# hash to bind by (unstamped, or no longer matching its stamp) binds by a labelled identity
-# instead (`_dependency_output_hash`), so that PR-1 refuses no run the gates admit.
+# key changes, every downstream key changes with it (A1's completion condition 4). The
+# selection is `DerivationResolver.select` for a dependency (its own chain under its own keys)
+# and, for this node's own upstream phases, the ref the caller passes: the conductor passes
+# the attempt's reserved / adopted ids, which `_adopt_certified_refs` keeps equal to the
+# selection; the resolver passes the selection itself. A dependency with no eligible output
+# is an unresolvable input (`_dependency_output_hash`): the consumer is not certified, and
+# readiness refuses the dependency for the same reason.
 
 
 class DerivationInputsUnresolvable(RuntimeError):
@@ -2567,86 +2155,30 @@ def _meta_output_hash(meta_doc: Mapping[str, Any], meta_ref: str) -> str:
     return _output_hash(meta_doc["artifact_hashes"], stage_dir=meta_ref.rsplit("/", 1)[0])
 
 
-def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path | None:
-    """The certifying meta of the output of `(node_key, step)` that a CONSUMER binds to today,
-    or `None` when there is none. PR-1's selection is the chain the readiness stages and the
-    build staging already use, so a key stamped now names the artifacts a run actually
-    consumed: `compile` → the latest IR (`_certified_ir_dir`); `generate` → the source the
-    latest pipeline's certified binary was built from (`_resolve_certified_closure_binding`),
-    NOT the latest source directory (a failed generate retry after the certified build is a
-    newer directory Build never linked). Whether the meta IS certified is the caller's
-    question (`_dependency_output_hash`)."""
-    step_token = step.strip().lower()
-    try:
-        kind, spec_id, version = _parse_node_key_strict(node_key)
-    except ValueError:
-        return None
-    if step_token == "compile":
-        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
-        return None if ir_dir is None else ir_dir / "ir_meta.json"
-    safe = f"{kind}__{spec_id}__{version}"
-    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
-    if pipe_dir is None:
-        return None
-    if step_token == "generate":
-        binding, _err = _resolve_certified_closure_binding(repo_root, node_key)
-        if binding is None:
-            return None
-        return pipe_dir / "source" / binding["source_id"] / "source_meta.json"
-    # No consumer key binds a dependency's BUILD or VALIDATE output (PR-1 of issue #250); a
-    # `build` arm — the certified binary, `_certified_binary_meta` — is added with its first
-    # reader rather than kept unread (a round-1 census found it vacuous).
-    return None
-
-
-def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> str:
-    """What a consumer's key binds a dependency's `step` output BY: its output hash, or — for
-    an output today's readiness accepts but cannot hash — a labelled identity.
-
-    Readiness (`_verify_dep_stage_detail`) accepts a dependency whose stage meta records
-    `verification_status: pass`; it does not re-hash the dependency's deliverables, and a meta
-    stamped before issue #177 carries no `artifact_hashes` at all. Both shapes are in the real
-    workspace (measured at `06bf4c73`: every `shallow_water2d` closure member's certified IR
-    is unstamped), and both must resolve, or a run the readiness gate admits would fail
-    closed here — PR-1 of issue #250 records and decides nothing. So:
-
-      * `sha256:<hex>` — the meta is certified in full (pass, not revoked, hashes intact);
-      * `unstamped:<stage_id>` — pass, but no `artifact_hashes` (a pre-#177 meta);
-      * `unverified:<stage_id>` — pass, but a deliverable no longer hashes to the stamp;
-      * `uncertified:<stage_id>` — a GENERATE output whose `source_meta.json` is revoked or
-        not `pass` while the binary built from it and that binary's verdict stand: readiness
-        reads the dependency's IR meta, binary meta and verdict and never its source meta, so
-        an operator's `revoke-artifact --step generate` on a dependency leaves it `ready` and
-        its consumers are still run against that source (round-1 review, issue #250).
-
-    The labelled forms are honest about what the consumer was bound to and can never equal a
-    recomputation over a stamped dependency, so a key taken over one re-derives once the
-    dependency is (PR-2's legacy blast radius, by design). A dependency with NO certified
-    output, or whose IR meta is not `pass`, is unresolvable — readiness refuses it too. (The
-    binary meta's status is readiness's question alone: `_selected_certified_meta` selects the
-    latest binary without reading its status, and no consumer key binds a dependency's build
-    output in PR-1.)"""
-    meta_path = _selected_certified_meta(repo_root, dep_node_key, step)
-    if meta_path is None:
-        raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: dependency {dep_node_key} has no certified "
-            f"{step} output (build the dependency closure first, e.g. "
-            f"run_workflow.py --with-deps)")
-    ok, detail = _stage_meta_certification(repo_root, meta_path)
-    meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
-    if ok:
-        return _meta_output_hash(detail["meta"], meta_ref)
-    reason = str(detail.get("reason") or "")
-    stage_id = meta_path.parent.name
-    if reason == "artifact_hashes_missing":
-        return f"unstamped:{stage_id}"
-    if reason.startswith("artifact_hash_mismatch:"):
-        return f"unverified:{stage_id}"
-    if step == "generate" and reason in ("revoked", "verification_status_not_pass"):
-        return f"uncertified:{stage_id}"
+def _dependency_output_hash(
+    resolver: DerivationResolver, dep_node_key: str, step: str
+) -> str:
+    """What a consumer's key binds a dependency's `step` output BY: the `output_hash` of the
+    SELECTED certified output of that step under the dependency's own key recomputed now
+    (`DerivationResolver.select`). A dependency with no eligible output — never derived,
+    revoked, or stamped under another key (every meta written before issue #250 PR-1) — is
+    unresolvable: the consumer's key cannot be computed, and the consumer is not certified
+    for the same reason readiness refuses the dependency. The labelled bindings PR-1 used
+    (`unstamped:` / `unverified:` / `uncertified:<id>`) are gone with the decision they
+    deferred."""
+    sel = resolver.select(dep_node_key, step)
+    if sel.ok and sel.output_hash is not None:
+        return sel.output_hash
+    reason = str(sel.reason or "")
+    if reason.startswith("derivation_inputs_unresolvable:"):
+        # The dependency's own key could not be computed because one of ITS dependencies has
+        # no certified output: that message already names the deepest node, so pass it
+        # through rather than nesting one "dependency X has no ..." per level of the closure.
+        raise DerivationInputsUnresolvable(reason)
     raise DerivationInputsUnresolvable(
-        f"derivation_inputs_unresolvable: dependency {dep_node_key} {step}: {meta_ref} is not "
-        f"certified ({reason})")
+        f"derivation_inputs_unresolvable: dependency {dep_node_key} has no certified "
+        f"{step} output ({reason}); build the dependency closure first, e.g. "
+        f"run_workflow.py --with-deps")
 
 
 def _spec_file_hash(repo_root: Path, spec_ref: str, name: str) -> str:
@@ -2705,6 +2237,7 @@ def phase_derivation_inputs(
     ir_ref: str | None = None,
     source_ref: str | None = None,
     binary_ref: str | None = None,
+    resolver: DerivationResolver | None = None,
 ) -> dict[str, Any]:
     """The contract inputs of `(node_key, step)` as they are NOW — the mapping
     `tools.derivation.derivation_key` hashes and `_stamp_certification` records as
@@ -2715,11 +2248,14 @@ def phase_derivation_inputs(
     the phase binds to — `generate` needs the IR, `build` the IR (for its closure and
     toolchain) and the source, `validate` the IR and the binary. A missing required ref, an
     upstream that is not certified, a dependency with no certified output and an unreadable
-    spec file all raise `DerivationInputsUnresolvable`."""
+    spec file all raise `DerivationInputsUnresolvable`. `resolver` is the evaluation's
+    memo of dependency selections (`DerivationResolver`); one is created when none is
+    passed."""
     step_token = step.strip().lower()
     if step_token not in DERIVATION_STEPS:
         raise ValueError(f"unsupported step for a derivation: {step!r}")
     node_key = node_key.strip()
+    resolver = resolver or DerivationResolver(repo_root)
 
     def need(name: str, value: str | None) -> str:
         if not isinstance(value, str) or not value.strip():
@@ -2766,7 +2302,7 @@ def phase_derivation_inputs(
             "profiles": profiles,
             "dependency_graph": _sha256_hex(_canonical_json_bytes(signature)),
             "closure": [
-                {"node_key": nk, "ir": _dependency_output_hash(repo_root, nk, "compile")}
+                {"node_key": nk, "ir": _dependency_output_hash(resolver, nk, "compile")}
                 for nk in closure],
             # The published-operation surface the producer is SHOWN (`dependency_surface.json`,
             # rendered through `<dependency_facts>`): for a dependency whose certified IR has no
@@ -2775,7 +2311,7 @@ def phase_derivation_inputs(
             # the resolved document itself — unresolved entries included — because that is what
             # both the producer and the membership gate read.
             "dependency_surface": _sha256_hex(_canonical_json_bytes(
-                _resolve_component_dep_surface(repo_root, node_key, graph))),
+                _resolve_component_dep_surface(repo_root, node_key, graph, resolver=resolver))),
             "toolchain_document": _sha256_hex(
                 admissible_toolchains_document(node_key).encode("utf-8")),
         }
@@ -2801,8 +2337,8 @@ def phase_derivation_inputs(
             },
             "closure": [
                 {"node_key": nk,
-                 "ir": _dependency_output_hash(repo_root, nk, "compile"),
-                 "source": _dependency_output_hash(repo_root, nk, "generate")}
+                 "ir": _dependency_output_hash(resolver, nk, "compile"),
+                 "source": _dependency_output_hash(resolver, nk, "generate")}
                 for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
         }
 
@@ -2814,7 +2350,7 @@ def phase_derivation_inputs(
                 repo_root, repo_root / source / "source_meta.json",
                 what=f"{node_key} generate"),
             "closure": [
-                {"node_key": nk, "source": _dependency_output_hash(repo_root, nk, "generate")}
+                {"node_key": nk, "source": _dependency_output_hash(resolver, nk, "generate")}
                 for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
             "toolchain": _ir_toolchain_identity(ir_doc),
         }
@@ -3034,10 +2570,13 @@ def check_phase_certified(
         "step": step_token,
         "reason": detail.get("reason"),
         "ir_ref": detail.get("ir_ref"),
+        "ir_id": detail.get("ir_id"),
         "pipeline_ref": detail.get("pipeline_ref"),
         "source_id": detail.get("source_id"),
         "binary_id": detail.get("binary_id"),
         "run_id": detail.get("run_id"),
+        "derivation_key": detail.get("derivation_key"),
+        "output_hash": detail.get("output_hash"),
         "revoked": bool(detail.get("revoked")),
         "last_fail_reason": detail.get("last_fail_reason"),
         "revocation_severity": detail.get("revocation_severity"),
@@ -3046,62 +2585,37 @@ def check_phase_certified(
     }
 
 
-def _certified_binary_meta(pipe_dir: Path) -> tuple[Path, dict[str, Any]] | None:
-    """The certified binary's ``(binary_meta.json path, parsed dict)`` — the SINGLE latest-binary
-    selection (``_latest_meta_under(.../binary/*/binary_meta.json)``) that ``_certified_model_source``
-    and the harness-pin provenance both key off. Returning the parsed meta lets a caller read
-    ``source_source_id`` and ``source_ir_id`` from ONE snapshot instead of re-selecting the latest
-    binary twice (which a concurrent build could race, pairing a source with a mismatched IR
-    lineage). Pure and NEVER raises; ``None`` on any missing / unparseable / non-dict meta."""
-    try:
-        binary_meta_path = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-        if binary_meta_path is None:
-            return None
-        binary_meta = json.loads(binary_meta_path.read_text(encoding="utf-8"))
-        if not isinstance(binary_meta, dict):
-            return None
-        return binary_meta_path, binary_meta
-    except Exception:
-        return None
+def _certified_model_source(
+    repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
+) -> Path | None:
+    """Resolve the certified Fortran model source of a dependency — the EXACT
+    `<spec_id>_model.f90` Build stages/links — or ``None`` if it cannot be resolved.
 
+    Single-sources the load-bearing selection every reader of a dependency's source depends
+    on: the orientation hint (``_resolve_dependency_facts``), the compile-time published
+    surface (``_resolve_component_dep_surface``), the harness pin
+    (``workflow_conductor._write_runner``) and the deterministic Build staging
+    (``_resolve_certified_closure_binding``), so the interface a consumer is SHOWN at Generate
+    is always the source Build COMPILES and the source the consumer's key binds. The
+    selection is the dependency's SELECTED certified Generate output under its key
+    recomputed now (``DerivationResolver.select``) — never the latest directory, never the
+    binary's ``source_source_id``.
 
-def _model_source_from_binary_meta(
-        pipe_dir: Path, spec_id: str, binary_meta: dict[str, Any]) -> Path | None:
-    """The certified ``<spec_id>_model.f90`` for an already-selected ``binary_meta`` (its
-    ``source_source_id`` source), or ``None`` if unresolvable. Split out of
-    ``_certified_model_source`` so the harness pin can bind the source AND its ``source_ir_id``
-    from the same selected binary meta. Pure and NEVER raises."""
+    Pure and NEVER raises: any unresolvable selection or missing source file yields
+    ``None``. Callers decide the policy — the orientation hint skips the dep; Build re-raises
+    its fail-closed precondition.
+    """
     try:
-        source_id = binary_meta.get("source_source_id")
-        if not isinstance(source_id, str) or not source_id.strip():
+        spec_id = _parse_node_key_strict(node_key)[1]
+        resolver = resolver or DerivationResolver(repo_root)
+        sel = resolver.select(node_key, "generate")
+        stage_dir = sel.stage_dir()
+        if not sel.ok or stage_dir is None:
             return None
-        model_src = pipe_dir / "source" / source_id.strip() / "src" / f"{spec_id}_model.f90"
+        model_src = stage_dir / "src" / f"{spec_id}_model.f90"
         return model_src if model_src.is_file() else None
     except Exception:
         return None
-
-
-def _certified_model_source(pipe_dir: Path, spec_id: str) -> Path | None:
-    """Resolve the certified Fortran model source for a dependency pipeline — the EXACT
-    `<spec_id>_model.f90` Build stages/links — or ``None`` if it cannot be resolved.
-
-    Single-sources the load-bearing selection both the orientation hint
-    (``_resolve_dependency_facts``) and the deterministic Build staging
-    (``workflow_conductor._stage_dependency_sources``) depend on, so the interface a
-    consumer is SHOWN at Generate is always the source Build COMPILES. The selection
-    binds to the certified binary's ``source_source_id`` (``binary/*/binary_meta.json``),
-    NOT the pipeline ``lineage.json`` (which tracks the latest *generated* source and may
-    have advanced past the certified binary). The latest binary is chosen identically to
-    how ``_verify_dep_stage`` / ``_resolve_dependency_facts`` select it.
-
-    Pure and NEVER raises: any missing/unparseable artifact (no binary_meta, no
-    ``source_source_id``, no source file) yields ``None``. Callers decide the policy —
-    the orientation hint skips the dep; Build re-raises its fail-closed precondition.
-    """
-    sel = _certified_binary_meta(pipe_dir)
-    if sel is None:
-        return None
-    return _model_source_from_binary_meta(pipe_dir, spec_id, sel[1])
 
 
 def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
@@ -3148,49 +2662,43 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
 
 
 def _resolve_certified_closure_binding(
-    repo_root: Path, node_key: str
+    repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """The binding of ONE closure node: which certified artifact of `node_key` a build of a
     consumer stages and links right now, identified and hashed.
 
-    Returns `({node_key, pipeline_ref, binary_id, source_id, model_source_ref,
-    model_source_sha256}, None)` on success and `(None, <reason>)` otherwise. Pure and NEVER
-    raises; the reason is phrased as the build precondition it is (the dependency closure must
-    be certified first), because the conductor re-raises it verbatim as a transport fail_closed.
+    Returns `({node_key, pipeline_ref, source_id, model_source_ref, model_source_sha256,
+    output_hash}, None)` on success and `(None, <reason>)` otherwise. Pure and NEVER
+    raises; the reason is phrased as the build precondition it is (the dependency closure
+    must be certified first), because the conductor re-raises it verbatim as a transport
+    fail_closed.
 
-    This is the SINGLE selection behind two readers that must never disagree: the deterministic
-    Build / syntax-probe staging (`workflow_conductor._stage_dependency_sources`) and the
-    readiness comparison (`_dependency_binding_freshness`). The chain is the same one
-    `_certified_model_source` documents — latest pipeline dir, then the certified binary's
-    `source_source_id` — so what a consumer was CERTIFIED AGAINST is compared with what Build
-    would STAGE NOW under one rule. The hash is taken over the same immutable file the stage
-    copies (a `source_id` directory's content is written once and never rewritten), so hashing
-    and copying cannot observe different bytes."""
+    The selection is the dependency's SELECTED certified Generate output under its key
+    (`DerivationResolver.select`) — the same selection the consumer's generate and build
+    keys bind by `closure[].source` (`phase_derivation_inputs`), so what a consumer is
+    CERTIFIED AGAINST and what Build STAGES are one output by construction, not two lookups
+    that must agree. The hash is taken over the same immutable file the stage copies (a
+    `source_id` directory's content is written once and never rewritten), so hashing and
+    copying cannot observe different bytes."""
     try:
-        spec_kind, spec_id, spec_version = _parse_node_key_strict(node_key)
+        spec_id = _parse_node_key_strict(node_key)[1]
     except Exception:
         return (None, f"unparseable dependency node_key {node_key!r}")
-    safe = f"{spec_kind}__{spec_id}__{spec_version}"
-    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
-    if pipe_dir is None:
+    resolver = resolver or DerivationResolver(repo_root)
+    sel = resolver.select(node_key, "generate")
+    stage_dir = sel.stage_dir()
+    if not sel.ok or stage_dir is None:
         reason = (
-            f"no ready pipeline under workspace/pipelines/{safe} to stage its certified "
-            f"model source from (build the dependency closure first, e.g. "
-            f"run_workflow.py --with-deps)"
+            f"{node_key} has no certified model source to stage ({sel.reason}); build the "
+            f"dependency closure first, e.g. run_workflow.py --with-deps"
         )
         return (None, reason)
-    sel = _certified_binary_meta(pipe_dir)
-    model_src = None if sel is None else _model_source_from_binary_meta(
-        pipe_dir, spec_id, sel[1])
-    if sel is None or model_src is None:
-        rel_pipe = _normalize_rel_posix(pipe_dir.relative_to(repo_root).as_posix())
-        reason = (
-            f"cannot resolve the certified model source under {rel_pipe} (no "
-            f"binary_meta.json / no source_source_id / missing source file; dependency not "
-            f"built ready — run_workflow.py --with-deps first)"
-        )
-        return (None, reason)
-    binary_meta_path, binary_meta = sel
+    model_src = stage_dir / "src" / f"{spec_id}_model.f90"
+    if not model_src.is_file():
+        rel = _normalize_rel_posix(stage_dir.relative_to(repo_root).as_posix())
+        return (None, f"cannot resolve the certified model source under {rel} (missing "
+                      f"{spec_id}_model.f90; dependency not built ready — run_workflow.py "
+                      f"--with-deps first)")
     try:
         digest = hashlib.sha256(model_src.read_bytes()).hexdigest()
     except Exception as exc:  # noqa: BLE001 - unreadable staged source is a precondition failure
@@ -3198,13 +2706,12 @@ def _resolve_certified_closure_binding(
     return (
         {
             "node_key": node_key,
-            "pipeline_ref": _normalize_rel_posix(
-                pipe_dir.relative_to(repo_root).as_posix()),
-            "binary_id": binary_meta_path.parent.name,
-            "source_id": str(binary_meta.get("source_source_id") or "").strip(),
+            "pipeline_ref": sel.pipeline_ref,
+            "source_id": sel.source_id,
             "model_source_ref": _normalize_rel_posix(
                 model_src.relative_to(repo_root).as_posix()),
             "model_source_sha256": digest,
+            "output_hash": sel.output_hash,
         },
         None,
     )
@@ -3693,17 +3200,17 @@ def _parse_fortran_dummy_declarations(
     return resolved
 
 
-def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, Any]]:
+def _resolve_dependency_facts(
+    repo_root: Path, ir_ref: Any, *, resolver: DerivationResolver | None = None,
+) -> list[dict[str, Any]]:
     """Resolve, host-side, the on-disk pipeline / run / aggregate_verdict each direct
     dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
     gate.
 
     Mirrors ``_verify_dep_stage``'s execution-readiness selection EXACTLY so the hint a
-    leaf reads matches the artifacts readiness actually accepted:
-    ``_node_key_to_safe`` -> ``_latest_pipeline_dir`` ->
-    ``_latest_meta_under("binary/*/binary_meta.json")`` ->
-    ``_latest_aggregate_verdict_under(bound_to_binary_id=...)``. ``run_id`` is read from
-    the chosen verdict's ``runs/<run_id>/...`` location.
+    leaf reads matches the artifacts readiness actually accepted: the dependency's SELECTED
+    certified Validate output under its key (``DerivationResolver.select``), whose run
+    directory holds the ``aggregate_verdict.json`` the fact names.
 
     Returns a list of ``{node_key, pipeline_ref, run_id, aggregate_verdict_ref}`` (repo-
     relative POSIX paths) for each direct dep that resolves to a bound verdict; deps that
@@ -3780,49 +3287,30 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
             if isinstance(toolchain, dict) else "fortran"
         )
         consumer_is_fortran = consumer_language == "fortran"
-        repo_resolved = repo_root.resolve()
+        resolver = resolver or DerivationResolver(repo_root)
         for entry in direct_deps:
             node_key = entry.get("node_key") if isinstance(entry, dict) else entry
             if not isinstance(node_key, str) or not node_key.strip():
                 continue
             node_key = node_key.strip()
             try:
-                safe = _node_key_to_safe(node_key)
+                _node_key_to_safe(node_key)
             except Exception:
                 # Malformed dep node_key: skip rather than raise (orientation-only).
                 continue
-            safe_root = repo_root / "workspace" / "pipelines" / safe
-            pipe_dir = _latest_pipeline_dir(safe_root)
-            if pipe_dir is None:
+            sel = resolver.select(node_key, "validate")
+            run_dir = sel.stage_dir()
+            if not sel.ok or run_dir is None or not sel.pipeline_ref:
                 continue
-            latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-            if latest_binary is None:
-                continue
-            chosen_binary_id = latest_binary.parent.name
-            verdict_path = _latest_aggregate_verdict_under(
-                pipe_dir, bound_to_binary_id=chosen_binary_id
-            )
-            if verdict_path is None:
-                continue
-            try:
-                rel_parts = verdict_path.relative_to(pipe_dir).parts
-            except ValueError:
-                continue
-            run_id = (
-                rel_parts[1]
-                if len(rel_parts) >= 2 and rel_parts[0] == "runs"
-                else ""
-            )
-            try:
-                pipeline_ref = pipe_dir.resolve().relative_to(repo_resolved).as_posix()
-                verdict_ref = verdict_path.resolve().relative_to(repo_resolved).as_posix()
-            except ValueError:
+            verdict_path = run_dir / "aggregate_verdict.json"
+            if not verdict_path.is_file():
                 continue
             fact: dict[str, Any] = {
                 "node_key": node_key,
-                "pipeline_ref": pipeline_ref,
-                "run_id": run_id,
-                "aggregate_verdict_ref": verdict_ref,
+                "pipeline_ref": sel.pipeline_ref,
+                "run_id": str(sel.run_id or ""),
+                "aggregate_verdict_ref": _normalize_rel_posix(
+                    verdict_path.relative_to(repo_root).as_posix()),
             }
             # Pin each called op's certified Fortran interface (argument order) so the
             # consumer's Generate need not guess it. Extracted from the SAME certified
@@ -3839,7 +3327,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
             if consumer_is_fortran and not is_infra_dep:
                 try:
                     dep_spec_id = _parse_node_key_strict(node_key)[1]
-                    model_src = _certified_model_source(pipe_dir, dep_spec_id)
+                    model_src = _certified_model_source(repo_root, node_key, resolver=resolver)
                 except Exception:
                     dep_spec_id = None
                     model_src = None
@@ -3913,7 +3401,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
                                 d_kind, d_id, d_ver = _parse_node_key_strict(node_key)
                                 drift = _signature_drift_fields(
                                     _ir_published_signature(
-                                        repo_root, d_kind, d_id, d_ver, op),
+                                        repo_root, d_kind, d_id, d_ver, op, resolver=resolver),
                                     iface)
                             except Exception:
                                 drift = []
@@ -3932,7 +3420,8 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
 
 
 def _resolve_component_dep_surface(
-    repo_root: Path, node_key: str, graph: Any
+    repo_root: Path, node_key: str, graph: Any,
+    *, resolver: DerivationResolver | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve, host-side at COMPILE phase start, the published operation-NAME surface of
     each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
@@ -3971,6 +3460,7 @@ def _resolve_component_dep_surface(
         all_nodes = graph.get("all_nodes")
         if not isinstance(all_nodes, list):
             return []
+        resolver = resolver or DerivationResolver(repo_root)
         self_nk = str(graph.get("node_key") or node_key or "").strip()
         transitive = graph.get("transitive_deps")
         transitive_nks: set[str] = set()
@@ -4005,30 +3495,24 @@ def _resolve_component_dep_surface(
             # Primary: the dep's certified IR public_api (the L1 name pin). A public_api that
             # is PRESENT (even with an empty operation list) is authoritative — a legacy dep IR
             # with NO public_api falls through to the certified source.
-            names = _ir_published_operation_ids(repo_root, kind, spec_id, version)
+            names = _ir_published_operation_ids(
+                repo_root, kind, spec_id, version, resolver=resolver)
             if names is not None:
                 entry["published_operations"] = names
                 entry["source"] = "ir_public_api"
                 out.append(entry)
                 continue
             # Fallback: the `<dep_spec_id>__` public subroutines in the certified model source.
-            try:
-                safe = _node_key_to_safe(nk)
-            except Exception:
-                out.append(entry)
-                continue
-            pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
-            if pipe_dir is not None:
-                model_src = _certified_model_source(pipe_dir, spec_id)
-                if model_src is not None:
-                    try:
-                        text = model_src.read_text(encoding="utf-8")
-                    except Exception:
-                        text = None
-                    if text is not None:
-                        entry["published_operations"] = _list_prefixed_subroutines(
-                            text, f"{spec_id}__")
-                        entry["source"] = "certified_source"
+            model_src = _certified_model_source(repo_root, nk, resolver=resolver)
+            if model_src is not None:
+                try:
+                    text = model_src.read_text(encoding="utf-8")
+                except Exception:
+                    text = None
+                if text is not None:
+                    entry["published_operations"] = _list_prefixed_subroutines(
+                        text, f"{spec_id}__")
+                    entry["source"] = "certified_source"
             out.append(entry)
         return out
     except Exception:
@@ -4036,7 +3520,8 @@ def _resolve_component_dep_surface(
 
 
 def _ir_published_operation_ids(
-    repo_root: Path, kind: str, spec_id: str, version: str
+    repo_root: Path, kind: str, spec_id: str, version: str,
+    *, resolver: DerivationResolver | None = None,
 ) -> list[str] | None:
     """The ``public_api.published_operations[].operation_id`` names of the CURRENT certified
     IR for ``(kind, spec_id, version)``, or ``None`` when the IR has NO ``public_api`` block
@@ -4044,7 +3529,7 @@ def _ir_published_operation_ids(
     ``public_api`` with an empty/malformed ``published_operations`` yields ``[]`` (authoritative
     empty), NOT ``None``. NEVER raises."""
     try:
-        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
         doc = _require_yaml().safe_load(
@@ -4067,7 +3552,8 @@ def _ir_published_operation_ids(
 
 
 def _ir_published_signature(
-    repo_root: Path, kind: str, spec_id: str, version: str, symbol: str
+    repo_root: Path, kind: str, spec_id: str, version: str, symbol: str,
+    *, resolver: DerivationResolver | None = None,
 ) -> dict[str, Any] | None:
     """The structured `signature` the CURRENT certified IR of `(kind, spec_id, version)` publishes
     for `symbol`, from `public_api.signatures[]` (each entry `{symbol, signature}`), or `None` when
@@ -4076,7 +3562,7 @@ def _ir_published_signature(
     Read for ONE purpose: the drift canary in `_resolve_dependency_facts`. It is NOT the truth source
     for what a consumer is shown — see `_signature_drift_fields`."""
     try:
-        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
         doc = _require_yaml().safe_load(
@@ -4221,11 +3707,12 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
     model + checks.
 
     Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage``
-    / ``_certified_model_source``): for each sibling catalog spec, the latest pipeline ->
-    latest binary -> the bound ``aggregate_verdict ∈ {pass, xfail}`` (a genuinely certified
-    node, not merely built). Across siblings the globally most-recent certified pipeline (by
-    canonical ``(date, seq)``) wins. ORIENTATION/PRIOR-ART ONLY — never a gate, and never the
-    node's OWN prior source (self is excluded, so it cannot leak a past attempt of itself).
+    / ``_certified_model_source``): for each sibling catalog spec, its SELECTED certified
+    Validate output under its key (a genuinely certified node, not merely built —
+    ``DerivationResolver.select``) and the certified Generate output that verdict stands on.
+    Across siblings the most-recent certified pipeline (by canonical ``(date, seq)``) wins.
+    ORIENTATION/PRIOR-ART ONLY — never a gate, and never the node's OWN prior source (self is
+    excluded, so it cannot leak a past attempt of itself).
 
     Returns ``{node_key, spec_id, sources: [{filename, text}, ...], source_ref}`` (the last
     is the repo-relative ``source/<source_id>`` directory the sources were read from) or
@@ -4299,6 +3786,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
                     siblings.append(key)
 
         best: tuple[tuple[str, int], dict[str, Any]] | None = None
+        resolver = DerivationResolver(repo_root)
         for cand_id, cand_version in siblings:
             if not (_is_safe_path_token(self_kind) and _is_safe_path_token(cand_id)
                     and (not cand_version or _is_safe_path_token(cand_version))):
@@ -4310,27 +3798,14 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
             for safe_root in (repo_root / "workspace" / "pipelines").glob(safe_glob):
                 if not safe_root.is_dir():
                     continue
-                pipe_dir = _latest_pipeline_dir(safe_root)
-                if pipe_dir is None:
+                cand_nk = f"{self_kind}/{cand_id}@{safe_root.name.rsplit('__', 1)[-1]}"
+                if not resolver.select(cand_nk, "validate").ok:
                     continue
-                latest_binary = _latest_meta_under(pipe_dir, "binary/*/binary_meta.json")
-                if latest_binary is None:
-                    continue
-                verdict_path = _latest_aggregate_verdict_under(
-                    pipe_dir, bound_to_binary_id=latest_binary.parent.name)
-                if verdict_path is None:
-                    continue
-                try:
-                    vdoc = json.loads(verdict_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                if (not isinstance(vdoc, dict)
-                        or str(vdoc.get("aggregate_verdict", "")).strip().lower()
-                        not in {"pass", "xfail"}):
-                    continue
-                model_src = _certified_model_source(pipe_dir, cand_id)
+                model_src = _certified_model_source(repo_root, cand_nk, resolver=resolver)
                 if model_src is None:
                     continue
+                # `<pipe>/source/<source_id>/src/<id>_model.f90` -> the pipeline directory.
+                pipe_dir = model_src.parent.parent.parent.parent
                 # R5 ABI-drift guard (M3c only): the checks exemplar must be authored under the
                 # CURRENT contract, else its `<id>_checks.f90` may carry a retired checks ABI the
                 # acceptance gate (name/kind only) admits but Generate.gate then rejects. The
@@ -4379,10 +3854,10 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
 def _certify_and_collect_dep_artifacts(
     repo_root: Path, spec_ref: Any
 ) -> dict[str, Any]:
-    """Single-pass: judge every candidate dep version through `_verify_dep_stage_detail`,
-    select the certified version per dep, and read the bytes of that version's selected
-    artifacts to feed into the fingerprint (Codex round 17 F1+F2; one primitive since
-    issue #178).
+    """Single-pass: judge every candidate dep version through `_verify_dep_stage_detail`
+    and select the certified version per dep (one primitive since issue #178; one
+    `DerivationResolver` for the whole direct-dependency set since issue #250 PR-2, so a
+    closure member two dependencies share is selected once).
 
     Returns a dict with:
       - `deps_doc_valid` (bool): True iff deps.yaml parsed as a dict.
@@ -4393,18 +3868,19 @@ def _certify_and_collect_dep_artifacts(
         catalog version that achieved the MAX level (any of {0,1,2,3}).
         When no version was matched / no artifacts existed, level is 0 and
         `certified_version` is None.
-      - `artifact_bytes_in_order`: list of `(stage, kind, sid, version, bytes)`
-        for ONLY the certified version of each dep — the canonical input to
-        the fingerprint hash. Walking only certified deps' artifacts means
-        unrelated historical-version artifact churn does NOT invalidate
-        readiness at the launch-time fingerprint check.
+
+    The `dep_set_fingerprint` this pass used to feed — the bytes of each selected stage
+    file, hashed as a cheap stale-detector beside the booleans — went with issue #250 PR-2:
+    every stage is now itself a content-hash comparison (the dependency's derivation key
+    over its inputs and the `artifact_hashes` of its output), recomputed live at every
+    gate, so there is nothing a byte fingerprint of the selected files would detect
+    earlier.
     """
     snap: dict[str, Any] = {
         "deps_doc_valid": False,
         "entries_well_formed": False,
         "has_entries": False,
         "certified_entries": [],
-        "artifact_bytes_in_order": [],
     }
     deps_doc = _read_deps_yaml(repo_root, spec_ref)
     if not isinstance(deps_doc, dict):
@@ -4428,6 +3904,7 @@ def _certify_and_collect_dep_artifacts(
     if expand_error is not None:
         snap["entries_well_formed"] = False
         return snap
+    resolver = DerivationResolver(repo_root)
     for kind, spec_id, constraint in entries:
         matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
         if not matched:
@@ -4435,204 +3912,54 @@ def _certify_and_collect_dep_artifacts(
             continue
         best_v: str | None = None
         best_level = -1
-        best_paths: dict[str, Path] = {}
         # matched is descending; iterate so ties prefer the higher version.
         for v in matched:
             # Cumulative readiness level of this version (0 = no ir / ir fail, 1 = ir pass,
             # 2 = ir + pipeline pass, 3 = ir + pipeline + verdict pass). The level is the INDEX
             # of the first stage the primitive refuses, which relies on
             # `_DEPENDENCY_READINESS_STAGES` being ordered (ir_ref, pipeline_ref,
-            # aggregate_verdict). The primitive already carries the R6-lite / R6 proper
-            # freshness demotions on `ir_ref` / `pipeline_ref`, so nothing is re-applied here.
-            # Every stage is asked even after one refuses — no short-circuit — because the
-            # files of the stages AFTER the first refusal are part of the fingerprint below,
-            # as they were before issue #178: a level-0 dep's `binary_meta.json` and verdict,
-            # a level-1 dep's verdict. A `break` at the first refusal would drop exactly those
-            # files (the refused stage's own file is recorded before `ok` is read, so it would
-            # survive a break — the loss is the later stages, not the refused one).
-            paths: dict[str, Path] = {}
+            # aggregate_verdict) and on each stage's selection requiring the one before it.
             level = len(_DEPENDENCY_READINESS_STAGES)
             for idx, stage in enumerate(_DEPENDENCY_READINESS_STAGES):
-                ok, _detail, path = _verify_dep_stage_detail(repo_root, kind, spec_id, v, stage)
-                if path is not None:
-                    paths[stage] = path
-                if not ok and level == len(_DEPENDENCY_READINESS_STAGES):
+                ok, _detail = _verify_dep_stage_detail(
+                    repo_root, kind, spec_id, v, stage, resolver=resolver)
+                if not ok:
                     level = idx
+                    break
             if level > best_level:
                 best_level = level
                 best_v = v
-                best_paths = paths
         if best_v is None:
             snap["certified_entries"].append((kind, spec_id, None, 0))
             continue
         snap["certified_entries"].append((kind, spec_id, best_v, best_level))
-        for stage in _DEPENDENCY_READINESS_STAGES:
-            path = best_paths.get(stage)
-            if path is None:
-                continue
-            try:
-                raw = path.read_bytes()
-            except OSError:
-                # Same disposition as before issue #178: a selected file that cannot be read
-                # contributes no bytes to the fingerprint for that stage.
-                continue
-            snap["artifact_bytes_in_order"].append((stage, kind, spec_id, best_v, raw))
     return snap
 
 
-def _walk_dep_artifacts(
+def _compute_dep_readiness(
     repo_root: Path, spec_ref: Any
-) -> Iterator[tuple[str, str, str, str, bytes]]:
-    """Yield artifact bytes for ONLY the certified version per dep.
-
-    Backed by `_certify_and_collect_dep_artifacts` so the fingerprint
-    hash narrows to artifacts that actually contributed to readiness
-    (Codex round 17 F2). Order is canonical: deps.yaml entry order,
-    one version per entry, stages in (ir_ref, pipeline_ref, aggregate_verdict).
-    """
-    snap = _certify_and_collect_dep_artifacts(repo_root, spec_ref)
-    for chunk in snap["artifact_bytes_in_order"]:
-        yield chunk
-
-
-def _dep_fingerprint_header_bytes(repo_root: Path, spec_ref: Any) -> bytes:
-    """Header bytes prefixed to the dep-set fingerprint hash.
-
-    Codex round 19 F1: the catalog contribution is NOT the entire
-    `spec_catalog.yaml` bytes — that would let unrelated catalog churn
-    (publishing a spec your orchestration does not depend on, editing
-    metadata elsewhere) invalidate every in-flight orchestration. Instead,
-    hash a deterministic representation of ONLY the catalog versions for
-    `(spec_kind, spec_id)` pairs that appear in this orchestration's
-    `deps.yaml`. Edits outside that subset cannot change resolution and
-    therefore cannot legitimately invalidate readiness.
-    """
-    spec_token = spec_ref.strip() if isinstance(spec_ref, str) and spec_ref.strip() else ""
-    deps_bytes: bytes = b""
-    if spec_token:
-        deps_path = (repo_root / spec_token / "deps.yaml").resolve()
-        try:
-            deps_path.relative_to(repo_root.resolve())
-            if deps_path.is_file():
-                deps_bytes = deps_path.read_bytes()
-        except (ValueError, OSError):
-            deps_bytes = b""
-    catalog_subset_bytes = _relevant_catalog_subset_bytes(repo_root, spec_ref)
-    return spec_token.encode("utf-8") + b"\x00" + deps_bytes + b"\x00" + catalog_subset_bytes
-
-
-def _no_deps_leaf_fingerprint(repo_root: Path, spec_ref: Any) -> str:
-    """Byte-only fingerprint that matches the full dep-set fingerprint
-    iff the orchestration is a leaf with no direct dependencies.
-
-    Codex round 30 F1: the round-29 PyYAML-missing leaf fallback trusted
-    `certified_deps == []` from persisted meta without proving it still
-    described the *current* deps.yaml — a stale meta or direct edit could
-    fail-open the gate. This helper recomputes the fingerprint header
-    bytes WITHOUT parsing YAML (catalog subset is empty by definition
-    when there are no deps) and SHA-256s them. For a true leaf, this
-    equals the original `_dependency_set_fingerprint` value because:
-      - `_relevant_catalog_subset_bytes` returns `b""` when deps.yaml has
-        no entries, so catalog_subset is empty.
-      - `artifact_bytes_in_order` is empty for a leaf, so the artifact
-        block is empty.
-    The hash therefore reduces to `SHA256(spec_token \\x00 deps_bytes \\x00 b"")`.
-    If the persisted fingerprint matches this byte-only recomputation,
-    deps.yaml hasn't been mutated since mark concluded "no deps" — so
-    trusting `certified_deps == []` is safe even without PyYAML.
-
-    Edits to deps.yaml (adding/changing deps) or to spec_ref change the
-    bytes → fingerprint mismatch → reject. Forging persisted meta cannot
-    succeed without also reconstructing matching deps.yaml bytes.
-    """
-    spec_token = spec_ref.strip() if isinstance(spec_ref, str) and spec_ref.strip() else ""
-    deps_bytes: bytes = b""
-    if spec_token:
-        deps_path = (repo_root / spec_token / "deps.yaml").resolve()
-        try:
-            deps_path.relative_to(repo_root.resolve())
-            if deps_path.is_file():
-                deps_bytes = deps_path.read_bytes()
-        except (ValueError, OSError):
-            deps_bytes = b""
-    h = hashlib.sha256()
-    h.update(spec_token.encode("utf-8"))
-    h.update(b"\x00")
-    h.update(deps_bytes)
-    h.update(b"\x00")
-    # catalog subset = empty for a no-deps leaf (round 19 F1 semantics).
-    return h.hexdigest()
-
-
-def _relevant_catalog_subset_bytes(repo_root: Path, spec_ref: Any) -> bytes:
-    """Deterministic serialization of the catalog subset relevant to
-    `spec_ref`'s deps: for each `(spec_kind, spec_id)` appearing in
-    deps.yaml, the sorted set of catalog versions for that pair. Returns
-    empty bytes when deps.yaml is missing, malformed, or has no entries.
-
-    Catalog edits to OTHER specs do not contribute to the hash, so they
-    cannot invalidate this orchestration's readiness.
-    """
-    deps_doc = _read_deps_yaml(repo_root, spec_ref)
-    if not isinstance(deps_doc, dict):
-        return b""
-    entries, well_formed = _parse_dep_entries(deps_doc)
-    if not well_formed or not entries:
-        return b""
-    catalog = _load_spec_catalog(str(repo_root.resolve()))
-    # Issue #175: fingerprint the (kind, spec_id) pairs AFTER profile expansion — the adopted
-    # profile's own catalog entry contributes through the pair it is expanded from, and the
-    # components it selects contribute as themselves, so a catalog edit to either invalidates
-    # readiness. An expansion failure yields the same empty-bytes value a malformed schema
-    # does; the gates that own that failure report it.
-    entries, profiles_record, expand_error = expand_profile_dependencies(
-        repo_root, spec_ref, entries, catalog
-    )
-    if expand_error is not None:
-        return b""
-    entries = entries + [("profile", rec["profile_id"], None) for rec in profiles_record]
-    seen: set[tuple[str, str]] = set()
-    items: list[tuple[str, str, list[str]]] = []
-    for kind, spec_id, _constraint in entries:
-        key = (kind, spec_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        versions = list(catalog.get(key, ()))
-        # Catalog tuples are already sorted descending; re-sort lexicographically
-        # so the serialized representation is stable across runs.
-        items.append((kind, spec_id, sorted(versions)))
-    items.sort()
-    return json.dumps(items, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def _compute_dep_readiness_and_fingerprint(
-    repo_root: Path, spec_ref: Any
-) -> tuple[dict[str, bool] | None, str, list[dict[str, str]], str | None]:
-    """Single-pass: derive readiness booleans, fingerprint, the certified
-    `(spec_kind, spec_id, spec_version)` per dep, and any verification-error
-    reason from the SAME artifact byte snapshots (Codex round 16 F1 + round
-    17 F1/F2 + round 21 F2).
+) -> tuple[dict[str, bool] | None, list[dict[str, str]], str | None]:
+    """Single-pass: derive the readiness booleans, the certified
+    `(spec_kind, spec_id, spec_version)` per dep, and any verification-error reason from
+    ONE evaluation of the dependency set.
 
     Per-dep certified version is the HIGHEST matching catalog version that
     achieved the max readiness level (ir → ir+pipeline → ir+pipeline+verdict).
-    The fingerprint hashes ONLY the certified version's artifacts plus the
-    header (spec_ref + deps.yaml + spec_catalog.yaml subset).
 
-    Returns `(verified_dict, fingerprint_hex, certified_deps, fail_reason)`:
+    Returns `(verified_dict, certified_deps, fail_reason)`:
       - `verified_dict`: None when verification cannot run. Else a dict of
         stage booleans.
-      - `fingerprint_hex`: stable hash of header + certified artifacts.
       - `certified_deps`: list of {"spec_kind", "spec_id", "spec_version"} in
         deps.yaml order.
       - `fail_reason`: None on success; otherwise one of
         `"deps_yaml_missing_or_unparseable"` (deps.yaml file absent or YAML
-        parse failed) or `"deps_yaml_malformed_schema"` (deps.yaml parsed
+        parse failed), `"deps_yaml_malformed_schema"` (deps.yaml parsed
         but the dependency-block schema is invalid — unknown keys, missing
-        canonical lists, list items in wrong shape, etc.). Callers that
-        write persisted state (`mark_dependency_readiness`) treat both as
-        hard verification failures and fail closed with the specific reason
-        so the audit trail records WHICH defect occurred.
+        canonical lists, list items in wrong shape, etc.) or
+        `"spec_catalog_corrupt"`. Callers that write persisted state
+        (`mark_dependency_readiness`) treat all of them as hard verification failures and
+        fail closed with the specific reason so the audit trail records WHICH defect
+        occurred.
     """
     # Codex round 33 F2: catalog corruption is a distinct hard failure,
     # not a normal "no matching dep" verification result. Convert the
@@ -4640,41 +3967,19 @@ def _compute_dep_readiness_and_fingerprint(
     # CLI exit, and persisted state all record WHICH defect occurred.
     try:
         snap = _certify_and_collect_dep_artifacts(repo_root, spec_ref)
-        header = _dep_fingerprint_header_bytes(repo_root, spec_ref)
     except SpecCatalogCorruption:
-        # Without a valid catalog there is no fingerprint we can stably
-        # compute. Return `verified=None` with the distinct
-        # `spec_catalog_corrupt` fail_reason so the same fail-closed
-        # persistence + raise path used for other hard verification
-        # failures (`deps_yaml_*`) handles this case loudly.
-        return (None, "", [], "spec_catalog_corrupt")
-    h = hashlib.sha256()
-    h.update(header)
-    for stage, kind, sid, version, raw in snap["artifact_bytes_in_order"]:
-        # Codex round 19 F2: prefix each artifact's bytes with its identity
-        # (kind/spec_id/version/stage). Without this, a higher matching
-        # version whose ir_meta.json bytes happen to equal the older
-        # certified version's bytes would recompute as the new certified
-        # version yet produce an identical fingerprint — gate would trust
-        # the persisted certified_deps even though they now point to a
-        # different version.
-        h.update(b"\x00")
-        h.update(f"{kind}__{sid}__{version}__{stage}".encode("utf-8"))
-        h.update(b"\x00")
-        h.update(raw)
-    fingerprint = h.hexdigest()
+        return (None, [], "spec_catalog_corrupt")
     if not snap["deps_doc_valid"]:
-        return None, fingerprint, [], "deps_yaml_missing_or_unparseable"
+        return None, [], "deps_yaml_missing_or_unparseable"
     if not snap["entries_well_formed"]:
         # Codex round 21 F2: malformed deps.yaml schema is a HARD verification
         # failure, not a normal negative result. Distinct reason so observability
         # tooling (and the CLI exit) can differentiate spec defects from
         # ordinary "no artifacts" cases.
-        return None, fingerprint, [], "deps_yaml_malformed_schema"
+        return None, [], "deps_yaml_malformed_schema"
     if not snap["has_entries"]:
         return (
             {f"{s}_verified": True for s in _DEPENDENCY_READINESS_STAGES},
-            fingerprint,
             [],
             None,
         )
@@ -4693,47 +3998,7 @@ def _compute_dep_readiness_and_fingerprint(
         if level < 3:
             results["aggregate_verdict_verified"] = False
         certified_deps.append({"spec_kind": kind, "spec_id": spec_id, "spec_version": cert_v})
-    return results, fingerprint, certified_deps, None
-
-
-def _dependency_set_fingerprint(repo_root: Path, spec_ref: Any) -> str:
-    """Fingerprint identifying the dependency set the readiness flags apply to.
-
-    Combines normalized `spec_ref`, the bytes of `<spec_ref>/deps.yaml`, and
-    the bytes of `spec/registry/spec_catalog.yaml`. When ANY of those inputs
-    differ from the value stored on `dependency_readiness`, the persisted
-    flags refer to a stale dependency set and MUST be reset.
-
-    Codex round 6 F1: includes spec_ref + deps.yaml so `spec_ref` repointing
-    or deps.yaml edits invalidate stale `true` flags.
-
-    Codex round 7 F2: also includes spec_catalog.yaml so catalog drift
-    (new matching version added, previous version removed, constraint
-    ambiguity introduced) invalidates persisted readiness. Without this,
-    `_resolve_dep_version` outcomes can drift while readiness booleans
-    silently stay true.
-
-    SCOPE (R6-lite): "dependency set" here means the DIRECT deps only. The catalog
-    contribution is narrowed to the direct-dep subset (`_relevant_catalog_subset_bytes`), so a
-    catalog bump of a TRANSITIVE dependency leaves this fingerprint byte-identical even though
-    a direct dep has gone stale against it. That is safe because `_dependency_ready` recomputes
-    readiness live and treats the recomputed booleans as authoritative — the fingerprint is only
-    a cheap early stale-detector, never the sole evidence. Do not add a fingerprint-only trust
-    path without extending the header to the transitive closure.
-    """
-    # Codex round 16 F1: route through the shared `_walk_dep_artifacts`
-    # walker so the fingerprint observed at gate time uses the same canonical
-    # ordering and read pattern as `_compute_dep_readiness_and_fingerprint`
-    # at mark time. The same on-disk state ALWAYS produces the same hash.
-    h = hashlib.sha256()
-    h.update(_dep_fingerprint_header_bytes(repo_root, spec_ref))
-    for stage, kind, sid, version, raw in _walk_dep_artifacts(repo_root, spec_ref):
-        # Round 19 F2: identity prefix; see _compute_dep_readiness_and_fingerprint.
-        h.update(b"\x00")
-        h.update(f"{kind}__{sid}__{version}__{stage}".encode("utf-8"))
-        h.update(b"\x00")
-        h.update(raw)
-    return h.hexdigest()
+    return results, certified_deps, None
 
 
 def _compute_initial_dependency_readiness(
@@ -4759,11 +4024,10 @@ def _compute_initial_dependency_readiness(
       that gate behaviour does not silently trust unverified state.
     """
     # Codex round 34 F1: detect a canonical empty-deps leaf via a strict
-    # BYTE-LEVEL recognizer BEFORE touching PyYAML. Round 33 made every
-    # init call `_dependency_set_fingerprint` up front, so a controller
-    # PyYAML outage caused `write_preflight` to drop into its degraded
-    # branch and persist an all-false readiness record for FRESH leaf
-    # orchestrations — a brand-new no-deps workflow could not launch.
+    # BYTE-LEVEL recognizer BEFORE touching PyYAML, so a controller PyYAML
+    # outage does not make `write_preflight` persist an all-false readiness
+    # record for a FRESH leaf orchestration (a brand-new no-deps workflow
+    # could not launch).
     # The byte-level recognizer is intentionally conservative: false
     # negatives just defer to PyYAML parsing (or fail-closed under
     # outage); false positives would be fail-open, so the grammar is
@@ -4778,27 +4042,6 @@ def _compute_initial_dependency_readiness(
                 deps_bytes_for_leaf = deps_path.read_bytes()
         except (ValueError, OSError):
             deps_bytes_for_leaf = None
-    if deps_bytes_for_leaf is not None and _deps_yaml_bytes_are_canonical_empty(
-        deps_bytes_for_leaf
-    ):
-        # Byte-confirmed leaf: full fingerprint == byte-only fingerprint
-        # (catalog subset is empty by construction; no artifact bytes).
-        return {
-            "direct_dependency_compile_readiness": True,
-            "direct_dependency_execution_readiness": True,
-            "detail": {
-                "ir_ref_verified": True,
-                "pipeline_ref_verified": True,
-                "aggregate_verdict_verified": True,
-            },
-            "dep_set_fingerprint": _no_deps_leaf_fingerprint(repo_root, spec_ref),
-            "certified_deps": [],
-        }
-    # Codex round 33 F1: PyYAML errors past this point propagate so
-    # `write_preflight` can decide between "preserve existing verified
-    # record" and "write fail-closed". Non-leaf specs cannot be verified
-    # without YAML, so a PyYAML outage MUST fail-closed for those.
-    fingerprint = _dependency_set_fingerprint(repo_root, spec_ref)
     trivial: dict[str, Any] = {
         "direct_dependency_compile_readiness": True,
         "direct_dependency_execution_readiness": True,
@@ -4807,19 +4050,19 @@ def _compute_initial_dependency_readiness(
             "pipeline_ref_verified": True,
             "aggregate_verdict_verified": True,
         },
-        "dep_set_fingerprint": fingerprint,
-        # Codex round 31 F1: persist `certified_deps: []` in the initial
-        # trivial-leaf payload so the round-30 PyYAML-missing leaf shortcut
-        # is satisfied without requiring a subsequent
-        # `mark-dependency-readiness` run. Previously this field was only
-        # written by `mark_dependency_readiness`, so a fresh
-        # `init → preflight → workflow-launch-check` for a no-deps spec
-        # failed closed under PyYAML outage even though it is a legitimate
-        # vacuous-leaf. The empty list IS the byte-level proof of no deps,
-        # cryptographically bound to the dep_set_fingerprint that hashes
-        # the deps.yaml bytes.
+        # `certified_deps: []` is the record that this is a leaf (no dependency to
+        # certify); `write_preflight` refreshes such a record from the current deps.yaml.
         "certified_deps": [],
     }
+    if deps_bytes_for_leaf is not None and _deps_yaml_bytes_are_canonical_empty(
+        deps_bytes_for_leaf
+    ):
+        # Byte-confirmed leaf, decided without PyYAML.
+        return trivial
+    # Codex round 33 F1: PyYAML errors past this point propagate so
+    # `write_preflight` can decide between "preserve existing verified
+    # record" and "write fail-closed". Non-leaf specs cannot be verified
+    # without YAML, so a PyYAML outage MUST fail-closed for those.
     fail_closed: dict[str, Any] = {
         "direct_dependency_compile_readiness": False,
         "direct_dependency_execution_readiness": False,
@@ -4828,12 +4071,8 @@ def _compute_initial_dependency_readiness(
             "pipeline_ref_verified": False,
             "aggregate_verdict_verified": False,
         },
-        "dep_set_fingerprint": fingerprint,
         # Fail-closed payloads explicitly omit `certified_deps`: there is
-        # no proof of any verification state to record. The PyYAML-missing
-        # leaf shortcut requires `certified_deps == []`, so its absence
-        # alone reliably fails the gate (consistent with the rest of the
-        # fail-closed semantics).
+        # no proof of any verification state to record.
     }
     # Codex round 33 F1: PyYAML errors propagate; write_preflight handles
     # the "preserve existing or write degraded fail-closed" decision based
@@ -6179,8 +5418,9 @@ REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "r
 # a chain that read as complete, and a `--resume` then recorded `skipped_certified` — which
 # clause (e) of the completion vouch reads as an EXEMPTION from the latest-attempt check.
 # `validate_meta.json` now carries the stamp (`_stamp_certification`, over exactly these
-# deliverables minus the meta itself); `_phase_certified`'s validate branch still reads this
-# list until PR-2 of issue #250 moves the predicate onto the stamped key.
+# deliverables minus the meta itself), and since PR-2 of issue #250 the predicate reads the
+# stamp — a missing deliverable cannot re-hash — so this list's remaining reader is the
+# coupling test below.
 #
 # COUPLED to `workflow_conductor.phase_required_outputs(..., "validate")` by
 # `test_validate_certifying_deliverables_match_the_declared_outputs`, so adding a deliverable
@@ -6922,15 +6162,9 @@ def _dependency_ready(
     step_token = step.strip().lower()
     if step_token not in {"compile", "generate", "build", "validate"}:
         return False, f"unsupported_step_for_dependency_readiness:{step_token}"
-    # Codex round 27 F2: serialize the read + recompute + fingerprint
-    # comparison against meta writers under the same exclusive lock that
-    # `mark_dependency_readiness` / `write_preflight` / `update_orchestration_status`
-    # use. Without the lock the read can see a half-written
-    # `dep_set_fingerprint` while `_compute_dep_readiness_and_fingerprint`
-    # reads catalog/deps bytes that the writer is in the middle of certifying,
-    # producing a false-negative `dep_set_fingerprint_stale` that
-    # fail-closes a perfectly valid orchestration. Holding the lock for the
-    # whole comparison turns the check into a snapshot read.
+    # Codex round 27 F2: serialize the read + recompute against meta writers under the same
+    # exclusive lock that `mark_dependency_readiness` / `write_preflight` /
+    # `update_orchestration_status` use, so the read is a snapshot of the record they write.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
         if not isinstance(meta, dict):
@@ -6938,66 +6172,31 @@ def _dependency_ready(
         readiness = meta.get("dependency_readiness")
         if not isinstance(readiness, dict):
             return False, "dependency_readiness_missing"
-        # Codex round 18 F1: do NOT trust persisted booleans alone. A direct
-        # edit of orchestration_meta.json that flips dependency_readiness flags
-        # while leaving artifacts (and therefore dep_set_fingerprint) unchanged
-        # would otherwise pass the gate. Recompute readiness from live workspace
-        # state at launch time and use the recomputed booleans as authoritative;
-        # the persisted booleans are advisory / audit-only. The stored fingerprint
-        # comparison still runs first as a cheap stale detector — catches catalog
-        # or deps.yaml mutation between mark and gate.
+        # Codex round 18 F1: do NOT trust persisted booleans. A direct edit of
+        # orchestration_meta.json that flips dependency_readiness flags would otherwise pass
+        # the gate. Recompute readiness from live workspace state at launch time and use the
+        # recomputed booleans as authoritative; the persisted booleans are audit-only. The
+        # `dep_set_fingerprint` that used to run first as a cheap stale detector went with
+        # issue #250 PR-2: the recompute IS a content-hash comparison (each dependency's
+        # derivation key over its inputs, its output's `artifact_hashes`), so nothing a
+        # fingerprint of the selected files saw is invisible to it.
         spec_ref = meta.get("spec_ref")
-        # Codex round 28 F1: `_compute_dep_readiness_and_fingerprint` reaches
-        # `_read_deps_yaml` / `_load_spec_catalog_from_bytes`, which raise
-        # `RuntimeError` when PyYAML is not installed (round 27 F1). Letting
-        # that escape `_dependency_ready` turns a missing package into an
-        # un-handled launch-gate exception (the upstream CLI prints a
-        # traceback instead of `dependency_not_ready`). Convert the install
-        # failure into a deterministic fail-closed gate result with a
-        # specific reason so operators can distinguish "PyYAML missing" from
-        # other verification failures.
+        # Codex round 28 F1: `_compute_dep_readiness` reaches `_read_deps_yaml` /
+        # `_load_spec_catalog_from_bytes`, which raise `RuntimeError` when PyYAML is not
+        # installed (round 27 F1). Letting that escape `_dependency_ready` turns a missing
+        # package into an un-handled launch-gate exception (the upstream CLI prints a
+        # traceback instead of `dependency_not_ready`). Convert the install failure into a
+        # deterministic fail-closed gate result with a specific reason. The no-deps-leaf
+        # shortcut that used to stand here (rounds 29–31: trust a persisted `certified_deps
+        # == []` bound to a byte fingerprint of deps.yaml) went with the fingerprint; no
+        # production launch reaches this branch without PyYAML, because `run_workflow.py`
+        # reads the catalog through it before any orchestration exists (`resolve_node`).
         try:
-            recomputed, current_fp, _certified, fail_reason = (
-                _compute_dep_readiness_and_fingerprint(repo_root, spec_ref)
-            )
+            recomputed, _certified, fail_reason = _compute_dep_readiness(repo_root, spec_ref)
         except RuntimeError as exc:
             if "PyYAML" in str(exc):
-                # Codex round 29 F1 → round 30 F1: PyYAML unavailable. A
-                # no-deps leaf orchestration (persisted `certified_deps == []`
-                # + all detail flags True) needs no YAML parse to verify,
-                # BUT the persisted claim must still be bound to the CURRENT
-                # deps.yaml bytes. Round 29's plain trust-persisted shortcut
-                # let stale meta or a direct edit (empty certified_deps +
-                # flipped detail flags) fail-open the gate exactly during a
-                # degraded control plane. Round 30 binds the shortcut to a
-                # byte-only fingerprint over `spec_ref` + raw `deps.yaml`
-                # bytes (catalog subset is empty by definition when there
-                # are no deps), so:
-                #   - deps.yaml edits → fingerprint mismatch → reject
-                #   - forged certified_deps without matching deps.yaml bytes
-                #     → fingerprint mismatch → reject
-                # The shortcut now requires (a) persisted no-deps claim,
-                # (b) all detail flags True, AND (c) live byte fingerprint
-                # equals persisted fingerprint.
-                persisted_certified = readiness.get("certified_deps")
-                persisted_detail = readiness.get("detail")
-                persisted_fp = readiness.get("dep_set_fingerprint")
-                if (
-                    isinstance(persisted_certified, list)
-                    and len(persisted_certified) == 0
-                    and isinstance(persisted_detail, dict)
-                    and persisted_detail.get("ir_ref_verified") is True
-                    and persisted_detail.get("pipeline_ref_verified") is True
-                    and persisted_detail.get("aggregate_verdict_verified") is True
-                    and isinstance(persisted_fp, str)
-                    and persisted_fp == _no_deps_leaf_fingerprint(repo_root, spec_ref)
-                ):
-                    return True, None
                 return False, "pyyaml_unavailable"
             raise
-        stored_fp = readiness.get("dep_set_fingerprint")
-        if stored_fp != current_fp:
-            return False, "dep_set_fingerprint_stale"
         if recomputed is None:
             # Codex round 20 F1: production launch checks MUST fail closed when
             # live recomputation cannot run — there is no way to re-verify
@@ -7019,18 +6218,17 @@ def _dependency_ready(
             if readiness.get("direct_dependency_execution_readiness") is not True:
                 return False, "direct_dependency_execution_readiness_not_pass"
             return True, None
-        # R6-lite: a dependency whose recorded resolution no longer matches the registry is
-        # not "unbuilt", it is STALE — and the remedy (`--with-deps`, which re-certifies the
-        # closure bottom-up) differs from the remedy for an unbuilt dep. Name the drifted node
+        # A dependency that is not ready is named with the stage that refused it and why —
+        # a key that moved names the input that moved (`derivation_key_mismatch:<input>`) —
         # instead of leaving the operator with an opaque `..._readiness_not_pass`. Computed
         # only on the reject path, so the happy path pays nothing.
         def _reject(reason: str) -> tuple[bool, str]:
-            stale = _stale_dependency_details(repo_root, spec_ref)
-            if not stale:
+            details = _stale_dependency_details(repo_root, spec_ref)
+            if not details:
                 return False, reason
             return False, (
-                f"{reason}; dependency stale: " + "; ".join(stale)
-                + " — re-run with `--with-deps` to re-certify the dependency closure"
+                f"{reason}; dependency not ready: " + "; ".join(details)
+                + " — re-run with `--with-deps` to certify the dependency closure"
             )
 
         if step_token == "compile":
@@ -15199,19 +14397,21 @@ def write_preflight(
         with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
             meta = _read_json(meta_path)
             if isinstance(meta, dict):
-                # Codex round 6 F1 fix: tie dependency_readiness to a fingerprint of
-                # (spec_ref + deps.yaml bytes). When that fingerprint changes —
-                # e.g. spec_ref repointed from a leaf to a non-leaf, or deps.yaml
-                # edited — any previously persisted "true" flags refer to a stale
-                # dependency set and MUST be invalidated. Branches:
+                # The persisted `dependency_readiness` is an AUDIT record: the launch gate
+                # (`_dependency_ready`) recomputes readiness live from the workspace and
+                # decides from the recomputation, never from these booleans. Branches:
                 #
                 #   - existing missing            → initialize from computed.
-                #   - fingerprint mismatch        → reset to computed (the new
-                #                                    canonical initial state, which
-                #                                    is fail-closed for non-leaf
-                #                                    and trivial-true for leaf).
-                #   - fingerprint match + leaf    → idempotent refresh from computed.
-                #   - fingerprint match + non-leaf→ preserve CLI-verified flags.
+                #   - leaf (now, or the existing  → idempotent refresh from computed (a
+                #     record is a leaf's)            spec_ref repointed to a non-leaf resets
+                #                                   the leaf's trivial-true to fail-closed).
+                #   - CLI-verified non-leaf       → preserve the verified flags.
+                #
+                # The `dep_set_fingerprint` whose mismatch used to reset a non-leaf's record
+                # went with issue #250 PR-2: the gate's live recompute is a content-hash
+                # comparison of its own (each dependency's derivation key), so a byte
+                # fingerprint of the selected files detected nothing it does not, and the
+                # record it reset is not what the gate decides from.
                 existing = meta.get("dependency_readiness")
                 # Codex round 33 F1: when PyYAML is unavailable we cannot
                 # recompute the full fingerprint that a previously-verified
@@ -15307,26 +14507,12 @@ def write_preflight(
                     # the invalidation/refresh logic.
                     pass
                 else:
-                    is_leaf = computed.get("direct_dependency_compile_readiness") is True
-                    current_fp = computed.get("dep_set_fingerprint")
-                    existing_fp = existing.get("dep_set_fingerprint") if isinstance(existing, dict) else None
                     if not isinstance(existing, dict):
                         meta["dependency_readiness"] = computed
                         _write_json(meta_path, meta)
-                    elif existing_fp != current_fp:
-                        meta["dependency_readiness"] = computed
-                        _write_json(meta_path, meta)
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_invalidated",
-                                "reason": "dep_set_fingerprint_mismatch",
-                                "previous_fingerprint": existing_fp,
-                                "new_fingerprint": current_fp,
-                            },
-                        )
-                    elif is_leaf and existing != computed:
+                    elif existing != computed and (
+                            computed.get("direct_dependency_compile_readiness") is True
+                            or existing.get("certified_deps") == []):
                         meta["dependency_readiness"] = computed
                         _write_json(meta_path, meta)
     if _preflight_allows_agent_launch(stored):
@@ -17858,19 +17044,17 @@ def mark_dependency_readiness(
 
     The runtime resolves every direct dependency in `<spec_ref>/deps.yaml`
     (via `spec/registry/spec_catalog.yaml` + version_constraint matching),
-    then inspects the LATEST (mtime) workspace artifact per stage:
+    then asks each stage of `_verify_dep_stage_detail` — since issue #250 PR-2 a
+    derivation-key question of the dependency's own chain:
 
-      - ir_ref: latest `workspace/ir/<dep_safe>/*/ir_meta.json` has verification_status=pass
-      - pipeline_ref: latest `workspace/pipelines/<dep_safe>/*/binary/*/binary_meta.json` has verification_status=pass
-      - aggregate_verdict: latest `workspace/pipelines/<dep_safe>/**/aggregate_verdict.json` has top-level value ∈ {pass, xfail}
+      - ir_ref: the dependency's Compile has an eligible output under its key recomputed now
+      - pipeline_ref: its Build has (which requires Generate and Compile to)
+      - aggregate_verdict: its Validate has
 
     A stage flag is True only when EVERY direct dep passes its per-stage check
     (empty deps → trivially true). Top-level flags derived:
       compile_readiness   = ir_ref_verified
       execution_readiness = ir_ref_verified AND pipeline_ref_verified AND aggregate_verdict_verified
-
-    Also refreshes `dep_set_fingerprint` so subsequent `write_preflight` calls
-    can detect deps.yaml / spec_ref churn.
 
     The CLI is NOT a caller assertion — it triggers runtime artifact
     verification. A caller cannot mark deps "verified" unless the workspace
@@ -17884,17 +17068,10 @@ def mark_dependency_readiness(
         if not isinstance(meta, dict):
             raise ValueError(f"invalid orchestration_meta.json: {meta_path}")
         spec_ref = meta.get("spec_ref")
-        # Codex round 16 F1: single-pass read so persisted booleans and
-        # fingerprint derive from the SAME artifact byte snapshots. Otherwise
-        # a producer mutation between a separate verify() and fingerprint()
-        # call would persist inconsistent state.
         # Codex round 17 F1+F2: also persist certified_deps (one canonical
         # version per dep) so downstream consumers see the same version that
-        # satisfied readiness, and the fingerprint narrows to those versions
-        # only (historical-version churn does not invalidate).
-        verified, fingerprint_hex, certified_deps, fail_reason = _compute_dep_readiness_and_fingerprint(
-            repo_root, spec_ref
-        )
+        # satisfied readiness.
+        verified, certified_deps, fail_reason = _compute_dep_readiness(repo_root, spec_ref)
         if verified is None:
             # Codex round 8 F2 + round 21 F2: persist fail-closed BEFORE
             # raising and record the SPECIFIC fail_reason so observability
@@ -17909,7 +17086,6 @@ def mark_dependency_readiness(
                     "pipeline_ref_verified": False,
                     "aggregate_verdict_verified": False,
                 },
-                "dep_set_fingerprint": fingerprint_hex,
             }
             meta["dependency_readiness"] = fail_closed_payload
             _write_json(meta_path, meta)
@@ -17966,7 +17142,6 @@ def mark_dependency_readiness(
             "direct_dependency_compile_readiness": compile_ok,
             "direct_dependency_execution_readiness": execution_ok,
             "detail": detail,
-            "dep_set_fingerprint": fingerprint_hex,
             # Codex round 17 F1: persist the per-dep certified version so
             # downstream lineage / launch-request templating uses the SAME
             # version that satisfied readiness, not a separately-resolved

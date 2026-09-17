@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - non-POSIX; the cold-start claim degrad
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 # Direct-CLI import bootstrap. When this script is executed as
@@ -213,6 +214,26 @@ def _normalize_phase(token: str) -> str:
     return PHASE_ALIASES[normalized]
 
 
+#: The phase tokens `--rederive` accepts: the conductor's phase names, lower-case.
+_REDERIVE_PHASES: tuple[str, ...] = ("compile", "generate", "build", "validate")
+
+
+def _parse_rederive(raw: str | None) -> frozenset[str]:
+    """`--rederive compile,generate` -> `{"compile", "generate"}`. An unknown token is a
+    usage error named as such; an empty value is no forced phase."""
+    out: set[str] = set()
+    for token in (raw or "").split(","):
+        name = token.strip().lower()
+        if not name:
+            continue
+        if name not in _REDERIVE_PHASES:
+            raise ValueError(
+                f"--rederive: unknown phase {token.strip()!r} "
+                f"(expected one of: {', '.join(_REDERIVE_PHASES)})")
+        out.add(name)
+    return frozenset(out)
+
+
 def _new_orchestration_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     suffix = uuid.uuid4().hex[:8]
@@ -252,6 +273,7 @@ def _build_invocation_record(
     closure_id: str | None = None,
     closure_target_spec_ref: str | None = None,
     closure_until_phase: str | None = None,
+    rederive: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Assemble the reproduction/provenance record persisted to
     `orchestration_meta.json#invocation`.
@@ -285,6 +307,11 @@ def _build_invocation_record(
         # recorded executor is not `pure` (legacy, or the field absent = a pre-adoption run) is
         # rejected with `generate_executor_legacy_removed`.
         "generate_executor": "pure",
+        # `--rederive` (issue #250 PR-2): the phases this invocation ran although certified.
+        # Recorded so a run log that shows a certified phase running has its cause on the
+        # orchestration; NOT auto-recovered on --resume (a resume re-evaluates every phase's
+        # key, and the forced attempt, once it passed, is the selected output).
+        "rederive": sorted(rederive),
     }
     if llm_config is not None:
         # The leaf-model authority, pinned three ways. The PATH says which file; the SHA256 of
@@ -1941,6 +1968,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "on --resume — re-pass --wait-usage-reset to keep it active."
         ),
     )
+    parser.add_argument(
+        "--rederive",
+        default="",
+        metavar="PHASE[,PHASE]",
+        help=(
+            "Run the named phase(s) of the TARGET node even when they are certified "
+            "(compile, generate, build, validate; comma-separated). The certified output is "
+            "left in place and stays eligible; the new attempt, once it passes, is the "
+            "selected output, and every later phase re-derives exactly when its key moved "
+            "(the forced phase's output changed) and skips when it did not. Dependencies of a "
+            "--with-deps closure are never forced: run the dependency as the target instead."
+        ),
+    )
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--orchestration-id", help="If omitted, generated automatically (or, with --resume, the latest orchestration).")
     parser.add_argument("--status", default="running", help="Initial orchestration status for init.")
@@ -2417,6 +2457,7 @@ def _run_main(
                 f"choose one of: {', '.join(PHASE_ORDER)}"
             )
         until_phase = _normalize_phase(until_phase_in)
+        rederive = _parse_rederive(getattr(args, "rederive", ""))
         # --- the leaf-LLM configuration (issue #28) --------------------------------------
         # Two ways in, in priority order, and they converge on ONE object:
         #   1. a resume whose orchestration recorded a config pin — the SAME file, re-hashed
@@ -2646,6 +2687,7 @@ def _run_main(
             resume=False,
             prior_orch_by_spec=None,
             raw_argv=raw_argv,
+            rederive=rederive,
         )
 
     # Cold-start guard (single node): a fresh run of a spec that still has a
@@ -2692,6 +2734,7 @@ def _run_main(
                 agent_model=agent_model_in,
                 with_deps=False,
                 wait_usage_reset=args.wait_usage_reset,
+                rederive=rederive,
             )
         )
         return _run_node(
@@ -2717,6 +2760,7 @@ def _run_main(
             # `_run_node` must not re-acquire what this process already has.
             spec_claim_held=not resume_mode,
             orch_claim_held=resume_mode,
+            rederive=rederive,
         )
 
 
@@ -2764,12 +2808,11 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         stage = payload.get("failed_stage")
         if stage:
             # `not_ready=`, never `stale=`. Staleness is a PROPER SUBSET of not-ready: a node that
-            # was never built is not stale, and this repository keeps that distinction in three
-            # places (`_dep_ir_meta_passes` / `_dep_binary_meta_passes` guard
-            # `_stale_dependency_details` precisely so an unbuilt dep is not reported as drifted).
-            # An earlier version of this line labelled every refusal `stale=`, so an operator on a
-            # fresh workspace read `stale=ir_ref: … has no certified IR` — the label contradicting
-            # the detail beside it. `not_ready=` is true of both cases; the detail says which.
+            # was never built is not stale (`ir_not_found`), one whose key moved is
+            # (`derivation_key_mismatch:<input>`), and the detail says which. An earlier version
+            # of this line labelled every refusal `stale=`, so an operator on a fresh workspace
+            # read `stale=ir_ref: … has no certified IR` — the label contradicting the detail
+            # beside it.
             line += f" not_ready={stage}: {payload.get('detail') or ''}"
         return line
 
@@ -3136,6 +3179,7 @@ def _run_node(
     stdout_format: str = "jsonl",
     spec_claim_held: bool = False,
     orch_claim_held: bool = False,
+    rederive: frozenset[str] = frozenset(),
 ) -> int:
     """Run a single node's orchestration (init → preflight → prompt → launch →
     terminalize) and print its JSON result. Returns the process exit code
@@ -3516,6 +3560,7 @@ def _run_node(
                     env=env,
                     resume=resume_mode,
                     wait_usage_reset=wait_usage_reset,
+                    rederive=rederive,
                 )
             except Exception as exc:  # noqa: BLE001 - terminalize on conductor error
                 # If the conductor/runtime already terminalized with a specific terminal
@@ -3729,27 +3774,24 @@ def _dependency_node_readiness(
     (the same version V must satisfy every stage). Kept module-level so the closure driver uses one
     consistent readiness rule for both the pre-run skip check and the post-run verification.
 
-    R6-lite rides on the `_verify_dep_stage_detail` call below: its `ir_ref` stage also requires the
-    node's RECORDED dependency resolution (its `dependency_graph.json` sidecar) to match the one
-    today's `deps.yaml` + `spec_catalog.yaml` derive. So a node certified against an older version
-    of one of ITS dependencies (e.g. harness 0.2.1 after the catalog moved to 0.3.0) reports
-    not-ready here and this driver re-runs it — which is how "a dependency spec was updated, so its
-    dependents are regenerated" becomes a mechanism rather than an operator ritual. No content-free
-    version bump of the dependents is required.
+    Each stage is a derivation-key question of the node's own chain (issue #250 PR-2): its
+    Compile / Build / Validate has an eligible output under the key recomputed NOW over the
+    node's contract inputs — the spec files, the registry-derived closure, every closure
+    member's selected outputs, the toolchain, the transformation version. So a node certified
+    against an older version of one of ITS dependencies, against a dependency re-derived within
+    its version, or against a spec text since edited, reports not-ready here with
+    `derivation_key_mismatch:<the input that moved>` and this driver re-runs it — which is how
+    "a dependency changed, so its dependents are regenerated" is a mechanism rather than an
+    operator ritual. A node whose metas predate the key (`derivation_key_missing`) is re-run
+    once.
 
-    R6 proper (closure-source half) rides on the same call one stage down: `pipeline_ref` also
-    requires the dependency SOURCES the node's certified binary was compiled against to be the ones
-    a build would stage for it today (`_dependency_binding_freshness`). So a consumer whose
-    dependency was regenerated and re-certified under an unchanged `spec_version` is re-run here
-    too, instead of being skipped and then failing closed inside the target's own gates.
-
-    This is the ONLY wire by which either invariant decides skip-vs-re-run, so it is the wire a
+    This is the ONLY wire by which the invariant decides skip-vs-re-run, so it is the wire a
     witness has to drive on real artifacts: in `test_run_workflow.py`,
-    `test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated` (R6 proper)
-    and `test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved` (R6-lite) are
-    the only driver tests that drive it on CERTIFIED artifacts; every other driver test in
-    their class either fakes this function or runs it on a workspace with no artifacts, where
-    neither invariant is reached.
+    `test_the_driver_re_runs_a_consumer_whose_dependency_source_was_regenerated` and
+    `test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved` are the driver tests
+    that drive it on CERTIFIED artifacts; every other driver test in their class either fakes
+    this function or runs it on a workspace with no artifacts, where the invariant is not
+    reached.
 
     Returns `{"ready": bool, "version": str | None, "failed_stage": str | None,
     "detail": str | None}`. When ready, `version` is the matching catalog version that satisfied
@@ -3760,15 +3802,16 @@ def _dependency_node_readiness(
     The driver records this so a skip and a re-run both carry their reason: without it, a skipped
     node reports `{"skipped": true, "status": "ready"}` and a re-run node reports nothing at all,
     which is how issue #153's silent skip of a drifted consumer left no trace in the run log."""
-    from tools.orchestration_runtime import _verify_dep_stage_detail
+    from tools.orchestration_runtime import DerivationResolver, _verify_dep_stage_detail
 
+    resolver = DerivationResolver(repo_root)
     kind, sid = node["spec_kind"], node["spec_id"]
     first: tuple[str, str | None, str | None] | None = None
     for v in node["spec_versions"]:
         failed_stage: str | None = None
         detail: str | None = None
         for st in required_stages:
-            ok, why, _selected = _verify_dep_stage_detail(repo_root, kind, sid, v, st)
+            ok, why = _verify_dep_stage_detail(repo_root, kind, sid, v, st, resolver=resolver)
             if not ok:
                 failed_stage, detail = st, why
                 break
@@ -4111,6 +4154,7 @@ def _run_with_dependency_closure(
     prior_orch_by_spec: dict[str, str] | None = None,
     raw_argv: list[str] | None = None,
     preclaimed_orchestration_id: str | None = None,
+    rederive: frozenset[str] = frozenset(),
 ) -> int:
     """Run the target's dependency closure bottom-up, then the target.
 
@@ -4480,6 +4524,7 @@ def _run_with_dependency_closure(
             closure_id=target_orchestration_id,
             closure_target_spec_ref=target_spec_ref,
             closure_until_phase=until_phase,
+            rederive=rederive,
         )
         return _run_node(
             repo_root=repo_root,
@@ -4503,6 +4548,7 @@ def _run_with_dependency_closure(
             stdout_format=stdout_format,
             spec_claim_held=not target_resume,
             orch_claim_held=target_resume,
+            rederive=rederive,
         )
 
 

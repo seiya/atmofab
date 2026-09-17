@@ -3382,6 +3382,12 @@ class Conductor:
     # identity left to reconstruct one from, and a conductor that quietly invented a
     # configuration would launch models nobody chose.
     llm_config: LlmConfig | None = None
+    #: `--rederive <phase>[,<phase>]` (issue #250 PR-2): the phases that run even when
+    #: certified. The standing output stays eligible (unlike a revocation); the new attempt,
+    #: once it passes, is selected by the policy (v1: the latest), and every downstream key
+    #: binds its output hash — so a later phase re-derives exactly when the output CHANGED,
+    #: and skips when the forced phase reproduced it byte for byte.
+    rederive: frozenset[str] = frozenset()
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
     #: attempt is stamped with.
@@ -5429,17 +5435,15 @@ class Conductor:
         """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`).
 
         Resolves the single infrastructure dependency's CERTIFIED harness — the exact
-        `<harness>_model.f90` Build stages/links (`_certified_model_source`) and the IR
-        `public_api.signatures` that source was certified against — runs the signature pin
-        (`assert_harness_pin`), then renders the runner from the IR alone (`render_runner`).
-        The certified harness IR is resolved STRUCTURALLY and BOUND to the linked source's
-        lineage — via `binary_meta.source_ir_id` (the host-authored ir_id the certified binary's
-        source was generated from), falling back to the latest certified IR (`_certified_ir_dir`)
-        for binaries predating that field. Never from a leaf-authored `source_meta.json` field.
-        Binding to the binary's origin IR (not the globally-latest passing IR) prevents a false
-        interface-drift failure when a same-version compile reopen advances the latest IR past the
-        certified binary; the pin exact-matches the resolved IR's embedded interface
-        (drift ⇒ fail, identical ⇒ pass).
+        `<harness>_model.f90` Build stages/links (`_certified_model_source`, the harness's
+        SELECTED certified Generate output under its derivation key) and the IR
+        `public_api.signatures` that source was certified against (`_certified_ir_dir`, its
+        selected certified Compile output) — runs the signature pin (`assert_harness_pin`),
+        then renders the runner from the IR alone (`render_runner`). The two selections are
+        one generation by construction: the source's generate key binds the selected IR's
+        output hash, so the IR the pin reads is byte-identical to the IR the source was
+        generated from (issue #250 PR-2; the `binary_meta.source_ir_id` binding and the
+        latest-IR fallback this used to carry went with the id chain).
 
         Raises RuntimeError on an unresolvable/unbuilt harness (a build precondition — run
         `--with-deps` first), a harness-interface drift (the pin), or an unrenderable IR (the
@@ -5449,8 +5453,7 @@ class Conductor:
         from tools.host_render import (
             render_runner, assert_harness_pin, RenderError, RunnerRenderUnavailable)
         from tools.orchestration_runtime import (
-            _certified_binary_meta, _certified_ir_dir, _is_safe_path_token,
-            _latest_pipeline_dir, _model_source_from_binary_meta)
+            DerivationResolver, _certified_ir_dir, _certified_model_source)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # The node's language decides WHICH backend renders the glue. Read through the SAME
         # helper `_conductor_authors_runner` uses, so the predicate that decided to author and
@@ -5472,72 +5475,20 @@ class Conductor:
         harness_nk = infra[0]
         harness_sid = spec_id_of(harness_nk)
         safe = node_key_safe(harness_nk)
-        pipe_dir = _latest_pipeline_dir(self.repo_root / "workspace" / "pipelines" / safe)
-        if pipe_dir is None:
-            raise RuntimeError(
-                f"harness dependency {harness_nk}: no ready pipeline under "
-                f"workspace/pipelines/{safe} to render {refs.spec_id}_runner.f90 against "
-                f"(build the dependency closure first, e.g. run_workflow.py --with-deps)")
-        # Select the certified binary ONCE: `source_text` (the model source) and `source_ir_id`
-        # (its IR provenance) both come from this single snapshot, so a binary published between
-        # two selections cannot pair a source with a mismatched IR lineage (the TOCTOU a split
-        # `_certified_model_source` + separate latest-binary lookup would allow).
-        bsel = _certified_binary_meta(pipe_dir)
-        model_src = _model_source_from_binary_meta(pipe_dir, harness_sid, bsel[1]) \
-            if bsel is not None else None
+        # ONE resolver for both selections, so the source and the IR come from one evaluation.
+        resolver = DerivationResolver(self.repo_root)
+        model_src = _certified_model_source(self.repo_root, harness_nk, resolver=resolver)
         if model_src is None:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: cannot resolve certified "
-                f"{harness_sid}_model.f90 under {self._rel(pipe_dir)} (harness not built ready — "
+                f"{harness_sid}_model.f90 under workspace/pipelines/{safe} "
+                f"({resolver.select(harness_nk, 'generate').reason}; harness not built ready — "
                 f"run_workflow.py --with-deps first)")
         source_text = model_src.read_text(encoding="utf-8")
-        bmeta = bsel[1]  # the SAME binary meta the source came from — one snapshot, no TOCTOU
-        # The certified harness IR (public_api.signatures) to pin against is resolved STRUCTURALLY
-        # (never from the leaf-authored OPTIONAL `source_meta.json` `ir_ref`, absent from the
-        # required-meta contract) AND bound to the linked source's lineage. `binary_meta.source_ir_id`
-        # (host-authored at Build) is the ir_id the certified binary's source was generated from;
-        # pinning against THAT IR — not the globally-latest passing IR — keeps the pinned IR and
-        # the pinned source in the same generation, so a same-version compile reopen that advances
-        # the latest IR past the certified binary cannot raise a false interface drift. Binaries
-        # predating the field fall back to `_certified_ir_dir` (latest certified IR), which equals
-        # the source's origin IR whenever no such reopen skew exists.
         kind_rest, _, harness_ver = harness_nk.partition("@")
         harness_kind = kind_rest.partition("/")[0]
-        harness_ir_dir: Path | None = None
-        # Legacy binaries predate the field (KEY ABSENT) and fall back; a binary that carries the
-        # key AT ALL is bound strictly — a null / non-string / unresolvable value is corrupt
-        # lineage, not a legacy binary. Keying on presence (not `is None`) keeps a `null` value
-        # out of the fallback branch, matching the "ONLY absence falls back" invariant.
-        has_source_ir_id = "source_ir_id" in bmeta
-        src_ir_id = bmeta.get("source_ir_id")
-        if not has_source_ir_id:
-            # Legacy binary predating the field: fall back to the latest certified IR.
-            # SAFETY INVARIANT: at a fixed version the controlled_spec §5.1 interface is fixed, and
-            # the IR validator (`_validate_ir_signatures_against_section51`) pins every certified
-            # IR's `public_api.signatures` == §5.1. So ALL passing certified IRs at the same
-            # `(kind, id, version)` carry IDENTICAL signatures, and the pin compares those against
-            # the renderer's embedded interface — hence WHICH same-version passing IR the fallback
-            # picks cannot change the pin verdict. A signature divergence between two same-version
-            # passing IRs can arise ONLY from a §5.1 edit without a version bump (a version-
-            # discipline contract violation governed by R6-lite freshness), not normal operation.
-            # The `source_ir_id` binding above is exact-provenance defense-in-depth on top of this.
-            harness_ir_dir = _certified_ir_dir(
-                self.repo_root, harness_kind, harness_sid, harness_ver)
-        else:
-            # A PRESENT source_ir_id must resolve to a real IR dir. A present-but-unresolvable
-            # link (unsafe token, or a dir that does not exist) is corrupt lineage, NOT an
-            # occasion to silently fall back to the globally-latest IR — that would reintroduce
-            # the exact false-drift the binding prevents. Fail closed instead.
-            if isinstance(src_ir_id, str) and _is_safe_path_token(src_ir_id.strip()):
-                cand = self.repo_root / "workspace" / "ir" / safe / src_ir_id.strip()
-                if cand.is_dir():
-                    harness_ir_dir = cand
-            if harness_ir_dir is None:
-                raise RuntimeError(
-                    f"harness dependency {harness_nk}: certified binary records "
-                    f"source_ir_id={src_ir_id!r} but no IR dir resolves at "
-                    f"workspace/ir/{safe}/<source_ir_id> (corrupt lineage) — re-certify the "
-                    f"harness (run_workflow.py --with-deps)")
+        harness_ir_dir = _certified_ir_dir(
+            self.repo_root, harness_kind, harness_sid, harness_ver, resolver=resolver)
         ir_meta = _read_json(harness_ir_dir / "ir_meta.json") \
             if harness_ir_dir is not None else None
         if not (isinstance(ir_meta, dict)
@@ -5569,19 +5520,6 @@ class Conductor:
         try:
             assert_harness_pin(
                 language, ir, refs.spec_id, harness_sid, harness_signatures, source_text)
-        except RenderError as e:
-            # A pin failure on the LEGACY-fallback path (no source_ir_id) matched against the
-            # latest certified IR, not a provenance-bound one. Per the same-version signature
-            # invariant that can only mislead under a version-bump contract violation — but name
-            # the fallback so this reads as an actionable hint, never a misdiagnosis: rebuilding
-            # the harness stamps source_ir_id and binds the pin to the exact origin IR.
-            if not has_source_ir_id:
-                raise RenderError(
-                    f"{e} [legacy harness binary carries no source_ir_id, so the pin matched the "
-                    f"latest certified IR under {self._rel(harness_ir_dir)}; if this is a "
-                    f"stale-IR false drift, rebuild the harness (run_workflow.py --with-deps) to "
-                    f"stamp source_ir_id and bind the pin to the source's origin IR]") from e
-            raise
         except RunnerRenderUnavailable as e:
             # The declaration/tree gap, named where it lands. `_conductor_authors_runner`
             # approved authorship on a DECLARATION and the seam cannot dispatch on it — a
@@ -5622,9 +5560,10 @@ class Conductor:
         from tools.orchestration_runtime import _closure_nodes_from_graph
         from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
         graph = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
-        # The ordering itself lives in `_closure_nodes_from_graph`, so the readiness comparison
-        # (`_dependency_binding_freshness`) derives the SAME closure from the SAME sidecar. What
-        # stays here is this caller's own policy: reading the sidecar, and the L6 guard below.
+        # The ordering itself lives in `_closure_nodes_from_graph`, so the derivation inputs
+        # (`_sidecar_closure`, the `closure[]` of the generate and build keys) derive the SAME
+        # closure from the SAME sidecar. What stays here is this caller's own policy: reading
+        # the sidecar, and the L6 guard below.
         closure = _closure_nodes_from_graph(graph, refs.node_key)
         # L6 guard: the Model B staged source basename (`<spec_id>_model.f90`) and the
         # Makefile object rules (`$(OBJDIR)/<spec_id>_model.o`) are keyed on the bare
@@ -9170,21 +9109,22 @@ clean:
         canonical `src/` — phase_02 §41 carve-out: a transient `$(OBJDIR)` stage is not a
         canonical-tree copy, so it is not the forbidden dependency mix-in.
 
-        Each dep's model source is resolved from the dep's latest ready pipeline, then from the
-        **certified binary** (`_latest_meta_under(.../binary/*/binary_meta.json)` — the same
-        binary `_verify_dep_stage` certifies readiness against) via its `source_source_id` ->
-        `source/<source_source_id>/src/<dep>_model.f90`. Binding to the certified binary's
-        source (not the pipeline `lineage.json`, which tracks the latest *generated* source)
-        guarantees the staged code is the exact source the ready binary/verdict was built from.
-        node_keys carry `@<version>`, so the per-version workspace path is unambiguous.
+        Each dep's model source is the dep's SELECTED certified Generate output under its
+        derivation key (`_resolve_certified_closure_binding` -> `DerivationResolver.select`),
+        `source/<source_id>/src/<dep>_model.f90` — the same selection this node's generate and
+        build keys bind by `closure[].source`, so the staged code is the source the key says
+        (issue #250 PR-2; the certified binary's `source_source_id` chain this used to follow
+        went with the id chain). node_keys carry `@<version>`, so the per-version workspace
+        path is unambiguous.
 
         Returns the BINDING of each staged source (deepest-first, i.e. staging/compile order):
-        `{node_key, pipeline_ref, binary_id, source_id, model_source_ref, model_source_sha256}`,
-        as resolved by `orchestration_runtime._resolve_certified_closure_binding` — the single
-        selection the readiness comparison (`_dependency_binding_freshness`) re-runs, so
-        CERTIFIED-AGAINST and STAGED-NOW are decided by one rule. The `sha256` and the copy read
-        the same immutable file: a `source_id` directory's content is written once and never
-        rewritten, so the hash recorded in `binary_meta` is the hash of the bytes compiled.
+        `{node_key, pipeline_ref, source_id, model_source_ref, model_source_sha256,
+        output_hash}`, as resolved by `orchestration_runtime._resolve_certified_closure_binding`.
+        The `sha256` and the copy read the same immutable file: a `source_id` directory's
+        content is written once and never rewritten, so the hash recorded in `binary_meta` is
+        the hash of the bytes compiled. (PR-3 of issue #250 makes the copy read from the
+        stamped `derivation_inputs.closure[]` and re-verify the bytes after copying, which is
+        what a parallel closure needs; here the selection is re-run.)
 
         Raises on an unresolvable dependency: a missing dep source means the dependency was not
         built ready (run `--with-deps` first), which is a build precondition failure routed to
@@ -9222,27 +9162,25 @@ clean:
         staged: list[dict[str, Any]] = []
         for nk in nodes:
             sid = spec_id_of(nk)
-            # Bind the staged source to the SAME binary the readiness gate certified, NOT to
-            # the pipeline-level lineage.json. `_verify_dep_stage` certifies the latest
-            # `binary/*/binary_meta.json` (selected by id) and binds the aggregate_verdict to
-            # it; that binary records the source it was actually built from in
-            # `source_source_id`. The pipeline lineage.json, by contrast, tracks the latest
-            # GENERATED source, which a Generate retry may have advanced past the certified
-            # binary's source (newer source, not yet rebuilt/validated) — staging from lineage
-            # would then compile the depending node against UNVERIFIED dependency code.
+            # Stage the SELECTED certified source of the dependency (its Generate output
+            # under its derivation key), NOT the pipeline-level lineage.json: lineage tracks
+            # the latest GENERATED source, which a Generate retry may have advanced past the
+            # certified one (newer source, not yet rebuilt/validated) — staging from lineage
+            # would compile the depending node against UNVERIFIED dependency code.
             # `_resolve_certified_closure_binding` is that single-sourced selection: the
-            # Generate-time interface hint (`_resolve_dependency_facts`) reads the same chain, so
-            # the interface a consumer is SHOWN equals the source Build COMPILES, and readiness
-            # (`_dependency_binding_freshness`) re-runs it so CERTIFIED-AGAINST equals
-            # STAGED-NOW. It locates the dependency's own pipeline by its EXACT sidecar-pinned
-            # version: the sidecar pins the highest catalog version satisfying the consumer
-            # constraint (matching run_workflow's node_label / `--with-deps` scheduling), so a
-            # correctly built closure has that exact version's pipeline. If it is absent, FAIL
-            # CLOSED rather than substitute a sibling version — staging a different version
-            # could link stale/constraint-incompatible dependency code, and the version-tolerant
-            # readiness gate (which accepts any matching version) diverging from exact-version
-            # staging is the L6-deferred multi-version concern. (All current specs are
-            # single-version, so the pinned version == the built version.)
+            # Generate-time interface hint (`_resolve_dependency_facts`) reads the same
+            # selection, so the interface a consumer is SHOWN equals the source Build
+            # COMPILES, and this node's build key binds the same output hash so
+            # CERTIFIED-AGAINST equals STAGED-NOW. It locates the dependency by its EXACT
+            # sidecar-pinned version: the sidecar pins the highest catalog version satisfying
+            # the consumer constraint (matching run_workflow's node_label / `--with-deps`
+            # scheduling), so a correctly built closure has that exact version's output. If it
+            # is absent, FAIL CLOSED rather than substitute a sibling version — staging a
+            # different version could link stale/constraint-incompatible dependency code, and
+            # the version-tolerant readiness gate (which accepts any matching version)
+            # diverging from exact-version staging is the L6-deferred multi-version concern.
+            # (All current specs are single-version, so the pinned version == the built
+            # version.)
             binding, err = _resolve_certified_closure_binding(self.repo_root, nk)
             if binding is None:
                 raise RuntimeError(f"dependency {nk}: {err}")
@@ -9280,10 +9218,10 @@ clean:
         # (build precondition: the dependency must be built ready first). The transient OBJDIR
         # stage never touches canonical src/ (phase_02 §41 carve-out). The returned bindings —
         # which certified source of each closure node was staged, and its sha256 — are recorded
-        # in binary_meta below, and are what readiness later compares against
-        # (`_dependency_binding_freshness`, R6 proper closure-source half). They are resolved
-        # BEFORE the compile, so a failing build records them too: the binding describes what
-        # was linked, not whether linking succeeded.
+        # in binary_meta below as the durable record of what was linked (the comparison lives
+        # in the build key's `closure[]`). They are resolved BEFORE the compile, so a failing
+        # build records them too: the binding describes what was linked, not whether linking
+        # succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir)
         from tools.orchestration_runtime import _ir_toolchain_identity
         toolchain_identity = _ir_toolchain_identity(ir)
@@ -9369,13 +9307,12 @@ clean:
             "build_log_ref": command_log_ref,
             # `closure_bindings` is the DURABLE record of what this binary was compiled
             # against — one entry per closure node in staging/compile order, carrying the
-            # certified source's identity and its sha256. `_dependency_binding_freshness` reads
-            # it to decide whether a later regeneration of a dependency has left this consumer
-            # linked to code that no longer exists. A node whose CLOSURE is empty — a leaf of the
-            # dependency graph, never an `LLM` leaf, which authors none of this — records `[]`
-            # explicitly: the key's PRESENCE is what tells such a node apart from a legacy binary
-            # certified before this contract, and a legacy binary with a non-empty closure fails
-            # closed.
+            # certified source's identity, its sha256 and its output hash. A RECORD, not a
+            # comparison: since issue #250 PR-2 the build key's `closure[].source` (the same
+            # selection, stamped as `derivation_inputs`) is what decides whether a later
+            # regeneration of a dependency has left this consumer stale; the reader this
+            # record used to have (`_dependency_binding_freshness`) went with 13b. A node whose
+            # CLOSURE is empty records `[]`.
             "dependency_check": {"direct_deps": dep_keys,
                                  "resolved": "match" if ok else "unresolved",
                                  "closure_bindings": closure_bindings},
@@ -11195,16 +11132,33 @@ clean:
         record = self._phase_derivations.get((node_key, phase))
         return str(record["derivation_key"]) if isinstance(record, dict) else None
 
-    @staticmethod
-    def _adopt_certified_refs(refs: NodeRefs, phase: str, cert: dict[str, Any]) -> None:
-        """Take the producer id a skipped phase's certification resolved into `refs`.
+    def _adopt_certified_refs(self, refs: NodeRefs, phase: str, cert: dict[str, Any]) -> None:
+        """Take the ids a skipped phase's certification SELECTED into `refs`, and re-reserve
+        the phase roots when the selection is not the one this orchestration reserved.
 
-        The ir_id and pipeline_id are NOT touched: those come from this orchestration's
-        reservations, and the certification is refused outright when they are not the
-        artifacts it evaluated (`ir_not_latest` / `pipeline_not_latest`), so they already
-        agree. What the reservations do not carry is the producer id of each pipeline stage —
-        which is exactly what the certification chain resolved by binding, and what the next
-        phase (or a `--resume` seed) must build against."""
+        Since issue #250 PR-2 the certification is a derivation-key lookup over the whole
+        workspace, not over this orchestration's reservation: the selected IR may live under
+        an ir_id this run did not reserve (a cold run adopts the selection in `prepare_node`,
+        but a phase certified by ANOTHER orchestration between two of this run's phases is
+        selected too), and the selected source / binary / run may live in a different
+        pipeline directory. `refs` must name what the next phase builds against and where
+        it writes, so every id the certification resolved is taken — `ir_id` and
+        `pipeline_id` included — and the reservation records follow (`reserve_root`; the
+        reservation is where this run WRITES, `_stamp_certification` reads `source_ir_id`
+        from it, and `_revocable_stage_meta_path` resolves a revocation through it)."""
+        ir_id = cert.get("ir_id") or (str(cert["ir_ref"]).rsplit("/", 1)[-1]
+                                      if cert.get("ir_ref") else None)
+        if ir_id and str(ir_id) != refs.ir_id:
+            refs.ir_id = str(ir_id)
+            self.reserve_root(refs.node_key, "compile", refs.ir_id,
+                              self.orchestration_agent_run_id)
+        pipeline_ref = cert.get("pipeline_ref")
+        if phase != "compile" and pipeline_ref:
+            pipeline_id = str(pipeline_ref).rstrip("/").rsplit("/", 1)[-1]
+            if pipeline_id != refs.pipeline_id:
+                refs.pipeline_id = pipeline_id
+                self.reserve_root(refs.node_key, "generate", refs.pipeline_id,
+                                  self.orchestration_agent_run_id)
         if phase == "generate" and cert.get("source_id"):
             refs.source_id = str(cert["source_id"])
         elif phase == "build" and cert.get("binary_id"):
@@ -11826,7 +11780,13 @@ clean:
         if not hasattr(self, "_producer_arid"):
             self._producer_arid: dict[str, str] = {}
         cert = self.check_phase_certified(node_key, phase)
-        if cert.get("certified"):
+        if cert.get("certified") and phase in self.rederive:
+            # Forced re-derivation: the phase runs although it is certified. The certified
+            # output is left as it is (eligible; a later run may select it again if this
+            # attempt does not pass). Recorded so the run log says why a certified phase ran.
+            self.emit("phase_rederive_forced", node_key=node_key, phase=phase,
+                      certified_by=self._certified_by_label(phase, cert))
+        elif cert.get("certified"):
             # The artifacts of this phase are certified, so it does not run — on a cold run
             # exactly as on a resume. ADOPT the ids the certification resolved into `refs`:
             # they are the artifacts every later phase must bind to, and a `refs` still
@@ -13285,18 +13245,24 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
     ir_id + pipeline_id roots before the Compile phase runs.
 
     A COLD run over a node that is already certified ADOPTS the standing artifacts instead
-    of minting new ids. Minting would be self-defeating: the certification predicate refuses
-    a reservation that is not the latest artifact under the root, so a fresh ir_id would make
-    every phase of an already-certified node re-derive. Adoption is what makes "re-run the
-    same target and it passes with four skips" true, which is the point of certifying
-    artifacts rather than recording runs. A revoked or unstamped IR is not adopted, so a
-    re-derivation still gets a fresh id and never overwrites the artifact it replaces."""
+    of minting new ids: the SELECTED certified IR under the derivation key recomputed now
+    (`_certified_ir_candidate`), and the pipeline built from it. Adoption is what makes
+    "re-run the same target and it passes with four skips" true, which is the point of
+    certifying artifacts rather than recording runs; and it keeps `refs` equal to the
+    selection from the first phase, so a run writes beside what it stands on (a fresh ir_id
+    would still certify — the selection is over the whole root since issue #250 PR-2 — but
+    every phase would then be adopting across reservations). A revoked, unstamped or
+    key-mismatching IR is not adopted, so a re-derivation gets a fresh id and never
+    overwrites the artifact it replaces. `--rederive compile` (`conductor.rederive`) forces
+    the fresh id too: the standing IR stays eligible, and the new attempt is selected once it
+    passes."""
     from tools.orchestration_runtime import _certified_ir_candidate
 
     safe = node_key_safe(node_key)
     slug = _slug_of(spec_id_of(node_key))
     date = _today()
-    ir_id = _certified_ir_candidate(conductor.repo_root, node_key)
+    ir_id = (None if "compile" in conductor.rederive
+             else _certified_ir_candidate(conductor.repo_root, node_key, spec_ref=spec_path))
     pipeline_id = None
     if ir_id:
         # The pipeline that was built FROM the adopted IR — identified by `lineage.json`,
@@ -13347,7 +13313,8 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   source_dependency_ref: str, until_phase: str,
                   llm_config: LlmConfig, workflow_mode: str = "dev",
                   env: dict[str, str] | None = None, resume: bool = False,
-                  wait_usage_reset: bool = False) -> str:
+                  wait_usage_reset: bool = False,
+                  rederive: frozenset[str] | set[str] | None = None) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
     pipeline bound to it on a cold run; on resume, seeding the stage ids from
@@ -13367,6 +13334,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
         orchestration_agent_run_id=orchestration_agent_run_id,
         env=env if env is not None else {}, workflow_mode=workflow_mode,
         wait_usage_reset=wait_usage_reset, llm_config=llm_config,
+        rederive=frozenset(rederive or ()),
     )
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))
