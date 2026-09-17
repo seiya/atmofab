@@ -2209,6 +2209,31 @@ shell_tool                       stable             true
                 repo_root, orch)["entries"]}
             self.assertEqual(rows["arid-cold-a"]["agent_session_id"], "thread-a")
             self.assertEqual(rows["arid-cold-a"]["codex_lineage_id"], "arid-cold-a")
+            # The TERMINAL upsert `record_agent_run` makes (with no lineage of its own)
+            # must leave the lineage on the row: the producer loop finalizes attempt 1
+            # BEFORE attempt 2 resolves its lineage off this row, so an upsert that
+            # overwrote the key with None would turn every codex repair cold, reported as
+            # a missing home (round 2 found the guard unpinned).
+            record_agent_run(
+                repo_root=repo_root, orchestration_id=orch,
+                payload={
+                    "agent_run_id": "arid-cold-a", "parent_agent_run_id": "orch_run_001",
+                    "agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0",
+                    "step": "compile", "substep": "generate", "status": "fail",
+                    "agent_backend": "codex", "agent_model": "gpt-5-codex",
+                    "context_id": "arid-cold-a", "agent_session_id": "thread-a",
+                    "launch_request_ref": cold["launch_request_ref"],
+                    "launch_response_ref": cold["launch_response_ref"],
+                    "launch_prompt_ref": cold["launch_prompt_ref"],
+                    "launch_reply_ref": cold["launch_reply_ref"],
+                    "started_at": "2026-03-11T00:00:10Z",
+                    "finished_at": "2026-03-11T00:00:50Z",
+                    "output_refs": [], "result_summary": "schema violation",
+                })
+            rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
+                repo_root, orch)["entries"]}
+            self.assertEqual(rows["arid-cold-a"]["status"], "fail")
+            self.assertEqual(rows["arid-cold-a"]["codex_lineage_id"], "arid-cold-a")
 
             # WARM: attempt 2 of thread-a, against the row's lineage.
             warm = _launch("arid-warm-a2", codex_lineage_id=rows["arid-cold-a"]["codex_lineage_id"])
