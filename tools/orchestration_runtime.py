@@ -2417,7 +2417,9 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 # key changes, every downstream key changes with it (A1's completion condition 4). In PR-1 the
 # selection is today's: the reserved / adopted id for this node's own upstream phases, and
 # `_selected_certified_meta`'s chain (the latest pipeline's certified binary and the source it
-# was built from) for a dependency.
+# was built from) for a dependency. A dependency output today's readiness accepts without a
+# hash to bind by (unstamped, or no longer matching its stamp) binds by a labelled identity
+# instead (`_dependency_output_hash`), so that PR-1 refuses no run the gates admit.
 
 
 class DerivationInputsUnresolvable(RuntimeError):
@@ -2579,14 +2581,43 @@ def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path 
 
 
 def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> str:
-    """The certified output hash of a dependency's `step`, or `DerivationInputsUnresolvable`."""
+    """What a consumer's key binds a dependency's `step` output BY: its output hash, or — for
+    an output today's readiness accepts but cannot hash — a labelled identity.
+
+    Readiness (`_verify_dep_stage_detail`) accepts a dependency whose stage meta records
+    `verification_status: pass`; it does not re-hash the dependency's deliverables, and a meta
+    stamped before issue #177 carries no `artifact_hashes` at all. Both shapes are in the real
+    workspace (measured at `06bf4c73`: every `shallow_water2d` closure member's certified IR
+    is unstamped), and both must resolve, or a run the readiness gate admits would fail
+    closed here — PR-1 of issue #250 records and decides nothing. So:
+
+      * `sha256:<hex>` — the meta is certified in full (pass, not revoked, hashes intact);
+      * `unstamped:<stage_id>` — pass, but no `artifact_hashes` (a pre-#177 meta);
+      * `unverified:<stage_id>` — pass, but a deliverable no longer hashes to the stamp.
+
+    The two labelled forms are honest about what the consumer was bound to and can never equal
+    a recomputation over a stamped dependency, so a key taken over one re-derives once the
+    dependency is (PR-2's legacy blast radius, by design). A dependency with NO certified
+    output, or one whose meta is not `pass`, is unresolvable — readiness refuses it too."""
     meta_path = _selected_certified_meta(repo_root, dep_node_key, step)
     if meta_path is None:
         raise DerivationInputsUnresolvable(
             f"derivation_inputs_unresolvable: dependency {dep_node_key} has no certified "
             f"{step} output (build the dependency closure first, e.g. "
             f"run_workflow.py --with-deps)")
-    return _certified_output_hash(repo_root, meta_path, what=f"dependency {dep_node_key} {step}")
+    ok, detail = _stage_meta_certification(repo_root, meta_path)
+    meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
+    if ok:
+        return _meta_output_hash(detail["meta"], meta_ref)
+    reason = str(detail.get("reason") or "")
+    stage_id = meta_path.parent.name
+    if reason == "artifact_hashes_missing":
+        return f"unstamped:{stage_id}"
+    if reason.startswith("artifact_hash_mismatch:"):
+        return f"unverified:{stage_id}"
+    raise DerivationInputsUnresolvable(
+        f"derivation_inputs_unresolvable: dependency {dep_node_key} {step}: {meta_ref} is not "
+        f"certified ({reason})")
 
 
 def _spec_file_hash(repo_root: Path, spec_ref: str, name: str) -> str:

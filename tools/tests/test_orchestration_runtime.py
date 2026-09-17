@@ -25606,6 +25606,46 @@ class DerivationInputsTests(unittest.TestCase):
 
     # --- refusals ---------------------------------------------------------------------
 
+    def test_a_dependency_readiness_accepts_without_a_hash_binds_by_labelled_identity(self) -> None:
+        """Measured at `06bf4c73`: every closure member of the real `shallow_water2d` carries a
+        pre-#177 IR meta with no `artifact_hashes`, and `_verify_dep_stage_detail` accepts it
+        on `verification_status` alone. PR-1 refuses no run the gates admit, so such an output
+        binds by `unstamped:<stage_id>`; one whose stamp no longer matches its bytes (readiness
+        does not re-hash a dependency) binds by `unverified:<stage_id>`. Neither can equal a
+        hash, so a key over either re-derives once the dependency is stamped (PR-2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            dep = certify_node(repo, "o-read", self._DEP, through="validate")
+            doc = json.loads((repo / dep["ir_meta"]).read_text(encoding="utf-8"))
+            del doc["artifact_hashes"]
+            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            model = repo / dep["model_ref"]
+            model.write_text(model.read_text(encoding="utf-8") + "! edited after the stamp\n",
+                             encoding="utf-8")
+            # The readiness stages still call both READY (status alone, no re-hash).
+            self.assertTrue(ort._dep_ir_meta_passes(repo, "component", "dep_a", "0.1.0"))
+            self.assertTrue(ort._dep_binary_meta_passes(repo, "component", "dep_a", "0.1.0"))
+            gen = self._inputs(repo, refs, "generate")
+            self.assertEqual(gen["closure"][0], {
+                "node_key": self._DEP,
+                "ir": f"unstamped:{dep['ir_id']}",
+                "source": f"unverified:{dep['source_id']}"})
+            self.assertEqual(self._inputs(repo, refs, "compile")["closure"][0]["ir"],
+                             f"unstamped:{dep['ir_id']}")
+            self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"],
+                             f"unverified:{dep['source_id']}")
+            # Restoring the stamp / the bytes turns both back into hashes — the labelled
+            # forms are what an accepted-but-unhashable output binds by, nothing more.
+            doc["artifact_hashes"] = {f"{dep['ir_ref']}/spec.ir.yaml": _compute_sha256(
+                repo / dep["ir_ref"] / "spec.ir.yaml")}
+            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            model.write_text(model.read_text(encoding="utf-8").replace(
+                "! edited after the stamp\n", ""), encoding="utf-8")
+            gen2 = self._inputs(repo, refs, "generate")
+            self.assertTrue(gen2["closure"][0]["ir"].startswith("sha256:"))
+            self.assertTrue(gen2["closure"][0]["source"].startswith("sha256:"))
+
     def test_a_dependency_without_a_certified_output_is_unresolvable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -25617,7 +25657,7 @@ class DerivationInputsTests(unittest.TestCase):
             for step in ("compile", "generate"):
                 with self.subTest(step=step), self.assertRaisesRegex(
                         ort.DerivationInputsUnresolvable,
-                        r"derivation_inputs_unresolvable: dependency component/dep_a@0.1.0 compile.*revoked"):
+                        r"derivation_inputs_unresolvable: dependency component/dep_a@0.1.0 compile: .*revoked"):
                     self._inputs(repo, refs, step)
             # Build binds the dep's SOURCE, which is still certified: the revoked IR is not
             # its business (the readiness stages are, in PR-2).
