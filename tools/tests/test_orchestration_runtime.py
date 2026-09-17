@@ -9503,9 +9503,9 @@ class PhaseCertificationTests(unittest.TestCase):
                 "revoked")
 
     def test_the_cli_accepts_a_validate_revocation(self) -> None:
-        """The over-refusal, driven through the route the RUNBOOK recipe uses. `revoke-artifact
-        --step validate` against a passing node is the documented remedy when the attributed
-        phase is validate, and it must exit 0."""
+        """The over-refusal, driven through the CLI: `revoke-artifact --step validate` against
+        a passing node must exit 0 (it used to answer a `step_certifies_no_meta` noop and, for
+        one revision, exited 1 on `still_certified`; since issue #250 it revokes the meta)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._preflight(repo)
@@ -25546,6 +25546,21 @@ class DerivationInputsTests(unittest.TestCase):
             tc2 = self._inputs(repo, refs, "build")["toolchain"]
             self.assertEqual(tc2["compiler"], "no_such_fc_x")
             self.assertIsNone(tc2["compiler_version"])
+
+    def test_an_upstream_binds_by_the_recomputed_hash_never_the_stamped_one(self) -> None:
+        """Round-3 mutant: `_meta_output_hash` returning a stamped `output_hash` when present
+        survived. The stamped key is a RECORD; what a downstream key binds is recomputed from
+        `artifact_hashes`, so a legacy meta (no stamp) and a new one answer alike and a meta
+        whose stamp disagrees with its hashes cannot bind by the stamp."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = self._inputs(repo, refs, "generate")["ir"]
+            doc = json.loads((repo / refs["ir_meta"]).read_text(encoding="utf-8"))
+            doc["output_hash"] = "sha256:" + "d" * 64
+            (repo / refs["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(self._inputs(repo, refs, "generate")["ir"], before)
+            self.assertEqual(ort._meta_output_hash(doc, refs["ir_meta"]), before)
 
     # --- what moves a key, named ---------------------------------------------------------
 
