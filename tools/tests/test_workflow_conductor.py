@@ -116,7 +116,10 @@ def _load_real_requests() -> dict[tuple[str, str | None], dict]:
     out: dict[tuple[str, str | None], dict] = {}
     for f in sorted(glob.glob(str(_FIXTURE_DIR / "*.request.json"))):
         d = json.load(open(f, encoding="utf-8"))
-        out[(d.get("step"), d.get("substep"))] = d
+        key = (d.get("step"), d.get("substep"))
+        if key in out:  # a second file for one pair would silently shadow the first
+            raise AssertionError(f"two fixtures for {key}: {f}")
+        out[key] = d
     return out
 
 

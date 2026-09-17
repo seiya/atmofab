@@ -25149,9 +25149,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         through prepare."""
         from tools.orchestration_runtime import _validate_launch_request_payload
 
-        # The `compile_generate` capture this used before is deleted with the agentic shape
-        # (Z4, issue #171); `validate_execute` is the surviving SUBSTEP capture, and the role
-        # canonicalization under test is role-shaped rather than substep-specific.
+        # `validate_execute` is a deterministic SUBSTEP capture, and the role canonicalization
+        # under test is role-shaped rather than substep-specific. (This row used the agentic
+        # `compile_generate` capture until Z4, issue #171, deleted that shape; the pure
+        # `compile_generate` capture that replaced it carries a `prompt_contract_version` the
+        # validator would demand re-stamping, so the deterministic row stays the simpler probe.)
         fixture = (
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
             / "validate_execute.request.json"
