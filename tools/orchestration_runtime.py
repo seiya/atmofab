@@ -2622,8 +2622,10 @@ def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> st
     The labelled forms are honest about what the consumer was bound to and can never equal a
     recomputation over a stamped dependency, so a key taken over one re-derives once the
     dependency is (PR-2's legacy blast radius, by design). A dependency with NO certified
-    output, or whose IR or binary meta is not `pass`, is unresolvable — readiness refuses it
-    too."""
+    output, or whose IR meta is not `pass`, is unresolvable — readiness refuses it too. (The
+    binary meta's status is readiness's question alone: `_selected_certified_meta` selects the
+    latest binary without reading its status, and no consumer key binds a dependency's build
+    output in PR-1.)"""
     meta_path = _selected_certified_meta(repo_root, dep_node_key, step)
     if meta_path is None:
         raise DerivationInputsUnresolvable(
