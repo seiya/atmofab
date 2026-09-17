@@ -1714,6 +1714,26 @@ class PhaseDerivationWiringTest(unittest.TestCase):
                 self.assertEqual(set(result["derivation"]),
                                  {"derivation_key", "derivation_inputs", "transformation"})
 
+    def test_a_re_attempt_of_a_phase_stamps_its_own_key_on_its_launches(self) -> None:
+        """A second `run_phase` of the same (node, phase) — a cross-phase reopen re-running
+        Generate after Compile re-derived — computes a NEW derivation and every launch of that
+        attempt carries it, never the first attempt's (round-1 mutant: a `setdefault` stash
+        survived; the launch rows PR-2 reads as "the derivation this attempt ran under" would
+        have named the pre-reopen key)."""
+        c = self._conductor()
+        keys = iter(["sha256:" + "1" * 64, "sha256:" + "2" * 64])
+        c._phase_derivation = lambda refs, phase: {  # type: ignore[method-assign]
+            "derivation_key": next(keys), "derivation_inputs": {}, "transformation": ["t"]}
+        refs = self._refs()
+        self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+        self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+        launches = [cap["--request-json"]["derivation_key"]
+                    for s, cap in c.calls if s == "record-launch"]
+        self.assertEqual(launches, ["sha256:" + "1" * 64] * 3 + ["sha256:" + "2" * 64] * 3)
+        results = [cap["--result-json"]["derivation"]["derivation_key"]
+                   for s, cap in c.calls if s == "write-step-result"]
+        self.assertEqual(results, ["sha256:" + "1" * 64, "sha256:" + "2" * 64])
+
     def test_unresolvable_inputs_fail_closed_before_any_substep(self) -> None:
         c = self._conductor()
 
@@ -1757,11 +1777,24 @@ class PhaseDerivationWiringTest(unittest.TestCase):
             spec_ref="spec/component/spec_x", ir_ref=bare.ir_ref, source_ref=None,
             binary_ref=None)
 
-    def test_a_launch_outside_a_phase_carries_no_key(self) -> None:
+    def test_a_launch_of_a_phase_no_run_phase_computed_carries_no_key(self) -> None:
+        """`record_launch` stamps the key of the (node, phase) attempt `run_phase` last
+        computed, and nothing otherwise — no placeholder. A phase this conductor never ran
+        has none. (The escalate diagnostician IS launched after `run_phase` returned and DOES
+        carry that attempt's key: the diagnosis is of that attempt, and the stash is not
+        cleared between the phase and its escalation.)"""
         c = self._conductor()
-        request = {"node_key": "component/spec_x@0.1.0", "step": "compile", "substep": "diagnose"}
+        request = {"node_key": "component/spec_x@0.1.0", "step": "build", "substep": None}
         c.record_launch("child-9", request, c.entry_for(None, None))
         self.assertNotIn("derivation_key", request)
+        refs = self._refs()
+        c.run_phase(refs, "compile")
+        after = {"node_key": refs.node_key, "step": "compile", "substep": "diagnose"}
+        c.record_launch("child-10", after, c.entry_for(None, None))
+        self.assertEqual(after["derivation_key"], "sha256:" + "f" * 64)
+        other = {"node_key": refs.node_key, "step": "generate", "substep": "generate"}
+        c.record_launch("child-11", other, c.entry_for(None, None))
+        self.assertNotIn("derivation_key", other)
 
 
 class ConductHappyPathTest(unittest.TestCase):
@@ -14457,6 +14490,39 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         # it — so the Makefile is absent from its output set regardless of authorship.
         ver = self._launch(refs, "verify", host_authored=False)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
+
+    def test_phase_required_outputs_declares_every_bundle_source(self) -> None:
+        """A `helper` / `internal_module` bundle file is written to `src/` and compiled by the
+        bundle-derived Makefile (round-1 review, issue #250 PR-1: the fixed list omitted it,
+        so two generate outputs differing only in a helper hashed equal). `bundle_sources`
+        joins the fixed names, de-duplicated and in bundle order, before the control file."""
+        refs = self._refs()
+        sid, src = refs.spec_id, refs.source_dir()
+        outs = wc.phase_required_outputs(
+            refs, "generate", runner_host_authored=True,
+            bundle_sources=[f"{sid}_model.f90", "sw_private_helpers.f90",
+                            f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""])
+        self.assertEqual(outs, [
+            f"{src}/src/{sid}_model.f90", f"{src}/src/{sid}_checks.f90",
+            f"{src}/src/{sid}_runner.f90", f"{src}/src/sw_private_helpers.f90",
+            f"{src}/src/Makefile", f"{src}/source_meta.json"])
+
+    def test_bundle_source_names_read_the_accepted_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            self.assertEqual(c._bundle_source_names(refs), [])
+            path = repo / refs.source_dir() / "codegen_bundle.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"files": [
+                {"logical_path": "a_model.f90", "role": "model"},
+                {"logical_path": "helpers.f90", "role": "helper"},
+                {"role": "checks"}, "junk", {"logical_path": "  "}]}), encoding="utf-8")
+            self.assertEqual(c._bundle_source_names(refs), ["a_model.f90", "helpers.f90"])
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(c._bundle_source_names(refs), [])
 
     def test_phase_required_outputs_always_declares_the_control_file(self) -> None:
         """Whoever authors it, the control file is a Generate DELIVERABLE (issue #250): Build

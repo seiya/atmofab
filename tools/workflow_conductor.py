@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, NamedTuple
 
 import yaml
@@ -4915,8 +4915,10 @@ class Conductor:
         # The derivation key of the phase attempt this launch belongs to (issue #250), stamped
         # here — the ONE funnel every launch passes through — rather than in
         # `build_launch_request`, so the request builder stays a pure function of `refs` and
-        # the recorded request names the key of the attempt in flight. `record_agent_run`
-        # copies it onto the terminal row. Absent (not `None`) when no phase is in flight.
+        # the recorded request names the key of the attempt `run_phase` last computed for
+        # this (node, step) — the escalate diagnostician, launched after `run_phase` returned,
+        # carries that attempt's key too. `record_agent_run` copies it onto the terminal row.
+        # Absent (not `None`) for a (node, step) no `run_phase` of this conductor computed.
         key = self._phase_derivation_key(str(request.get("node_key") or ""),
                                          str(request.get("step") or ""))
         if key is not None:
@@ -6225,6 +6227,22 @@ clean:
                     / self.CONTROL_FILE_BASENAME)
         makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
         return written
+
+    def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
+        """The `files[].logical_path` names of the ACCEPTED bundle under `refs.source_dir()`
+        (`codegen_bundle.json`, written by `_write_pure_bundle_artifacts`), in document order;
+        `[]` when the phase produced none (a failed attempt, or a node whose generate wrote no
+        bundle). Read by `run_phase` so `phase_required_outputs("generate")` declares every
+        source the bundle contributed, helpers included (issue #250)."""
+        doc = _read_json(self.repo_root / refs.source_dir() / "codegen_bundle.json")
+        if not isinstance(doc, dict):
+            return []
+        names: list[str] = []
+        for entry in doc.get("files") or []:
+            logical = entry.get("logical_path") if isinstance(entry, dict) else None
+            if isinstance(logical, str) and logical.strip():
+                names.append(logical.strip())
+        return names
 
     def _pure_bundle_prior_document(self, record: dict[str, Any]) -> str | None:
         """The bundle the repair target's attempt returned, read back from the artifact
@@ -11980,7 +11998,8 @@ clean:
             "required_outputs": phase_required_outputs(
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
-                runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs))),
+                runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
+                bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ())),
             "executor_agent_run_id": executor,
             "substep_agent_run_ids": substep_arids,
             "failed_substeps": failed,
@@ -12974,29 +12993,43 @@ def _host_platform_record() -> dict[str, str | None]:
 
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
-                           *, runner_host_authored: bool = False) -> list[str]:
+                           *, runner_host_authored: bool = False,
+                           bundle_sources: Sequence[str] = ()) -> list[str]:
     """The deliverables a phase's terminal step_result declares — and, on a pass, the set
     `_stamp_certification` byte-pins into the certifying meta and hashes into the phase's
-    output hash (issue #250). So this is the definition of what a phase's OUTPUT is."""
+    output hash (issue #250). So this is the definition of what a phase's OUTPUT is.
+
+    `bundle_sources` (generate only) is every `files[].logical_path` of the ACCEPTED bundle,
+    as `Conductor._bundle_source_names` reads it off `codegen_bundle.json`: the model and the
+    checks module or the runner, plus any `helper` / `internal_module` file the producer
+    added — the bundle contract permits those, the host writes and compiles them, and a
+    review measured that the fixed list below omitted them, so two generate outputs differing
+    only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names."""
     if phase == "compile":
         return [f"{refs.ir_ref}/spec.ir.yaml", f"{refs.ir_ref}/ir_meta.json"]
     if phase == "generate":
         src = refs.source_dir()
         # Every source Build compiles is a Generate deliverable, whoever wrote it: the model,
         # the checks module (on an M3c node, where the host renders the runner) and the runner
-        # itself, and the build control file. Until issue #250 the host-authored runner and
-        # `src/Makefile` were left out because a required output had to be covered by a
-        # leaf's `output_refs`; every generate leaf is pure now and the phase's outputs are
-        # vouched by on-disk existence (`_validate_step_result_payload`), and leaving them out
-        # meant the generate output hash — what Build's derivation key binds to — did not see
-        # the glue and the control file Build actually compiles. lineage.json stays out: it is
-        # a pipeline-root record, not a source.
+        # itself, every other bundle file, and the build control file. Until issue #250 the
+        # host-authored runner and `src/Makefile` were left out because a required output had
+        # to be covered by a leaf's `output_refs`; every generate leaf is pure now and the
+        # phase's outputs are vouched by on-disk existence (`_validate_step_result_payload`),
+        # and leaving them out meant the generate output hash — what Build's derivation key
+        # binds to — did not see the glue and the control file Build actually compiles.
+        # lineage.json stays out: it is a pipeline-root record, not a source.
         checks_entry = ([f"{src}/src/{refs.spec_id}_checks.f90"] if runner_host_authored
                         else [])
-        return [
+        fixed = [
             f"{src}/src/{refs.spec_id}_model.f90",
             *checks_entry,
             f"{src}/src/{refs.spec_id}_runner.f90",
+        ]
+        extra = [f"{src}/src/{name.strip()}" for name in bundle_sources
+                 if isinstance(name, str) and name.strip()]
+        return [
+            *fixed,
+            *[ref for ref in dict.fromkeys(extra) if ref not in fixed],
             f"{src}/src/{Conductor.CONTROL_FILE_BASENAME}",
             f"{src}/source_meta.json",
         ]
