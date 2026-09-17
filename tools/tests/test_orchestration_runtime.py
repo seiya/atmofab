@@ -9933,11 +9933,17 @@ class CertificationStampTests(unittest.TestCase):
             self.assertNotIn("source_ir_id", doc)   # validate binds through trial_meta
             on_disk = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
             self.assertEqual(on_disk["artifact_hashes"], doc["artifact_hashes"])
+            # The strip removes EVERY key the stamp added — measured against the stamp's own
+            # output, not against the constant the strip reads (a constant missing a key
+            # would then satisfy its own test; `output_hash` did, in a mechanism sweep).
+            before = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
+            added = set(doc) - (set(before) - set(ort._CERTIFICATION_STAMP_KEYS))
+            self.assertEqual(added, {"artifact_hashes", "output_hash", "derivation_key",
+                                     "derivation_inputs", "derivation_transformation"})
             self.assertEqual(ort._strip_certification(
                 repo, step="validate", required_outputs=outs), meta_ref)
             stripped = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
-            for key in ort._CERTIFICATION_STAMP_KEYS:
-                self.assertNotIn(key, stripped)
+            self.assertEqual(added & set(stripped), set())
             self.assertEqual(stripped["verification_status"], "pass")
 
     def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
@@ -25785,7 +25791,9 @@ class DerivationRecordStampTests(unittest.TestCase):
                          "required_outputs": [meta_ref], "failed_substeps": ["substep_gen_verify_001"],
                          "substep_agent_run_ids": ["substep_gen_verify_001"]})
             stripped = json.loads((repo / meta_ref).read_text("utf-8"))
-            self.assertEqual(set(ort._CERTIFICATION_STAMP_KEYS) & set(stripped), set())
+            for key in ("artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
+                        "derivation_transformation", "source_ir_id"):
+                self.assertNotIn(key, stripped)
             self.assertEqual(stripped["verification_status"], "fail")
 
 
