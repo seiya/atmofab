@@ -23,9 +23,9 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - non-POSIX; the cold-start claim degrades
     fcntl = None  # type: ignore[assignment]
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
