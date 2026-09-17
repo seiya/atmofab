@@ -105,6 +105,9 @@ _NON_BUILDER_KEYS = {
     "leaf_transport",
     # Provenance the redaction script writes: path, byte count and sha256 of the recorded request.
     "_capture_source",
+    # The conductor's `record_launch` wrapper stamps the phase attempt's derivation key on every
+    # launch it records (issue #250); the builder stays a pure function of `refs`.
+    "derivation_key",
 }
 # Stamped `""` on EVERY launch by `prepare_launch_request_payload` (which `record_launch` calls),
 # and emitted `""` by the builder on the pure branch only. So on a deterministic capture it is a
@@ -1016,6 +1019,14 @@ def _pure_leaf_tail() -> list[str]:
     return [*pure_leaf_flags(), "-p"]
 
 
+# The derivation record a pass stamp requires (issue #250), in the shape `write_step_result`
+# validates. `_FakeConductor._phase_derivation` returns the same shape; the real resolvers are
+# `test_orchestration_runtime.DerivationInputsTests`' subject.
+_FAKE_DERIVATION = {"derivation_key": "sha256:" + "f" * 64,
+                    "derivation_inputs": {"fake": "fixture"},
+                    "transformation": ["fake-1"]}
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
@@ -1121,6 +1132,16 @@ class _FakeConductor(wc.Conductor):
 
     def read_case_ids(self, refs):  # type: ignore[override]
         return ()
+
+    def _phase_derivation(self, refs, phase):  # type: ignore[override]
+        """The derivation record `run_phase` computes at phase start (issue #250), faked: the
+        real resolvers read certified upstream metas and spec files these fixtures do not
+        carry. The shape is the one `write_step_result` validates; the resolvers themselves
+        are driven by `test_orchestration_runtime.DerivationInputsTests` and the wiring by
+        `PhaseDerivationWiringTest` here."""
+        return {"derivation_key": "sha256:" + "f" * 64,
+                "derivation_inputs": {"fake": phase},
+                "transformation": ["fake-1"]}
 
     # --- the LLM leaf, faked at the loop rather than at the process -------------------
     #
@@ -1326,9 +1347,9 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
 
     def test_a_noop_over_a_phase_that_is_not_certified_is_only_reported(self) -> None:
-        """The legitimate half of the same word: validate certifies no meta, and a phase that
-        never produced one has nothing to revoke. Neither is a failure — but both are still
-        EMITTED, because `noop` is the one answer that looks identical in the good case and the
+        """The legitimate half of the same word: a phase that never produced a meta has
+        nothing to revoke (until issue #250 Validate certified no meta and was the standing
+        example). Not a failure — but still EMITTED, because `noop` is the one answer that looks identical in the good case and the
         bad one, and a run log that never mentions it cannot be read back either way."""
         c = self._conductor({"status": "noop", "meta_ref": None, "reason": "no_meta",
                              "still_certified": False})
@@ -1641,6 +1662,165 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         self.assertIsNone(received["compile"])
         self.assertEqual(received["generate"]["repair_reason"], "revoked_artifact_resume")
         self.assertEqual(received["generate"]["repair_findings"], "predicate p1 failed")
+
+
+class PhaseDerivationWiringTest(unittest.TestCase):
+    """`run_phase` computes the phase's derivation ONCE at phase start (issue #250) and the
+    conductor records it three ways: on every launch of that attempt (`record_launch`
+    stamps `derivation_key` on the request), on the terminal step_result (`derivation`),
+    and — through `write_step_result` — into the certifying meta. An unresolvable input is a
+    transport fail_closed before any substep runs."""
+
+    def _conductor(self) -> _FakeConductor:
+        c = _FakeConductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001", source_binary_id="bin_20260101_001")
+
+    def test_every_launch_and_the_step_result_carry_the_phase_key(self) -> None:
+        c = self._conductor()
+        seen: list[tuple[str, str]] = []
+        real = c._phase_derivation
+
+        def spy(refs, phase):
+            record = real(refs, phase)
+            record = {**record, "derivation_key": "sha256:" + phase.ljust(64, "0")}
+            seen.append((refs.node_key, phase))
+            return record
+
+        c._phase_derivation = spy  # type: ignore[method-assign]
+        self.assertEqual(c.conduct(self._refs(), "validate"), "pass")
+        # Once per phase, in phase order — never per substep.
+        self.assertEqual(seen, [("component/spec_x@0.1.0", p)
+                                for p in ("compile", "generate", "build", "validate")])
+        launches = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"]
+        self.assertEqual(len(launches), 3 + 3 + 1 + 4)
+        for req in launches:
+            with self.subTest(step=req["step"], substep=req.get("substep")):
+                self.assertEqual(req["derivation_key"], "sha256:" + req["step"].ljust(64, "0"))
+        for cap in (cap for s, cap in c.calls if s == "write-step-result"):
+            result = cap["--result-json"]
+            with self.subTest(step=cap["--step"]):
+                self.assertEqual(result["derivation"]["derivation_key"],
+                                 "sha256:" + cap["--step"].ljust(64, "0"))
+                self.assertEqual(set(result["derivation"]),
+                                 {"derivation_key", "derivation_inputs", "transformation"})
+
+    def test_a_re_attempt_of_a_phase_stamps_its_own_key_on_its_launches(self) -> None:
+        """A second `run_phase` of the same (node, phase) — a cross-phase reopen re-running
+        Generate after Compile re-derived — computes a NEW derivation and every launch of that
+        attempt carries it, never the first attempt's (round-1 mutant: a `setdefault` stash
+        survived; the launch rows PR-2 reads as "the derivation this attempt ran under" would
+        have named the pre-reopen key)."""
+        c = self._conductor()
+        keys = iter(["sha256:" + "1" * 64, "sha256:" + "2" * 64])
+        c._phase_derivation = lambda refs, phase: {  # type: ignore[method-assign]
+            "derivation_key": next(keys), "derivation_inputs": {}, "transformation": ["t"]}
+        refs = self._refs()
+        self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+        self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+        launches = [cap["--request-json"]["derivation_key"]
+                    for s, cap in c.calls if s == "record-launch"]
+        self.assertEqual(launches, ["sha256:" + "1" * 64] * 3 + ["sha256:" + "2" * 64] * 3)
+        results = [cap["--result-json"]["derivation"]["derivation_key"]
+                   for s, cap in c.calls if s == "write-step-result"]
+        self.assertEqual(results, ["sha256:" + "1" * 64, "sha256:" + "2" * 64])
+
+    def test_run_phase_declares_the_accepted_bundles_files_as_generate_outputs(self) -> None:
+        """The one production call that threads the accepted bundle into the phase's declared
+        deliverables (round-2 mutant on both axes: `bundle_sources=()` at that call survived
+        while the pure function and the reader were each pinned alone). A Generate whose
+        bundle carries a `helper` declares it, so the stamp hashes it."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _FakeConductor(repo_root=repo, orchestration_id="orch_x",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={})
+            c.calls = []
+            # The real producer writes the bundle INTO the attempt's (rotated) source dir; the
+            # fake writes nothing, so pin the id and plant the document where it would land.
+            c._ensure_fresh_producer_id = lambda refs, phase: None  # type: ignore[method-assign]
+            refs = self._refs()
+            bundle = repo / refs.source_dir() / "codegen_bundle.json"
+            bundle.parent.mkdir(parents=True, exist_ok=True)
+            bundle.write_text(json.dumps({"files": [
+                {"logical_path": "spec_x_model.f90", "role": "model"},
+                {"logical_path": "sw_private_helpers.f90", "role": "helper"}]}), encoding="utf-8")
+            self.assertEqual(c.run_phase(refs, "generate").status, "pass")
+            result = next(cap["--result-json"] for s, cap in c.calls if s == "write-step-result")
+            src = refs.source_dir()
+            self.assertIn(f"{src}/src/sw_private_helpers.f90", result["required_outputs"])
+            self.assertEqual(result["required_outputs"].count(f"{src}/src/spec_x_model.f90"), 1)
+
+    def test_unresolvable_inputs_fail_closed_before_any_substep(self) -> None:
+        c = self._conductor()
+
+        def refuse(refs, phase):
+            raise wc.DerivationInputsUnresolvable(
+                "derivation_inputs_unresolvable: dependency component/dep@0.1.0 has no "
+                "certified compile output")
+
+        c._phase_derivation = refuse  # type: ignore[method-assign]
+        events: list[dict] = []
+        c.emit = lambda event, **fields: events.append({"event": event, **fields})  # type: ignore[method-assign]
+        outcome = c.run_phase(self._refs(), "compile")
+        self.assertEqual((outcome.status, outcome.decision.action, outcome.decision.reason),
+                         ("fail", "fail_closed", "derivation_inputs_unresolvable"))
+        self.assertEqual([s for s, _ in c.calls if s in ("record-launch", "write-step-result")], [])
+        detail = [e for e in events if e["event"] == "derivation_inputs_unresolvable"]
+        self.assertEqual(len(detail), 1)
+        self.assertIn("component/dep@0.1.0", detail[0]["detail"])
+
+    def test_the_refs_handed_to_the_resolver_are_this_attempts_own(self) -> None:
+        """`_phase_derivation` names THIS attempt's artifacts: the reserved IR, the source
+        Generate produced, and the binary Validate runs (`source_binary_id`, which a build
+        pass or an adoption sets — not `binary_id`, which a later build retry may have
+        rotated)."""
+        c = self._conductor()
+        refs = self._refs()
+        refs.source_binary_id = "bin_20260101_007"
+        with mock.patch.object(wc, "phase_derivation", return_value={"ok": 1}) as pd:
+            self.assertEqual(wc.Conductor._phase_derivation(c, refs, "validate"), {"ok": 1})
+        pd.assert_called_once_with(
+            Path("/tmp/repo"), node_key=refs.node_key, step="validate",
+            spec_ref="spec/component/spec_x", ir_ref=refs.ir_ref,
+            source_ref=f"{refs.pipeline_ref}/source/src_20260101_001",
+            binary_ref=f"{refs.pipeline_ref}/binary/bin_20260101_007")
+        bare = wc.NodeRefs(node_key=refs.node_key, spec_path=refs.spec_path,
+                           ir_id=refs.ir_id, pipeline_id=refs.pipeline_id)
+        with mock.patch.object(wc, "phase_derivation", return_value={}) as pd:
+            wc.Conductor._phase_derivation(c, bare, "compile")
+        pd.assert_called_once_with(
+            Path("/tmp/repo"), node_key=refs.node_key, step="compile",
+            spec_ref="spec/component/spec_x", ir_ref=bare.ir_ref, source_ref=None,
+            binary_ref=None)
+
+    def test_a_launch_of_a_phase_no_run_phase_computed_carries_no_key(self) -> None:
+        """`record_launch` stamps the key of the (node, phase) attempt `run_phase` last
+        computed, and nothing otherwise — no placeholder. A phase this conductor never ran
+        has none. (The escalate diagnostician IS launched after `run_phase` returned and DOES
+        carry that attempt's key: the diagnosis is of that attempt, and the stash is not
+        cleared between the phase and its escalation.)"""
+        c = self._conductor()
+        request = {"node_key": "component/spec_x@0.1.0", "step": "build", "substep": None}
+        c.record_launch("child-9", request, c.entry_for(None, None))
+        self.assertNotIn("derivation_key", request)
+        refs = self._refs()
+        c.run_phase(refs, "compile")
+        after = {"node_key": refs.node_key, "step": "compile", "substep": "diagnose"}
+        c.record_launch("child-10", after, c.entry_for(None, None))
+        self.assertEqual(after["derivation_key"], "sha256:" + "f" * 64)
+        other = {"node_key": refs.node_key, "step": "generate", "substep": "generate"}
+        c.record_launch("child-11", other, c.entry_for(None, None))
+        self.assertNotIn("derivation_key", other)
 
 
 class ConductHappyPathTest(unittest.TestCase):
@@ -5918,7 +6098,7 @@ class NodeAllocationTest(unittest.TestCase):
         for phase in ("compile", "generate", "build", "validate"):
             with self.subTest(phase=phase):
                 declared = wc.phase_required_outputs(
-                    refs, phase, exe_name="spec_x_runner", makefile_required=True)
+                    refs, phase, exe_name="spec_x_runner")
                 ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
                 self.assertIn(ref, declared)
 
@@ -6038,7 +6218,8 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                              issue_severity=None, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="compile",
-                required_outputs=wc.phase_required_outputs(refs, "compile"))
+                required_outputs=wc.phase_required_outputs(refs, "compile"),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile")
             self.assertTrue(ok, detail)
 
@@ -6052,7 +6233,8 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="generate",
-                required_outputs=wc.phase_required_outputs(refs, "generate"))
+                required_outputs=wc.phase_required_outputs(refs, "generate"),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate")
             self.assertTrue(ok, detail)
 
@@ -6073,14 +6255,14 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 "dependency_check": {"direct_deps": [], "resolved": "match",
                                      "closure_bindings": []},
             }), encoding="utf-8")
-            # `_build_inproc` writes that meta INSIDE the build child's window, so the child's
-            # terminalization strips the certification keys from it before the host stamps
-            # (the strip itself is pinned in test_orchestration_runtime; what is checked here
-            # is that the stamp puts back what the predicate reads).
+            # `_build_inproc` writes that meta without the stamp keys (the host stamps them at
+            # `write-step-result`); strip here to model a meta the stamp has not reached, and
+            # check that the stamp puts in what the predicate reads.
             ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="build",
-                required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe))
+                required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
+                derivation=_FAKE_DERIVATION)
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build")
             self.assertTrue(ok, detail)
             # Validate.execute APPENDS to Build's command log; Build must stay certified.
@@ -14024,14 +14206,23 @@ class WriteRunnerTest(unittest.TestCase):
                       leaf_authored["allowed_output_paths"])
 
     def test_phase_required_outputs_symmetry(self) -> None:
+        """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
+        and the control file Generate deliverables — they are what Build compiles and what
+        the generate output hash must cover): an M3c node declares model + checks + runner +
+        Makefile, a runner-authoring node model + runner + Makefile. The checks module is
+        the one entry that follows the shape."""
         refs = self._refs()
-        m3c = wc.phase_required_outputs(refs, "generate", makefile_required=False,
-                                        runner_host_authored=True)
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_checks.f90", m3c)
-        self.assertNotIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", m3c)
-        # Runner-authoring node (the infrastructure self-test) still requires the runner.
+        src = refs.source_dir()
+        m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True)
+        self.assertEqual(m3c, [
+            f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_checks.f90",
+            f"{src}/src/{self.SID}_runner.f90", f"{src}/src/Makefile",
+            f"{src}/source_meta.json"])
+        # Runner-authoring node (the infrastructure self-test): no checks module.
         leaf_authored = wc.phase_required_outputs(refs, "generate")
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", leaf_authored)
+        self.assertEqual(leaf_authored, [
+            f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_runner.f90",
+            f"{src}/src/Makefile", f"{src}/source_meta.json"])
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -14325,11 +14516,48 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         ver = self._launch(refs, "verify", host_authored=False)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
 
-    def test_phase_required_outputs_leaf_omits_makefile(self) -> None:
+    def test_phase_required_outputs_declares_every_bundle_source(self) -> None:
+        """A `helper` / `internal_module` bundle file is written to `src/` and compiled by the
+        bundle-derived Makefile (round-1 review, issue #250 PR-1: the fixed list omitted it,
+        so two generate outputs differing only in a helper hashed equal). `bundle_sources`
+        joins the fixed names, de-duplicated and in bundle order, before the control file."""
+        refs = self._refs()
+        sid, src = refs.spec_id, refs.source_dir()
+        outs = wc.phase_required_outputs(
+            refs, "generate", runner_host_authored=True,
+            bundle_sources=[f"{sid}_model.f90", "sw_private_helpers.f90",
+                            f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""])
+        self.assertEqual(outs, [
+            f"{src}/src/{sid}_model.f90", f"{src}/src/{sid}_checks.f90",
+            f"{src}/src/{sid}_runner.f90", f"{src}/src/sw_private_helpers.f90",
+            f"{src}/src/Makefile", f"{src}/source_meta.json"])
+
+    def test_bundle_source_names_read_the_accepted_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            self.assertEqual(c._bundle_source_names(refs), [])
+            path = repo / refs.source_dir() / "codegen_bundle.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"files": [
+                {"logical_path": "a_model.f90", "role": "model"},
+                {"logical_path": "helpers.f90", "role": "helper"},
+                {"role": "checks"}, "junk", {"logical_path": "  "}]}), encoding="utf-8")
+            self.assertEqual(c._bundle_source_names(refs), ["a_model.f90", "helpers.f90"])
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(c._bundle_source_names(refs), [])
+
+    def test_phase_required_outputs_always_declares_the_control_file(self) -> None:
+        """Whoever authors it, the control file is a Generate DELIVERABLE (issue #250): Build
+        compiles with it, so the generate output hash Build's key binds to must cover it. The
+        LAUNCH request above still omits it from a pure leaf's output set — that is the leaf's
+        write authority, which is empty; this is the phase's output."""
         refs = self._refs()
         mk = f"{refs.source_dir()}/src/Makefile"
-        self.assertNotIn(mk, wc.phase_required_outputs(refs, "generate", makefile_required=False))
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", makefile_required=True))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate"))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True))
 
 
 class DeterministicBuildTest(unittest.TestCase):
@@ -14511,6 +14739,45 @@ class DeterministicBuildTest(unittest.TestCase):
                 c._build_inproc(refs, "child-1")
 
             self.assertIn("BIN=spec_x_runner", captured["extra_args"])
+
+    def test_build_inproc_records_the_compiler_identity_the_key_hashes(self) -> None:
+        """`binary_meta.json#compiler` / `#compiler_version` (issue #250): the compiler the
+        control file pins (here the host default — the IR pins none) and its `--version`
+        line, resolved by the runtime's one reader so the record and the build derivation
+        key's `toolchain` member are the same value. Until #250 `compiler` was `""`."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_compile(args):
+                (repo / refs.binary_dir() / "bin").mkdir(parents=True, exist_ok=True)
+                (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
+                return {"ok": True, "return_code": 0, "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
+                    mock.patch.object(build_runtime_server, "_syntax_compiler_version",
+                                      lambda argv: f"probed {argv[0]}"), \
+                    mock.patch.object(subprocess, "run",
+                                      return_value=subprocess.CompletedProcess([], 0, "", "")):
+                c._build_inproc(refs, "child-1")
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+            expected = ort._ir_toolchain_identity({})
+            self.assertEqual(meta["compiler"], build_runtime_server.MANDATORY_SYNTAX_COMPILER)
+            self.assertEqual(meta["compiler"], wc.DEFAULT_COMPILER)
+            self.assertEqual((meta["compiler"], meta["compiler_version"]),
+                             (expected["compiler"], f"probed {expected['compiler']}"))
 
     def _seed_closure_dep(self, repo: Path, node_key: str, body: str) -> str:
         """A certified dependency pipeline for `node_key`; returns the sha256 of `body`."""
@@ -14831,6 +15098,70 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(qc_env["CASES"], "c_alpha c_beta")
             self.assertEqual(qc_env["BIN"], "spec_x_runner")
             self.assertEqual(seen[1]["command"], ["make", "test"])
+
+    def test_execute_inproc_records_the_host_platform_in_trial_meta(self) -> None:
+        """`trial_meta.json#environment.platform` (issue #250): the machine the evidence was
+        produced on — RECORDED, not keyed; the validate derivation inputs carry no host
+        identity, and the record is what the day a perf predicate keys on it reads."""
+        import platform as _platform
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n"
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_run_program(args):
+                run_tmp = Path(args["project_dir"])
+                (run_tmp / "diagnostics.json").write_text(
+                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                (run_tmp / "perf.json").write_text("{}", encoding="utf-8")
+                return {"ok": True, "command_id": "R"}
+
+            def fake_qc(args):
+                qc_tmp = Path(args["env"]["RUNDIR"])
+                qc_tmp.mkdir(parents=True, exist_ok=True)
+                (qc_tmp / "diagnostics.json").write_text(
+                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                return {"ok": True, "command_id": "Q"}
+
+            with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
+                 mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
+                 mock.patch.object(subprocess, "run",
+                                   return_value=subprocess.CompletedProcess([], 0, "", "")):
+                out = c._execute_inproc(refs, "child-1")
+            self.assertEqual(out["returncode"], 0)
+            trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
+            env = trial["environment"]
+            self.assertEqual(set(env), {"target_class", "backend", "threads_per_rank",
+                                        "openmp_env", "platform"})
+            self.assertEqual(env["platform"], wc._host_platform_record())
+            self.assertEqual(env["platform"]["machine"], _platform.machine())
+            self.assertEqual(env["platform"]["node"], _platform.node())
+            self.assertIn("cpu_model", env["platform"])
+
+    def test_host_platform_record_survives_an_unreadable_cpuinfo(self) -> None:
+        with mock.patch.object(Path, "read_text", side_effect=OSError("no proc")):
+            record = wc._host_platform_record()
+        self.assertEqual(set(record), {"machine", "node", "cpu_model"})
+        self.assertIsNone(record["cpu_model"])
+        self.assertTrue(record["machine"])
 
     def test_execute_inproc_clears_stale_verdict_on_runtime_error(self) -> None:
         # R2 guard: a structural (runtime-error) execute failure must leave NO verdict.json, so a

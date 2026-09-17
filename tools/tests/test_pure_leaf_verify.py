@@ -1201,8 +1201,7 @@ class PureStepResultValidationTests(unittest.TestCase):
                 json.dumps({"leaf_mode": "pure", "step": "generate", "substep": substep}),
                 encoding="utf-8")
         # Host-authored deliverables on disk (what the pure producer + verify write).
-        required = wc.phase_required_outputs(refs, "generate", makefile_required=False,
-                                             runner_host_authored=True)
+        required = wc.phase_required_outputs(refs, "generate", runner_host_authored=True)
         for ref in required:
             p = repo / ref
             p.parent.mkdir(parents=True, exist_ok=True)

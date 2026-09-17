@@ -68,6 +68,13 @@ try:
         backend_credential_home_paths as _backend_credential_home_paths,
         workflow_homes_root as _hooks_workflow_homes_root,
     )
+    from tools.derivation import (
+        DERIVATION_STEPS,
+        canonical_json_bytes as _canonical_json_bytes,
+        derivation_key as _derivation_key,
+        output_hash as _output_hash,
+        sha256_hex as _sha256_hex,
+    )
     from tools.meta_contracts import (
         CERTIFYING_META_FILENAME_BY_STEP,
         STAGE_META_FILENAME_BY_STEP,
@@ -94,6 +101,13 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _resolve_lenient,
         backend_credential_home_paths as _backend_credential_home_paths,
         workflow_homes_root as _hooks_workflow_homes_root,
+    )
+    from tools.derivation import (
+        DERIVATION_STEPS,
+        canonical_json_bytes as _canonical_json_bytes,
+        derivation_key as _derivation_key,
+        output_hash as _output_hash,
+        sha256_hex as _sha256_hex,
     )
     from tools.meta_contracts import (
         CERTIFYING_META_FILENAME_BY_STEP,
@@ -1801,7 +1815,7 @@ def _certification_hash_mismatch(repo_root: Path, meta_doc: dict[str, Any]) -> s
 
 
 def _stage_meta_certification(repo_root: Path, meta_path: Path) -> tuple[bool, dict[str, Any]]:
-    """The per-meta half of the predicate, shared by all three certifying phases:
+    """The per-meta half of the predicate, shared by the certifying phases:
     readable object, `verification_status == "pass"`, and hashes that re-compute.
 
     The second element always carries `revoked`, `last_fail_reason` and
@@ -2083,7 +2097,8 @@ def _phase_certified(
     if str(gate_doc.get("status", "")).strip().lower() != "pass":
         return (False, {**detail, "reason": "post_judge_not_pass"})
     # And every declared deliverable is on disk. The other three phases get this for free from
-    # `artifact_hashes` — a missing deliverable cannot re-hash — but Validate has no stamp, so
+    # `artifact_hashes` — a missing deliverable cannot re-hash — and Validate has that stamp
+    # too since issue #250 PR-1, but this branch is not yet read through it (PR-2 does that);
     # without this an attempt that died after `post_judge_meta.json` and before the rest
     # certifies on a half-written run directory.
     missing = [name for name in VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES
@@ -2112,6 +2127,46 @@ def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -
     return refs
 
 
+_DERIVATION_RECORD_KEYS: tuple[str, ...] = (
+    "derivation_key", "derivation_inputs", "transformation")
+
+
+def _validated_derivation_record(derivation: Any, step_token: str) -> dict[str, Any]:
+    """The derivation record a pass step_result carries, checked for SHAPE: a `sha256:<hex>`
+    key, an object of inputs, a non-empty list of version strings. The key is not recomputed
+    here — the inputs it was taken over are the phase-START inputs, and recomputing at stamp
+    time would answer a different question (see `_stamp_certification`). Type-checked
+    because `_phase_certified` (PR-2) compares the stamped key with a recomputation, and a
+    structurally wrong stamp would read as a stale phase and send the operator hunting for
+    an input nobody changed."""
+    if not isinstance(derivation, dict):
+        raise RuntimeError(
+            f"certification stamp: pass step_result for {step_token} must carry a "
+            f"`derivation` record ({{derivation_key, derivation_inputs, transformation}}, "
+            f"as `phase_derivation` computes it at phase start); got {type(derivation).__name__}")
+    missing = [k for k in _DERIVATION_RECORD_KEYS if k not in derivation]
+    if missing:
+        raise RuntimeError(
+            f"certification stamp: {step_token} derivation record lacks {missing}")
+    key = derivation.get("derivation_key")
+    if not (isinstance(key, str) and key.startswith("sha256:") and len(key) > len("sha256:")):
+        raise RuntimeError(
+            f"certification stamp: {step_token} derivation_key must be 'sha256:<hex>', got {key!r}")
+    inputs = derivation.get("derivation_inputs")
+    if not isinstance(inputs, dict):
+        raise RuntimeError(
+            f"certification stamp: {step_token} derivation_inputs must be an object, "
+            f"got {type(inputs).__name__}")
+    transformation = derivation.get("transformation")
+    if (not isinstance(transformation, list) or not transformation
+            or not all(isinstance(v, str) and v.strip() for v in transformation)):
+        raise RuntimeError(
+            f"certification stamp: {step_token} transformation must be a non-empty list of "
+            f"version strings, got {transformation!r}")
+    return {"derivation_key": key, "derivation_inputs": inputs,
+            "transformation": list(transformation)}
+
+
 def _stamp_certification(
     repo_root: Path,
     orchestration_id: str,
@@ -2119,9 +2174,19 @@ def _stamp_certification(
     node_key: str,
     step: str,
     required_outputs: Sequence[str],
+    derivation: Any,
 ) -> dict[str, Any] | None:
-    """Write `artifact_hashes` (and, for generate and build, `source_ir_id`) into the phase's stage
-    meta. Returns the stamped document, or `None` for a phase that certifies no meta.
+    """Write `artifact_hashes`, `output_hash`, the derivation record (`derivation_key`,
+    `derivation_inputs`, `derivation_transformation`) and, for generate and build,
+    `source_ir_id` into the phase's stage meta. Returns the stamped document, or `None` for a
+    step outside `CERTIFYING_META_FILENAME_BY_STEP` (every phase is in it since issue #250).
+
+    `derivation` is the record the conductor computed at PHASE START (`phase_derivation`,
+    before any substep ran) and carried in the step_result payload: the inputs the phase was
+    actually run under, not the inputs at stamp time. It is REQUIRED on a pass — a pass
+    without one raises like a pass whose deliverable is missing — because a certified meta
+    with no key is, from PR-2 of issue #250 on, a meta no lookup can ever select, and failing
+    open here would silently re-derive that phase on every later run.
 
     Called from `write_step_result` on a `pass`, after `_validate_step_result_payload` has
     proved every `required_outputs` entry exists and before the result file is written. That
@@ -2145,6 +2210,7 @@ def _stamp_certification(
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
     if meta_filename is None:
         return None
+    derivation_doc = _validated_derivation_record(derivation, step_token)
     refs = [r.strip() for r in required_outputs if isinstance(r, str) and r.strip()]
     meta_refs = [r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename]
     if len(meta_refs) != 1:
@@ -2178,6 +2244,15 @@ def _stamp_certification(
             )
         hashes[ref] = digest
     doc["artifact_hashes"] = hashes
+    # The three identities of A1 (issue #250): the output hash over the deliverables just
+    # hashed — relative to the stage directory, so a byte-identical re-derivation under a
+    # fresh id is the same output — and the derivation this output was produced under. The
+    # attempt id is the step_result's own `executor_agent_run_id` / the launch rows, not
+    # repeated here.
+    doc["output_hash"] = _output_hash(hashes, stage_dir=meta_ref.rsplit("/", 1)[0])
+    doc["derivation_key"] = derivation_doc["derivation_key"]
+    doc["derivation_inputs"] = derivation_doc["derivation_inputs"]
+    doc["derivation_transformation"] = derivation_doc["transformation"]
 
     if step_token in {"generate", "build"}:
         # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
@@ -2242,12 +2317,12 @@ def _strip_certification(
     Best effort by design: an absent or unreadable meta is the ordinary shape of a failed
     phase (nothing was authored), and there is nothing to strip.
 
-    This is the SECOND of two strips and covers only phases that reach here. The phase that
-    fail-closes without writing a step_result at all (a leaf transport error, a validate gate
-    failure) is covered by the FIRST one, at the child's own terminalization in
-    `record_agent_run` — every child window terminalizes, and the keys are erased there from
-    whatever stage meta the child changed. Between them, the keys exist only where a passing `write-step-result` stamped
-    them.
+    This is the ONE strip: `write_step_result` is its only caller (the strip at the child's
+    own terminalization went with the FS-diff window in Z4, issue #171 PR-2; a pure leaf
+    authors no meta, so there is nothing of a child's to erase). A phase that fail-closes
+    without writing a step_result at all leaves its meta as the host last wrote it — never
+    stamped, since the stamp is written only here on a pass — so the keys exist only where a
+    passing `write-step-result` put them.
     """
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step.strip().lower())
     if meta_filename is None:
@@ -2262,9 +2337,15 @@ def _strip_certification(
     return meta_refs[0] if _strip_certification_keys(repo_root / meta_refs[0]) else None
 
 
+#: Every key `_stamp_certification` writes; `_strip_certification_keys` removes exactly these.
+_CERTIFICATION_STAMP_KEYS: tuple[str, ...] = (
+    "artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
+    "derivation_transformation", "source_ir_id")
+
+
 def _strip_certification_keys(meta_path: Path) -> bool:
-    """Remove `artifact_hashes` / `source_ir_id` from one stage meta, preserving every other
-    key. `True` when something was removed. Never raises: an absent or unreadable meta is the
+    """Remove every certification stamp key (`_CERTIFICATION_STAMP_KEYS`) from one stage
+    meta, preserving every other key. `True` when something was removed. Never raises: an absent or unreadable meta is the
     ordinary shape of a phase that authored nothing, and there is nothing to strip."""
     try:
         doc = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -2272,7 +2353,7 @@ def _strip_certification_keys(meta_path: Path) -> bool:
         return False
     if not isinstance(doc, dict):
         return False
-    removed = [k for k in ("artifact_hashes", "source_ir_id") if k in doc]
+    removed = [k for k in _CERTIFICATION_STAMP_KEYS if k in doc]
     if not removed:
         return False
     for key in removed:
@@ -2284,6 +2365,494 @@ def _strip_certification_keys(meta_path: Path) -> bool:
     return True
 
 
+# --- derivation keys (Z5, issue #250) -------------------------------------------------
+#
+# The per-phase CONTRACT INPUTS of a node, resolved from disk, and the derivation key over
+# them (`tools/derivation.py` hashes; this section says what each phase hashes). PR-1 of
+# issue #250 RECORDS the key — in the certifying stage meta on a pass (`_stamp_certification`),
+# on every launch row (`agent_runs.jsonl`) and on every terminal step_result — and decides
+# nothing from it: `_phase_certified` still reads the id chain, 13a and 13b. PR-2 replaces the
+# predicate with a lookup of this key. Every resolver here therefore answers the question the
+# predicate will ask ("what are the inputs NOW"), and the conductor asks the same function at
+# phase start, so the stamp and the later recomputation are one rule.
+#
+# What each phase hashes (`inputs`; hashes and identifiers only, no bodies):
+#
+#   compile   spec.{controlled_spec,tests,deps} — the three spec files' bytes;
+#             profiles[] — each adopted profile's `controlled_spec.md`, as the compile
+#               producer is shown it (`_pure_profile_spec_document`);
+#             dependency_graph — the derived closure's canonical signature
+#               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
+#               set, heights, direct/transitive split and the adopted profile set);
+#             closure[] — every closure node's certified COMPILE output hash (its IR is what
+#               the reviewer's facts come from);
+#             dependency_surface — the resolved published-operation surface of the component
+#               direct deps as the producer is shown it (`_resolve_component_dep_surface`;
+#               read off a dependency's certified SOURCE when its IR has no `public_api`);
+#             toolchain_document — the admissible-toolchain document the producer is shown.
+#   generate  ir — this node's certified compile output hash (`spec.ir.yaml`; carries the
+#               target profile, the case set and every `impl_defaults` knob);
+#             spec.{controlled_spec,tests} — the reviewer reads the spec, the producer the
+#               tests;
+#             harness — the ONE harness the producer negotiates against and the manifest
+#               document it is shown (`harness_capability_manifest_document_for`);
+#             closure[] — every closure node's certified compile AND generate output hashes:
+#               the published operations the producer transcribes come from the certified
+#               source, and the host-rendered runner is glue over the harness's certified
+#               source and IR.
+#             NOT hashed, because they are functions of the members above and of the
+#             transformation version: the host-rendered runner and control file
+#             (`RENDER_VERSION`), and the bundle shape (the node kind and the IR's toolchain).
+#   build     source — this node's certified generate output hash (model, checks or runner,
+#               the control file, all host- or leaf-authored deliverables of Generate);
+#             closure[] — the certified generate output hash of every closure node Build
+#               stages (`_stage_dependency_sources` copies exactly these sources);
+#             toolchain — `{language, standard, build_system, backend, compiler,
+#               compiler_version}` read off the IR, with the compiler the control-file
+#               writer would pin and the first line of its `--version`.
+#   validate  binary — this node's certified build output hash;
+#             ir — the compile output hash (the case set and the predicates);
+#             spec.tests — the judge reads `tests.md`;
+#             run_policy — the execution policy `_execute_inproc` imposes.
+#
+# An UPSTREAM output hash is always the `output_hash` of the SELECTED certified output —
+# never a derivation key — so that when the selection among several certified outputs of one
+# key changes, every downstream key changes with it (A1's completion condition 4). In PR-1 the
+# selection is today's: the reserved / adopted id for this node's own upstream phases, and
+# `_selected_certified_meta`'s chain (the latest pipeline's certified binary and the source it
+# was built from) for a dependency. A dependency output today's readiness accepts without a
+# hash to bind by (unstamped, or no longer matching its stamp) binds by a labelled identity
+# instead (`_dependency_output_hash`), so that PR-1 refuses no run the gates admit.
+
+
+class DerivationInputsUnresolvable(RuntimeError):
+    """A contract input of the phase cannot be resolved from disk — an upstream phase that is
+    not certified, a dependency with no certified output, a spec file that cannot be read.
+    The message names the input. The conductor turns it into a `fail_closed` transport
+    outcome (`derivation_inputs_unresolvable`), the same disposition as a pure context that
+    cannot be assembled: nothing a leaf could repair."""
+
+
+def _infrastructure_direct_deps(ir: Any) -> list[str]:
+    """The `infrastructure/...` direct-dependency node_keys of an IR (the harness deps).
+    ONE definition, read by the conductor's runner / harness resolution and by the generate
+    derivation inputs, so the harness the producer is shown is the harness the key names."""
+    dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
+    out: list[str] = []
+    for d in (dep.get("direct_deps") or []) if isinstance(dep, dict) else []:
+        nk = d.get("node_key") if isinstance(d, dict) else (d if isinstance(d, str) else None)
+        if isinstance(nk, str) and nk.strip() and nk.split("/", 1)[0].strip() == "infrastructure":
+            out.append(nk.strip())
+    return out
+
+
+def harness_node_key_for(ir: Any, node_key: str) -> str | None:
+    """The ONE harness a pure generate producer negotiates against, or None.
+
+    An `infrastructure` node negotiates against ITSELF (its self-test bundle declares the
+    execution model it implements); any other node against its single `infrastructure` direct
+    dependency. `infrastructure` is read off the NODE_KEY — the host's identity for the node —
+    never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's context
+    assembly and acceptance layer (`_pure_harness_node_key` delegates here) and by the generate
+    derivation inputs."""
+    if node_key.split("/", 1)[0].strip() == "infrastructure":
+        return node_key
+    infra = _infrastructure_direct_deps(ir)
+    return infra[0] if len(infra) == 1 else None
+
+
+def admissible_toolchains_document(node_key: str) -> str:
+    """The toolchain combinations the HOST can build and render for a node of this kind, as
+    JSON — the `toolchain_document` a pure compile producer is shown, and a compile
+    derivation input.
+
+    The pairs are derived from the backend registry so no `neutral core` file names a
+    target-stack technology (`docs/BACKEND_BOUNDARY.md`). The capabilities asked are exactly
+    the ones the deterministic gate (`validate_pipeline_semantics._toolchain_capability_clauses`)
+    asks of a node of this kind: an `infrastructure` node needs only its build system to be
+    executable; every other kind additionally needs the host to author the control file and
+    render the runner. An empty result RAISES — a prompt whose admissible set is `[]` would
+    ask the producer to invent a value."""
+    kind = node_key.partition("@")[0].partition("/")[0].strip()
+    is_infrastructure = kind == "infrastructure"
+    build_systems = [
+        b for b in backend_registry.implemented_backend_ids("build_system")
+        if backend_registry.provides("build_system", b, "build_execute")
+        and (is_infrastructure
+             or backend_registry.provides("build_system", b, "control_file"))
+    ]
+    languages = [
+        lang for lang in backend_registry.implemented_backend_ids("language")
+        if is_infrastructure
+        or (backend_registry.provides("language", lang, "control_file")
+            and backend_registry.provides("language", lang, "runner_render"))
+    ]
+    pairs = [{"language": lang, "build_system": b} for lang in languages for b in build_systems]
+    if not pairs:
+        raise RuntimeError(
+            "pure_toolchain_document_unresolvable: the backend registry declares no "
+            f"(language, build_system) pair the host can serve for a {kind!r} node")
+    return json.dumps({"admissible_toolchains": pairs}, indent=2, ensure_ascii=False)
+
+
+def _ir_toolchain_identity(ir: Any) -> dict[str, Any]:
+    """The build toolchain identity read off an IR's `impl_defaults`, for the build key and for
+    `binary_meta.json`: `language` / `standard` / `build_system` / `backend` AS THE IR DECLARES
+    THEM — `None` where it declares nothing — plus the compiler and its `--version` line.
+
+    No default is filled in here for the four declared fields. The defaults the host applies
+    to an IR that pins nothing (`Conductor._read_toolchain`, the control-file writer) are the
+    host's TRANSFORMATION, which `RENDER_VERSION`'s drift pin watches; spelling them again in
+    this module would be a second statement of a backend fact in the `neutral core`, which the
+    boundary check refuses (a round-2 review measured the growth). "Declares nothing" is the
+    honest identity of such an IR, and it changes exactly when the IR does.
+
+    The compiler is the one exception, because its VERSION must be probed from an executable:
+    the IR's pin, else the build-runtime server's `MANDATORY_SYNTAX_COMPILER` — asked of the
+    server, which owns the compiler adapters and whose value the conductor's `DEFAULT_COMPILER`
+    is pinned equal to (`tools/tests/test_host_prerequisites.py`). `compiler_version` is the
+    first line of `<compiler> --version`, `None` when it cannot be probed (recorded, not
+    refused)."""
+    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
+    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+    tc = tc if isinstance(tc, dict) else {}
+    target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
+    target = target if isinstance(target, dict) else {}
+    server = _build_runtime_server_module()
+    compiler = str(tc.get("compiler") or "").strip() or str(server.MANDATORY_SYNTAX_COMPILER)
+
+    def declared(mapping: dict[str, Any], key: str) -> str | None:
+        value = mapping.get(key)
+        return str(value).strip().lower() if isinstance(value, str) and value.strip() else None
+
+    return {
+        "language": declared(tc, "language"),
+        "standard": declared(tc, "standard"),
+        "build_system": declared(tc, "build_system"),
+        "backend": declared(target, "backend"),
+        "compiler": compiler,
+        "compiler_version": server._syntax_compiler_version((compiler, "--version")),
+    }
+
+
+def _build_runtime_server_module() -> Any:
+    """The build-runtime server module, imported the way the conductor's in-process gate
+    bodies and `tools/host_prerequisites.py` import it (it is standalone-runnable and lives
+    outside `tools/`)."""
+    mcp_dir = str(Path(__file__).resolve().parent.parent / "mcp_servers")
+    if mcp_dir not in sys.path:
+        sys.path.insert(0, mcp_dir)
+    import build_runtime_server
+    return build_runtime_server
+
+
+def _certified_output_hash(repo_root: Path, meta_path: Path, *, what: str) -> str:
+    """The output hash of the certified phase whose certifying meta is `meta_path`, or a
+    `DerivationInputsUnresolvable` naming `what` when that meta is not certified (absent,
+    unreadable, not `pass`, revoked, or with a deliverable whose bytes moved)."""
+    ok, detail = _stage_meta_certification(repo_root, meta_path)
+    meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
+    if not ok:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {what}: {meta_ref} is not certified "
+            f"({detail.get('reason')})")
+    return _meta_output_hash(detail["meta"], meta_ref)
+
+
+def _meta_output_hash(meta_doc: Mapping[str, Any], meta_ref: str) -> str:
+    """The output hash a certifying meta at `meta_ref` STANDS FOR: `output_hash` over its
+    `artifact_hashes`, relative to the meta's own directory. Recomputed rather than read off
+    the stamped `output_hash` key, so the value every reader binds to has one definition and
+    a legacy meta (stamped before the key existed) answers the same way as a new one."""
+    return _output_hash(meta_doc["artifact_hashes"], stage_dir=meta_ref.rsplit("/", 1)[0])
+
+
+def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path | None:
+    """The certifying meta of the output of `(node_key, step)` that a CONSUMER binds to today,
+    or `None` when there is none. PR-1's selection is the chain the readiness stages and the
+    build staging already use, so a key stamped now names the artifacts a run actually
+    consumed: `compile` → the latest IR (`_certified_ir_dir`); `generate` → the source the
+    latest pipeline's certified binary was built from (`_resolve_certified_closure_binding`),
+    NOT the latest source directory (a failed generate retry after the certified build is a
+    newer directory Build never linked). Whether the meta IS certified is the caller's
+    question (`_dependency_output_hash`)."""
+    step_token = step.strip().lower()
+    try:
+        kind, spec_id, version = _parse_node_key_strict(node_key)
+    except ValueError:
+        return None
+    if step_token == "compile":
+        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version)
+        return None if ir_dir is None else ir_dir / "ir_meta.json"
+    safe = f"{kind}__{spec_id}__{version}"
+    pipe_dir = _latest_pipeline_dir(repo_root / "workspace" / "pipelines" / safe)
+    if pipe_dir is None:
+        return None
+    if step_token == "generate":
+        binding, _err = _resolve_certified_closure_binding(repo_root, node_key)
+        if binding is None:
+            return None
+        return pipe_dir / "source" / binding["source_id"] / "source_meta.json"
+    # No consumer key binds a dependency's BUILD or VALIDATE output (PR-1 of issue #250); a
+    # `build` arm — the certified binary, `_certified_binary_meta` — is added with its first
+    # reader rather than kept unread (a round-1 census found it vacuous).
+    return None
+
+
+def _dependency_output_hash(repo_root: Path, dep_node_key: str, step: str) -> str:
+    """What a consumer's key binds a dependency's `step` output BY: its output hash, or — for
+    an output today's readiness accepts but cannot hash — a labelled identity.
+
+    Readiness (`_verify_dep_stage_detail`) accepts a dependency whose stage meta records
+    `verification_status: pass`; it does not re-hash the dependency's deliverables, and a meta
+    stamped before issue #177 carries no `artifact_hashes` at all. Both shapes are in the real
+    workspace (measured at `06bf4c73`: every `shallow_water2d` closure member's certified IR
+    is unstamped), and both must resolve, or a run the readiness gate admits would fail
+    closed here — PR-1 of issue #250 records and decides nothing. So:
+
+      * `sha256:<hex>` — the meta is certified in full (pass, not revoked, hashes intact);
+      * `unstamped:<stage_id>` — pass, but no `artifact_hashes` (a pre-#177 meta);
+      * `unverified:<stage_id>` — pass, but a deliverable no longer hashes to the stamp;
+      * `uncertified:<stage_id>` — a GENERATE output whose `source_meta.json` is revoked or
+        not `pass` while the binary built from it and that binary's verdict stand: readiness
+        reads the dependency's IR meta, binary meta and verdict and never its source meta, so
+        an operator's `revoke-artifact --step generate` on a dependency leaves it `ready` and
+        its consumers are still run against that source (round-1 review, issue #250).
+
+    The labelled forms are honest about what the consumer was bound to and can never equal a
+    recomputation over a stamped dependency, so a key taken over one re-derives once the
+    dependency is (PR-2's legacy blast radius, by design). A dependency with NO certified
+    output, or whose IR meta is not `pass`, is unresolvable — readiness refuses it too. (The
+    binary meta's status is readiness's question alone: `_selected_certified_meta` selects the
+    latest binary without reading its status, and no consumer key binds a dependency's build
+    output in PR-1.)"""
+    meta_path = _selected_certified_meta(repo_root, dep_node_key, step)
+    if meta_path is None:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: dependency {dep_node_key} has no certified "
+            f"{step} output (build the dependency closure first, e.g. "
+            f"run_workflow.py --with-deps)")
+    ok, detail = _stage_meta_certification(repo_root, meta_path)
+    meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
+    if ok:
+        return _meta_output_hash(detail["meta"], meta_ref)
+    reason = str(detail.get("reason") or "")
+    stage_id = meta_path.parent.name
+    if reason == "artifact_hashes_missing":
+        return f"unstamped:{stage_id}"
+    if reason.startswith("artifact_hash_mismatch:"):
+        return f"unverified:{stage_id}"
+    if step == "generate" and reason in ("revoked", "verification_status_not_pass"):
+        return f"uncertified:{stage_id}"
+    raise DerivationInputsUnresolvable(
+        f"derivation_inputs_unresolvable: dependency {dep_node_key} {step}: {meta_ref} is not "
+        f"certified ({reason})")
+
+
+def _spec_file_hash(repo_root: Path, spec_ref: str, name: str) -> str:
+    digest = _compute_sha256(repo_root / spec_ref / name)
+    if digest == "sha256:missing":
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: spec file {spec_ref}/{name} is missing")
+    return digest
+
+
+def _derived_closure_graph(repo_root: Path, node_key: str, spec_ref: str) -> dict[str, Any]:
+    """The dependency closure of `node_key` as the registry derives it NOW (the same pure
+    builder the compile sidecar and the R6-lite comparison use, without `via` paths). A
+    closure that does not build is unresolvable: the compile key cannot be computed for a
+    node whose `deps.yaml` + catalog yield no valid closure."""
+    from tools.dependency_graph import build_dependency_graph
+    try:
+        graph, error = build_dependency_graph(
+            repo_root, target_spec_ref=spec_ref, target_node_key=node_key, include_via=False)
+    except RecursionError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: dependency closure of {node_key} is too deep "
+            f"to derive ({type(exc).__name__})") from exc
+    if error is not None or not isinstance(graph, dict):
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: dependency closure of {node_key} does not "
+            f"resolve from deps.yaml + spec_catalog.yaml "
+            f"({(error or {}).get('reason')}: {(error or {}).get('detail')})")
+    return graph
+
+
+def _read_ir_document(repo_root: Path, ir_ref: str) -> dict[str, Any]:
+    path = repo_root / ir_ref / "spec.ir.yaml"
+    try:
+        doc = _require_yaml().safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # every read failure is the same unresolvable input
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {ir_ref}/spec.ir.yaml cannot be read "
+            f"({type(exc).__name__})") from exc
+    return doc if isinstance(doc, dict) else {}
+
+
+def _sidecar_closure(repo_root: Path, ir_ref: str, node_key: str) -> list[str]:
+    """The build closure recorded by the certified IR's `dependency_graph.json` sidecar, in
+    compile order — the closure the conductor stages and shows (`_dependency_closure_nodes`)."""
+    graph = _read_json_or_none(repo_root / ir_ref / "dependency_graph.json")
+    return _closure_nodes_from_graph(graph, node_key)
+
+
+def phase_derivation_inputs(
+    repo_root: Path,
+    *,
+    node_key: str,
+    step: str,
+    spec_ref: str | None = None,
+    ir_ref: str | None = None,
+    source_ref: str | None = None,
+    binary_ref: str | None = None,
+) -> dict[str, Any]:
+    """The contract inputs of `(node_key, step)` as they are NOW — the mapping
+    `tools.derivation.derivation_key` hashes and `_stamp_certification` records as
+    `derivation_inputs`. The section comment above lists each phase's members.
+
+    `spec_ref` is the node's spec directory; `ir_ref` / `source_ref` / `binary_ref` name this
+    node's OWN upstream artifacts (the reserved or adopted ones) whose certified output hashes
+    the phase binds to — `generate` needs the IR, `build` the IR (for its closure and
+    toolchain) and the source, `validate` the IR and the binary. A missing required ref, an
+    upstream that is not certified, a dependency with no certified output and an unreadable
+    spec file all raise `DerivationInputsUnresolvable`."""
+    step_token = step.strip().lower()
+    if step_token not in DERIVATION_STEPS:
+        raise ValueError(f"unsupported step for a derivation: {step!r}")
+    node_key = node_key.strip()
+
+    def need(name: str, value: str | None) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: {step_token} derivation of {node_key} "
+                f"needs {name}")
+        return _normalize_rel_posix(value.strip())
+
+    if step_token == "compile":
+        spec = need("spec_ref", spec_ref)
+        graph = _derived_closure_graph(repo_root, node_key, spec)
+        signature = _closure_signature(graph)
+        if signature is None:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: derived dependency graph of {node_key} "
+                "is malformed")
+        profiles: list[dict[str, str]] = []
+        for entry in graph.get("profiles") or []:
+            pid = entry.get("profile_id") if isinstance(entry, dict) else None
+            pnk = entry.get("node_key") if isinstance(entry, dict) else None
+            if not (isinstance(pid, str) and pid.strip()):
+                continue
+            profile_ref = resolve_spec_ref_for(repo_root, "profile", pid.strip())
+            if not profile_ref:
+                raise DerivationInputsUnresolvable(
+                    f"derivation_inputs_unresolvable: adopted profile {pid!r} of {node_key} "
+                    "does not resolve to one spec directory")
+            profiles.append({
+                "node_key": str(pnk or "").strip(),
+                "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
+            })
+        profiles.sort(key=lambda p: p["node_key"])
+        closure = sorted(
+            nk for nk in (
+                (n.get("node_key") or "").strip() for n in (graph.get("all_nodes") or [])
+                if isinstance(n, dict))
+            if nk and nk != node_key)
+        return {
+            "spec": {
+                "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
+                "tests": _spec_file_hash(repo_root, spec, "tests.md"),
+                "deps": _spec_file_hash(repo_root, spec, "deps.yaml"),
+            },
+            "profiles": profiles,
+            "dependency_graph": _sha256_hex(_canonical_json_bytes(signature)),
+            "closure": [
+                {"node_key": nk, "ir": _dependency_output_hash(repo_root, nk, "compile")}
+                for nk in closure],
+            # The published-operation surface the producer is SHOWN (`dependency_surface.json`,
+            # rendered through `<dependency_facts>`): for a dependency whose certified IR has no
+            # `public_api` it is read off the certified SOURCE, which can change while the IR
+            # stands (a Codex review found the closure's `ir` entries blind to that). Hashed as
+            # the resolved document itself — unresolved entries included — because that is what
+            # both the producer and the membership gate read.
+            "dependency_surface": _sha256_hex(_canonical_json_bytes(
+                _resolve_component_dep_surface(repo_root, node_key, graph))),
+            "toolchain_document": _sha256_hex(
+                admissible_toolchains_document(node_key).encode("utf-8")),
+        }
+
+    ir = need("ir_ref", ir_ref)
+    ir_hash = _certified_output_hash(
+        repo_root, repo_root / ir / "ir_meta.json", what=f"{node_key} compile")
+    if step_token == "generate":
+        spec = need("spec_ref", spec_ref)
+        ir_doc = _read_ir_document(repo_root, ir)
+        harness_nk = harness_node_key_for(ir_doc, node_key)
+        from tools.codegen_bundle import harness_capability_manifest_document_for
+        manifest = harness_capability_manifest_document_for(harness_nk)
+        return {
+            "ir": ir_hash,
+            "spec": {
+                "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
+                "tests": _spec_file_hash(repo_root, spec, "tests.md"),
+            },
+            "harness": {
+                "node_key": harness_nk,
+                "manifest": _sha256_hex(_canonical_json_bytes(manifest)),
+            },
+            "closure": [
+                {"node_key": nk,
+                 "ir": _dependency_output_hash(repo_root, nk, "compile"),
+                 "source": _dependency_output_hash(repo_root, nk, "generate")}
+                for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
+        }
+
+    if step_token == "build":
+        source = need("source_ref", source_ref)
+        ir_doc = _read_ir_document(repo_root, ir)
+        return {
+            "source": _certified_output_hash(
+                repo_root, repo_root / source / "source_meta.json",
+                what=f"{node_key} generate"),
+            "closure": [
+                {"node_key": nk, "source": _dependency_output_hash(repo_root, nk, "generate")}
+                for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
+            "toolchain": _ir_toolchain_identity(ir_doc),
+        }
+
+    spec = need("spec_ref", spec_ref)
+    binary = need("binary_ref", binary_ref)
+    ir_doc = _read_ir_document(repo_root, ir)
+    impl = (ir_doc.get("impl_defaults") or {}) if isinstance(ir_doc, dict) else {}
+    target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
+    return {
+        "binary": _certified_output_hash(
+            repo_root, repo_root / binary / "binary_meta.json", what=f"{node_key} build"),
+        "ir": ir_hash,
+        "spec": {"tests": _spec_file_hash(repo_root, spec, "tests.md")},
+        # The execution policy `_execute_inproc` imposes: the target class off the IR, one
+        # thread per rank, and the `make_test` quality-check preset.
+        "run_policy": {
+            "target_class": str((target if isinstance(target, dict) else {}).get("class") or "cpu"),
+            "threads_per_rank": 1,
+            "preset": "make_test",
+        },
+    }
+
+
+def phase_derivation(repo_root: Path, *, node_key: str, step: str, **refs: str | None) -> dict[str, Any]:
+    """`{"derivation_key", "derivation_inputs", "transformation"}` of `(node_key, step)` NOW.
+    The one record the conductor stamps on a launch, a step_result and (on pass) the
+    certifying stage meta; `refs` are `phase_derivation_inputs`'s keyword refs."""
+    from tools.derivation import transformation_versions
+    inputs = phase_derivation_inputs(repo_root, node_key=node_key, step=step, **refs)
+    step_token = step.strip().lower()
+    return {
+        "derivation_key": _derivation_key(step_token, inputs),
+        "derivation_inputs": inputs,
+        "transformation": list(transformation_versions()[step_token]),
+    }
+
+
 def _revocable_stage_meta_path(
     repo_root: Path,
     orchestration_id: str,
@@ -2293,13 +2862,13 @@ def _revocable_stage_meta_path(
 ) -> Path | None:
     """The stage meta a re-derivation of `(node_key, step)` must revoke, resolved from THIS
     orchestration's records — the compile reservation for the ir_id, and
-    `<pipeline_ref>/lineage.json` for the source_id / binary_id.
+    `<pipeline_ref>/lineage.json` for the source_id / binary_id / run_id.
 
     Resolved from the records rather than by re-selecting the latest artifact: a retry is a
     statement about the artifact this run produced, and the latest one under the root may
-    already belong to a different orchestration. `None` when the step certifies no meta
-    (validate) or the record naming it does not exist — the caller reports that as a no-op
-    rather than an error, because a phase that never produced a meta has nothing to revoke.
+    already belong to a different orchestration. `None` when the record naming the meta does
+    not exist — the caller reports that as a no-op rather than an error, because a phase that
+    never produced a meta has nothing to revoke.
     """
     step_token = step.strip().lower()
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
@@ -2329,10 +2898,14 @@ def _revocable_stage_meta_path(
     lineage = _read_json_or_none(pipe_dir / "lineage.json")
     if not isinstance(lineage, dict):
         return None
-    key = "source_id" if step_token == "generate" else "binary_id"
+    key = {"generate": "source_id", "build": "binary_id", "validate": "run_id"}[step_token]
     stage_id = lineage.get(key)
     if not (isinstance(stage_id, str) and stage_id.strip()):
         return None
+    if step_token == "validate":
+        # `runs/<run_id>/<node_safe>/validate_meta.json`: the run's node dir, the same place
+        # `_phase_certified` reads the verdict and `phase_required_outputs` declares the meta.
+        return pipe_dir / "runs" / stage_id.strip() / node_safe / meta_filename
     sub = "source" if step_token == "generate" else "binary"
     return pipe_dir / sub / stage_id.strip() / meta_filename
 
@@ -3654,8 +4227,9 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
     canonical ``(date, seq)``) wins. ORIENTATION/PRIOR-ART ONLY — never a gate, and never the
     node's OWN prior source (self is excluded, so it cannot leak a past attempt of itself).
 
-    Returns ``{node_key, spec_id, sources: [{filename, text}, ...]}`` or ``None``. Best-effort:
-    NEVER raises (a missing catalog / IR / source yields ``None``)."""
+    Returns ``{node_key, spec_id, sources: [{filename, text}, ...], source_ref}`` (the last
+    is the repo-relative ``source/<source_id>`` directory the sources were read from) or
+    ``None``. Best-effort: NEVER raises (a missing catalog / IR / source yields ``None``)."""
     try:
         ir_ref_token = str(ir_ref or "").strip().rstrip("/")
         if not ir_ref_token:
@@ -3789,7 +4363,12 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
                     continue
                 cand = {"node_key": f"{self_kind}/{cand_id}"
                         + (f"@{cand_version}" if cand_version else ""),
-                        "spec_id": cand_id, "sources": sources}
+                        "spec_id": cand_id, "sources": sources,
+                        # WHICH certified source directory the exemplar was read from, so the
+                        # attempt record can name it (`bundle_meta.json#per_attempt[].exemplar_ref`,
+                        # issue #250): an advisory input is recorded per attempt, never keyed.
+                        "source_ref": _normalize_rel_posix(
+                            model_src.parent.parent.relative_to(repo_root).as_posix())}
                 if best is None or key > best[0]:
                     best = (key, cand)
         return best[1] if best is not None else None
@@ -5591,14 +6170,17 @@ REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"}
 # `reuse` of the producer session the decision had said to throw away.
 REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "re_execute"})
 
-# Validate's deliverables, as basenames under `runs/<run_id>/<node_key_safe>/`. Validate is the
-# one phase with NO entry in `CERTIFYING_META_FILENAME_BY_STEP`, so it gets no `artifact_hashes`
-# byte-pin, no child-window certification strip, and no revocable meta — its certification rests
+# Validate's deliverables, as basenames under `runs/<run_id>/<node_key_safe>/`. Until issue
+# #250 (PR-1) Validate was the one phase with NO entry in `CERTIFYING_META_FILENAME_BY_STEP`,
+# so it got no `artifact_hashes` byte-pin and no revocable meta, and its certification rested
 # entirely on what `_phase_certified` reads. Reading only the verdict and the gate record let a
 # phase that DIED mid-write certify: `aggregate_verdict.json` and `post_judge_meta.json` are
 # written before the rest, so an attempt that stopped between them and `validate_meta.json` left
 # a chain that read as complete, and a `--resume` then recorded `skipped_certified` — which
 # clause (e) of the completion vouch reads as an EXEMPTION from the latest-attempt check.
+# `validate_meta.json` now carries the stamp (`_stamp_certification`, over exactly these
+# deliverables minus the meta itself); `_phase_certified`'s validate branch still reads this
+# list until PR-2 of issue #250 moves the predicate onto the stamped key.
 #
 # COUPLED to `workflow_conductor.phase_required_outputs(..., "validate")` by
 # `test_validate_certifying_deliverables_match_the_declared_outputs`, so adding a deliverable
@@ -15838,6 +16420,9 @@ def record_timeout(
         val = req_doc.get(field)
         if isinstance(val, str) and val.strip():
             payload[field] = val.strip()
+    # `derivation_key` (issue #250) is NOT copied here: `record_agent_run` below backfills it
+    # from the same launch request for every step / substep row, so a timeout row carries it
+    # through the one reader rather than two (a hunk sweep measured the copy here inert).
 
     result = record_agent_run(
         repo_root=repo_root,
@@ -15950,7 +16535,12 @@ def record_agent_run(
         except (OSError, json.JSONDecodeError, KeyError):
             _launch_req = None
         if isinstance(_launch_req, dict):
-            for _field in ("parent_agent_run_id", "agent_model"):
+            # `node_key` / `step` / `substep` / `derivation_key` join the two above (issue
+            # #250): the row is the attempt record of A1, and an attempt is identified by
+            # the derivation it ran under, whatever its outcome — a FAILED attempt keeps its
+            # key here when no stage meta ever records it.
+            for _field in ("parent_agent_run_id", "agent_model", "node_key", "step",
+                           "substep", "derivation_key"):
                 _val = _launch_req.get(_field)
                 if isinstance(_val, str) and _val.strip():
                     payload.setdefault(_field, _val.strip())
@@ -16592,6 +17182,7 @@ def write_step_result(
             node_key=node_key,
             step=step_token,
             required_outputs=_declared_outputs,
+            derivation=result.get("derivation"),
         )
     else:
         # A non-passing phase leaves no certification behind — including one a leaf wrote
@@ -16700,8 +17291,9 @@ def revoke_artifact(
 
     Downstream phases need no revocation of their own: each binds to the id of the phase above
     it (`source_ir_id` / `source_source_id` / `trial_meta.source_binary_id`), so a re-derived
-    phase leaves them unbound. A step that certifies no meta (validate) and a phase whose meta
-    was never written are `noop` — there is nothing to revoke, which is not an error.
+    phase leaves them unbound. A phase whose meta was never written is a `noop` — there is
+    nothing to revoke, which is not an error. (Validate certified no meta until issue #250
+    PR-1 gave it `validate_meta.json`; every phase certifies one now.)
 
     `last_fail_reason` overwrites the meta's own when given: on the routes that carry findings
     it is what the resumed run seeds the repair from. `severity` travels with it for the same
@@ -16718,13 +17310,6 @@ def revoke_artifact(
         )
     meta_path = _revocable_stage_meta_path(
         repo_root, orchestration_id, node_key=node_key, step=step_token)
-    # A step that certifies NO meta (validate) is a different `noop` from one whose meta could
-    # not be resolved, and only the second is ever a failure. Telling them apart here rather
-    # than by `still_certified` is the whole difference between a clean answer and an
-    # over-refusal: validate is ALWAYS certified-and-unrevocable when it has passed, so asking
-    # "is it still certified" made the documented RUNBOOK §3-1 recipe exit 1 on a phase where
-    # the runtime's own docstring says the `noop` is the legitimate side.
-    certifies_a_meta = step_token in CERTIFYING_META_FILENAME_BY_STEP
     result: dict[str, Any] = {
         "status": "noop",
         "orchestration_id": orchestration_id,
@@ -16732,14 +17317,12 @@ def revoke_artifact(
         "step": step_token,
         "meta_ref": None,
         "prior_verification_status": None,
-        "reason": "no_meta" if certifies_a_meta else "step_certifies_no_meta",
+        "reason": "no_meta",
         "still_certified": False,
     }
-    if not certifies_a_meta:
-        return result
     if meta_path is None or not meta_path.is_file():
-        # `noop` is the one answer that looks identical in the good case (validate certifies no
-        # meta; none was written yet) and the bad one (the decision did not reach the artifact).
+        # `noop` is the one answer that looks identical in the good case (none was written
+        # yet) and the bad one (the decision did not reach the artifact).
         # Answer the distinguishing question HERE, where it is a pure read: `_phase_certified`
         # writes nothing. `check_phase_certified` would have been the obvious thing for the
         # conductor to ask instead, and it is the wrong one — it TRANSITIONS the phase to
@@ -17783,7 +18366,10 @@ def main(argv: list[str] | None = None) -> int:
         "(pass/fail/blocked/timeout/cancel), validation_stage is required: "
         "compile=>compile|full, generate=>post_generate|full, "
         "build=>post_build|full, validate=>post_execute|pre_judge|full. "
-        "For compile/generate pass, required_outputs must be covered by effective substep output_refs."
+        "For compile/generate pass, required_outputs must be covered by effective substep output_refs. "
+        "For status=pass, derivation ({derivation_key, derivation_inputs, transformation}, the "
+        "record phase_derivation computed at phase start) is required and is stamped into the "
+        "phase's certifying stage meta (issue #250)."
     )
 
     launch_parser = subparsers.add_parser(
@@ -18094,7 +18680,7 @@ def main(argv: list[str] | None = None) -> int:
             "revocation_reason. This is the half of a retry that reaches the ARTIFACT — the "
             "phase-state reset beside it is this orchestration's own bookkeeping, which a cold "
             "re-run does not read. Downstream phases need no revocation: each binds to the id "
-            "of the phase above it. `noop` when the step certifies no meta or none was written."
+            "of the phase above it. `noop` when no meta was written."
         ),
     )
     revoke_artifact_parser.add_argument("--repo-root", required=True)
