@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Derivation keys, output hashes and eligible-output selection (Z5, issue #250).
 
 `docs/design/zero_base_architecture.md` §A1 keeps three identities apart for every phase
@@ -107,24 +106,43 @@ def sha256_hex(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
-def output_hash(artifact_hashes: Mapping[str, str]) -> str:
+def output_hash(artifact_hashes: Mapping[str, str], *, stage_dir: str) -> str:
     """The output hash of a certified phase: one digest over its `artifact_hashes` map
-    (repo-relative deliverable path -> `sha256:<hex>`), order-independent.
+    (repo-relative deliverable path -> `sha256:<hex>`), order-independent, with every path
+    taken RELATIVE to `stage_dir` — the directory the certifying stage meta lives in.
 
-    Keyed by PATH as well as by content, because a phase's output is the set of named
-    deliverables — two sources whose bytes are swapped between files are not the same output.
-    The map is sorted by `canonical_json_bytes`, so insertion order does not matter.
+    Relative, because the output of a phase is CONTENT: a re-derivation that produces
+    byte-identical deliverables under a fresh stage id (`source/src_20260102_001/` instead of
+    `source/src_20260101_001/`) is the same output, and every downstream key that binds it
+    must stay unchanged — the one property A1 asks of the identity ("re-certifying a
+    dependency whose source bytes are unchanged invalidates nobody"). A repo-relative key
+    would put the attempt's id into the hash and lose it.
 
-    Refuses an empty map and a malformed entry: an output hash over nothing would let an
-    unstamped meta look like a certified one to a downstream key."""
+    Keyed by the relative PATH as well as by content, because a phase's output is the set of
+    named deliverables — two sources whose bytes are swapped between files are not the same
+    output. Sorted by `canonical_json_bytes`, so insertion order does not matter.
+
+    Refuses an empty map, a malformed entry, and a path outside `stage_dir` (a deliverable a
+    phase declares outside its own stage directory cannot be addressed relative to it — that
+    is a contract defect to surface, never a key to guess): an output hash over nothing, or
+    over the wrong thing, would let an unstamped or foreign meta satisfy a downstream key."""
     if not isinstance(artifact_hashes, Mapping) or not artifact_hashes:
         raise ValueError("output_hash: artifact_hashes must be a non-empty mapping")
+    base = str(stage_dir).strip().strip("/")
+    if not base:
+        raise ValueError("output_hash: stage_dir must be a non-empty repo-relative directory")
+    relative: dict[str, str] = {}
     for path, digest in artifact_hashes.items():
         if not (isinstance(path, str) and path.strip()):
             raise ValueError(f"output_hash: artifact path must be a non-empty string, got {path!r}")
         if not (isinstance(digest, str) and digest.startswith("sha256:") and len(digest) > len("sha256:")):
             raise ValueError(f"output_hash: digest of {path!r} must be 'sha256:<hex>', got {digest!r}")
-    return sha256_hex(canonical_json_bytes(dict(artifact_hashes)))
+        norm = path.strip().strip("/")
+        if not norm.startswith(base + "/") or norm == base:
+            raise ValueError(
+                f"output_hash: deliverable {path!r} is not under the stage directory {base!r}")
+        relative[norm[len(base) + 1:]] = digest
+    return sha256_hex(canonical_json_bytes(relative))
 
 
 def derivation_key(step: str, inputs: Mapping[str, Any]) -> str:
@@ -140,7 +158,7 @@ def derivation_key(step: str, inputs: Mapping[str, Any]) -> str:
         raise ValueError(
             f"derivation_key: unknown step {step!r}; expected one of {DERIVATION_STEPS}")
     if not isinstance(inputs, Mapping):
-        raise ValueError("derivation_key: inputs must be a mapping")
+        raise TypeError("derivation_key: inputs must be a mapping")
     payload = {
         "key_version": DERIVATION_KEY_VERSION,
         "step": step_token,

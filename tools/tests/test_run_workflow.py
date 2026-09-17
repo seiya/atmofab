@@ -6713,7 +6713,7 @@ class SubstepEventTests(unittest.TestCase):
             # `__init__` is bypassed, so the derivation stash and the phase-start record
             # (issue #250) are supplied directly; the real resolvers need artifacts this
             # stub has none of.
-            _phase_derivations: dict = {}
+            _phase_derivations: dict = {}  # noqa: RUF012 — a stub bypassing __init__
 
             def _phase_derivation(self, refs, phase):
                 return {"derivation_key": "sha256:" + "0" * 64,
@@ -6792,7 +6792,7 @@ class SubstepEventTests(unittest.TestCase):
             def _conductor_authors_makefile(self, *_a, **_k):
                 return False
 
-            _phase_derivations: dict = {}
+            _phase_derivations: dict = {}  # noqa: RUF012 — a stub bypassing __init__
 
             def _phase_derivation(self, refs, phase):
                 return {"derivation_key": "sha256:" + "0" * 64,

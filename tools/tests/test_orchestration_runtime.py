@@ -1839,7 +1839,10 @@ shell_tool                       stable             true
         agent_runs entry from launches/<arid>.request.json when the record-agent-run
         payload omits them. This satisfies the pre_judge step/substep requirement
         without the orchestration agent re-supplying fields the launch already
-        captured (parent unconditionally; agent_model from the required launch field)."""
+        captured (parent unconditionally; agent_model from the required launch field).
+        Since issue #250 the same read carries `derivation_key` (and `node_key` / `step` /
+        `substep` when the payload omits them): the row is the attempt record, so an attempt
+        — a FAILED one above all — names the derivation it ran under."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(
@@ -1888,6 +1891,7 @@ shell_tool                       stable             true
                     "deterministic": True,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
+                    "derivation_key": "sha256:" + "d" * 64,
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
@@ -1944,6 +1948,7 @@ shell_tool                       stable             true
             )
             self.assertEqual(sub.get("parent_agent_run_id"), "orch_run_001")
             self.assertEqual(sub.get("agent_model"), "claude-opus-4-8")
+            self.assertEqual(sub.get("derivation_key"), "sha256:" + "d" * 64)
 
     def test_validate_launch_request_payload_requires_agent_model(self) -> None:
         """A step/substep launch request without agent_model is rejected at
@@ -9922,7 +9927,7 @@ class CertificationStampTests(unittest.TestCase):
             self.assertIsNotNone(doc)
             self.assertEqual(sorted(doc["artifact_hashes"]), sorted(outs[:-1]))
             self.assertEqual(doc["output_hash"],
-                             tools_derivation.output_hash(doc["artifact_hashes"]))
+                             ort._meta_output_hash(doc, meta_ref))
             self.assertEqual(doc["derivation_key"], _DERIVATION_RECORD["derivation_key"])
             self.assertNotIn("source_ir_id", doc)   # validate binds through trial_meta
             on_disk = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
@@ -14346,6 +14351,8 @@ class RecordTimeoutTests(unittest.TestCase):
             child_env=child_env,
             request_payload={**_launch_request_body(substep_arid,
                                                     deterministic=deterministic),
+                             # The phase attempt's key, as the conductor stamps it (issue #250).
+                             "derivation_key": "sha256:" + "e" * 64,
                              **(request_extra or {})},
             response_payload={
                 "agent_run_id": substep_arid,
@@ -14935,6 +14942,8 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertIn("finished_at", timeout_entry)
             self.assertEqual(timeout_entry["agent_role"], "substep")
             self.assertEqual(timeout_entry["timeout_reason"], "API stream idle timeout after 600s")
+            # A timed-out attempt is still an attempt of its derivation (issue #250).
+            self.assertEqual(timeout_entry["derivation_key"], "sha256:" + "e" * 64)
             self.assertFalse(tmp_dir.exists(),
                              "workspace/tmp/<arid>/ must be cleaned by record-timeout")  # noqa: E501
 
@@ -22456,6 +22465,12 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
             self.assertEqual({s["filename"] for s in ex["sources"]},
                              {"adv_bndry_model.f90", "adv_bndry_runner.f90"})
+            # WHICH source directory the exemplar was read from (issue #250): the attempt
+            # record names it, so an advisory input is traceable without being keyed.
+            self.assertEqual(ex["source_ref"],
+                             "workspace/pipelines/component__adv_bndry__0.1.0/"
+                             "adv-bndry_20260101_001/source/src_20260101_001")
+            self.assertTrue((repo / ex["source_ref"] / "src" / "adv_bndry_model.f90").is_file())
 
     def test_m3c_target_selects_model_and_checks(self) -> None:
         # R1/M3c-β: an M3c target (one infrastructure dep) exemplifies a sibling's
@@ -25265,6 +25280,472 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         rendered = prepare_launch_request_payload(dict(respelled))
         self.assertEqual(rendered["agent_role"], "step")
         self.assertIn("Target step:", rendered["launch_prompt_full"])
+
+
+
+
+class DerivationInputsTests(unittest.TestCase):
+    """`phase_derivation_inputs` / `phase_derivation` (issue #250 PR-1): the per-phase contract
+    inputs resolved from a real spec registry and a real certified artifact chain.
+
+    PINNED: the top-level input SET of each phase (set identity — an input added to a phase
+    without a decision here is red, an advisory value slipped in as an input is red); which
+    upstream output each entry binds to (the output hash recomputed from the selected meta's
+    `artifact_hashes`); the refusals (a missing ref, an uncertified upstream, a dependency with
+    no certified output). SAMPLED: one moving input per phase, each named by
+    `first_differing_input`.
+
+    The fixture is a `problem` adopting one `profile` (which selects a `component`) and one
+    `infrastructure` harness, the closure `--with-deps` would run, with every closure member
+    certified through Validate by `certify_node`.
+    """
+
+    _NK = "problem/spec_x@0.1.0"
+    _DEP = "component/dep_a@0.1.0"
+    _HARNESS = "infrastructure/harness_h@0.1.0"
+    _PROFILE = "profile/pr@0.1.0"
+
+    @staticmethod
+    def _write(path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _spec_dir(self, kind: str, sid: str) -> str:
+        return f"spec/{kind}/dynamics/fam/{sid}"
+
+    def _seed_registry(self, repo: Path, *, infra_dep: bool = True) -> None:
+        lines = ["catalog_version: 0.2.0", "specs:"]
+        for kind, sid, ver in (("problem", "spec_x", "0.1.0"), ("component", "dep_a", "0.1.0"),
+                               ("infrastructure", "harness_h", "0.1.0"), ("profile", "pr", "0.1.0")):
+            lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                      f"    spec_version: \"{ver}\"", "    domain: dynamics", "    family: fam",
+                      f"    deps_path: {self._spec_dir(kind, sid)}/deps.yaml"]
+        self._write(repo / "spec/registry/spec_catalog.yaml", "\n".join(lines) + "\n")
+        for kind, sid in (("problem", "spec_x"), ("component", "dep_a"),
+                          ("infrastructure", "harness_h"), ("profile", "pr")):
+            d = repo / self._spec_dir(kind, sid)
+            self._write(d / "controlled_spec.md", f"# {sid}\n\nbody of {sid}\n")
+            self._write(d / "tests.md", f"# tests of {sid}\n")
+        infra = ("  infrastructure:\n    - infrastructure_id: harness_h\n"
+                 "      version_constraint: \">=0.1.0\"\n") if infra_dep else "  infrastructure: []\n"
+        self._write(repo / self._spec_dir("problem", "spec_x") / "deps.yaml",
+                    "spec_id: spec_x\nspec_kind: problem\ndependencies:\n  components: []\n"
+                    "  profiles:\n    - profile_id: pr\n      version_constraint: \">=0.1.0\"\n"
+                    + infra)
+        self._write(repo / self._spec_dir("profile", "pr") / "deps.yaml",
+                    "spec_id: pr\nspec_kind: profile\ndependencies:\n  components:\n"
+                    "    - component_id: dep_a\n      version_constraint: \">=0.1.0\"\n"
+                    "  profiles: []\n")
+        for kind, sid in (("component", "dep_a"), ("infrastructure", "harness_h")):
+            self._write(repo / self._spec_dir(kind, sid) / "deps.yaml",
+                        f"spec_id: {sid}\nspec_kind: {kind}\ndependencies:\n  components: []\n"
+                        "  profiles: []\n  infrastructure: []\n")
+
+    _IR_TEXT = ("meta:\n  spec_kind: problem\n  spec_id: spec_x\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n  target:\n    class: cpu\n    backend: openmp\n"
+                "dependency:\n  direct_deps:\n"
+                "    - node_key: component/dep_a@0.1.0\n"
+                "    - node_key: infrastructure/harness_h@0.1.0\n")
+
+    def _seed(self, repo: Path, *, through: str = "validate") -> dict[str, Any]:
+        """The registry plus certified chains for the two closure members and for spec_x
+        itself (`through`), spec_x's IR carrying the two direct deps and its sidecar written by
+        the real graph builder."""
+        from tools.dependency_graph import build_dependency_graph
+        self._seed_registry(repo)
+        for nk in (self._DEP, self._HARNESS):
+            certify_node(repo, "o1", nk, through="validate")
+        refs = certify_node(repo, "o1", self._NK, through=through)
+        self._reir(repo, refs, self._IR_TEXT)
+        graph, err = build_dependency_graph(
+            repo, target_spec_ref=self._spec_dir("problem", "spec_x"), target_node_key=self._NK)
+        self.assertIsNone(err, err)
+        self._write(repo / refs["ir_ref"] / "dependency_graph.json", json.dumps(graph, indent=2))
+        return refs
+
+    def _reir(self, repo: Path, refs: dict[str, Any], text: str) -> None:
+        """Rewrite spec_x's IR document and re-stamp its meta's byte-pin, as a real compile
+        pass would leave it."""
+        ir_path = repo / refs["ir_ref"] / "spec.ir.yaml"
+        self._write(ir_path, text)
+        meta_path = repo / refs["ir_meta"]
+        doc = json.loads(meta_path.read_text(encoding="utf-8"))
+        doc["artifact_hashes"] = {f"{refs['ir_ref']}/spec.ir.yaml": _compute_sha256(ir_path)}
+        meta_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    def _own(self, refs: dict[str, Any]) -> dict[str, str | None]:
+        return {"spec_ref": self._spec_dir("problem", "spec_x"), "ir_ref": refs["ir_ref"],
+                "source_ref": (f"{refs['pipeline_ref']}/source/{refs['source_id']}"
+                               if "source_id" in refs else None),
+                "binary_ref": (f"{refs['pipeline_ref']}/binary/{refs['binary_id']}"
+                               if "binary_id" in refs else None)}
+
+    @staticmethod
+    def _meta_output_hash(repo: Path, meta_ref: str) -> str:
+        doc = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
+        return ort._meta_output_hash(doc, meta_ref)
+
+    def _inputs(self, repo: Path, refs: dict[str, Any], step: str) -> dict[str, Any]:
+        return ort.phase_derivation_inputs(repo, node_key=self._NK, step=step, **self._own(refs))
+
+    # --- the input SET of each phase ---------------------------------------------------
+
+    def test_each_phase_hashes_exactly_its_contract_inputs(self) -> None:
+        """Set identity of the top-level inputs, per phase. Nothing advisory — no model, no
+        exemplar, no usage, no repo revision — and nothing derived from a listed member (the
+        host-rendered runner, the bundle shape) is a member."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            expected = {
+                "compile": {"spec", "profiles", "dependency_graph", "closure", "toolchain_document"},
+                "generate": {"ir", "spec", "harness", "closure"},
+                "build": {"source", "closure", "toolchain"},
+                "validate": {"binary", "ir", "spec", "run_policy"},
+            }
+            self.assertEqual(set(expected), set(ort.DERIVATION_STEPS))
+            for step, keys in expected.items():
+                with self.subTest(step=step):
+                    inputs = self._inputs(repo, refs, step)
+                    self.assertEqual(set(inputs), keys)
+                    # Every leaf value is a hash, an identifier or a small policy scalar — never
+                    # a document body: the record is stamped beside the key.
+                    self.assertLess(len(json.dumps(inputs)), 4000)
+            self.assertEqual(set(self._inputs(repo, refs, "compile")["spec"]),
+                             {"controlled_spec", "tests", "deps"})
+            self.assertEqual(set(self._inputs(repo, refs, "generate")["spec"]),
+                             {"controlled_spec", "tests"})
+            self.assertEqual(set(self._inputs(repo, refs, "build")["toolchain"]),
+                             {"language", "standard", "build_system", "backend", "compiler",
+                              "compiler_version"})
+            self.assertEqual(self._inputs(repo, refs, "validate")["run_policy"],
+                             {"target_class": "cpu", "threads_per_rank": 1, "preset": "make_test"})
+
+    # --- what each entry binds to ------------------------------------------------------
+
+    def test_compile_inputs_bind_the_spec_the_profile_and_the_closure_irs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            inputs = self._inputs(repo, refs, "compile")
+            spec = self._spec_dir("problem", "spec_x")
+            self.assertEqual(inputs["spec"], {
+                name.split(".")[0]: _compute_sha256(repo / spec / name)
+                for name in ("controlled_spec.md", "tests.md", "deps.yaml")})
+            self.assertEqual(inputs["profiles"], [{
+                "node_key": self._PROFILE,
+                "controlled_spec": _compute_sha256(
+                    repo / self._spec_dir("profile", "pr") / "controlled_spec.md")}])
+            # The closure is every member of the derived graph but self, sorted, each bound
+            # to the output hash of its certified IR (`_certified_ir_dir` selection).
+            dep_ir = ort._certified_ir_dir(repo, "component", "dep_a", "0.1.0")
+            har_ir = ort._certified_ir_dir(repo, "infrastructure", "harness_h", "0.1.0")
+            self.assertEqual(inputs["closure"], [
+                {"node_key": self._DEP,
+                 "ir": self._meta_output_hash(repo, str((dep_ir / "ir_meta.json").relative_to(repo)))},
+                {"node_key": self._HARNESS,
+                 "ir": self._meta_output_hash(repo, str((har_ir / "ir_meta.json").relative_to(repo)))},
+            ])
+            self.assertEqual(inputs["toolchain_document"], tools_derivation.sha256_hex(
+                ort.admissible_toolchains_document(self._NK).encode("utf-8")))
+            # The graph signature is the canonical form the R6-lite comparison reads.
+            from tools.dependency_graph import build_dependency_graph
+            graph, _ = build_dependency_graph(repo, target_spec_ref=spec, target_node_key=self._NK,
+                                              include_via=False)
+            self.assertEqual(inputs["dependency_graph"], tools_derivation.sha256_hex(
+                tools_derivation.canonical_json_bytes(ort._closure_signature(graph))))
+
+    def test_generate_inputs_bind_the_ir_the_harness_and_both_closure_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            inputs = self._inputs(repo, refs, "generate")
+            self.assertEqual(inputs["ir"], self._meta_output_hash(repo, refs["ir_meta"]))
+            from tools.codegen_bundle import harness_capability_manifest_document_for
+            self.assertEqual(inputs["harness"], {
+                "node_key": self._HARNESS,
+                "manifest": tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes(
+                    harness_capability_manifest_document_for(self._HARNESS)))})
+            dep_refs = {nk: certify_node(repo, "o-read", nk, through="validate")
+                        for nk in (self._DEP, self._HARNESS)}
+            self.assertEqual(inputs["closure"], [
+                {"node_key": nk,
+                 "ir": self._meta_output_hash(repo, dep_refs[nk]["ir_meta"]),
+                 "source": self._meta_output_hash(repo, dep_refs[nk]["source_meta"])}
+                for nk in (self._DEP, self._HARNESS)])
+
+    def test_build_and_validate_inputs_bind_their_own_upstream_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            build = self._inputs(repo, refs, "build")
+            self.assertEqual(build["source"], self._meta_output_hash(repo, refs["source_meta"]))
+            self.assertEqual([c["node_key"] for c in build["closure"]], [self._DEP, self._HARNESS])
+            self.assertEqual(set(build["closure"][0]), {"node_key", "source"})
+            validate = self._inputs(repo, refs, "validate")
+            self.assertEqual(validate["binary"], self._meta_output_hash(repo, refs["binary_meta"]))
+            self.assertEqual(validate["ir"], self._meta_output_hash(repo, refs["ir_meta"]))
+            self.assertEqual(validate["spec"], {"tests": _compute_sha256(
+                repo / self._spec_dir("problem", "spec_x") / "tests.md")})
+
+    def test_build_toolchain_takes_the_ir_pin_else_the_server_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            server = ort._build_runtime_server_module()
+            tc = self._inputs(repo, refs, "build")["toolchain"]
+            self.assertEqual(tc["compiler"], server.MANDATORY_SYNTAX_COMPILER)
+            self.assertEqual(tc["compiler_version"],
+                             server._syntax_compiler_version((tc["compiler"], "--version")))
+            self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
+                             ("fortran", "f2008", "make", "openmp"))
+            # An IR that pins a compiler is read as pinned; an unprobeable one records None
+            # rather than refusing (the version is a record of the host, not a gate).
+            self._reir(repo, refs, self._IR_TEXT.replace(
+                "    build_system: make\n", "    build_system: make\n    compiler: no_such_fc_x\n"))
+            tc2 = self._inputs(repo, refs, "build")["toolchain"]
+            self.assertEqual(tc2["compiler"], "no_such_fc_x")
+            self.assertIsNone(tc2["compiler_version"])
+
+    # --- what moves a key, named ---------------------------------------------------------
+
+    def test_one_byte_of_the_spec_moves_the_compile_key_and_is_named(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = ort.phase_derivation(repo, node_key=self._NK, step="compile", **self._own(refs))
+            path = repo / self._spec_dir("problem", "spec_x") / "controlled_spec.md"
+            path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+            after = ort.phase_derivation(repo, node_key=self._NK, step="compile", **self._own(refs))
+            self.assertNotEqual(before["derivation_key"], after["derivation_key"])
+            self.assertEqual(tools_derivation.first_differing_input(
+                before["derivation_inputs"], after["derivation_inputs"]), "spec.controlled_spec")
+            # A stamped record and a recomputation are comparable as records: the same
+            # inputs give the same key (determinism across two resolutions).
+            again = ort.phase_derivation(repo, node_key=self._NK, step="compile", **self._own(refs))
+            self.assertEqual(after, again)
+
+    def test_the_adopted_profiles_spec_moves_the_compile_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = self._inputs(repo, refs, "compile")
+            path = repo / self._spec_dir("profile", "pr") / "controlled_spec.md"
+            path.write_text(path.read_text(encoding="utf-8") + "\nconstraint\n", encoding="utf-8")
+            after = self._inputs(repo, refs, "compile")
+            self.assertEqual(tools_derivation.first_differing_input(before, after),
+                             "profiles[0].controlled_spec")
+
+    def test_a_deps_edit_moves_the_graph_and_the_closure(self) -> None:
+        """The 13a fact under one key: dropping the harness from `deps.yaml` moves the derived
+        graph signature AND the closure list (and the deps file hash, which sorts first)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = self._inputs(repo, refs, "compile")
+            self._seed_registry(repo, infra_dep=False)
+            after = self._inputs(repo, refs, "compile")
+            self.assertNotEqual(before["dependency_graph"], after["dependency_graph"])
+            self.assertEqual([c["node_key"] for c in after["closure"]], [self._DEP])
+            self.assertEqual(tools_derivation.first_differing_input(before, after), "closure")
+
+    def test_a_dependency_re_derived_within_its_version_moves_every_consumer_key(self) -> None:
+        """The 13b fact under one key, and the compile-side fact 13b never saw: a NEWER
+        certified IR / source of `dep_a` under the same `spec_version` changes what the
+        consumer's compile, generate and build bind to."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = {s: self._inputs(repo, refs, s) for s in ("compile", "generate", "build")}
+            # A later attempt of dep_a: new ids, different bytes.
+            new = certify_node(repo, "o2", self._DEP, through="validate",
+                               ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260102_001",
+                               source_id="src_20260102_001", binary_id="bin_20260102_001",
+                               run_id="run_20260102_001")
+            for ref, extra in ((f"{new['ir_ref']}/spec.ir.yaml", "# v2\n"),
+                               (new["model_ref"], "! v2\n")):
+                p = repo / ref
+                p.write_text(p.read_text(encoding="utf-8") + extra, encoding="utf-8")
+                meta_ref = new["ir_meta"] if ref.endswith("spec.ir.yaml") else new["source_meta"]
+                doc = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
+                doc["artifact_hashes"][ref] = _compute_sha256(p)
+                (repo / meta_ref).write_text(json.dumps(doc), encoding="utf-8")
+            after = {s: self._inputs(repo, refs, s) for s in ("compile", "generate", "build")}
+            self.assertEqual(tools_derivation.first_differing_input(before["compile"], after["compile"]),
+                             "closure[0].ir")
+            self.assertEqual(tools_derivation.first_differing_input(before["generate"], after["generate"]),
+                             "closure[0].ir")
+            self.assertEqual(tools_derivation.first_differing_input(before["build"], after["build"]),
+                             "closure[0].source")
+            # The harness entry did not move: the diff is exactly dep_a's.
+            self.assertEqual(before["build"]["closure"][1], after["build"]["closure"][1])
+
+    def test_a_dependency_re_certified_with_identical_bytes_moves_nothing(self) -> None:
+        """The other half of the same fact: a NEWER certified attempt of `dep_a` whose IR and
+        source come out byte-identical binds identically, whatever its ids — the consumer's
+        compile, generate and build keys do not move (13b's "invalidates nobody", and the
+        property the output hash's stage-relative paths exist for)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, **self._own(refs))
+                      for s in ("compile", "generate", "build")}
+            certify_node(repo, "o2", self._DEP, through="validate",
+                         ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260102_001",
+                         source_id="src_20260102_001", binary_id="bin_20260102_001",
+                         run_id="run_20260102_001")
+            # The selection did move to the new ids ...
+            self.assertEqual(
+                ort._selected_certified_meta(repo, self._DEP, "compile").parent.name,
+                "dep-a_20260102_001")
+            # ... and every key stayed.
+            after = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, **self._own(refs))
+                     for s in ("compile", "generate", "build")}
+            self.assertEqual(before, after)
+
+    # --- refusals ---------------------------------------------------------------------
+
+    def test_a_dependency_without_a_certified_output_is_unresolvable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            dep = certify_node(repo, "o-read", self._DEP, through="validate")
+            doc = json.loads((repo / dep["ir_meta"]).read_text(encoding="utf-8"))
+            doc["verification_status"] = "revoked"
+            (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
+            for step in ("compile", "generate"):
+                with self.subTest(step=step), self.assertRaisesRegex(
+                        ort.DerivationInputsUnresolvable,
+                        r"derivation_inputs_unresolvable: dependency component/dep_a@0.1.0 compile.*revoked"):
+                    self._inputs(repo, refs, step)
+            # Build binds the dep's SOURCE, which is still certified: the revoked IR is not
+            # its business (the readiness stages are, in PR-2).
+            self._inputs(repo, refs, "build")
+            shutil.rmtree(repo / "workspace" / "pipelines" / "component__dep_a__0.1.0")
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                        r"dependency component/dep_a@0.1.0 has no certified generate output"):
+                self._inputs(repo, refs, "build")
+
+    def test_an_uncertified_own_upstream_is_unresolvable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            ir_path = repo / refs["ir_ref"] / "spec.ir.yaml"
+            ir_path.write_text(ir_path.read_text(encoding="utf-8") + "# tampered\n", encoding="utf-8")
+            for step in ("generate", "build", "validate"):
+                with self.subTest(step=step), self.assertRaisesRegex(
+                        ort.DerivationInputsUnresolvable,
+                        r"problem/spec_x@0.1.0 compile: .*ir_meta.json is not certified \(artifact_hash_mismatch"):
+                    self._inputs(repo, refs, step)
+
+    def test_a_missing_ref_or_spec_file_is_unresolvable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs ir_ref"):
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="generate",
+                                            spec_ref=self._spec_dir("problem", "spec_x"))
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs source_ref"):
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="build",
+                                            ir_ref=refs["ir_ref"])
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs binary_ref"):
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="validate",
+                                            ir_ref=refs["ir_ref"],
+                                            spec_ref=self._spec_dir("problem", "spec_x"))
+            (repo / self._spec_dir("problem", "spec_x") / "tests.md").unlink()
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, r"tests.md is missing"):
+                self._inputs(repo, refs, "compile")
+            with self.assertRaises(ValueError):
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="assemble")
+
+    # --- the record, end to end -------------------------------------------------------
+
+    def test_phase_derivation_is_what_the_stamp_writes(self) -> None:
+        """The record `run_phase` computes is what `_stamp_certification` puts into the
+        certifying meta, key, inputs and transformation alike, beside an `output_hash` that
+        recomputes from the stamped `artifact_hashes`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo, through="compile")
+            record = ort.phase_derivation(repo, node_key=self._NK, step="compile", **self._own(refs))
+            self.assertEqual(set(record), {"derivation_key", "derivation_inputs", "transformation"})
+            self.assertEqual(record["derivation_key"], tools_derivation.derivation_key(
+                "compile", record["derivation_inputs"]))
+            self.assertEqual(record["transformation"],
+                             list(tools_derivation.transformation_versions()["compile"]))
+            doc = ort._stamp_certification(
+                repo, "o1", node_key=self._NK, step="compile",
+                required_outputs=[f"{refs['ir_ref']}/spec.ir.yaml", refs["ir_meta"]],
+                derivation=record)
+            self.assertEqual(doc["derivation_key"], record["derivation_key"])
+            self.assertEqual(doc["derivation_inputs"], record["derivation_inputs"])
+            self.assertEqual(doc["derivation_transformation"], record["transformation"])
+            self.assertEqual(doc["output_hash"], ort._meta_output_hash(doc, refs["ir_meta"]))
+            on_disk = json.loads((repo / refs["ir_meta"]).read_text(encoding="utf-8"))
+            self.assertEqual(on_disk, doc)
+
+
+class DerivationRecordStampTests(unittest.TestCase):
+    """`_validated_derivation_record`: the shape a pass step_result's `derivation` must have."""
+
+    def test_each_malformed_shape_is_refused_by_name(self) -> None:
+        good = dict(_DERIVATION_RECORD)
+        cases = [
+            (None, "must carry a `derivation` record"),
+            ({**good, "derivation_key": "abc"}, "derivation_key must be 'sha256:<hex>'"),
+            ({**good, "derivation_key": "sha256:"}, "derivation_key must be 'sha256:<hex>'"),
+            ({**good, "derivation_inputs": []}, "derivation_inputs must be an object"),
+            ({**good, "transformation": []}, "transformation must be a non-empty list"),
+            ({**good, "transformation": ["ok", ""]}, "transformation must be a non-empty list"),
+            ({**good, "transformation": "pure-43"}, "transformation must be a non-empty list"),
+            ({k: v for k, v in good.items() if k != "derivation_inputs"}, r"lacks \['derivation_inputs'\]"),
+        ]
+        for record, pattern in cases:
+            with self.subTest(record=record), self.assertRaisesRegex(RuntimeError, pattern):
+                ort._validated_derivation_record(record, "compile")
+        self.assertEqual(ort._validated_derivation_record(good, "compile"), good)
+
+    def test_write_step_result_pass_refuses_a_missing_record_before_writing(self) -> None:
+        """A pass without a derivation is refused like a pass whose deliverable is absent:
+        no step_result is written, and the meta stays unstamped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo)
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
+            with self.assertRaisesRegex(RuntimeError, "must carry a `derivation` record"):
+                write_step_result(
+                    repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                    agent_run_id="orch_run_001",
+                    payload={"status": "pass", "validation_stage": "post_generate",
+                             "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
+                             "substep_agent_run_ids": ["substep_gen_verify_001"]})
+            self.assertEqual(
+                list((repo / "workspace/orchestrations/o1/steps").rglob("step_result.json")), [])
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            for key in ort._CERTIFICATION_STAMP_KEYS:
+                self.assertNotIn(key, doc)
+
+    def test_a_fail_step_result_needs_no_record_and_strips_every_stamp_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _setup_certifiable_generate(repo, verification_status="fail")
+            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
+            doc = json.loads((repo / meta_ref).read_text("utf-8"))
+            doc.update({"artifact_hashes": {"x": "sha256:" + "0" * 64}, "output_hash": "sha256:" + "1" * 64,
+                        "derivation_key": "sha256:" + "2" * 64, "derivation_inputs": {},
+                        "derivation_transformation": ["t"], "source_ir_id": "leafwrote"})
+            (repo / meta_ref).write_text(json.dumps(doc), "utf-8")
+            write_step_result(
+                repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
+                agent_run_id="orch_run_001",
+                payload={"status": "fail", "validation_stage": "post_generate",
+                         "required_outputs": [meta_ref], "failed_substeps": ["substep_gen_verify_001"],
+                         "substep_agent_run_ids": ["substep_gen_verify_001"]})
+            stripped = json.loads((repo / meta_ref).read_text("utf-8"))
+            self.assertEqual(set(ort._CERTIFICATION_STAMP_KEYS) & set(stripped), set())
+            self.assertEqual(stripped["verification_status"], "fail")
 
 
 if __name__ == "__main__":

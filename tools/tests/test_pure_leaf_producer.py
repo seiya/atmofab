@@ -1875,6 +1875,7 @@ class PureProducerExemplarTests(unittest.TestCase):
         "node_key": "component/sibling@1.0.0",
         "sources": [{"filename": "sibling_model.f90",
                      "text": "module sibling_model\n  ! prior art body\nend module sibling_model\n"}],
+        "source_ref": "workspace/pipelines/component__sibling__1.0.0/sibling_20260101_001/source/src_20260101_001",
     }
 
     def _run(self, envelopes, repair=None):
@@ -1912,6 +1913,28 @@ class PureProducerExemplarTests(unittest.TestCase):
         self.assertEqual(oc.attempts, 2)
         self.assertNotIn("exemplar", c.requests[1])
         self.assertNotIn("Certified exemplar", c.prompts[1])
+        # The attempt record names the exemplar each attempt was SHOWN (issue #250): an
+        # advisory input, recorded per attempt and never keyed — the cold launch saw it, the
+        # repair turn did not. Until #250 nothing pinned which exemplar an attempt saw.
+        meta = json.loads((Path(self._tmp.name) / _write_node(Path(self._tmp.name)).source_dir()
+                           / "bundle_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual([a["exemplar_ref"] for a in meta["per_attempt"]],
+                         [self._EXEMPLAR["source_ref"], None])
+
+    def test_an_attempt_with_no_exemplar_records_none(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+        c = _RenderingFakeConductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_cfg("claude"), env={})
+        c.exemplar_value = None
+        c.envelopes = [_envelope(_valid_bundle())]
+        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "pass")
+        meta = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual([a["exemplar_ref"] for a in meta["per_attempt"]], [None])
 
     def test_outer_reopen_with_a_lost_claude_session_carries_findings_cold(self) -> None:
         """The CLI half of issue #209: the provider HAS `warm_resume`, but this transcript is

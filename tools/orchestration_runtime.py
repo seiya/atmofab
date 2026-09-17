@@ -2245,9 +2245,11 @@ def _stamp_certification(
         hashes[ref] = digest
     doc["artifact_hashes"] = hashes
     # The three identities of A1 (issue #250): the output hash over the deliverables just
-    # hashed, and the derivation this output was produced under. The attempt id is the
-    # step_result's own `executor_agent_run_id` / the launch rows, not repeated here.
-    doc["output_hash"] = _output_hash(hashes)
+    # hashed — relative to the stage directory, so a byte-identical re-derivation under a
+    # fresh id is the same output — and the derivation this output was produced under. The
+    # attempt id is the step_result's own `executor_agent_run_id` / the launch rows, not
+    # repeated here.
+    doc["output_hash"] = _output_hash(hashes, stage_dir=meta_ref.rsplit("/", 1)[0])
     doc["derivation_key"] = derivation_doc["derivation_key"]
     doc["derivation_inputs"] = derivation_doc["derivation_inputs"]
     doc["derivation_transformation"] = derivation_doc["transformation"]
@@ -2529,12 +2531,20 @@ def _certified_output_hash(repo_root: Path, meta_path: Path, *, what: str) -> st
     `DerivationInputsUnresolvable` naming `what` when that meta is not certified (absent,
     unreadable, not `pass`, revoked, or with a deliverable whose bytes moved)."""
     ok, detail = _stage_meta_certification(repo_root, meta_path)
+    meta_ref = _normalize_rel_posix(str(meta_path.relative_to(repo_root)))
     if not ok:
         raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: {what}: "
-            f"{_normalize_rel_posix(str(meta_path.relative_to(repo_root)))} is not certified "
+            f"derivation_inputs_unresolvable: {what}: {meta_ref} is not certified "
             f"({detail.get('reason')})")
-    return _output_hash(detail["meta"]["artifact_hashes"])
+    return _meta_output_hash(detail["meta"], meta_ref)
+
+
+def _meta_output_hash(meta_doc: Mapping[str, Any], meta_ref: str) -> str:
+    """The output hash a certifying meta at `meta_ref` STANDS FOR: `output_hash` over its
+    `artifact_hashes`, relative to the meta's own directory. Recomputed rather than read off
+    the stamped `output_hash` key, so the value every reader binds to has one definition and
+    a legacy meta (stamped before the key existed) answers the same way as a new one."""
+    return _output_hash(meta_doc["artifact_hashes"], stage_dir=meta_ref.rsplit("/", 1)[0])
 
 
 def _selected_certified_meta(repo_root: Path, node_key: str, step: str) -> Path | None:
@@ -2612,7 +2622,7 @@ def _read_ir_document(repo_root: Path, ir_ref: str) -> dict[str, Any]:
     path = repo_root / ir_ref / "spec.ir.yaml"
     try:
         doc = _require_yaml().safe_load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 — every read failure is the same unresolvable input
+    except Exception as exc:  # every read failure is the same unresolvable input
         raise DerivationInputsUnresolvable(
             f"derivation_inputs_unresolvable: {ir_ref}/spec.ir.yaml cannot be read "
             f"({type(exc).__name__})") from exc
@@ -18285,7 +18295,10 @@ def main(argv: list[str] | None = None) -> int:
         "(pass/fail/blocked/timeout/cancel), validation_stage is required: "
         "compile=>compile|full, generate=>post_generate|full, "
         "build=>post_build|full, validate=>post_execute|pre_judge|full. "
-        "For compile/generate pass, required_outputs must be covered by effective substep output_refs."
+        "For compile/generate pass, required_outputs must be covered by effective substep output_refs. "
+        "For status=pass, derivation ({derivation_key, derivation_inputs, transformation}, the "
+        "record phase_derivation computed at phase start) is required and is stamped into the "
+        "phase's certifying stage meta (issue #250)."
     )
 
     launch_parser = subparsers.add_parser(
