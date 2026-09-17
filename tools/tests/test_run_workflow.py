@@ -379,6 +379,25 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertNotIn("6h", flag)
         self.assertNotIn("epoch", flag)
 
+    def test_parse_rederive_accepts_phase_tokens_and_refuses_an_unknown_one(self) -> None:
+        """`--rederive` (issue #250 PR-2): comma-separated conductor phase names, case- and
+        space-insensitive; empty means nothing forced; an unknown token is a usage error that
+        names the token and the accepted set, not a silently ignored phase."""
+        self.assertEqual(run_workflow._parse_rederive(""), frozenset())
+        self.assertEqual(run_workflow._parse_rederive(None), frozenset())
+        self.assertEqual(run_workflow._parse_rederive("build"), frozenset({"build"}))
+        self.assertEqual(run_workflow._parse_rederive(" Compile, validate ,"),
+                         frozenset({"compile", "validate"}))
+        with self.assertRaises(ValueError) as ctx:
+            run_workflow._parse_rederive("build,judge")
+        self.assertIn("'judge'", str(ctx.exception))
+        for phase in run_workflow._REDERIVE_PHASES:
+            self.assertIn(phase, str(ctx.exception))
+        self.assertEqual(run_workflow._parse_args(["spec/p.md", "validate"]).rederive, "")
+        self.assertEqual(
+            run_workflow._parse_args(["spec/p.md", "validate", "--rederive", "build"]).rederive,
+            "build")
+
     def test_parse_args_allows_omitted_positionals_for_resume(self) -> None:
         ns = run_workflow._parse_args(["--resume", "--no-run-conductor"])
         self.assertTrue(ns.resume)
@@ -730,6 +749,72 @@ class RunWorkflowTests(unittest.TestCase):
                 run_workflow._runtime_command = orig_rt  # type: ignore[assignment]
                 wc.run_conductor = orig_rc  # type: ignore[assignment]
             self.assertTrue(captured.get("wait_usage_reset"))
+
+    def _main_with_conductor_spy(self, repo_root: Path, argv: list[str]) -> tuple[int, dict]:
+        """`main(argv)` with the runtime CLI faked and `run_conductor` replaced by a spy that
+        returns `pass`; the spy's kwargs are what the driver handed the conductor."""
+        import tools.workflow_conductor as wc
+
+        def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
+            if args[0] == "init":
+                return run_workflow.RuntimeResult(
+                    payload={"status": "ok", "orchestration_agent_run_id": "oar"},
+                    raw_stdout="{}")
+            if args[0] == "preflight":
+                return run_workflow.RuntimeResult(
+                    payload={"status": "pass", "can_launch_step_agents": True,
+                             "can_launch_substep_agents": True},
+                    raw_stdout="{}")
+            return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+        captured: dict = {}
+        orig_rt = run_workflow._runtime_command
+        orig_rc = wc.run_conductor
+        try:
+            run_workflow._runtime_command = fake_runtime_command  # type: ignore[assignment]
+
+            def _fake_rc(**kw):
+                captured.update(kw)
+                return "pass"
+
+            wc.run_conductor = _fake_rc  # type: ignore[assignment]
+            with redirect_stdout(io.StringIO()):
+                code = run_workflow.main(
+                    [*argv, "--repo-root", str(repo_root), "--stdout-format", "jsonl"])
+        finally:
+            run_workflow._runtime_command = orig_rt  # type: ignore[assignment]
+            wc.run_conductor = orig_rc  # type: ignore[assignment]
+        return code, captured
+
+    def test_rederive_threads_into_run_conductor_on_a_cold_run_and_on_a_resume(self) -> None:
+        """`--rederive` reaches the conductor on BOTH driver paths (cold single node, resume),
+        parsed to the phase set; omitted, the conductor gets the empty set. The closure path
+        is pinned by `DependencyClosureTests.test_rederive_reaches_only_the_target_node`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            code, kw = self._main_with_conductor_spy(repo_root, [
+                "spec/problem/test.md", "build", "--orchestration-id", "orch_rd_cold",
+                "--mode", "dev", "--rederive", "build,compile"])
+            self.assertEqual(code, 0)
+            self.assertEqual(kw["rederive"], frozenset({"build", "compile"}))
+            code, kw = self._main_with_conductor_spy(repo_root, [
+                "spec/problem/test.md", "build", "--orchestration-id", "orch_rd_cold2",
+                "--mode", "dev"])
+            self.assertEqual(code, 0)
+            self.assertEqual(kw["rederive"], frozenset())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_20260101T000000Z_aaaaaaaa",
+                spec_ref="spec/problem/test.md", until_phase="Build", mode="dev",
+                backend="claude")
+            code, kw = self._main_with_conductor_spy(
+                repo_root, ["--resume", "--rederive", "validate"])
+            self.assertEqual(code, 0)
+            self.assertTrue(kw.get("resume"))
+            self.assertEqual(kw["rederive"], frozenset({"validate"}))
 
     def test_resume_recovers_params_and_uses_the_resume_init(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2882,6 +2967,16 @@ class RunWorkflowTests(unittest.TestCase):
             wait_usage_reset=True,
         )
         self.assertTrue(rec["wait_usage_reset"])
+
+    def test_build_invocation_record_records_rederive_sorted(self) -> None:
+        """The forced phases are on the orchestration record (so a log that shows a certified
+        phase running has its cause), sorted, and an empty set records an empty list."""
+        common = dict(argv=["spec/problem/a", "validate"], spec_ref="spec/problem/a",
+                      until_phase="Validate", llm="claude", llm_command="claude",
+                      workflow_mode="dev", agent_model="opus", with_deps=False)
+        rec = run_workflow._build_invocation_record(**common, rederive=frozenset({"validate", "build"}))
+        self.assertEqual(rec["rederive"], ["build", "validate"])
+        self.assertEqual(run_workflow._build_invocation_record(**common)["rederive"], [])
 
     def test_build_invocation_record_closure_fields_present(self) -> None:
         rec = run_workflow._build_invocation_record(
@@ -7751,6 +7846,59 @@ class LlmConfigStartupTests(unittest.TestCase):
             for oid in written:
                 self.assertEqual(self._snapshot(repo_root, oid).read_bytes(),
                                  _sample_config("claude").raw)
+
+    def test_rederive_reaches_only_the_target_node_of_a_closure(self) -> None:
+        """`--with-deps --rederive build`: the forced set is handed to the TARGET's `_run_node`
+        (and recorded on its invocation) and to NO dependency — a dependency is never forced
+        from a consumer's command line (`--help`: run the dependency as the target instead).
+        Driven through the real closure driver with `_run_node` spied, over the diamond."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            _load_spec_catalog.cache_clear()
+            self._runtime_calls = []
+            orig_ready = run_workflow._dependency_node_readiness
+            orig_rt = run_workflow._runtime_command
+            real_run_node = run_workflow._run_node
+            ran: set[str] = set()
+            handed: dict[str, tuple[frozenset[str], object]] = {}
+
+            def _spy_run_node(**kw):
+                ran.add(kw["spec_ref"])
+                inv = kw.get("invocation")
+                # A dependency launch passes no `rederive` at all (the parameter's default
+                # is the empty set); the target's carries the parsed flag.
+                handed[kw["spec_ref"]] = (kw.get("rederive", frozenset()),
+                                          None if inv is None else inv.get("rederive"))
+                return real_run_node(**kw)
+
+            try:
+                run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
+                    lambda root, node, stages: {
+                        "ready": node["spec_ref"] in ran,
+                        "version": node["spec_versions"][0],
+                        "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
+                        "detail": None if node["spec_ref"] in ran else "fake: not run yet"})
+                run_workflow._run_node = _spy_run_node             # type: ignore[assignment]
+                with redirect_stdout(io.StringIO()):
+                    rc = run_workflow.main([
+                        "spec/problem/a", "compile", "--with-deps", "--rederive", "build",
+                        "--repo-root", str(repo_root),
+                        "--orchestration-id", "orch_rederive_tgt",
+                        "--no-run-conductor", "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._run_node = real_run_node             # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready   # type: ignore[assignment]
+                run_workflow._runtime_command = orig_rt            # type: ignore[assignment]
+            self.assertEqual(rc, 0)
+            self.assertEqual(handed, {
+                "spec/component/c": (frozenset(), []),
+                "spec/component/b": (frozenset(), []),
+                "spec/problem/a": (frozenset({"build"}), ["build"]),
+            })
 
     def test_the_refusal_names_the_snapshot_only_when_there_is_one(self) -> None:
         """Pre-snapshot records have none, and naming a file the operator will not find is

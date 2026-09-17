@@ -1948,6 +1948,62 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(completes[0]["certified_by"], "workspace/ir/x/ir_1")
         self.assertNotIn("elapsed_seconds", completes[0])
 
+    def test_a_certified_phase_named_in_rederive_runs_and_says_why(self) -> None:
+        """`--rederive` (issue #250 PR-2): a certified phase named in `Conductor.rederive` RUNS
+        — `phase_rederive_forced` is emitted with the artifact it would have skipped on, and the
+        phase completes as `pass` with an elapsed time, not as `skipped` — while a certified
+        phase NOT named still skips. Both arms in one run, so a `rederive` read as "force
+        everything" or as "force nothing" fails here."""
+        c = self._conductor()
+        c.rederive = frozenset({"compile"})
+        c.check_phase_certified = (  # type: ignore[method-assign]
+            lambda node_key, phase: {"certified": True, "ir_ref": "workspace/ir/x/ir_1",
+                                     "pipeline_ref": "workspace/pipelines/x/p_1",
+                                     "source_id": "src_1"}
+            if phase in ("compile", "generate") else {"certified": False}
+        )
+        c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            status = c.conduct(self._refs(), "generate")
+        self.assertEqual(status, "pass")
+        events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+        forced = [e for e in events if e["event"] == "phase_rederive_forced"]
+        self.assertEqual([(e["phase"], e["certified_by"]) for e in forced],
+                         [("compile", "workspace/ir/x/ir_1")])
+        completes = {e["phase"]: e for e in events if e["event"] == "phase_complete"}
+        self.assertEqual(completes["compile"]["result"], "pass")
+        self.assertIn("elapsed_seconds", completes["compile"])
+        self.assertEqual(completes["generate"]["result"], "skipped")
+        self.assertNotIn("elapsed_seconds", completes["generate"])
+
+    def test_run_conductor_hands_rederive_to_the_conductor_as_a_frozenset(self) -> None:
+        """The driver's `--rederive` reaches `run_phase` only through `run_conductor`'s
+        kwarg; an omitted kwarg is the empty set (nothing forced)."""
+        from unittest.mock import patch
+        seen: list[object] = []
+        orig_init = wc.Conductor.__init__
+
+        def _capture_init(self, **kw):  # type: ignore[no-untyped-def]
+            orig_init(self, **kw)
+            seen.append(self.rederive)
+
+        common = dict(
+            repo_root="/tmp/repo", orchestration_id="o", orchestration_agent_run_id="O",
+            spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
+            llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+            workflow_mode="dev", env={})
+        with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
+             patch.object(wc, "prepare_node",
+                          return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
+                                                   ir_id="x_1", pipeline_id="x_1")), \
+             patch.object(wc.Conductor, "__init__", _capture_init), \
+             patch.object(wc.Conductor, "conduct", return_value="pass"):
+            wc.run_conductor(**common, rederive=["build", "compile"])
+            wc.run_conductor(**common)
+        self.assertEqual(seen, [frozenset({"build", "compile"}), frozenset()])
+        self.assertIsInstance(seen[0], frozenset)
+
     def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
         """A model-less claude entry is stamped with the SPEC-side default, and that default
         is not read out of the operator's `~/.claude`.
@@ -6062,6 +6118,35 @@ class NodeAllocationTest(unittest.TestCase):
             self.assertNotEqual(refs.ir_id, on_disk["ir_id"])
             self.assertNotEqual(refs.pipeline_id, on_disk["pipeline_id"])
             self.assertTrue(refs.source_id.startswith("src_"))
+
+    def test_prepare_node_mints_when_compile_is_rederived_and_adopts_otherwise(self) -> None:
+        """`--rederive compile` forces a fresh ir_id: the standing certified IR is NOT adopted
+        (it stays eligible on disk; the new attempt is selected once it passes). Forcing a
+        LATER phase leaves the adoption alone — the IR is still the one to build on."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
+                                   through="validate", reserve=False)
+            for forced, expect_adopted in ((frozenset({"compile"}), False),
+                                           (frozenset({"build"}), True)):
+                with self.subTest(rederive=sorted(forced)):
+                    c = _FakeConductor(repo_root=root, orchestration_id="o",
+                                       orchestration_agent_run_id="ORCH",
+                                       llm_config=_cfg("claude"), env={}, rederive=forced)
+                    c.calls = []
+                    refs = wc.prepare_node(c, "component/spec_x@0.1.0",
+                                           "spec/component/spec_x")
+                    if expect_adopted:
+                        self.assertEqual(refs.ir_id, on_disk["ir_id"])
+                        self.assertEqual(refs.pipeline_id, on_disk["pipeline_id"])
+                    else:
+                        self.assertNotEqual(refs.ir_id, on_disk["ir_id"])
+                        self.assertNotEqual(refs.pipeline_id, on_disk["pipeline_id"])
+                        self.assertTrue(refs.source_id.startswith("src_"))
+                    # Either way the ir the run stands on is the one it reserved.
+                    reserved = {cap["--step"]: cap["--reserved-id"]
+                                for s, cap in c.calls if s == "reserve-phase-root"}
+                    self.assertEqual(reserved["compile"], refs.ir_id)
 
     def test_prepare_node_keeps_the_certified_ir_and_mints_an_unbound_pipeline(self) -> None:
         """`lineage.json#ir_ref` is what binds a pipeline to an IR. A pipeline belonging to a

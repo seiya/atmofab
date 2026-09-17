@@ -33,7 +33,7 @@ from mcp_servers.build_runtime_server import tool_compile_project
 from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import (
-    accept_any_certified_ir, certify_node, ensure_spec_entry)
+    accept_any_certified_ir, certify_node, ensure_spec_entry, spec_ref_of)
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -8762,10 +8762,17 @@ class PhaseCertificationTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o1", node_key=self._NK, step="validate")
             self.assertTrue(out["certified"], out)
             self.assertEqual(
-                (out["ir_ref"], out["pipeline_ref"], out["source_id"], out["binary_id"],
-                 out["run_id"]),
-                (refs["ir_ref"], refs["pipeline_ref"], refs["source_id"], refs["binary_id"],
-                 refs["run_id"]))
+                (out["ir_ref"], out["ir_id"], out["pipeline_ref"], out["source_id"],
+                 out["binary_id"], out["run_id"]),
+                (refs["ir_ref"], refs["ir_id"], refs["pipeline_ref"], refs["source_id"],
+                 refs["binary_id"], refs["run_id"]))
+            # ... and the key the selection was made under plus the selected output's hash
+            # (issue #250 PR-2): the two values a reader needs to tell WHY this output stands.
+            sel = ort.DerivationResolver(repo).select(self._NK, "validate")
+            self.assertTrue(sel.ok, sel.reason)
+            self.assertEqual((out["derivation_key"], out["output_hash"]),
+                             (sel.derivation_key, sel.output_hash))
+            self.assertTrue(out["derivation_key"] and out["output_hash"])
 
     def test_check_phase_certified_cli_json(self) -> None:
         """The CLI is the conductor's only route to this predicate, so the subcommand and its
@@ -18655,6 +18662,26 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
             ok, reason = _dependency_ready(repo_root, "fp_gate", step="compile")
             self.assertFalse(ok)
             self.assertTrue(reason.startswith("direct_dependency_compile_readiness_not_pass"), reason)
+
+    def test_a_refusal_names_the_dependency_the_stage_and_the_input_that_moved(self) -> None:
+        """The reject path is the operator's only diagnosis: the opaque
+        `direct_dependency_compile_readiness_not_pass` is followed by the dependency node, the
+        readiness stage that refused it, the reason with the input that moved, and the remedy.
+        One byte appended to the dependency's controlled spec is the E2E leg-2 shape."""
+        from tools.orchestration_runtime import _dependency_ready, _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._setup_passing_orch(repo_root)
+            spec = repo_root / spec_ref_of("component/dep_a@0.1.0") / "controlled_spec.md"
+            spec.write_text(spec.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            ok, reason = _dependency_ready(repo_root, "fp_gate", step="compile")
+            self.assertFalse(ok)
+            self.assertEqual(
+                reason,
+                "direct_dependency_compile_readiness_not_pass; dependency not ready: "
+                "component/dep_a@0.1.0 compile: derivation_key_mismatch:spec.controlled_spec"
+                " \u2014 re-run with `--with-deps` to certify the dependency closure")
 
     def test_gate_rejects_when_catalog_changes_after_marking(self) -> None:
         """An out-of-band catalog edit between mark and gate is seen by the recompute: the
