@@ -21879,6 +21879,35 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             self.assertEqual(self._certified(repo_root, self.USER, "compile")[1]["reason"],
                              "derivation_key_missing")
 
+    def test_a_mismatch_is_diagnosed_against_the_keyed_output_closest_to_todays_inputs(self) -> None:
+        """Security round 2, F1 (the real corpus holds this shape: a stale sibling stamped
+        under other inputs beside the standing IR). Two keyed IR outputs: `_001` stands
+        (its key matches today), `_002` is NEWER and was stamped while `controlled_spec.md`
+        and `tests.md` read differently (two leaves away from today). The operator edits
+        `deps.yaml`: the refusal must name `spec.deps` — diffed against `_001`, one leaf
+        away — not `spec.controlled_spec`, the first leaf separating `_002` from today,
+        whose remedy text would send them after something that did not move."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            spec_dir = repo_root / "spec" / "component" / "user"
+            originals = {f: (spec_dir / f).read_text(encoding="utf-8")
+                         for f in ("controlled_spec.md", "tests.md", "deps.yaml")}
+            for f in ("controlled_spec.md", "tests.md"):
+                (spec_dir / f).write_text(originals[f] + "\n# sibling\n", encoding="utf-8")
+            certify_node(repo_root, "orch_user2", self.USER, through="compile",
+                         ir_id="user_20260102_001", pipeline_id="user_20260102_001",
+                         ir_text=f"node_key: {self.USER}\n# sibling\n")
+            for f in ("controlled_spec.md", "tests.md"):
+                (spec_dir / f).write_text(originals[f], encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertEqual((ok, detail["ir_id"]), (True, "user_20260101_001"))
+            (spec_dir / "deps.yaml").write_text(originals["deps.yaml"] + "# edited\n",
+                                                encoding="utf-8")
+            ok, detail = self._certified(repo_root, self.USER, "compile")
+            self.assertEqual((ok, detail["reason"]),
+                             (False, "derivation_key_mismatch:spec.deps"))
+
     def test_a_moved_deliverable_is_not_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

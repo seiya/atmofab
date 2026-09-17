@@ -1103,8 +1103,8 @@ class DerivationSelection:
     predicate's other reasons: an upstream's reason when the chain stops above this phase,
     `derivation_inputs_unresolvable:<input>` when the key cannot be computed,
     `<step>_not_found` when nothing was ever produced, `derivation_key_missing` when no
-    output carries a key, `derivation_key_mismatch:<first differing input>` when the latest
-    keyed output carries another, and the stage meta's own reason (`revoked`,
+    output carries a key, `derivation_key_mismatch:<first differing input>` when the keyed
+    outputs carry other keys (diffed against the one closest to today's inputs), and the stage meta's own reason (`revoked`,
     `verification_status_not_pass`, `artifact_hash_mismatch:<ref>`) when an output carries
     THIS key but is not eligible — read off the latest such output, with its `revoked` /
     `last_fail_reason` / `revocation_severity` / `revocation_repair_strategy`, which the
@@ -1384,25 +1384,30 @@ class DerivationResolver:
 
         from tools.derivation import (
             Candidate,
-            first_differing_input,
+            differing_inputs,
             select_eligible,
             transformation_versions,
         )
         eligible: list[Candidate] = []
         refused: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         latest: tuple[tuple[Any, ...], Path, Any] | None = None
-        # The diagnosis of a mismatch is read off the latest output that CARRIES a key: a
-        # newer failed attempt has its stamp keys stripped (`write-step-result` non-pass),
-        # and reading the diff off it would report `derivation_key_missing` for a node whose
-        # certified output simply moved (correctness round 1, F6).
-        latest_keyed: tuple[tuple[Any, ...], Path, dict[str, Any]] | None = None
+        # The diagnosis of a mismatch is read off an output that CARRIES a key (a newer
+        # failed attempt has its stamp keys stripped — `write-step-result` non-pass — and
+        # reading the diff off it would report `derivation_key_missing` for a node whose
+        # certified output simply moved; correctness round 1, F6), and among those off the
+        # one CLOSEST to today's inputs — fewest differing leaves, the latest on a tie. The
+        # latest keyed output is not always the standing one: the real corpus holds a stale
+        # sibling stamped under other closure hashes beside the selected IR, and diffing
+        # against it reported an operator's own `deps.yaml` edit as `closure[0].ir`, whose
+        # documented remedy sends them after a dependency that did not move (security
+        # round 2, F1).
+        keyed: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         for order, meta_path in candidates:
             doc = _read_json_or_none(meta_path)
             if latest is None or order > latest[0]:
                 latest = (order, meta_path, doc)
-            if isinstance(doc, dict) and "derivation_key" in doc and (
-                    latest_keyed is None or order > latest_keyed[0]):
-                latest_keyed = (order, meta_path, doc)
+            if isinstance(doc, dict) and "derivation_key" in doc:
+                keyed.append((order, doc))
             if not isinstance(doc, dict) or doc.get("derivation_key") != key:
                 continue
             ok, detail = _stage_meta_certification(self.repo_root, meta_path)
@@ -1447,15 +1452,24 @@ class DerivationResolver:
             sel.revocation_repair_strategy = detail.get("revocation_repair_strategy")
             return
         assert latest is not None  # `candidates` was non-empty
-        if latest_keyed is None:
+        if not keyed:
             _order, _path, doc = latest
             sel.reason = ("stage_meta_unreadable" if not isinstance(doc, dict)
                           else "derivation_key_missing")
             return
-        _order, _path, doc = latest_keyed
-        recorded = doc.get("derivation_inputs")
-        differing = (first_differing_input(recorded, inputs)
-                     if isinstance(recorded, dict) else "derivation_inputs")
+        closest: tuple[int, tuple[Any, ...], list[str] | None] | None = None
+        for order, doc in keyed:
+            recorded = doc.get("derivation_inputs")
+            diff = differing_inputs(recorded, inputs) if isinstance(recorded, dict) else None
+            rank = (len(diff) if diff is not None else sys.maxsize, order)
+            if closest is None or rank[0] < closest[0] or (rank[0] == closest[0]
+                                                            and order > closest[1]):
+                closest = (rank[0], order, diff)
+                doc_closest = doc
+        assert closest is not None
+        doc = doc_closest
+        diff = closest[2]
+        differing = (diff[0] if diff else None) if diff is not None else "derivation_inputs"
         if differing is None:
             recorded_tf = doc.get("derivation_transformation")
             differing = ("transformation"

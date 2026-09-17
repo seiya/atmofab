@@ -163,6 +163,24 @@ class FirstDifferingInputTests(unittest.TestCase):
         both["spec"]["tests"] = "t2"; both["closure"][0]["ir"] = "8"
         self.assertEqual(d.first_differing_input(recorded, both), "closure[0].ir")
 
+    def test_differing_inputs_lists_every_path_in_the_same_walk(self) -> None:
+        """`differing_inputs` is the whole list `first_differing_input` takes the head of:
+        same order, every leaf, a length difference or a one-sided key counted once. Its
+        LENGTH is what picks the stamped output a mismatch is diagnosed against."""
+        recorded = {"spec": {"tests": "t1", "controlled_spec": "c1"},
+                    "closure": [{"node_key": "a", "ir": "1"}, {"node_key": "b", "ir": "2"}]}
+        self.assertEqual(d.differing_inputs(recorded, json.loads(json.dumps(recorded))), [])
+        both = json.loads(json.dumps(recorded))
+        both["spec"]["tests"] = "t2"; both["closure"][0]["ir"] = "8"; both["profiles"] = []
+        self.assertEqual(d.differing_inputs(recorded, both),
+                         ["closure[0].ir", "profiles", "spec.tests"])
+        self.assertEqual(d.differing_inputs(recorded, both)[0],
+                         d.first_differing_input(recorded, both))
+        shorter = json.loads(json.dumps(recorded)); shorter["closure"].pop()
+        shorter["spec"]["controlled_spec"] = "c2"
+        self.assertEqual(d.differing_inputs(recorded, shorter),
+                         ["closure", "spec.controlled_spec"])
+
     def test_scalar_roots(self) -> None:
         self.assertEqual(d.first_differing_input({"a": 1}, {"a": 2}), "a")
         self.assertEqual(d.first_differing_input({"a": [1]}, {"a": [1, 2]}), "a")
