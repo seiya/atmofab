@@ -24093,6 +24093,28 @@ class DerivationInputsTests(unittest.TestCase):
                         rf"problem/spec_x@0.1.0 compile: .*ir_meta.json is not certified \({reason}\)"):
                     self._inputs(repo, refs, "generate")
 
+    def test_a_closure_too_deep_to_derive_is_unresolvable_not_certified(self) -> None:
+        """origin/main's `test_recursion_error_does_not_crash_readiness` pinned a
+        RecursionError inside the graph builder as FRESH (fail-open); on this branch it is an
+        unresolvable compile input — refused, named — and that disposition was unpinned
+        (round 2 correctness, route not established: no corpus closure is 900 deep)."""
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+
+            def _too_deep(*a, **kw):
+                raise RecursionError("maximum recursion depth exceeded")
+
+            with patch("tools.dependency_graph.build_dependency_graph", _too_deep), \
+                    self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                           r"too deep to derive \(RecursionError\)"):
+                self._inputs(repo, refs, "compile")
+            with patch("tools.dependency_graph.build_dependency_graph", _too_deep):
+                ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            self.assertFalse(ok)
+            self.assertIn("too deep to derive", detail["reason"])
+
     def test_a_missing_ref_or_spec_file_is_unresolvable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
