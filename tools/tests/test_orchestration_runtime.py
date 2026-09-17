@@ -21966,11 +21966,15 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             p2 = p1.replace("0101", "0102")
             for ir_text in (f"node_key: {self.USER}\n# re-derived\n", None):
                 with self.subTest(ir_changed=ir_text is not None):
+                    # P2's ids differ from P1's, so the re-pointing to P1's twins is
+                    # observable (a round-2 sweep found it unpinned with equal ids).
                     certify_node(repo_root, "orch_user2", self.USER, through="generate",
                                  ir_id="user_20260102_001", pipeline_id="user_20260102_001",
+                                 source_id="src_20260102_001",
                                  ir_text=ir_text, model_text="module user_model\nend module\n")
                     ok, detail = self._certified(repo_root, self.USER, "generate")
-                    self.assertEqual((ok, detail["pipeline_ref"]), (True, p2), detail)
+                    self.assertEqual((ok, detail["pipeline_ref"], detail["source_id"]),
+                                     (True, p2, "src_20260102_001"), detail)
                     ok, detail = self._certified(repo_root, self.USER, "build")
                     self.assertTrue(ok, detail)
                     self.assertEqual(
@@ -21988,7 +21992,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             (repo_root / first["model_ref"]).write_text("! edited\n", encoding="utf-8")
             ok, detail = self._certified(repo_root, self.USER, "build")
             self.assertEqual((ok, detail["reason"], detail["pipeline_ref"], detail["source_id"]),
-                             (False, "binary_not_found", p2, "src_20260101_001"))
+                             (False, "binary_not_found", p2, "src_20260102_001"))
 
     def test_selection_is_memoised_per_evaluation_and_refuses_a_cycle(self) -> None:
         from tools.orchestration_runtime import DerivationResolver
