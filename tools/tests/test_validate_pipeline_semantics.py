@@ -10585,6 +10585,40 @@ end program shallow_water2d_runner
             )
             self.assertTrue(any("missing agent_model" in v for v in before), before)
 
+    def test_a_phase_skipped_as_certified_owes_no_step_result(self) -> None:
+        """A phase this orchestration skipped as certified (`phase_state.json` records
+        `skipped_certified`, the host record `check-phase-certified` writes — issue #250 PR-2
+        measured the refusal on a `--rederive build` run whose Compile / Generate stood
+        certified) wrote no step_result here, and the census must not demand one. The
+        exemption is keyed on the RECORDED state and on nothing else: a step merely missing
+        its result stays refused, and a state other than `skipped_certified` exempts nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_test_001"
+            state_path = orch_root / "phase_state.json"
+
+            def _drive(state: str | None) -> list[str]:
+                if state_path.is_file():
+                    doc = json.loads(state_path.read_text(encoding="utf-8"))
+                else:
+                    doc = {"orchestration_id": "orch_test_001", "current_state": "preflight_passed"}
+                node_states = doc.setdefault("node_states", {}).setdefault(
+                    self._INFLIGHT_NODE_SAFE, {})
+                node_states.pop("validate", None)
+                if state is not None:
+                    node_states["validate"] = state
+                _write_json(state_path, doc)
+                return validate(repo_root=repo_root, workspace_root="workspace",
+                                require_orchestration=True)
+
+            # The tree with its validate step_result deleted: refused as missing ...
+            self._violations_with_removed_child(repo_root, remove_validate_step_result=True)
+            self.assertTrue(self._has_missing_validate_step_result(_drive(None)))
+            # ... a state that is not the skip exempts nothing ...
+            self.assertTrue(self._has_missing_validate_step_result(_drive("child_finished")))
+            # ... and the recorded skip is the one thing that does.
+            self.assertFalse(self._has_missing_validate_step_result(_drive("skipped_certified")))
+
     def test_inflight_judge_tolerated_with_explicit_flag(self) -> None:
         """When the live judge declares its own agent_run_id via
         --in-flight-agent-run-id, its not-yet-recorded edge AND its not-yet-written

@@ -10908,6 +10908,32 @@ def _validate_orchestration_hierarchy(
             violations.append(f"{steps_root}: missing")
             continue
 
+        # A phase this orchestration SKIPPED as certified wrote no step_result here: the
+        # artifact it stands on was certified by another run, and `check-phase-certified`
+        # recorded the skip as `skipped_certified` in `phase_state.json` (docs/ORCHESTRATION.md
+        # §43) — a host record no leaf writes. The completion vouch reads the same state to
+        # exempt the phase from its latest-attempt clause; this census reads it for the same
+        # reason, or a run whose Compile / Generate stood certified while Validate ran (a
+        # `--rederive build`, a cold run over a node certified through Build) would refuse its
+        # own pre_judge for step_results it correctly never wrote.
+        skipped_certified: set[tuple[str, str]] = set()
+        try:
+            phase_state = json.loads(
+                (orchestration_dir / "phase_state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            phase_state = None
+        node_states = phase_state.get("node_states") if isinstance(phase_state, dict) else None
+        if isinstance(node_states, dict):
+            for ns, states in node_states.items():
+                if not isinstance(states, dict):
+                    continue
+                for st, value in states.items():
+                    if value == "skipped_certified":
+                        skipped_certified.add((str(ns), str(st)))
+        for key in skipped_certified:
+            if key in step_coverage:
+                step_coverage[key] = True
+
         for node_safe in node_safes:
             for step in REQUIRED_WORKFLOW_STEPS:
                 step_dir = steps_root / node_safe / step
