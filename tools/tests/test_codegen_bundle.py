@@ -3086,6 +3086,47 @@ class PureStateBindingLayerTests(unittest.TestCase):
         upper = self._CHECKS.replace("  public :: q\n", "  public :: Q\n")
         self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=upper), ["q"]))
 
+    def test_metric_compute_dummy_declaration_is_judged_at_the_handler(self) -> None:
+        """Issue #261: the backend's `checks_abi_dummy_violation` runs inside the ABI layer, after
+        the procedure clause and before the bound-state clause. Pinned here through
+        `pure_bundle_contract_violation` so a gate that stopped calling the seam cannot stay
+        green; the spellings themselves are the backend test's (`test_fortran_runner`)."""
+        pinned = "    character(len=:), allocatable, intent(out) :: reason_na\n"
+        bad = "    character(len=64), intent(out) :: reason_na\n"
+        defined = self._CHECKS.replace(
+            "contains\n",
+            "contains\n"
+            "  subroutine metric_compute(case_id, name, val, is_na, reason_na, found)\n"
+            "    character(len=*), intent(in) :: case_id, name\n"
+            "    real(real64), intent(out) :: val\n"
+            "    logical, intent(out) :: is_na, found\n"
+            + pinned +
+            "    val = 0.0_real64; is_na = .false.; found = .false.; reason_na = ''\n"
+            "  end subroutine metric_compute\n", 1)
+        self.assertNotEqual(defined, self._CHECKS)
+        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=defined), ["q"]))
+        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(pinned, bad)),
+                      ["q"])
+        self.assertIsNotNone(r)
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("module bx_checks: metric_compute's dummy argument 'reason_na'", r[1])
+        self.assertIn("without the `allocatable` attribute", r[1])
+        # ordering: an unpublished ABI name is reported before the declaration ...
+        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(
+            pinned, bad).replace("  public :: checks_compute, metric_compute\n",
+                                 "  public :: checks_compute\n")), ["q"])
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("not published by module bx_checks: metric_compute", r[1])
+        self.assertNotIn("allocatable", r[1])
+        # ... and the declaration before an unpublished bound state variable
+        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(
+            pinned, bad).replace("  public :: q\n", "")), ["q"])
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("without the `allocatable` attribute", r[1])
+        self.assertNotIn("bound state", r[1])
+        # the fixture that publishes the name without defining it is not judged on it
+        self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
+
     def test_harness_shape_refuses_a_binding(self) -> None:
         doc = BundleShapeAdmissibilityTest()._harness_doc()
         doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]

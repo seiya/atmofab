@@ -162,6 +162,19 @@ def ir_content_violations(
     return _module(language).ir_content_violations(ir, spec_id, harness_spec_id)
 
 
+def checks_abi_dummy_violation(language: Any, text: str, spec_id: str) -> str | None:
+    """The dummy-argument declaration constraint on the leaf-authored checks module of
+    `language` that its compiler cannot check against the host-rendered runner's call, as a
+    violation message, or None.
+
+    The runner is what makes it an ABI: the backend that renders the call site is the one
+    that knows which actual it passes in a state the callee's declaration must accept, so the
+    rule is defined beside the renderer and read here by the bundle acceptance gate
+    (`codegen_bundle.m3c_checks_abi_violation`). Issue #261 records the defect this closes.
+    """
+    return _module(language).checks_abi_dummy_violation(text, spec_id)
+
+
 def checks_public_names(language: Any) -> tuple[str, ...]:
     """The fixed public names of the leaf-authored checks module for `language`.
 

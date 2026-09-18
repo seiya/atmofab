@@ -176,6 +176,11 @@ PINNED_RENDER: dict[str, str] = {
     # instead of calling getters, captures twice per case, and the build control file creates
     # `raw/state_snapshots/initial`.
     "render-2": "8409184903c2dc3dca987c853f134fa24ec4cbd38b7623a08457a49ff1b501d3",
+    # render-3 (issue #261): the rendered runner states, in a comment under its
+    # `use <spec_id>_checks`, the `metric_compute` dummy declaration the compiler cannot check
+    # against its call; `runner.py` also gained `checks_abi_dummy_violation`, the bundle
+    # acceptance reader of that declaration, beside the renderer.
+    "render-3": "1bf8abe92db87fe896c87f6939623fabfc97569b941a0956e0f7ae8cb1c4d1e3",
 }
 PINNED_BUILD: dict[str, str] = {
     "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",

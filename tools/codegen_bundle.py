@@ -1606,8 +1606,12 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
 
     Conservative NECESSARY condition: every ABI name is published — defined in this module, or
     named in one of its `public ::` statements — and none is defined HERE as a function. It does
-    not check dummy-argument agreement; `Generate.gate` syntax check stages the runner with the source and
-    owns call resolution.
+    not check dummy-argument agreement in general; `Generate.gate` syntax check stages the runner with the source and
+    owns call resolution. The ONE dummy-argument fact that call resolution cannot see — the
+    attribute the runner's actual for `metric_compute`'s reason argument requires of the dummy,
+    which the compiler accepts either way and the program faults on at run time — is asked of
+    the language backend that renders that call (`host_render.checks_abi_dummy_violation`,
+    issue #261), after the procedure clause and before the bound-state clause below.
 
     "Published" is the `Generate.gate` static check's own notion, deliberately, not a better one. Fortran has
     ways to export a callable name that neither gate models — a whole-module `use` re-export with
@@ -1621,7 +1625,11 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     the SAME parser `Generate.gate` static check uses, so the two gates cannot disagree about what a given
     source publishes. (A second implementation is exactly how this layer came to accept output
     `Generate.gate` static check rejected.)"""
-    from tools.host_render import checks_public_names, runner_render_refusal
+    from tools.host_render import (
+        checks_abi_dummy_violation,
+        checks_public_names,
+        runner_render_refusal,
+    )
     from tools.validate_pipeline_semantics import (
         checks_module_abi_facts,
         unpublished_bound_state,
@@ -1680,6 +1688,13 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
                 f"subroutines — " + "; ".join(parts)
                 + f". The full required set is {', '.join(CHECKS_PUBLIC_NAMES)} for EVERY M3c "
                 f"node, whatever subset this node's runner imports.")
+    # The dummy declaration the compiler cannot check (issue #261): the runner backend states
+    # it, this gate applies it. Positive evidence only, like the clause above — a module that
+    # does not DEFINE the procedure here is not judged on it.
+    dummy_violation = checks_abi_dummy_violation(
+        match.get("language"), str(match.get("content") or ""), spec_id)
+    if dummy_violation:
+        return f"module {spec_id}_checks: {dummy_violation}"
     # The bound state (Z6, issue #255): every `state_bindings[].storage_symbol` is a
     # module-level variable the host-rendered runner imports with `use <spec_id>_checks, only:
     # sb_<var> => <var>`, so it must be PUBLISHED by this module under the same scan and the

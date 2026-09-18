@@ -75,6 +75,28 @@ def _checks_symbols() -> tuple[str, ...]:
     return CHECKS_PUBLIC_NAMES
 
 
+_METRIC_COMPUTE_STUB = (
+    "subroutine metric_compute(case_id, name, val, is_na, reason_na, found)\n"
+    "  character(len=*), intent(in) :: case_id, name\n"
+    "  real(real64), intent(out) :: val\n"
+    "  logical, intent(out) :: is_na, found\n"
+    "  character(len=:), allocatable, intent(out) :: reason_na\n"
+    "end subroutine metric_compute\n")
+
+
+def _stub(sym: str, *, indent: str = "  ", prefix: str = "", named_end: bool = True) -> str:
+    """A minimal module-level definition of ABI name `sym` for a fixture that tests the
+    PUBLICATION half of the ABI layer. Four of the five are zero-dummy stubs (only their name
+    and subroutine-ness are read); `metric_compute` carries the pinned dummy list, because
+    since issue #261 the same layer reads its fifth dummy's declaration when it is defined
+    here and refuses a zero-dummy stub as "0 dummy argument(s)"."""
+    if sym == "metric_compute":
+        return "".join(indent + prefix * (i == 0) + line + "\n"
+                       for i, line in enumerate(_METRIC_COMPUTE_STUB.splitlines()))
+    end = f"end subroutine {sym}" if named_end else "end subroutine"
+    return f"{indent}{prefix}subroutine {sym}()\n{indent}{end}\n"
+
+
 def _checks_content(*, omit: str = "", as_function: str = "", unexported: str = "",
                     bound: tuple[str, ...] = ("h",)) -> str:
     """A checks module publishing the fixed ABI, in the certified idiom (a bare `private` default
@@ -96,7 +118,7 @@ def _checks_content(*, omit: str = "", as_function: str = "", unexported: str = 
         if sym == as_function:
             body += [f"  function {sym}() result(r)", f"  end function {sym}"]
         else:
-            body += [f"  subroutine {sym}()", f"  end subroutine {sym}"]
+            body.append(_stub(sym).rstrip("\n"))
     body.append("end module")
     return "\n".join(body) + "\n"
 
@@ -466,7 +488,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n  private\n"
             + "".join(f"  public :: {s}\n" for s in syms) + "  public :: h\n"
             + "contains\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine {s}\n" for s in syms)
+            + "".join(_stub(s) for s in syms)
             + "end module\n")
         cat, findings = c._pure_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
@@ -495,7 +517,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         bad["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n"
             + "".join(f"  public :: {s}\n" for s in syms) + "contains\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine {s}\n"
+            + "".join(_stub(s)
                       for s in syms if s != "metric_compute")
             + "  character(kind=kind('a')) function metric_compute()\n"
             "    metric_compute = 'x'\n  end function metric_compute\n"
@@ -526,7 +548,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         syms = _checks_symbols()
         pubs = "".join(f"  public :: {s}\n" for s in syms)
-        defs = "".join(f"  subroutine {s}()\n  end subroutine {s}\n"
+        defs = "".join(_stub(s)
                        for s in syms if s != "case_setup")
         ok = _valid_bundle()
         ok["files"][1]["content"] = (
@@ -569,7 +591,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         ok = _valid_bundle()
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in _checks_symbols())
+            + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
 
@@ -587,7 +609,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n" + wrapped
             + "contains\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in syms)
+            + "".join(_stub(s, named_end=False) for s in syms)
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
 
@@ -601,7 +623,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n"
             "  type :: bucket\n    private\n    integer :: n\n  end type bucket\n"
             "contains\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in _checks_symbols())
+            + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
 
@@ -614,7 +636,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n"
             "  integer, private :: n\n  private :: helper\n"
             "contains\n"
-            + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in _checks_symbols())
+            + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
 
@@ -626,7 +648,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         wrapped = "  public :: " + ", &\n    ".join((*syms, "h")) + "\n"
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n" + wrapped
-            + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in syms)
+            + "".join(_stub(s, named_end=False) for s in syms)
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
 
@@ -638,7 +660,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         bad = _valid_bundle()
         bad["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n"
-            + "".join(f"subroutine {s}()\nend subroutine {s}\n"
+            + "".join(_stub(s, indent="")
                       for s in _checks_symbols() if s != "metric_compute")
             + "! the runner also calls subroutine metric_compute\n"
             + "function metric_compute() result(r)\nend subroutine metric_compute\n"
@@ -653,7 +675,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         ok = _valid_bundle()
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n"
-            + "".join(f"  pure subroutine {s}()\n  end subroutine {s}\n"
+            + "".join(_stub(s, prefix="pure ")
                       for s in _checks_symbols())
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))

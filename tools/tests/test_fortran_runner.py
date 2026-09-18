@@ -19,14 +19,18 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from tools.backends.language.fortran import lines as fortran_lines
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
     CHECK_STATUS_WIDTH,
     CHECKS_PUBLIC_NAMES,
     EXPECTED_HARNESS_SPEC_ID,
+    METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY,
+    METRIC_COMPUTE_DUMMIES,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
     assert_harness_pin,
+    checks_abi_dummy_violation,
     ir_content_violations,
     render_runner,
 )
@@ -698,7 +702,11 @@ class RenderShapeTest(unittest.TestCase):
             self.txt)
 
     def test_no_metrics_block_when_absent(self) -> None:
-        self.assertNotIn("metric_compute", self.txt)
+        # No import and no call; the ABI comment under `use <spec_id>_checks` names it on
+        # every node (issue #261), so the assertion is on the CODE lines, not the whole text.
+        code = "\n".join(ln for ln in self.txt.splitlines() if not ln.lstrip().startswith("!"))
+        self.assertNotIn("metric_compute", code)
+        self.assertIn("metric_compute's", self.txt)
         self.assertIn("allocate(results(ci)%metrics(0))", self.txt)
 
     def test_terminal_writers(self) -> None:
@@ -1805,3 +1813,184 @@ class GfortranSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChecksAbiDummyDeclarationTest(unittest.TestCase):
+    """`checks_abi_dummy_violation` (issue #261): the one `metric_compute` dummy-argument fact
+    the compiler cannot check against the rendered call. What is PINNED: the position the
+    constant names is the position at which the rendered runner passes its unallocated
+    deferred-length actual (read off the render, not restated); the attribute is required on
+    the dummy at that position however it is spelled; and the judgment is positive-evidence
+    only. What is SAMPLED: the spellings in the two matrices — each row is one spelling the
+    language allows, and the set is a regression guard, not the definition of the class."""
+
+    _MODULE = textwrap.dedent("""\
+        module bx_checks
+          implicit none
+          private
+          public :: metric_compute
+        contains
+          subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
+            character(len=*), intent(in) :: case_id, name
+            real(8), intent(out) :: val
+            logical, intent(out) :: is_na, found
+            {DECL}
+            associate (u => case_id); end associate
+            val = 0.0d0; is_na = .false.; found = .false.; reason_na = ''
+          end subroutine metric_compute
+        end module bx_checks
+        """)
+
+    def _v(self, decl: str, **over) -> str | None:
+        text = self._MODULE.replace("{DECL}", decl)
+        for old, new in over.items():
+            self.assertIn(old, text)
+            text = text.replace(old, new)
+        return checks_abi_dummy_violation(text, "bx")
+
+    def test_the_position_is_the_one_the_rendered_runner_passes_its_unallocated_actual_at(
+            self) -> None:
+        runner = render_runner(_metrics_ir(), "prob_x", HARNESS)
+        stmts = [s.strip().lower() for ln in fortran_lines.fortran_logical_line_texts(runner)
+                 for s in fortran_lines.split_fortran_statements(ln)]
+        calls = [s for s in stmts if s.startswith("call metric_compute(")]
+        self.assertTrue(calls)
+        position = METRIC_COMPUTE_DUMMIES.index(METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY)
+        actuals = {tuple(a.strip() for a in fortran_lines.split_top_level_commas(
+            c[len("call metric_compute("):-1])) for c in calls}
+        self.assertEqual(1, len({a[position] for a in actuals}))
+        actual = next(iter(actuals))[position]
+        self.assertEqual(len(METRIC_COMPUTE_DUMMIES), len(next(iter(actuals))))
+        # that actual is declared deferred-length allocatable in the runner ...
+        decls = [s for s in stmts if re.match(
+            rf"^character\s*\(\s*len\s*=\s*:\s*\)\s*,\s*allocatable\s*::\s*{actual}$", s)]
+        self.assertEqual(1, len(decls), actual)
+        # ... and nothing in the runner allocates or assigns it before the call: the callee is
+        # the first writer, so the callee's declaration decides whether the write is legal.
+        first_call = next(i for i, s in enumerate(stmts) if s in calls)
+        before = stmts[:first_call]
+        self.assertFalse([s for s in before if re.match(rf"^allocate\s*\(.*\b{actual}\b", s)
+                          or re.match(rf"^{actual}\s*=", s)], actual)
+
+    def test_the_pinned_declaration_and_its_spellings_are_accepted(self) -> None:
+        for decl in (
+                "character(len=:), allocatable, intent(out) :: reason_na",
+                "CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: Reason_NA",
+                "character(len=:), allocatable, &\n      intent(out) :: reason_na",
+                "character(:), allocatable, intent(out) :: reason_na",
+                "character(len=:), intent(out) :: reason_na\n    allocatable :: reason_na",
+                "character(len=:), intent(out) :: reason_na\n    allocatable reason_na",
+                "character(len=:), intent(out) :: reason_na; allocatable :: reason_na",
+                "character(len=:), allocatable, intent(out) :: reason_na, extra",
+                "character(len=:), allocatable, intent(out) :: extra, reason_na",
+                # a lookalike entity is not the dummy
+                ("character(len=64) :: xreason_na\n"
+                 "    character(len=:), allocatable, intent(out) :: reason_na"),
+                # a literal carrying the dummy's name and a `::` is not a declaration of it
+                ("character(len=20) :: note = 'reason_na :: x'\n"
+                 "    character(len=:), allocatable, intent(out) :: reason_na"),
+        ):
+            with self.subTest(decl=decl):
+                self.assertIsNone(self._v(decl))
+
+    def test_a_non_allocatable_dummy_is_refused_however_spelled(self) -> None:
+        for decl in (
+                "character(len=64), intent(out) :: reason_na",  # the billed run's form
+                "character(len=*), intent(out) :: reason_na",
+                "character(len=64) reason_na",
+                "character*64 reason_na",
+                "character*(64) reason_na",
+                "character(len=64), intent(out) :: reason_na, extra",
+                ("character(len=8) :: junk = 'a::b'\n"
+                 "    character(len=64), intent(out) :: reason_na"),
+        ):
+            with self.subTest(decl=decl):
+                r = self._v(decl)
+                self.assertIsNotNone(r, decl)
+                self.assertIn("without the `allocatable` attribute", r)
+                self.assertIn("'reason_na' (position 5)", r)
+                self.assertIn("character(len=:), allocatable, intent(out) :: reason_na", r)
+
+    def test_the_dummy_is_found_by_position_not_name(self) -> None:
+        r = self._v("character(len=64), intent(out) :: rs",
+                    **{"reason_na, found)": "rs, found)", "reason_na = ''": "rs = ''"})
+        self.assertIsNotNone(r)
+        self.assertIn("'rs' (position 5)", r)
+
+    def test_a_missing_declaration_and_a_short_dummy_list_fail_closed(self) -> None:
+        r = self._v("")
+        self.assertIsNotNone(r)
+        self.assertIn("has no type declaration statement", r)
+        r = self._v("", **{"(case_id, name, val, is_na, reason_na, found)": "(a, b)"})
+        self.assertIsNotNone(r)
+        self.assertIn("declares 2 dummy argument(s)", r)
+        self.assertIn("metric_compute(case_id, name, val, is_na, reason_na, found)", r)
+
+    def test_positive_evidence_only(self) -> None:
+        v = checks_abi_dummy_violation
+        bad = "character(len=64), intent(out) :: reason_na"
+        # published but not defined here: not judged (the syntax gate resolves the `use`)
+        self.assertIsNone(v("module bx_checks\n private\n public :: metric_compute\n"
+                            "end module bx_checks\n", "bx"))
+        # defined in another module, or after `end module`: not the runner's callee
+        self.assertIsNone(self._v(bad, bx_checks="other"))
+        self.assertIsNone(v(self._MODULE.replace("{DECL}", bad).replace(
+            "contains\n", "end module bx_checks\nmodule tail\ncontains\n").replace(
+            "end module bx_checks\n", "end module tail\n", 1), "bx"))
+        # a prototype in an interface block is not a definition
+        self.assertIsNone(v("module bx_checks\n interface\n  subroutine metric_compute("
+                            "a, b, c, d, e, f)\n   character(len=64) :: e\n  end subroutine\n"
+                            " end interface\nend module bx_checks\n", "bx"))
+        # an internal procedure of that name is not the module-level definition; the
+        # module-level one that follows is judged
+        nested = self._MODULE.replace("{DECL}", "character(len=:), allocatable, intent(out) :: reason_na").replace(
+            "contains\n",
+            "contains\n  subroutine case_setup(case_id, ok)\n"
+            "    character(len=*), intent(in) :: case_id\n    logical, intent(out) :: ok\n"
+            "    ok = .true.\n  contains\n"
+            "    subroutine metric_compute(a, b, c, d, e, f)\n      character(len=64) :: e\n"
+            "    end subroutine metric_compute\n  end subroutine case_setup\n", 1)
+        self.assertIsNone(v(nested, "bx"))
+        self.assertIsNotNone(v(nested.replace(
+            "character(len=:), allocatable, intent(out) :: reason_na", bad), "bx"))
+        # a bare `end` never closes the module, even when the walk's depth count is off — here
+        # a statement-labelled header the header pattern does not read, so its bare `end`
+        # arrives at depth 0; reading that as `end module` would skip the definition after it
+        self.assertIsNotNone(v(self._MODULE.replace("{DECL}", bad).replace(
+            "contains\n", "contains\n10 subroutine get_time(t)\n    real(8), intent(out) :: t\n"
+            "    t = 0d0\n  end\n", 1), "bx"))
+        # a string literal spelling a header is not a header: unmasked, the literal would be
+        # read as a six-dummy `metric_compute` with no declarations and refused; the real one
+        # after it is the pinned form and passes
+        self.assertIsNone(v(self._MODULE.replace(
+            "{DECL}", "character(len=:), allocatable, intent(out) :: reason_na").replace(
+            "contains\n", "  character(len=*), parameter :: note = &\n"
+            "    'see subroutine metric_compute(a, b, c, d, e, f)'\n  public :: note\ncontains\n",
+            1), "bx"))
+
+    @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
+    def test_the_premise_the_compiler_does_not_see_it(self) -> None:
+        """The gate exists because `-fsyntax-only` accepts the refused form against the
+        rendered runner (measured, gfortran 11.4). If this row starts failing, the compiler has
+        started diagnosing it and the gate is a pre-emption of the syntax check rather than the
+        only deterministic reader — update `METRIC_COMPUTE_DUMMIES`' comment, not the gate."""
+        v = checks_abi_dummy_violation
+        ir = _rank34_metrics_ir()
+        runner = render_runner(ir, RANK_SID, HARNESS)
+        pinned = "character(len=:), allocatable, intent(out) :: reason_na"
+        bad = "character(len=64), intent(out) :: reason_na"
+        self.assertIn(pinned, _RANK_CHECKS_STUB)
+        for decl, refused in ((pinned, False), (bad, True)):
+            checks = _RANK_CHECKS_STUB.replace(pinned, decl)
+            self.assertEqual(refused, v(checks, RANK_SID) is not None, decl)
+            with tempfile.TemporaryDirectory() as td:
+                d = Path(td)
+                (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
+                (d / f"{RANK_SID}_checks.f90").write_text(checks)
+                (d / f"{RANK_SID}_runner.f90").write_text(runner)
+                r = subprocess.run(
+                    ["gfortran", "-fsyntax-only", "-std=f2008", "-J", td,
+                     "harness_fortran_cpu_model.f90", f"{RANK_SID}_checks.f90",
+                     f"{RANK_SID}_runner.f90"],
+                    cwd=d, capture_output=True, text=True, check=False)
+                self.assertEqual(0, r.returncode, (decl, r.stderr))

@@ -237,6 +237,11 @@ node's self-test).
   or a deferred-length allocatable (`character(len=:), allocatable`) — an
   assumed-length `intent(out)` (`character(len=*)`) is illegal, matching the
   harness's own rule.
+- **`metric_compute`'s `reason_na` keeps its §1 declaration on every node.** The
+  runner passes an UNALLOCATED deferred-length actual for it; a fixed-length or
+  assumed-length dummy passes the syntax check and Build and faults at the first call.
+  The bundle acceptance gate refuses it (`m3c_checks_abi_violation`, issue #261) — a
+  no-metrics stub included; the rendered runner states the declaration in a comment.
 - **`spec_id` ≤ 55 characters** so the derived `<spec_id>_checks` / `_runner` /
   `_model` identifiers stay within the f2008 63-character limit (on an M3c node the
   renderer fails closed above this).
