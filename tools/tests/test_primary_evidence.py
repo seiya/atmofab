@@ -185,6 +185,20 @@ class GrammarAllowlistTest(unittest.TestCase):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
 
+    def test_function_table_is_pinned_by_literal(self) -> None:
+        """The arities are values a leaf-read document states; iterating the table pins only
+        its shape (round 2 census)."""
+        self.assertEqual(pe.FUNCTIONS, {
+            "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
+            "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
+            "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
+            "floor": (1, 1)})
+        self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
+        self.assertEqual(pe.GRAMMAR_VERSION, 1)
+        for src in ("abs(1, 2)", "sum()", "roll(final.h)"):
+            with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
+                pe.parse_expr(src)
+
     def test_function_table_is_closed(self) -> None:
         for src in ("__import__('os')", "open('x')", "eval('1')", "getattr(final, 'h')",
                     "np.sum(final.h)", "final.h.sum()", "where(1, 2, 3)"):
@@ -209,6 +223,7 @@ class GrammarAllowlistTest(unittest.TestCase):
             with self.subTest(src=src):
                 pe.parse_expr(src)
         for src in ("final.h.T", "final", "at('a')", "at('a').final", "at('a').inputs",
+                    "at(' a').final.h", "at(x).final.h", "at(abs(1)).final.h",
                     "at('a').initial", "at('a').x.y",
                     "at('a').final.h.T", "at(1).final.h", "at('').final.h", "at().final.h",
                     "at('a', 'b').final.h", "pi.real", "abs(1).real", "x.y", "final.h.shape",
@@ -265,6 +280,11 @@ class EvaluationTest(unittest.TestCase):
     def test_no_primary_predicates_is_empty(self) -> None:
         self.assertEqual(pe.evaluate_primary_predicates(_ir(None), self.run.root), [])
         self.assertEqual(pe.evaluate_primary_predicates(_ir([]), self.run.root), [])
+        # an IR with no primary predicates AND no snapshot entry (metrics_basis evidence only)
+        # is evaluated to nothing, not refused
+        ir = _ir(None)
+        del ir["io_contract"]["raw_requirements"]
+        self.assertEqual(pe.evaluate_primary_predicates(ir, self.run.root), [])
 
     def test_physics_fail_names_the_case_and_stops(self) -> None:
         strict = {**HMIN, "value": {"per_case": {"a": 0.5, "b": 2.0}}}
@@ -286,10 +306,60 @@ class EvaluationTest(unittest.TestCase):
         self.assertTrue(rec["satisfied"], rec)
         env = pe.load_case_env(self.run.root, self.cases[1],
                                pe.snapshot_schema(_ir([], coordinates=coords)))
+        # expanded to the STATE's shape, so a reference built from a coordinate reduces over
+        # the state's cells (round 2: `norm2(h_ref)` over an (nx, 1) field was sqrt(ny) short)
+        self.assertEqual(env.coordinates["x"].shape, (NX, NY))
+        self.assertEqual(env.coordinates["y"].shape, (NX, NY))
+        np.testing.assert_allclose(env.coordinates["x"][:, 0], (np.arange(NX) + 0.5) / NX)
+        np.testing.assert_allclose(env.coordinates["x"][:, 1], env.coordinates["x"][:, 0])
+        np.testing.assert_allclose(env.coordinates["y"][0], (np.arange(NY) + 0.5) * 2 / NY)
+
+    def test_a_reference_built_from_a_coordinate_values_the_full_shape_norm(self) -> None:
+        """Round 2 (blank-slate, HIGH): the doc's analytic-agreement row, valued by the grammar,
+        must equal the same formula over the full (nx, ny) grid in numpy."""
+        coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
+                   "placement": "cell_center"}]
+        pred = {"test_id": "t_mass", "quantity": "err", "target_cases": ["b"],
+                "bind": {"h_ref": "1 + 0.001 * sin(2 * pi * x / inputs.grid.L_x)"},
+                "expr": "norm2(final.h - h_ref) / norm2(h_ref)", "op": "le", "value": 1.0,
+                "case": "b"}
+        [rec] = self._eval([pred], coordinates=coords)
+        x = ((np.arange(NX) + 0.5) / NX)[:, None] * np.ones((NX, NY))
+        h_ref = 1 + 0.001 * np.sin(2 * np.pi * x)
+        expected = np.linalg.norm(self.h - h_ref) / np.linalg.norm(h_ref)
+        self.assertAlmostEqual(rec["evaluated"][0]["value"], float(expected), places=12)
+        # sanity: an (nx, 1) reference would have given a different number
+        self.assertNotAlmostEqual(
+            rec["evaluated"][0]["value"],
+            float(np.linalg.norm(self.h - h_ref) / np.linalg.norm(h_ref[:, :1])), places=6)
+
+    def test_a_reduction_over_an_unexpanded_coordinate_field_is_refused(self) -> None:
+        """When the captured arrays of the state's rank disagree on shape, a coordinate keeps
+        extent 1 on the other axes and reducing over a field built from it is refused."""
+        coords = [{"name": "x", "axis": 0, "count": NX, "length": 1.0, "placement": "cell_center"}]
+        ir = _ir([self._one("norm2(x)")], coordinates=coords, cases=self.cases)
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] \
+            .append({"name": "w", "shape_expr": "[nx, nw]"})
+        for path in (self.run.sdir / "initial" / "b.json", self.run.sdir / "b.json",
+                     self.run.sdir / "initial" / "a.json", self.run.sdir / "a.json"):
+            doc = json.loads(path.read_text())
+            doc["w"] = [[1.0] * 2] * NX
+            path.write_text(json.dumps(doc))
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        self.assertEqual(rec["kind"], "structural")
+        self.assertIn("extent-1 axis", rec["evaluated"][-1]["error"])
+        env = pe.load_case_env(self.run.root, self.cases[1], pe.snapshot_schema(ir))
         self.assertEqual(env.coordinates["x"].shape, (NX, 1))
-        self.assertEqual(env.coordinates["y"].shape, (1, NY))
-        np.testing.assert_allclose(env.coordinates["x"].ravel(), (np.arange(NX) + 0.5) / NX)
-        np.testing.assert_allclose(env.coordinates["y"].ravel(), (np.arange(NY) + 0.5) * 2 / NY)
+        # paired with a state array first, it evaluates
+        ir["io_contract"]["primary_predicates"] = [self._one("norm2(x + 0 * final.h)")]
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        self.assertTrue(rec["satisfied"], rec)
+
+    def test_a_coordinate_count_must_match_the_captured_extent(self) -> None:
+        coords = [{"name": "x", "axis": 0, "count": NX + 1, "length": 1.0,
+                   "placement": "cell_center"}]
+        self._structural(self._one("x"), "does not match the captured state shape",
+                         coordinates=coords)
 
     def _structural(self, pred: dict, fragment: str, **kw) -> dict:
         [rec] = self._eval([pred], **kw)
@@ -339,12 +409,39 @@ class EvaluationTest(unittest.TestCase):
                          "ZeroDivisionError")
         self._structural(self._one("1 / 0"), "ZeroDivisionError")
         self._structural(self._one("1" * 400), "OverflowError")
-        # equal rank, unequal extents: the shape rule names the shapes instead of numpy raising
+        # equal rank, unequal extents between the two captures: named at load
         self.run.write("b", initial={"h": self.h.tolist(), "s": 1.0, "t": 0.0},
                        final={"h": self.h[:, :2].tolist(), "s": 1.0, "t": 0.2})
-        self._structural(self._one("sum(final.h - initial.h)"), "do not pair")
-        self._structural(self._one("sum(min(final.h, initial.h))"), "do not pair")
-        self._structural(self._one("sum(final.h ** initial.h)"), "do not pair")
+        self._structural(self._one("sum(final.h - initial.h)"), "disagree on the state shape")
+        # ... and between two cases: the shape rule names the shapes instead of numpy raising
+        self.run.write_state("b", self.h, self.h)
+        small = self.h[:, :2]
+        self.run.write_state("a", small, small)
+        self._structural(self._one("sum(final.h - at('a').final.h)"), "do not pair")
+        self._structural(self._one("sum(min(final.h, at('a').final.h))"), "do not pair")
+        self._structural(self._one("sum(final.h ** at('a').final.h)"), "do not pair")
+        self._structural(self._one("sum(min(final.h, at('a').final.h, 1))"), "do not pair")
+
+    def test_a_scalar_pairs_with_an_array(self) -> None:
+        for expr in ("sum(final.h * 2) - 2 * sum(final.h)", "sum(max(final.h, 0.0)) - sum(final.h)",
+                     "sum(final.s * final.h - final.h)"):
+            with self.subTest(expr=expr):
+                [rec] = self._eval([self._one(expr, op="eq", value=0.0)])
+                self.assertTrue(rec["satisfied"], rec)
+
+    def test_errors_this_module_names_are_kept_verbatim(self) -> None:
+        [rec] = self._eval([self._one("nope")])
+        self.assertEqual(rec["evaluated"][0]["error"],
+                         "name 'nope' is not a bind, a coordinate or a constant")
+        [rec] = self._eval([self._one("1 / 0")])
+        self.assertEqual(rec["evaluated"][0]["error"],
+                         "evaluation failed: ZeroDivisionError: float division by zero")
+
+    def test_deep_nesting_is_a_parse_refusal(self) -> None:
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "nested too deeply|does not parse"):
+            pe.parse_expr("-" * 5000 + "1")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "nested too deeply|does not parse"):
+            pe.parse_expr(" + ".join(["1"] * 5000))
 
     def test_physics_fail_stops_at_the_first_failing_case(self) -> None:
         strict = {**HMIN, "value": {"per_case": {"a": 2.0, "b": 2.0}}}
@@ -377,6 +474,19 @@ class EvaluationTest(unittest.TestCase):
         [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
                                                self.run.root)
         self.assertIn("do not pair", rec["evaluated"][-1]["error"])
+        # the OTHER case's inputs are what `at('b').inputs` reads (round 2 census: the earlier
+        # threshold straddled neither value)
+        exact = {**pred, "bind": {}, "expr": "inputs.grid.nx - at('b').inputs.grid.nx",
+                 "op": "eq", "value": float(NX)}
+        [rec] = pe.evaluate_primary_predicates(_ir([exact], coordinates=coords, cases=cases),
+                                               self.run.root)
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual(rec["evaluated"][0]["value"], float(NX))
+        # a bind may not shadow a coordinate (the lookup order is binds first)
+        shadow = {**pred, "bind": {"x": "1"}, "expr": "sum(x)"}
+        [rec] = pe.evaluate_primary_predicates(_ir([shadow], coordinates=coords, cases=cases),
+                                               self.run.root)
+        self.assertIn("shadows a grammar name", rec["evaluated"][-1]["error"])
 
     def test_roll_shift_must_be_integer_and_per_axis(self) -> None:
         self._structural(self._one("sum(roll(final.h, 1.5, 0))"), "not an integer")
@@ -426,6 +536,9 @@ class EvaluationTest(unittest.TestCase):
         self.run.write("b", initial={"h": [1.0] * NX, "s": 1.0, "t": 0.0},
                        final={"h": [1.0] * NX, "s": 1.0, "t": 0.2})
         self._structural(self._one("final.s"), "has rank 1, declared shape_expr has rank 2")
+        self.run.write("b", initial={"h": [[]] * NX, "s": 1.0, "t": 0.0},
+                       final={"h": [[]] * NX, "s": 1.0, "t": 0.2})
+        self._structural(self._one("final.s"), "has no elements")
         nan = self.h.tolist()
         nan[0][0] = float("nan")
         self.run.write("b", initial={"h": nan, "s": 1.0, "t": 0.0},
@@ -499,7 +612,8 @@ class EvaluationTest(unittest.TestCase):
 
     def test_value_map_needs_every_case_and_a_number(self) -> None:
         self._structural({**HMIN, "value": {"per_case": {"a": 0.5}}}, "no entry for 'b'")
-        self._structural({**HMIN, "value": "0.5"}, "is not a number")
+        self._structural({**HMIN, "value": "0.5"}, "is not a finite number")
+        self._structural({**HMIN, "value": float("inf")}, "is not a finite number")
 
     def test_function_semantics(self) -> None:
         h = self.h
@@ -645,8 +759,9 @@ class SchemaGateTest(unittest.TestCase):
     def test_reference_set_is_valid(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
                    "placement": "cell_center"}]
-        ir = _ir([MASS, HMIN, SYM], coordinates=coords)
-        self.assertEqual(self._v([MASS, HMIN, SYM], ir=ir), [])
+        with_coord = {**HMIN, "expr": "sum(final.h * x) * pi + e", "op": "le", "value": 1e9}
+        ir = _ir([MASS, HMIN, SYM, with_coord], coordinates=coords)
+        self.assertEqual(self._v([MASS, HMIN, SYM, with_coord], ir=ir), [])
         self.assertEqual(self._v(None), [])
         self.assertEqual(self._v([]), [])
 
@@ -666,12 +781,15 @@ class SchemaGateTest(unittest.TestCase):
             ([{**SYM, "case": "b", "target_cases": ["a"]}], "not one of its target_cases"),
             ([{**HMIN, "na_allowed": True}], "na_allowed has no meaning"),
             ([{**HMIN, "value": None}], "non-null"),
-            ([{**HMIN, "value": "0.5"}], "value must be a number"),
+            ([{**HMIN, "value": "0.5"}], "value must be a finite number"),
+            ([{**HMIN, "value": float("nan")}], "value must be a finite number"),
             ([{**HMIN, "value": {"x": 1}}], "must be a number or a"),
             ([{**SYM, "value": {"per_case": {"a": 1.0}}}], "per_case is not true"),
             ([{**HMIN, "value": {"per_case": {}}}], "non-empty map"),
             ([{**HMIN, "value": {"per_case": {"a": 1.0, "zz": 1.0}}}], "unknown case_id ('zz')"),
-            ([{**HMIN, "value": {"per_case": {"a": "1"}}}], "must be a number"),
+            ([{**HMIN, "value": {"per_case": {"a": "1"}}}], "must be a finite number"),
+            ([{**HMIN, "value": {"per_case": {"a": float("inf"), "b": 1.0}}}],
+             "must be a finite number"),
             ([{**HMIN, "value": {"per_case": {"a": 1.0}}}], "missing a threshold"),
             ([{**HMIN, "bind": [1]}], "bind must be a mapping"),
             ([{**HMIN, "bind": {"1x": "1"}}], "not an identifier"),
@@ -715,6 +833,21 @@ class SchemaGateTest(unittest.TestCase):
         out = self._v([HMIN], ir=ir)
         self.assertEqual(len(out), 1)
         self.assertIn("requires a state_snapshots", out[0])
+
+    def test_a_bind_may_not_shadow_a_coordinate(self) -> None:
+        coords = [{"name": "x", "axis": 0, "count": NX, "length": 1.0, "placement": "cell_center"}]
+        ir = _ir([HMIN], coordinates=coords)
+        out = self._v([{**HMIN, "bind": {"x": "1"}, "expr": "sum(x)"}], ir=ir)
+        self.assertTrue(any("shadows a grammar name" in m for m in out), out)
+
+    def test_an_input_path_must_resolve_in_every_target_case(self) -> None:
+        ir = _ir([HMIN])
+        del ir["case"]["test_case_set"][1]["inputs"]["grid"]["dx"]
+        out = self._v([{**HMIN, "expr": "inputs.grid.dx"}], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b'", out[0])
+        # under at('<case>') the path resolves in THAT case alone
+        self.assertEqual(self._v([{**HMIN, "expr": "at('a').inputs.grid.dx"}], ir=ir), [])
 
     def test_coordinates_resolve_in_every_case(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",

@@ -8,8 +8,11 @@ arithmetic expression over the PRIMARY state the host-rendered runner captured t
 certified harness emitters (`raw/state_snapshots/initial/<case_id>.json` right after
 `case_setup`, `raw/state_snapshots/<case_id>.json` right after `case_run`), over the case's
 declared inputs, and over grid coordinates the host derives from those inputs — evaluated
-HERE, by the host, with the generated code contributing nothing to the value. The LLM
-writes the expression at Compile; no LLM holds the number.
+HERE, by the host, with the generated code contributing nothing to the value but the
+captured arrays themselves and the capture's time (`initial.t` / `final.t` is what the
+generated `get_time` reported; an expression that needs the case's end time reads the
+declared `inputs.time.t_end`). The LLM writes the expression at Compile; no LLM holds the
+number.
 
 The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema)::
 
@@ -48,9 +51,13 @@ Names, and where each resolves:
   ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value.
 - ``inputs.<a>.<b>...`` — a NUMERIC value of the case's `case.test_case_set[].inputs`
   (a string, a boolean, a list or a mapping at that path is refused at name resolution).
-- ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array carrying the
-  axis's `count` cell-centre positions along `axis` and extent 1 on every other axis of the
-  state's rank, so it broadcasts against a state array without a subscript.
+- ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array of the STATE's
+  shape carrying the axis's `count` cell-centre positions along `axis` (the same value on
+  every other axis), so a field built from it — an analytic reference — has the state's
+  shape and reduces (`norm2`, `sum`, `mean`) over the same cells. The state's shape is the
+  one shape every captured array of the state's rank has; when those disagree the
+  coordinate keeps extent 1 on the other axes, and a reduction over such a field is refused
+  until it is paired with a state array.
 - ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>``,
   ``at('<case_id>').inputs.<a>.<b>``, ``at('<case_id>').<coordinate name>`` — the same three
   kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
@@ -216,7 +223,10 @@ def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
                     or not isinstance(call.args[0].value, str)
                     or not call.args[0].value.strip()):
                 raise PrimaryEvidenceError("at(...) takes exactly one case_id string")
-            case_id = call.args[0].value.strip()
+            case_id = call.args[0].value
+            if case_id != case_id.strip():
+                raise PrimaryEvidenceError(
+                    f"at({case_id!r}): a case_id carries no surrounding whitespace")
             if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
                 refs.append(NameRef("capture", attrs[1], point=attrs[0], case=case_id))
                 return
@@ -265,9 +275,11 @@ def parse_expr(text: Any) -> ast.Expression:
         raise PrimaryEvidenceError("expr must be a non-empty string")
     try:
         tree = ast.parse(text.strip(), mode="eval")
+        _check_node(tree.body, [])
     except (SyntaxError, ValueError) as exc:
         raise PrimaryEvidenceError(f"expr does not parse: {exc}") from None
-    _check_node(tree.body, [])
+    except RecursionError:
+        raise PrimaryEvidenceError("expr is nested too deeply to parse") from None
     return tree
 
 
@@ -359,9 +371,12 @@ def _coordinate_param(spec: dict[str, Any], key: str, inputs: Any) -> float:
         f"(got {raw!r})")
 
 
-def coordinate_arrays(schema: dict[str, Any], inputs: Any) -> dict[str, np.ndarray]:
-    """The coordinate arrays of one case, shaped to the state rank with the axis's `count`
-    positions along `axis` and extent 1 elsewhere."""
+def coordinate_arrays(schema: dict[str, Any], inputs: Any,
+                      state_shape: tuple[int, ...] | None = None) -> dict[str, np.ndarray]:
+    """The coordinate arrays of one case: the axis's `count` positions along `axis`, expanded
+    to ``state_shape`` when one is given (the shape shared by every captured array of the
+    state's rank, so a field built from the coordinate reduces over the state's cells), else
+    with extent 1 on the other axes."""
     rank = state_rank(schema)
     out: dict[str, np.ndarray] = {}
     specs = schema.get("coordinates")
@@ -395,8 +410,22 @@ def coordinate_arrays(schema: dict[str, Any], inputs: Any) -> dict[str, np.ndarr
         positions = (np.arange(n, dtype=np.float64) + 0.5) * (length / n)
         shape = [1] * rank
         shape[axis] = n
-        out[name] = positions.reshape(shape)
+        arr = positions.reshape(shape)
+        if state_shape is not None:
+            if len(state_shape) != rank or state_shape[axis] != n:
+                raise PrimaryEvidenceError(
+                    f"coordinates[{name!r}]: count {n} on axis {axis} does not match the "
+                    f"captured state shape {list(state_shape)}")
+            arr = np.ascontiguousarray(np.broadcast_to(arr, state_shape))
+        out[name] = arr
     return out
+
+
+def state_shape_of(captures: dict[str, Any], rank: int) -> tuple[int, ...] | None:
+    """The one shape every captured array of ``rank`` has, or None when there is none or
+    they disagree."""
+    shapes = {np.shape(v) for v in captures.values() if np.ndim(v) == rank}
+    return next(iter(shapes)) if len(shapes) == 1 else None
 
 
 def _load_capture(path: Path, variables: dict[str, list[str]],
@@ -431,6 +460,8 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
             raise PrimaryEvidenceError(
                 f"{path.name}: variable {name!r} has rank {arr.ndim}, declared "
                 f"shape_expr has rank {len(dims)}")
+        if arr.size == 0:
+            raise PrimaryEvidenceError(f"{path.name}: variable {name!r} has no elements")
         bound: dict[str, int] = {}
         for token, extent in zip(dims, arr.shape):
             if token.isdigit():
@@ -467,8 +498,13 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any]) -
     sdir = Path(run_dir) / "raw" / "state_snapshots"
     initial = _load_capture(sdir / "initial" / f"{case_id}.json", variables, tv)
     final = _load_capture(sdir / f"{case_id}.json", variables, tv)
+    rank = state_rank(schema)
+    shape = state_shape_of(final, rank)
+    if shape is not None and state_shape_of(initial, rank) != shape:
+        raise PrimaryEvidenceError(
+            f"{case_id}: the initial and final captures disagree on the state shape")
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
-                   coordinates=coordinate_arrays(schema, inputs))
+                   coordinates=coordinate_arrays(schema, inputs, shape))
 
 
 # ------------------------------------------------------------------------------ evaluation
@@ -498,14 +534,30 @@ def _shape_compatible(a: Any, b: Any, what: str) -> None:
             "equal, or 1 on one side)")
 
 
+_REDUCTIONS: frozenset[str] = frozenset({"sum", "mean", "min", "max", "norm2", "maxabs"})
+
+
+def _reducible(name: str, value: Any) -> Any:
+    """A reduction over an array with an extent-1 axis (a coordinate the host could not
+    expand to the state's shape) would count one cell where the state has a whole row; it is
+    refused rather than valued."""
+    shape = np.shape(value)
+    if len(shape) >= 2 and 1 in shape:
+        raise PrimaryEvidenceError(
+            f"{name}(): reduction over a field of shape {list(shape)} with an extent-1 axis "
+            "(a coordinate-built field); pair it with a state array first")
+    return value
+
+
 def _call(name: str, args: list[Any]) -> Any:
     with np.errstate(all="ignore"):
         if name == "sum":
-            return np.sum(args[0])
+            return np.sum(_reducible(name, args[0]))
         if name == "mean":
-            return np.mean(args[0])
+            return np.mean(_reducible(name, args[0]))
         if name in ("min", "max"):
             if len(args) == 1:
+                _reducible(name, args[0])
                 return np.min(args[0]) if name == "min" else np.max(args[0])
             acc = args[0]
             for other in args[1:]:
@@ -527,9 +579,9 @@ def _call(name: str, args: list[Any]) -> Any:
         if name == "cos":
             return np.cos(args[0])
         if name == "norm2":
-            return np.sqrt(np.sum(np.asarray(args[0], dtype=np.float64) ** 2))
+            return np.sqrt(np.sum(np.asarray(_reducible(name, args[0]), dtype=np.float64) ** 2))
         if name == "maxabs":
-            return np.max(np.abs(args[0]))
+            return np.max(np.abs(_reducible(name, args[0])))
         if name == "ceil":
             return np.ceil(args[0])
         if name == "floor":
@@ -590,7 +642,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             return resolve_input_number(env.inputs, ".".join(attrs))
         assert _is_at_call(root) and isinstance(root, ast.Call)
-        case_id = str(root.args[0].value).strip()  # type: ignore[attr-defined]
+        case_id = str(root.args[0].value)  # type: ignore[attr-defined]
         if case_id not in at_envs:
             raise PrimaryEvidenceError(
                 f"at({case_id!r}) names a case outside this predicate's target_cases")
@@ -620,7 +672,7 @@ def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
 #: integer literal too large for a float, a numpy operation refused on its operands. Each
 #: becomes a PrimaryEvidenceError so the record names the predicate, not the interpreter.
 _ARITHMETIC_ERRORS = (ZeroDivisionError, OverflowError, ValueError, FloatingPointError,
-                      TypeError, MemoryError)
+                      TypeError, MemoryError, RecursionError)
 
 
 def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] | None = None,
@@ -629,6 +681,8 @@ def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] 
     only `PrimaryEvidenceError`."""
     try:
         return _eval_node(tree.body, env, at_envs or {}, binds or {})
+    except PrimaryEvidenceError:
+        raise   # already named by this module (and a ValueError subclass: keep it verbatim)
     except _ARITHMETIC_ERRORS as exc:
         raise PrimaryEvidenceError(
             f"evaluation failed: {type(exc).__name__}: {str(exc)[:200]}") from None
@@ -765,8 +819,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
                 present, rhs = _resolve_value(pred.get("value"), cid)
                 if not present:
                     raise PrimaryEvidenceError(f"{loc}.value.per_case has no entry for {cid!r}")
-                if not _is_number(rhs):
-                    raise PrimaryEvidenceError(f"{loc}.value for {cid!r} is not a number")
+                if not _is_number(rhs) or not math.isfinite(rhs):
+                    raise PrimaryEvidenceError(f"{loc}.value for {cid!r} is not a finite number")
                 ok = _apply_op(value, op, rhs)
                 record["evaluated"].append({"case": cid, "value": value, "rhs": rhs,
                                             "satisfied": bool(ok)})
@@ -887,14 +941,14 @@ def validate_primary_predicate_schema(
                     for cid, tv_ in table.items():
                         if cid not in case_ids:
                             v.append(f"{loc}.value.per_case references unknown case_id ({cid!r})")
-                        if not _is_number(tv_):
-                            v.append(f"{loc}.value.per_case[{cid!r}] must be a number")
+                        if not _is_number(tv_) or not math.isfinite(tv_):
+                            v.append(f"{loc}.value.per_case[{cid!r}] must be a finite number")
                     uncovered = sorted(c for c in targets if c not in table)
                     if uncovered:
                         v.append(f"{loc}.value.per_case is missing a threshold for target "
                                  f"case(s) {uncovered}")
-        elif not _is_number(value):
-            v.append(f"{loc}.value must be a number (got {value!r})")
+        elif not _is_number(value) or not math.isfinite(value):
+            v.append(f"{loc}.value must be a finite number (got {value!r})")
 
         # Names: the binds first, in order, then `expr`; each expression may reference the
         # binds written before it and nothing written after.

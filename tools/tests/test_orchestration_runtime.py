@@ -21102,7 +21102,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # coordinate-name rule; the worked examples spell the cell size from the inputs the
         # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in /home/seiya/atmofab
         # at the commit that takes this bump, plus this entry's ~150 B slack.
-        "docs/workflow/phases/phase_01_compile.md": 84200,
+        # Bumped 84200->85300 (Z6 PR-2 round 2): a coordinate carries the state's shape (a
+        # norm over a reference field counts every cell), the time variable's provenance, the
+        # `at()` case_id spelling, finite thresholds, the reference at the declared end time.
+        # Measured 85136 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 85300,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

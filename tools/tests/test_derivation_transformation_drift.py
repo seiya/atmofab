@@ -152,7 +152,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 1 before shipping (the version is new on this branch): the grammar
     # block gains the cross-case `at('<case>').inputs` / `.<coordinate>` roots, the operand
     # pairing rule, the arity caps and the coordinate-name rule; V3 gains item (iv).
-    "compile-docs-3": "415c072ce9451f76dcac2643c7d0f3ff3addbbcb91b5bc4ce840c41b484777a2",
+    # Re-pinned again in round 2: a coordinate carries the state's shape, the time variable's
+    # provenance and the declared end time in the examples, finite thresholds.
+    "compile-docs-3": "7a30cbcfbf64fa6264aaa757cd727d114186876e087b58281372f5b5fed2efb1",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -179,7 +181,10 @@ PINNED_VERDICT: dict[str, str] = {
     # interpreter / numpy exception on admitted operands becomes a per-predicate structural
     # record, the operand rule pairs shapes rather than ranks, `at()` reads a case's inputs
     # and coordinates, and a record's `target_cases` must equal its test's.
-    "verdict-2": "2970ea6f3cd7e5f99163485f88ddb4dfac4c86904ccb655fecc77fdff213f042",
+    # Re-pinned again in round 2: coordinates are expanded to the captured state's shape, a
+    # reduction over an unexpanded coordinate field is refused, a threshold must be finite, an
+    # empty capture is refused, and the module's own errors are kept verbatim.
+    "verdict-2": "62e9b757f265fe3e049a2170af04b17035693dafaa607cb9a507c94355c20467",
 }
 
 

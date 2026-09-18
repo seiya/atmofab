@@ -11151,7 +11151,7 @@ end program shallow_water2d_runner
 
     def _compile_with_io_contract(
         self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True,
-        case_ids: tuple[str, ...] = ("c1",),
+        case_ids: tuple[str, ...] = ("c1",), case_inputs: dict | None = None,
     ):
         _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
@@ -11179,7 +11179,8 @@ end program shallow_water2d_runner
         ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                    "/shallow-water2d_20260415_001/spec.ir.yaml")
         doc = json.loads(ir_path.read_text())
-        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": {}} for cid in case_ids]}
+        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": copy.deepcopy(case_inputs or {})}
+                                         for cid in case_ids]}
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",
@@ -11646,6 +11647,22 @@ end program shallow_water2d_runner
             io["primary_predicates"] = [self._primary_predicate(target_cases=["c2", "c1"])]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])
+
+    def test_compile_gate_resolves_input_paths_against_the_cases_it_is_given(self) -> None:
+        """Round 2 census: with every fixture case carrying `inputs: {}`, the wiring's
+        `cases=` argument was indistinguishable from `{}`. A numeric case input is accepted
+        through the real stage and a string one at the same path is refused."""
+        for value, expected in ((8, []), ("8", ["not a number"])):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+                io["primary_predicates"] = [
+                    self._primary_predicate(expr="sum(final.h) / inputs.grid.nx")]
+                v = self._compile_with_io_contract(Path(tmp), io,
+                                                   case_inputs={"grid": {"nx": value}})
+                if expected:
+                    self.assertTrue(any(expected[0] in x for x in v), v)
+                else:
+                    self.assertEqual(v, [])
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
