@@ -16313,6 +16313,33 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
             self.assertIn("c_alpha", meta["failure_excerpt"])
 
+    def test_execute_inproc_asks_for_initial_captures_of_a_host_rendered_runner(self) -> None:
+        # Z6 (issue #255), pinned at the handler: `_execute_inproc` passes
+        # `initial_required=self._conductor_authors_runner(refs)` to the deliverable-gap helper,
+        # so the ACTIONABLE excerpt names the missing `initial/<case_id>.json` on a host-rendered
+        # node and never on one whose runner is its own. (Without the wiring the missing file
+        # is still refused, by the opaque deliverable-presence gate — the bypass axis's W4
+        # survivor was this diagnostic, not the gate.)
+        import tempfile
+        from unittest import mock
+        for authored in (True, False):
+            with self.subTest(runner_host_authored=authored), \
+                 tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                run_tmp = repo / "workspace" / "tmp" / "child-1" / "run"
+                (run_tmp / "raw" / "state_snapshots").mkdir(parents=True)
+                (run_tmp / "raw" / "state_snapshots" / "c_alpha.json").write_text(
+                    "{}", encoding="utf-8")
+                with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                       return_value=authored):
+                    _o, meta = self._b1_execute(repo, self._B1_IR_SNAPSHOTS, gate_result=(0, ""),
+                                                matching_diagnostics=True)
+                if authored:
+                    self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
+                    self.assertIn("initial/c_alpha.json", meta["failure_excerpt"])
+                else:
+                    self.assertNotEqual(meta.get("failure_category"), "snapshot_deliverable_gap")
+
     def test_execute_inproc_category_precedence_when_inputs_fail_together(self) -> None:
         # The categories differ only in report quality (all three route to generate/reuse), so the
         # precedence is what the leaf reads first: the most specific report wins. A gate report
