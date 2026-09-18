@@ -3093,7 +3093,7 @@ and `build_graph`) makes a mis-authored ABI a BOUNDED in-conversation repair ins
 requires every name in `runner_renderer.CHECKS_PUBLIC_NAMES` to be published by `module <spec_id>_checks` AND defined
 there as a SUBROUTINE. That is a conservative necessary condition which pre-empts BOTH downstream gates:
 the `Generate.gate` static check (`_validate_checks_source_files`) requires all ten published but cannot tell a subroutine from a
-function, and the `Generate.gate` syntax check rejects both an undefined name and a function-form one. Dummy-argument agreement stays
+function, and the `Generate.gate` syntax check rejects both an undefined name and a function-form one. Dummy-argument agreement stays (with the one `metric_compute` exception issue #261 added to this layer: the fifth dummy's `allocatable` attribute, which the compiler cannot check against the runner's call, and the dummy count)
 with the `Generate.gate` syntax check, which stages the runner with the source and owns it. The check is scoped to the ONE module the
 runner imports: a bundle may legally carry other `checks`-role files, and reading their text too would let a sibling
 module vouch for a name `use <spec_id>_checks` cannot resolve. The category `bundle_checks_abi_violation` joins
@@ -3200,7 +3200,7 @@ passed Generate, and each is a genuine ABI guess: the failed sw2d P arm's four a
 the defect-B/C era that authored the prefixed `<spec_id>__checks` instead of `checks_compute`. A regression test drives
 the REAL `Generate.gate` static check with a bundle this layer accepts, so the two agreeing is pinned rather than asserted.
 
-**Known gap (accepted).** The `Generate.gate` syntax check owns dummy-argument agreement: nothing before it checks that an imported
+**Known gap (accepted; narrowed by issue #261 — the bundle gate now reads the one `metric_compute` dummy fact the syntax check cannot, the fifth dummy's `allocatable` attribute, plus its dummy count).** The `Generate.gate` syntax check owns dummy-argument agreement: nothing before it checks that an imported
 callback's dummies match the runner's `call` sites. The runner is inlined so the producer can read them off.
 
 An earlier draft filed a second "gap" here — that nothing enforces the stub bodies of the ABI names a runner does not

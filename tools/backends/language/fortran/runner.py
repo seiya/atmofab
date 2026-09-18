@@ -52,6 +52,7 @@ import re
 from typing import Any
 
 from tools.backends.language.fortran import bundle
+from tools.backends.language.fortran import lines as fortran_lines
 
 # Neutral policy this emitter also enforces at render time.
 #
@@ -74,6 +75,30 @@ CHECKS_PUBLIC_NAMES = (
     "case_setup", "case_run", "get_time",
     "checks_compute", "metric_compute",
 )
+
+# The dummy arguments of `metric_compute`, in the order the rendered call passes its actuals
+# (`_render_metric_calls`), and the one of them whose declaration the compiler cannot check
+# against that call. The runner passes `mreason` — `character(len=:), allocatable`, UNALLOCATED
+# — for `reason_na`. Fortran lets an allocatable actual associate with a non-allocatable dummy,
+# so a `character(len=64)` dummy resolves against the explicit interface with no diagnostic
+# from `gfortran -fsyntax-only` (measured, 11.4: rc=0), passes the lint gate (the declaration
+# earns no finding under the declared rule set, fortitude 0.8.0), and at the shipped build
+# flags (`-std=f2008 -O2`, no `-fcheck`) faults at the first call — the assignment writes
+# through a null descriptor: SIGSEGV; under `-fcheck=all`, "Allocatable actual argument
+# 'mreason' is not allocated". That fixed-length form is what this check exists for. The
+# assumed-length form (`character(len=*), intent(out)`) is refused by the LINT gate before
+# Build (C072, measured with `lint.check_argv`; contract §5 declares it illegal), so it never
+# reaches the compiler in a workflow — at the compiler alone it also passes and records an
+# empty reason, which is a fact about the compiler and not a reason for this check (a round-3
+# review found the earlier text presenting it as one). Only an
+# `allocatable` dummy is conforming, and once the dummy IS allocatable the compiler owns the
+# rest: a fixed-length allocatable dummy is refused ("must have a deferred length type
+# parameter if and only if the dummy has one"), a `pointer` one is refused too. So the one
+# fact the compiler cannot see is the attribute, and `checks_abi_dummy_violation` reads
+# exactly that one (issue #261: the first bundle of a billed run carried the `len=64` form
+# through every deterministic gate and was rejected only by the LLM verify).
+METRIC_COMPUTE_DUMMIES = ("case_id", "name", "val", "is_na", "reason_na", "found")
+METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY = "reason_na"
 
 # The runner-local alias of a bound snapshot variable: `use <spec_id>_checks, only:
 # sb_<var> => <var>`. The prefix keeps the alias clear of every runner local (none starts
@@ -669,6 +694,16 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     for i, sym in enumerate(checks_syms):
         sep = ", &" if i < len(checks_syms) - 1 else ""
         a(f"    {sym}{sep}")
+    # The one dummy declaration this program's calls cannot make the compiler check, stated
+    # where the producer leaf is told to read the ABI from (`METRIC_COMPUTE_DUMMIES`). Rendered
+    # on every node, metrics or not: the stub a no-metrics node still has to define is where
+    # the fixed-length form has been observed (issue #261).
+    a("  ! The checks ABI is the same five subroutines for every node. metric_compute's")
+    a(f"  ! `{METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY}` dummy MUST be declared")
+    a("  ! `character(len=:), allocatable, intent(out)`: the runner of a node with metrics")
+    a("  ! passes an UNALLOCATED deferred-length allocatable for it, and a fixed-length dummy")
+    a("  ! compiles and faults at the first call. A no-metrics stub included: a deterministic")
+    a("  ! gate refuses any non-allocatable form.")
     # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
     # is unrecoverable: the lint gate imposes its rule set with `--ignore-allow-comments`
     # (`tools/backends/linter/fortitude/lint.py`), so a directive here would be reported as
@@ -950,6 +985,247 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
                     f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "
                     "variable) is too long for the lint column limit; shorten it")
     return "\n".join(lines) + "\n"
+
+
+# --- checks ABI: the dummy declaration the compiler cannot check ----------------
+
+_DECL_TYPE_RE = re.compile(
+    r"^(?:integer|real|logical|complex|character|double\s*precision|type\s*\(|class\s*\()")
+# A statement label may precede any statement (`10 subroutine f(x)`, `20 end`); the walk
+# strips one before matching, so a labelled definition is neither skipped nor read as an
+# executable statement.
+_LABEL_RE = re.compile(r"^\d+\s+")
+_UNIT_HEADER_RE = re.compile(r"^module\s+([a-z]\w*)$")
+# An `interface` block opener. `interface` is not a reserved word: `interface = 1` and
+# `interface(1) = 1` are assignments (round-2 review: read as an opener with no closer, they
+# hid every later definition), so a following `=` or `(` is excluded.
+_INTERFACE_OPEN_RE = re.compile(r"^(?:abstract\s+)?interface\b(?!\s*[=(])")
+# A procedure definition header over a string-masked statement (the type-spec prefix of a
+# function is greedy, exactly as the neutral ABI scan matches it).
+_PROC_HEADER_RE = re.compile(
+    r"^(?:(?:module|pure|impure|elemental|recursive|non_recursive)\s+)*"
+    r"(?:(?:integer|real|double\s+precision|complex|logical|character|type|class)\b[^!]*\s+)?"
+    r"(subroutine|function)\s+([a-z]\w*)\s*(?:\((.*?)\))?")
+
+
+def _statements(text: str) -> list[str]:
+    """Free-form source as one statement per entry: comments stripped, continuations joined,
+    `;`-joined statements split, each stripped and lower-cased (Fortran is case-insensitive)."""
+    return [_LABEL_RE.sub("", stmt.strip().lower())
+            for line in fortran_lines.fortran_logical_line_texts(text)
+            for stmt in fortran_lines.split_fortran_statements(line)
+            if stmt.strip()]
+
+
+def _split_declaration(stmt: str) -> tuple[str, str] | None:
+    """A type declaration statement as `(attribute_list, entity_list)`, or None when `stmt` is
+    not one. With `::` the split is at the first `::` outside parentheses and literals; without
+    it the language allows no attributes, so the entity list is what follows the type-spec
+    (the keyword, then a `*len` / `(...)` selector with balanced parentheses)."""
+    if not _DECL_TYPE_RE.match(stmt):
+        return None
+    depth = 0
+    quote = ""
+    for i, c in enumerate(stmt):
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == ":" and depth == 0 and stmt.startswith("::", i):
+            return stmt[:i], stmt[i + 2:]
+    m = re.match(r"^(?:double\s*precision|integer|real|logical|complex|character|type|class)",
+                 stmt)
+    i = m.end()
+    n = len(stmt)
+    while i < n:
+        c = stmt[i]
+        if c in " \t":
+            i += 1
+        elif c == "*":
+            i += 1
+            while i < n and (stmt[i] in " \t" or stmt[i].isdigit()):
+                i += 1
+        elif c == "(":
+            depth = 0
+            while i < n:
+                if stmt[i] == "(":
+                    depth += 1
+                elif stmt[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+        else:
+            break
+    return "", stmt[i:]
+
+
+def _entity_names(entity_list: str) -> set[str]:
+    """The names an entity list declares: the leading identifier of each top-level
+    comma-separated item (`x`, `x(:)`, `x*8`, `x = 0`)."""
+    names: set[str] = set()
+    for item in fortran_lines.split_top_level_commas(entity_list):
+        m = re.match(r"^\s*([a-z]\w*)", item)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _declared_allocatable(spec_part: list[str], name: str) -> bool | None:
+    """Whether `name` carries the `allocatable` attribute over the statements of one
+    specification part — in its type declaration's attribute list or in a separate
+    `allocatable [::] <names>` attribute statement; None when no type declaration statement
+    declares `name` at all."""
+    declared = False
+    allocatable = False
+    for stmt in spec_part:
+        am = re.match(r"^allocatable\b\s*(?:::)?(.*)$", stmt)
+        if am:
+            if name in _entity_names(am.group(1)):
+                allocatable = True
+            continue
+        split = _split_declaration(stmt)
+        if split is None or name not in _entity_names(split[1]):
+            continue
+        declared = True
+        if any(a.strip() == "allocatable"
+               for a in fortran_lines.split_top_level_commas(split[0])):
+            allocatable = True
+    return allocatable if declared else None
+
+
+def _specification_part(stmts: list[str]) -> list[str]:
+    """The statements of one procedure's specification part that can declare a dummy: from
+    the statement after its header up to its own `end`, its `contains`, or a nested procedure
+    header — with the bodies of a derived-type definition, an `interface` block and a
+    `block` construct skipped, since a component, a prototype's dummy or a block-local
+    variable named like the dummy is not the dummy's declaration (round-1 and round-2 reviews
+    built both directions: a `type` component or a `block` local declared allocatable vouching
+    for a fixed-length dummy, and a `type` block whose `end type` cut the reading short of the
+    real declaration). An `enum` block needs no skip: an enumerator
+    cannot share the dummy's name, and only an `end` that names a procedure kind (or a bare
+    one) ends the reading, so `end enum` is passed over."""
+    out: list[str] = []
+    skip_until: str | None = None
+    for s in stmts:
+        if skip_until is not None:
+            if re.match(skip_until, s):
+                skip_until = None
+            continue
+        if re.match(r"^type\b", s) and not re.match(r"^type\s*\(", s) \
+                and not re.match(r"^type\s+is\b", s):
+            skip_until = r"^end\s*type\b"
+            continue
+        if _INTERFACE_OPEN_RE.match(s):
+            skip_until = r"^end\s*interface\b"
+            continue
+        if re.match(r"^(?:[a-z]\w*\s*:\s*)?block\s*$", s):
+            skip_until = r"^end\s*block\b"
+            continue
+        if (re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end"
+                or s == "contains"
+                or _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s))):
+            break
+        out.append(s)
+    return out
+
+
+def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
+    """The one dummy-declaration constraint on `<spec_id>_checks` the compiler cannot state, or
+    None: a `metric_compute` DEFINED at module level inside `module <spec_id>_checks` must
+    declare `METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY` (found by POSITION in its dummy list, so a
+    renamed dummy is still the one the runner's unallocated actual reaches) with the
+    `allocatable` attribute — see `METRIC_COMPUTE_DUMMIES` for why that attribute alone.
+
+    Positive evidence only, like `checks_module_abi_facts`: a module that publishes the name
+    without defining it here is not judged, and a definition inside an `interface` block, an
+    internal procedure, or another module is not the runner's callee. For THIS check that
+    is a designed limit rather than a hand-off: the syntax gate resolves the `use` but not
+    the attribute, so a `metric_compute` reached by use association, a generic interface, a
+    procedure pointer or a separate module procedure (`module subroutine` prototype plus
+    `submodule`) is accepted unjudged. None occurred in the 66 checks modules under the
+    operator's gitignored `workspace/` at review time (rounds 1-2, `os.walk`), and every
+    certified module defines it inline. The required set is the FULL fixed ABI, so this runs whether or not
+    the node's runner imports `metric_compute` (a node with no metrics stubs it and the runner
+    never calls it — the declaration is still the pinned one, and the check is uniform rather
+    than conditioned on the IR).
+
+    Read over statements (`fortran_lines`), never lines, with the same tolerance for spelling as
+    the ABI scan: a declaration with `::` or without, the attribute inline or in a separate
+    `allocatable ::` statement, `end subroutine` / `endsubroutine` / bare `end`. The
+    specification part is read up to the first `contains` or the procedure's own end. A
+    `metric_compute` with fewer dummies than the position is a violation here (fail-closed);
+    the syntax gate would refuse the call too. The two fail-open shapes a walk like this can
+    take are both closed on the safe side: a bare `end` is never read as closing the target
+    module (a later `metric_compute` would otherwise be skipped), and a body whose end is not
+    found is judged over what was read."""
+    target = f"{spec_id}_checks".lower()
+    position = METRIC_COMPUTE_DUMMIES.index(METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY)
+    stmts = _statements(text)
+    in_target = False
+    in_interface = False
+    proc_depth = 0
+    for i, s in enumerate(stmts):
+        um = _UNIT_HEADER_RE.match(s)
+        if um:
+            in_target = um.group(1) == target
+            proc_depth, in_interface = 0, False
+            continue
+        if re.match(r"^end\s*module\b", s):
+            in_target = False
+            proc_depth, in_interface = 0, False
+            continue
+        if not in_interface and _INTERFACE_OPEN_RE.match(s):
+            in_interface = True
+            continue
+        if in_interface:
+            if re.match(r"^end\s*interface\b", s):
+                in_interface = False
+            continue
+        if re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end":
+            proc_depth = max(proc_depth - 1, 0)
+            continue
+        hm = _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s))
+        if hm is None:
+            continue
+        proc_depth += 1
+        if not (in_target and proc_depth == 1
+                and hm.group(1) == "subroutine" and hm.group(2) == "metric_compute"):
+            continue
+        # The header is matched on the masked text; the dummy list is read from the original.
+        dummies = [d.strip() for d in fortran_lines.split_top_level_commas(
+            s[hm.start(3):hm.end(3)] if hm.group(3) is not None else "") if d.strip()]
+        pinned = ", ".join(METRIC_COMPUTE_DUMMIES)
+        if len(dummies) <= position:
+            return (f"metric_compute declares {len(dummies)} dummy argument(s) where the "
+                    f"runner's call passes {len(METRIC_COMPUTE_DUMMIES)}: declare it as "
+                    f"metric_compute({pinned})")
+        name = dummies[position]
+        verdict = _declared_allocatable(_specification_part(stmts[i + 1:]), name)
+        if verdict is None:
+            return (f"metric_compute's dummy argument {name!r} (position {position + 1}, the "
+                    f"one the host-rendered runner passes its unallocated deferred-length "
+                    f"actual for) has no type declaration statement in metric_compute; declare "
+                    f"it as the ABI comment in the rendered runner states: "
+                    f"`character(len=:), allocatable, intent(out) :: {name}`")
+        if not verdict:
+            return (f"metric_compute's dummy argument {name!r} (position {position + 1}) is "
+                    f"declared without the `allocatable` attribute. The host-rendered runner "
+                    f"passes an UNALLOCATED `character(len=:), allocatable` actual for it, "
+                    f"which a fixed-length dummy accepts at compile time (no diagnostic from "
+                    f"the syntax check or the build) and faults on at the first call (the "
+                    f"assignment writes through a null descriptor). Declare it as the ABI "
+                    f"comment in the rendered runner states: "
+                    f"`character(len=:), allocatable, intent(out) :: {name}` — an assignment "
+                    f"`{name} = '<short reason>'` then allocates it")
+        return None
+    return None
 
 
 def _xfail_expr(case_ids: list[str], xfail: set[str]) -> str:
