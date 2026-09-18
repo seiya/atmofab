@@ -671,6 +671,9 @@ def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
 #: What Python and numpy raise on admitted operands: a Python-float division by zero, an
 #: integer literal too large for a float, a numpy operation refused on its operands. Each
 #: becomes a PrimaryEvidenceError so the record names the predicate, not the interpreter.
+#: `RecursionError` is defence in depth and NOT pinned: `parse_expr` refuses an expression
+#: nested deeply enough to recurse here before it can be evaluated (measured: a 5000-term
+#: chain), so no test reaches this member.
 _ARITHMETIC_ERRORS = (ZeroDivisionError, OverflowError, ValueError, FloatingPointError,
                       TypeError, MemoryError, RecursionError)
 
