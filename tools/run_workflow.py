@@ -4649,10 +4649,15 @@ def _run_closure_members_parallel(
                 if dep_resume:
                     rejection = _closure_member_resume_rejection(repo_root, dep_orch_id, llm_config)
                     if rejection is not None:
-                        _emit({**rejection, "failed_dependency_node": _label(node),
-                               "spec_ref": ref, "dependency_runs": dependency_runs,
-                               "target_spec_ref": target_spec_ref})
-                        first_failure = {"rc": 2, "node": node, "orchestration_id": dep_orch_id}
+                        # The refusal is the closure's terminal envelope, emitted once the
+                        # running members are drained (below) so it carries every record.
+                        _emit({"status": "info", "event": "closure_member_failed",
+                               "node": _label(node), "spec_ref": ref,
+                               "orchestration_id": dep_orch_id, "exit_code": None,
+                               "detail": f"{rejection.get('reason')}: not launched; no further "
+                                         f"member is launched, running ones are waited for"})
+                        first_failure = {"rc": 2, "node": node, "orchestration_id": dep_orch_id,
+                                         "envelope": rejection}
                         del pending[ref]
                         break
                     if dep_orch_id == preclaimed_orchestration_id and release_preclaim is not None:
@@ -4756,7 +4761,11 @@ def _run_closure_members_parallel(
             done.add(ref)
     if first_failure is not None:
         node = first_failure["node"]
-        if "not_ready" in first_failure:
+        if "envelope" in first_failure:
+            _emit({**first_failure["envelope"], "failed_dependency_node": _label(node),
+                   "spec_ref": node["spec_ref"], "dependency_runs": dependency_runs,
+                   "target_spec_ref": target_spec_ref})
+        elif "not_ready" in first_failure:
             after = first_failure["not_ready"]
             _emit({
                 "status": "fail",

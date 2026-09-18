@@ -6580,6 +6580,47 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertEqual(argv[argv.index("--orchestration-id") + 1], "orch_c")
             self.assertEqual(rc, 7)
 
+    def test_a_resumed_member_pinned_to_another_config_is_refused_before_any_child_launches(self) -> None:
+        """Round-1 finding: the scheduler's resume twin-gate (`_closure_member_resume_rejection`)
+        had no witness — a mutant ignoring its result stayed green. The sequential loop's
+        pin (`test_closure_member_resume_is_refused_when_its_config_changed`) refuses a member
+        whose recorded leaf-LLM pin is not the closure's; the parallel scheduler must refuse
+        the same member, launch no child for it, and stop the closure with the rejection —
+        because the CHILD's own gate compares the member's recorded pin against itself and
+        would let it run on the old configuration beside a target on the new one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            path, cfg = DependencyClosureTests._closure_config(self, repo_root)
+            DependencyClosureTests._pin_member(self, repo_root, "orch_c_prev", "spec/component/c",
+                                               "closure.yaml", cfg.sha256)
+            path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
+                            encoding="utf-8")
+            with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=lc.load_llm_config(path),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=True,
+                        prior_orch_by_spec={"spec/component/c": "orch_c_prev"},
+                        preclaimed_orchestration_id=None, release_preclaim=None,
+                        dependency_runs=[])
+            self.assertEqual(rc, 2)
+            launch.assert_not_called()
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+            self.assertEqual(events[-1]["reason"], "llm_config_changed_since_launch")
+            self.assertEqual(events[-1]["failed_dependency_node"], "infrastructure/c@0.1.0")
+
     def test_jobs_one_keeps_the_in_process_sequential_loop(self) -> None:
         """`--jobs 1` (the default) never launches a child: the members run through
         `_run_node` in this process, as before."""
