@@ -71,7 +71,9 @@ subroutine case_run(case_id, steps, cells_updated, ok)
 end subroutine case_run
 
 ! The scalar time value of this case at the capture point (real(dp), 0.0 for an
-! untimed component). Called right before each of the two captures.
+! untimed component). Called right AFTER each of the two captures, for the time the
+! snapshot is written with — so no generated procedure runs between case_setup /
+! case_run returning and the state being serialized.
 subroutine get_time(t)
   real(dp), intent(out) :: t
 end subroutine get_time
@@ -190,10 +192,13 @@ every path, the rejected-input path included.
   real values; a metrics_basis zero-filled across the whole run fails `post_execute`
   (`trivial placeholder detected`). The exact rejection condition is canonical in
   `RUNNER_OUTPUT_CONTRACT.md` §3.
-- **A callback cannot reach the snapshot through the state.** Both captures of a case
-  precede its first `get_time` / `checks_compute` / `metric_compute` call, and the runner
+- **A callback cannot reach the snapshot through the state.** Each capture of a case is
+  taken straight after `case_setup` / `case_run` returns, before the `get_time` that
+  follows it and before every `checks_compute` / `metric_compute` call, and the runner
   keeps the serialized copy — whatever a callback writes into a bound variable afterwards
-  is invisible to the snapshot and to the metrics basis. Callbacks compute from the state;
+  is invisible to that capture and to the metrics basis (a write from the initial
+  capture's `get_time` reaches the final capture exactly as a write in `case_run` would:
+  it is the state). Callbacks compute from the state;
   they do not stage it. (A callback that rewrote the snapshot FILE would be the §4 file-I/O
   prohibition broken; the record of what the gate does and does not see is
   `docs/design/zero_base_architecture.md`, the Z6 item.)

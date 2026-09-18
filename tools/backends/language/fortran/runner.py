@@ -480,16 +480,11 @@ def _flit(value: str) -> str:
 
 
 def _ranks_used(ir: dict[str, Any]) -> set[int]:
-    """The snapshot-variable ranks (0..4) that actually appear across the cases —
-    so both the renderer and the signature pin agree on which emitters the glue
-    depends on."""
+    """The snapshot-variable ranks (0..4) the schema declares — every variable is captured
+    for every case — so both the renderer and the signature pin agree on which emitters the
+    glue depends on."""
     schema_vars, _ = _snapshot_schema(ir)
-    per_case = _per_case_vars(ir, schema_vars)
-    ranks: set[int] = set()
-    for vs in per_case.values():
-        for v in vs:
-            ranks.add(_rank_of_shape(schema_vars[v], v))
-    return ranks
+    return {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
 
 
 def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
@@ -618,12 +613,11 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     target_class = _target_class(ir)
     threads = _threads(ir)
 
-    # ranks actually used across every case that emits, so we import/declare only
-    # the emitters and buffers we need (unused `use only`/vars would trip lint).
-    ranks_used: set[int] = set()
-    for cid in case_ids:
-        for v in per_case.get(cid, []):
-            ranks_used.add(_rank_of_shape(schema_vars[v], v))
+    # ranks the schema declares, so we import only the emitters we call (an unused `use only`
+    # name would trip lint). Every snapshot variable is captured for EVERY case (Z6): the
+    # snapshot is the full declared state, not the subset a case's tests happen to require —
+    # `per_case` above validates `required_raw_variables` ⊆ schema and nothing else here.
+    ranks_used = {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
     has_scalar = 0 in ranks_used
     array_ranks = sorted(r for r in ranks_used if r >= 1)
 
@@ -644,12 +638,11 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     checks_syms = ["case_setup", "case_run", "get_time", "checks_compute"]
     if metrics:  # metric_compute is only called when the node declares metrics
         checks_syms.append("metric_compute")
-    # The bound state: one `sb_<var> => <var>` rename per snapshot variable some case emits
-    # (schema declaration order). An unused import would trip lint, so a variable no case
-    # requires is not imported — the bundle gate still requires its binding, because the set
-    # of bindings is the IR's snapshot schema, not this runner's read set.
-    bound_vars = [v for v in schema_vars
-                  if any(v in per_case.get(cid, []) for cid in case_ids)]
+    # The bound state: one `sb_<var> => <var>` rename per snapshot variable (schema declaration
+    # order) — the same set the bundle gate requires bound, so a declared state the runner
+    # never read cannot exist (a round-2 reviewer measured that gap when the read set was the
+    # per-case union of `required_raw_variables`).
+    bound_vars = list(schema_vars)
     for v in bound_vars:
         one_line = f"    {STATE_BINDING_PREFIX}{v} => {v}, &"
         if len(one_line) < MAX_RENDERED_LINE:
@@ -868,34 +861,28 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     a("")
     a("contains")
     a("")
-    a("  ! This case's required snapshot variables, read from the checks module's bound")
-    a("  ! storage (host-associated `sb_<var>`) and serialized by the harness emitters.")
+    a("  ! Every declared snapshot variable, read from the checks module's bound storage")
+    a("  ! (host-associated `sb_<var>`) and serialized by the harness emitters. The same")
+    a("  ! set for every case: the snapshot is the full declared state.")
     a("  subroutine capture_state(cid, out)")
     a("    character(len=*), intent(in) :: cid")
     a(f"    type({H('h_named')}), allocatable, intent(out) :: out(:)")
-    a("    select case (cid)")
-    for cid in case_ids:
-        vs = per_case.get(cid, [])
-        a(f"    case ('{_flit(cid)}')")
-        a(f"      allocate(out({len(vs)}))")
-        for k, v in enumerate(vs, start=1):
-            rank = _rank_of_shape(schema_vars[v], v)
-            vlit = _flit(v)
-            sb = f"{STATE_BINDING_PREFIX}{v}"
-            if rank == 0:
-                a(f"      out({k}) = {H('box')}('{vlit}', &")
-                a(f"        {H('emit_real')}({sb}))")
-            else:
-                # An unallocated bound array is a binding the module never established for
-                # this case (its `case_setup` did not allocate it): fail the run loudly rather
-                # than pass an unallocated actual to the emitter (undefined behaviour).
-                a(f"      call require_bound(allocated({sb}), &")
-                a(f"        '{vlit}', cid)")
-                a(f"      out({k}) = {H('box')}('{vlit}', &")
-                a(f"        {H(f'emit_array_r{rank}')}({sb}))")
-    a("    case default")
-    a("      allocate(out(0))")
-    a("    end select")
+    a(f"    allocate(out({len(bound_vars)}))")
+    for k, v in enumerate(bound_vars, start=1):
+        rank = _rank_of_shape(schema_vars[v], v)
+        vlit = _flit(v)
+        sb = f"{STATE_BINDING_PREFIX}{v}"
+        if rank == 0:
+            a(f"    out({k}) = {H('box')}('{vlit}', &")
+            a(f"      {H('emit_real')}({sb}))")
+        else:
+            # An unallocated bound array is a binding the module never established for this
+            # case (its `case_setup` did not allocate it): fail the run loudly rather than
+            # pass an unallocated actual to the emitter (undefined behaviour).
+            a(f"    call require_bound(allocated({sb}), &")
+            a(f"      '{vlit}', cid)")
+            a(f"    out({k}) = {H('box')}('{vlit}', &")
+            a(f"      {H(f'emit_array_r{rank}')}({sb}))")
     a("  end subroutine capture_state")
     a("")
     a("  ! Stop the run when a bound array is not allocated at a capture point.")

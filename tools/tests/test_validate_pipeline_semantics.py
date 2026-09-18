@@ -9712,11 +9712,12 @@ end program shallow_water2d_runner
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
-            "a per-case runtime value is a state_snapshots variable with the value's shape_expr "
-            "(scalar for an enumerated input), valued numerically (a snapshot variable is a real(dp) "
-            "module variable the runner serializes, so an enumerated or string input is recorded as "
-            "a numeric code whose meaning the IR states in that entry's description), and "
-            "metrics_basis.json rows are valued from those same variables",
+            "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
+            "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+            "serializes); a case INPUT — an enumerated selector included — is not an evidence "
+            "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
+            "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
+            "variables",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
@@ -9736,10 +9737,11 @@ end program shallow_water2d_runner
 
     def test_numeric_coded_scalar_snapshot_variable_passes_post_execute(self) -> None:
         """The premise behind retiring `execution_trace.json` (issue #235): an enumerated
-        runtime input needs no evidence form of its own — it is a numeric-coded `scalar`
-        snapshot variable, which is the form the producer emits (a snapshot variable is a
-        `real(dp)` module variable — `CHECKS_MODULE_CONTRACT.md` §1-b — so it is a number;
-        PR #236 round 1 corrected the remedy
+        runtime input needs no evidence form of its own. Since Z6 (issue #255) the remedy routes
+        a case INPUT to `case.test_case_set[].inputs` and not into the snapshot at all; what this
+        row still pins is the validator half — a numeric-coded `scalar` snapshot variable (the
+        only form the producer can emit: a `real(dp)` module variable, `CHECKS_MODULE_CONTRACT.md`
+        §1-b) is accepted and a one-element list is refused (PR #236 round 1 corrected the remedy
         from "a string is scalar", which the validator accepts and no runner produces).
         Driven through `_validate_raw_evidence` via the full validator over the default
         fixture with one numeric-coded variable added to the IR schema, the on-disk

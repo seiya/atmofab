@@ -613,15 +613,21 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("    sb_field_ghost => field_ghost, &", self.txt)
         self.assertIn("    sb_max_abs_deviation => max_abs_deviation, &", self.txt)
         self.assertIn(
-            "      out(1) = harness_fortran_cpu__box('field_ghost', &\n"
-            "        harness_fortran_cpu__emit_array_r2(sb_field_ghost))", self.txt)
+            "    out(1) = harness_fortran_cpu__box('field_ghost', &\n"
+            "      harness_fortran_cpu__emit_array_r2(sb_field_ghost))", self.txt)
         self.assertIn(
             "harness_fortran_cpu__box('max_abs_deviation', &\n"
-            "        harness_fortran_cpu__emit_real(sb_max_abs_deviation))", self.txt)
+            "      harness_fortran_cpu__emit_real(sb_max_abs_deviation))", self.txt)
         # an unallocated bound array stops the run (never an unallocated actual to the emitter)
-        self.assertIn("      call require_bound(allocated(sb_field_ghost), &\n"
-                      "        'field_ghost', cid)", self.txt)
+        self.assertIn("    call require_bound(allocated(sb_field_ghost), &\n"
+                      "      'field_ghost', cid)", self.txt)
         self.assertNotIn("require_bound(allocated(sb_max_abs_deviation)", self.txt)  # scalar
+        # EVERY declared variable is captured for EVERY case — the snapshot is the full state,
+        # not the per-case union of `required_raw_variables` (the xfail case requires only
+        # `guard_fired`, and still gets all four): one capture body, no per-case select.
+        self.assertIn("    allocate(out(4))", self.txt)
+        self.assertNotIn("select case (cid)", self.txt)
+        self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
 
     def test_capture_points_bracket_case_run_and_precede_every_callback(self) -> None:
         # Z6 capture contract: initial capture right after case_setup, final capture right
@@ -884,7 +890,9 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir["case"]["test_case_set"][0]["case_id"] = exact
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [exact]
         txt = render_runner(ir, BOUNDARY_SID, HARNESS)
-        self.assertIn(f"case ('{exact}')", txt)
+        # the id reaches the metrics-basis lookup literal (no per-case `select case` exists
+        # since every case captures the full state)
+        self.assertIn(f"    '{exact}')", txt)
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
 
     def test_duplicate_case_id_fails_closed(self) -> None:
@@ -936,7 +944,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [ok]
-        self.assertIn(f"case ('{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))
+        self.assertIn(f"    '{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))
 
     def test_non_ascii_in_name_fails_closed(self) -> None:
         # Fortran's default character kind counts BYTES; `CASE_ID_LEN` and the 100-column
@@ -1261,7 +1269,7 @@ class LineWidthTest(unittest.TestCase):
         # it on fortitude 0.8.0). The backstop is `>=` now, so no rendered line reaches 100.
         ir = copy.deepcopy(_boundary_ir())
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        name = "m" * (100 - len("      out(3) = harness_fortran_cpu__box('', &"))
+        name = "m" * (100 - len("    out(3) = harness_fortran_cpu__box('', &"))
         for v in schema["variables"]:
             if v["name"] == "max_abs_deviation":
                 v["name"] = name

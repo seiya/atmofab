@@ -20811,8 +20811,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the publication rule, the allocate-on-every-path rule) the `m3c` reviewer judges the
         # checks module against; §2 gains the "a callback cannot reach the snapshot" bullet.
         # Measured 17441; 17673 after round 1 scoped the §2 bullet to the state (the file is
-        # the §4 prohibition's, with the record pointer). Ceiling 17800.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 17800,
+        # the §4 prohibition's, with the record pointer); 18043 after round 2 stated where
+        # `get_time` sits relative to each capture. Ceiling 18200.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 18200,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
