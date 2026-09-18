@@ -9807,6 +9807,76 @@ end program shallow_water2d_runner
             control,
         )
 
+    def test_initial_captures_are_shape_checked_and_not_counted_as_samples(self) -> None:
+        """Z6 (issue #255): `raw/state_snapshots/initial/<case_id>.json` is walked by the same
+        recursive scan as the final snapshot — a wrong shape or a missing required variable
+        there is refused (the witness the rglob had none of) — and it is NOT a `min_samples`
+        sample: with one case and `min_samples: 2`, an `initial/` file does not make up the
+        count (it did before this row, halving the floor on every host-rendered node)."""
+        def _violations(initial: object, min_samples: int) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text="""module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+""",
+                    runner_text="""program shallow_water2d_runner
+implicit none
+write(*,*) 'diagnostics only'
+end program shallow_water2d_runner
+""",
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                )
+                workspace = repo_root / "workspace"
+                ir_path = (
+                    workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                    / "shallow-water2d_20260415_001" / "spec.ir.yaml"
+                )
+                ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+                entry = next(
+                    e for e in ir_doc["io_contract"]["raw_requirements"]["required_evidence"]
+                    if e["artifact"] == "state_snapshots"
+                )
+                entry["min_samples"] = min_samples
+                _write_json(ir_path, ir_doc)
+                snapshots_dir = (
+                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0"
+                    / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                    / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots"
+                )
+                schema_path = snapshots_dir / "snapshot_schema.json"
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                schema["min_samples"] = min_samples
+                _write_json(schema_path, schema)
+                if initial is not None:
+                    case_path = snapshots_dir / "snapshot000.json"
+                    doc = json.loads(case_path.read_text(encoding="utf-8"))
+                    doc.update(initial)
+                    _write_json(snapshots_dir / "initial" / "snapshot000.json", doc)
+                return validate(repo_root=repo_root, workspace_root="workspace")
+
+        finals_only = _violations(None, 1)
+        self.assertEqual([], finals_only)
+        # a faithful initial capture is accepted...
+        self.assertEqual([], _violations({}, 1))
+        # ...a wrong-rank one is refused, on the initial file's own path
+        bad_shape = _violations({"h": [1.0]}, 1)
+        self.assertTrue(any("initial" in v and "does not match declared shape_expr" in v
+                            for v in bad_shape), bad_shape)
+        # ...and it is not a sample: the floor of 2 is not met by 1 final + 1 initial
+        short = _violations({}, 2)
+        self.assertTrue(any("snapshot data files must be >= 2" in v for v in short), short)
+
     def test_detects_snapshot_output_shape_mismatch_inside_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

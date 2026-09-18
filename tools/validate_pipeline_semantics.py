@@ -4519,7 +4519,12 @@ def _validate_raw_evidence(
                             f"{schema_path}: time_shape_expr must match io_contract ({expected_time_shape_expr})"
                         )
 
-                if len(snapshot_data_files) < required_snapshot_min_samples:
+                # `min_samples` counts distinct CASE snapshots: the files at the top level, as
+                # `_author_snapshot_schema`'s `samples` does. A host-rendered runner's
+                # `initial/<case_id>.json` (Z6, issue #255) is a second capture of the same
+                # case — shape-checked above through the recursive walk, and not a sample.
+                case_samples = [p for p in snapshot_data_files if p.parent == snapshots_dir]
+                if len(case_samples) < required_snapshot_min_samples:
                     violations.append(
                         f"{snapshots_dir}: snapshot data files must be >= {required_snapshot_min_samples}"
                     )
