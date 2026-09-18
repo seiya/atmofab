@@ -217,6 +217,22 @@ Revert by (a) running in a separate worktree (the script's default) or (b) takin
 <scratchpad>/<file>.bak` first. Committing right before a handwritten mutation also works, but a
 backup is faster than verifying "I should have committed" every time.
 
+## `git stash` on a clean tree pops someone else's stash (PR #257, 2026-09-18)
+
+The ruff comparison against `origin/main` was written as `git stash -q; ruff check <files>;
+git stash pop -q`. The tree was clean at that moment (every branch edit committed), so the
+first command stashed nothing and exited 0, and the `pop` took the stash the repository already
+carried — a WIP entry from an unrelated branch, months old — and merged it into the working
+tree: one file left in conflict state (`UU`), the entry kept because the pop did not complete.
+Nothing was lost only because nothing was uncommitted; `git restore --staged` + `git restore`
+on the one file put the tree back, and the foreign stash is still there for whoever owns it.
+
+Two things the checkout episode above does not say: a stash is a REVERT that you did not name
+a file for, so it fails the same way on uncommitted work; and its no-op on a clean tree is
+silent, which turns the undo into an unrelated operation. The comparison it was made for
+needs no stash at all — `git show origin/main:<path> | ruff check --stdin-filename <path> -`
+answers it per file, and a detached worktree answers it for a whole tree.
+
 ## A mutation that did not apply is indistinguishable from green (PR #76)
 
 A substitution script's `assert old in t` failed, the test ran **unmutated**, and `1 passed` came
