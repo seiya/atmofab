@@ -1609,7 +1609,8 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     not check dummy-argument agreement in general; `Generate.gate` syntax check stages the runner with the source and
     owns call resolution. The ONE dummy-argument fact that call resolution cannot see — the
     attribute the runner's actual for `metric_compute`'s reason argument requires of the dummy,
-    which the compiler accepts either way and the program faults on at run time — is asked of
+    which the compiler accepts either way and the program then faults on (a fixed-length
+    dummy) or silently records an empty reason for (an assumed-length one) — is asked of
     the language backend that renders that call (`host_render.checks_abi_dummy_violation`,
     issue #261), after the procedure clause and before the bound-state clause below.
 

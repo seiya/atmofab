@@ -1921,10 +1921,74 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
         r = self._v("")
         self.assertIsNotNone(r)
         self.assertIn("has no type declaration statement", r)
-        r = self._v("", **{"(case_id, name, val, is_na, reason_na, found)": "(a, b)"})
-        self.assertIsNotNone(r)
-        self.assertIn("declares 2 dummy argument(s)", r)
-        self.assertIn("metric_compute(case_id, name, val, is_na, reason_na, found)", r)
+        for dummies, n in (("(a, b)", 2), ("(a, b, c, d)", 4)):  # 4 is the boundary (`<=`)
+            r = self._v("", **{"(case_id, name, val, is_na, reason_na, found)": dummies})
+            self.assertIsNotNone(r)
+            self.assertIn(f"declares {n} dummy argument(s)", r)
+            self.assertIn("metric_compute(case_id, name, val, is_na, reason_na, found)", r)
+
+    def test_the_specification_part_is_read_past_nested_blocks(self) -> None:
+        """Round-1 review, both directions. A derived type, an `interface` block or an `enum`
+        inside `metric_compute` neither ends the reading (its `end type` / `end interface` /
+        `end enum` is not the procedure's end — the pinned declaration AFTER it was reported
+        missing) nor supplies the declaration (a component / prototype dummy / enumerator named
+        like the dummy is not the dummy)."""
+        pinned = "character(len=:), allocatable, intent(out) :: reason_na"
+        bad = "character(len=64), intent(out) :: reason_na"
+        blocks = (
+            "type :: t\n      character(len=:), allocatable :: reason_na\n    end type t",
+            ("interface\n      subroutine f(reason_na)\n"
+             "        character(len=:), allocatable :: reason_na\n      end subroutine f\n"
+             "    end interface"),
+            # (an enumerator cannot share the dummy's name; the row pins the skip only)
+            "enum, bind(c)\n      enumerator :: reason_code = 1\n    end enum",
+        )
+        for block in blocks:
+            with self.subTest(block=block.split("\n")[0]):
+                # block BEFORE the real declaration: not an over-refusal
+                self.assertIsNone(self._v(block + "\n    " + pinned))
+                # block AFTER: same
+                self.assertIsNone(self._v(pinned + "\n    " + block))
+                # the block's own declaration does not vouch for a fixed-length dummy
+                r = self._v(block + "\n    " + bad)
+                self.assertIsNotNone(r)
+                self.assertIn("without the `allocatable` attribute", r)
+
+    def test_header_and_end_spellings_the_walk_must_read(self) -> None:
+        """Survivors of a round-1 mechanism sweep, one row each: a prefixed header, a bare
+        `end` closing the previous procedure, `endsubroutine` as one word, a module-level
+        `abstract interface` block before `contains`, a statement label on the target's own
+        header, and two attribute look-alikes (`allocatable :: other`, an identifier
+        containing `allocatable` inside the len spec)."""
+        v = checks_abi_dummy_violation
+        bad = "character(len=64), intent(out) :: reason_na"
+        module = self._MODULE.replace("{DECL}", bad)
+        rows = {
+            "pure prefix": module.replace("  subroutine metric_compute(",
+                                          "  pure subroutine metric_compute("),
+            "bare end before": module.replace(
+                "contains\n", "contains\n  subroutine get_time(t)\n"
+                "    real(8), intent(out) :: t\n    t = 0d0\n  end\n", 1),
+            "endsubroutine before": module.replace(
+                "contains\n", "contains\n  subroutine get_time(t)\n"
+                "    real(8), intent(out) :: t\n    t = 0d0\n  endsubroutine get_time\n", 1),
+            "abstract interface before contains": module.replace(
+                "contains\n", "  abstract interface\n    subroutine cb(x)\n"
+                "      real(8), intent(in) :: x\n    end subroutine cb\n"
+                "  end interface\ncontains\n", 1),
+            "labelled header": module.replace("  subroutine metric_compute(",
+                                              "10 subroutine metric_compute("),
+            "allocatable :: other": module.replace(
+                bad, "real(8), dimension(:) :: other\n    allocatable :: other\n    " + bad),
+            "allocatable inside len spec": module.replace(
+                bad, "character(len=8), parameter :: allocatable_x = 'abcdefgh'\n"
+                "    character(len=len(allocatable_x)), intent(out) :: reason_na"),
+        }
+        for label, text in rows.items():
+            with self.subTest(row=label):
+                r = v(text, "bx")
+                self.assertIsNotNone(r, label)
+                self.assertIn("without the `allocatable` attribute", r)
 
     def test_positive_evidence_only(self) -> None:
         v = checks_abi_dummy_violation

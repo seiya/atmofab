@@ -81,9 +81,13 @@ CHECKS_PUBLIC_NAMES = (
 # against that call. The runner passes `mreason` — `character(len=:), allocatable`, UNALLOCATED
 # — for `reason_na`. Fortran lets an allocatable actual associate with a non-allocatable dummy,
 # so a `character(len=64)` or `character(len=*)` dummy resolves against the explicit interface
-# with no diagnostic from `gfortran -fsyntax-only` (measured, 11.4: rc=0 for both) and faults
-# at the first call at run time (the assignment inside writes through a null descriptor; with
-# `-fcheck=all` it is "Allocatable actual argument 'mreason' is not allocated"). Only an
+# with no diagnostic from `gfortran -fsyntax-only` (measured, 11.4: rc=0 for both). At the
+# shipped build flags (`-std=f2008 -O2`, no `-fcheck`) the fixed-length form faults at the
+# first call (the assignment writes through a null descriptor: SIGSEGV) and the assumed-length
+# form does NOT fault — the unallocated actual's length is 0, so the assignment copies nothing
+# and the runner records `reason_na` as `''` (a false record rather than a crash; measured,
+# round-1 review). Under `-fcheck=all` both are "Allocatable actual argument 'mreason' is not
+# allocated". Only an
 # `allocatable` dummy is conforming, and once the dummy IS allocatable the compiler owns the
 # rest: a fixed-length allocatable dummy is refused ("must have a deferred length type
 # parameter if and only if the dummy has one"), a `pointer` one is refused too. So the one
@@ -694,8 +698,9 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     a("  ! The checks ABI is the same five subroutines for every node. metric_compute's")
     a(f"  ! `{METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY}` dummy MUST be declared")
     a("  ! `character(len=:), allocatable, intent(out)`: this program passes an UNALLOCATED")
-    a("  ! deferred-length allocatable for it, which a fixed-length or assumed-length dummy")
-    a("  ! accepts at compile time and faults on at run time. A no-metrics stub included.")
+    a("  ! deferred-length allocatable for it; a fixed-length dummy compiles and faults at the")
+    a("  ! first call, an assumed-length one compiles and records an empty reason. A")
+    a("  ! no-metrics stub included: a deterministic gate refuses any non-allocatable form.")
     # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
     # is unrecoverable: the lint gate imposes its rule set with `--ignore-allow-comments`
     # (`tools/backends/linter/fortitude/lint.py`), so a directive here would be reported as
@@ -983,6 +988,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
 
 _DECL_TYPE_RE = re.compile(
     r"^(?:integer|real|logical|complex|character|double\s*precision|type\s*\(|class\s*\()")
+# A statement label may precede any statement (`10 subroutine f(x)`, `20 end`); the walk
+# strips one before matching, so a labelled definition is neither skipped nor read as an
+# executable statement.
+_LABEL_RE = re.compile(r"^\d+\s+")
 _UNIT_HEADER_RE = re.compile(r"^module\s+([a-z]\w*)$")
 # A procedure definition header over a string-masked statement (the type-spec prefix of a
 # function is greedy, exactly as the neutral ABI scan matches it).
@@ -995,7 +1004,7 @@ _PROC_HEADER_RE = re.compile(
 def _statements(text: str) -> list[str]:
     """Free-form source as one statement per entry: comments stripped, continuations joined,
     `;`-joined statements split, each stripped and lower-cased (Fortran is case-insensitive)."""
-    return [stmt.strip().lower()
+    return [_LABEL_RE.sub("", stmt.strip().lower())
             for line in fortran_lines.fortran_logical_line_texts(text)
             for stmt in fortran_lines.split_fortran_statements(line)
             if stmt.strip()]
@@ -1084,6 +1093,38 @@ def _declared_allocatable(spec_part: list[str], name: str) -> bool | None:
     return allocatable if declared else None
 
 
+def _specification_part(stmts: list[str]) -> list[str]:
+    """The statements of one procedure's specification part that can declare a dummy: from
+    the statement after its header up to its own `end`, its `contains`, or a nested procedure
+    header — with the bodies of a derived-type definition and an `interface` block skipped,
+    since a component or a prototype's dummy named like the dummy is not the dummy's
+    declaration (a round-1 review built both directions: a `type` component declared
+    allocatable vouching for a fixed-length dummy, and a `type` block whose `end type` cut the
+    reading short of the real declaration). An `enum` block needs no skip: an enumerator
+    cannot share the dummy's name, and only an `end` that names a procedure kind (or a bare
+    one) ends the reading, so `end enum` is passed over."""
+    out: list[str] = []
+    skip_until: str | None = None
+    for s in stmts:
+        if skip_until is not None:
+            if re.match(skip_until, s):
+                skip_until = None
+            continue
+        if re.match(r"^type\b", s) and not re.match(r"^type\s*\(", s) \
+                and not re.match(r"^type\s+is\b", s):
+            skip_until = r"^end\s*type\b"
+            continue
+        if re.match(r"^(?:abstract\s+)?interface\b", s):
+            skip_until = r"^end\s*interface\b"
+            continue
+        if (re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end"
+                or s == "contains"
+                or _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s))):
+            break
+        out.append(s)
+    return out
+
+
 def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
     """The one dummy-declaration constraint on `<spec_id>_checks` the compiler cannot state, or
     None: a `metric_compute` DEFINED at module level inside `module <spec_id>_checks` must
@@ -1092,9 +1133,13 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
     `allocatable` attribute — see `METRIC_COMPUTE_DUMMIES` for why that attribute alone.
 
     Positive evidence only, like `checks_module_abi_facts`: a module that publishes the name
-    without defining it here is not judged (the syntax gate resolves that `use`), and a
-    definition inside an `interface` block, an internal procedure, or another module is not
-    the runner's callee. The required set is the FULL fixed ABI, so this runs whether or not
+    without defining it here is not judged, and a definition inside an `interface` block, an
+    internal procedure, or another module is not the runner's callee. For THIS check that
+    is a designed limit rather than a hand-off: the syntax gate resolves the `use` but not
+    the attribute, so a `metric_compute` reached by use association, a generic interface, a
+    procedure pointer or a separate module procedure (`module subroutine` prototype plus
+    `submodule`) is accepted unjudged. None occurs in the 66 checks modules of the tree
+    (round-1 review, `os.walk`), and every certified module defines it inline. The required set is the FULL fixed ABI, so this runs whether or not
     the node's runner imports `metric_compute` (a node with no metrics stubs it and the runner
     never calls it — the declaration is still the pinned one, and the check is uniform rather
     than conditioned on the IR).
@@ -1150,30 +1195,24 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
                     f"runner's call passes {len(METRIC_COMPUTE_DUMMIES)}: declare it as "
                     f"metric_compute({pinned})")
         name = dummies[position]
-        spec_part: list[str] = []
-        for s2 in stmts[i + 1:]:
-            if (re.match(r"^end\s*(?:subroutine|function|procedure)?\b", s2) or s2 == "end"
-                    or s2 == "contains"
-                    or _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s2))):
-                break
-            spec_part.append(s2)
-        verdict = _declared_allocatable(spec_part, name)
+        verdict = _declared_allocatable(_specification_part(stmts[i + 1:]), name)
         if verdict is None:
             return (f"metric_compute's dummy argument {name!r} (position {position + 1}, the "
                     f"one the host-rendered runner passes its unallocated deferred-length "
                     f"actual for) has no type declaration statement in metric_compute; declare "
-                    f"it exactly as the checks-module contract pins it: "
+                    f"it as the ABI comment in the rendered runner states: "
                     f"`character(len=:), allocatable, intent(out) :: {name}`")
         if not verdict:
             return (f"metric_compute's dummy argument {name!r} (position {position + 1}) is "
                     f"declared without the `allocatable` attribute. The host-rendered runner "
                     f"passes an UNALLOCATED `character(len=:), allocatable` actual for it, "
                     f"which a non-allocatable dummy accepts at compile time (no diagnostic from "
-                    f"the syntax check or the build) and faults on at run time (the first "
-                    f"assignment to it writes through a null descriptor). Declare it exactly as "
-                    f"the checks-module contract pins it: `character(len=:), allocatable, "
-                    f"intent(out) :: {name}` — an assignment `{name} = '<short reason>'` "
-                    f"then allocates it")
+                    f"the syntax check or the build): a fixed-length dummy then faults at the "
+                    f"first call (the assignment writes through a null descriptor) and an "
+                    f"assumed-length one silently truncates the reason to zero length. Declare "
+                    f"it as the ABI comment in the rendered runner states: "
+                    f"`character(len=:), allocatable, intent(out) :: {name}` — an assignment "
+                    f"`{name} = '<short reason>'` then allocates it")
         return None
     return None
 

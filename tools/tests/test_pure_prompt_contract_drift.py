@@ -553,10 +553,11 @@ PINNED: dict[str, str] = {
     # `reason_na` is declared exactly as the rendered runner's ABI comment states and that a
     # deterministic gate refuses any other declaration of it, on every node — the m3c producer
     # is shown no section of the checks-module contract, so the runner (a backend render,
-    # `render-3`) carries the declaration and the template only points at it (every recorded
-    # stub carried the fixed-length form; every called `metric_compute` the pinned one). The
+    # `render-3`) carries the declaration and the template only points at it (of the tree's 34
+    # no-metrics stubs 30 carried a fixed-length form and 4 the pinned one; every one of the 32
+    # called `metric_compute`s the pinned one — round-1 census, `os.walk`). The
     # contract's §5 gains the same bullet; that slice reaches the `harness` producer only.
-    "pure-47": "1bd838028a10dc08726b459448717fa6f66f4fcf54f67bac57512a983de1d843",}
+    "pure-47": "6ad0c816ec1086f3e07949237d943ce9097e8dcf7928f295fcb8be864615992c",}
 
 
 def _contract_tuple() -> dict[str, object]:

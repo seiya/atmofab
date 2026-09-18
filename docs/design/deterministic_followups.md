@@ -3200,7 +3200,7 @@ passed Generate, and each is a genuine ABI guess: the failed sw2d P arm's four a
 the defect-B/C era that authored the prefixed `<spec_id>__checks` instead of `checks_compute`. A regression test drives
 the REAL `Generate.gate` static check with a bundle this layer accepts, so the two agreeing is pinned rather than asserted.
 
-**Known gap (accepted).** The `Generate.gate` syntax check owns dummy-argument agreement: nothing before it checks that an imported
+**Known gap (accepted; narrowed by issue #261 — the bundle gate now reads the one `metric_compute` dummy fact the syntax check cannot, the fifth dummy's `allocatable` attribute, plus its dummy count).** The `Generate.gate` syntax check owns dummy-argument agreement: nothing before it checks that an imported
 callback's dummies match the runner's `call` sites. The runner is inlined so the producer can read them off.
 
 An earlier draft filed a second "gap" here — that nothing enforces the stub bodies of the ABI names a runner does not
