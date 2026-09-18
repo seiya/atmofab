@@ -5911,6 +5911,13 @@ class ParallelClosureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "--jobs applies to the driver"):
                 run_workflow._validated_closure_member(
                     argparse.Namespace(**{**full, "jobs": 2}), repo_root)
+            # `--rederive` is target-only; a member REFUSES it rather than dropping it
+            # (round-1 probe: it was accepted and silently ignored).
+            with self.assertRaisesRegex(ValueError, "never forces a phase"):
+                run_workflow._validated_closure_member(
+                    argparse.Namespace(**{**full, "rederive": "build"}), repo_root)
+            self.assertIsNotNone(run_workflow._validated_closure_member(
+                argparse.Namespace(**{**full, "rederive": ""}), repo_root))
 
     def test_main_refuses_a_bad_jobs_value_as_invalid_startup_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

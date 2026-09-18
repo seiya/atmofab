@@ -255,6 +255,12 @@ def _validated_closure_member(args: argparse.Namespace, repo_root: Path) -> dict
         raise ValueError("--closure-member runs ONE closure member; it excludes --with-deps")
     if _validated_jobs(getattr(args, "jobs", 1)) != 1:
         raise ValueError("--closure-member runs ONE node; --jobs applies to the driver")
+    if str(getattr(args, "rederive", "") or "").strip():
+        # A dependency of a closure is never forced (`--rederive` is target-only); a member
+        # that dropped the flag silently would record a run the operator asked for and did
+        # not get. Refused rather than ignored.
+        raise ValueError("--closure-member never forces a phase: run the dependency as the "
+                         "target to --rederive it")
     return {"closure_id": str(closure_id),
             "target_spec_ref": _canonicalize_spec_ref(repo_root, str(target)),
             "until_phase": _normalize_phase(str(until))}
