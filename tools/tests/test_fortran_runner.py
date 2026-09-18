@@ -22,6 +22,7 @@ from pathlib import Path
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
     CHECK_STATUS_WIDTH,
+    CHECKS_PUBLIC_NAMES,
     EXPECTED_HARNESS_SPEC_ID,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
@@ -192,8 +193,9 @@ def _rank34_metrics_ir() -> dict:
     }
 
 
-# A checks stub matching _rank34_metrics_ir: rank-3 + rank-4 + scalar getters with real
-# data, one check, two metrics — enough to compile+link+run against the harness stub.
+# A checks stub matching _rank34_metrics_ir: rank-3 + rank-4 + scalar BOUND storage with
+# real data (the module-level variables the runner reads directly, named as the IR snapshot
+# variables), one check, two metrics — enough to compile+link+run against the harness stub.
 _RANK_CHECKS_STUB = textwrap.dedent(f"""\
     module {RANK_SID}_checks
       use, intrinsic :: iso_fortran_env, only: real64
@@ -201,16 +203,18 @@ _RANK_CHECKS_STUB = textwrap.dedent(f"""\
       implicit none
       private
       integer, parameter :: dp = real64
-      real(dp) :: a3(2, 2, 2) = 0.0_dp
-      real(dp) :: a4(2, 2, 2, 2) = 0.0_dp
+      real(dp), allocatable :: a3(:, :, :)
+      real(dp), allocatable :: a4(:, :, :, :)
       real(dp) :: s = 0.0_dp
       public :: case_setup, case_run, get_time
-      public :: get_scalar, get_r1, get_r2, get_r3, get_r4
       public :: checks_compute, metric_compute
+      public :: a3, a4, s
     contains
       subroutine case_setup(case_id, ok)
         character(len=*), intent(in) :: case_id
         logical, intent(out) :: ok
+        if (.not. allocated(a3)) allocate(a3(2, 2, 2))
+        if (.not. allocated(a4)) allocate(a4(2, 2, 2, 2))
         a3 = 1.0_dp
         a4 = 2.0_dp
         s = 3.0_dp
@@ -228,47 +232,6 @@ _RANK_CHECKS_STUB = textwrap.dedent(f"""\
         real(dp), intent(out) :: t
         t = 0.0_dp
       end subroutine get_time
-      subroutine get_scalar(name, val, found)
-        character(len=*), intent(in) :: name
-        real(dp), intent(out) :: val
-        logical, intent(out) :: found
-        found = trim(name) == 's'
-        val = s
-      end subroutine get_scalar
-      subroutine get_r1(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:)
-        logical, intent(out) :: found
-        allocate(arr(1))
-        arr = 0.0_dp
-        found = .false.
-        if (len_trim(name) < 0) continue
-      end subroutine get_r1
-      subroutine get_r2(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:)
-        logical, intent(out) :: found
-        allocate(arr(1, 1))
-        arr = 0.0_dp
-        found = .false.
-        if (len_trim(name) < 0) continue
-      end subroutine get_r2
-      subroutine get_r3(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:,:)
-        logical, intent(out) :: found
-        found = trim(name) == 'a3'
-        allocate(arr(2, 2, 2))
-        arr = a3
-      end subroutine get_r3
-      subroutine get_r4(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:,:,:)
-        logical, intent(out) :: found
-        found = trim(name) == 'a4'
-        allocate(arr(2, 2, 2, 2))
-        arr = a4
-      end subroutine get_r4
       subroutine checks_compute(case_id, check_id, status)
         character(len=*), intent(in) :: case_id
         character(len=*), intent(in) :: check_id
@@ -521,6 +484,14 @@ _HARNESS_STUB = textwrap.dedent("""\
     end module harness_fortran_cpu_model
     """)
 
+# The boundary checks stub. Its snapshot variables are BOUND module-level storage (named as the
+# IR declares them, `public ::`-listed, arrays allocated by `case_setup`) that the rendered
+# runner reads directly. Two deliberate properties make it the Z6 fixture (d)
+# (`zero_base_architecture.md:253`): `checks_compute` OVERWRITES every bound variable with a
+# sentinel (-99) the moment it is first called for a case, so a runner that captured AFTER a
+# callback — or re-read storage instead of the serialized copy — would emit -99 somewhere;
+# and `case_run` changes `field_ghost` from its `case_setup` value, so the `initial/` and the
+# final snapshot of one case are distinguishable.
 _CHECKS_STUB = textwrap.dedent("""\
     module dynamics_shallow_water_boundary_2d_periodic_copy_checks
       use, intrinsic :: iso_fortran_env, only: real64
@@ -528,30 +499,32 @@ _CHECKS_STUB = textwrap.dedent("""\
       implicit none
       private
       integer, parameter :: dp = real64
-      real(dp) :: ghost(4, 4) = 0.0_dp
-      real(dp) :: interior(2, 2) = 0.0_dp
-      real(dp) :: deviation = 0.0_dp
-      real(dp) :: guard = 0.0_dp
+      real(dp), allocatable :: field_ghost(:, :)
+      real(dp), allocatable :: field_interior(:, :)
+      real(dp) :: max_abs_deviation = 0.0_dp
+      real(dp) :: guard_fired = 0.0_dp
       integer :: ncase_seen = 0
       public :: case_setup, case_run, get_time
-      public :: get_scalar, get_r1, get_r2, get_r3, get_r4
       public :: checks_compute, metric_compute
+      public :: field_ghost, field_interior, max_abs_deviation, guard_fired
     contains
       subroutine case_setup(case_id, ok)
         character(len=*), intent(in) :: case_id
         logical, intent(out) :: ok
         integer :: i, j
+        if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))
+        if (.not. allocated(field_interior)) allocate(field_interior(2, 2))
         do i = 1, 2
           do j = 1, 2
-            interior(i, j) = real(i * 10 + j, dp)
+            field_interior(i, j) = real(i * 10 + j, dp)
           end do
         end do
-        ghost = 0.0_dp
+        field_ghost = 0.0_dp
         ! A per-case ordinal, so a metrics-basis row that sourced the WRONG case's
         ! snapshot carries a detectably wrong value.
         ncase_seen = ncase_seen + 1
-        deviation = real(ncase_seen, dp)
-        guard = 0.0_dp
+        max_abs_deviation = real(ncase_seen, dp)
+        guard_fired = 0.0_dp
         ok = trim(case_id) /= 'l0_invalid_ny_xfail'
       end subroutine case_setup
       subroutine case_run(case_id, steps, cells_updated, ok)
@@ -560,9 +533,9 @@ _CHECKS_STUB = textwrap.dedent("""\
         logical, intent(out) :: ok
         steps = 1
         cells_updated = 4
-        ghost(2:3, 2:3) = interior
+        field_ghost(2:3, 2:3) = field_interior
         if (trim(case_id) == 'l0_invalid_ny_xfail') then
-          guard = 1.0_dp
+          guard_fired = 1.0_dp
           ok = .false.
         else
           ok = .true.
@@ -572,70 +545,16 @@ _CHECKS_STUB = textwrap.dedent("""\
         real(dp), intent(out) :: t
         t = 0.0_dp
       end subroutine get_time
-      subroutine get_scalar(name, val, found)
-        character(len=*), intent(in) :: name
-        real(dp), intent(out) :: val
-        logical, intent(out) :: found
-        found = .true.
-        select case (trim(name))
-        case ('max_abs_deviation')
-          val = deviation
-        case ('guard_fired')
-          val = guard
-        case default
-          val = 0.0_dp
-          found = .false.
-        end select
-      end subroutine get_scalar
-      subroutine get_r1(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:)
-        logical, intent(out) :: found
-        allocate(arr(1))
-        arr = 0.0_dp
-        found = .false.
-        if (len_trim(name) < 0) continue
-      end subroutine get_r1
-      subroutine get_r2(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:)
-        logical, intent(out) :: found
-        found = .true.
-        select case (trim(name))
-        case ('field_ghost')
-          allocate(arr(4, 4))
-          arr = ghost
-        case ('field_interior')
-          allocate(arr(2, 2))
-          arr = interior
-        case default
-          allocate(arr(1, 1))
-          arr = 0.0_dp
-          found = .false.
-        end select
-      end subroutine get_r2
-      subroutine get_r3(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:,:)
-        logical, intent(out) :: found
-        allocate(arr(1, 1, 1))
-        arr = 0.0_dp
-        found = .false.
-        if (len_trim(name) < 0) continue
-      end subroutine get_r3
-      subroutine get_r4(name, arr, found)
-        character(len=*), intent(in) :: name
-        real(dp), allocatable, intent(out) :: arr(:,:,:,:)
-        logical, intent(out) :: found
-        allocate(arr(1, 1, 1, 1))
-        arr = 0.0_dp
-        found = .false.
-        if (len_trim(name) < 0) continue
-      end subroutine get_r4
       subroutine checks_compute(case_id, check_id, status)
         character(len=*), intent(in) :: case_id
         character(len=*), intent(in) :: check_id
         character(len=4), intent(out) :: status
+        ! Fixture (d): a callback that writes to the bound storage AFTER case_run. The
+        ! captured snapshot must not see it.
+        field_ghost = -99.0_dp
+        field_interior = -99.0_dp
+        max_abs_deviation = -99.0_dp
+        guard_fired = -99.0_dp
         select case (trim(check_id))
         case ('input_guard')
           status = 'fail'
@@ -674,13 +593,88 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("harness_fortran_cpu__emit_real", self.txt)
         self.assertNotIn("emit_array_r1", self.txt)
         self.assertNotIn("emit_array_r3", self.txt)
-        self.assertNotIn("get_r1", self.txt)
 
     def test_calls_checks_abi(self) -> None:
         for name in ("case_setup", "case_run", "get_time"):
             self.assertIn(f"call {name}(", self.txt)
-        self.assertIn("call get_r2('field_ghost', r2buf, gfound)", self.txt)
-        self.assertIn("call get_scalar('max_abs_deviation', sval, gfound)", self.txt)
+
+    def test_snapshot_is_read_from_bound_storage_not_a_getter(self) -> None:
+        # Z6 fixture (b) (`zero_base_architecture.md:253`): the retired getter path must be
+        # UNREACHABLE from the rendered runner — no getter is named in the ABI, imported, or
+        # called; the snapshot values come from the checks module's bound storage, imported
+        # under the `sb_` alias and passed straight to the certified harness emitter.
+        for gone in ("get_scalar", "get_r1", "get_r2", "get_r3", "get_r4",
+                     "gfound", "r2buf", "sval"):
+            self.assertNotIn(gone, CHECKS_PUBLIC_NAMES)
+            self.assertNotIn(gone, self.txt)
+        self.assertEqual(
+            CHECKS_PUBLIC_NAMES,
+            ("case_setup", "case_run", "get_time", "checks_compute", "metric_compute"))
+        self.assertIn("    sb_field_ghost => field_ghost, &", self.txt)
+        self.assertIn("    sb_max_abs_deviation => max_abs_deviation, &", self.txt)
+        self.assertIn(
+            "    out(1) = harness_fortran_cpu__box('field_ghost', &\n"
+            "      harness_fortran_cpu__emit_array_r2(sb_field_ghost))", self.txt)
+        self.assertIn(
+            "harness_fortran_cpu__box('max_abs_deviation', &\n"
+            "      harness_fortran_cpu__emit_real(sb_max_abs_deviation))", self.txt)
+        # an unallocated bound array stops the run (never an unallocated actual to the emitter)
+        self.assertIn("    call require_bound(allocated(sb_field_ghost), &\n"
+                      "      'field_ghost', cid)", self.txt)
+        self.assertNotIn("require_bound(allocated(sb_max_abs_deviation)", self.txt)  # scalar
+        # EVERY declared variable is captured for EVERY case — the snapshot is the full state,
+        # not the per-case union of `required_raw_variables` (the xfail case requires only
+        # `guard_fired`, and still gets all four): one capture body, no per-case select.
+        self.assertIn("    allocate(out(4))", self.txt)
+        self.assertNotIn("select case (cid)", self.txt)
+        self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
+
+    def test_a_schema_variable_no_test_requires_is_still_captured(self) -> None:
+        # The set the runner reads is the SCHEMA, not the union of `required_raw_variables`:
+        # a declared state no test names is imported, its emitter imported, and captured for
+        # every case (the round-3 census's only corpus-dependent decision on the renderer).
+        ir = copy.deepcopy(_boundary_ir())
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("    sb_orphan_r1 => orphan_r1", txt)
+        self.assertIn("    harness_fortran_cpu__emit_array_r1, &", txt)
+        self.assertIn("    allocate(out(5))", txt)
+        self.assertIn("harness_fortran_cpu__emit_array_r1(sb_orphan_r1))", txt)
+
+    def test_capture_points_bracket_case_run_and_precede_every_callback(self) -> None:
+        # Z6 capture contract: initial capture right after case_setup, final capture right
+        # after case_run, both BEFORE the first checks_compute / metric_compute of the case;
+        # `initial/` snapshots go under the sub-directory, and the metrics basis is picked
+        # from the final capture's cache (never re-read from storage).
+        body = self.txt[self.txt.index("  do ci = 1, ncases"):
+                        self.txt.index("  call system_clock(count=clock1)")]
+        order = [
+            "call case_setup(trim(case_ids(ci)), setup_ok)",
+            "call capture_state(trim(case_ids(ci)), vals)",
+            "call get_time(tval)",  # generated code: only AFTER the capture
+            "call harness_fortran_cpu__write_snapshot('initial/'//trim(case_ids(ci)), vals, tval)",
+            "call case_run(trim(case_ids(ci)), steps_c, cells_c, run_ok)",
+            "call capture_state(trim(case_ids(ci)), vals)",
+            "call get_time(tval)",
+            "call harness_fortran_cpu__write_snapshot(trim(case_ids(ci)), vals, tval)",
+            "snap_cache(ci)%values = vals",
+            "call checks_compute(trim(case_ids(ci)), &",
+        ]
+        pos = -1
+        for needle in order:
+            nxt = body.index(needle, pos + 1)
+            self.assertGreater(nxt, pos, needle)
+            pos = nxt
+        self.assertEqual(body.count("call capture_state("), 2)
+        self.assertEqual(body.count("write_snapshot("), 2)
+        # no generated procedure runs between case_setup / case_run returning and the capture
+        setup_end = body.index("call case_setup(")
+        self.assertLess(body.index("call capture_state(", setup_end),
+                        body.index("call get_time(", setup_end))
+        run_end = body.index("call case_run(")
+        self.assertLess(body.index("call capture_state(", run_end),
+                        body.index("call get_time(", run_end))
 
     def test_per_id_checks_abi(self) -> None:
         # Per-id ABI: the runner sizes case_checks to the declared count and calls checks_compute
@@ -806,9 +800,10 @@ class MetricsRenderTest(unittest.TestCase):
         self.assertIn("results(ci)%metrics = case_metrics(1:mcount)", txt)
         # threads flow through to perf (num_threads=4)
         self.assertIn("walltime, 1, 4, 0)", txt)
-        # rank-1 snapshot var -> get_r1 + emit_array_r1
-        self.assertIn("call get_r1('u', r1buf, gfound)", txt)
-        self.assertNotIn("get_r2", txt)
+        # rank-1 snapshot var -> bound `sb_u` + emit_array_r1
+        self.assertIn("    sb_u => u", txt)
+        self.assertIn("harness_fortran_cpu__emit_array_r1(sb_u))", txt)
+        self.assertNotIn("emit_array_r2", txt)
 
 
 class RenderErrorMatrixTest(unittest.TestCase):
@@ -846,6 +841,49 @@ class RenderErrorMatrixTest(unittest.TestCase):
         self._expect(lambda ir: ir["io_contract"]["test_evidence_requirements"][0]
                      ["required_raw_variables"].append("ghost_field_typo"))
 
+    def _rename_snapshot_var(self, ir: dict, old: str, new: str) -> None:
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        for v in schema["variables"]:
+            if v["name"] == old:
+                v["name"] = new
+        for r in ir["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                new if v == old else v for v in r["required_raw_variables"]]
+
+    def test_snapshot_variable_must_be_a_bindable_identifier(self) -> None:
+        # A snapshot variable IS a module-level variable of the checks module (the binding
+        # convention), so a name Fortran cannot declare is refused at render / compile.static
+        # rather than left to fail the syntax gate on a file no leaf can edit.
+        for bad in ("field-ghost", "1field", "field ghost", "field.ghost"):
+            with self.subTest(bad=bad):
+                self._expect(lambda ir, b=bad: self._rename_snapshot_var(ir, "field_ghost", b))
+
+    def test_snapshot_variable_alias_bounded_by_identifier_limit(self) -> None:
+        # 61 chars is a legal identifier, but `sb_` + 61 = 64 > 63: refused by the alias
+        # bound, with its own message (the 100-column backstop would also catch it, one
+        # step later and with a message about line width rather than the identifier).
+        ir = copy.deepcopy(_boundary_ir())
+        self._rename_snapshot_var(ir, "field_ghost", "f" * 61)
+        with self.assertRaises(RenderError) as cm:
+            render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("exceeds the 63-char identifier limit", str(cm.exception))
+        # A long name that fits every rendered line takes the wrapped rename form.
+        ir = copy.deepcopy(_boundary_ir())
+        self._rename_snapshot_var(ir, "field_ghost", "f" * 50)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("    sb_" + "f" * 50 + " => &\n      " + "f" * 50 + ", &", txt)
+
+    def test_snapshot_variables_that_fold_to_one_identifier_are_refused(self) -> None:
+        # `guard_fired` and `Guard_Fired` are ONE variable to Fortran; two bindings of one
+        # storage would be an ambiguous mapping, and a schema that lists both is unbindable.
+        self._expect(lambda ir: self._rename_snapshot_var(ir, "field_ghost", "Guard_Fired"))
+
+    def test_snapshot_variable_named_like_an_abi_procedure_is_refused(self) -> None:
+        # A module cannot hold a variable and a procedure of one name.
+        for name in CHECKS_PUBLIC_NAMES + ("Case_Run",):
+            with self.subTest(name=name):
+                self._expect(lambda ir, n=name: self._rename_snapshot_var(ir, "field_ghost", n))
+
     def test_over_long_case_id_fails_closed(self) -> None:
         # 70 chars: under the 100-column render guard (a `case ('<id>')` label only reaches
         # column 100 at ~87 chars), but over the harness `case_id_len = 64`. Without this gate
@@ -865,7 +903,9 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir["case"]["test_case_set"][0]["case_id"] = exact
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [exact]
         txt = render_runner(ir, BOUNDARY_SID, HARNESS)
-        self.assertIn(f"case ('{exact}')", txt)
+        # the id reaches the metrics-basis lookup literal (no per-case `select case` exists
+        # since every case captures the full state)
+        self.assertIn(f"    '{exact}')", txt)
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
 
     def test_duplicate_case_id_fails_closed(self) -> None:
@@ -917,7 +957,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [ok]
-        self.assertIn(f"case ('{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))
+        self.assertIn(f"    '{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))
 
     def test_non_ascii_in_name_fails_closed(self) -> None:
         # Fortran's default character kind counts BYTES; `CASE_ID_LEN` and the 100-column
@@ -943,7 +983,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # the runner is host-rendered (unrepairable by a leaf), fail closed at render time.
         # The name must be a test_id, not a case_id: a long case_id now trips the earlier
         # `CASE_ID_LEN` bound instead, so it would never reach the column guard.
-        with self.assertRaisesRegex(RenderError, "exceeds 100 columns"):
+        with self.assertRaisesRegex(RenderError, "reaches the 100-column lint limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
             render_runner(ir, BOUNDARY_SID, HARNESS)
@@ -1235,6 +1275,33 @@ class LineWidthTest(unittest.TestCase):
         txt = render_runner(ir, BOUNDARY_SID, HARNESS)
         self.assertLessEqual(self._maxw(txt), 99)
 
+    def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
+        # The variable-name path had no `_checks`-style strict bound: a scalar name whose
+        # `out(k) = harness_fortran_cpu__box('<name>', &` line is EXACTLY 100 columns slipped a
+        # `> 100` backstop and failed S001 on a host-authored line (a round-1 reviewer measured
+        # it on fortitude 0.8.0). The backstop is `>=` now, so no rendered line reaches 100.
+        ir = copy.deepcopy(_boundary_ir())
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        name = "m" * (100 - len("    out(3) = harness_fortran_cpu__box('', &"))
+        for v in schema["variables"]:
+            if v["name"] == "max_abs_deviation":
+                v["name"] = name
+        for r in ir["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
+        with self.assertRaises(RenderError) as cm:
+            render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("reaches the 100-column lint limit (100 columns", str(cm.exception))
+        # one char shorter renders, and every line is at most 99 wide
+        ir2 = copy.deepcopy(ir)
+        for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
+            if v["name"] == name:
+                v["name"] = name[:-1]
+        for r in ir2["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                name[:-1] if x == name else x for x in r["required_raw_variables"]]
+        self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS)), 99)
+
 
 class FortranLiteralEscapingTest(unittest.TestCase):
     """R1/M3c-β (Codex review): IR-sourced names are only required non-empty, so a name with a
@@ -1522,7 +1589,7 @@ class GfortranSmokeTest(unittest.TestCase):
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(link.returncode, 0, link.stderr)
 
-            (d / "raw" / "state_snapshots").mkdir(parents=True)
+            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
             run = subprocess.run(
                 ["./runner", "--cases", "spec.ir.yaml",
                  "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
@@ -1532,11 +1599,75 @@ class GfortranSmokeTest(unittest.TestCase):
             for cid in ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass",
                         "l0_invalid_ny_xfail"):
                 self.assertTrue((d / "raw" / "state_snapshots" / f"{cid}.json").is_file())
+                self.assertTrue(
+                    (d / "raw" / "state_snapshots" / "initial" / f"{cid}.json").is_file())
             self.assertTrue((d / "diagnostics.json").is_file())
             self.assertTrue((d / "perf.json").is_file())
             self.assertTrue((d / "raw" / "metrics_basis.json").is_file())
             diag = (d / "diagnostics.json").read_text()
             self.assertIn("input_guard", diag)
+            # Z6 fixture (d): the checks stub overwrites every bound variable with -99 inside
+            # `checks_compute`, which runs AFTER the final capture. Neither snapshot nor the
+            # metrics basis may carry the sentinel — the captured value is the serialized copy
+            # taken before any callback, not a later re-read of the storage.
+            initial_path = d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json"
+            final_path = d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json"
+            mb_path = d / "raw" / "metrics_basis.json"
+            # On the RAW text: the harness writes `-9.9000000000000000E+001`, which a parsed
+            # document re-serializes as `-99.0` (a round-3 reviewer found the assertion on
+            # `json.dumps(doc)` vacuous for that reason and the metrics basis unpinned).
+            for path in (initial_path, final_path, mb_path):
+                self.assertNotIn("-9.9", path.read_text(), path)
+            initial = json.loads(initial_path.read_text())
+            final = json.loads(final_path.read_text())
+            mb = json.loads(mb_path.read_text())
+            for row in mb["per_test"]:
+                for value in row.values():
+                    self.assertNotEqual(value, -99.0, row)
+            # initial = the case_setup state (ghost all zero), final = after case_run (the
+            # interior copied into the ghost's centre): the two capture points differ.
+            self.assertEqual(initial["field_ghost"][1][1], 0.0)
+            self.assertEqual(final["field_ghost"][1][1], 11.0)
+            self.assertEqual(final["field_interior"], [[11.0, 12.0], [21.0, 22.0]])
+            self.assertEqual(final["max_abs_deviation"], 1.0)
+            self.assertEqual(initial["max_abs_deviation"], 1.0)
+
+    def test_unallocated_bound_array_stops_the_run(self) -> None:
+        # A checks module whose `case_setup` never allocates a bound array is a binding that
+        # was never established: the runner must `error stop` with the variable named, not
+        # hand an unallocated actual to the emitter.
+        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        broken = _CHECKS_STUB
+        for line in ("    if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))\n",
+                     "    field_ghost = 0.0_dp\n",
+                     "    field_ghost(2:3, 2:3) = field_interior\n",
+                     "    field_ghost = -99.0_dp\n"):
+            self.assertEqual(broken.count(line), 1, line)
+            broken = broken.replace(line, "")
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
+            (d / f"{BOUNDARY_SID}_checks.f90").write_text(broken)
+            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
+            for srcs in (["harness_fortran_cpu_model.f90"], [f"{BOUNDARY_SID}_checks.f90"],
+                         [f"{BOUNDARY_SID}_runner.f90"]):
+                r = subprocess.run(["gfortran", "-std=f2008", "-c", *srcs],
+                                   cwd=d, capture_output=True, text=True, check=False)
+                self.assertEqual(r.returncode, 0, r.stderr)
+            link = subprocess.run(
+                ["gfortran", "harness_fortran_cpu_model.o",
+                 f"{BOUNDARY_SID}_checks.o", f"{BOUNDARY_SID}_runner.o", "-o", "runner"],
+                cwd=d, capture_output=True, text=True, check=False)
+            self.assertEqual(link.returncode, 0, link.stderr)
+            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+            run = subprocess.run(
+                ["./runner", "--cases", "spec.ir.yaml", "l0_periodic_x_wrap_pass"],
+                cwd=d, capture_output=True, text=True, check=False)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn("bound state field_ghost is not allocated at capture", run.stderr)
+            self.assertFalse(
+                (d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json")
+                .is_file())
 
     def test_multi_target_runner_compiles_and_emits_one_row_per_case(self) -> None:
         # The multi-target mb_rows path is otherwise only text-asserted. Compile, link and RUN
@@ -1568,7 +1699,7 @@ class GfortranSmokeTest(unittest.TestCase):
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(link.returncode, 0, link.stderr)
 
-            (d / "raw" / "state_snapshots").mkdir(parents=True)
+            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
             run = subprocess.run(
                 ["./runner", "--cases", "spec.ir.yaml",
                  "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
@@ -1620,12 +1751,13 @@ class GfortranSmokeTest(unittest.TestCase):
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(link.returncode, 0, link.stderr)
 
-            (d / "raw" / "state_snapshots").mkdir(parents=True)
+            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
             run = subprocess.run(
                 ["./runner", "--cases", "spec.ir.yaml", "c0"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertTrue((d / "raw" / "state_snapshots" / "c0.json").is_file())
+            self.assertTrue((d / "raw" / "state_snapshots" / "initial" / "c0.json").is_file())
             self.assertTrue((d / "raw" / "metrics_basis.json").is_file())
             self.assertTrue((d / "diagnostics.json").is_file())
             self.assertTrue((d / "perf.json").is_file())

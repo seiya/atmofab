@@ -103,7 +103,7 @@ class PureVerifyContextTests(unittest.TestCase):
                             "## 3. Module-level state is expected",
                             "## 4. Prohibitions",
                             "ok=.false.",
-                            "runner always emits the case's snapshot"):
+                            "runner always captures the case's state"):
                 self.assertIn(present, doc)
             # Every literal here must occur in the REAL document, or the assertion is true of any
             # slice and pins nothing — an earlier version of this test named a preamble sentence

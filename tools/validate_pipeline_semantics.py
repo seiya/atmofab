@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 try:
     # The Fortran logical-line scanner is IMPORTED, not copy-pasted: three hand-rolled
@@ -131,17 +131,19 @@ RAW_EVIDENCE_ARTIFACTS = {
 # same routing the contract states; the document does not cite this constant, so
 # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` is
 # what holds the two spellings together. Stated in the form the PRODUCER supports, not
-# only the form this validator accepts: the snapshot getters of
-# docs/workflow/CHECKS_MODULE_CONTRACT.md return numbers, and a metrics_basis.json
+# only the form this validator accepts: a snapshot variable is a `real(dp)` module
+# variable of the checks module that the host-rendered runner serializes
+# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b), and a metrics_basis.json
 # row is valued from a test's required_raw_variables, which must be snapshot
 # variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
 # and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
-    "a per-case runtime value is a state_snapshots variable with the value's shape_expr "
-    "(scalar for an enumerated input), valued numerically (the snapshot getters return "
-    "numbers, so an enumerated or string input is recorded as a numeric code whose meaning "
-    "the IR states in that entry's description), and metrics_basis.json rows are valued "
-    "from those same variables"
+    "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
+    "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+    "serializes); a case INPUT — an enumerated selector included — is not an evidence "
+    "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
+    "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
+    "variables"
 )
 # The one raw-evidence token an IR used to be able to name that no Generate contract
 # produces (issue #235). `evidence_ref` is an open vocabulary (`raw/diagnostics`,
@@ -4405,8 +4407,9 @@ def _validate_raw_evidence(
                                 # (2) A per-CASE snapshot (the contract's `<case_id>.json`,
                                 # and everything a host-rendered runner writes) carries no
                                 # test_id. Its required set is the UNION over every test
-                                # ranging over the case — precisely what
-                                # the language backend runner's `_per_case_vars` emitted. Without this
+                                # ranging over the case — the language backend runner's
+                                # `_per_case_vars` (a host-rendered runner emits every declared
+                                # variable, a superset, since Z6). Without this
                                 # anchor an IR whose `case.test_case_set[]` omits `test_id`
                                 # (never a required field) falls through to "every declared
                                 # variable" and false-rejects a conformant per-case snapshot,
@@ -4518,7 +4521,12 @@ def _validate_raw_evidence(
                             f"{schema_path}: time_shape_expr must match io_contract ({expected_time_shape_expr})"
                         )
 
-                if len(snapshot_data_files) < required_snapshot_min_samples:
+                # `min_samples` counts distinct CASE snapshots: the files at the top level, as
+                # `_author_snapshot_schema`'s `samples` does. A host-rendered runner's
+                # `initial/<case_id>.json` (Z6, issue #255) is a second capture of the same
+                # case — shape-checked above through the recursive walk, and not a sample.
+                case_samples = [p for p in snapshot_data_files if p.parent == snapshots_dir]
+                if len(case_samples) < required_snapshot_min_samples:
                     violations.append(
                         f"{snapshots_dir}: snapshot data files must be >= {required_snapshot_min_samples}"
                     )
@@ -4933,7 +4941,7 @@ _FORTRAN_NAME_LIMIT = 63
 # language backend that renders the runner owns the set — it renders the consumer, and selects
 # the per-node subset that runner imports FROM it. A copy here would be a second authority for
 # one fact, which is exactly how the Z2 bundle gate came to require the imported subset while
-# this gate required all ten. It cannot be a module-level import either: module scope has no
+# this gate required the full set. It cannot be a module-level import either: module scope has no
 # node, so it has no language to ask about — `_validate_checks_source_files` asks with the
 # node's own value through `tools/host_render.py`.
 
@@ -5065,12 +5073,14 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
 
 def _validate_checks_source_files(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
-    violations: list[str],
+    violations: list[str], *, bound_state: Iterable[str] = (),
 ) -> None:
     """R1/M3c-β deterministic gate: an M3c physics node's leaf-authored
     ``<spec_id>_checks.f90`` must satisfy the fixed-ABI contract
     (docs/workflow/CHECKS_MODULE_CONTRACT.md). Checks: the file exists; it declares
-    ``module <spec_id>_checks``; it publishes all ten ABI names; NEITHER the checks NOR
+    ``module <spec_id>_checks``; it publishes every ABI name AND every bound state variable
+    (``bound_state`` — the IR's snapshot variables, which the host-rendered runner imports as
+    ``sb_<var> => <var>`` since Z6, issue #255); NEITHER the checks NOR
     the model source ``use``s the harness (the physics sources never depend on it — the
     host-rendered runner is the sole harness caller); the checks module does no file I/O
     (``open(``); and it writes no forbidden judge-artifact filename. A violation routes
@@ -5140,6 +5150,13 @@ def _validate_checks_source_files(
         violations.append(
             f"{checks_path}: checks module must publish the fixed ABI names "
             f"{list(checks_public_names)}; missing {missing}")
+    hidden = unpublished_bound_state(text, spec_id, bound_state)
+    if hidden:
+        violations.append(
+            f"{checks_path}: checks module must publish every bound state variable (the "
+            f"host-rendered runner imports each IR snapshot variable as `sb_<var> => <var>` and "
+            f"serializes it at the two capture points); hidden by a bare `private` default "
+            f"with no `public ::` naming it, or by a `private ::` naming it: {hidden}")
 
     _validate_checks_source_harness_isolation(execution, src_dir, model_files, violations)
 
@@ -5159,7 +5176,8 @@ def _fortran_statements(text: str) -> list[str]:
 
 def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
     """`(published, defined_subroutines, defined_procs)` for `module <spec_id>_checks` in `text`,
-    lowercased.
+    lowercased. The 3-tuple projection of `checks_module_accessibility_scan` (below), kept as
+    the two ABI gates' entry point.
 
     THE single parser for the checks-module ABI surface, shared by the deterministic
     `Generate.static` gate (`_validate_checks_source_files`, which reads the staged file) and the
@@ -5184,6 +5202,36 @@ def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str]
     as a single `public` statement whose list was `a; public :: b`, losing `a` (whose token was
     `a;`) and inventing a name `public` — legal Fortran (gfortran rc=0) reported unpublished by
     BOTH gates."""
+    return checks_module_accessibility_scan(text, spec_id)[:3]
+
+
+def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> list[str]:
+    """The `bound` module-level variable names `use <spec_id>_checks, only: <name>` cannot
+    resolve, by the same scan and the same notion of "published" the ABI gates use (Z6, issue
+    #255): under a bare module-level `private` a variable is published iff a `public ::`
+    statement names it; under the language's default-public accessibility it is published unless a
+    `private ::` statement names it. A variable is never DEFINED in the sense a procedure is
+    (the scan reads no declarations — that is the source-text surface the gates refuse to
+    parse), so the default-public branch cannot tell an undeclared name from a declared one and
+    accepts both; the `Generate.gate` syntax check then owns the undeclared case (`Symbol not
+    found in module`), exactly as it owns a `use`-associated ABI procedure. Case-insensitive."""
+    _, _, _, public_ids, private_ids, default_private = \
+        checks_module_accessibility_scan(text, spec_id)
+    out: list[str] = []
+    for name in bound:
+        key = name.casefold()
+        if key in private_ids or (default_private and key not in public_ids):
+            out.append(name)
+    return out
+
+
+def checks_module_accessibility_scan(
+    text: str, spec_id: str,
+) -> tuple[set[str], set[str], set[str], set[str], set[str], bool]:
+    """The three sets of `checks_module_abi_facts` followed by `(public_ids, private_ids,
+    module_default_private)` for `module <spec_id>_checks` in `text`, lowercased — the one scan
+    behind `checks_module_abi_facts` (its first three) and `unpublished_bound_state` (its last
+    three). See the former's docstring for what each set does and does not prove."""
     logical = _fortran_statements(text)
     public_ids: set[str] = set()
     private_ids: set[str] = set()
@@ -5300,7 +5348,8 @@ def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str]
         published = public_ids - private_ids
     else:
         published = (public_ids | defined_procs) - private_ids
-    return published, defined_subroutines, defined_procs
+    return (published, defined_subroutines, defined_procs,
+            public_ids, private_ids, module_default_private)
 
 
 def _validate_checks_source_harness_isolation(
@@ -5437,7 +5486,8 @@ def _validate_generate_outputs_for_generation(
         )
     if is_m3c:
         _validate_checks_source_files(
-            execution, m3c_language, src_dir, model_files, violations)
+            execution, m3c_language, src_dir, model_files, violations,
+            bound_state=_state_snapshot_requirement_details(repo_root, execution)[0])
 
     if dep_spec_ids:
         _validate_dependency_operation_on_model_files(
@@ -6719,11 +6769,12 @@ def _case_id_to_test_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
     """Map each case_id to every test_id ranging over it, from
     ``io_contract.test_predicates[].target_cases``.
 
-    This is the anchor a host-rendered runner is built from: the language backend runner's `_per_case_vars`
-    emits, per case, the union of `required_raw_variables` over exactly these tests. Reading
-    the same field here makes the post_execute snapshot check a mirror of what the renderer
-    wrote, rather than an independent guess (the `_validate_harness_render_preconditions`
-    discipline). It is also the only case -> test mapping every IR carries: `case.test_case_set[]`
+    This is the anchor a host-rendered runner is built from: the language backend runner's
+    `_per_case_vars` validates, per case, the union of `required_raw_variables` over exactly
+    these tests (and, since Z6, the runner captures every declared variable for every case —
+    a superset of that union). Reading the same field here makes the post_execute snapshot
+    check a mirror of what the renderer validated, rather than an independent guess (the
+    `_validate_harness_render_preconditions` discipline). It is also the only case -> test mapping every IR carries: `case.test_case_set[]`
     is not required to declare a `test_id` (`phase_01_compile.md`), so `_case_id_to_test_id`
     returns {} for an IR that omits it, and a case targeted by several tests has no single id
     at all. Empty dict when the IR declares no predicates.
@@ -7597,6 +7648,33 @@ def _state_snapshot_required(repo_root: Path, execution: NodeExecution) -> bool:
     return default_required
 
 
+def _algorithm_state_variable_names(ir: Any) -> list[str]:
+    """The names the IR's state contract declares under `state_variables[]` (object form
+    `{name, ...}` or a bare string), in order, deduplicated; `[]` when the `algorithm` section
+    is absent or declares none. Read through `_algorithm_state_contract` — the same resolution
+    order the multi-dimensional contract gate uses (`state_contract`, then `update_semantics`,
+    then the direct children of `algorithm`) — so the two gates cannot read two contracts."""
+    algorithm = ir.get("algorithm") if isinstance(ir, dict) else None
+    if not isinstance(algorithm, dict):
+        return []
+    # The same unwrapping `_validate_algorithm_contract_file` does before ITS read: a section that
+    # carries a document-level key (`schema_version`, `algorithm`) would trip `_require_ir_section`,
+    # and swallowing that raise here made this clause vacuous on exactly the shape the other gate
+    # tolerates — a round-2 reviewer planted `algorithm.schema_version` and the ⊆ clause went dark
+    # while the multi-dimensional gate still read the contract. Drop the markers, never the read.
+    markers = {"algorithm", *_IR_DOCUMENT_ONLY_KEYS} & set(algorithm)
+    if markers:
+        algorithm = {k: v for k, v in algorithm.items() if k not in markers}
+    contract = _algorithm_state_contract(algorithm)
+    raw = contract.get("state_variables") if isinstance(contract, dict) else None
+    out: list[str] = []
+    for v in (raw if isinstance(raw, list) else []):
+        name = v if isinstance(v, str) else (v.get("name") if isinstance(v, dict) else None)
+        if isinstance(name, str) and name.strip() and name.strip() not in out:
+            out.append(name.strip())
+    return out
+
+
 def _validate_io_contract_file(
     repo_root: Path, contract_path: Path, violations: list[str]
 ) -> None:
@@ -7616,6 +7694,9 @@ def _validate_io_contract_file(
     # tests.md is referenced from `meta.source_refs.tests`, which the io_contract flattening below
     # does not carry — resolve it from the document while we still hold it.
     tests_path = _tests_path_from_ir_document(repo_root, contract)
+    # `algorithm.state_variables` is not carried by the flattening either; keep the declared
+    # names for the snapshot-coverage rule below (Z6, issue #255).
+    declared_state_variables = _algorithm_state_variable_names(contract)
 
     # New IR: spec.ir.yaml has the io_contract section nested under
     # `io_contract:` and contains inputs / outputs / raw_requirements /
@@ -7789,6 +7870,19 @@ def _validate_io_contract_file(
         if artifact != "state_snapshots":
             continue
 
+        # ONE `state_snapshots` entry. Every runtime reader of the schema — the runner
+        # renderer, the bundle gate's `snapshot_variables_from_ir`, the post-execute
+        # requirement details, the schema author — takes the FIRST entry; a second one would be
+        # read by nothing at runtime while this validator's own union over entries admitted its
+        # names, so a declared state could satisfy the ⊆ clause below through an entry no
+        # runner captures (a round-3 reviewer constructed it; zero occurrences in the corpus).
+        if snapshot_variables or snapshot_required:
+            violations.append(
+                f"{contract_path}:raw_requirements.required_evidence[{idx}] declares "
+                "state_snapshots a second time; declare the snapshot schema in ONE entry"
+            )
+            continue
+
         if item.get("required") is not False:
             snapshot_required = True
 
@@ -7887,6 +7981,20 @@ def _validate_io_contract_file(
         violations.append(
             f"{contract_path}:state_snapshots schema must declare variables with shape_expr when required"
         )
+    # Every declared primary state variable is captured: `algorithm.state_variables` ⊆ the
+    # snapshot schema (Z6, issue #255). A state the IR declares and the runner never captures
+    # is a state no host-evaluated predicate can reach, and the bundle binds the schema alone,
+    # so the gap would otherwise be named by nothing. Checked when snapshots are required (like
+    # every other snapshot clause here; a `required: false` entry skips them all) — a `problem`
+    # IR's multi-dimensional contract carries the names; other kinds declare none.
+    if snapshot_required:
+        uncaptured = [v for v in declared_state_variables if v not in snapshot_variables]
+        if uncaptured:
+            violations.append(
+                f"{contract_path}:algorithm.state_variables {uncaptured} are not "
+                "state_snapshots schema variables; every declared state variable is captured "
+                "(add it to raw_requirements.required_evidence[state_snapshots].schema.variables)"
+            )
     if snapshot_required and not snapshot_time_variable:
         violations.append(
             f"{contract_path}:state_snapshots schema must declare time_variable when required"
@@ -14201,8 +14309,9 @@ def _validate_post_generate_bundle(
     Fires ONLY when `codegen_bundle.json` exists (the legacy leaf-authored source tree has none),
     so it is inert on every legacy node. Re-runs the FULL host acceptance contract
     (`codegen_bundle.pure_bundle_contract_violation`: schema + single-node shape + harness
-    capability negotiation + IR state bindings + M3c model/checks names + the fixed
-    checks-module ABI + assembly-graph collisions) — the SAME layers the producer
+    capability negotiation + the state bindings of every IR snapshot variable + M3c
+    model/checks names + the fixed checks-module ABI + assembly-graph collisions) — the SAME
+    layers the producer
     accepted, reconstructed from the IR + dependency sidecar — so a post-write edit that stays
     schema-valid (e.g. swapping in an unsupported `capability_requirements`) cannot slip past a
     validator that only re-ran `validate_bundle`.
@@ -14216,7 +14325,7 @@ def _validate_post_generate_bundle(
         return
     from tools.codegen_bundle import (
         pure_bundle_contract_violation, harness_provided_capabilities, derive_build_graph,
-        published_operations_from_ir)
+        published_operations_from_ir, snapshot_variables_from_ir)
     try:
         doc = _read_json(bundle_path)
     except json.JSONDecodeError:
@@ -14226,9 +14335,9 @@ def _validate_post_generate_bundle(
         violations.append(f"{bundle_path}: must be a JSON object")
         return
     spec_id = node_key.split("/", 1)[1].split("@", 1)[0] if "/" in node_key else ""
-    # Reconstruct the acceptance inputs (harness capabilities, IR state vars, build graph) from
-    # the IR + dependency sidecar so the tamper gate re-runs the producer's FULL contract, not
-    # just schema re-validation.
+    # Reconstruct the acceptance inputs (harness capabilities, the IR snapshot variables, build
+    # graph) from the IR + dependency sidecar so the tamper gate re-runs the producer's FULL
+    # contract, not just schema re-validation.
     ir = _read_yaml(repo_root / ir_ref / "spec.ir.yaml") if ir_ref else {}
     if not isinstance(ir, dict):
         ir = {}
@@ -14242,7 +14351,6 @@ def _validate_post_generate_bundle(
         infra = _infra_direct_dep_node_keys(ir)
         harness_nk = infra[0] if len(infra) == 1 else None
     provided = harness_provided_capabilities(harness_nk) if harness_nk else None
-    algorithm = (ir.get("algorithm") or {}) if isinstance(ir, dict) else {}
     toolchain, closure, edges = _pure_gate_build_graph_inputs(repo_root, ir_ref, ir, node_key)
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
     # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
@@ -14258,7 +14366,7 @@ def _validate_post_generate_bundle(
     contract = pure_bundle_contract_violation(
         doc, node_key=node_key, spec_id=spec_id,
         shape=(shape or ""), runner_basename=_expected_runner_name(spec_id),
-        ir_state_variables=(algorithm.get("state_variables") or []),
+        ir_snapshot_variables=snapshot_variables_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))
     if contract is not None:

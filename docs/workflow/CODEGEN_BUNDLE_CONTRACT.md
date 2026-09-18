@@ -1,4 +1,4 @@
-# CodegenBundle contract (`bundle_schema_version` 1.1.0)
+# CodegenBundle contract (`bundle_schema_version` 1.2.0)
 
 > **Scope note.** Under `Z2` (`docs/design/zero_base_architecture.md`) the pure
 > `Generate.generate` leaf produces exactly one `CodegenBundle`; the host validates
@@ -22,7 +22,7 @@
 >
 > This document is the canonical contract for the bundle document itself; the schema
 > (`spec/schema/generate/codegen_bundle.schema.json`) and the validator module
-> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 1.1.0.
+> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 1.2.0.
 
 ## Purpose
 
@@ -79,7 +79,7 @@ token.
 ## Serialization
 
 A bundle is a single JSON document. `bundle_schema_version` is required and is
-compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "1.1.0"`, and a document
+compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "1.2.0"`, and a document
 whose major version differs from the module's is rejected without further inspection.
 Every object in the document is closed (`additionalProperties: false`) with **one declared
 exception**: the value objects of `target_lowering_plan` (`precision`, `data_layout`,
@@ -96,7 +96,12 @@ load-bearing security property (a command cannot ride in on an unknown key) and 
 relaxed for forward compatibility. A producer that emits a new minor's fields therefore
 requires a validator of that minor; it does not silently pass an older one. The 1.0.0 -> 1.1.0
 bump is the worked example of the additive case: it adds the `runner` role, which no 1.0.0
-validator's role enum admits, and producer and validator move together in one change. The declarative
+validator's role enum admits, and producer and validator move together in one change. The
+1.1.0 -> 1.2.0 bump (`Z6`) is the worked example of the OTHER direction the rule allows: a
+minor that NARROWS — the `capture` enum loses `checks_getter` and `state_bindings` becomes
+required on the `m3c` shape — so a 1.1.0 document of the old shape is a same-major document
+this validator reads and refuses on its content, which is what "backward only, by design"
+means for a retirement: nothing is relaxed to keep the old shape passing. The declarative
 schema's `bundle_schema_version` pattern pins the supported major (`^1\.[0-9]+\.[0-9]+$`), so a
 schema-only consumer (structured generation) rejects an incompatible major at the schema
 boundary rather than admitting it to fail later at `validate_bundle`.
@@ -109,7 +114,7 @@ as untrusted model-authored input, exactly as it treats `files[].content`.
 
 ```json
 {
-  "bundle_schema_version": "1.1.0",
+  "bundle_schema_version": "1.2.0",
   "optimization_unit": {"members": ["problem/adv1d@0.1.0"]},
   "files": [{"logical_path": "adv1d_model.f90", "role": "model",
              "language": "fortran", "member_node_key": "problem/adv1d@0.1.0",
@@ -118,10 +123,11 @@ as untrusted model-authored input, exactly as it treats `files[].content`.
                    "node_key": "problem/adv1d@0.1.0", "defined_in": "adv1d_model.f90"}],
   "target_lowering_plan": {"precision": {"real_kind": "real64"},
                            "state_residency": "host"},
-  "capability_requirements": ["sync_single_case@1"],
+  "capability_requirements": ["sync_single_case@1", "state_registration@1"],
   "state_bindings": [{"node_key": "problem/adv1d@0.1.0", "state_variable": "q",
-                      "storage_symbol": "adv1d_checks__get_r1",
-                      "capture": "checks_getter", "capability": null}]
+                      "storage_symbol": "q", "module": "adv1d_checks",
+                      "capture": "harness_registration",
+                      "capability": "state_registration@1"}]
 }
 ```
 
@@ -283,7 +289,7 @@ declares it.
 - **Symbol uniqueness**: a symbol is published at most once **per module**, compared
   case-insensitively (Fortran is case-insensitive in both). A symbol is module-qualified, so
   each member's checks module legitimately exports the same fixed ABI name (`case_run`,
-  `get_r1`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
+  `get_time`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
   same name in the same module is an unlinkable duplicate.
 - **Coverage invariant**: every unit member owns at least one `model` file and an
   `operation` entrypoint count set by its kind (see "Optimization unit"): a `problem` member
@@ -341,7 +347,7 @@ integer version. The version is part of the token, not a range.
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
 | `full_state_capture` | the harness captures full snapshots itself (reserved, `A4`/`Z6`) |
 | `trusted_reductions` | the harness computes certified reductions over state (reserved, `A4`/`Z6`) |
-| `state_registration` | generated code registers state storage the harness reads (reserved, `Z6`) |
+| `state_registration` | generated code holds its state in module-level storage the host-rendered runner reads and serializes through the harness (`Z6`, [issue #255](https://github.com/seiya/atmofab/issues/255)) |
 
 `capability_requirements` is a duplicate-free list of tokens. A name outside the
 vocabulary is a violation (fail-closed: an unrecognized capability is never treated as
@@ -354,13 +360,22 @@ bundle states how it expects to be driven.
 `HARNESS_CAPABILITY_MANIFESTS` maps a harness `node_key` to the capability set it
 provides. It is tool-side data, not a field of the harness `controlled_spec.md`: adding
 it to the spec would edit a certified artifact and force recertification for no change
-in generated behavior. When the harness spec is next re-specified on content grounds
-(`Z6`), the manifest moves into a `§capabilities` section of the spec and this table
-becomes its projection.
+in generated behavior. `Z6` ([issue #255](https://github.com/seiya/atmofab/issues/255))
+kept it here on the same ground — `state_registration@1` is defined by the render contract
+of the language backend that renders the runner, not by any operation of the harness
+source, so a spec-side `§capabilities` section would be a copy with no reader; the plan on
+the issue records this as a departure from `zero_base_architecture.md` §A4 as written.
 
 ```
-"infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1"}
+"infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
 ```
+
+`state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
+variable straight from the module-level storage of the bundle's checks module
+(`use <spec_id>_checks, only: sb_<var> => <var>`) and serializes it through the harness's
+`__emit_*` / `__write_snapshot` right after `case_setup` and right after `case_run`, before
+any check or metric callback of that case (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b).
+The harness source needs no new operation for it, so the harness version is unchanged.
 
 `sync_single_case@1` is defined as exactly the canonical interface block of
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`
@@ -407,13 +422,31 @@ Assembly fails closed when any required capability is unsatisfied.
 
 ## State bindings
 
-`state_bindings[]` records how each member's primary state is reached. It may be empty
-in v1. Each entry declares `node_key` (a unit member), `state_variable`, `storage_symbol`,
-`module`, `capture`, and `capability`. `(node_key, state_variable)` is the identity
+`state_bindings[]` records how each member's primary state is reached: the module-level
+storage the host-rendered runner reads and serializes through the certified harness at
+the two capture points of a case (right after `case_setup`, right after `case_run`), before
+any generated callback of that case runs. Each entry declares `node_key` (a unit member),
+`state_variable`, `storage_symbol`, `module`, `capture`, and `capability`.
+`(node_key, state_variable)` is the identity
 of a member's primary state and is **unique** across the array: a second binding for the same
 pair would leave the mapping ambiguous (two consumers could register or read different storage
 for one declared state). The same `state_variable` name on two distinct members is allowed —
 the identity is the pair, not the name.
+
+Since 1.2.0 (`Z6`, [issue #255](https://github.com/seiya/atmofab/issues/255)) the array is
+**required on the `m3c` shape** and its content is fixed by the IR: the pure acceptance
+contract (`pure_bundle_contract_violation`, the layer both the producer's gate and the
+post-generate tamper gate run) requires exactly one entry per IR snapshot variable
+(`io_contract.raw_requirements.required_evidence[state_snapshots].schema.variables[]` —
+an unbound variable and a binding of an undeclared name are both
+`bundle_state_binding_mismatch`), each with `storage_symbol == state_variable`,
+`module == <spec_id>_checks`, `capture: harness_registration` and
+`capability: state_registration@1`. That is the convention the host renders
+`use <spec_id>_checks, only: sb_<var> => <var>` from WITHOUT reading the bundle — the runner
+is rendered from the IR alone, before the leaf runs — so the entry declares that the module
+implements the convention, and the checks-ABI layer then requires each bound variable
+published by that module. The `harness` shape carries no binding (its runner is its own
+writer, and there is no checks module to bind).
 
 `module` is the Fortran module that publishes `storage_symbol`, so the host renders
 `use <module>, only: <storage_symbol>` mechanically (as for an entrypoint). It must be a
@@ -422,20 +455,18 @@ capture**. Otherwise a binding for member A could name member B's checks module 
 capture/register B's storage as A's state, producing incorrect verification evidence with no
 compile or link failure. The exporting module is declared, never inferred from the source.
 
-- `capture: checks_getter` — the value is read through the generated checks module's
-  snapshot getters. This is the current (`M3c`) mechanism, and it takes
-  `capability: null` because no harness capability is involved. Here `storage_symbol` is a
-  rank getter (`get_r1`) that dispatches on the variable name, so several same-rank variables
-  legitimately share one `storage_symbol`; they are disambiguated by `state_variable` at the
-  call.
-- `capture: harness_registration` — the generated code registers storage the harness
-  reads directly. It requires a `state_registration@N` token in `capability`, and the
-  same token must appear in `capability_requirements`. This is the shape `Z6` adopts;
-  the schema already admits it, so `Z6` is additive (add `state_registration@1` to the
-  harness manifest and switch the default `capture`), with no schema change. Here
-  `storage_symbol` is the actual registered storage, so `(module, storage_symbol)` is
-  **unique** across `harness_registration` bindings — two states registering one storage
+- `capture: harness_registration` — the one capture since 1.2.0: the generated code holds
+  the state in module-level storage the host-rendered runner reads directly. It requires a
+  `state_registration@N` token in `capability`, and the same token must appear in
+  `capability_requirements`. `storage_symbol` is the actual storage, so
+  `(module, storage_symbol)` is **unique** across bindings — two states bound to one storage
   would silently capture the same evidence for both.
+- `capture: checks_getter` (1.1.0) is **retired** with the snapshot getters
+  (`get_scalar` / `get_r1..r4`) it read through: a value that passed through a generated
+  procedure was secondary evidence, and `Z6` makes that path unrepresentable rather than
+  policed. The token is no longer a member of the `capture` enum, so a 1.1.0 document that
+  declares it fails the schema layer; there is no backfill (the 1.1.0 → 1.2.0 bump is the
+  minor a document of the old shape does not satisfy — see "Version compatibility").
 
 The coupling holds in **both directions, per token**: each `state_registration@N` token in
 `capability_requirements` requires a `harness_registration` binding whose `capability` is
@@ -443,9 +474,14 @@ that same token. A declared `state_registration@2` is not licensed by a binding 
 `state_registration@1`; otherwise the bundle negotiates an ABI wider than the code it ships
 actually uses.
 
-Agreement between `state_bindings[].state_variable` and the IR's
-`algorithm.state_variables` is checked at assembly time (`Z2`), where the IR is in
-scope. This contract validates the bundle in isolation and therefore does not check it.
+Agreement between `state_bindings[]` and the IR's snapshot variables (the set equality and
+the convention above) is checked at assembly time (`Z2`), where the IR is in scope. This
+contract validates the bundle in isolation and therefore does not check it. (Through 1.1.0
+the assembly-time check was membership in `algorithm.state_variables`; the snapshot schema
+is the wider set — the compile gate requires `algorithm.state_variables` ⊆ snapshot variables
+(`_validate_io_contract_file`, added with Z6: a declared state the runner never captures is
+a `Compile fail`) — and it is the set the runner captures, so it is the one the binding must
+cover.)
 
 ## Build-graph derivation
 

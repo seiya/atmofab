@@ -456,6 +456,38 @@ class StateSnapshotsTest(unittest.TestCase):
         case = self._snapshots()["cases"][0]
         self.assertFalse(case["read"])
         self.assertEqual(case["variables"], [])
+        self.assertIsNone(case["initial"])
+
+    def test_the_initial_capture_is_summarized_beside_the_final_one(self):
+        # Z6 (issue #255): a host-rendered runner writes `initial/<case_id>.json` right after
+        # `case_setup`; the excerpt carries it under the case's `initial` key, summarized by
+        # the same rules, so the judge sees both capture points. A case with no initial
+        # capture (a harness self-test) carries `initial: None`.
+        self.raw.write("state_snapshots/snapshot_schema.json", {
+            "variables": [{"name": "h", "shape_expr": "[nx, ny]"}],
+            "time_variable": "t", "min_samples": 1})
+        self.raw.write("state_snapshots/case_a.json", {"h": [[3.0, 4.0]], "t": 1.0})
+        self.raw.write("state_snapshots/initial/case_a.json", {"h": [[1.0, 2.0]], "t": 0.0})
+        self.raw.write("state_snapshots/case_b.json", {"h": [[5.0, 6.0]], "t": 1.0})
+        cases = {c["case_id"]: c for c in self._snapshots()["cases"]}
+        # the `initial/` files are not cases of their own
+        self.assertEqual(sorted(cases), ["case_a", "case_b"])
+        a = cases["case_a"]
+        self.assertEqual(a["time_value"]["value"], 1.0)
+        self.assertEqual(a["variables"][0]["max"], 4.0)
+        self.assertTrue(a["initial"]["read"])
+        self.assertEqual(a["initial"]["case_id"], "case_a")
+        self.assertEqual(a["initial"]["time_value"]["value"], 0.0)
+        self.assertEqual(a["initial"]["variables"][0]["max"], 2.0)
+        self.assertEqual(a["initial"]["variables"][0]["declared_shape_expr"], "[nx, ny]")
+        self.assertIsNone(cases["case_b"]["initial"])
+        # an unreadable initial capture is a problem the excerpt names
+        self.raw.write("state_snapshots/initial/case_b.json", "{broken")
+        excerpt = rex.raw_evidence_excerpt(self.raw.path, _contract())
+        b = next(c for c in excerpt["state_snapshots"]["cases"] if c["case_id"] == "case_b")
+        self.assertFalse(b["initial"]["read"])
+        self.assertTrue(any("initial/case_b.json" in p for p in excerpt["problems"]),
+                        excerpt["problems"])
 
     def test_cases_are_ordered(self):
         for name in ("case_c", "case_a", "case_b"):
@@ -575,6 +607,9 @@ class ExcerptIsBoundedTest(unittest.TestCase):
             rex.raw_evidence_excerpt(raw.path, _contract())["policy_version"],
             rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertIsInstance(rex.RAW_EXCERPT_POLICY_VERSION, int)
+        # 2 since Z6 (issue #255): the window gained each case's `initial` capture. A recorded
+        # review stamped 1 was made through a window with no initial capture in it.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 2)
 
 
 if __name__ == "__main__":

@@ -157,9 +157,14 @@ def _case_ids_from_outputs(paths: list[str]) -> tuple[str, ...]:
     for p in paths:
         if "/raw/state_snapshots/" in p and p.endswith(".json"):
             name = p.rsplit("/", 1)[1][:-5]
-            if name != "snapshot_schema":
+            # `initial/<case_id>.json` (Z6) names the same case a second time; not a new id.
+            if name != "snapshot_schema" and name not in cids:
                 cids.append(name)
     return tuple(cids)
+
+
+def _runner_host_authored_from_outputs(paths: list[str]) -> bool:
+    return any("/raw/state_snapshots/initial/" in p for p in paths)
 
 
 def _evidence_artifacts_from_outputs(paths: list[str]) -> tuple[str, ...]:
@@ -228,7 +233,9 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
                       "repair_target_agent_run_id", "repair_reason", "repair_findings")
             if k in req
         },
-        runner_host_authored=bool(req.get("runner_host_authored")),
+        runner_host_authored=(bool(req.get("runner_host_authored"))
+                              or _runner_host_authored_from_outputs(
+                                  req.get("allowed_output_paths", []))),
         resolved_dependencies=tuple(req.get("resolved_dependencies", ())),
         dependency_surface=tuple(req.get("dependency_surface", ())),
         exemplar=req.get("exemplar"),
@@ -13060,6 +13067,35 @@ class SnapshotDeliverableGapTest(unittest.TestCase):
             self.assertEqual(
                 c._snapshot_deliverable_gap(sdir, [], ["state_snapshots"]), "")
 
+    def test_initial_captures_required_only_for_a_host_rendered_runner(self) -> None:
+        # Z6 (issue #255): the host-rendered runner writes `initial/<case_id>.json` right
+        # after `case_setup`; a hand-authored harness runner does not, so the requirement is
+        # keyed on `initial_required` (the caller's `_conductor_authors_runner`).
+        with tempfile.TemporaryDirectory() as tmp:
+            sdir = Path(tmp) / "raw" / "state_snapshots"
+            sdir.mkdir(parents=True)
+            for cid in ("l0_pass", "l0_xfail"):
+                (sdir / f"{cid}.json").write_text("{}", encoding="utf-8")
+            c = self._conductor(Path(tmp))
+            self.assertEqual(
+                c._snapshot_deliverable_gap(sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"]),
+                "")
+            msg = c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True)
+            self.assertIn("snapshot deliverable mismatch", msg)
+            self.assertIn("initial/<case_id>.json", msg)
+            self.assertIn("'initial/l0_pass.json'", msg)
+            self.assertIn("'initial/l0_xfail.json'", msg)
+            (sdir / "initial").mkdir()
+            (sdir / "initial" / "l0_pass.json").write_text("{}", encoding="utf-8")
+            msg = c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True)
+            self.assertIn("'initial/l0_xfail.json'", msg)
+            self.assertNotIn("'initial/l0_pass.json'", msg.split("missing=")[1])
+            (sdir / "initial" / "l0_xfail.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True), "")
+
 
 class WriteMakefileTest(unittest.TestCase):
     """The conductor authors a leaf node's src/Makefile deterministically (runtime-owned,
@@ -16277,6 +16313,37 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
             self.assertIn("c_alpha", meta["failure_excerpt"])
 
+    def test_execute_inproc_asks_for_initial_captures_of_a_host_rendered_runner(self) -> None:
+        # Z6 (issue #255), pinned at the handler: `_execute_inproc` passes
+        # `initial_required=self._conductor_authors_runner(refs)` to the deliverable-gap helper,
+        # so the ACTIONABLE excerpt names the missing `initial/<case_id>.json` on a host-rendered
+        # node and never on one whose runner is its own. (Without the wiring the missing file
+        # is still refused, by the opaque deliverable-presence gate — the bypass axis's W4
+        # survivor was this diagnostic, not the gate.)
+        import tempfile
+        from unittest import mock
+        for authored in (True, False):
+            with self.subTest(runner_host_authored=authored), \
+                 tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                run_tmp = repo / "workspace" / "tmp" / "child-1" / "run"
+                (run_tmp / "raw" / "state_snapshots").mkdir(parents=True)
+                (run_tmp / "raw" / "state_snapshots" / "c_alpha.json").write_text(
+                    "{}", encoding="utf-8")
+                with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                       return_value=authored):
+                    _o, meta = self._b1_execute(repo, self._B1_IR_SNAPSHOTS, gate_result=(0, ""),
+                                                matching_diagnostics=True)
+                if authored:
+                    self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
+                    self.assertIn("initial/c_alpha.json", meta["failure_excerpt"])
+                else:
+                    self.assertNotEqual(meta.get("failure_category"), "snapshot_deliverable_gap")
+                # the in-process execute pre-creates the directory the host-rendered runner
+                # opens `initial/<case_id>.json` in (the binary runs directly here, not through
+                # the Makefile's `mkdir -p`; without it the harness's open fails with rc 2)
+                self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
+
     def test_execute_inproc_category_precedence_when_inputs_fail_together(self) -> None:
         # The categories differ only in report quality (all three route to generate/reuse), so the
         # precedence is what the leaf reads first: the most specific report wins. A gate report
@@ -19001,6 +19068,15 @@ class ExecutePromoterTest(unittest.TestCase):
         snap_outs = snap["allowed_output_paths"]
         self.assertTrue(any("/raw/state_snapshots/a.json" in p for p in snap_outs))
         self.assertTrue(any("snapshot_schema.json" in p for p in snap_outs))
+        # a node whose runner is not host-rendered (the harness self-test) owes no `initial/`
+        self.assertFalse(any("/raw/state_snapshots/initial/" in p for p in snap_outs))
+        # ...a host-rendered runner owes one per case (Z6, issue #255)
+        m3c = wc.build_launch_request(
+            refs, evidence_artifacts=("state_snapshots",), runner_host_authored=True, **common)
+        m3c_outs = m3c["allowed_output_paths"]
+        for cid in ("a", "b"):
+            self.assertTrue(any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json")
+                                for p in m3c_outs), m3c_outs)
 
         # metrics_basis.json alone: it is always an allowed output, and no snapshot
         # path is added for an IR that does not declare state_snapshots.
@@ -19029,6 +19105,7 @@ class ExecutePromoterTest(unittest.TestCase):
             self._write(run / "raw" / "metrics_basis.json", {"x": 1})
             self._write(run / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
             self._write(run / "raw" / "state_snapshots" / "caseB.json", {"u": [2]})
+            self._write(run / "raw" / "state_snapshots" / "initial" / "caseA.json", {"u": [0]})
             node = repo / "node"
             refs = c._promote_run_evidence(run, node, ["state_snapshots"])
             self.assertTrue((node / "diagnostics.json").exists())
@@ -19036,7 +19113,17 @@ class ExecutePromoterTest(unittest.TestCase):
             self.assertTrue((node / "raw" / "metrics_basis.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseA.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseB.json").exists())
+            # the host-rendered runner's initial capture is promoted beside the final one
+            self.assertTrue((node / "raw" / "state_snapshots" / "initial" / "caseA.json").exists())
+            self.assertIn("node/raw/state_snapshots/initial/caseA.json", refs)
             self.assertIn("node/raw/metrics_basis.json", refs)
+            # ...and an empty `initial/` (a harness node's own runner writes none) is not
+            # promoted as an empty directory
+            run2, node2 = repo / "run2", repo / "node2"
+            self._write(run2 / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
+            (run2 / "raw" / "state_snapshots" / "initial").mkdir()
+            c._promote_run_evidence(run2, node2, ["state_snapshots"])
+            self.assertFalse((node2 / "raw" / "state_snapshots" / "initial").exists())
 
     def test_promote_is_selective_and_drops_runner_aux_files(self) -> None:
         """Promotion is per artifact type, not a copytree: a file the runner leaves
@@ -20219,6 +20306,40 @@ class LeafUsageRecordingTests(unittest.TestCase):
         # here to say what they are). Before this, codex usage was persisted as it arrived.
         self.assertEqual(usage["provider_details"],
                          {"turn_usage": {"input_tokens": 10, "output_tokens": 20}})
+
+    def test_validate_execute_owes_initial_captures_only_from_a_host_rendered_runner(self) -> None:
+        """Z6 (issue #255), pinned at the handler: `run_substep` computes `runner_host_authored`
+        for the validate phase too, so the execute launch request it records lists
+        `raw/state_snapshots/initial/<case_id>.json` per case exactly when the node's runner
+        is host-rendered. Driven through `run_substep` with `_conductor_authors_runner`
+        answering each way — the direct `build_launch_request` row beside
+        `test_execute_allowed_paths_are_evidence_artifact_driven` cannot see this wiring.
+        Witnessed: with the `phase in ("generate", "validate")` clause reverted to
+        `phase == "generate"` this row fails on the `True` branch."""
+        from unittest import mock
+        for authored in (True, False):
+            with self.subTest(runner_host_authored=authored):
+                c = self._conductor(wc.ProcResult(0, "", ""))
+                # `_FakeConductor` answers `read_case_ids` itself, so patch the INSTANCE's
+                # resolution (the class patch would sit below the fake's override).
+                with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                       return_value=authored), \
+                     mock.patch.object(c, "read_case_ids",
+                                       return_value=("c_alpha", "c_beta")), \
+                     mock.patch.object(c, "_read_evidence_artifacts",
+                                       return_value=("state_snapshots",)):
+                    c.run_substep(self._refs(), "validate", "execute")
+                req = [cap["--request-json"] for sub, cap in c.calls
+                       if sub == "record-launch"][-1]
+                self.assertEqual(req["substep"], "execute")
+                outs = req["allowed_output_paths"]
+                self.assertTrue(any(p.endswith("/raw/state_snapshots/c_alpha.json")
+                                    for p in outs), outs)
+                for cid in ("c_alpha", "c_beta"):
+                    self.assertEqual(
+                        any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json") for p in outs),
+                        authored, outs)
+                self.assertEqual(bool(req.get("runner_host_authored")), authored)
 
     def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no

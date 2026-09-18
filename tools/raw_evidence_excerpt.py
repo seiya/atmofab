@@ -47,7 +47,10 @@ from typing import Any, NamedTuple
 
 #: Bumped when what the excerpt CONTAINS changes, so a recorded `semantic_review.json` says
 #: which window its judge was looking through. Stamped by the host into that file.
-RAW_EXCERPT_POLICY_VERSION = 1
+#: 2: each snapshot case additionally carries `initial` — the summary of the host-rendered
+#: runner's capture right after `case_setup` (`raw/state_snapshots/initial/<case_id>.json`,
+#: Z6, issue #255) — so the judge sees both capture points of a case.
+RAW_EXCERPT_POLICY_VERSION = 2
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {
@@ -478,6 +481,11 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
     The declared shape travels with the summary so the judge can compare them: a snapshot
     whose array is not the shape the schema declares is evidence about the runner, and it is
     invisible from the numbers alone.
+
+    A case whose runner is host-rendered has TWO captures (Z6, issue #255): the final one at
+    `<case_id>.json` and the initial one at `initial/<case_id>.json`, taken right after
+    `case_setup`. The initial capture is summarized under the case's `initial` key by the same
+    summarizer, or `None` when the runner wrote none (a harness self-test's own runner).
     """
     snapshots_dir = raw_dir / "state_snapshots"
     if not snapshots_dir.is_dir():
@@ -502,28 +510,13 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
         problems.append(f"raw/state_snapshots: unreadable ({type(exc).__name__})")
         files = []
     for path in files:
-        label = f"raw/state_snapshots/{path.name}"
-        doc = _read_json(path, problems, label)
-        case: dict[str, Any] = {"case_id": path.stem, "variables": []}
-        if doc is None:
-            case["read"] = False
-            cases.append(case)
-            continue
-        case["read"] = True
-        if not isinstance(doc, dict):
-            problems.append(f"{label}: not a JSON object")
-            cases.append(case)
-            continue
-        if isinstance(time_variable, str):
-            case["time_variable"] = time_variable
-            case["time_value"] = _summarize(doc.get(time_variable)) if (
-                time_variable in doc) else None
-        for name in sorted(k for k in doc if k != time_variable):
-            variable = {"name": name, "declared_shape_expr": declared.get(name)}
-            variable.update(_summarize(doc[name]))
-            case["variables"].append(variable)
-        case["declared_variables_absent"] = sorted(
-            n for n in declared if n not in doc and n != time_variable)
+        case = _snapshot_case(path, f"raw/state_snapshots/{path.name}", declared,
+                              time_variable, problems)
+        initial_path = snapshots_dir / "initial" / path.name
+        case["initial"] = (
+            _snapshot_case(initial_path, f"raw/state_snapshots/initial/{path.name}",
+                           declared, time_variable, problems)
+            if initial_path.is_file() else None)
         cases.append(case)
     return {
         "present": True,
@@ -535,6 +528,32 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
         },
         "cases": cases,
     }
+
+
+def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variable: Any,
+                   problems: list[str]) -> dict[str, Any]:
+    """One snapshot file summarized against the declaration (the per-case body of
+    `_state_snapshots`, shared by the final and the initial capture of a case)."""
+    doc = _read_json(path, problems, label)
+    case: dict[str, Any] = {"case_id": path.stem, "variables": []}
+    if doc is None:
+        case["read"] = False
+        return case
+    case["read"] = True
+    if not isinstance(doc, dict):
+        problems.append(f"{label}: not a JSON object")
+        return case
+    if isinstance(time_variable, str):
+        case["time_variable"] = time_variable
+        case["time_value"] = _summarize(doc.get(time_variable)) if (
+            time_variable in doc) else None
+    for name in sorted(k for k in doc if k != time_variable):
+        variable = {"name": name, "declared_shape_expr": declared.get(name)}
+        variable.update(_summarize(doc[name]))
+        case["variables"].append(variable)
+    case["declared_variables_absent"] = sorted(
+        n for n in declared if n not in doc and n != time_variable)
+    return case
 
 
 def _required_evidence_rows(raw_dir: Path, io_contract: Any) -> list[dict[str, Any]]:

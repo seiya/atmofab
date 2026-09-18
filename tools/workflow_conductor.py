@@ -513,8 +513,8 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
 # attempt that provably cannot converge (the C1/C2 "regenerating one side can't fix the other"
 # pattern). `post_execute_violation` and `quality_check_mismatch` stay on the Generate route even
-# on an M3c node: the renderer boxes that case's required variables unconditionally (it discards
-# the leaf registry's found-flag), so the key set and shapes are host-fixed by the IR, but every
+# on an M3c node: the renderer captures every declared variable for every case straight from
+# the checks module's bound storage, so the key set and shapes are host-fixed by the IR, but every
 # VALUE comes from the leaf's checks module — a trivial (all-zero) basis, a NaN, or a wrong metric
 # is exactly what a warm repair fixes.
 HOST_RENDERED_RUNNER_UNREPAIRABLE: frozenset[str] = frozenset({"snapshot_deliverable_gap"})
@@ -1708,10 +1708,15 @@ def build_launch_request(
                 f"{rundir}/raw/metrics_basis.json",
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
-            # artifacts the IR's required_evidence declares.
+            # artifacts the IR's required_evidence declares. A host-rendered runner (Z6, issue
+            # #255) additionally writes the case's INITIAL capture under `initial/` — the same
+            # per-case shape, taken right after `case_setup`; a hand-authored harness runner
+            # writes none, so the deliverable is keyed on `runner_host_authored`.
             if "state_snapshots" in evidence_artifacts:
                 for cid in case_ids:
                     outs.append(f"{rundir}/raw/state_snapshots/{cid}.json")
+                    if runner_host_authored:
+                        outs.append(f"{rundir}/raw/state_snapshots/initial/{cid}.json")
                 outs.append(f"{rundir}/raw/state_snapshots/snapshot_schema.json")
             outs += [
                 f"{rundir}/stdout.log",
@@ -3353,11 +3358,15 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     That is unchanged from before this was a function — both loops wrote the same literal — and
     it is inert. It was inert already when its only reader was `_payload_is_m3c_physics`, which
     narrowed the AGENTIC contract-doc set while a pure launch emptied `skill_must_read_refs`
-    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery, so
-    the stamp now has NO reader at all and is recorded provenance. It is written down because
-    this is the SEAM: the next author needs to know it already has a caller it does not fit,
-    and that adding a reader means deciding what the flag means for an `infrastructure` node
-    first.
+    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery.
+    Since Z6 (issue #255) `build_launch_request` reads the flag again, for ONE decision on the
+    validate.execute request only: whether the `raw/state_snapshots/initial/<case_id>.json`
+    captures are deliverables — and THAT caller passes the node's real answer
+    (`_conductor_authors_runner`, in `run_substep`), never this constant, so the literal here
+    stays inert and recorded provenance on the compile path. It is written down because this
+    is the SEAM: the next author needs to know it already has a caller it does not fit, and
+    that reading it on the compile path means deciding what the flag means for an
+    `infrastructure` node first.
     """
     return (True, True)
 
@@ -5751,7 +5760,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots
+\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:
@@ -6004,11 +6013,12 @@ clean:
 
         The layers themselves live in `codegen_bundle.pure_bundle_contract_violation` (the SINGLE
         source shared with the deterministic post-generate tamper gate, so the two cannot drift);
-        this method only assembles the conductor-side inputs (IR state vars, resolved harness
-        capabilities, the build-graph derivation) and delegates."""
+        this method only assembles the conductor-side inputs (the IR snapshot variables the
+        bundle must bind, resolved harness capabilities, the build-graph derivation) and
+        delegates."""
         from tools.codegen_bundle import (
             pure_bundle_contract_violation, harness_provided_capabilities,
-            published_operations_from_ir)
+            published_operations_from_ir, snapshot_variables_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # Capability negotiation against the SINGLE infrastructure (harness) dependency, resolved
         # by the same `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a
@@ -6016,12 +6026,11 @@ clean:
         # declared (None => nothing provided => every requirement unsatisfied, fail-closed).
         harness_nk = self._pure_harness_node_key(ir, refs.node_key)
         provided = harness_provided_capabilities(harness_nk) if harness_nk else None
-        algorithm = (ir.get("algorithm") or {}) if isinstance(ir, dict) else {}
         return pure_bundle_contract_violation(
             doc, node_key=refs.node_key, spec_id=refs.spec_id,
             shape=(self._bundle_shape(refs) or ""),
             runner_basename=self._runner_basename(refs),
-            ir_state_variables=(algorithm.get("state_variables") or []),
+            ir_snapshot_variables=snapshot_variables_from_ir(ir),
             harness_provided=provided, harness_label=harness_nk,
             build_graph=lambda d: self._build_pure_bundle_graph(refs, d),
             ir_published_operations=published_operations_from_ir(ir))
@@ -6132,7 +6141,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots
+\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:
@@ -10408,6 +10417,15 @@ clean:
                 for f in sorted((run_tmp / "raw" / "state_snapshots").glob("*.json")):
                     shutil.copy2(f, sdst / f.name)
                     raw_refs.append(f"{node_ref}/raw/state_snapshots/{f.name}")
+                # The initial captures a host-rendered runner writes (Z6, issue #255): the
+                # same per-case files one directory down, promoted with the final ones.
+                initial = run_tmp / "raw" / "state_snapshots" / "initial"
+                initial_files = sorted(initial.glob("*.json")) if initial.is_dir() else []
+                if initial_files:  # a harness node's own runner writes none: no empty dir
+                    (sdst / "initial").mkdir(exist_ok=True)
+                for f in initial_files:
+                    shutil.copy2(f, sdst / "initial" / f.name)
+                    raw_refs.append(f"{node_ref}/raw/state_snapshots/initial/{f.name}")
         return raw_refs
 
     def _author_snapshot_schema(self, ir: dict[str, Any], node_dir: Path) -> str | None:
@@ -10447,7 +10465,8 @@ clean:
         return f"{self._rel(node_dir)}/raw/state_snapshots/snapshot_schema.json"
 
     def _snapshot_deliverable_gap(self, snapshots_dir: Path, case_ids: list[str],
-                                  artifacts: list[str]) -> str:
+                                  artifacts: list[str], *,
+                                  initial_required: bool = False) -> str:
         """Diagnostic for a per-case snapshot deliverable mismatch, else "".
 
         Validate.execute's deliverable gate (build_launch_request) requires one
@@ -10471,12 +10490,21 @@ clean:
                    if snapshots_dir.exists() else set())
         expected = {f"{cid}.json" for cid in case_ids}
         missing = sorted(expected - present)
+        if initial_required:
+            # The host-rendered runner's initial captures (Z6, issue #255), under `initial/`.
+            initial_dir = snapshots_dir / "initial"
+            present_initial = ({f.name for f in initial_dir.glob("*.json")}
+                               if initial_dir.exists() else set())
+            missing += [f"initial/{name}" for name in sorted(expected - present_initial)]
+            present |= {f"initial/{name}" for name in present_initial}
         if not missing:
             return ""
         return (
             "[execute fail: snapshot deliverable mismatch] Validate.execute requires "
-            "one raw/state_snapshots/<case_id>.json per case. "
-            f"expected={sorted(expected)}; runner wrote={sorted(present)}; "
+            "one raw/state_snapshots/<case_id>.json per case"
+            + (" (and one raw/state_snapshots/initial/<case_id>.json, the host-rendered "
+               "runner's capture right after case_setup)" if initial_required else "")
+            + f". expected={sorted(expected)}; runner wrote={sorted(present)}; "
             f"missing={missing}. Name each snapshot exactly <case_id>.json, built "
             "from the case_id passed via --cases (e.g. trim(case_id)//'.json'). "
             "Canonical: phase_02_generate.md / phase_04_validate.md §43."
@@ -10566,8 +10594,9 @@ clean:
         qc_cmd_log = src_dir / "command_log.jsonl"
         case_ids = list(self.read_case_ids(refs))
 
-        # The runner opens raw/ paths relatively (cwd=RUNDIR); pre-create them.
-        (run_tmp / "raw" / "state_snapshots").mkdir(parents=True, exist_ok=True)
+        # The runner opens raw/ paths relatively (cwd=RUNDIR); pre-create them — `initial/`
+        # included, which the host-rendered runner writes its post-`case_setup` captures into.
+        (run_tmp / "raw" / "state_snapshots" / "initial").mkdir(parents=True, exist_ok=True)
         qc_tmp.mkdir(parents=True, exist_ok=True)
 
         # R2 invariant guard: clear any pre-existing verdict.json / trial_meta.json in this run
@@ -10650,7 +10679,8 @@ clean:
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
         snapshot_gap = self._snapshot_deliverable_gap(
-            run_tmp / "raw" / "state_snapshots", case_ids, artifacts)
+            run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
+            initial_required=self._conductor_authors_runner(refs))
 
         run_diag = _read_json(run_tmp / "diagnostics.json") or {}
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
@@ -10918,8 +10948,10 @@ clean:
             exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
             makefile_host_authored=(
                 phase == "generate" and self._conductor_authors_makefile(refs)),
+            # `validate` too: execute's deliverable set depends on whether the runner is the
+            # host-rendered glue (which writes the `initial/` captures) — Z6, issue #255.
             runner_host_authored=(
-                phase == "generate" and self._conductor_authors_runner(refs)),
+                phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
             repair=repair,
             resolved_dependencies=resolved_dependencies,
             dependency_surface=dependency_surface,

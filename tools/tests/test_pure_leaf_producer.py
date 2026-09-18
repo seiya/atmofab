@@ -44,7 +44,7 @@ def _runner_text() -> str:
 def cb_runner_imports(runner_text: str, spec_id: str) -> tuple[str, ...]:
     """The names a rendered runner actually imports — a TEST-only read of the runner, kept here to
     assert that the required ABI is deliberately WIDER than it (production must not key off this;
-    `Generate.static` requires all ten regardless)."""
+    `Generate.static` requires the full ABI regardless)."""
     out: list[str] = []
     body, seen = "", False
     for raw in runner_text.splitlines():
@@ -69,15 +69,18 @@ def cb_runner_imports(runner_text: str, spec_id: str) -> tuple[str, ...]:
 
 def _checks_symbols() -> tuple[str, ...]:
     """The fixed checks ABI — required in FULL of every M3c node, not the subset this node's
-    runner imports (`Generate.static` checks all ten). Imported from the renderer, the ABI's
-    authority, rather than hand-typed here."""
+    runner imports (`Generate.static` checks the full ABI). Imported from the renderer, the
+    ABI's authority, rather than hand-typed here."""
     from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
     return CHECKS_PUBLIC_NAMES
 
 
-def _checks_content(*, omit: str = "", as_function: str = "", unexported: str = "") -> str:
+def _checks_content(*, omit: str = "", as_function: str = "", unexported: str = "",
+                    bound: tuple[str, ...] = ("h",)) -> str:
     """A checks module publishing the fixed ABI, in the certified idiom (a bare `private` default
-    plus an explicit `public ::` list — authoring rule 1). `omit` drops a name entirely,
+    plus an explicit `public ::` list — authoring rule 1), plus the BOUND state `bound` — the
+    module-level variables (named as the IR snapshot variables) the host-rendered runner reads
+    directly since Z6, each `public ::`-listed. `omit` drops an ABI name entirely,
     `as_function` defines one as a FUNCTION (the two shapes the sw2d P-arm emitted), and
     `unexported` defines one but leaves it off the export list.
 
@@ -85,7 +88,9 @@ def _checks_content(*, omit: str = "", as_function: str = "", unexported: str = 
     id as a literal actual — so there is no id-literal-presence layer to satisfy here."""
     syms = [s for s in _checks_symbols() if s != omit]
     body = [f"module {_SPEC_ID}_checks", "  private"]
+    body += [f"  real(real64), allocatable :: {v}(:, :)" for v in bound]
     body += [f"  public :: {s}" for s in syms if s != unexported]
+    body += [f"  public :: {v}" for v in bound]
     body.append("contains")
     for sym in syms:
         if sym == as_function:
@@ -115,8 +120,17 @@ def _valid_bundle() -> dict:
              "defined_in": f"{_SPEC_ID}_checks.f90", "module": f"{_SPEC_ID}_checks"},
         ],
         "target_lowering_plan": {"precision": {"real_kind": "real64"}, "state_residency": "host"},
-        "capability_requirements": ["sync_single_case@1"],
+        "capability_requirements": ["sync_single_case@1", "state_registration@1"],
+        # Z6: one binding per IR snapshot variable (`_node_ir` declares `h`), in the convention
+        # the host-rendered runner is rendered against.
+        "state_bindings": [_binding("h")],
     }
+
+
+def _binding(var: str) -> dict:
+    return {"node_key": _NODE, "state_variable": var, "storage_symbol": var,
+            "module": f"{_SPEC_ID}_checks", "capture": "harness_registration",
+            "capability": "state_registration@1"}
 
 
 def _node_ir(state_vars=("h", "u", "v")) -> dict:
@@ -289,31 +303,58 @@ class PureBundleViolationsTests(unittest.TestCase):
     def test_capability_unsatisfied(self) -> None:
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["capability_requirements"] = ["batched_cases@1"]
+        bad["capability_requirements"] = ["batched_cases@1", "state_registration@1"]
         cat, _ = c._pure_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_capability_unsatisfied")
 
     def test_state_binding_mismatch(self) -> None:
+        # A binding of a name the IR snapshot schema does not declare is an invented
+        # registration; the declared `h` stays unbound at the same time.
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["files"][1]["modules"] = [f"{_SPEC_ID}_checks"]
-        bad["state_bindings"] = [{
-            "node_key": _NODE, "state_variable": "not_a_state", "storage_symbol": "q_storage",
-            "module": f"{_SPEC_ID}_checks", "capture": "checks_getter", "capability": None}]
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        bad["state_bindings"] = [_binding("not_a_state")]
+        cat, detail = c._pure_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_state_binding_mismatch")
+        self.assertIn("['not_a_state']", detail)
+        self.assertIn("with no binding: ['h']", detail)
 
-    def test_state_binding_on_canonical_ir_object_state_var_accepted(self) -> None:
-        # Codex P2 (finding 1): with the canonical OBJECT-shaped state_variables, a binding on a
-        # REAL declared state var ("h") must be accepted. A comprehension that kept only str
-        # entries would leave ir_state_vars empty and wrongly reject this as a mismatch.
+    def test_state_bindings_are_required_on_m3c(self) -> None:
+        # Z6: the host-rendered runner reads `sb_h => h` from the checks module, so a bundle
+        # that binds nothing is one whose runner cannot be linked — refused with the convention
+        # spelled out in the finding (it is a warm-repair instruction).
         c, refs = self._c_refs()
-        ok = _valid_bundle()
-        ok["files"][1]["modules"] = [f"{_SPEC_ID}_checks"]
-        ok["state_bindings"] = [{
-            "node_key": _NODE, "state_variable": "h", "storage_symbol": "q_storage",
-            "module": f"{_SPEC_ID}_checks", "capture": "checks_getter", "capability": None}]
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        for shape in ("absent", "empty"):
+            with self.subTest(shape=shape):
+                bad = _valid_bundle()
+                if shape == "absent":
+                    del bad["state_bindings"]
+                else:
+                    bad["state_bindings"] = []
+                bad["capability_requirements"] = ["sync_single_case@1"]
+                cat, detail = c._pure_bundle_violations(refs, bad)
+                self.assertEqual(cat, "bundle_state_binding_mismatch")
+                self.assertIn("declares ['h']", detail)
+                self.assertIn("'harness_registration'", detail)
+                self.assertIn("'state_registration@1'", detail)
+                self.assertIn(f"'{_SPEC_ID}_checks'", detail)
+
+    def test_state_binding_on_the_ir_snapshot_variable_is_accepted(self) -> None:
+        # The set the bundle must bind is the IR's SNAPSHOT schema (`_node_ir` declares `h`
+        # there; its `algorithm.state_variables` also lists `u` and `v`, which are NOT snapshot
+        # variables and so must NOT be demanded). The fixture's snapshot schema uses the
+        # canonical OBJECT form — a projection that kept only `str` entries would leave the
+        # set empty and reject every binding.
+        c, refs = self._c_refs()
+        self.assertIsNone(c._pure_bundle_violations(refs, _valid_bundle()))
+
+    def test_bound_variable_must_be_published(self) -> None:
+        c, refs = self._c_refs()
+        bad = _valid_bundle()
+        bad["files"][1]["content"] = _checks_content().replace("  public :: h\n", "")
+        self.assertNotIn("public :: h\n", bad["files"][1]["content"])
+        cat, detail = c._pure_bundle_violations(refs, bad)
+        self.assertEqual(cat, "bundle_checks_abi_violation")
+        self.assertIn("must publish every bound state variable", detail)
 
     def test_m3c_name_match_is_case_sensitive_like_the_filesystem(self) -> None:
         # `logical_path` becomes a FILENAME, and Generate.static opens `<spec_id>_checks.f90`
@@ -406,17 +447,24 @@ class PureBundleViolationsTests(unittest.TestCase):
         self.assertIn("runner_render", violation)
 
     def test_runner_imported_subset_is_not_the_required_set(self) -> None:
-        # Pins the direction of the Codex P1 fix: the runner here imports 6 of the 10, and a
-        # bundle publishing only those 6 must be REJECTED (Generate.static wants all ten).
+        # Pins the direction of the Codex P1 fix: the runner here imports a PROPER subset of the
+        # ABI (a node with no metrics imports no `metric_compute`), and a bundle publishing only
+        # that subset must be REJECTED (Generate.static wants the full ABI). The fixture IR
+        # declares metrics, so drop them here to make the import set a proper subset.
         c, refs = self._c_refs()
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
-        imported = cb_runner_imports(_runner_text(), _SPEC_ID)
+        from tools.backends.language.fortran.runner import (
+            CHECKS_PUBLIC_NAMES,
+            render_runner,
+        )
+        ir = _node_ir()
+        ir["io_contract"]["diagnostics_contract"]["metrics"] = []
+        imported = cb_runner_imports(render_runner(ir, _SPEC_ID, _HARNESS_SPEC_ID), _SPEC_ID)
         self.assertTrue(set(imported) < set(CHECKS_PUBLIC_NAMES), imported)
         bad = _valid_bundle()
         syms = list(imported)
         bad["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n"
-            + "".join(f"  public :: {s}\n" for s in syms)
+            + "".join(f"  public :: {s}\n" for s in syms) + "  public :: h\n"
             + "contains\n"
             + "".join(f"  subroutine {s}()\n  end subroutine {s}\n" for s in syms)
             + "end module\n")
@@ -486,7 +534,8 @@ class PureBundleViolationsTests(unittest.TestCase):
             "  subroutine case_setup()\n  end subroutine case_setup\n"
             f"end module {_SPEC_ID}_checks_impl\n"
             f"module {_SPEC_ID}_checks\n"
-            f"  use {_SPEC_ID}_checks_impl, only: case_setup\n  private\n{pubs}contains\n"
+            f"  use {_SPEC_ID}_checks_impl, only: case_setup\n  private\n{pubs}"
+            "  public :: h\ncontains\n"
             + defs
             + "end module\n")
         self.assertIsNone(c._pure_bundle_violations(refs, ok))
@@ -534,7 +583,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         ok = _valid_bundle()
         syms = _checks_symbols()
-        wrapped = "  public :: " + ", &\n       &  ".join(syms) + "\n"
+        wrapped = "  public :: " + ", &\n       &  ".join((*syms, "h")) + "\n"
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n" + wrapped
             + "contains\n"
@@ -574,7 +623,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         ok = _valid_bundle()
         syms = _checks_symbols()
-        wrapped = "  public :: " + ", &\n    ".join(syms) + "\n"
+        wrapped = "  public :: " + ", &\n    ".join((*syms, "h")) + "\n"
         ok["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n  private\n" + wrapped
             + "".join(f"  subroutine {s}()\n  end subroutine\n" for s in syms)
@@ -659,16 +708,19 @@ class PureBundleViolationsTests(unittest.TestCase):
         cat, _ = c._pure_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
 
-    def test_state_binding_fail_closed_when_ir_declares_no_state(self) -> None:
-        # Review fix: an EMPTY declared state set must REJECT any binding (not accept all).
+    def test_state_binding_fail_closed_when_ir_declares_no_snapshot(self) -> None:
+        # Review fix (kept through Z6): an EMPTY declared set must REJECT any binding (not
+        # accept all). The declared set is now the snapshot schema, so empty it there.
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _write_node(repo, state_vars=())
+        ir_path = repo / "workspace" / "ir" / _SAFE / "sw_20260715_001" / "spec.ir.yaml"
+        import yaml
+        ir = yaml.safe_load(ir_path.read_text())
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] = []
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
         c = _conductor(repo)
         bad = _valid_bundle()
-        bad["state_bindings"] = [{
-            "node_key": _NODE, "state_variable": "h", "storage_symbol": "q_storage",
-            "module": f"{_SPEC_ID}_checks", "capture": "checks_getter", "capability": None}]
         cat, _ = c._pure_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_state_binding_mismatch")
 
@@ -737,7 +789,7 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         self._saved = dict(cb.HARNESS_CAPABILITY_MANIFESTS)
         # A second harness providing what the node's own harness does not.
         cb.HARNESS_CAPABILITY_MANIFESTS["infrastructure/harness_gpu_next@0.1.0"] = frozenset(
-            {"async_device_resident@1", "state_registration@1"})
+            {"async_device_resident@1", "trusted_reductions@1"})
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name)
         self.refs = _write_node(self.repo, state_vars=("h",))
@@ -759,9 +811,9 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         # a repair burn on a bundle the leaf could not know was unsatisfiable.
         shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
         provided = {t for m in shown["manifests"] for t in m["provides"]}
-        self.assertNotIn("state_registration@1", provided)
+        self.assertNotIn("trusted_reductions@1", provided)
         self.assertNotIn("async_device_resident@1", provided)
-        self.assertEqual(provided, {"sync_single_case@1"})
+        self.assertEqual(provided, {"sync_single_case@1", "state_registration@1"})
 
     def test_context_and_gate_resolve_the_same_harness(self) -> None:
         # The invariant the fix rests on: one resolution, so the two cannot drift.
@@ -2563,7 +2615,8 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, gen, ir_ref = self._gen_dir(tmp)
             bundle = _valid_bundle()
-            bundle["capability_requirements"] = ["batched_cases@1"]  # schema-valid, unsupported
+            bundle["capability_requirements"] = [  # schema-valid, unsupported
+                "batched_cases@1", "state_registration@1"]
             (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
             v: list[str] = []
             vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)

@@ -140,15 +140,26 @@ def verdict_tuple() -> dict[str, str]:
 # version -> digest, per transformation. KEEP historical entries; ADD the new one on a bump.
 PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-1": "5f2a2b23cefa67a97a5c3ca493df8fcb37f870de3c2c65076897fd8b544648e1",
+    # Z6 PR-1 (issue #255): `phase_01_compile.md` now states what a snapshot variable IS (primary
+    # state, bound in the checks module) and the identifier rule its name must satisfy — a
+    # compile leaf reading it authors a different IR, so the key moves.
+    "compile-docs-2": "1c4e903efb34e2ed8699159a0cac0a994573d4d8269cbab61223d93a82d6263a",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
+    # Z6 PR-1 (issue #255): the rendered runner reads bound storage (`sb_<var> => <var>`)
+    # instead of calling getters, captures twice per case, and the build control file creates
+    # `raw/state_snapshots/initial`.
+    "render-2": "8409184903c2dc3dca987c853f134fa24ec4cbd38b7623a08457a49ff1b501d3",
 }
 PINNED_BUILD: dict[str, str] = {
     "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
+    # Z6 PR-1 (issue #255): execute promotes and requires the `initial/<case_id>.json` captures
+    # of a host-rendered runner — a new deliverable of the phase.
+    "execute-2": "28a3364616ba866133a0e34933a67c0154f0de61409d4cf5ffb95103933eb182",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

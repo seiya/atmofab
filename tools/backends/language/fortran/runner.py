@@ -16,14 +16,24 @@ folds a verdict, or excludes an xfail itself.
 
 Split of authorship on an M3c node:
 - ``<spec_id>_model.f90`` — the physics kernel + ``__apply`` op   (LLM leaf)
-- ``<spec_id>_checks.f90`` — the fixed-ABI check/getter callbacks (LLM leaf)
+- ``<spec_id>_checks.f90`` — the fixed-ABI check/metric callbacks + the
+  module-level state storage the snapshot is captured from   (LLM leaf)
 - ``<spec_id>_runner.f90`` — this renderer                        (host)
 - ``src/Makefile``          — ``workflow_conductor._write_makefile`` (host)
 
 The rendered runner ``use``s two modules: ``harness_fortran_cpu_model`` (the
-certified plumbing) and ``<spec_id>_checks`` (the leaf's fixed-ABI callbacks,
-see ``docs/workflow/CHECKS_MODULE_CONTRACT.md``). It is authored lint-clean
-(``use only:``, a bare ``implicit none`` with NO allow directive, ≤100-column
+certified plumbing) and ``<spec_id>_checks`` (the leaf's fixed-ABI callbacks AND
+its bound state storage, see ``docs/workflow/CHECKS_MODULE_CONTRACT.md``). Snapshot
+capture is the runner's, not the module's (Z6, issue #255): every snapshot variable
+is a module-level ``real(dp)`` variable of ``<spec_id>_checks`` named exactly as the IR
+declares it, imported as ``sb_<var> => <var>`` and serialized by the certified harness
+emitters twice per case — right after ``case_setup`` (``raw/state_snapshots/initial/
+<case_id>.json``) and right after ``case_run`` (``raw/state_snapshots/<case_id>.json``)
+— before any check or metric callback of that case runs. Generated code contributes
+the binding (the declaration and the allocation) and nothing downstream of it: there
+is no getter, so no generated procedure can filter, compute or rewrite a captured
+value (``zero_base_architecture.md`` §A4). It is authored lint-clean
+(``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column
 lines) so the deterministic
 Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
 
@@ -38,6 +48,7 @@ the *certified* harness IR signatures + source before rendering.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from tools.backends.language.fortran import bundle
@@ -55,12 +66,21 @@ from tools.spec_input_gates import CASE_ID_TOKEN_RE
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
 # docs/workflow/CHECKS_MODULE_CONTRACT.md). Non-prefixed public names (module
 # scope makes them collision-free) so the f2008 63-char identifier limit is not
-# exceeded even for a 55-char spec_id.
+# exceeded even for a 55-char spec_id. Five procedures: the former snapshot getters
+# (`get_scalar` / `get_r1..r4`) are retired — the runner reads the bound module-level
+# state directly (`STATE_BINDING_PREFIX`), so a value-returning getter is
+# unrepresentable rather than policed (Z6, issue #255).
 CHECKS_PUBLIC_NAMES = (
     "case_setup", "case_run", "get_time",
-    "get_scalar", "get_r1", "get_r2", "get_r3", "get_r4",
     "checks_compute", "metric_compute",
 )
+
+# The runner-local alias of a bound snapshot variable: `use <spec_id>_checks, only:
+# sb_<var> => <var>`. The prefix keeps the alias clear of every runner local (none starts
+# with `sb_`) and of the ABI names, so an IR variable named like a runner local (`i`,
+# `ok`, `vals`) still renders. `_snapshot_schema` bounds `sb_<var>` at the identifier limit.
+STATE_BINDING_PREFIX = "sb_"
+_IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 
 # Harness-owned snapshot keys a physics snapshot variable must not shadow.
 HARNESS_RESERVED_SNAPSHOT_KEYS = frozenset({"t", "case_id", "step"})
@@ -166,11 +186,42 @@ def _snapshot_schema(ir: dict[str, Any]) -> tuple[dict[str, str], str]:
         raise RenderError("state_snapshots schema declares no variables")
     time_var = schema.get("time_variable")
     time_var = time_var.strip() if isinstance(time_var, str) and time_var.strip() else "t"
+    seen_folded: dict[str, str] = {}
+    abi_folded = {n.casefold() for n in CHECKS_PUBLIC_NAMES}
     for name in variables:
         if name in HARNESS_RESERVED_SNAPSHOT_KEYS:
             raise RenderError(
                 f"snapshot variable {name!r} collides with a harness-reserved key "
                 f"{sorted(HARNESS_RESERVED_SNAPSHOT_KEYS)}")
+        # A snapshot variable IS a module-level variable of `<spec_id>_checks` (the binding
+        # convention), imported by the runner as `sb_<name> => <name>`: so the name must be a
+        # legal identifier, the alias must fit the identifier limit, two names may not fold to
+        # one identifier (Fortran is case-insensitive: `U` and `u` would be one variable, and
+        # `use ..., only: sb_U => U, sb_u => u` would alias one storage twice), and it may not
+        # fold to an ABI procedure name (a module cannot hold a variable and a procedure of one
+        # name, so no checks module could be written for such an IR).
+        if not _IDENTIFIER_RE.fullmatch(name):
+            raise RenderError(
+                f"snapshot variable {name!r} is not a bindable identifier: every snapshot "
+                "variable is captured from a module-level variable of that name in the "
+                f"checks module, so it must match {bundle.IDENTIFIER_PATTERN}")
+        alias = f"{STATE_BINDING_PREFIX}{name}"
+        if len(alias) > bundle.IDENTIFIER_MAX:
+            raise RenderError(
+                f"snapshot variable {name!r} is {len(name)} chars; its runner alias "
+                f"{alias!r} exceeds the {bundle.IDENTIFIER_MAX}-char identifier limit")
+        folded = name.casefold()
+        if folded in seen_folded:
+            raise RenderError(
+                f"snapshot variables {seen_folded[folded]!r} and {name!r} are one identifier "
+                "to the checks module (identifiers are case-insensitive), so they cannot both "
+                "be bound")
+        seen_folded[folded] = name
+        if folded in abi_folded:
+            raise RenderError(
+                f"snapshot variable {name!r} collides with a checks-ABI procedure name "
+                f"{list(CHECKS_PUBLIC_NAMES)}; a module cannot hold a variable of that name "
+                "beside the procedure")
     return variables, time_var
 
 
@@ -250,9 +301,10 @@ def _target_cases(ir: dict[str, Any], test_id: str) -> list[str]:
 
 
 def _per_case_vars(ir: dict[str, Any], schema_vars: dict[str, str]) -> dict[str, list[str]]:
-    """Map each case_id to the ordered snapshot variables it must emit — the
-    union of ``required_raw_variables`` over the tests targeting that case,
-    ordered by the snapshot schema declaration order (stable JSON key order)."""
+    """Map each case_id to the union of ``required_raw_variables`` over the tests targeting
+    that case, ordered by the snapshot schema declaration order. Since Z6 this is a
+    VALIDATION (each entry must be a schema variable) and the metrics-basis pick set — the
+    runner captures every schema variable for every case, not this per-case subset."""
     io = _dget(ir, "io_contract", {})
     req_by_test: dict[str, list[str]] = {}
     for r in _dget(io, "test_evidence_requirements", []) or []:
@@ -429,16 +481,11 @@ def _flit(value: str) -> str:
 
 
 def _ranks_used(ir: dict[str, Any]) -> set[int]:
-    """The snapshot-variable ranks (0..4) that actually appear across the cases —
-    so both the renderer and the signature pin agree on which emitters/getters
-    the glue depends on."""
+    """The snapshot-variable ranks (0..4) the schema declares — every variable is captured
+    for every case — so both the renderer and the signature pin agree on which emitters the
+    glue depends on."""
     schema_vars, _ = _snapshot_schema(ir)
-    per_case = _per_case_vars(ir, schema_vars)
-    ranks: set[int] = set()
-    for vs in per_case.values():
-        for v in vs:
-            ranks.add(_rank_of_shape(schema_vars[v], v))
-    return ranks
+    return {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
 
 
 def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
@@ -567,12 +614,11 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     target_class = _target_class(ir)
     threads = _threads(ir)
 
-    # ranks actually used across every case that emits, so we import/declare only
-    # the emitters and buffers we need (unused `use only`/vars would trip lint).
-    ranks_used: set[int] = set()
-    for cid in case_ids:
-        for v in per_case.get(cid, []):
-            ranks_used.add(_rank_of_shape(schema_vars[v], v))
+    # ranks the schema declares, so we import only the emitters we call (an unused `use only`
+    # name would trip lint). Every snapshot variable is captured for EVERY case (Z6): the
+    # snapshot is the full declared state, not the subset a case's tests happen to require —
+    # `per_case` above validates `required_raw_variables` ⊆ schema and nothing else here.
+    ranks_used = {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
     has_scalar = 0 in ranks_used
     array_ranks = sorted(r for r in ranks_used if r >= 1)
 
@@ -590,13 +636,20 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
         H("write_diagnostics"),
         H("write_perf"),
     ]
-    checks_syms = ["case_setup", "case_run", "get_time"]
-    if has_scalar:
-        checks_syms.append("get_scalar")
-    checks_syms += [f"get_r{r}" for r in array_ranks]
-    checks_syms.append("checks_compute")
+    checks_syms = ["case_setup", "case_run", "get_time", "checks_compute"]
     if metrics:  # metric_compute is only called when the node declares metrics
         checks_syms.append("metric_compute")
+    # The bound state: one `sb_<var> => <var>` rename per snapshot variable (schema declaration
+    # order) — the same set the bundle gate requires bound, so a declared state the runner
+    # never read cannot exist (a round-2 reviewer measured that gap when the read set was the
+    # per-case union of `required_raw_variables`).
+    bound_vars = list(schema_vars)
+    for v in bound_vars:
+        one_line = f"    {STATE_BINDING_PREFIX}{v} => {v}, &"
+        if len(one_line) < MAX_RENDERED_LINE:
+            checks_syms.append(f"{STATE_BINDING_PREFIX}{v} => {v}")
+        else:  # a long name: continue between the alias and the target
+            checks_syms.append(f"{STATE_BINDING_PREFIX}{v} => &\n      {v}")
 
     lines: list[str] = []
     a = lines.append
@@ -645,12 +698,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
         a(f"  type({H('h_metric')}), allocatable :: case_metrics(:)")
     a("")
     a(f"  character(len={CHECK_STATUS_WIDTH}) :: cstatus")
-    if has_scalar:
-        a("  real(dp) :: sval")
-    for r in array_ranks:
-        dims = ",".join(":" for _ in range(r))
-        a(f"  real(dp), allocatable :: r{r}buf({dims})")
-    a("  logical :: gfound")
     if metrics:
         a("  integer :: mcount, tci")
         a("  real(dp) :: mval")
@@ -682,31 +729,30 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # ---- per-case loop ----
     a("  do ci = 1, ncases")
     a("    call case_setup(trim(case_ids(ci)), setup_ok)")
+    a("")
+    # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
+    # state — read straight from the checks module's storage — right after `case_setup`
+    # (initial) and right after `case_run` (final), and `snap_cache` holds the serialized
+    # STRINGS, so nothing a later `checks_compute` / `metric_compute` / `get_time` callback
+    # writes into that storage can reach a snapshot or the metrics basis. There is no getter in
+    # between: `get_time` — generated code — is called AFTER the capture, for the time value
+    # the snapshot is written with, so no generated procedure runs between `case_setup` /
+    # `case_run` returning and the state being serialized.
+    a("    ! --- initial state: bound storage serialized right after case_setup, before any")
+    a("    ! --- callback of this case runs (raw/state_snapshots/initial/<case_id>.json) ---")
+    a("    call capture_state(trim(case_ids(ci)), vals)")
+    a("    call get_time(tval)")
+    a(f"    call {H('write_snapshot')}('initial/'//trim(case_ids(ci)), vals, tval)")
+    a("    deallocate(vals)")
+    a("")
     a("    call case_run(trim(case_ids(ci)), steps_c, cells_c, run_ok)")
     a("    steps_total = steps_total + steps_c")
     a("    cells_total = cells_total + cells_c")
-    a("    call get_time(tval)")
     a("")
-    a("    ! --- per-case snapshot state (emit only this case's required variables) ---")
-    a("    select case (trim(case_ids(ci)))")
-    for cid in case_ids:
-        vs = per_case.get(cid, [])
-        a(f"    case ('{_flit(cid)}')")
-        a(f"      allocate(vals({len(vs)}))")
-        for k, v in enumerate(vs, start=1):
-            rank = _rank_of_shape(schema_vars[v], v)
-            vlit = _flit(v)
-            if rank == 0:
-                a(f"      call get_scalar('{vlit}', sval, gfound)")
-                a(f"      vals({k}) = {H('box')}('{vlit}', &")
-                a(f"        {H('emit_real')}(sval))")
-            else:
-                a(f"      call get_r{rank}('{vlit}', r{rank}buf, gfound)")
-                a(f"      vals({k}) = {H('box')}('{vlit}', &")
-                a(f"        {H(f'emit_array_r{rank}')}(r{rank}buf))")
-    a("    case default")
-    a("      allocate(vals(0))")
-    a("    end select")
+    a("    ! --- final state: the same bound storage right after case_run, before any check")
+    a("    ! --- or metric callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
+    a("    call capture_state(trim(case_ids(ci)), vals)")
+    a("    call get_time(tval)")
     a(f"    call {H('write_snapshot')}(trim(case_ids(ci)), vals, tval)")
     a("    snap_cache(ci)%case_id = trim(case_ids(ci))")
     a("    snap_cache(ci)%values = vals")
@@ -771,10 +817,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # the post_execute completeness matrix (`_validate_metrics_basis_per_test`) pins the entry
     # set against exactly this product, so partial evidence cannot pass.
     #
-    # Every target case emits its test's `required_raw_variables` BY CONSTRUCTION: `_per_case_vars`
-    # DEFINES a case's emitted set as the union of `required_raw_variables` over the tests
-    # targeting it, and already fail-closes there when one is absent from the snapshot schema.
-    # So each `pick` below resolves — there is no additional precondition to check here.
+    # Every target case's snapshot holds its test's `required_raw_variables` BY CONSTRUCTION:
+    # the runner captures EVERY schema variable for every case, and `_per_case_vars` already
+    # fail-closes when a required variable is absent from the schema. So each `pick` below
+    # resolves — there is no additional precondition to check here.
     mb_rows: list[tuple[str, str, list[str]]] = []
     for tid, req_vars in evidence:
         tcases = _target_cases(ir, tid)
@@ -815,6 +861,41 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     a(f"    steps_total, cells_total, walltime, 1, {threads}, 0)")
     a("")
     a("contains")
+    a("")
+    a("  ! Every declared snapshot variable, read from the checks module's bound storage")
+    a("  ! (host-associated `sb_<var>`) and serialized by the harness emitters. The same")
+    a("  ! set for every case: the snapshot is the full declared state.")
+    a("  subroutine capture_state(cid, out)")
+    a("    character(len=*), intent(in) :: cid")
+    a(f"    type({H('h_named')}), allocatable, intent(out) :: out(:)")
+    a(f"    allocate(out({len(bound_vars)}))")
+    for k, v in enumerate(bound_vars, start=1):
+        rank = _rank_of_shape(schema_vars[v], v)
+        vlit = _flit(v)
+        sb = f"{STATE_BINDING_PREFIX}{v}"
+        if rank == 0:
+            a(f"    out({k}) = {H('box')}('{vlit}', &")
+            a(f"      {H('emit_real')}({sb}))")
+        else:
+            # An unallocated bound array is a binding the module never established for this
+            # case (its `case_setup` did not allocate it): fail the run loudly rather than
+            # pass an unallocated actual to the emitter (undefined behaviour).
+            a(f"    call require_bound(allocated({sb}), &")
+            a(f"      '{vlit}', cid)")
+            a(f"    out({k}) = {H('box')}('{vlit}', &")
+            a(f"      {H(f'emit_array_r{rank}')}({sb}))")
+    a("  end subroutine capture_state")
+    a("")
+    a("  ! Stop the run when a bound array is not allocated at a capture point.")
+    a("  subroutine require_bound(is_bound, name, cid)")
+    a("    logical, intent(in) :: is_bound")
+    a("    character(len=*), intent(in) :: name")
+    a("    character(len=*), intent(in) :: cid")
+    a("    if (is_bound) return")
+    a("    write(error_unit, '(A)') 'error: bound state '//name// &")
+    a("      ' is not allocated at capture for case '//cid")
+    a("    error stop 1")
+    a("  end subroutine require_bound")
     a("")
     a("  ! Index of `target` in the parsed case list, or -1 when absent.")
     a("  function find_case_index(ids, n, target) result(idx)")
@@ -857,11 +938,15 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # A few `lines` entries embed their own `&` continuations (the multi-line `_xfail_expr`),
     # so measure per PHYSICAL line (split on embedded newlines) — measuring the joined entry
     # would false-fail a valid render whose wrapped physical lines are each within the limit.
+    # `>=`, not `>`: on some supported linter builds S001 fires AT 100 columns (the same reason
+    # `_checks` bounds the check-id assignment strictly under the limit), and a host-authored
+    # line of exactly 100 columns is unrepairable by any leaf.
     for entry in lines:
         for ln in entry.split("\n"):
-            if len(ln) > MAX_RENDERED_LINE:
+            if len(ln) >= MAX_RENDERED_LINE:
                 raise RenderError(
-                    f"rendered runner line exceeds {MAX_RENDERED_LINE} columns ({len(ln)}): "
+                    f"rendered runner line reaches the {MAX_RENDERED_LINE}-column lint limit "
+                    f"({len(ln)} columns; 99 is the widest that lints everywhere): "
                     f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "
                     "variable) is too long for the lint column limit; shorten it")
     return "\n".join(lines) + "\n"

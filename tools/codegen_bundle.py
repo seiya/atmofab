@@ -45,7 +45,7 @@ from tools.backends import registry as backend_registry
 # constants and never the file, so a missing or unreadable schema cannot fail-open a gate.
 # --------------------------------------------------------------------------------------
 
-CODEGEN_BUNDLE_SCHEMA_VERSION = "1.1.0"
+CODEGEN_BUNDLE_SCHEMA_VERSION = "1.2.0"
 
 BUNDLE_SCHEMA_PATH = "spec/schema/generate/codegen_bundle.schema.json"
 HARNESS_CAPABILITIES_SCHEMA_PATH = "spec/schema/generate/harness_capabilities.schema.json"
@@ -219,7 +219,11 @@ LOWERING_PLAN_OPTIONAL_KEYS: tuple[str, ...] = (
     "accelerator_mapping", "fusion",
 )
 
-STATE_CAPTURES: tuple[str, ...] = ("checks_getter", "harness_registration")
+# One capture since bundle 1.2.0 (Z6, issue #255): the former `checks_getter` — a value
+# read through a generated getter — is retired with the getters, so the enum can no longer
+# name it; a 1.1.0 document that does is rejected at the schema layer (fail-closed, no
+# backfill: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §State bindings).
+STATE_CAPTURES: tuple[str, ...] = ("harness_registration",)
 
 # The declarative `impl_defaults.toolchain` fields the derived build graph may echo
 # (docs/IMPL_PLAN_SPEC.md). The IR's toolchain object is not closed, so the graph projects
@@ -328,19 +332,36 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 }
 # `harness_registration` capture requires the harness to expose state registration (Z6).
 CAPABILITY_FOR_CAPTURE: dict[str, str] = {"harness_registration": "state_registration"}
+#: The one capture token every M3c binding carries (`STATE_CAPTURES` has one member, and the
+#: pure contract below requires it by name so the message can say which).
+STATE_BINDING_CAPTURE = "harness_registration"
+#: The capability token an M3c binding carries: `state_registration` at the ABI generation
+#: this module implements. Defined by the render contract of the language backend that
+#: renders the runner (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1): the bound module-level
+#: variables of `<spec_id>_checks` are serialized by the rendered runner through the certified
+#: harness emitters right after `case_setup` and right after `case_run`.
+STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 
 # Tool-side manifest data, deliberately NOT a section of the harness `controlled_spec.md`:
 # adding it there would edit a certified artifact and force recertification for no change
-# in generated behavior. When the harness spec is next re-specified on content grounds
-# (Z6), the manifest moves into the spec and this table becomes its projection.
+# in generated behavior. Z6 (issue #255) kept it here on the same ground: `state_registration@1`
+# is defined by the RENDER contract (what the host-rendered runner does with the bound storage),
+# not by any operation of the harness source, so a spec-side `§capabilities` section would be a
+# copy with no reader. The plan on the issue records this departure from
+# `docs/design/zero_base_architecture.md` §A4 as written.
 #
 # `sync_single_case@1` is defined as exactly the canonical interface block of
 # `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`
 # (rendered `real64`), `case_id_len = 64`). Its mechanical enforcer remains
 # the language backend's `assert_harness_pin`; this contract names the ABI, it does not
-# re-check it.
+# re-check it. `state_registration@1` (`STATE_REGISTRATION_TOKEN`) is defined as: the rendered
+# runner reads every snapshot variable straight from the module-level storage of the bundle's
+# checks module and serializes it through `__emit_*` / `__write_snapshot` at the two capture
+# points, before any callback of that case — the harness source needs no new operation for it,
+# so the harness version is unchanged.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
-    "infrastructure/harness_fortran_cpu@0.7.0": frozenset({"sync_single_case@1"}),
+    "infrastructure/harness_fortran_cpu@0.7.0": frozenset(
+        {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
 }
 
 
@@ -933,7 +954,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"{prefix}node_key {node_key!r} is not a member of optimization_unit")
         # Uniqueness is scoped to `(module, symbol)`, case-folded (Fortran is case-insensitive
         # in both). A symbol is module-qualified, so each member's checks module legitimately
-        # exports the same fixed ABI name (`case_run`, `get_r1`): `a_checks::case_run` and
+        # exports the same fixed ABI name (`case_run`, `get_time`): `a_checks::case_run` and
         # `b_checks::case_run` are distinct procedures. Only the SAME name in the SAME module is
         # an unlinkable duplicate.
         symbol = entry.get("symbol")
@@ -1095,18 +1116,13 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"member {node_key!r} (it publishes {entry.get('storage_symbol')!r})")
         capture = entry.get("capture")
         capability = entry.get("capability")
-        if capture == "checks_getter":
-            if capability is not None:
-                violations.append(
-                    f"{prefix}capability must be null for capture 'checks_getter' "
-                    "(no harness capability is involved)")
-        elif capture == "harness_registration":
+        if capture == "harness_registration":
             # For harness_registration the `storage_symbol` is the ACTUAL registered storage
-            # (`q_storage`), not a name-dispatched rank getter, so two state variables sharing
+            # (the module-level variable the runner reads), so two state variables sharing
             # one `(module, storage_symbol)` would register the same storage for two semantic
-            # states — silently corrupt evidence. Reject the duplicate. (A `checks_getter`
-            # shares a rank getter like `get_r1` across same-rank variables and is disambiguated
-            # by `state_variable` at the call, so it is intentionally NOT constrained here.)
+            # states — silently corrupt evidence. Reject the duplicate. (Bundle 1.1.0's
+            # `checks_getter` capture, which shared a rank getter across variables, is gone
+            # with the getters — Z6, issue #255.)
             module_val = module if isinstance(module, str) else ""
             storage = entry.get("storage_symbol")
             storage_val = storage if isinstance(storage, str) else ""
@@ -1583,10 +1599,10 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
       which is not consistent with the CALL`).
 
     The required set is the FULL fixed ABI, never the subset the node's own runner happens to
-    import: the runner's import list IS dynamic in the IR (`get_r<rank>` per declared rank,
-    `metric_compute` only with metrics), but `Generate.gate` static check requires all ten regardless, so
-    requiring only the imported subset would accept a bundle that gate then rejects — which is
-    what it did until a review caught it.
+    import: the runner's import list IS dynamic in the IR (`metric_compute` only with metrics),
+    but `Generate.gate` static check requires the full ABI regardless, so requiring only the
+    imported subset would accept a bundle that gate then rejects — which is what it did until a
+    review caught it.
 
     Conservative NECESSARY condition: every ABI name is published — defined in this module, or
     named in one of its `public ::` statements — and none is defined HERE as a function. It does
@@ -1606,7 +1622,10 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     source publishes. (A second implementation is exactly how this layer came to accept output
     `Generate.gate` static check rejected.)"""
     from tools.host_render import checks_public_names, runner_render_refusal
-    from tools.validate_pipeline_semantics import checks_module_abi_facts
+    from tools.validate_pipeline_semantics import (
+        checks_module_abi_facts,
+        unpublished_bound_state,
+    )
     # `m3c_literal_name_violation` runs first and guarantees this file exists and declares this
     # module. Scope to it: a bundle may legally carry OTHER checks-role files, and reading their
     # text too would let a sibling module vouch for a name `use <spec_id>_checks` cannot resolve.
@@ -1661,6 +1680,25 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
                 f"subroutines — " + "; ".join(parts)
                 + f". The full required set is {', '.join(CHECKS_PUBLIC_NAMES)} for EVERY M3c "
                 f"node, whatever subset this node's runner imports.")
+    # The bound state (Z6, issue #255): every `state_bindings[].storage_symbol` is a
+    # module-level variable the host-rendered runner imports with `use <spec_id>_checks, only:
+    # sb_<var> => <var>`, so it must be PUBLISHED by this module under the same scan and the
+    # same notion of "published" as the ABI procedures (`unpublished_bound_state`). The
+    # state-binding layer ran before this one and pinned the set of bindings to the IR's
+    # snapshot variables, so reading them off the document here reads a set the host already
+    # accepted. Reported after the procedure clause so an ABI defect is named first.
+    bound = [str(b.get("storage_symbol")) for b in (doc.get("state_bindings") or [])
+             if isinstance(b, dict) and isinstance(b.get("storage_symbol"), str)]
+    unpublished_state = unpublished_bound_state(str(match.get("content") or ""), spec_id, bound)
+    if unpublished_state:
+        return (f"module {spec_id}_checks must publish every bound state variable — the "
+                f"host-rendered runner imports each one by name (`sb_<var> => <var>`) and "
+                f"serializes it at the two capture points — but the module hides these "
+                f"(a bare `private` default with no `public ::` naming them, or a "
+                f"`private ::` naming them): {', '.join(unpublished_state)}. Declare each as a "
+                f"module-level `real(dp)` variable (an array of the declared rank, allocated by "
+                f"`case_setup`) "
+                f"and list it in a `public ::` statement in the specification part.")
     return None
 
 
@@ -1758,6 +1796,34 @@ def published_operations_from_ir(ir: Mapping[str, Any]) -> list[str] | None:
     ]
 
 
+def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
+    """The IR's snapshot-variable names, in declaration order — the set an M3c bundle must bind
+    (`io_contract.raw_requirements.required_evidence[artifact == state_snapshots].schema.
+    variables[].name`). Single-sourced for the same reason as `published_operations_from_ir`:
+    the two callers of `pure_bundle_contract_violation` must extract it identically, and the
+    language backend's runner renderer reads the same section (`_snapshot_schema`), so the set
+    the gate requires bound is the set the runner imports from. A missing section yields `[]`,
+    which the M3c layer refuses (an M3c node always declares snapshots — the renderer fails
+    closed on the same absence)."""
+    if not isinstance(ir, collections.abc.Mapping):
+        return []
+    io = ir.get("io_contract")
+    rr = io.get("raw_requirements") if isinstance(io, collections.abc.Mapping) else None
+    entries = rr.get("required_evidence") if isinstance(rr, collections.abc.Mapping) else None
+    out: list[str] = []
+    for e in (entries if isinstance(entries, list) else []):
+        if not isinstance(e, collections.abc.Mapping) or e.get("artifact") != "state_snapshots":
+            continue
+        schema = e.get("schema")
+        variables = schema.get("variables") if isinstance(schema, collections.abc.Mapping) else None
+        for v in (variables if isinstance(variables, list) else []):
+            if isinstance(v, collections.abc.Mapping) and isinstance(v.get("name"), str) \
+                    and v["name"].strip() and v["name"].strip() not in out:
+                out.append(v["name"].strip())
+        break
+    return out
+
+
 #: The bundle SHAPES a pure producer may be asked to satisfy. `m3c` is a physics node (the host
 #: renders the runner glue, the leaf authors model + checks); `harness` is an `infrastructure`
 #: node's self-test (the leaf authors model + the executable entry, and there is no checks
@@ -1774,6 +1840,60 @@ BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
 L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
 
 
+def _m3c_state_binding_mismatch(
+    bindings: list[Mapping[str, Any]], snapshot_vars: list[str], spec_id: str,
+) -> str | None:
+    """The `bundle_state_binding_mismatch` clause of an M3c bundle, or None.
+
+    The set of bound `state_variable`s must EQUAL the IR's snapshot-variable set (each
+    direction is a defect: an unbound snapshot variable is one the runner cannot capture — its
+    `use` would not resolve — and a binding of an undeclared name is an invented registration),
+    and each binding must state the convention the runner is rendered against. The schema
+    layer already guaranteed each entry's keys and identifier grammar, and the invariant layer
+    the capture/capability coupling and the module's ownership; what is left is the CONVENTION,
+    which only a caller holding the IR and the spec_id can check."""
+    if not bindings:
+        return (f"an M3c bundle must bind every snapshot variable: state_bindings is missing or "
+                f"empty, but the IR snapshot schema declares {snapshot_vars} — add one entry per "
+                f"variable with capture {STATE_BINDING_CAPTURE!r}, capability "
+                f"{STATE_REGISTRATION_TOKEN!r}, module {spec_id + '_checks'!r} and storage_symbol "
+                f"equal to the variable name")
+    declared = set(snapshot_vars)
+    bound = [str(b.get("state_variable")) for b in bindings]
+    unbound = [v for v in snapshot_vars if v not in bound]
+    invented = sorted(v for v in bound if v not in declared)
+    if unbound or invented:
+        parts = []
+        if unbound:
+            parts.append(f"snapshot variable(s) with no binding: {unbound}")
+        if invented:
+            parts.append(f"binding(s) of a name the IR snapshot schema does not declare: "
+                         f"{invented}")
+        return ("state_bindings must bind EXACTLY the IR snapshot variables "
+                f"(raw_requirements.required_evidence[state_snapshots].schema.variables[] = "
+                f"{snapshot_vars}) — " + "; ".join(parts))
+    want_module = f"{spec_id}_checks"
+    for idx, b in enumerate(bindings):
+        prefix = f"state_bindings[{idx}]"
+        sv = str(b.get("state_variable"))
+        if b.get("capture") != STATE_BINDING_CAPTURE:
+            return (f"{prefix}.capture must be {STATE_BINDING_CAPTURE!r} (the one capture the "
+                    f"host-rendered runner implements); got {b.get('capture')!r}")
+        if b.get("capability") != STATE_REGISTRATION_TOKEN:
+            return (f"{prefix}.capability must be {STATE_REGISTRATION_TOKEN!r}; got "
+                    f"{b.get('capability')!r}")
+        module = b.get("module")
+        if not isinstance(module, str) or module.casefold() != want_module.casefold():
+            return (f"{prefix}.module must be {want_module!r} — the host-rendered runner reads "
+                    f"the bound storage with `use {want_module}, only: ...`; got {module!r}")
+        storage = b.get("storage_symbol")
+        if not isinstance(storage, str) or storage.casefold() != sv.casefold():
+            return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — the "
+                    f"runner imports the module-level variable of THAT name (`sb_{sv} => {sv}`); "
+                    f"got {storage!r}")
+    return None
+
+
 def pure_bundle_contract_violation(
     doc: Mapping[str, Any],
     *,
@@ -1781,7 +1901,7 @@ def pure_bundle_contract_violation(
     spec_id: str,
     shape: str,
     runner_basename: str,
-    ir_state_variables: Iterable[str],
+    ir_snapshot_variables: Iterable[str],
     harness_provided: Iterable[str] | None,
     harness_label: str | None = None,
     build_graph: Callable[[Mapping[str, Any]], Any],
@@ -1804,11 +1924,23 @@ def pure_bundle_contract_violation(
     report AND a later layer never runs on a doc an earlier one already rejected): shape
     vocabulary -> schema (`validate_bundle`) -> single-node unit shape -> (m3c) no `runner`-role
     file -> harness capability negotiation (the manifest MUST exist — an undeclared harness
-    satisfies nothing) -> state_variable ∈ IR algorithm.state_variables -> the file-shape layer
-    (m3c: the literal names the host-rendered runner `use`s, then the fixed checks-module ABI;
-    harness: `harness_bundle_shape_violation`) -> the L1c published surface -> `build_graph(doc)`
-    (the caller's assembly derivation, which raises RuntimeError on a cross-origin object/module
-    collision or a straddle).
+    satisfies nothing) -> the state-binding layer (below) -> the file-shape layer
+    (m3c: the literal names the host-rendered runner `use`s, then the fixed checks-module ABI,
+    which also requires every bound variable published; harness: `harness_bundle_shape_violation`)
+    -> the L1c published surface -> `build_graph(doc)` (the caller's assembly derivation, which
+    raises RuntimeError on a cross-origin object/module collision or a straddle).
+
+    The state-binding layer (Z6, issue #255) is what makes snapshot capture host-owned: an
+    `m3c` bundle MUST carry one `state_bindings[]` entry per IR snapshot variable
+    (`ir_snapshot_variables`, the `raw_requirements.required_evidence[state_snapshots].schema.
+    variables[]` names — neither more nor fewer, `bundle_state_binding_mismatch`), each with
+    `capture: harness_registration`, `capability: state_registration@1`, `module: <spec_id>_checks`
+    and `storage_symbol == state_variable` — the convention the host-rendered runner renders
+    `use <spec_id>_checks, only: sb_<var> => <var>` from WITHOUT reading the bundle (the runner
+    is rendered from the IR alone, before the leaf runs, so the binding cannot be a free choice;
+    the entry declares that the module implements the convention, and this layer checks the
+    declaration). A `harness` bundle carries no binding (its runner is its own writer; there is
+    no checks module to bind), so a non-empty `state_bindings` is a shape violation there.
 
     `harness_provided` is the caller-resolved harness capability set (`None` = undeclared harness
     = nothing provided, fail-closed); `harness_label` only names it in the findings text.
@@ -1854,25 +1986,30 @@ def pure_bundle_contract_violation(
         return ("bundle_capability_unsatisfied",
                 f"capability_requirements not satisfied by harness{label}: "
                 + ", ".join(unsatisfied))
-    # Canonical IRs carry `algorithm.state_variables` as OBJECTS (`{name, shape_expr, ...}`);
-    # older/degenerate specs may use a bare-string list. Accept both — a comprehension that kept
-    # only `str` entries would silently yield an EMPTY set on every canonical IR and reject every
-    # bundle that declares a state_binding as a mismatch.
-    ir_state_vars: set[str] = set()
-    for v in ir_state_variables:
-        if isinstance(v, str):
-            ir_state_vars.add(v)
-        elif isinstance(v, collections.abc.Mapping) and isinstance(v.get("name"), str):
-            ir_state_vars.add(v["name"])
-    for idx, binding in enumerate(doc.get("state_bindings") or []):
-        # Fail-CLOSED on an empty declared set too: a bundle that binds state a stateless IR
-        # never declared is an invented registration, so an EMPTY ir_state_vars rejects any
-        # binding rather than accepting all of them.
-        sv = binding.get("state_variable") if isinstance(binding, dict) else None
-        if isinstance(sv, str) and sv not in ir_state_vars:
-            return ("bundle_state_binding_mismatch",
-                    f"state_bindings[{idx}].state_variable {sv!r} is not an IR "
-                    f"algorithm.state_variable (declared: {sorted(ir_state_vars)})")
+    # The IR's snapshot schema names come as OBJECTS (`{name, shape_expr}`) or, from a caller
+    # that already projected them, as strings. Accept both — a comprehension that kept only
+    # `str` entries would silently yield an EMPTY set on a canonical IR and reject every bundle.
+    snapshot_vars: list[str] = []
+    for v in ir_snapshot_variables:
+        name = v if isinstance(v, str) else (
+            v.get("name") if isinstance(v, collections.abc.Mapping) else None)
+        if isinstance(name, str) and name.strip() and name.strip() not in snapshot_vars:
+            snapshot_vars.append(name.strip())
+    bindings = [b for b in (doc.get("state_bindings") or []) if isinstance(b, dict)]
+    if shape == "harness":
+        # Backstop, not reached through the ordered contract today: `validate_bundle`'s
+        # ownership invariant already refuses any binding on a bundle with no checks-role file
+        # (which the harness shape has by definition), so this clause fires only if that
+        # invariant were ever loosened. Kept so the shape states its own rule and fails closed.
+        if bindings:
+            return ("bundle_shape_unsupported",
+                    "state_bindings must be omitted on the harness shape: the harness self-test "
+                    "authors its own runner and has no checks module to bind, so there is no "
+                    f"storage the host reads; got {len(bindings)} binding(s)")
+    else:
+        mismatch = _m3c_state_binding_mismatch(bindings, snapshot_vars, spec_id)
+        if mismatch is not None:
+            return ("bundle_state_binding_mismatch", mismatch)
     if shape == "harness":
         shape_violation = harness_bundle_shape_violation(doc, spec_id, runner_basename)
         if shape_violation is not None:

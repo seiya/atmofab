@@ -18,7 +18,7 @@
       "description": "Semantic version of this contract. The pattern pins the supported MAJOR (1), so a schema-only consumer rejects an incompatible major here rather than admitting it to fail later at validate_bundle; the canonical validator additionally reports a malformed version and an unsupported major as distinct clauses.",
       "type": "string",
       "pattern": "^1\\.[0-9]+\\.[0-9]+(?![\\s\\S])",
-      "x-current-version": "1.1.0"
+      "x-current-version": "1.2.0"
     },
     "optimization_unit": {
       "description": "The semantic nodes generated as this one bundle. The ordered member list IS the unit identity; no derived unit_id exists.",
@@ -176,7 +176,7 @@
       "items": {"$ref": "#/definitions/capability_token"}
     },
     "state_bindings": {
-      "description": "How each member's primary state is reached. May be empty in v1. capture=checks_getter is the current M3c mechanism and takes capability: null; capture=harness_registration requires a state_registration@N token, which must also appear in capability_requirements (the Z6 shape — additive, no schema change). Agreement with the IR's algorithm.state_variables is checked at assembly time (Z2), where the IR is in scope.",
+      "description": "How each member's primary state is reached: the module-level storage the host-rendered runner reads and serializes through the certified harness at the two capture points (right after case_setup, right after case_run). Since 1.2.0 (Z6, issue #255) the only capture is harness_registration, which requires a state_registration@N token in capability and the same token in capability_requirements; 1.1.0's checks_getter (a value read through a generated getter) is retired with the getters and no longer a member of the enum. An M3c bundle binds EXACTLY the IR's snapshot variables (storage_symbol == state_variable, module == <spec_id>_checks) — checked at assembly time (Z2), where the IR is in scope; a harness-shape bundle omits the key.",
       "type": "array",
       "items": {
         "type": "object",
@@ -199,7 +199,7 @@
           },
           "capture": {
             "type": "string",
-            "enum": ["checks_getter", "harness_registration"],
+            "enum": ["harness_registration"],
             "x-capability-name-for-capture": {"harness_registration": "state_registration"}
           },
           "capability": {

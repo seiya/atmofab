@@ -64,7 +64,7 @@
       "harness_capability_abi_version": 1,
       "manifests": [
         {"node_key": "infrastructure/harness_fortran_cpu@0.7.0",
-         "provides": ["sync_single_case@1"]}
+         "provides": ["sync_single_case@1", "state_registration@1"]}
       ]
     }
   ],

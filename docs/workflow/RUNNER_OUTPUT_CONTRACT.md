@@ -98,9 +98,9 @@ source; do not uniformly require a fixed minimal composition.
   (`snapshot_0001.json`) or a single combined file: a string-literal name is
   flagged by `post_generate`; a wrong runtime-built name fails
   `Validate.execute`'s per-`<case_id>.json` deliverable gate. Each snapshot must
-  hold **every** state variable in *that case's*
+  hold **at least every** state variable in *that case's*
   `test_evidence_requirements.required_raw_variables` (not the union across
-  cases) **plus the declared `time_variable`**, each shape-matching its
+  cases; a host-rendered runner holds every declared variable) **plus the declared `time_variable`**, each shape-matching its
   `snapshot_schema.json` declaration (state variables their `shape_expr`, the
   `time_variable` its `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still
@@ -123,6 +123,12 @@ source; do not uniformly require a fixed minimal composition.
 
   When `required_evidence` does not declare `state_snapshots` as required,
   `raw/state_snapshots/` must not be required.
+- **`raw/state_snapshots/initial/<case_id>.json`** (host-rendered runners only) — the
+  glue the host renders for an M3c physics node writes a SECOND capture of each case,
+  taken right after `case_setup` and before `case_run`, under `initial/`, of exactly the
+  per-case shape above (Z6, issue #255). It is a deliverable of that runner and is
+  shape-checked like the final snapshot. A hand-authored runner (a harness self-test)
+  does not write it, and nothing requires it to.
 
 ## 4. JSON serialization (UTF-8, standard-parseable)
 
