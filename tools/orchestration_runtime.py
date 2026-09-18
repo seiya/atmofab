@@ -6632,18 +6632,28 @@ def pre_orchestration_start(
     orch_root = _orchestration_root(repo_root, orchestration_id)
     orch_root.mkdir(parents=True, exist_ok=True)
     meta_path = orch_root / "orchestration_meta.json"
-    meta: dict[str, Any] = {}
-    if meta_path.is_file():
-        try:
-            loaded = _read_json(meta_path)
-        except (OSError, json.JSONDecodeError):
-            loaded = None
-        if isinstance(loaded, dict):
-            meta = loaded
-    meta.setdefault("parallel_nodes_explicit", parallel_explicit)
-    meta.setdefault("parallel_nodes_policy", "sequential_default")
-    parallel_nodes_explicit_persisted = meta["parallel_nodes_explicit"]
-    _write_json(meta_path, meta)
+    # The read-modify-write of `orchestration_meta.json` is under the same lock
+    # `mark_dependency_readiness` and `write_preflight`'s own readiness block take: this
+    # hook runs at the START of `write_preflight`, before that block, and unlocked it
+    # could read the meta, lose the race to a concurrent `mark-dependency-readiness`, and
+    # write its stale copy back — the verified `dependency_readiness` gone, and the
+    # readiness block that follows then initialising a fail-closed record over it (an
+    # audit-record clobber; the launch gate recomputes live and decided nothing from it).
+    # Measured as an intermittent CI failure of
+    # `test_concurrent_preflight_and_mark_do_not_clobber_verified` (issue #250 PR-3).
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        meta: dict[str, Any] = {}
+        if meta_path.is_file():
+            try:
+                loaded = _read_json(meta_path)
+            except (OSError, json.JSONDecodeError):
+                loaded = None
+            if isinstance(loaded, dict):
+                meta = loaded
+        meta.setdefault("parallel_nodes_explicit", parallel_explicit)
+        meta.setdefault("parallel_nodes_policy", "sequential_default")
+        parallel_nodes_explicit_persisted = meta["parallel_nodes_explicit"]
+        _write_json(meta_path, meta)
     detail = {
         "event": event,
         "workspace_bootstrap": created_ws,

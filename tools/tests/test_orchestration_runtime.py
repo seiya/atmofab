@@ -18377,6 +18377,48 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
             )
             self.assertTrue(_orchestration_meta_lock_path(repo_root, "wpl").is_file())
 
+    def test_pre_orchestration_start_waits_for_the_meta_lock(self) -> None:
+        """The deterministic half of the row below (issue #250 PR-3, found as an intermittent
+        CI failure): `pre_orchestration_start` runs at the START of `write_preflight`, before
+        its locked readiness block, and its own read-modify-write of `orchestration_meta.json`
+        was unlocked — so a `mark-dependency-readiness` landing between its read and its write
+        was clobbered. Another thread holds the meta lock, writes `dependency_readiness` while
+        holding it, and releases; the hook must not have written before that, so the flags it
+        writes back are the ones the holder wrote."""
+        import threading
+        from tools.orchestration_runtime import (
+            _orchestration_meta_exclusive_lock, pre_orchestration_start,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="lk",
+                               spec_ref="spec/component/src")
+            meta_path = repo_root / "workspace" / "orchestrations" / "lk" / "orchestration_meta.json"
+            holding = threading.Event()
+            hook_returned = threading.Event()
+            saw_hook_return_while_held = []
+
+            def holder() -> None:
+                with _orchestration_meta_exclusive_lock(repo_root, "lk"):
+                    holding.set()
+                    # give the hook time to read the meta if it does not wait for the lock
+                    hook_returned.wait(0.5)
+                    saw_hook_return_while_held.append(hook_returned.is_set())
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta["dependency_readiness"] = {"direct_dependency_compile_readiness": True}
+                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            t = threading.Thread(target=holder)
+            t.start()
+            holding.wait(5)
+            pre_orchestration_start(repo_root, "lk", event="preflight")
+            hook_returned.set()
+            t.join()
+            self.assertEqual(saw_hook_return_while_held, [False])  # the hook waited
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertTrue(meta["dependency_readiness"]["direct_dependency_compile_readiness"])
+            self.assertIn("parallel_nodes_policy", meta)  # and still did its own write
+
     def test_concurrent_preflight_and_mark_do_not_clobber_verified(self) -> None:
         """A concurrent write_preflight + mark_dependency_readiness must not
         end with stale dependency_readiness. Because both now acquire the
