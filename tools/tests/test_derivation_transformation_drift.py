@@ -131,6 +131,8 @@ def verdict_tuple() -> dict[str, str]:
     author."""
     return {
         "tools/verdict_evaluator.py": _file_digest("tools/verdict_evaluator.py"),
+        # Z6 (issue #255): the host-evaluated primary predicates are half of the verdict.
+        "tools/primary_evidence.py": _file_digest("tools/primary_evidence.py"),
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
@@ -144,6 +146,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # state, bound in the checks module) and the identifier rule its name must satisfy — a
     # compile leaf reading it authors a different IR, so the key moves.
     "compile-docs-2": "1c4e903efb34e2ed8699159a0cac0a994573d4d8269cbab61223d93a82d6263a",
+    # Z6 PR-2 (issue #255): `phase_01_compile.md` gains `io_contract.primary_predicates`, the
+    # snapshot schema's `coordinates[]`, a condition's `quantity`, and the V3 fidelity rule over
+    # them — a compile leaf reading it authors the host-evaluated corroborants, so the key moves.
+    "compile-docs-3": "c70caba88a6dfa233bdd961579c92942b48e2340fbfcace4b86e46d7bea45412",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -163,6 +169,10 @@ PINNED_EXECUTE: dict[str, str] = {
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
+    # Z6 PR-2 (issue #255): the verdict conjoins `io_contract.primary_predicates`, valued by
+    # `tools/primary_evidence.py` from the captures under the run node directory, with the
+    # diagnostics predicates; `basis.primary[]` / `basis.corroboration` are new per-test keys.
+    "verdict-2": "c41fa1a8ea78b35a6ffbe5604c76b41c7af23a9c6f8579965a3412f4cabf45c6",
 }
 
 

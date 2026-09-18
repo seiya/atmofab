@@ -118,6 +118,8 @@ io_contract:
               shape_expr: "<...>"
           time_variable: "<name>"
           time_shape_expr: "scalar"   # MUST be "scalar": the per-snapshot time index is a scalar loop counter the runner always emits as a scalar; "[1]" (or any non-scalar) is rejected at compile and fails post_execute
+          coordinates:          # OPTIONAL (Z6, issue #255): the grid axes a primary predicate expression may name. The host derives each as an array of `count` positions along `axis` (extent 1 on every other axis of the state's rank, so it broadcasts against a state array); `count` / `length` are a number or an `inputs.<dotted>` path that resolves to a number in EVERY case; `placement` is `cell_center` ((i + 1/2) * length / count), the one placement the grammar version 1 derives
+            - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x, placement: cell_center}
   test_evidence_requirements:
     - test_id: "<test_id>"
       required_raw_variables: ["<var1>", ...]   # must be SUFFICIENT for Validate.judge to independently recompute this test's judgment, i.e. include the recompute inputs (e.g. U_L/U_R for an "F*=F(U_L)" judgment), not only the outputs. Each name resolves to a raw_requirements...schema.variables[].name
@@ -149,6 +151,49 @@ io_contract:
             per_case: false                 # optional: resolve `ref` inside each target case's diagnostics slice
             case: "<case_id>"               # optional: resolve `ref` inside ONE target case's slice (excludes per_case)
             na_allowed: false               # optional: a null/absent lhs counts as satisfied (a "not applied" metric)
+            quantity: "<name>"              # the quantity this condition measures (`[a-z][a-z0-9_.]*`); a primary_predicates entry of the same test and quantity is its corroborant. Optional until the per-test coverage gate lands; when present, its form is gated
+  primary_predicates:
+    # Z6 (issue #255): the HOST-EVALUATED corroborants of the test_predicates. Every value a test_predicates
+    # condition reads was computed by the generated checks module (secondary evidence); a primary predicate is
+    # an arithmetic expression over the PRIMARY STATE the host-rendered runner captured — `initial.<var>`
+    # (right after case_setup) and `final.<var>` (right after case_run), every state_snapshots schema variable
+    # and the time_variable — plus the case's own `inputs.<dotted>` numbers and the `coordinates` above, valued
+    # by the host (`tools/primary_evidence.py`) with no generated code in the path. Validate.execute conjoins
+    # it with the test's pass_when: the test's status holds only when both hold, and verdict.json records
+    # `basis.primary[]` (each host-computed value) and `basis.corroboration` (agree / disagree).
+    # A test may carry several (one per quantity); a test may carry none until the coverage gate lands.
+    - test_id: "<test_id>"                 # a tests.md test_id (⊆ the test_predicates set)
+      quantity: "<name>"                   # the quantity the expression evaluates; matches the secondary condition it corroborates
+      target_cases: ["<case_id>", ...]     # the cases it ranges over (same vocabulary as test_predicates)
+      per_case: true                       # EXACTLY ONE of: per_case: true (evaluate in every target case) / case: "<case_id>" (evaluate in that one case; how a cross-case reduction is read)
+      bind:                                # optional named sub-expressions, evaluated in order; each may reference only the ones before it
+        M0: "sum(initial.h) * inputs.grid.dx * inputs.grid.dy"
+        M1: "sum(final.h) * inputs.grid.dx * inputs.grid.dy"
+      expr: "abs(M1 - M0) / max(abs(M0), 1e-14)"   # must evaluate to a finite SCALAR
+      op: "le"                             # eq | ne | le | ge | lt | gt (no `includes`, no `na_allowed`: the host always has the state)
+      value: 1.0e-10                       # a number, OR {per_case: {<case_id>: v}} with per_case: true
+  # primary predicate grammar (closed; `tools/primary_evidence.py` GRAMMAR_VERSION 1 — gated at --stage compile
+  # by parse + name resolution, so an expression that reaches Validate always evaluates):
+  #   operators   + - * / ** and unary -; numeric constants; `pi`, `e`
+  #   names       initial.<var> / final.<var> (a snapshot schema variable or the time_variable);
+  #               inputs.<a>.<b> (a NUMERIC case input — a string, a boolean, a list or a mapping is rejected);
+  #               <coordinate name> (a `coordinates[]` axis); a `bind` name;
+  #               at('<case_id>').initial.<var> / at('<case_id>').final.<var> (another case of THIS predicate's target_cases)
+  #   functions   sum, mean, min, max (one argument reduces; two or more are elementwise), abs, sqrt, exp, log,
+  #               log2, sin, cos, norm2 (sqrt of the sum of squares), maxabs, ceil, floor,
+  #               roll(a, s0[, s1, ...]) (one INTEGER shift per axis; a non-integer shift is an evaluation error)
+  #   refused     a subscript or slice, a comparison, `and` / `or` / `not`, a conditional, a lambda, a
+  #               comprehension, a keyword argument, a string anywhere but at('...'), any other function or
+  #               attribute root. A binary operator's operands have equal rank or one is a scalar.
+  #   errors      a non-finite intermediate, an array result, a capture file absent / ragged / non-numeric /
+  #               non-finite / of the wrong rank — each is a STRUCTURAL failure of that predicate at Validate.execute
+  # worked translations of tests.md prose (the fidelity V3 reads):
+  #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05
+  #   lake at rest          expr: "maxabs(final.h - initial.h)"                   op: le  value: 1.0e-12
+  #   analytic agreement    bind: {c0: "sqrt(inputs.constants.g * inputs.initial.H_0)", h_ref: "inputs.initial.H_0 + inputs.initial.eta0 * sin(2 * pi * (x - c0 * final.t) / inputs.grid.L_x)"}  (c0 is written before h_ref, which reads it)
+  #                         expr: "norm2(final.h - h_ref) / norm2(h_ref)"          op: le  value: {per_case: {...}}
+  #   convergence order     case: "<the finer case>"  bind: {e_c: "...at('<coarse>')...", e_f: "..."}  expr: "log2(e_c / e_f)"  op: ge  value: 0.8
+  #   translation pair      case: "<shifted>"  expr: "norm2(final.h - roll(at('<base>').final.h, inputs.initial.shift_x_fraction * inputs.grid.nx, 0)) / norm2(final.h)"
   # NOT DEGENERATE (--stage compile, degenerate_predicate_violations): a pass set whose EVERY
   #   expected_outcome=pass predicate asserts only verdict.* is rejected (it collapses the per-test
   #   judgment back to the runner's verdict.overall). Each pass test carries its concrete conditions
@@ -315,6 +360,7 @@ The required invariant set for the self-check (finalized as a **minimal set**):
 - When any `tests.md §4` test's `pass_when` references `verdict.*`, `io_contract.diagnostics_contract.verdict.required=true` and `verdict.fields` covers the referenced keys (e.g. `overall` / `failed_checks`). When no test references `verdict.*`, `verdict.required=false` is allowed.
 - `io_contract.semantic_dependency.required_sources` is a non-empty string array.
 - **`io_contract.test_predicates` (R2) faithfully encodes every `tests.md §6/§7` pass rule.** The `--stage compile` gate (`_validate_test_predicates` → `verdict_evaluator.validate_predicate_schema`) enforces the schema mechanically (op/outcome enums, non-empty `pass_when.all`, `target_cases ⊆ case.test_case_set`, a `case:` selector that is one of the predicate's own `target_cases` and is not combined with `per_case`, `ref` resolves against the declared `verdict.fields` / `checks[].id` / `diagnostics_contract.metrics` vocabulary, `test_id` set == `tests.md`); this V3 invariant is the SEMANTIC check `Compile.verify` owns: each predicate's conjunction is a truthful translation of that test's prose judgment (correct `op`/threshold direction, the right check/metric `ref`, per-case thresholds matching the nx map, `na_allowed` only where `tests.md` marks the metric "not applied"), **and each condition carries the scope the prose asks for** — `per_case` for "in every case", `case:` for a cross-case reduction read at the case that completes it, neither for a suite-level fact. A schema-valid but semantically-wrong predicate (e.g. `ge` where the prose says `le`, or a per-case bound written suite-level) is a V3 `fail` — this is where the judge-time nondeterminism R2 removed becomes a reviewable compile-time artifact.
+- **`io_contract.primary_predicates` (Z6, [issue #255](https://github.com/seiya/atmofab/issues/255)) faithfully transcribes the DEFINING quantity of each `tests.md` judgment from the primary state.** The `--stage compile` gate (`_validate_test_predicates` → `primary_evidence.validate_primary_predicate_schema`) enforces the grammar and the name resolution mechanically (every construct is in the closed grammar, every `initial.<var>` / `final.<var>` is a snapshot schema variable, every `inputs.<path>` is a number in every target case, every `at('<case>')` is a target case, `coordinates[]` resolves in every case, exactly one scope, a numeric `value`). The SEMANTIC check `Compile.verify` owns: (i) each `quantity` names the SAME quantity on the primary predicate and on the secondary condition that carries it — a primary `mass_drift_rel` that computes a maximum, or a secondary `cfl.max` condition tagged with a quantity whose primary expression is a mass, is a `fail`; (ii) each `expr` is a truthful transcription of the `tests.md` §5/§6 definition of that quantity over the captured state and the declared inputs (the conservation integral over the whole domain with the case's cell size, the analytic reference at `final.t`, the convergence order over the two cases it names), with the direction and threshold of the prose; (iii) the scope is the one the prose asks for, on the same rule as the secondary conditions. A primary predicate that evaluates a quantity no test defines, or one whose `expr` is satisfiable by a state the test would reject, is a V3 `fail`.
 - **`target_cases` is also the evidence contract.** The runner records one `raw/metrics_basis.json` entry per (`test_id`, target `case_id`) pair, and `post_execute` pins that matrix in both directions. So a test's `target_cases` must list every case its judgment actually reads — a convergence sweep names all its resolutions, an equivariance test both members of the pair — and no case it does not.
 
 #### V4. dependency consistency

@@ -21088,7 +21088,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # and rewrote the V3 recompute-inputs sentence (a scalar case input is `inputs`, not a
         # snapshot echo): 74417; 74455 after round 2; 74999 after round 3 said what
         # `evidence_ref` a CASE input takes (`spec.ir.yaml`) versus a STATE input. Ceiling 75200.
-        "docs/workflow/phases/phase_01_compile.md": 75200,
+        # Bumped 75200->82200 (Z6 PR-2, issue #255): the schema gains `io_contract.primary_predicates`
+        # — the host-evaluated corroborant of each test — and the compile leaf has to be told the
+        # whole closed grammar it may write in (operators, name roots, the function table, what
+        # is refused, what is an evaluation error), the `coordinates[]` half of the snapshot schema,
+        # a condition's `quantity`, five worked translations of `tests.md` prose (the fidelity V3
+        # reads), and the V3 rule itself. A grammar stated anywhere but here reaches no leaf
+        # (a pure leaf reads only what is inlined). Measured 82034 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack.
+        "docs/workflow/phases/phase_01_compile.md": 82200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -26734,7 +26742,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:623d8311ce9f93f6":
+        "tools/prompt_templates/pure_compile_generate.txt:55d00f99d7336f34":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",

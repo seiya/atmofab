@@ -527,7 +527,14 @@ PINNED: dict[str, str] = {
     # on this branch): the judge template names the `initial` key of the excerpt, the harness
     # template no longer says "getter", and the producer template says the compile gate holds
     # `algorithm.state_variables` ⊆ snapshot variables.
-    "pure-44": "dbe78f6f396e964c4dc9fb48d95efe95ad692e4ce25c494af55d793cadb1e78a",}
+    "pure-44": "dbe78f6f396e964c4dc9fb48d95efe95ad692e4ce25c494af55d793cadb1e78a",
+    # issue #255 (Z6 PR-2): the `compile.generate` template's rule (7) tells the producer to author
+    # `io_contract.primary_predicates` — the host-evaluated corroborant of each test, in the closed
+    # grammar the inlined phase contract states — and the `compile.verify` template names the
+    # grammar/name-resolution gate as already run and states what fidelity the reviewer judges on a
+    # primary predicate. Nothing else on the pinned surface moved (the phase contract's own text is
+    # `compile-docs-3`, pinned by `test_derivation_transformation_drift.py`).
+    "pure-45": "1e41a376718bc738503681648eb08f3849f543c54448f4e5e64b356295555c76",}
 
 
 def _contract_tuple() -> dict[str, object]:

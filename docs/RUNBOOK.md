@@ -37,20 +37,23 @@ pip install -r requirements.txt
 | `PyYAML` | every host-side reader of `spec.ir.yaml` and of the leaf-`LLM` configuration |
 | `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` (measured at 0.26.0) |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (measured at, and written against, 0.6.0) |
+| `numpy` | the array arithmetic behind `tools/primary_evidence.py`: `Validate.execute` values every `io_contract.primary_predicates` expression over the captured state with it (Z6, [issue #255](https://github.com/seiya/atmofab/issues/255); measured at 1.26.4) |
 
-**Install from the file, not from the names.** The two versions in the table are a measured
-property of this repository, not a free choice: they are `MEASURED_PACKAGE_VERSIONS` in the module
-the table names above, which is the single definition this table, `requirements.txt` and that
-module's own grammar refusal are all checked against, and a bump is accepted only after re-running
-`tools/backends/language/fortran/structure_differential.py` (both halves). Typing the three names
-instead resolves whatever is newest, and the `Generate.gate` structure read that follows has then
-not been measured on what it is running. `requirements.txt` says, per line, whether the value is a
-pin or a floor and why.
+**Install from the file, not from the names.** The two `tree-sitter` versions in the table are a
+measured property of this repository, not a free choice: they are `MEASURED_PACKAGE_VERSIONS` in
+the module the table names above, which is the single definition this table, `requirements.txt`
+and that module's own grammar refusal are all checked against, and a bump is accepted only after
+re-running `tools/backends/language/fortran/structure_differential.py` (both halves). Typing the
+names instead resolves whatever is newest, and the `Generate.gate` structure read that follows has
+then not been measured on what it is running. `requirements.txt` says, per line, whether the value
+is a pin or a floor and why.
 
 They are needed by the HOST that runs the conductor, because `Generate.gate`'s static check runs
-`python3 tools/validate_pipeline_semantics.py` there; no leaf needs them. Without them that gate
-cannot read a Fortran source at all and fails closed — correctly, but only after lint and syntax
-have passed, i.e. part-way into a billed run — so their absence is checked at launch instead.
+`python3 tools/validate_pipeline_semantics.py` there and `Validate.execute` authors `verdict.json`
+there; no leaf needs them. Without the `tree-sitter` pair that gate cannot read a Fortran source at
+all and fails closed — correctly, but only after lint and syntax have passed, i.e. part-way into a
+billed run — and without `numpy` the verdict author cannot import, one phase later still; so their
+absence is checked at launch instead.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`

@@ -118,11 +118,15 @@ REQUIRED_CLI_TOOLS = ("python3", "jq", "git")
 # (`tools/backends/language/fortran/structure.py`). The failure is correct and the timing is not: nothing in this
 # repository installs these, so a machine that satisfies the RUNBOOK today does not have them.
 #
-# Checked by IMPORT NAME, not by distribution name: the distributions are `tree-sitter` and
-# `tree-sitter-fortran`, which is what the operator types, so the message carries both.
+# Checked by IMPORT NAME, not by distribution name: the distributions are `tree-sitter`,
+# `tree-sitter-fortran` and `numpy`, which is what the operator types, so the message carries them.
 REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = (
     ("tree_sitter", "tree-sitter"),
     ("tree_sitter_fortran", "tree-sitter-fortran"),
+    # `tools/primary_evidence.py` (Z6, issue #255): `Validate.execute` imports it to value the
+    # IR's primary predicates, so a host without numpy would fail closed at the first verdict
+    # of a billed run; refused at launch instead, like the two above.
+    ("numpy", "numpy"),
 )
 
 
@@ -2241,10 +2245,10 @@ def _run_main(
             {
                 "status": "fail",
                 "reason": "missing_required_python_modules",
-                # The remedy installs from the FILE, not from the names. Two of the three
+                # The remedy installs from the FILE, not from the names. Three of the four
                 # distributions in `requirements.txt` carry a version this repository measured
-                # (`MEASURED_PACKAGE_VERSIONS`, in the `language` backend that reads structure),
-                # and a by-name
+                # (`MEASURED_PACKAGE_VERSIONS`, in the `language` backend that reads structure,
+                # and the numpy pin the file records), and a by-name
                 # install resolves whatever is current — which is the state `docs/RUNBOOK.md`
                 # §0-1 now refuses in as many words. This message is the ONLY install instruction
                 # most operators meet, because the refusal is what sends them to §0-1 in the first

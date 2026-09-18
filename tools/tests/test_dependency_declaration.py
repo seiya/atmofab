@@ -692,11 +692,11 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
             self.assertEqual(
                 [], named,
                 "a pip install command in docs/RUNBOOK.md §0-1 names distributions instead of "
-                f"installing from requirements.txt (arguments: {arguments}). Two of the three "
+                f"installing from requirements.txt (arguments: {arguments}). Three of the four "
                 "versions are measured; a by-name install resolves whatever is current.")
 
     def test_the_runbook_points_the_operator_at_the_pinned_versions(self) -> None:
-        """§0-1 has to install from the FILE, because two of the three versions are measured.
+        """§0-1 has to install from the FILE, because three of the four versions are measured.
 
         `tools/backends/language/fortran/structure.py` records the Fortran front end as pinned by
         measurement at `tree-sitter` 0.26.0 and `tree-sitter-fortran` 0.6.0; an operator who types
@@ -916,7 +916,7 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
 class RemedyTests(unittest.TestCase):
     """No remedy this repository PRINTS teaches a by-name install of a declared distribution.
 
-    The rule `docs/RUNBOOK.md` §0-1 states — install from the file, because two of the three
+    The rule `docs/RUNBOOK.md` §0-1 states — install from the file, because three of the four
     versions are measured — was stated in a document and enforced in a document, while FIVE places
     in the code told an operator the opposite. The worst of them is
     `tools/run_workflow.py`'s `missing_required_python_modules` detail: it is the ONLY install
@@ -967,7 +967,7 @@ class RemedyTests(unittest.TestCase):
         self.assertEqual(
             [], offenders,
             "a module prints a remedy telling the reader to install a declared distribution BY "
-            "NAME. Two of the three carry a version this repository measured, so following it "
+            "NAME. Three of the four carry a version this repository measured, so following it "
             "lands on a release nothing here has driven — and a printed remedy outranks a "
             f"document, because it arrives at the moment of the failure: {offenders}")
 
