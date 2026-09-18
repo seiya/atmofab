@@ -4593,7 +4593,7 @@ _CLOSURE_MEMBER_POLL_SECONDS = 0.2
 _CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS = 60.0
 
 
-def _stop_closure_members(running: dict[str, "_ClosureMemberProcess"], *,
+def _stop_closure_members(running: dict[str, _ClosureMemberProcess], *,
                           dependency_runs: list[dict[str, Any]],
                           emit: Any, label: Any) -> None:
     """The interrupted driver stops its running members and records them.
@@ -4717,7 +4717,7 @@ def _schedule_closure_members(
     pending: dict[str, dict[str, Any]],
     launch_order: list[str],
     done: set[str],
-    running: dict[str, "_ClosureMemberProcess"],
+    running: dict[str, _ClosureMemberProcess],
     jobs: int,
     repo_root: Path,
     required_stages: list[str],
