@@ -70,8 +70,9 @@ verdict) never sees one; the operator's ``[execute fail: verdict]`` report and t
 diagnostician do. Every condition carries ``quantity: <name>`` — what it measures — and the
 primary predicate of the same test and ``quantity`` is its corroborant; the Compile gate
 (``tools.primary_evidence.coverage_violations``) refuses a condition with no corroborant, so
-no test's verdict rests on secondary evidence alone. That gate compares NAMES: whether the
-two sides measure the same quantity is ``Compile.verify``'s judgment.
+no test's verdict rests on secondary evidence alone. That gate compares names and the cases
+a corroborant reads: whether the two sides measure the same quantity is ``Compile.verify``'s
+judgment.
 """
 
 from __future__ import annotations

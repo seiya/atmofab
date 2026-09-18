@@ -546,7 +546,9 @@ PINNED: dict[str, str] = {
     # contract's own text is `compile-docs-4`, pinned by `test_derivation_transformation_drift.py`.)
     # Re-pinned in round 1 (new on this branch): rule (7) states the scope rule of the coverage gate.
     # Re-pinned in round 2: rule (7) states it over the cases a corroborant reads.
-    "pure-46": "23218001664589155f214e4deb298d3e06650c3d92d959bc6b73627422dab5a5",}
+    # Re-pinned in round 3 (disclosure): the verify template says the gate compares names AND
+    # cases read.
+    "pure-46": "6f4b83cab5180201a6d9310ed6af643ea695eea44c9d98bce3c134db73c9c5b0",}
 
 
 def _contract_tuple() -> dict[str, object]:

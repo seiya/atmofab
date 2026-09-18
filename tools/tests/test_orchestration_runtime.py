@@ -21117,7 +21117,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
         # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
         # Round 2: the rule is stated over the cases a corroborant reads; measured 89207, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 89300,
+        # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
+        # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 90200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

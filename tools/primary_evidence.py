@@ -537,8 +537,8 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
     for name, dims in wanted.items():
         if name not in doc:
             # A capture carries the variables its writer holds for this case: the
-            # host-rendered runner every declared one (it refuses to run otherwise), a harness
-            # self-test's own runner the case's required set. A predicate naming an absent one
+            # host-rendered runner every declared one (it `error stop`s on an unbound one), a
+            # harness self-test's own runner the case's required set. A predicate naming an absent one
             # fails at `_capture_value`, on that predicate.
             continue
         raw = doc[name]
@@ -592,7 +592,9 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any]) -
     sdir = Path(run_dir) / "raw" / "state_snapshots"
     initial_path = sdir / "initial" / f"{case_id}.json"
     # A node whose own runner writes the snapshots (a harness self-test) writes no `initial/`
-    # capture; the host-rendered runner always does, and `post_execute` requires it there.
+    # capture; the host-rendered runner always does, and the conductor's
+    # `_snapshot_deliverable_gap(initial_required=True)` refuses a run without one before any
+    # verdict is authored (the `--stage post_execute` validator only shape-checks the file).
     initial = _load_capture(initial_path, variables, tv) if initial_path.is_file() else None
     final = _load_capture(sdir / f"{case_id}.json", variables, tv)
     rank = state_rank(schema)
@@ -976,7 +978,7 @@ def validate_primary_predicate_schema(
     the same forms as a `test_predicates` condition, exactly one scope, `target_cases` ⊆
     cases), parses `expr` and every `bind` under the closed grammar, and resolves every name:
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
-    number in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
+    number or a rectangular numeric list in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
     an `at('<case>')` case is one of the predicate's own target cases. `coordinates[]` is
     resolved against every declared case, since every case is captured. With
     ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a

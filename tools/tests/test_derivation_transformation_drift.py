@@ -165,7 +165,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 1 (the version is new on this branch): the coverage block and V3 state
     # the scope rule, two "a number" sentences say "or a numeric list", "at least one per quantity".
     # Re-pinned in round 2: the rule is stated over the cases a corroborant READS.
-    "compile-docs-4": "387246ba36266af31b2e8aaca80b912fdf4d8d93240677b040ad64a5257f06e2",
+    # Re-pinned in round 3 (disclosure): the harness self-test's snapshot variables and its
+    # tests.md-prescribed corroborants are carved out of the "primary state only" rule and
+    # V3 (iv); "names and cases read" at the condition.
+    "compile-docs-4": "0d5a96a95ea427fc505ca3572f99f2d3b719fa524ba4d1cbb176829d8f5abb4c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -211,7 +214,8 @@ PINNED_VERDICT: dict[str, str] = {
     # `evaluate_verdict`, a record's `case`, the overflow guard, the initial-capture message.
     # Re-pinned in round 2: the rule is over the cases a corroborant READS (`cases_read` on the
     # record replaces `case`), `per_case` / `na_allowed` must be booleans, one dead check gone.
-    "verdict-3": "aee0f1f80b4ba682c6507ad8c967c1e52704ab4e9aa457e7f58c007eb064dcc1",
+    # Re-pinned in round 3 (disclosure; comment / docstring wording only).
+    "verdict-3": "6fcdb58b9f7e969a34c577128aa9dbe0e71c763b09d1ebb913096b758b851d27",
 }
 
 
