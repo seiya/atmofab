@@ -419,7 +419,10 @@ def resolve_input_value(inputs: Any, dotted: str) -> Any:
     if not present:
         raise PrimaryEvidenceError(f"inputs.{dotted} is not a key of this case's inputs")
     if _is_number(value):
-        return _finite(float(value), f"inputs.{dotted}")
+        try:
+            return _finite(float(value), f"inputs.{dotted}")
+        except OverflowError:   # an integer literal beyond float64
+            raise PrimaryEvidenceError(f"inputs.{dotted} is too large for a float") from None
     if isinstance(value, list):
         if _contains_non_number(value) or not value:
             raise PrimaryEvidenceError(
@@ -427,7 +430,7 @@ def resolve_input_value(inputs: Any, dotted: str) -> Any:
                 "empty one (only a rectangular numeric list can enter an expression)")
         try:
             arr = np.asarray(value, dtype=np.float64)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             arr = None
         if arr is None or arr.dtype != np.float64 or arr.size == 0 or arr.ndim > MAX_INPUT_RANK:
             raise PrimaryEvidenceError(
@@ -760,8 +763,9 @@ def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
     table = env.initial if point == "initial" else env.final
     if table is None:
         raise PrimaryEvidenceError(
-            f"{point}.{var}: case {env.case_id!r} has no initial capture (this node's own "
-            "runner writes none)")
+            f"{point}.{var}: case {env.case_id!r} has no initial capture "
+            "(raw/state_snapshots/initial/<case_id>.json is absent: a node whose own runner "
+            "writes the snapshots writes none)")
     if var not in table:
         raise PrimaryEvidenceError(
             f"{point}.{var}: not captured in case {env.case_id!r}")
@@ -918,6 +922,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
             "op": op, "scope": scope, "target_cases": list(targets),
+            # the one case a `case:`-scoped record is read in (None under per_case), so the
+            # verdict evaluator can re-check the condition/corroborant scope rule
+            "case": contexts[0] if scope == "case" else None,
             "grammar_version": GRAMMAR_VERSION,
             "satisfied": True, "kind": "pass", "evaluated": [],
         }
@@ -1148,23 +1155,43 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
     test therefore always has at least one primary predicate. `primary_predicates` absent
     is the same omission for every test and is refused as such.
 
-    This compares NAMES and nothing else: whether a same-named pair measures the same
-    quantity, and whether the primary expression can fail at all, is `Compile.verify`'s
-    judgment (V3). Malformed entries are left to the two schema gates that run before this
-    one: a condition with no `quantity` is skipped here (the secondary schema gate refuses
-    it), and so is a primary predicate with no `test_id` or `quantity`."""
+    A corroborant also has to cover the condition's SCOPE, or a test ranging over several
+    cases certifies on the one its corroborant names (round 1 of PR-3's review): a
+    `per_case: true` condition needs a `per_case: true` primary of that quantity; a
+    `case: X` condition needs a primary with `per_case: true` or `case: X`; a suite-level
+    condition (neither key) takes either. `target_cases` equality is the primary schema
+    gate's; this rule is about which of those cases the primary is EVALUATED in.
+
+    This compares names and scope keys and nothing else: whether a same-named pair measures
+    the same quantity, and whether the primary expression can fail at all, is
+    `Compile.verify`'s judgment (V3). Malformed entries are left to the two schema gates
+    that run before this one: a condition with no `quantity` is skipped here (the secondary
+    schema gate refuses it), and so is a primary predicate with no `test_id` or `quantity`."""
     if not isinstance(test_predicates, list):
         return []
     if not isinstance(primary_predicates, list):
         return [("io_contract.primary_predicates missing: every test_predicates condition needs "
                  "a host-evaluated corroborant of the same test_id and quantity")]
-    corroborated: dict[str, set[str]] = {}
+    # test_id -> quantity -> the scopes its corroborants are evaluated in: "per_case", or
+    # ("case", <case_id>) — as `_predicate_scope` reads them, so a malformed scope (both keys,
+    # neither, a non-string case) is the primary schema gate's and covers nothing here.
+    corroborated: dict[str, dict[str, set[Any]]] = {}
     for pred in primary_predicates:
         if not isinstance(pred, dict):
             continue
         test_id, quantity = pred.get("test_id"), pred.get("quantity")
-        if isinstance(test_id, str) and isinstance(quantity, str):
-            corroborated.setdefault(test_id.strip(), set()).add(quantity)
+        if not (isinstance(test_id, str) and isinstance(quantity, str)):
+            continue
+        # The same reading as `_predicate_scope`.
+        scope: Any
+        if pred.get("per_case") is True and "case" not in pred:
+            scope = "per_case"
+        elif "case" in pred and not pred.get("per_case") and isinstance(pred.get("case"), str) \
+                and pred["case"].strip():
+            scope = ("case", pred["case"].strip())
+        else:
+            continue
+        corroborated.setdefault(test_id.strip(), {}).setdefault(quantity, set()).add(scope)
     v: list[str] = []
     for pred in test_predicates:
         if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str):
@@ -1175,11 +1202,28 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
         for cond in (conds if isinstance(conds, list) else []):
             if not isinstance(cond, dict) or not isinstance(cond.get("quantity"), str):
                 continue
-            if cond["quantity"] not in corroborated.get(test_id, set()):
+            scopes = corroborated.get(test_id, {}).get(cond["quantity"], set())
+            if not scopes:
                 v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
                          f"{cond['quantity']!r}) has no host-evaluated corroborant: add a "
                          f"primary_predicates entry with test_id {test_id!r} and quantity "
                          f"{cond['quantity']!r} that values it from the captured state")
+                continue
+            if bool(cond.get("per_case")):
+                holds = "holds in every target case"
+                needed, ok = "per_case: true", "per_case" in scopes
+            elif isinstance(cond.get("case"), str):
+                holds = f"is read in case {cond['case'].strip()!r}"
+                needed = f"per_case: true or case: {cond['case'].strip()!r}"
+                ok = "per_case" in scopes or ("case", cond["case"].strip()) in scopes
+            else:
+                holds, needed, ok = "", "", True
+            if not ok:
+                v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
+                         f"{cond['quantity']!r}) {holds}, but its corroborant of that quantity "
+                         f"is evaluated in a narrower scope: give the primary_predicates entry "
+                         f"{needed} — a corroborant pinned to another single case would "
+                         "certify the test on that case alone")
     return v
 
 

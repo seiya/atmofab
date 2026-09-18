@@ -21114,7 +21114,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # numeric-list inputs and the harness-shape capture errors, the same-name rule for a
         # run-wide metric and the harness sentinel example, V3 (i)'s window / vacuity clauses.
         # Measured 88398 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 88600,
+        # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
+        # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 89300,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -26760,7 +26762,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:980c80d28adfa061":
+        "tools/prompt_templates/pure_compile_generate.txt:144c9a59d5f2322d":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
             "PR-3, which edited rule 7 of the same paragraph)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":

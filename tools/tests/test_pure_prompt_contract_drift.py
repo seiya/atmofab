@@ -544,7 +544,8 @@ PINNED: dict[str, str] = {
     # corroboration record and says a value difference is not a finding; the `harness` producer
     # template's rule (5) says the sentinels a case emits are its declared inputs. (The phase
     # contract's own text is `compile-docs-4`, pinned by `test_derivation_transformation_drift.py`.)
-    "pure-46": "d8aac9795879c3fe36f55fbfa5ac569a95cc7e36f5d2ee41574494e244bb039d",}
+    # Re-pinned in round 1 (new on this branch): rule (7) states the scope rule of the coverage gate.
+    "pure-46": "f827861e2f51f868e4449ed68b6fb145a024c5d560537927677127c923bf0f8a",}
 
 
 def _contract_tuple() -> dict[str, object]:

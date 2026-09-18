@@ -11661,9 +11661,14 @@ end program shallow_water2d_runner
                 self.assertTrue(any(fragment in x for x in v), (fragment, v))
                 self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"))
+            # the SECONDARY refusal, through the stage (round 1: `corroborate=False`, or the
+            # helper's auto-added primary of the same malformed name answers the fragment)
+            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"),
+                                                   corroborate=False)
             v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("quantity must match" in x for x in v), v)
+            self.assertTrue(any("quantity must be present and match" in x for x in v), v)
+            self.assertFalse(any("primary_predicates[" in x and "quantity must match" in x
+                                 for x in v), v)
 
     def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
         """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
@@ -11842,6 +11847,22 @@ end program shallow_water2d_runner
                 v = self._compile_with_io_contract(Path(tmp), io)
                 self.assertTrue(any(fragment in x and "spec.ir.yaml:" in x for x in v),
                                 (fragment, v))
+        # round 1 (security axis): a `case:`-scoped corroborant of a per_case condition passed
+        # every gate through the stage; refused now, with the pinned scope named
+        per_case = copy.deepcopy(verdict_only)
+        per_case[0]["target_cases"] = ["c1", "c2"]
+        per_case[0]["pass_when"]["all"][0]["per_case"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(per_case, corroborate=False)
+            narrow = {**corroborant, "target_cases": ["c1", "c2"], "case": "c1"}
+            del narrow["per_case"]
+            io["primary_predicates"] = [narrow]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("evaluated in a narrower scope" in x and "spec.ir.yaml:" in x
+                                for x in v), v)
+            io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
         with tempfile.TemporaryDirectory() as tmp:
             no_q = copy.deepcopy(verdict_only)
             del no_q[0]["pass_when"]["all"][0]["quantity"]
@@ -11856,8 +11877,10 @@ end program shallow_water2d_runner
         # The coverage gate (Z6 PR-3, replacing the degenerate gate this row used to calibrate)
         # reaches a REAL full-fidelity IR's predicates. The tracked fixture predates Z6: it
         # carries no `quantity` and no `primary_predicates`, which is exactly the shape every
-        # certified legacy IR has and `ir_rejected_by_current_validator` re-derives (plan
-        # decision 10) — so the captured drive must name the absent corroborant set, and the
+        # certified legacy IR has: the current validator refuses it (plan decision 10; in a
+        # real tree the version bumps' key mismatch precedes the validator clause of
+        # `_ir_certification`, and either way the node re-derives) — so the captured drive
+        # must name the absent corroborant set, and the
         # same fixture with every condition tagged and corroborated must be clean of both
         # complaints. Driving the fixture twice, in both directions, is what shows the gate
         # reached real predicates rather than falling out early on a document it could not

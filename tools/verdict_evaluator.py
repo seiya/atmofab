@@ -406,6 +406,30 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                     raise PredicateError(
                         f"primary record for {test_id.strip()!r} ranges over "
                         f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
+            # The Compile gate's scope rule, re-checked here like the target_cases pin: a
+            # `per_case` condition needs a per_case corroborant of its quantity, a `case: X`
+            # one a per_case corroborant or one read in X — else a corroborant pinned to one
+            # case would read as corroboration of the whole test.
+            for cond in _predicate_conditions(pred):
+                q = cond.get("quantity") if isinstance(cond, dict) else None
+                if not isinstance(q, str):
+                    continue
+                same = [r for r in records if r.get("quantity") == q]
+                if not same:
+                    continue   # the gate's coverage rule owns an uncovered quantity
+                if bool(cond.get("per_case")):
+                    ok = any(r.get("scope") == "per_case" for r in same)
+                elif isinstance(cond.get("case"), str):
+                    ok = any(r.get("scope") == "per_case" or (
+                        r.get("scope") == "case" and r.get("case") == cond["case"].strip())
+                        for r in same)
+                else:
+                    ok = True
+                if not ok:
+                    raise PredicateError(
+                        f"primary record(s) for {test_id.strip()!r} quantity {q!r} are "
+                        f"evaluated in a narrower scope than the condition on "
+                        f"{cond.get('ref')!r} holds in")
             secondary_ok = bool(basis.get("satisfied"))
             primary_ok = all(bool(r.get("satisfied")) for r in records)
             structural = any(r.get("kind") == _KIND_STRUCTURAL for r in records)

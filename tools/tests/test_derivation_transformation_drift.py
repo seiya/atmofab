@@ -162,7 +162,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # grammar 2 (a numeric-list input, the harness-shape capture errors); a run-wide metric
     # shares its end-state primary's name (the positivity example) and the harness sentinel
     # example; V3 (i) gains the window and vacuity clauses.
-    "compile-docs-4": "a807d3475a00c17a6e02a51adcccf965344b69e6fd65a43aaa99deb6e3a602bd",
+    # Re-pinned in round 1 (the version is new on this branch): the coverage block and V3 state
+    # the scope rule, two "a number" sentences say "or a numeric list", "at least one per quantity".
+    "compile-docs-4": "e59eb28f4db4fdecc08f8ac52c368fb204f3a19647283c66784d8131a50f89e9",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -204,7 +206,9 @@ PINNED_VERDICT: dict[str, str] = {
     # grammar 2 — `inputs.<path>` may be a rectangular numeric list (an array), a capture carries
     # the variables its file holds and `initial` is None where no `initial/` capture exists
     # (a variable or capture a predicate names and the case lacks fails that predicate).
-    "verdict-3": "65c9736a82e5ba70e4400c9e40e757d11bd9d938550f23675a24035a45be7398",
+    # Re-pinned in round 1 (new on this branch): the coverage gate's scope rule and its re-check in
+    # `evaluate_verdict`, a record's `case`, the overflow guard, the initial-capture message.
+    "verdict-3": "5dad71be0b51375e2cc2c430a3c97b570af06d4aebd87e40348644bbcaf09ca0",
 }
 
 

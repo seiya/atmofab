@@ -70,7 +70,8 @@ def _ir(primary: list[dict] | None, *, coordinates: list[dict] | None = None,
                   "quantity": "mass_drift_rel"}]}},
             {"test_id": "t_sym", "expected_outcome": "pass", "target_cases": ["a", "b"],
              "pass_when": {"all": [
-                 {"ref": "errors.sym", "op": "le", "value": 1e-12, "case": "a"}]}},
+                 {"ref": "errors.sym", "op": "le", "value": 1e-12, "case": "a",
+                  "quantity": "sym"}]}},
         ],
     }
     if primary is not None:
@@ -555,6 +556,7 @@ class EvaluationTest(unittest.TestCase):
         # a [ny] row against the [nx, ny] state: refused by the shape rule like any array
         self._structural(self._one("maxabs(final.h - inputs.initial.row)"), "rank 2 and 1")
         for bad, fragment in ((h[0][:3].tolist() + [[1.0]], "rectangular"),
+                              (10 ** 400, "too large for a float"), ([10 ** 400], "rectangular"),
                               ([], "empty"), ([[1.0], [1.0, 2.0]], "rectangular"),
                               ([1.0, "2"], "other than numbers"),
                               ([True, 1.0], "other than numbers"),
@@ -844,6 +846,34 @@ class VerdictIntegrationTest(unittest.TestCase):
         del primary[0]["target_cases"]   # a record without the key is accepted as before
         evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
 
+    def test_a_corroborant_pinned_to_one_case_of_a_per_case_condition_raises(self) -> None:
+        """Round 1 (security axis): a `case: a` corroborant of a `per_case` condition passed
+        the target_cases pin (set-equal) and the coverage gate (same name), and the test
+        certified on case a alone with `corroboration: agree` while case b's state failed.
+        The gate now refuses it (CoverageGateTest) and the evaluator re-checks it here."""
+        self.run.write_state("b", self.h, self.h * 0.5)   # b loses mass; a does not
+        self.ir["io_contract"]["primary_predicates"] = [
+            {**MASS, "per_case": False, "case": "a"}, HMIN, SYM]
+        del self.ir["io_contract"]["primary_predicates"][0]["per_case"]
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        self.assertEqual(primary[0]["scope"], "case")
+        self.assertEqual(primary[0]["case"], "a")
+        self.assertTrue(primary[0]["satisfied"])   # a alone holds
+        with self.assertRaisesRegex(PredicateError, "narrower scope"):
+            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+        # a `case:` condition takes a corroborant read in the SAME case, or a per_case one;
+        # t_sym's condition is `case: a` and SYM is `case: a`
+        self.assertEqual(primary[2]["case"], "a")
+        primary[2]["case"] = "b"
+        with self.assertRaisesRegex(PredicateError, "narrower scope"):
+            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
+        primary[2]["scope"], primary[2]["case"] = "per_case", None
+        doc = evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
+        # accepted as a scope; both tests then fail on the state itself (b lost mass, so the
+        # depth floor and the translation pair both break) with a corroboration recorded
+        self.assertEqual([t["basis"]["corroboration"] for t in doc["per_test"]],
+                         ["disagree", "disagree"])
+
     def test_unknown_test_id_raises(self) -> None:
         primary = [{"test_id": "nope", "satisfied": True, "kind": "pass"}]
         with self.assertRaisesRegex(PredicateError, "no test_predicates entry"):
@@ -1042,6 +1072,58 @@ class CoverageGateTest(unittest.TestCase):
         # of the same quantity and a corroborant of an unnamed quantity change nothing
         self.assertEqual(pe.coverage_violations(
             self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")]), [])
+
+    def test_a_corroborant_must_cover_the_conditions_scope(self) -> None:
+        """Round 1 (security axis): per (test, quantity), a `per_case` condition needs a
+        `per_case` corroborant; a `case: X` condition one read in X or a per_case one; a
+        suite-level condition takes either. A primary with a malformed scope covers nothing
+        (the primary schema gate refuses it)."""
+        t = copy.deepcopy(self._T)
+        t[0]["pass_when"]["all"] = [
+            {"ref": "m.a", "op": "le", "value": 1, "per_case": True, "quantity": "pc"},
+            {"ref": "m.b", "op": "le", "value": 1, "case": "a", "quantity": "ca"},
+            {"ref": "m.c", "op": "le", "value": 1, "quantity": "suite"}]
+        t[1]["pass_when"]["all"] = [
+            {"ref": "m.d", "op": "le", "value": 1, "per_case": True, "quantity": "pc2"}]
+
+        def case_p(test_id: str, quantity: str, case: str) -> dict:
+            p = {**self._p(test_id, quantity), "case": case}
+            del p["per_case"]
+            return p
+
+        # per_case condition, case: corroborant -> refused; case: condition read in another
+        # case -> refused; suite-level with a case: corroborant -> accepted
+        v = pe.coverage_violations(t, [case_p("t_mass", "pc", "a"), case_p("t_mass", "ca", "b"),
+                                       case_p("t_mass", "suite", "a"),
+                                       case_p("t_sym", "pc2", "a")])
+        self.assertEqual(len(v), 3, v)
+        self.assertIn("t_mass: condition on 'm.a' (quantity 'pc') holds in every target case, "
+                      "but its corroborant of that quantity is evaluated in a narrower scope: "
+                      "give the primary_predicates entry per_case: true", v[0])
+        self.assertIn("condition on 'm.b' (quantity 'ca') is read in case 'a'", v[1])
+        self.assertIn("per_case: true or case: 'a'", v[1])
+        self.assertIn("t_sym: condition on 'm.d'", v[2])
+        # the same case, or per_case, satisfies each
+        self.assertEqual(pe.coverage_violations(t, [
+            self._p("t_mass", "pc"), case_p("t_mass", "ca", "a"), case_p("t_mass", "suite", "b"),
+            self._p("t_sym", "pc2")]), [])
+        self.assertEqual(pe.coverage_violations(t, [
+            self._p("t_mass", "pc"), self._p("t_mass", "ca"), self._p("t_mass", "suite"),
+            self._p("t_sym", "pc2")]), [])
+        # one of several corroborants of a quantity in the right scope is enough
+        self.assertEqual(pe.coverage_violations(t, [
+            case_p("t_mass", "pc", "a"), self._p("t_mass", "pc"), self._p("t_mass", "ca"),
+            self._p("t_mass", "suite"), self._p("t_sym", "pc2")]), [])
+        # a malformed scope (both keys, neither, per_case: false alone, an empty case) is not
+        # a corroborant at all: every condition it "covered" is reported uncovered
+        for bad in ({"per_case": True, "case": "a"}, {}, {"per_case": False}, {"case": ""},
+                    {"case": 1}):
+            with self.subTest(bad=bad):
+                p = {k: v_ for k, v_ in self._p("t_sym", "pc2").items() if k != "per_case"}
+                p.update(bad)
+                v = pe.coverage_violations(t[1:], [p])
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("has no host-evaluated corroborant", v[0])
 
     def test_absent_list_is_refused(self) -> None:
         for absent in (None, "x", {}):
