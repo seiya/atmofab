@@ -4568,14 +4568,64 @@ def _closure_member_argv(
 def _launch_closure_member(argv: list[str], *, repo_root: Path,
                            env: dict[str, str]) -> subprocess.Popen[str]:
     """Start one `--jobs` child. Its stdout is a pipe the driver relays; stderr is
-    inherited, so a child's warnings reach the operator's terminal as the driver's do."""
+    inherited, so a child's warnings reach the operator's terminal as the driver's do.
+
+    `start_new_session`: the child leaves the driver's process group, so a terminal Ctrl-C
+    (SIGINT to the foreground group) reaches the DRIVER alone; what then happens to the
+    members is one mechanism, `_stop_closure_members` — the driver forwards SIGTERM and
+    waits — rather than a race between the terminal's signal and the driver's (found by
+    the Codex pass of round 2)."""
     return subprocess.Popen(
         argv, cwd=repo_root, env=env, stdout=subprocess.PIPE, stderr=None, text=True,
-        encoding="utf-8", errors="backslashreplace", bufsize=1)
+        encoding="utf-8", errors="backslashreplace", bufsize=1, start_new_session=True)
 
 
 #: How often the `--jobs` driver polls its children between exits, in seconds.
 _CLOSURE_MEMBER_POLL_SECONDS = 0.2
+
+#: How long the interrupted driver waits for a member it sent SIGTERM to: the member's own
+#: SIGTERM handling is one runtime call that terminalizes its orchestration (`_run_node`'s
+#: interrupt clause), then exit. Past this the member is killed and its orchestration is
+#: left `running` — resumable, since a free claim is a dead driver (RUNBOOK §3-1).
+_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS = 60.0
+
+
+def _stop_closure_members(running: dict[str, "_ClosureMemberProcess"], *,
+                          dependency_runs: list[dict[str, Any]],
+                          emit: Any, label: Any) -> None:
+    """The interrupted driver stops its running members and records them.
+
+    A driver that simply exited would close the only reader of each member's stdout, and
+    the member's next event would die of `BrokenPipeError` inside its `_StdoutTee` —
+    terminalized as a `driver_exception` failure at a moment nobody chose. Instead every
+    running member is sent SIGTERM (its `_sigterm_to_exit` converter routes that through
+    `_run_node`'s interrupt clause: the orchestration is terminalized `cancel` /
+    `driver_interrupted`, resumable) and waited for within
+    `_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS`; a member that outlives the grace is killed.
+    The rc of each is recorded in `dependency_runs` so the closure's last word says which
+    members were stopped and how."""
+    for mp in running.values():
+        try:
+            mp.proc.send_signal(signal.SIGTERM)
+        except OSError:
+            pass
+    for ref, mp in running.items():
+        try:
+            rc = mp.proc.wait(timeout=_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            mp.proc.kill()
+            rc = mp.proc.wait()
+        mp.reader.join()
+        dependency_runs.append({
+            "node": label(mp.node), "spec_ref": ref, "skipped": False, "resumed": mp.resumed,
+            "orchestration_id": mp.orchestration_id, "exit_code": rc,
+            "status": "interrupted",
+        })
+        emit({
+            "status": "info", "event": "closure_member_interrupted",
+            "node": label(mp.node), "spec_ref": ref, "orchestration_id": mp.orchestration_id,
+            "exit_code": rc,
+        })
 
 
 def _run_closure_members_parallel(
@@ -4621,7 +4671,6 @@ def _run_closure_members_parallel(
     launch_order = [n["spec_ref"] for n in ordered]
     done: set[str] = set()
     running: dict[str, _ClosureMemberProcess] = {}
-    first_failure: dict[str, Any] | None = None
     relay_lock = threading.Lock()
     child_env = dict(os.environ)
     child_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
@@ -4632,6 +4681,60 @@ def _run_closure_members_parallel(
     def _emit(payload: dict[str, Any]) -> None:
         with relay_lock:
             _emit_unlogged_event(payload, stdout_format)
+
+    try:
+        return _schedule_closure_members(
+            pending=pending, launch_order=launch_order, done=done, running=running,
+            jobs=jobs, repo_root=repo_root, required_stages=required_stages,
+            dep_until_phase=dep_until_phase, target_orchestration_id=target_orchestration_id,
+            target_spec_ref=target_spec_ref, until_phase=until_phase, llm_config=llm_config,
+            workflow_mode=workflow_mode, status=status, run_conductor=run_conductor,
+            wait_usage_reset=wait_usage_reset, stdout_format=stdout_format, resume=resume,
+            prior_orch_by_spec=prior_orch_by_spec,
+            preclaimed_orchestration_id=preclaimed_orchestration_id,
+            release_preclaim=release_preclaim, dependency_runs=dependency_runs,
+            child_env=child_env, emit=_emit, label=_label, relay_lock=relay_lock)
+    except (KeyboardInterrupt, SystemExit):
+        # The driver was interrupted (Ctrl-C, or SIGTERM through `_sigterm_to_exit`): stop
+        # the members it started, record them, and let the interrupt propagate.
+        _stop_closure_members(running, dependency_runs=dependency_runs, emit=_emit, label=_label)
+        raise
+
+
+def _schedule_closure_members(
+    *,
+    pending: dict[str, dict[str, Any]],
+    launch_order: list[str],
+    done: set[str],
+    running: dict[str, "_ClosureMemberProcess"],
+    jobs: int,
+    repo_root: Path,
+    required_stages: list[str],
+    dep_until_phase: str,
+    target_orchestration_id: str,
+    target_spec_ref: str,
+    until_phase: str,
+    llm_config: LlmConfig,
+    workflow_mode: str,
+    status: str,
+    run_conductor: bool,
+    wait_usage_reset: bool,
+    stdout_format: str,
+    resume: bool,
+    prior_orch_by_spec: dict[str, str],
+    preclaimed_orchestration_id: str | None,
+    release_preclaim: Any,
+    dependency_runs: list[dict[str, Any]],
+    child_env: dict[str, str],
+    emit: Any,
+    label: Any,
+    relay_lock: threading.Lock,
+) -> int:
+    """The loop of `_run_closure_members_parallel`; `running` is shared with the caller so
+    an interrupt can stop what is in flight."""
+    first_failure: dict[str, Any] | None = None
+    _emit = emit
+    _label = label
 
     while pending or running:
         if first_failure is None:
@@ -4725,15 +4828,6 @@ def _run_closure_members_parallel(
                     "detail": mp.readiness["detail"],
                 },
             }
-            if mp.skipped and rc == 0:
-                # The child found the node ready once it held the claim: the driver's
-                # pre-launch reading was overturned, so the record is a SKIP record — the
-                # shape the driver-side and sequential skips write — plus the child that
-                # answered it; a `rerun_reason` would name a stage that did not fail.
-                record = {
-                    "node": _label(node), "spec_ref": ref, "skipped": True, "status": "ready",
-                    "orchestration_id": mp.orchestration_id, "exit_code": rc,
-                }
             dependency_runs.append(record)
             if rc != 0:
                 _emit({
@@ -4752,8 +4846,21 @@ def _run_closure_members_parallel(
                 continue
             after = _dependency_node_readiness(repo_root, node, required_stages)
             if after["ready"] and mp.skipped:
-                record["version"] = after["version"]
+                # The child found the node ready once it held the claim and the driver's
+                # re-verify agrees: the pre-launch reading was overturned, so the record is
+                # a SKIP record — the shape the driver-side and sequential skips write —
+                # plus the child that answered it; a `rerun_reason` would name a stage that
+                # did not fail. A child that printed the skip and left the node NOT ready
+                # keeps the run record and takes the not-ready arm below.
+                record.clear()
+                record.update({
+                    "node": _label(node), "spec_ref": ref, "skipped": True, "status": "ready",
+                    "version": after["version"],
+                    "orchestration_id": mp.orchestration_id, "exit_code": rc,
+                })
             if not after["ready"]:
+                # Not a skip the driver accepts, whatever the child printed.
+                record["skipped"] = False
                 record["status"] = "not_ready_after_run"
                 record["readiness"] = after
                 _emit({
