@@ -194,7 +194,8 @@ class GrammarAllowlistTest(unittest.TestCase):
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
             "floor": (1, 1)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 1)
+        self.assertEqual(pe.GRAMMAR_VERSION, 2)
+        self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
@@ -532,8 +533,56 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("final.s + inputs.grid"), "not a number")
         self._structural(self._one("final.s + inputs.grid.missing"), "not a key")
 
+    def test_an_input_may_be_a_rectangular_numeric_list(self) -> None:
+        """Grammar 2 (Z6 PR-3, the harness sentinels): `inputs.<path>` may be a nested list of
+        numbers of rank 1..MAX_INPUT_RANK, read as a float64 array of that shape and paired
+        with a capture under the ordinary shape rule; every other list is refused, and a
+        coordinate parameter still takes one number."""
+        h = self.h
+        self.cases[1]["inputs"]["initial"]["h_ref"] = h.tolist()
+        self.cases[1]["inputs"]["initial"]["row"] = h[0].tolist()
+        self.cases[1]["inputs"]["initial"]["r4"] = np.ones((2, 2, 2, 2)).tolist()
+        [rec] = self._eval([self._one("maxabs(final.h - inputs.initial.h_ref)")])
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual(rec["evaluated"][0]["value"], 0.0)
+        [rec] = self._eval([self._one("sum(inputs.initial.r4) + final.s")])
+        self.assertEqual(rec["evaluated"][0]["value"], 17.0)
+        # a [ny] row against the [nx, ny] state: refused by the shape rule like any array
+        self._structural(self._one("maxabs(final.h - inputs.initial.row)"), "rank 2 and 1")
+        for bad, fragment in ((h[0][:3].tolist() + [[1.0]], "rectangular"),
+                              ([], "empty"), ([[1.0], [1.0, 2.0]], "rectangular"),
+                              ([1.0, "2"], "other than numbers"),
+                              ([True, 1.0], "other than numbers"),
+                              ([float("nan")], "non-finite"),
+                              (np.ones((2,) * 5).tolist(), "rank 1..4")):
+            with self.subTest(bad=str(bad)[:40]):
+                self.cases[1]["inputs"]["initial"]["bad"] = bad
+                self._structural(self._one("final.s + sum(inputs.initial.bad)"), fragment)
+        self.assertEqual(pe.resolve_input_number({"a": 2}, "a"), 2.0)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "not one number"):
+            pe.resolve_input_number({"a": [2.0]}, "a")
+
+    def test_a_harness_shaped_run_evaluates_final_only_predicates(self) -> None:
+        """A node whose own runner writes the snapshots (the harness self-test) writes no
+        `initial/` capture and, per case, only that case's required variables. A predicate
+        over `final.<var>` of a variable that case holds evaluates; one naming the initial
+        capture, or a variable another case holds, fails structurally on its own."""
+        for cid in ("a", "b"):
+            (self.run.sdir / "initial" / f"{cid}.json").unlink()
+        (self.run.sdir / "initial").rmdir()
+        (self.run.sdir / "a.json").write_text(json.dumps({"h": self.h.tolist(), "t": 0.0}))
+        (self.run.sdir / "b.json").write_text(json.dumps({"s": 1.0, "t": 0.0}))
+        self.cases[0]["inputs"]["initial"]["h_ref"] = self.h.tolist()
+        ok = {**self._one("maxabs(final.h - inputs.initial.h_ref)"), "case": "a"}
+        [rec] = self._eval([ok])
+        self.assertTrue(rec["satisfied"], rec)
+        [rec] = self._eval([self._one("final.s")])
+        self.assertTrue(rec["satisfied"], rec)
+        self._structural({**self._one("sum(final.h)")}, "final.h: not captured in case 'b'")
+        self._structural(self._one("final.s + initial.s"), "has no initial capture")
+
     def test_unknown_name_and_capture_variable(self) -> None:
-        self._structural(self._one("final.zeta + final.s"), "not a snapshot schema variable")
+        self._structural(self._one("final.zeta + final.s"), "not captured in case 'b'")
         self._structural(self._one("nope + final.s"), "not a bind, a coordinate or a constant")
 
     def test_binds_evaluate_in_order_and_cannot_look_forward(self) -> None:
@@ -546,11 +595,25 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("final.s", bind=[1]), "bind must be a mapping")
 
     def test_capture_file_defects_are_structural(self) -> None:
+        # Grammar 2 (Z6 PR-3): a capture carries the variables its writer holds for the case
+        # — a harness self-test's own runner writes no `initial/` and a per-case subset — so an
+        # ABSENT initial capture or an absent variable fails the predicate that NAMES it, and
+        # only that one. The final capture itself absent fails every predicate of the case.
         (self.run.sdir / "initial" / "b.json").unlink()
-        self._structural(self._one("final.s"), "is absent")
+        [rec] = self._eval([self._one("final.s")])
+        self.assertTrue(rec["satisfied"], rec)
+        self._structural(self._one("initial.s"), "has no initial capture")
+        self._structural(self._one("final.s + initial.t"), "has no initial capture")
+        (self.run.sdir / "b.json").unlink()
+        self._structural(self._one("final.s"), "b.json is absent")
         self.run.write("b", initial={"h": self.h.tolist(), "t": 0.0},
                        final={"h": self.h.tolist(), "s": 1.0, "t": 0.2})
-        self._structural(self._one("final.s"), "'s' is not captured")
+        [rec] = self._eval([self._one("final.s")])
+        self.assertTrue(rec["satisfied"], rec)
+        self._structural(self._one("initial.s"), "initial.s: not captured in case 'b'")
+        self.run.write("b", initial={"h": self.h.tolist(), "s": 1.0, "t": 0.0},
+                       final={"h": self.h.tolist(), "t": 0.2})
+        self._structural(self._one("final.s"), "final.s: not captured in case 'b'")
         bad = self.h.tolist()
         bad[0] = bad[0][:-1]
         self.run.write("b", initial={"h": bad, "s": 1.0, "t": 0.0},
@@ -890,6 +953,23 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(self._v([{**HMIN, "expr": "at('a').inputs.grid.dx + final.s"}],
                                  ir=ir), [])
 
+    def test_a_numeric_list_input_resolves_at_the_gate(self) -> None:
+        """Grammar 2 (the harness sentinels): a rectangular numeric list resolves like a number
+        at the gate, and the same list ragged or holding a string is refused in the case that
+        holds it, through the gate's own resolver."""
+        ir = _ir([HMIN])
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["initial"]["a2"] = [[1.0, 2.0], [3.0, 4.0]]
+        pred = {**HMIN, "expr": "maxabs(final.h) + sum(inputs.initial.a2)"}
+        self.assertEqual(self._v([pred], ir=ir), [])
+        ir["case"]["test_case_set"][1]["inputs"]["initial"]["a2"] = [[1.0, 2.0], [3.0]]
+        out = self._v([pred], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b': inputs.initial.a2 is not a rectangular", out[0])
+        ir["case"]["test_case_set"][1]["inputs"]["initial"]["a2"] = [[1.0, "2"], [3.0, 4.0]]
+        out = self._v([pred], ir=ir)
+        self.assertIn("other than numbers", out[0])
+
     def test_a_predicate_that_reads_no_state_is_refused(self) -> None:
         """Round 3 (leaf shortcut): `expr: "1.0"`, an input alone, or the time alone values
         nothing the kernel produced; refused at the gate and at evaluation."""
@@ -926,6 +1006,75 @@ class SchemaGateTest(unittest.TestCase):
 
 
 # ------------------------------------------------------------------------- doc coupling
+
+class CoverageGateTest(unittest.TestCase):
+    """`coverage_violations` (Z6 PR-3): every condition's `quantity` has a primary predicate
+    of the same test and quantity. Pinned per branch: the absent list, a covered set, an
+    uncovered quantity, a `verdict.*` condition needing one like any other, a corroborant on
+    the wrong test, and the malformed shapes that are the schema gates' to refuse."""
+
+    _T: ClassVar[list[dict]] = [
+        {"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a"],
+         "pass_when": {"all": [
+             {"ref": "checks.mass.status", "op": "eq", "value": "pass", "quantity": "mass"},
+             {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": "overall"}]}},
+        {"test_id": "t_sym", "expected_outcome": "xfail", "target_cases": ["a"],
+         "pass_when": {"all": [
+             {"ref": "verdict.overall", "op": "eq", "value": "fail", "quantity": "guard"},
+             {"ref": "verdict.failed_checks", "op": "includes", "value": "g",
+              "quantity": "guard"}]}},
+    ]
+
+    @staticmethod
+    def _p(test_id: str, quantity: str) -> dict:
+        return {"test_id": test_id, "quantity": quantity, "expr": "final.s", "op": "le",
+                "value": 1.0, "target_cases": ["a"], "per_case": True}
+
+    def test_covered(self) -> None:
+        full = [self._p("t_mass", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")]
+        self.assertEqual(pe.coverage_violations(self._T, full), [])
+        # two conditions sharing one quantity name share one corroborant; a second corroborant
+        # of the same quantity and a corroborant of an unnamed quantity change nothing
+        self.assertEqual(pe.coverage_violations(
+            self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")]), [])
+
+    def test_absent_list_is_refused(self) -> None:
+        for absent in (None, "x", {}):
+            with self.subTest(absent=absent):
+                v = pe.coverage_violations(self._T, absent)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("primary_predicates missing", v[0])
+
+    def test_each_uncovered_quantity_is_named(self) -> None:
+        v = pe.coverage_violations(self._T, [self._p("t_mass", "mass")])
+        self.assertEqual(len(v), 3, v)
+        self.assertIn("t_mass: condition on 'verdict.overall' (quantity 'overall') has no "
+                      "host-evaluated corroborant", v[0])
+        self.assertIn("t_sym: condition on 'verdict.overall' (quantity 'guard')", v[1])
+        self.assertIn("t_sym: condition on 'verdict.failed_checks' (quantity 'guard')", v[2])
+        self.assertIn("quantity 'guard' that values it from the captured state", v[2])
+
+    def test_a_corroborant_counts_for_its_own_test_only(self) -> None:
+        v = pe.coverage_violations(self._T, [
+            self._p("t_sym", "mass"), self._p("t_sym", "overall"), self._p("t_mass", "guard")])
+        self.assertEqual(len(v), 4, v)
+        v = pe.coverage_violations(self._T, [
+            self._p(" t_mass ", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")])
+        self.assertEqual(v, [], "a test_id is compared stripped, as the schema gates do")
+
+    def test_an_empty_list_leaves_every_test_uncovered(self) -> None:
+        v = pe.coverage_violations(self._T, [])
+        self.assertEqual(len(v), 4, v)
+
+    def test_malformed_shapes_are_left_to_the_schema_gates(self) -> None:
+        self.assertEqual(pe.coverage_violations("x", []), [])
+        self.assertEqual(pe.coverage_violations([1, {"test_id": 2}], []), [])
+        no_q = [{"test_id": "t", "pass_when": {"all": [{"ref": "verdict.overall"}, 3]}}]
+        self.assertEqual(pe.coverage_violations(no_q, []), [])
+        self.assertEqual(pe.coverage_violations(
+            self._T, [1, {"quantity": "mass"}, {"test_id": "t_mass"},
+                      {"test_id": "t_mass", "quantity": 1}]), pe.coverage_violations(self._T, []))
+
 
 class CompileContractCouplingTest(unittest.TestCase):
     """The grammar is stated twice — in `FUNCTIONS` and in the compile contract's grammar block

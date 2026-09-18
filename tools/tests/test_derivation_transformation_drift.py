@@ -157,6 +157,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in rounds 3 and 4: every entry reads captured state (a bind `expr` reaches;
     # syntactic), the xfail semantics, the depth bound, the end-state-minimum note.
     "compile-docs-3": "569a188ed9fcad5b59c64bb90e5049b7e8d523636fc09505755a5575f2918eb5",
+    # issue #255 (Z6 PR-3): `quantity` is required on every condition and the per-test coverage
+    # rule is stated at the condition; the COVERAGE block replaces the NOT DEGENERATE one;
+    # grammar 2 (a numeric-list input, the harness-shape capture errors); a run-wide metric
+    # shares its end-state primary's name (the positivity example) and the harness sentinel
+    # example; V3 (i) gains the window and vacuity clauses.
+    "compile-docs-4": "a807d3475a00c17a6e02a51adcccf965344b69e6fd65a43aaa99deb6e3a602bd",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -193,6 +199,12 @@ PINNED_VERDICT: dict[str, str] = {
     # state-read rule is transitive over the binds `expr` reaches, `unevaluated` covers a
     # secondary-side gap too, the CLI's exit codes hold for an unreadable IR / run directory.
     "verdict-2": "1594ef48dbb275d9ec64d345ebcdf500356f7a1f165740191d9616001260b715",
+    # issue #255 (Z6 PR-3): every condition's `quantity` is required (`validate_predicate_schema`),
+    # `degenerate_predicate_violations` is deleted for `primary_evidence.coverage_violations`,
+    # grammar 2 — `inputs.<path>` may be a rectangular numeric list (an array), a capture carries
+    # the variables its file holds and `initial` is None where no `initial/` capture exists
+    # (a variable or capture a predicate names and the case lacks fails that predicate).
+    "verdict-3": "65c9736a82e5ba70e4400c9e40e757d11bd9d938550f23675a24035a45be7398",
 }
 
 

@@ -24,6 +24,8 @@ over the runner's ``diagnostics.json``::
                 per_case: <bool>          # optional: resolve `ref` inside each target case's diagnostics slice
                 case: <case_id>           # optional: resolve `ref` inside ONE target case's slice (excl. per_case)
                 na_allowed: <bool>        # optional: a null/absent lhs counts as satisfied (a "not applied" metric)
+                quantity: <name>          # what the condition measures; its corroborant is the primary
+                                          # predicate of the same test and quantity (Z6)
 
 A multi-target test (a convergence sweep, a base/shifted equivariance pair) ranges its
 ``target_cases`` over several cases and picks its scope per condition:
@@ -65,10 +67,11 @@ when exactly one is, ``unevaluated`` when either half is structural — a record
 not value, or a diagnostics ref absent — so nothing was corroborated either way). A ``disagree`` — a kernel/checks
 inconsistency — or an ``unevaluated`` fails the test, so the judge (not spawned on a failing
 verdict) never sees one; the operator's ``[execute fail: verdict]`` report and the escalate
-diagnostician do. A condition's optional
-``quantity: <name>`` names what it measures, so a primary predicate of the same ``quantity``
-on the same test is its corroborant; the per-test coverage rule over those names is a
-separate Compile gate.
+diagnostician do. Every condition carries ``quantity: <name>`` — what it measures — and the
+primary predicate of the same test and ``quantity`` is its corroborant; the Compile gate
+(``tools.primary_evidence.coverage_violations``) refuses a condition with no corroborant, so
+no test's verdict rests on secondary evidence alone. That gate compares NAMES: whether the
+two sides measure the same quantity is ``Compile.verify``'s judgment.
 """
 
 from __future__ import annotations
@@ -551,13 +554,15 @@ def validate_predicate_schema(
                 if bool(cond.get("per_case")):
                     v.append(f"{cloc} sets both `per_case` and `case` "
                              "(mutually exclusive condition scopes)")
-            if "quantity" in cond:
-                # The name a primary predicate corroborates this condition under (Z6). Optional
-                # until the per-test coverage gate lands; when present it must be a well-formed
-                # quantity name, so a later coverage comparison never reads a malformed one.
-                q = cond.get("quantity")
-                if not isinstance(q, str) or not _QUANTITY_RE.match(q):
-                    v.append(f"{cloc}.quantity must match {_QUANTITY_RE.pattern} (got {q!r})")
+            # The name a primary predicate corroborates this condition under (Z6, issue #255).
+            # Required on EVERY condition — a `verdict.*` one included, since the runner's own
+            # verdict is secondary evidence too — and well-formed, so the coverage comparison
+            # (`primary_evidence.coverage_violations`) never reads a malformed or absent one.
+            q = cond.get("quantity")
+            if not isinstance(q, str) or not _QUANTITY_RE.match(q):
+                v.append(f"{cloc}.quantity must be present and match {_QUANTITY_RE.pattern} "
+                         f"(got {q!r}): the name of what this condition measures, under which "
+                         "a primary_predicates entry of the same test corroborates it")
             if "value" not in cond or cond.get("value") is None:
                 # Every op needs a concrete rhs. A condition with no `value` (or an explicit
                 # null) would compare against None at execute and permanently fail its test —
@@ -616,73 +621,6 @@ def validate_predicate_schema(
     if extra:
         v.append(f"test_predicates has unknown test_id not in tests.md ({extra})")
     return v
-
-
-def degenerate_predicate_violations(predicates: Any) -> list[str]:
-    """Necessary-condition gate against a degenerate pass-test set (TODO Item 2). If EVERY
-    ``expected_outcome == "pass"`` predicate's ``pass_when.all`` conditions reference only
-    ``verdict.<field>`` — with NO ``checks.<id>`` condition and NO per-case metric-address condition
-    anywhere in the pass set — then the per-test pass judgment reduces to the runner's own
-    ``verdict.overall``, reintroducing the judge nondeterminism the R2 predicate DSL exists to
-    remove. Returns a single violation string in that case, else an empty list.
-
-    ``xfail`` predicates are EXEMPT (a guard-rejection test such as ``l0_cfl_guard_xfail``
-    legitimately asserts only ``verdict.*``), and a SINGLE ``checks``/metric condition anywhere in
-    the pass set clears the gate. Deliberately kept SEPARATE from ``validate_predicate_schema``
-    (which validates structure) so a malformed set fails there first; this inspects only well-formed
-    pass predicates and never raises on a malformed one (it skips it). The ref-head classification
-    mirrors ``_check_ref``: head ``verdict`` is a verdict field, ``checks`` a check status, anything
-    else a per-case metric address.
-
-    Deliberately SET-LEVEL, not per-predicate. It flags ONLY the fully-degenerate set (no pass test
-    anywhere pins a concrete condition), which is unambiguously wrong. It does NOT flag a single
-    verdict-only pass predicate sitting alongside concrete ones, because that is NOT unambiguously
-    degenerate: an individual pass test can legitimately assert an aggregate criterion — a
-    multi-target evidence test such as the ``infrastructure/harness_fortran_cpu`` suite's
-    ``l0_multi_case_evidence_pass`` may reduce to ``verdict.*`` while its sibling pass tests carry the
-    ``checks.<id>`` / metric-address conditions, and a per-predicate rule would false-reject it.
-    Whether a specific pass test that COULD carry a threshold instead dropped it to ``verdict.*``
-    is a per-test FIDELITY question — it needs ``tests.md`` (which this gate cannot read) to decide,
-    so it belongs to ``Compile.verify`` (the R2 fidelity checklist item: each predicate is a truthful
-    translation of its ``tests.md`` §6/§7 prose), not to this deterministic necessary-condition gate.
-    Keeping this gate sound (no false positive on legitimate aggregate tests) and delegating per-test
-    fidelity to the semantic verifier is the same division of labor the dependency-dataflow gate uses
-    for ``required_sources``."""
-    if not isinstance(predicates, list):
-        return []
-    saw_pass_predicate = False
-    heads: list[str] = []
-    for pred in predicates:
-        if not isinstance(pred, dict):
-            continue
-        if str(pred.get("expected_outcome") or "").strip().lower() != _KIND_PASS:
-            continue
-        pass_when = pred.get("pass_when")
-        conds = pass_when.get("all") if isinstance(pass_when, dict) else None
-        if not isinstance(conds, list) or not conds:
-            continue
-        saw_pass_predicate = True
-        for cond in conds:
-            if not isinstance(cond, dict):
-                continue
-            ref = cond.get("ref")
-            if not isinstance(ref, str) or not ref.strip():
-                continue
-            heads.append(ref.strip().split(".", 1)[0])
-    # No well-formed pass predicate (only xfail, or malformed handled by the schema gate), or no
-    # resolvable ref at all: nothing to judge degenerate.
-    if not saw_pass_predicate or not heads:
-        return []
-    if any(head != "verdict" for head in heads):
-        return []
-    return [
-        "io_contract.test_predicates: degenerate pass-test set — every expected_outcome=pass "
-        "predicate references only verdict.* fields, with no checks.<id> or per-case metric-address "
-        "condition anywhere in the pass set. The per-test pass judgment then reduces to the runner's "
-        "own verdict.overall, defeating the deterministic R2 predicate DSL. Give each pass test the "
-        "concrete threshold/reduction conditions it actually asserts (a checks.<id> status or a "
-        "pinned diagnostics_contract.metrics address)."
-    ]
 
 
 def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str],

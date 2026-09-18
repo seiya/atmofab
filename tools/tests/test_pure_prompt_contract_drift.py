@@ -534,7 +534,17 @@ PINNED: dict[str, str] = {
     # grammar/name-resolution gate as already run and states what fidelity the reviewer judges on a
     # primary predicate. Nothing else on the pinned surface moved (the phase contract's own text is
     # `compile-docs-3`, pinned by `test_derivation_transformation_drift.py`).
-    "pure-45": "1e41a376718bc738503681648eb08f3849f543c54448f4e5e64b356295555c76",}
+    "pure-45": "1e41a376718bc738503681648eb08f3849f543c54448f4e5e64b356295555c76",
+    # issue #255 (Z6 PR-3): the `compile.generate` template's rule (7) says every secondary
+    # condition carries a `quantity` and the coverage gate refuses an uncovered one, that a
+    # run-wide metric and its end-state primary share a name, and how a harness self-test's
+    # corroborants are written (no `initial/`, the declared sentinels as list inputs); the
+    # `compile.verify` template's fidelity item gains the window / vacuity clauses; the
+    # `validate.judge` template's checklist (a)/(b) reads `basis.primary[]` as the host's
+    # corroboration record and says a value difference is not a finding; the `harness` producer
+    # template's rule (5) says the sentinels a case emits are its declared inputs. (The phase
+    # contract's own text is `compile-docs-4`, pinned by `test_derivation_transformation_drift.py`.)
+    "pure-46": "d8aac9795879c3fe36f55fbfa5ac569a95cc7e36f5d2ee41574494e244bb039d",}
 
 
 def _contract_tuple() -> dict[str, object]:

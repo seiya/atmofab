@@ -3404,7 +3404,9 @@ the same `na_allowed` mechanism, so the omission cannot mislead a downstream ver
 `diagnostics_contract.metrics` at Compile and `_resolve_predicate_ref` fails the run structurally at execute. The other
 half is the `tests.md` §5/§6 → IR transcription, which is `Compile.verify`'s R2 fidelity item, NOT a deterministic
 gate: no gate requires a given test's predicate to carry a metric condition (`degenerate_predicate_violations` is
-deliberately set-level, and the sibling `checks.*` pass tests already clear it), so an IR that reduced
+deliberately set-level, and the sibling `checks.*` pass tests already clear it — that gate was retired by Z6 PR-3,
+[issue #255](https://github.com/seiya/atmofab/issues/255), for the per-test coverage gate over `quantity` names,
+which still does not pin a metric address against `tests.md` §5), so an IR that reduced
 `l0_metric_leaf_pass` to its `checks.metric_leaf.status` condition alone would be schema-conformant and would
 re-certify the drop silently. Tightening that would mean a deterministic Compile-stage pin of
 `diagnostics_contract.metrics` ⊇ the addresses parsed out of `tests.md` §5, which requires a §5 address grammar every
