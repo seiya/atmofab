@@ -21116,6 +21116,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Measured 88398 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
         # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
         # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Round 2: the rule is stated over the cases a corroborant reads; measured 89207, no bump.
         "docs/workflow/phases/phase_01_compile.md": 89300,
     }
 
@@ -26762,7 +26763,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:144c9a59d5f2322d":
+        "tools/prompt_templates/pure_compile_generate.txt:497316dbffc61897":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
             "PR-3, which edited rule 7 of the same paragraph)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":

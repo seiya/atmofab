@@ -164,7 +164,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # example; V3 (i) gains the window and vacuity clauses.
     # Re-pinned in round 1 (the version is new on this branch): the coverage block and V3 state
     # the scope rule, two "a number" sentences say "or a numeric list", "at least one per quantity".
-    "compile-docs-4": "e59eb28f4db4fdecc08f8ac52c368fb204f3a19647283c66784d8131a50f89e9",
+    # Re-pinned in round 2: the rule is stated over the cases a corroborant READS.
+    "compile-docs-4": "387246ba36266af31b2e8aaca80b912fdf4d8d93240677b040ad64a5257f06e2",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -208,7 +209,9 @@ PINNED_VERDICT: dict[str, str] = {
     # (a variable or capture a predicate names and the case lacks fails that predicate).
     # Re-pinned in round 1 (new on this branch): the coverage gate's scope rule and its re-check in
     # `evaluate_verdict`, a record's `case`, the overflow guard, the initial-capture message.
-    "verdict-3": "5dad71be0b51375e2cc2c430a3c97b570af06d4aebd87e40348644bbcaf09ca0",
+    # Re-pinned in round 2: the rule is over the cases a corroborant READS (`cases_read` on the
+    # record replaces `case`), `per_case` / `na_allowed` must be booleans, one dead check gone.
+    "verdict-3": "aee0f1f80b4ba682c6507ad8c967c1e52704ab4e9aa457e7f58c007eb064dcc1",
 }
 
 

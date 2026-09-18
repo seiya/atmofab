@@ -406,30 +406,27 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                     raise PredicateError(
                         f"primary record for {test_id.strip()!r} ranges over "
                         f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
-            # The Compile gate's scope rule, re-checked here like the target_cases pin: a
-            # `per_case` condition needs a per_case corroborant of its quantity, a `case: X`
-            # one a per_case corroborant or one read in X — else a corroborant pinned to one
-            # case would read as corroboration of the whole test.
+            # The Compile gate's coverage rule (`primary_evidence.coverage_violations`),
+            # re-checked here like the target_cases pin: some record of the condition's
+            # quantity must READ every case the condition holds in — every target case for a
+            # per_case or suite-level condition, the one case for a `case:` one — else a
+            # corroborant reading one case would stand for the whole test.
             for cond in _predicate_conditions(pred):
-                q = cond.get("quantity") if isinstance(cond, dict) else None
+                q = cond.get("quantity")
                 if not isinstance(q, str):
                     continue
                 same = [r for r in records if r.get("quantity") == q]
                 if not same:
                     continue   # the gate's coverage rule owns an uncovered quantity
-                if bool(cond.get("per_case")):
-                    ok = any(r.get("scope") == "per_case" for r in same)
-                elif isinstance(cond.get("case"), str):
-                    ok = any(r.get("scope") == "per_case" or (
-                        r.get("scope") == "case" and r.get("case") == cond["case"].strip())
-                        for r in same)
+                if isinstance(cond.get("case"), str) and not cond.get("per_case"):
+                    holds = {cond["case"].strip()}
                 else:
-                    ok = True
-                if not ok:
+                    holds = {str(c) for c in (pred.get("target_cases") or [])}
+                if not any(isinstance(r.get("cases_read"), list)
+                           and holds <= {str(c) for c in r["cases_read"]} for r in same):
                     raise PredicateError(
-                        f"primary record(s) for {test_id.strip()!r} quantity {q!r} are "
-                        f"evaluated in a narrower scope than the condition on "
-                        f"{cond.get('ref')!r} holds in")
+                        f"no primary record for {test_id.strip()!r} quantity {q!r} reads every "
+                        f"case the condition on {cond.get('ref')!r} holds in")
             secondary_ok = bool(basis.get("satisfied"))
             primary_ok = all(bool(r.get("satisfied")) for r in records)
             structural = any(r.get("kind") == _KIND_STRUCTURAL for r in records)
@@ -563,6 +560,12 @@ def validate_predicate_schema(
             # It must name a case this predicate ranges over (a case outside `target_cases` is
             # evidence the predicate does not own — the metrics-basis matrix would not carry it),
             # and it is mutually exclusive with `per_case` (which ranges over all of them).
+            # The scope and N/A flags are read with `bool()` by every evaluator and by the
+            # coverage gate; only a real bool is admitted, so no reader can disagree on a
+            # truthy string.
+            for flag in ("per_case", "na_allowed"):
+                if flag in cond and not isinstance(cond.get(flag), bool):
+                    v.append(f"{cloc}.{flag} must be a boolean (got {cond.get(flag)!r})")
             if "case" in cond:
                 case_sel = cond.get("case")
                 # Compare against — and report — the same list: the STRING members of

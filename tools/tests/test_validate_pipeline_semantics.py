@@ -11718,8 +11718,12 @@ end program shallow_water2d_runner
             preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["nope"],
                       "pass_when": {"all": [{"ref": "checks.absent.status", "op": "eq",
                                              "value": "pass"}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            self.assertTrue(any("unknown case_id" in x for x in v), v)
+            # `corroborate=False` (round 2 census): the helper's auto-added corroborant copies
+            # `target_cases: ["nope"]` and the PRIMARY gate would answer the fragment too
+            v = self._compile_with_io_contract(
+                Path(tmp), self._io_contract_with_predicates(preds, corroborate=False))
+            self.assertTrue(any("test_predicates[0].target_cases references unknown case_id"
+                                in x for x in v), v)
             self.assertTrue(any("diagnostics_contract.checks" in x for x in v), v)
 
     def test_compile_predicate_gate_uses_test_evidence_requirements_fallback(self) -> None:
@@ -11858,8 +11862,21 @@ end program shallow_water2d_runner
             del narrow["per_case"]
             io["primary_predicates"] = [narrow]
             v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("evaluated in a narrower scope" in x and "spec.ir.yaml:" in x
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "spec.ir.yaml:" in x for x in v), v)
+            # round 2: the same corroborant against a SUITE-LEVEL condition over both cases
+            suite = copy.deepcopy(per_case)
+            del suite[0]["pass_when"]["all"][0]["per_case"]
+            io = self._io_contract_with_predicates(suite, corroborate=False)
+            io["primary_predicates"] = [narrow]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
                                 for x in v), v)
+            # ... and a `case: c1` corroborant whose at('c2') reaches the other case passes
+            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) + sum(at('c2').final.h)"}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
+            io = self._io_contract_with_predicates(per_case, corroborate=False)
             io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])

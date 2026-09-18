@@ -545,7 +545,8 @@ PINNED: dict[str, str] = {
     # template's rule (5) says the sentinels a case emits are its declared inputs. (The phase
     # contract's own text is `compile-docs-4`, pinned by `test_derivation_transformation_drift.py`.)
     # Re-pinned in round 1 (new on this branch): rule (7) states the scope rule of the coverage gate.
-    "pure-46": "f827861e2f51f868e4449ed68b6fb145a024c5d560537927677127c923bf0f8a",}
+    # Re-pinned in round 2: rule (7) states it over the cases a corroborant reads.
+    "pure-46": "23218001664589155f214e4deb298d3e06650c3d92d959bc6b73627422dab5a5",}
 
 
 def _contract_tuple() -> dict[str, object]:

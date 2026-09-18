@@ -407,6 +407,22 @@ class SchemaTest(unittest.TestCase):
     def test_valid(self) -> None:
         self.assertEqual(validate_predicate_schema([self._pred()], **self._kwargs()), [])
 
+    def test_scope_and_na_flags_must_be_booleans(self) -> None:
+        """Round 2 (census): every reader of `per_case` / `na_allowed` uses `bool()`, so a
+        truthy string or `1` is admitted only if no gate refuses it; this one does, so the
+        coverage gate and the evaluator never read a scope the schema did not."""
+        for flag, bad in (("per_case", 1), ("per_case", "true"), ("na_allowed", "yes"),
+                          ("per_case", None)):
+            with self.subTest(flag=flag, bad=bad):
+                v = validate_predicate_schema([self._pred(pass_when={"all": [
+                    {"ref": "verdict.overall", "op": "eq", "value": "pass",
+                     "quantity": "overall", flag: bad}]})], **self._kwargs())
+                self.assertTrue(any(f"{flag} must be a boolean" in x for x in v), v)
+        v = validate_predicate_schema([self._pred(pass_when={"all": [
+            {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": "overall",
+             "per_case": True, "na_allowed": False}]})], **self._kwargs())
+        self.assertEqual(v, [])
+
     def test_quantity_is_required_on_every_condition(self) -> None:
         """Z6 PR-3 (issue #255): a condition with no `quantity` — a `verdict.*` one included —
         is refused, since the coverage gate keys a condition's corroborant by that name; a
