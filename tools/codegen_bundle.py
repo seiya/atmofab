@@ -1696,7 +1696,8 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
                 f"serializes it at the two capture points — but the module hides these "
                 f"(a bare `private` default with no `public ::` naming them, or a "
                 f"`private ::` naming them): {', '.join(unpublished_state)}. Declare each as a "
-                f"module-level `real(dp)` variable (arrays `allocatable`, of the declared rank) "
+                f"module-level `real(dp)` variable (an array of the declared rank, allocated by "
+                f"`case_setup`) "
                 f"and list it in a `public ::` statement in the specification part.")
     return None
 

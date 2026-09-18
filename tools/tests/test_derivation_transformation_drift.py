@@ -143,7 +143,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Z6 PR-1 (issue #255): `phase_01_compile.md` now states what a snapshot variable IS (primary
     # state, bound in the checks module) and the identifier rule its name must satisfy — a
     # compile leaf reading it authors a different IR, so the key moves.
-    "compile-docs-2": "6fd6fed5d7d8cb6ec528ec8b5fcde1a0e618ca1b229336ddb55988c408ded223",
+    "compile-docs-2": "1c4e903efb34e2ed8699159a0cac0a994573d4d8269cbab61223d93a82d6263a",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

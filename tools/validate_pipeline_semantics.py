@@ -5202,16 +5202,14 @@ def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str]
     as a single `public` statement whose list was `a; public :: b`, losing `a` (whose token was
     `a;`) and inventing a name `public` — legal Fortran (gfortran rc=0) reported unpublished by
     BOTH gates."""
-    published, defined_subroutines, defined_procs, _, _, _ = \
-        checks_module_accessibility_scan(text, spec_id)
-    return published, defined_subroutines, defined_procs
+    return checks_module_accessibility_scan(text, spec_id)[:3]
 
 
 def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> list[str]:
     """The `bound` module-level variable names `use <spec_id>_checks, only: <name>` cannot
     resolve, by the same scan and the same notion of "published" the ABI gates use (Z6, issue
     #255): under a bare module-level `private` a variable is published iff a `public ::`
-    statement names it; under Fortran's default-public accessibility it is published unless a
+    statement names it; under the language's default-public accessibility it is published unless a
     `private ::` statement names it. A variable is never DEFINED in the sense a procedure is
     (the scan reads no declarations — that is the source-text surface the gates refuse to
     parse), so the default-public branch cannot tell an undeclared name from a declared one and
@@ -5230,7 +5228,7 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
 def checks_module_accessibility_scan(
     text: str, spec_id: str,
 ) -> tuple[set[str], set[str], set[str], set[str], set[str], bool]:
-    """`(published, defined_subroutines, defined_procs, public_ids, private_ids,
+    """The three sets of `checks_module_abi_facts` followed by `(public_ids, private_ids,
     module_default_private)` for `module <spec_id>_checks` in `text`, lowercased — the one scan
     behind `checks_module_abi_facts` (its first three) and `unpublished_bound_state` (its last
     three). See the former's docstring for what each set does and does not prove."""
