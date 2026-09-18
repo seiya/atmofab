@@ -157,9 +157,14 @@ def _case_ids_from_outputs(paths: list[str]) -> tuple[str, ...]:
     for p in paths:
         if "/raw/state_snapshots/" in p and p.endswith(".json"):
             name = p.rsplit("/", 1)[1][:-5]
-            if name != "snapshot_schema":
+            # `initial/<case_id>.json` (Z6) names the same case a second time; not a new id.
+            if name != "snapshot_schema" and name not in cids:
                 cids.append(name)
     return tuple(cids)
+
+
+def _runner_host_authored_from_outputs(paths: list[str]) -> bool:
+    return any("/raw/state_snapshots/initial/" in p for p in paths)
 
 
 def _evidence_artifacts_from_outputs(paths: list[str]) -> tuple[str, ...]:
@@ -228,7 +233,9 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
                       "repair_target_agent_run_id", "repair_reason", "repair_findings")
             if k in req
         },
-        runner_host_authored=bool(req.get("runner_host_authored")),
+        runner_host_authored=(bool(req.get("runner_host_authored"))
+                              or _runner_host_authored_from_outputs(
+                                  req.get("allowed_output_paths", []))),
         resolved_dependencies=tuple(req.get("resolved_dependencies", ())),
         dependency_surface=tuple(req.get("dependency_surface", ())),
         exemplar=req.get("exemplar"),
@@ -20268,6 +20275,40 @@ class LeafUsageRecordingTests(unittest.TestCase):
         # here to say what they are). Before this, codex usage was persisted as it arrived.
         self.assertEqual(usage["provider_details"],
                          {"turn_usage": {"input_tokens": 10, "output_tokens": 20}})
+
+    def test_validate_execute_owes_initial_captures_only_from_a_host_rendered_runner(self) -> None:
+        """Z6 (issue #255), pinned at the handler: `run_substep` computes `runner_host_authored`
+        for the validate phase too, so the execute launch request it records lists
+        `raw/state_snapshots/initial/<case_id>.json` per case exactly when the node's runner
+        is host-rendered. Driven through `run_substep` with `_conductor_authors_runner`
+        answering each way — the direct `build_launch_request` row beside
+        `test_execute_allowed_paths_are_evidence_artifact_driven` cannot see this wiring.
+        Witnessed: with the `phase in ("generate", "validate")` clause reverted to
+        `phase == "generate"` this row fails on the `True` branch."""
+        from unittest import mock
+        for authored in (True, False):
+            with self.subTest(runner_host_authored=authored):
+                c = self._conductor(wc.ProcResult(0, "", ""))
+                # `_FakeConductor` answers `read_case_ids` itself, so patch the INSTANCE's
+                # resolution (the class patch would sit below the fake's override).
+                with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                       return_value=authored), \
+                     mock.patch.object(c, "read_case_ids",
+                                       return_value=("c_alpha", "c_beta")), \
+                     mock.patch.object(c, "_read_evidence_artifacts",
+                                       return_value=("state_snapshots",)):
+                    c.run_substep(self._refs(), "validate", "execute")
+                req = [cap["--request-json"] for sub, cap in c.calls
+                       if sub == "record-launch"][-1]
+                self.assertEqual(req["substep"], "execute")
+                outs = req["allowed_output_paths"]
+                self.assertTrue(any(p.endswith("/raw/state_snapshots/c_alpha.json")
+                                    for p in outs), outs)
+                for cid in ("c_alpha", "c_beta"):
+                    self.assertEqual(
+                        any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json") for p in outs),
+                        authored, outs)
+                self.assertEqual(bool(req.get("runner_host_authored")), authored)
 
     def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no

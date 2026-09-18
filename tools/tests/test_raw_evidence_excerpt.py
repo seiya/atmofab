@@ -607,6 +607,9 @@ class ExcerptIsBoundedTest(unittest.TestCase):
             rex.raw_evidence_excerpt(raw.path, _contract())["policy_version"],
             rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertIsInstance(rex.RAW_EXCERPT_POLICY_VERSION, int)
+        # 2 since Z6 (issue #255): the window gained each case's `initial` capture. A recorded
+        # review stamped 1 was made through a window with no initial capture in it.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 2)
 
 
 if __name__ == "__main__":
