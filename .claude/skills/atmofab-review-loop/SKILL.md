@@ -699,6 +699,20 @@ reproduce it or establish it cannot happen — rather than reading the silence a
 There it did not reproduce (`conduct` sets `idx = target_idx` and walks forward, so Build
 re-runs), and the commit says so; the cost of having assumed either way was one reproduction.
 
+**The twin of that: a completion notification is not a stop.** Since 2026-09-18 a reviewer's
+report can arrive as a task notification while `ListAgents` still shows the agent RUNNING —
+its own background work (a suite run in its worktree) re-invokes it, and it re-delivers the
+same report at each stop; issue #250 PR-3 saw every agent of three rounds report two to four
+times, with its worktrees still REGISTERED and a full-suite pytest live in one of them each
+time. **Rule: act on a report only once it is stable across deliveries, then `TaskStop` the
+agent, `git worktree remove --force` what it left registered and delete its scratch yourself
+— the "removed" in its report was written before the harness re-invoked it.** The
+end-of-round hygiene check (`ListAgents` + `ps` + `git worktree list`) is what shows this;
+the notification alone reads exactly like a finished agent. Editing the primary checkout
+while such an agent runs is safe for its worktree (detached at a fixed commit) and unsafe for
+its findings only in the way the section above already covers. `references/round-conduct.md`
+§"An agent that notifies twice" carries both episodes.
+
 ## Delegate verifiable work to sonnet
 
 **Operational conclusion (14 data points; the confound resolved in PR #72 by giving both models

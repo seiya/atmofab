@@ -347,6 +347,27 @@ qualifier, a "(defaults to …)", a "…, which is what the gate runs" — sitti
 machine-shaped form you coupled. The machine-shaped form is the one you notice; the sentence is
 the one that stays free.
 
+## Rule 1-d / rule 3: a behaviour measured with a fake that swallows the failure (issue #250 PR #253, 2026-09-18)
+
+Round 1 of the `--jobs N` closure driver asked what happens to the running member processes
+when the driver is killed. The reviewer measured it: SIGTERM to the driver, both members
+completed and exited 0. The RUNBOOK sentence was written from that measurement — "killing the
+driver leaves the running members to finish their orchestrations on their own" — and it was
+FALSE for every production member. The instrument was a fake child whose only stdout writer
+was `_emit_unlogged_event`, which catches `BrokenPipeError`; a real member's events go through
+`_StdoutTee.write`, which does not, so when the driver exits and closes the relay pipe the
+member dies at its next event with `driver_exception`. Codex's pass and round 2's correctness
+axis both found it by asking what the REAL child writes with. The correction changed the
+design (the driver now forwards SIGTERM and waits), not just the sentence.
+
+The rule it fell through is rule 1-d's "executing the premise on ONE layer is not executing
+it", in the shape a fake makes easiest: **a fake that reproduces the interface but not the
+failure disposition of the real thing measures the fake.** Before writing a behaviour
+sentence from a fake-driven measurement, name what the real component does at the point the
+fake tolerated — here, what raises when the pipe closes — and either drive the real component
+or say the sentence is about the fake. Rule 3's "execute the sentence you wrote" was followed
+and did not help, because the execution reused the same fake.
+
 ## Rule 1-d: a premise executed on the accepting layer only (issue #235 / PR #236, 2026-09-16)
 
 `execution_trace.json` sat in the `required_evidence[].artifact` enum with no Generate contract

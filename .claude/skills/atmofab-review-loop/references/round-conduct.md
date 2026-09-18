@@ -271,6 +271,18 @@ the decision to keep paying for retries belongs to the user once the second one 
 
 ## An agent that notifies twice (issue #177, PR #213, 2026-09-11)
 
+*(A second shape, issue #250 PR #253, 2026-09-18: the SAME report delivered two to four times
+per agent while `ListAgents` showed the agent running throughout. The harness note on each
+notification said "this agent stopped with background work of its own still running … the
+result may be interim"; the agents' own reports ended with "worktrees removed, scratch
+deleted", and `git worktree list` showed six registered worktrees with a full-suite pytest live
+in one. Nothing was lost — the reports were identical across deliveries — but the round's
+hygiene had to be done by the author: `TaskStop` each agent, `git worktree remove --force`,
+`rm -rf` the scratch, `ps` for stragglers. The sonnet axis, stopped the same way, then
+delivered ONE more report through `SendMessage` (its real final one, consistent with the
+earlier ones). The rule in SKILL.md — stable across deliveries, then stop and clean — is what
+this cost: three rounds of waiting on agents that had already said everything.)*
+
 Round 2's correctness axis returned **two** completion notifications. They were not a resend.
 
 - The first was measured at `e3ab79f7` and led with an over-refusal it called high: after a
