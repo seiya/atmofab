@@ -6125,6 +6125,49 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertIsNone(kw["invocation"])
             self.assertEqual(kw["closure_until_phase"], "Validate")
 
+    def test_a_resumed_member_takes_its_phase_from_the_closure_not_its_own_record(self) -> None:
+        """Round-1 finding: a member recorded at `Compile` (a closure first run with the
+        target at compile), resumed under a closure whose target now ends at `validate`
+        (the phase-override resume), must ask the readiness question the DRIVER will ask
+        after it exits — the closure's three stages, not its own record's one — and run to
+        the closure's dependency phase. Otherwise it skips on `[ir_ref]`, the driver refuses
+        `dependency_not_ready_after_run`, and the closure is never resumable under --jobs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Compile",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Compile"})
+            asked: list[list[str]] = []
+
+            def fake_ready(root, node, required_stages):
+                asked.append(list(required_stages))
+                # Compile stands; the execution stages do not — ready under `[ir_ref]` only.
+                ready = required_stages == ["ir_ref"]
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "pipeline_ref",
+                        "detail": None if ready else "fake: not built"}
+
+            captured: list[dict] = []
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready), \
+                    redirect_stdout(io.StringIO()):
+                code = run_workflow.main(
+                    ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                     "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                     "--closure-until-phase", "validate", "--no-run-conductor",
+                     "--stdout-format", "jsonl"])
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [["ir_ref", "pipeline_ref", "aggregate_verdict"]])
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["until_phase"], "Validate")
+            self.assertEqual(captured[0]["closure_until_phase"], "Validate")
+
     def test_main_hands_jobs_to_the_closure_driver_on_both_paths(self) -> None:
         """`--jobs` reaches `_run_with_dependency_closure` from the cold `--with-deps` path and
         from the closure-aware resume path — which also hands the driver the entry claim's

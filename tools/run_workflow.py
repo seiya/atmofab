@@ -4382,6 +4382,17 @@ def _run_closure_member(
     both record having stood on it. Otherwise the node runs exactly as the sequential
     driver would have run it in-process, with the closure back-link on its invocation.
     """
+    # The member's phase is the CLOSURE's dependency phase, derived from
+    # `--closure-until-phase` exactly as the driver derives `dep_until_phase` — not the
+    # `until_phase` `_run_main` resolved, which on a resumed member is the phase the member
+    # was ORIGINALLY launched to. A closure resumed with its target at a later phase (the
+    # phase-override resume) would otherwise ask a weaker readiness question than the
+    # driver asks after the child exits (`[ir_ref]` against the driver's three stages),
+    # skip, and be refused `dependency_not_ready_after_run` on every resume; and a member
+    # that does run would run to its old phase. The sequential loop refreshes both the
+    # same way (`until_phase=dep_until_phase`, `closure_until_phase=until_phase`). Found
+    # by round 1 of the review.
+    until_phase = "Compile" if closure_until_phase == "Compile" else "Validate"
     with contextlib.ExitStack() as claim:
         if not resume_mode:
             # Blocking: the only False this can yield is the degraded-host arms' "proceed"
