@@ -12105,10 +12105,14 @@ clean:
             # leave a long gap during multi-substep phases like generate). The
             # build phase has no substep (SUBSTEPS["build"] == (None,)); use
             # the agent_role label "step" so the line still reads cleanly.
+            # The event carries no `attempt`: `phase_start.attempt` is the
+            # phase's attempt counter, and a substep's position is named by
+            # `substep` itself — carrying the index under the same key read as
+            # "passed on attempt 3" on the jsonl stream (issue #262).
             substep_label = substep or "step"
             substep_started = time.monotonic()
             self.emit("substep_start", node_key=refs.node_key, phase=phase,
-                      substep=substep_label, attempt=i + 1)
+                      substep=substep_label)
             oc = self.run_substep(refs, phase, substep, repair=repair if i == 0 else None,
                                   resolved_dependencies=dep_facts,
                                   dependency_surface=dep_surface)

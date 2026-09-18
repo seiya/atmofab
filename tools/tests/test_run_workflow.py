@@ -7267,7 +7267,7 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(
             f({"status": "info", "event": "substep_start",
                "node_key": "n", "phase": "validate", "substep": "execute",
-               "attempt": 1, "orchestration_id": "o"}),
+               "orchestration_id": "o"}),
             "    [substep] validate.execute ...",
         )
         self.assertEqual(
@@ -7903,6 +7903,9 @@ class SubstepEventTests(unittest.TestCase):
         self.assertEqual([(e["phase"], e["substep"]) for e in starts],
                          [("validate", "pre_judge"), ("validate", "execute"),
                           ("validate", "judge"), ("validate", "post_judge")])
+        # `attempt` belongs to `phase_start` alone: a substep_start that carried its
+        # index under that key read as a retry count on the jsonl stream (issue #262).
+        self.assertFalse(any("attempt" in e for e in starts))
         self.assertEqual([(e["phase"], e["substep"], e["result"]) for e in completes],
                          [("validate", "pre_judge", "pass"),
                           ("validate", "execute", "pass"),
