@@ -18377,6 +18377,48 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
             )
             self.assertTrue(_orchestration_meta_lock_path(repo_root, "wpl").is_file())
 
+    def test_pre_orchestration_start_waits_for_the_meta_lock(self) -> None:
+        """The deterministic half of the row below (issue #250 PR-3, found as an intermittent
+        CI failure): `pre_orchestration_start` runs at the START of `write_preflight`, before
+        its locked readiness block, and its own read-modify-write of `orchestration_meta.json`
+        was unlocked — so a `mark-dependency-readiness` landing between its read and its write
+        was clobbered. Another thread holds the meta lock, writes `dependency_readiness` while
+        holding it, and releases; the hook must not have written before that, so the flags it
+        writes back are the ones the holder wrote."""
+        import threading
+        from tools.orchestration_runtime import (
+            _orchestration_meta_exclusive_lock, pre_orchestration_start,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="lk",
+                               spec_ref="spec/component/src")
+            meta_path = repo_root / "workspace" / "orchestrations" / "lk" / "orchestration_meta.json"
+            holding = threading.Event()
+            hook_returned = threading.Event()
+            saw_hook_return_while_held = []
+
+            def holder() -> None:
+                with _orchestration_meta_exclusive_lock(repo_root, "lk"):
+                    holding.set()
+                    # give the hook time to read the meta if it does not wait for the lock
+                    hook_returned.wait(0.5)
+                    saw_hook_return_while_held.append(hook_returned.is_set())
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta["dependency_readiness"] = {"direct_dependency_compile_readiness": True}
+                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            t = threading.Thread(target=holder)
+            t.start()
+            holding.wait(5)
+            pre_orchestration_start(repo_root, "lk", event="preflight")
+            hook_returned.set()
+            t.join()
+            self.assertEqual(saw_hook_return_while_held, [False])  # the hook waited
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertTrue(meta["dependency_readiness"]["direct_dependency_compile_readiness"])
+            self.assertIn("parallel_nodes_policy", meta)  # and still did its own write
+
     def test_concurrent_preflight_and_mark_do_not_clobber_verified(self) -> None:
         """A concurrent write_preflight + mark_dependency_readiness must not
         end with stale dependency_readiness. Because both now acquire the
@@ -22120,7 +22162,8 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         the bytes that landed in the build dir."""
         import tools.workflow_conductor as wc
         from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _resolve_certified_closure_binding)
+            DerivationResolver, _certify_and_collect_dep_artifacts,
+            _resolve_certified_closure_binding)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             refs = self._seed(repo_root)
@@ -22144,8 +22187,19 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 f'  direct_deps:\n    - node_key: "{self.DEP}"\n', encoding="utf-8")
             conductor = wc.Conductor.__new__(wc.Conductor)
             conductor.repo_root = repo_root
+            conductor._phase_closure_bindings = {}
             obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
-            staged = conductor._stage_dependency_sources(node_refs, obj_dir)
+            # Since issue #250 PR-3 the binding is taken at phase START through the key's
+            # resolver (`_phase_derivation` -> `_bind_closure_sources`) and staging copies
+            # from it; bind here as the phase start would, over the selection NOW.
+            resolver = DerivationResolver(repo_root)
+            conductor._phase_closure_bindings[(self.DEP_B, "build")] = (
+                conductor._bind_closure_sources(
+                    node_refs, "build",
+                    [{"node_key": self.DEP,
+                      "source": resolver.select(self.DEP, "generate").output_hash}],
+                    resolver=resolver))
+            staged = conductor._stage_dependency_sources(node_refs, obj_dir, phase="build")
             resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP)
             self.assertIsNone(err)
             self.assertEqual(staged, [resolved])

@@ -1027,6 +1027,23 @@ _FAKE_DERIVATION = {"derivation_key": "sha256:" + "f" * 64,
                     "transformation": ["fake-1"]}
 
 
+def _bind_phase_closure(c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "build",
+                        *, resolver=None) -> "wc.Conductor":
+    """Do what `run_phase` does before staging (issue #250 PR-3): bind the closure the
+    phase's key names — the sidecar closure, each member's SELECTED certified source —
+    and hold the bindings on the conductor for `_stage_dependency_sources`. The
+    phase-start wiring itself (one resolver for the key and the bindings) is pinned in
+    `PhaseDerivationWiringTest`; rows that use this drive the staging half directly."""
+    from tools.orchestration_runtime import DerivationResolver
+    resolver = resolver or DerivationResolver(c.repo_root)
+    closure = [
+        {"node_key": nk, "source": resolver.select(nk, "generate").output_hash}
+        for nk in c._dependency_closure_nodes(refs)]
+    c._phase_closure_bindings[(refs.node_key, phase)] = c._bind_closure_sources(
+        refs, phase, closure, resolver=resolver)
+    return c
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
@@ -1050,6 +1067,18 @@ class _FakeConductor(wc.Conductor):
 
     def _resolve_evidence(self, rel):
         return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
+
+    # The id minting of issue #250 PR-3 settles an id by CREATING its directory
+    # (`_mint_seq_dir`, `_claim_artifact_dir`), which the non-existent `repo_root` these fakes
+    # pin cannot host. The fakes keep the pre-PR-3 answer — an id is this attempt's own iff
+    # its directory does not exist, the next seq is read off the listing — and create
+    # nothing; the exclusive-mkdir semantics are covered against a real Conductor in a
+    # TemporaryDirectory (`SubstepStatusAndResumeTest`, `MintSeqDirTest`).
+    def _claim_artifact_dir(self, path):  # type: ignore[override]
+        return not path.exists()
+
+    def _mint_dir(self, parent, prefix):  # type: ignore[override]
+        return wc._next_seq(parent, prefix)
 
     # `_read_launch_config_bytes` was faked here until Z4 (issue #171): `_launch_setting_surface`
     # read and hashed the leaf's `.mcp.json`, and these fakes pin a `repo_root` that does not
@@ -1789,11 +1818,16 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         refs.source_binary_id = "bin_20260101_007"
         with mock.patch.object(wc, "phase_derivation", return_value={"ok": 1}) as pd:
             self.assertEqual(wc.Conductor._phase_derivation(c, refs, "validate"), {"ok": 1})
+        from tools.orchestration_runtime import DerivationResolver
         pd.assert_called_once_with(
             Path("/tmp/repo"), node_key=refs.node_key, step="validate",
             spec_ref="spec/component/spec_x", ir_ref=refs.ir_ref,
             source_ref=f"{refs.pipeline_ref}/source/src_20260101_001",
-            binary_ref=f"{refs.pipeline_ref}/binary/bin_20260101_007")
+            binary_ref=f"{refs.pipeline_ref}/binary/bin_20260101_007",
+            resolver=mock.ANY)
+        # One resolver per phase derivation (issue #250 PR-3): the closure bindings staging
+        # reads are resolved through the memo that computed the key.
+        self.assertIsInstance(pd.call_args.kwargs["resolver"], DerivationResolver)
         bare = wc.NodeRefs(node_key=refs.node_key, spec_path=refs.spec_path,
                            ir_id=refs.ir_id, pipeline_id=refs.pipeline_id)
         with mock.patch.object(wc, "phase_derivation", return_value={}) as pd:
@@ -1801,7 +1835,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         pd.assert_called_once_with(
             Path("/tmp/repo"), node_key=refs.node_key, step="compile",
             spec_ref="spec/component/spec_x", ir_ref=bare.ir_ref, source_ref=None,
-            binary_ref=None)
+            binary_ref=None, resolver=mock.ANY)
 
     def test_a_launch_of_a_phase_no_run_phase_computed_carries_no_key(self) -> None:
         """`record_launch` stamps the key of the (node, phase) attempt `run_phase` last
@@ -5817,6 +5851,101 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
 
 
+class MintSeqDirTest(unittest.TestCase):
+    """Issue #250 PR-3: an id is settled by an exclusive `mkdir`, not by a directory listing
+    two drivers can read alike. The grammar (`<prefix>_<NNN>`) is unchanged."""
+
+    def test_mint_creates_the_directory_and_advances_past_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "ir" / "n"
+            seq, made = wc._mint_seq_dir(parent, "x_20260101")
+            self.assertEqual((seq, made), ("001", parent / "x_20260101_001"))
+            self.assertTrue(made.is_dir())
+            self.assertEqual(wc._mint_seq_dir(parent, "x_20260101")[0], "002")
+            # a directory someone ELSE created under the next name is skipped, not taken
+            (parent / "x_20260101_003").mkdir()
+            self.assertEqual(wc._mint_seq_dir(parent, "x_20260101")[0], "004")
+            # `_next_seq` is the READ half and creates nothing
+            self.assertEqual(wc._next_seq(parent, "x_20260101"), "005")
+            self.assertFalse((parent / "x_20260101_005").exists())
+
+    def test_mint_refuses_an_exhausted_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "x_20260101_999").mkdir()
+            with self.assertRaisesRegex(RuntimeError, "exhausted"):
+                wc._mint_seq_dir(parent, "x_20260101")
+
+    def test_concurrent_processes_mint_distinct_ids(self) -> None:
+        """Several PROCESSES minting under one parent at once get pairwise distinct ids and
+        every mint lands: the `mkdir` decides. The listing-only `_next_seq` hands the same
+        number to processes that read the listing at the same time — a race this row
+        cannot make deterministic, so it pins the mkdir's property (distinctness across
+        processes) rather than a reproduction of the collision."""
+        procs, per_proc = 4, 12
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "pipelines" / "n"
+            go = Path(tmp) / "go"
+            script = (
+                "import sys, time, pathlib\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "from tools.workflow_conductor import _mint_seq_dir\n"
+                "parent, go, out = (pathlib.Path(a) for a in sys.argv[2:5])\n"
+                "while not go.exists(): time.sleep(0.005)\n"
+                f"names = [_mint_seq_dir(parent, 'n_20260101')[1].name for _ in range({per_proc})]\n"
+                "out.write_text('\\n'.join(names) + '\\n')\n")
+            children = [
+                subprocess.Popen(
+                    [sys.executable, "-c", script, str(REPO_ROOT), str(parent), str(go),
+                     str(Path(tmp) / f"out_{i}")],
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                for i in range(procs)]
+            time.sleep(0.3)
+            go.write_text("go")
+            for child in children:
+                self.assertEqual(child.wait(timeout=120), 0)
+            minted = [
+                name for i in range(procs)
+                for name in (Path(tmp) / f"out_{i}").read_text().split()]
+            self.assertEqual(len(minted), procs * per_proc)
+            self.assertEqual(len(set(minted)), procs * per_proc)
+            self.assertEqual(sorted(minted), sorted(p.name for p in parent.iterdir()))
+
+    def test_two_conductors_preparing_one_node_get_distinct_ids(self) -> None:
+        """`prepare_node` mints the IR and pipeline ids through the mkdir: two conductors
+        over one workspace (two closures that share a dependency, two operators) prepare
+        the same node into two directories each."""
+        class _Minting(_FakeConductor):
+            _mint_dir = wc.Conductor._mint_dir
+            _claim_artifact_dir = wc.Conductor._claim_artifact_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "spec" / "component" / "spec_x").mkdir(parents=True)
+            results: list[wc.NodeRefs] = []
+            barrier = threading.Barrier(2)
+
+            def prepare() -> None:
+                c = _Minting(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+                             llm_config=_cfg("claude"), env={})
+                c.calls = []
+                barrier.wait()
+                results.append(wc.prepare_node(c, "component/spec_x@0.1.0",
+                                               "spec/component/spec_x"))
+
+            threads = [threading.Thread(target=prepare) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(len(results), 2)
+            self.assertNotEqual(results[0].ir_id, results[1].ir_id)
+            self.assertNotEqual(results[0].pipeline_id, results[1].pipeline_id)
+            for r in results:
+                self.assertTrue((repo / r.ir_ref).is_dir())
+                self.assertTrue((repo / r.pipeline_ref).is_dir())
+
+
 class NodeAllocationTest(unittest.TestCase):
     """M5: node resolution + deterministic id allocation + reservation."""
 
@@ -7472,14 +7601,31 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
                 ir_id="ir1", pipeline_id="p1", source_id="s1", binary_id="b1",
                 run_id="run_20260101_001", source_binary_id="b1")
             runs = root / refs.pipeline_ref / "runs"
-            # no run dir yet -> first run keeps the prepared id
+            # no run dir yet -> first run keeps the prepared id, and CREATES the directory
+            # (issue #250 PR-3: the id is settled by an exclusive mkdir, not a listing)
             c._ensure_fresh_producer_id(refs, "validate")
             self.assertEqual(refs.run_id, "run_20260101_001")
-            # the run dir exists (a prior attempt) -> allocate a fresh run_id
-            (runs / "run_20260101_001").mkdir(parents=True)
+            self.assertTrue((runs / "run_20260101_001").is_dir())
+            # the minted directory is still empty -> the same attempt keeps it
+            c._ensure_fresh_producer_id(refs, "validate")
+            self.assertEqual(refs.run_id, "run_20260101_001")
+            # the run dir holds a prior attempt -> allocate a fresh run_id
+            (runs / "run_20260101_001" / "trial_meta.json").write_text("{}", encoding="utf-8")
             c._ensure_fresh_producer_id(refs, "validate")
             self.assertNotEqual(refs.run_id, "run_20260101_001")
             self.assertTrue(refs.run_id.startswith("run_"))
+            self.assertTrue((runs / refs.run_id).is_dir())
+            # a directory ANOTHER process created (exists, empty, not minted here) is not
+            # this attempt's: it rotates past it rather than writing into it
+            other = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="ir1", pipeline_id="p1", source_id="s1", binary_id="b1",
+                run_id="run_20260101_007", source_binary_id="b1")
+            (runs / "run_20260101_007").mkdir()
+            c._ensure_fresh_producer_id(other, "validate")
+            self.assertNotEqual(other.run_id, "run_20260101_007")
+            self.assertTrue((runs / other.run_id).is_dir())
+            self.assertFalse(any((runs / "run_20260101_007").iterdir()))
 
     def test_producer_stale_outputs_fail_freshness_gate(self) -> None:
         import tempfile
@@ -13537,7 +13683,7 @@ class WriteMakefileTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
                 c._dependency_closure(refs)
             with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
-                c._stage_dependency_sources(refs, repo / "obj")
+                c._stage_dependency_sources(refs, repo / "obj", phase="build")
 
     def test_dependency_makefile_emits_closure_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13581,6 +13727,10 @@ class WriteMakefileTest(unittest.TestCase):
             wc.json.dumps({"source_id": lineage_source_id}) + "\n", encoding="utf-8")
         return pipe / "source" / binary_source_id / "src" / f"{sid}_model.f90"
 
+    def _bound(self, c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "build",
+               *, resolver=None) -> "wc.Conductor":
+        return _bind_phase_closure(c, refs, phase, resolver=resolver)
+
     def test_stage_dependency_sources_copies_closure_into_objdir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -13592,7 +13742,8 @@ class WriteMakefileTest(unittest.TestCase):
             self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
                                     "src_20260101_001", "module mid_model\nend module mid_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+            staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
+                refs, obj_dir, phase="build")
             # deepest-first (base before mid), matching the Makefile object order
             self.assertEqual(len(staged), 2)
             self.assertTrue(staged[0]["model_source_ref"].endswith("base_model.f90"))
@@ -13637,7 +13788,8 @@ class WriteMakefileTest(unittest.TestCase):
             (new_src / "base_model.f90").write_text(
                 "module base_model ! NEWER UNVERIFIED\nend module base_model\n", encoding="utf-8")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+            staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
+                refs, obj_dir, phase="build")
             self.assertEqual(len(staged), 1)
             self.assertIn("CERTIFIED", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
             self.assertIn("/src_20260101_001/", staged[0]["model_source_ref"])
@@ -13685,7 +13837,8 @@ class WriteMakefileTest(unittest.TestCase):
             self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
                                     "src_20260101_001", "module mid_model\nend module mid_model\n")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            staged = self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+            staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
+                refs, obj_dir, phase="build")
             self.assertEqual([b["node_key"] for b in staged],
                              ["component/base@0.1.0", "component/mid@0.1.0"])
             for binding, sid in zip(staged, ("base", "mid")):
@@ -13705,13 +13858,121 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertNotEqual(staged[0]["model_source_sha256"],
                                 staged[1]["model_source_sha256"])
 
+    def test_staging_copies_what_the_key_bound_not_what_is_selected_now(self) -> None:
+        """Issue #250 PR-3. The build key binds each closure member's SELECTED source at
+        phase start; staging copies THAT source. A member re-certified in between — a
+        parallel closure does this — moves the selection, and a stager that re-selected
+        would compile bytes the key never saw (the TOCTOU PR-2 left). Here `base` gains a
+        newer certified source after the binding; the fresh selection is the newer one,
+        the staged bytes are the bound one, and the recorded binding names it."""
+        from tools.orchestration_runtime import DerivationResolver
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
+                                    "src_20260101_001", "module base_model ! OLD\nend module\n")
+            self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
+                                    "src_20260101_001", "module mid_model\nend module mid_model\n")
+            c = self._bound(self._conductor(repo), refs)
+            # The member is re-certified: a newer source under the same key.
+            certify_node(repo, "orch_dep2", "component/base@0.1.0", through="generate",
+                         ir_id="base_20260101_001", pipeline_id="base_20260101_001",
+                         source_id="src_20260101_002",
+                         model_text="module base_model ! NEW\nend module\n")
+            fresh = DerivationResolver(repo).select("component/base@0.1.0", "generate")
+            self.assertEqual(fresh.source_id, "src_20260101_002")  # the selection moved
+            obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
+            staged = c._stage_dependency_sources(refs, obj_dir, phase="build")
+            self.assertIn("OLD", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
+            self.assertEqual(staged[0]["source_id"], "src_20260101_001")
+            self.assertEqual(staged[0]["output_hash"],
+                             c._phase_closure_bindings[(refs.node_key, "build")][0]["output_hash"])
+
+    def test_staging_refuses_bytes_that_are_not_the_bound_ones(self) -> None:
+        """The copy is hashed AFTER it lands and refused if it is not the binding's sha256:
+        a certified source directory rewritten under the running attempt (no writer does
+        it; the check is what makes 'staged == bound' a measurement, not a premise)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            base = self._seed_dep_pipeline(
+                repo, "component/base@0.1.0", "base_20260101_001",
+                "src_20260101_001", "module base_model\nend module base_model\n")
+            self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
+                                    "src_20260101_001", "module mid_model\nend module mid_model\n")
+            c = self._bound(self._conductor(repo), refs)
+            base.write_text("module base_model ! REWRITTEN\nend module\n", encoding="utf-8")
+            obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
+            with self.assertRaisesRegex(RuntimeError, "hashes to .* not the .* bound"):
+                c._stage_dependency_sources(refs, obj_dir, phase="build")
+
+    def test_staging_refuses_a_closure_that_moved_since_the_key(self) -> None:
+        """`dependency_graph.json` is outside the compile byte-pin; staging is its first
+        reader that pins it between two reads. A sidecar that names a different member
+        set than the one the key bound is refused rather than staged from a fresh
+        selection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
+            self._write_dep_ir(repo, refs)
+            self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
+                                    "src_20260101_001", "module base_model\nend module base_model\n")
+            self._seed_dep_pipeline(repo, "component/mid@0.1.0", "mid_20260101_001",
+                                    "src_20260101_001", "module mid_model\nend module mid_model\n")
+            c = self._bound(self._conductor(repo), refs)
+            self._write_dep_graph_sidecar(repo, refs, all_nodes=[
+                {"node_key": "component/base@0.1.0", "topo_level": 0},
+                {"node_key": "component/top@0.1.0", "topo_level": 1},
+            ], transitive_deps=[])
+            obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
+            with self.assertRaisesRegex(RuntimeError, "moved since its build key"):
+                c._stage_dependency_sources(refs, obj_dir, phase="build")
+            self.assertFalse((obj_dir / "base_model.f90").exists())
+
+    def test_phase_derivation_binds_the_closure_through_the_keys_resolver(self) -> None:
+        """`_phase_derivation` for `build` leaves the closure bindings on the conductor,
+        resolved by the resolver that computed the key: each binding's `output_hash` is
+        the `closure[].source` the key hashed. Driven on a certified consumer so the real
+        `phase_derivation` runs; a non-fortran node binds nothing (nothing is staged)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for dep in ("component/base@0.1.0", "component/mid@0.1.0"):
+                self._seed_dep_pipeline(repo, dep, f"{wc.spec_id_of(dep)}_20260101_001",
+                                        "src_20260101_001",
+                                        f"module {wc.spec_id_of(dep)}_model\nend module\n")
+            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+                               ir_id="top_20260101_001", pipeline_id="top_20260101_001",
+                               source_id="src_20260101_001", binary_id="b")
+            # A certified make+fortran consumer whose sidecar closure is base + mid.
+            self._write_dep_ir(repo, refs)
+            certify_node(repo, "orch_top", "component/top@0.1.0", through="generate",
+                         ir_id="top_20260101_001", pipeline_id="top_20260101_001",
+                         ir_text=(repo / refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
+            self._write_dep_ir(repo, refs)  # certify_node rewrote the sidecar leaf-shaped
+            c = wc.Conductor(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})  # the REAL resolvers
+            self.assertTrue(c._conductor_authors_makefile(refs))
+            derivation = c._phase_derivation(refs, "build")
+            bound = c._phase_closure_bindings[(refs.node_key, "build")]
+            self.assertEqual([b["node_key"] for b in bound],
+                             [e["node_key"] for e in derivation["derivation_inputs"]["closure"]])
+            self.assertEqual([b["output_hash"] for b in bound],
+                             [e["source"] for e in derivation["derivation_inputs"]["closure"]])
+            self.assertEqual(len(bound), 2)
+
     def test_stage_dependency_sources_noop_for_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             self._write_ir(repo, refs)  # leaf (direct_deps: [])
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir), [])
+            self.assertEqual(
+                self._conductor(repo)._stage_dependency_sources(refs, obj_dir, phase="build"), [])
 
     def test_stage_dependency_sources_raises_when_dep_unbuilt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -13722,9 +13983,16 @@ class WriteMakefileTest(unittest.TestCase):
             # only base is built; mid is missing -> fail-closed (build precondition)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
                                     "src_20260101_001", "module base_model\nend module base_model\n")
+            # Since issue #250 PR-3 the binding is resolved at phase start, before any
+            # substep, and refused there as an unresolvable derivation input (a transport
+            # fail_closed with no leaf spawned); staging without a binding is refused too.
+            c = self._conductor(repo)
+            with self.assertRaisesRegex(wc.DerivationInputsUnresolvable,
+                                        "component/mid@0.1.0.*no certified model source"):
+                self._bound(c, refs)
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            with self.assertRaises(RuntimeError):
-                self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+            with self.assertRaisesRegex(RuntimeError, "no derivation record"):
+                c._stage_dependency_sources(refs, obj_dir, phase="build")
 
     def test_stage_dependency_sources_raises_on_empty_closure_with_direct_deps(self) -> None:
         # IR declares direct_deps but the closure (now from the dependency_graph.json sidecar's
@@ -13736,7 +14004,7 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, direct_deps="[{operations: [x]}]")  # no sidecar authored
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             with self.assertRaisesRegex(RuntimeError, "empty build closure"):
-                self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+                self._conductor(repo)._stage_dependency_sources(refs, obj_dir, phase="build")
 
     def test_stage_dependency_sources_fails_closed_on_version_mismatch(self) -> None:
         # The sidecar pins base@0.2.0, but only base@0.1.0 is built. Staging must FAIL CLOSED
@@ -13760,10 +14028,10 @@ class WriteMakefileTest(unittest.TestCase):
             # Only base@0.1.0 is built — NOT the pinned 0.2.0.
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
                                     "src_20260101_001", "module base_model\nend module base_model\n")
-            obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             with self.assertRaisesRegex(
-                    RuntimeError, "component/base@0.2.0 has no certified model source to stage"):
-                self._conductor(repo)._stage_dependency_sources(refs, obj_dir)
+                    wc.DerivationInputsUnresolvable,
+                    "component/base@0.2.0 has no certified model source to stage"):
+                self._bound(self._conductor(repo), refs)
 
     def test_stage_dependency_sources_noop_for_non_fortran(self) -> None:
         # A c/cpp/mixed dependency node keeps its LLM-authored Makefile and owns its own
@@ -13774,7 +14042,7 @@ class WriteMakefileTest(unittest.TestCase):
             refs = self._refs()
             self._write_ir(repo, refs, language="c", direct_deps="[component/dep@0.1.0]")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
-            self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir), [])
+            self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir, phase="build"), [])
 
 
 def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
@@ -14842,7 +15110,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     mock.patch.object(wc.subprocess, "run",
                                       lambda *a, **k: wc.subprocess.CompletedProcess(
                                           a[0] if a else [], 0, "", "")):
-                c._build_inproc(refs, "child-1")
+                _bind_phase_closure(c, refs, "build")._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             bindings = meta["dependency_check"]["closure_bindings"]
@@ -16846,7 +17114,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                         "skipped": False}
 
             with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1")
+                out = _bind_phase_closure(c, refs, "generate")._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
             staged = repo / "workspace" / "tmp" / "child-1" / "syntax" / "_deps"
             self.assertTrue((staged / "depz_model.f90").is_file())
@@ -16958,7 +17226,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._m3c_refs()
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
@@ -16985,7 +17253,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._m3c_refs()
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unattributed_interaction")
@@ -17028,7 +17296,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._m3c_refs()
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
 
             def _raise(args):
                 raise SyntaxSourceNameError("refused source name '-o.f90'")
@@ -17068,7 +17336,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             # Stage one dependency the way the real closure would, so the copy has something to
             # carry; the staging itself has its own rows.
             c._stage_dependency_sources = (  # type: ignore[assignment]
-                lambda r, d: (__import__("shutil").copy2(dep, d / dep.name), ["harness"])[1])
+                lambda r, d, **kw: (__import__("shutil").copy2(dep, d / dep.name), ["harness"])[1])
             base = self._attributing_syntax(leaf_probe_ok=True)
 
             def _fn(args):
@@ -17096,7 +17364,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._m3c_refs()
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d: []  # type: ignore[assignment]
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
 
             def _fn(args):
                 pd = str(args.get("project_dir", ""))
@@ -17277,7 +17545,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         """Patch the conductor so one dependency-closure `dep_model.f90` is staged."""
         from unittest import mock
 
-        def stage(_refs, obj_dir):
+        def stage(_refs, obj_dir, **_kw):
             obj_dir.mkdir(parents=True, exist_ok=True)
             (obj_dir / "dep_model.f90").write_text(
                 "module dep_model\nend module dep_model\n", encoding="utf-8")

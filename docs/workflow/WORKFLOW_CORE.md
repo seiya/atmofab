@@ -7,7 +7,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 - The phase boundary is cut by **the hierarchy of observable primary producers**. Each phase produces exactly one kind of primary artifact.
 - The execution order between `node` is determined from the `spec` dependency declarations, and within each `node` execution proceeds in the order `Compile -> Generate -> Build -> Validate`.
 - Uniquely define each phase's `execution input`, `verification input`, and `output`.
-- Limit the parallel execution of independent `node` to cases with an explicit instruction; by default execute sequentially.
+- Limit the parallel execution of independent `node` to cases with an explicit instruction (`tools/run_workflow.py --jobs N`, N > 1; rule 36); by default execute sequentially.
 
 ## Scope
 - Workflow execution in `spec`-origin mode and `resolved`-origin mode
@@ -84,7 +84,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 33. When a requirement definition is insufficient, forbid back-deriving completion from the verification implementation, and stop the relevant phase with `fail`.
 34. The preset-compatible quality path needed for `quality check` execution must be established by the official output of `Generate` alone. Forbid the operation of having a downstream phase additionally generate test source, harness, auxiliary scripts, or a temporary Makefile under `workspace/` to establish it.
 35. The `quality check` execution method must be consistent with `impl_defaults.toolchain.language` and `impl_defaults.toolchain.build_system` of `spec.ir.yaml`. With `toolchain.build_system=make` and `toolchain.language=fortran` / `c` / `cpp` / `mixed` families, use `make_test` or `make_check`, and forbid substitution by `pytest`.
-36. Even for `node` that are independent in terms of dependencies, the workflow must execute sequentially unless an explicit parallel-execution instruction exists.
+36. Even for `node` that are independent in terms of dependencies, the workflow must execute sequentially unless an explicit parallel-execution instruction exists. The one such instruction is `tools/run_workflow.py --with-deps --jobs N` with N > 1 ([issue #250](https://github.com/seiya/atmofab/issues/250) Z5 PR-3): the driver then runs up to N dependency `node` whose own dependencies are all ready at once, each as a child driver process with one orchestration per `node` as before, and the target after every member; the default `--jobs 1` is the sequential execution this rule requires. `docs/ORCHESTRATION.md` rule 28 carries the failure policy and the member semantics.
 
 ## Common conventions
 ### `LLM`-using phases

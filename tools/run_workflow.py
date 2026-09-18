@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import traceback
 import uuid
 
@@ -218,6 +220,52 @@ def _normalize_phase(token: str) -> str:
 _REDERIVE_PHASES: tuple[str, ...] = ("compile", "generate", "build", "validate")
 
 
+def _validated_jobs(raw: Any) -> int:
+    """`--jobs N`: a positive integer. Raises `ValueError` (an `invalid_startup_input`)."""
+    try:
+        jobs = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"--jobs must be a positive integer, got {raw!r}") from exc
+    if jobs < 1:
+        raise ValueError(f"--jobs must be a positive integer, got {jobs}")
+    return jobs
+
+
+def _validated_closure_member(args: argparse.Namespace, repo_root: Path) -> dict[str, str] | None:
+    """The `--closure-member` flag set, checked as a unit: `None` when the flag is absent,
+    else `{closure_id, target_spec_ref, until_phase}`. A member is one node of one closure
+    with a fixed identity, so it takes an explicit `--orchestration-id`, both closure
+    back-link flags, and neither `--with-deps` nor `--jobs` above 1 (a member does not
+    drive a closure of its own). Raises `ValueError` (an `invalid_startup_input`)."""
+    closure_id = getattr(args, "closure_member", None)
+    target = getattr(args, "closure_target_spec_ref", None)
+    until = getattr(args, "closure_until_phase", None)
+    if not closure_id:
+        if target or until:
+            raise ValueError(
+                "--closure-target-spec-ref / --closure-until-phase are only meaningful "
+                "with --closure-member")
+        return None
+    missing = [flag for flag, value in (
+        ("--closure-target-spec-ref", target), ("--closure-until-phase", until),
+        ("--orchestration-id", getattr(args, "orchestration_id", None))) if not value]
+    if missing:
+        raise ValueError(f"--closure-member requires {', '.join(missing)}")
+    if getattr(args, "with_deps", False):
+        raise ValueError("--closure-member runs ONE closure member; it excludes --with-deps")
+    if _validated_jobs(getattr(args, "jobs", 1)) != 1:
+        raise ValueError("--closure-member runs ONE node; --jobs applies to the driver")
+    if str(getattr(args, "rederive", "") or "").strip():
+        # A dependency of a closure is never forced (`--rederive` is target-only); a member
+        # that dropped the flag silently would record a run the operator asked for and did
+        # not get. Refused rather than ignored.
+        raise ValueError("--closure-member never forces a phase: run the dependency as the "
+                         "target to --rederive it")
+    return {"closure_id": str(closure_id),
+            "target_spec_ref": _canonicalize_spec_ref(repo_root, str(target)),
+            "until_phase": _normalize_phase(str(until))}
+
+
 def _parse_rederive(raw: str | None) -> frozenset[str]:
     """`--rederive compile,generate` -> `{"compile", "generate"}`. An unknown token is a
     usage error named as such; an empty value is no forced phase."""
@@ -274,6 +322,7 @@ def _build_invocation_record(
     closure_target_spec_ref: str | None = None,
     closure_until_phase: str | None = None,
     rederive: Sequence[str] = (),
+    jobs: int | None = None,
 ) -> dict[str, Any]:
     """Assemble the reproduction/provenance record persisted to
     `orchestration_meta.json#invocation`.
@@ -328,6 +377,12 @@ def _build_invocation_record(
         record["closure_id"] = closure_id
         record["closure_target_spec_ref"] = closure_target_spec_ref or ""
         record["closure_until_phase"] = closure_until_phase or ""
+    if jobs is not None:
+        # `--jobs` (issue #250 PR-3): how many members the closure driver ran at once —
+        # recorded on the closure TARGET's invocation (the closure's identity; a member
+        # child is not told N). Provenance only, like `wait_usage_reset`; not recovered
+        # on --resume.
+        record["jobs"] = int(jobs)
     return record
 
 
@@ -1354,8 +1409,16 @@ def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
 
 @contextlib.contextmanager
 def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
-                     stdout_format: str = "human"):
+                     stdout_format: str = "human", blocking: bool = False):
     """Hold an advisory, process-scoped claim on `(repo_root, kind, key)`.
+
+    `blocking` (issue #250 PR-3, the `--jobs` closure member): a held claim is WAITED for
+    instead of refused — the member of a parallel closure that finds another driver on
+    its spec (a second closure sharing the dependency) waits for that driver to finish and
+    then asks its readiness again, which is how the same derivation is run once across
+    two closures rather than twice or not at all. The wait is announced once
+    (`start_claim_waiting`, `status: info`) so a member that sits on a claim is not
+    mistaken for a hung one. Every degradation arm below is the same in both modes.
 
     `kind="spec"` serializes cold starts of one spec against each other;
     `kind="orch"` serializes drivers of one orchestration — two `--resume` invocations
@@ -1443,7 +1506,16 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
         return
     try:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if not blocking:
+                    raise
+                _emit_unlogged_event(
+                    {"status": "info", "event": "start_claim_waiting",
+                     "claim_kind": kind, "claim_key": key},
+                    stdout_format)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         except BlockingIOError:
             # Held by another cold start of this spec — the case this exists for.
             yield False
@@ -1981,6 +2053,41 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "--with-deps closure are never forced: run the dependency as the target instead."
         ),
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "With --with-deps (or a closure-aware --resume): run up to N dependency nodes "
+            "whose own dependencies are ready AT ONCE, each as a child `run_workflow.py` "
+            "process of its own (one orchestration per node, as before), then the target. "
+            "This flag IS the explicit parallel-execution instruction the workflow "
+            "invariants require (docs/workflow/WORKFLOW_CORE.md rule 36); the default 1 "
+            "runs the closure sequentially in this process. A member that finds another "
+            "driver on its spec waits for it and re-asks its readiness instead of refusing. "
+            "Not recovered on --resume: re-pass it."
+        ),
+    )
+    # The three flags below are how a `--jobs` driver runs ONE closure member in a child
+    # process; an operator reproduces a member by re-running the recorded `invocation.command`.
+    parser.add_argument(
+        "--closure-member",
+        default=None,
+        metavar="CLOSURE_ID",
+        help=(
+            "Run this node as one member of the --with-deps closure whose target orchestration "
+            "is CLOSURE_ID (what a `--jobs N` driver passes to each child): take the spec claim "
+            "waiting rather than refusing, re-ask the node's readiness once it is held, skip "
+            "with `closure_member_skipped` when ready, else run it cold (or --resume it) with "
+            "the closure back-link recorded. Requires spec_ref, until_phase, --orchestration-id, "
+            "--closure-target-spec-ref and --closure-until-phase; excludes --with-deps."
+        ),
+    )
+    parser.add_argument("--closure-target-spec-ref", default=None, metavar="SPEC_REF",
+                        help="With --closure-member: the closure target's spec_ref.")
+    parser.add_argument("--closure-until-phase", default=None, metavar="PHASE",
+                        help="With --closure-member: the closure target's until_phase.")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--orchestration-id", help="If omitted, generated automatically (or, with --resume, the latest orchestration).")
     parser.add_argument("--status", default="running", help="Initial orchestration status for init.")
@@ -2292,7 +2399,11 @@ def _run_main(
         # re-acquire it.
         if not resume_claim.enter_context(
             _exclusive_claim(repo_root, "orch", orchestration_id,
-                             stdout_format=args.stdout_format)
+                             stdout_format=args.stdout_format,
+                             # A `--jobs` closure member waits for a competing driver of
+                             # its orchestration and re-asks its readiness (issue #250
+                             # PR-3); every other resume refuses.
+                             blocking=bool(getattr(args, "closure_member", None)))
         ):
             _emit_unlogged_event(
                 {
@@ -2361,7 +2472,9 @@ def _run_main(
                 and target_recovered.get("until_phase")
             ):
                 closure_until_recovered = target_recovered.get("until_phase")
-        force_single_node = bool(spec_ref_arg)
+        # A `--closure-member` child resumes ONE node: its own, never the closure the
+        # recorded back-link names (the parent is driving that closure).
+        force_single_node = bool(spec_ref_arg) or bool(getattr(args, "closure_member", None))
         # All three closure fields are co-written by _build_invocation_record, so
         # require all three: if any is missing (corrupt/partial block), fall back to
         # single-node resume rather than driving the closure with a wrong until_phase
@@ -2458,6 +2571,8 @@ def _run_main(
             )
         until_phase = _normalize_phase(until_phase_in)
         rederive = _parse_rederive(getattr(args, "rederive", ""))
+        jobs = _validated_jobs(getattr(args, "jobs", 1))
+        closure_member = _validated_closure_member(args, repo_root)
         # --- the leaf-LLM configuration (issue #28) --------------------------------------
         # Two ways in, in priority order, and they converge on ONE object:
         #   1. a resume whose orchestration recorded a config pin — the SAME file, re-hashed
@@ -2636,6 +2751,35 @@ def _run_main(
     # out of the repo source tree by the `sys.pycache_prefix` redirect installed near the top of
     # main() (see the comment there for why it must run that early and why it uses a literal).
 
+    # One member of a `--jobs` closure (issue #250 PR-3): this process is a child of the
+    # closure driver and runs exactly this node — cold, or resumed when `--resume` names
+    # its prior orchestration. Placed before the closure-aware resume branch on purpose: a
+    # member's recorded `closure_id` must not make it re-derive and drive the whole
+    # closure its parent is already driving.
+    if closure_member is not None:
+        return _run_closure_member(
+            repo_root=repo_root,
+            base_env=base_env,
+            orchestration_id=orchestration_id,
+            spec_ref=spec_ref,
+            source_dependency_ref=source_dependency_ref,
+            until_phase=until_phase,
+            llm=llm,
+            llm_command=llm_command,
+            llm_config=llm_config,
+            workflow_mode=workflow_mode,
+            agent_model=agent_model_in,
+            status=args.status,
+            run_conductor=args.run_conductor,
+            wait_usage_reset=args.wait_usage_reset,
+            stdout_format=args.stdout_format,
+            resume_mode=resume_mode,
+            closure_id=closure_member["closure_id"],
+            closure_target_spec_ref=closure_member["target_spec_ref"],
+            closure_until_phase=closure_member["until_phase"],
+            raw_argv=raw_argv,
+        )
+
     # Closure-aware resume: the resumed orchestration is a node of a `--with-deps`
     # closure, so re-derive the closure and drive it to the TARGET (spec_ref is the
     # closure target here). Prior node orchestrations are resumed; not-yet-run nodes
@@ -2644,6 +2788,10 @@ def _run_main(
         prior_map = _index_closure_orchestrations(repo_root, resume_closure_id)
         return _run_with_dependency_closure(
             preclaimed_orchestration_id=orchestration_id,
+            # The entry claim is this process's; a `--jobs` child resuming that member
+            # takes it itself, so the driver lets go of it first.
+            release_preclaim=resume_claim.close,
+            jobs=jobs,
             repo_root=repo_root,
             base_env=base_env,
             target_orchestration_id=resume_closure_id,
@@ -2670,6 +2818,7 @@ def _run_main(
     # `--resume` of a `--with-deps` run is handled by the closure-aware branch above.
     if getattr(args, "with_deps", False) and not resume_mode:
         return _run_with_dependency_closure(
+            jobs=jobs,
             repo_root=repo_root,
             base_env=base_env,
             target_orchestration_id=orchestration_id,
@@ -3834,10 +3983,12 @@ def _resolve_dependency_closure(
     Returns `(ordered, error)`:
       - `ordered`: dependency nodes in dependency order (dependencies before
         dependents), EXCLUDING the target. Each is
-        `{spec_ref, spec_kind, spec_id, spec_versions}`. `spec_versions` is the
-        descending list of catalog versions satisfying the requiring edge's
+        `{spec_ref, spec_kind, spec_id, spec_versions, direct_deps}`. `spec_versions` is
+        the descending list of catalog versions satisfying the requiring edge's
         constraint (intersected across edges when a node is required more than
-        once). The readiness check mirrors the launch gate's contract
+        once); `direct_deps` is the node's own direct dependencies as spec_refs
+        (profiles expanded into the components they select), the edges a `--jobs`
+        scheduler waits on before launching the node. The readiness check mirrors the launch gate's contract
         (`_certify_and_collect_dep_artifacts`): a node is ready when ANY one of these
         versions has a coherent artifact chain — so we keep all of them, not
         just the highest, to avoid re-running a dependency that an older
@@ -3892,6 +4043,9 @@ def _resolve_dependency_closure(
     # satisfying every edge that required it (intersection across edges).
     kindid_by_ref: dict[str, tuple[str, str]] = {}
     matched_by_ref: dict[str, tuple[str, ...]] = {}
+    # Per spec_ref: the spec_refs of its direct dependencies after profile expansion — the
+    # edges the `--jobs` scheduler waits on (`_run_closure_members_parallel`).
+    deps_by_ref: dict[str, list[str]] = {}
     visiting: set[str] = set()
     done: set[str] = set()
     error: dict[str, str] | None = None
@@ -4089,6 +4243,7 @@ def _resolve_dependency_closure(
                 }
                 return
             kindid_by_ref[dep_spec_ref] = (kind, sid)
+            deps_by_ref.setdefault(spec_ref, []).append(dep_spec_ref)
             # Intersect the matching-version sets across edges. An empty
             # intersection means two edges pin incompatible version ranges for
             # the same node — a genuine conflict, fail-closed.
@@ -4129,9 +4284,654 @@ def _resolve_dependency_closure(
                 "spec_kind": kind,
                 "spec_id": sid,
                 "spec_versions": list(matched_by_ref[ref]),
+                "direct_deps": list(deps_by_ref.get(ref, [])),
             }
         )
     return ordered, None
+
+
+def _required_dependency_stages(dep_until_phase: str) -> list[str]:
+    """The readiness a closure member must reach for the closure's `dep_until_phase`:
+    Compile-only when the target stops at Compile, else full execution readiness."""
+    return ["ir_ref"] if dep_until_phase == "Compile" else ["ir_ref", "pipeline_ref", "aggregate_verdict"]
+
+
+def _closure_member_resume_rejection(
+    repo_root: Path, dep_orch_id: str, llm_config: LlmConfig,
+) -> dict[str, Any] | None:
+    """The two twin gates a warm-resumed closure member must pass, asked by the DRIVER
+    before the member is resumed (in-process or as a `--jobs` child): its recorded
+    generate executor is the only one left (`pure`), and the leaf-LLM configuration it
+    launched with is still the closure's effective one — a member's remaining phases must
+    not run on different models than its finished ones did. Returns the first rejection
+    envelope, or None."""
+    for rejection in (
+        _generate_executor_resume_rejection(
+            dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)),
+        _llm_config_resume_rejection(
+            dep_orch_id, _recorded_llm_config(repo_root, dep_orch_id),
+            repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
+            effective_sha256=llm_config.sha256,
+            effective_overrides={}),
+    ):
+        if rejection is not None:
+            return rejection
+    return None
+
+
+def _closure_member_readiness(
+    repo_root: Path, spec_ref: str, closure_target_spec_ref: str, until_phase: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """A `--closure-member` child's own readiness question, asked AFTER its claim is held:
+    the closure is re-derived from the recorded target (the same resolution the driver
+    made — the member's matching versions come from the target's edges, which the child
+    is not told), the member's entry is found, and `_dependency_node_readiness` answers
+    for the stages its `until_phase` requires. Returns `(readiness, error_envelope)`."""
+    ordered, error = _resolve_dependency_closure(repo_root, closure_target_spec_ref)
+    if error is not None:
+        return None, {
+            "status": "fail",
+            "reason": "dependency_closure_unresolved",
+            "detail": error.get("detail"),
+            "reason_code": error.get("reason"),
+            "target_spec_ref": closure_target_spec_ref,
+        }
+    node = next((n for n in ordered if n["spec_ref"] == spec_ref), None)
+    if node is None:
+        return None, {
+            "status": "fail",
+            "reason": "closure_member_not_in_closure",
+            "detail": (
+                f"{spec_ref} is not a dependency of {closure_target_spec_ref} under the "
+                f"current deps.yaml / spec_catalog.yaml, so it cannot be run as a member of "
+                f"that closure"),
+            "spec_ref": spec_ref,
+            "target_spec_ref": closure_target_spec_ref,
+        }
+    return _dependency_node_readiness(
+        repo_root, node, _required_dependency_stages(until_phase)), None
+
+
+def _run_closure_member(
+    *,
+    repo_root: Path,
+    base_env: dict[str, str],
+    orchestration_id: str,
+    spec_ref: str,
+    source_dependency_ref: str,
+    until_phase: str,
+    llm: str,
+    llm_command: str,
+    llm_config: LlmConfig,
+    workflow_mode: str,
+    agent_model: str | None,
+    status: str,
+    run_conductor: bool,
+    wait_usage_reset: bool,
+    stdout_format: str,
+    resume_mode: bool,
+    closure_id: str,
+    closure_target_spec_ref: str,
+    closure_until_phase: str,
+    raw_argv: list[str] | None,
+) -> int:
+    """Run ONE member of a `--jobs` closure in this (child) process (issue #250 PR-3).
+
+    Claim, then ask, then run: a cold member takes the SPEC claim WAITING (the driver's
+    sequential loop refuses a held claim; a parallel member waits, because the holder is
+    most often the same dependency being derived by another closure); a resumed member
+    holds the ORCHESTRATION claim `_run_main` took the same way. Once the claim is held the
+    member re-asks its own readiness — the driver asked before launching this process, and
+    whoever held the claim may have certified the node meanwhile — and SKIPS with
+    `closure_member_skipped` (exit 0) when it is ready: that is the duplicate-work
+    suppression, and it is what lets two closures sharing a dependency derive it once and
+    both record having stood on it. Otherwise the node runs exactly as the sequential
+    driver would have run it in-process, with the closure back-link on its invocation.
+    """
+    # The member's phase is the CLOSURE's dependency phase, derived from
+    # `--closure-until-phase` exactly as the driver derives `dep_until_phase` — not the
+    # `until_phase` `_run_main` resolved, which on a resumed member is the phase the member
+    # was ORIGINALLY launched to. A closure resumed with its target at a later phase (the
+    # phase-override resume) would otherwise ask a weaker readiness question than the
+    # driver asks after the child exits (`[ir_ref]` against the driver's three stages),
+    # skip, and be refused `dependency_not_ready_after_run` on every resume; and a member
+    # that does run would run to its old phase. The sequential loop refreshes both the
+    # same way (`until_phase=dep_until_phase`, `closure_until_phase=until_phase`). Found
+    # by round 1 of the review.
+    until_phase = "Compile" if closure_until_phase == "Compile" else "Validate"
+    with contextlib.ExitStack() as claim:
+        if not resume_mode:
+            # Blocking: the only False this can yield is the degraded-host arms' "proceed"
+            # (which yield True), so a refusal is not a case here.
+            claim.enter_context(_exclusive_claim(
+                repo_root, "spec", spec_ref, stdout_format=stdout_format, blocking=True))
+        readiness, error = _closure_member_readiness(
+            repo_root, spec_ref, closure_target_spec_ref, until_phase)
+        if error is not None:
+            _emit_unlogged_event({**error, "orchestration_id": orchestration_id}, stdout_format)
+            return 2
+        assert readiness is not None
+        if readiness["ready"]:
+            _emit_unlogged_event(
+                {
+                    "status": "info",
+                    "event": "closure_member_skipped",
+                    "orchestration_id": orchestration_id,
+                    "spec_ref": spec_ref,
+                    "closure_id": closure_id,
+                    "version": readiness["version"],
+                    "detail": ("ready once the claim was held: another driver certified "
+                               "this node meanwhile; nothing to derive"),
+                },
+                stdout_format,
+            )
+            return 0
+        if not resume_mode:
+            _warn_about_resumable_priors(repo_root, spec_ref, stdout_format)
+        invocation = None if resume_mode else _build_invocation_record(
+            argv=raw_argv,
+            spec_ref=spec_ref,
+            until_phase=until_phase,
+            llm=llm,
+            llm_command=llm_command,
+            llm_config=llm_config,
+            repo_root=repo_root,
+            workflow_mode=workflow_mode,
+            agent_model=agent_model,
+            with_deps=True,
+            wait_usage_reset=wait_usage_reset,
+            closure_id=closure_id,
+            closure_target_spec_ref=closure_target_spec_ref,
+            closure_until_phase=closure_until_phase,
+        )
+        return _run_node(
+            repo_root=repo_root,
+            base_env=base_env,
+            orchestration_id=orchestration_id,
+            spec_ref=spec_ref,
+            source_dependency_ref=source_dependency_ref,
+            until_phase=until_phase,
+            llm=llm,
+            llm_command=llm_command,
+            llm_config=llm_config,
+            workflow_mode=workflow_mode,
+            agent_model=agent_model,
+            status=status,
+            run_conductor=run_conductor,
+            resume_mode=resume_mode,
+            wait_usage_reset=wait_usage_reset,
+            invocation=invocation,
+            closure_until_phase=closure_until_phase if resume_mode else None,
+            stdout_format=stdout_format,
+            spec_claim_held=not resume_mode,
+            orch_claim_held=resume_mode,
+        )
+
+
+class _ClosureMemberProcess:
+    """One `--jobs` child: its `Popen`, the node it runs, and what its stdout said.
+
+    The child prints its event stream as JSON lines (it is launched with
+    `--stdout-format jsonl` whatever the driver's format); a reader thread relays every
+    line to the driver's stdout under one lock — rendered through `_emit_unlogged_event`,
+    so a `human` driver shows the child's events the way it shows its own — and notes the
+    one event the driver decides by, `closure_member_skipped`."""
+
+    def __init__(self, node: dict[str, Any], orchestration_id: str, resumed: bool,
+                 readiness: dict[str, Any], proc: subprocess.Popen[str],
+                 stdout_format: str, lock: threading.Lock) -> None:
+        self.node = node
+        self.orchestration_id = orchestration_id
+        self.resumed = resumed
+        self.readiness = readiness
+        self.proc = proc
+        self.skipped = False
+        self._stdout_format = stdout_format
+        self._lock = lock
+        self.reader = threading.Thread(target=self._relay, daemon=True)
+        self.reader.start()
+
+    def _relay(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            text = line.rstrip("\n")
+            if not text:
+                continue
+            payload: Any = None
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                payload = None
+            with self._lock:
+                if isinstance(payload, dict):
+                    if (payload.get("event") == "closure_member_skipped"
+                            and payload.get("orchestration_id") == self.orchestration_id):
+                        self.skipped = True
+                    _emit_unlogged_event(payload, self._stdout_format)
+                else:
+                    try:
+                        print(text, flush=True)
+                    except BrokenPipeError:
+                        pass
+
+    def finished(self) -> bool:
+        return self.proc.poll() is not None
+
+    def wait(self) -> int:
+        rc = self.proc.wait()
+        self.reader.join()
+        return rc
+
+
+def _closure_member_argv(
+    *,
+    repo_root: Path,
+    spec_ref: str,
+    dep_until_phase: str,
+    orchestration_id: str,
+    resume: bool,
+    target_orchestration_id: str,
+    target_spec_ref: str,
+    until_phase: str,
+    llm_config: LlmConfig,
+    workflow_mode: str,
+    status: str,
+    run_conductor: bool,
+    wait_usage_reset: bool,
+) -> list[str]:
+    """The command line of one `--jobs` child. A resumed member is named by its prior
+    orchestration alone (its spec, phase, mode and leaf-LLM configuration are recovered
+    from the record, as any `--resume` recovers them; passing the configuration would only
+    be announced and ignored); a cold member is given everything the driver was."""
+    argv = [sys.executable, str(repo_root / "tools" / "run_workflow.py")]
+    if resume:
+        argv += ["--resume"]
+    else:
+        argv += [spec_ref, dep_until_phase, "--llm-config", str(llm_config.path),
+                 "--mode", workflow_mode]
+    argv += [
+        "--repo-root", str(repo_root),
+        "--orchestration-id", orchestration_id,
+        "--status", status,
+        "--stdout-format", "jsonl",
+        "--closure-member", target_orchestration_id,
+        "--closure-target-spec-ref", target_spec_ref,
+        "--closure-until-phase", until_phase,
+    ]
+    if not run_conductor:
+        argv.append("--no-run-conductor")
+    if wait_usage_reset:
+        argv.append("--wait-usage-reset")
+    return argv
+
+
+def _launch_closure_member(argv: list[str], *, repo_root: Path,
+                           env: dict[str, str]) -> subprocess.Popen[str]:
+    """Start one `--jobs` child. Its stdout is a pipe the driver relays; stderr is
+    inherited, so a child's warnings reach the operator's terminal as the driver's do.
+
+    `start_new_session`: the child leaves the driver's process group AND its controlling
+    terminal, so no terminal signal reaches a member directly — not Ctrl-C's SIGINT, not
+    the SIGHUP of a closing session; what happens to the members is one mechanism,
+    `_stop_closure_members` — the driver, which does receive those signals (SIGTERM and
+    SIGHUP converted by `_install_signal_handlers`), forwards SIGTERM and waits — rather
+    than a race between the terminal's signal and the driver's (found by the Codex pass
+    of round 2; the hangup half by round 3). The member's inherited stderr still reaches
+    the terminal while it is open."""
+    return subprocess.Popen(
+        argv, cwd=repo_root, env=env, stdout=subprocess.PIPE, stderr=None, text=True,
+        encoding="utf-8", errors="backslashreplace", bufsize=1, start_new_session=True)
+
+
+#: How often the `--jobs` driver polls its children between exits, in seconds.
+_CLOSURE_MEMBER_POLL_SECONDS = 0.2
+
+#: How long the interrupted driver waits for a member it sent SIGTERM to: the member's own
+#: SIGTERM handling is one runtime call that terminalizes its orchestration (`_run_node`'s
+#: interrupt clause), then exit. Past this the member is killed and its orchestration is
+#: left `running` — resumable, since a free claim is a dead driver (RUNBOOK §3-1).
+_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS = 60.0
+
+
+def _stop_closure_members(running: dict[str, _ClosureMemberProcess], *,
+                          dependency_runs: list[dict[str, Any]],
+                          emit: Any, label: Any) -> None:
+    """The interrupted driver stops its running members and records them.
+
+    A driver that simply exited would close the only reader of each member's stdout, and
+    the member's next event would die of `BrokenPipeError` inside its `_StdoutTee` —
+    terminalized as a `driver_exception` failure at a moment nobody chose. Instead every
+    running member is sent SIGTERM (its `_sigterm_to_exit` converter routes that through
+    `_run_node`'s interrupt clause: the orchestration is terminalized `cancel` /
+    `driver_interrupted`, resumable) and waited for within
+    `_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS`; a member that outlives the grace is killed.
+    The rc of each is recorded in `dependency_runs` so the closure's last word says which
+    members were stopped and how."""
+    for mp in running.values():
+        try:
+            mp.proc.send_signal(signal.SIGTERM)
+        except OSError:
+            pass
+    for ref, mp in running.items():
+        try:
+            rc = mp.proc.wait(timeout=_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            # The member is a session leader (`start_new_session`), so its whole session
+            # goes with it — a runtime call in flight would otherwise outlive it holding
+            # the relay pipe open, and the reader below would wait for that instead.
+            try:
+                os.killpg(mp.proc.pid, signal.SIGKILL)
+            except OSError:
+                mp.proc.kill()
+            rc = mp.proc.wait()
+        # Bounded: the pipe closes with the member's session; a stray holder of it is not
+        # worth waiting on when the driver is already on its way out.
+        mp.reader.join(timeout=_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS)
+        dependency_runs.append({
+            "node": label(mp.node), "spec_ref": ref, "skipped": False, "resumed": mp.resumed,
+            "orchestration_id": mp.orchestration_id, "exit_code": rc,
+            "status": "interrupted",
+        })
+        emit({
+            "status": "info", "event": "closure_member_interrupted",
+            "node": label(mp.node), "spec_ref": ref, "orchestration_id": mp.orchestration_id,
+            "exit_code": rc,
+        })
+
+
+def _run_closure_members_parallel(
+    *,
+    repo_root: Path,
+    ordered: list[dict[str, Any]],
+    jobs: int,
+    dep_until_phase: str,
+    required_stages: list[str],
+    target_orchestration_id: str,
+    target_spec_ref: str,
+    until_phase: str,
+    llm_config: LlmConfig,
+    workflow_mode: str,
+    status: str,
+    run_conductor: bool,
+    wait_usage_reset: bool,
+    stdout_format: str,
+    resume: bool,
+    prior_orch_by_spec: dict[str, str],
+    preclaimed_orchestration_id: str | None,
+    release_preclaim: Any,
+    dependency_runs: list[dict[str, Any]],
+) -> int:
+    """The `--jobs N` ready-set scheduler over the closure members (issue #250 PR-3):
+    every member whose direct dependencies have all finished (skipped ready, or run and
+    verified ready) is launchable; up to `jobs` run at once, each as a child
+    `run_workflow.py --closure-member` process (`_closure_member_argv`), in launch order
+    = `ordered` (dependency order, so a deeper member is launched first among the ready).
+
+    Each member is asked its readiness by the driver before launch (a ready one is
+    skipped here, no child), and the child asks again once it holds the claim. The
+    driver re-verifies after the child exits, as the sequential loop does — a child that
+    exited 0 and left the node not ready is a failure (`dependency_not_ready_after_run`).
+
+    Failure policy — rule 28 read for a parallel closure: on the first failed member no
+    further member is launched, the members already running are waited for (their
+    records land in `dependency_runs`, and killing them would leave orchestrations
+    `running`), and the closure stops with `dependency_node_failed` naming the FIRST
+    failure. The target is not launched. Returns 0 when every member finished ready.
+    """
+    pending: dict[str, dict[str, Any]] = {n["spec_ref"]: n for n in ordered}
+    launch_order = [n["spec_ref"] for n in ordered]
+    done: set[str] = set()
+    running: dict[str, _ClosureMemberProcess] = {}
+    relay_lock = threading.Lock()
+    child_env = dict(os.environ)
+    child_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+
+    def _label(node: dict[str, Any]) -> str:
+        return f"{node['spec_kind']}/{node['spec_id']}@{node['spec_versions'][0]}"
+
+    def _emit(payload: dict[str, Any]) -> None:
+        with relay_lock:
+            _emit_unlogged_event(payload, stdout_format)
+
+    try:
+        return _schedule_closure_members(
+            pending=pending, launch_order=launch_order, done=done, running=running,
+            jobs=jobs, repo_root=repo_root, required_stages=required_stages,
+            dep_until_phase=dep_until_phase, target_orchestration_id=target_orchestration_id,
+            target_spec_ref=target_spec_ref, until_phase=until_phase, llm_config=llm_config,
+            workflow_mode=workflow_mode, status=status, run_conductor=run_conductor,
+            wait_usage_reset=wait_usage_reset, stdout_format=stdout_format, resume=resume,
+            prior_orch_by_spec=prior_orch_by_spec,
+            preclaimed_orchestration_id=preclaimed_orchestration_id,
+            release_preclaim=release_preclaim, dependency_runs=dependency_runs,
+            child_env=child_env, emit=_emit, label=_label, relay_lock=relay_lock)
+    except (KeyboardInterrupt, SystemExit):
+        # The driver was interrupted (Ctrl-C, or SIGTERM through `_sigterm_to_exit`): stop
+        # the members it started, record them, and let the interrupt propagate.
+        _stop_closure_members(running, dependency_runs=dependency_runs, emit=_emit, label=_label)
+        raise
+
+
+def _schedule_closure_members(
+    *,
+    pending: dict[str, dict[str, Any]],
+    launch_order: list[str],
+    done: set[str],
+    running: dict[str, _ClosureMemberProcess],
+    jobs: int,
+    repo_root: Path,
+    required_stages: list[str],
+    dep_until_phase: str,
+    target_orchestration_id: str,
+    target_spec_ref: str,
+    until_phase: str,
+    llm_config: LlmConfig,
+    workflow_mode: str,
+    status: str,
+    run_conductor: bool,
+    wait_usage_reset: bool,
+    stdout_format: str,
+    resume: bool,
+    prior_orch_by_spec: dict[str, str],
+    preclaimed_orchestration_id: str | None,
+    release_preclaim: Any,
+    dependency_runs: list[dict[str, Any]],
+    child_env: dict[str, str],
+    emit: Any,
+    label: Any,
+    relay_lock: threading.Lock,
+) -> int:
+    """The loop of `_run_closure_members_parallel`; `running` is shared with the caller so
+    an interrupt can stop what is in flight."""
+    first_failure: dict[str, Any] | None = None
+    _emit = emit
+    _label = label
+
+    while pending or running:
+        if first_failure is None:
+            for ref in launch_order:
+                if ref not in pending or len(running) >= jobs:
+                    continue
+                node = pending[ref]
+                if any(d in pending or d in running for d in node["direct_deps"]):
+                    continue
+                readiness = _dependency_node_readiness(repo_root, node, required_stages)
+                if readiness["ready"]:
+                    dependency_runs.append(
+                        {"node": _label(node), "spec_ref": ref, "skipped": True,
+                         "status": "ready", "version": readiness["version"]})
+                    done.add(ref)
+                    del pending[ref]
+                    continue
+                prior = prior_orch_by_spec.get(ref) if resume else None
+                dep_orch_id = prior or _new_orchestration_id()
+                dep_resume = prior is not None
+                if dep_resume:
+                    rejection = _closure_member_resume_rejection(repo_root, dep_orch_id, llm_config)
+                    if rejection is not None:
+                        # The refusal is the closure's terminal envelope, emitted once the
+                        # running members are drained (below) so it carries every record.
+                        _emit({"status": "info", "event": "closure_member_failed",
+                               "node": _label(node), "spec_ref": ref,
+                               "orchestration_id": dep_orch_id, "exit_code": None,
+                               "detail": f"{rejection.get('reason')}: not launched; no further "
+                                         f"member is launched, running ones are waited for"})
+                        first_failure = {"rc": 2, "node": node, "orchestration_id": dep_orch_id,
+                                         "envelope": rejection}
+                        del pending[ref]
+                        break
+                    if dep_orch_id == preclaimed_orchestration_id and release_preclaim is not None:
+                        release_preclaim()
+                _emit({
+                    "status": "info",
+                    "event": "dependency_node_begin",
+                    "node": _label(node),
+                    "spec_ref": ref,
+                    "until_phase": dep_until_phase,
+                    "orchestration_id": dep_orch_id,
+                    "resume": dep_resume,
+                    "failed_stage": readiness["failed_stage"],
+                    "detail": readiness["detail"],
+                    "jobs": jobs,
+                })
+                argv = _closure_member_argv(
+                    repo_root=repo_root, spec_ref=ref, dep_until_phase=dep_until_phase,
+                    orchestration_id=dep_orch_id, resume=dep_resume,
+                    target_orchestration_id=target_orchestration_id,
+                    target_spec_ref=target_spec_ref, until_phase=until_phase,
+                    llm_config=llm_config, workflow_mode=workflow_mode, status=status,
+                    run_conductor=run_conductor, wait_usage_reset=wait_usage_reset)
+                proc = _launch_closure_member(argv, repo_root=repo_root, env=child_env)
+                running[ref] = _ClosureMemberProcess(
+                    node, dep_orch_id, dep_resume, readiness, proc, stdout_format, relay_lock)
+                del pending[ref]
+        if not running:
+            if pending and first_failure is None:
+                # Unreachable for a closure `_resolve_dependency_closure` accepted (every
+                # member's edges are in the closure, and it is acyclic); named rather than
+                # spun on, should a closure ever say otherwise.
+                _emit({
+                    "status": "fail",
+                    "reason": "dependency_closure_stalled",
+                    "detail": f"no launchable member among {sorted(pending)}",
+                    "dependency_runs": dependency_runs,
+                    "target_spec_ref": target_spec_ref,
+                })
+                return 2
+            break
+        exited = [ref for ref, mp in running.items() if mp.finished()]
+        if not exited:
+            time.sleep(_CLOSURE_MEMBER_POLL_SECONDS)
+            continue
+        for ref in exited:
+            mp = running.pop(ref)
+            rc = mp.wait()
+            node = mp.node
+            record: dict[str, Any] = {
+                "node": _label(node),
+                "spec_ref": ref,
+                "skipped": mp.skipped,
+                "resumed": mp.resumed,
+                "orchestration_id": mp.orchestration_id,
+                "exit_code": rc,
+                "rerun_reason": {
+                    "failed_stage": mp.readiness["failed_stage"],
+                    "detail": mp.readiness["detail"],
+                },
+            }
+            dependency_runs.append(record)
+            if rc != 0:
+                _emit({
+                    "status": "info",
+                    "event": "closure_member_failed",
+                    "node": _label(node),
+                    "spec_ref": ref,
+                    "orchestration_id": mp.orchestration_id,
+                    "exit_code": rc,
+                    "detail": ("no further member is launched; the members already running "
+                               "are waited for"),
+                })
+                if first_failure is None:
+                    first_failure = {"rc": rc, "node": node,
+                                     "orchestration_id": mp.orchestration_id}
+                continue
+            after = _dependency_node_readiness(repo_root, node, required_stages)
+            if after["ready"] and mp.skipped:
+                # The child found the node ready once it held the claim and the driver's
+                # re-verify agrees: the pre-launch reading was overturned, so the record is
+                # a SKIP record — the shape the driver-side and sequential skips write —
+                # plus the child that answered it; a `rerun_reason` would name a stage that
+                # did not fail. A child that printed the skip and left the node NOT ready
+                # keeps the run record and takes the not-ready arm below.
+                record.clear()
+                record.update({
+                    "node": _label(node), "spec_ref": ref, "skipped": True, "status": "ready",
+                    "version": after["version"],
+                    "orchestration_id": mp.orchestration_id, "exit_code": rc,
+                })
+            if not after["ready"]:
+                # Not a skip the driver accepts, whatever the child printed.
+                record["skipped"] = False
+                record["status"] = "not_ready_after_run"
+                record["readiness"] = after
+                _emit({
+                    "status": "info",
+                    "event": "closure_member_failed",
+                    "node": _label(node),
+                    "spec_ref": ref,
+                    "orchestration_id": mp.orchestration_id,
+                    "exit_code": rc,
+                    "detail": (
+                        f"{_label(node)} ran (exit 0) but did not produce the required "
+                        f"readiness ({'/'.join(required_stages)})"
+                        + (f"; stage {after['failed_stage']}: {after['detail']}"
+                           if after["failed_stage"] else "")),
+                })
+                if first_failure is None:
+                    first_failure = {"rc": 2, "node": node, "not_ready": after,
+                                     "orchestration_id": mp.orchestration_id}
+                continue
+            done.add(ref)
+    if first_failure is not None:
+        node = first_failure["node"]
+        if "envelope" in first_failure:
+            _emit({**first_failure["envelope"], "failed_dependency_node": _label(node),
+                   "spec_ref": node["spec_ref"], "dependency_runs": dependency_runs,
+                   "target_spec_ref": target_spec_ref})
+        elif "not_ready" in first_failure:
+            after = first_failure["not_ready"]
+            _emit({
+                "status": "fail",
+                "reason": "dependency_not_ready_after_run",
+                "detail": (
+                    f"{_label(node)} ran (exit 0) but did not produce the "
+                    f"required readiness ({'/'.join(required_stages)}); "
+                    "common causes: --no-run-conductor, or the agent exited "
+                    "without recording a terminal pass (status still running)."
+                    + (f" stage {after['failed_stage']}: {after['detail']}"
+                       if after["failed_stage"] else "")),
+                "failed_dependency_node": _label(node),
+                "spec_ref": node["spec_ref"],
+                "orchestration_id": first_failure["orchestration_id"],
+                "dependency_runs": dependency_runs,
+                "target_spec_ref": target_spec_ref,
+            })
+        else:
+            _emit({
+                "status": "fail",
+                "reason": "dependency_node_failed",
+                "failed_dependency_node": _label(node),
+                "spec_ref": node["spec_ref"],
+                "orchestration_id": first_failure["orchestration_id"],
+                "exit_code": first_failure["rc"],
+                "dependency_runs": dependency_runs,
+                "target_spec_ref": target_spec_ref,
+            })
+        # A child killed by a signal exits negative (`Popen.returncode`); the driver's own
+        # exit status is a failure code, never a signal number shifted into one.
+        rc = int(first_failure["rc"])
+        return rc if rc > 0 else 2
+    return 0
 
 
 def _run_with_dependency_closure(
@@ -4156,6 +4956,8 @@ def _run_with_dependency_closure(
     raw_argv: list[str] | None = None,
     preclaimed_orchestration_id: str | None = None,
     rederive: frozenset[str] = frozenset(),
+    jobs: int = 1,
+    release_preclaim: Any = None,
 ) -> int:
     """Run the target's dependency closure bottom-up, then the target.
 
@@ -4179,6 +4981,13 @@ def _run_with_dependency_closure(
 
     `raw_argv` is threaded into each node's `invocation` record so the reproduction
     command is captured on every closure node.
+
+    `jobs` (issue #250 PR-3): 1 runs the members in this process, one after another, as
+    below; N > 1 hands the members to `_run_closure_members_parallel`, which runs up to N
+    launchable members at once as child processes and stops on the first failure the
+    same way. The target then runs here, in-process, in both cases. `release_preclaim`
+    lets the parallel scheduler give up the entry orchestration's claim before a child
+    resumes that member.
     """
     prior_orch_by_spec = prior_orch_by_spec or {}
     ordered, error = _resolve_dependency_closure(repo_root, target_spec_ref)
@@ -4198,11 +5007,7 @@ def _run_with_dependency_closure(
     # Dependency depth follows the target: Compile-only readiness when the
     # target stops at Compile, else full execution readiness (Build+Validate).
     dep_until_phase = "Compile" if until_phase == "Compile" else "Validate"
-    required_stages = (
-        ["ir_ref"]
-        if dep_until_phase == "Compile"
-        else ["ir_ref", "pipeline_ref", "aggregate_verdict"]
-    )
+    required_stages = _required_dependency_stages(dep_until_phase)
 
     # This driver's identity, so the per-node cold-start guard below can tell the
     # orchestrations THIS invocation starts apart from a genuinely concurrent run. The
@@ -4211,6 +5016,20 @@ def _run_with_dependency_closure(
     # run launched inside that window is precisely what the guard must catch.
 
     dependency_runs: list[dict[str, Any]] = []
+    if jobs > 1:
+        rc = _run_closure_members_parallel(
+            repo_root=repo_root, ordered=ordered, jobs=jobs, dep_until_phase=dep_until_phase,
+            required_stages=required_stages, target_orchestration_id=target_orchestration_id,
+            target_spec_ref=target_spec_ref, until_phase=until_phase, llm_config=llm_config,
+            workflow_mode=workflow_mode, status=status, run_conductor=run_conductor,
+            wait_usage_reset=wait_usage_reset, stdout_format=stdout_format, resume=resume,
+            prior_orch_by_spec=prior_orch_by_spec,
+            preclaimed_orchestration_id=preclaimed_orchestration_id,
+            release_preclaim=release_preclaim, dependency_runs=dependency_runs)
+        if rc != 0:
+            return rc
+        # An emptied schedule: the sequential loop below has nothing left to do.
+        ordered = []
     for node in ordered:
         kind, sid, spec_ref = node["spec_kind"], node["spec_id"], node["spec_ref"]
         node_label = f"{kind}/{sid}@{node['spec_versions'][0]}"
@@ -4236,17 +5055,8 @@ def _run_with_dependency_closure(
             # Twin gate, same reasoning one level down: the leaf-LLM configuration a member
             # launched with must still be the one on disk, or its remaining phases would run on
             # different models than its finished ones did.
-            for rejection in (
-                _generate_executor_resume_rejection(
-                    dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)),
-                _llm_config_resume_rejection(
-                    dep_orch_id, _recorded_llm_config(repo_root, dep_orch_id),
-                    repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
-                    effective_sha256=llm_config.sha256,
-                    effective_overrides={}),
-            ):
-                if rejection is None:
-                    continue
+            rejection = _closure_member_resume_rejection(repo_root, dep_orch_id, llm_config)
+            if rejection is not None:
                 _emit_unlogged_event(
                     {
                         **rejection,
@@ -4526,6 +5336,7 @@ def _run_with_dependency_closure(
             closure_target_spec_ref=target_spec_ref,
             closure_until_phase=until_phase,
             rederive=rederive,
+            jobs=jobs,
         )
         return _run_node(
             repo_root=repo_root,
@@ -4565,17 +5376,27 @@ def _sigterm_to_exit(signum: int, frame: Any) -> None:  # noqa: ARG001 - signal 
 
 
 def _install_signal_handlers() -> None:
-    """Install the SIGTERM converter. Called ONLY from the `__main__` block.
+    """Install the SIGTERM (and SIGHUP) converter. Called ONLY from the `__main__` block.
 
     Not from `main()`: the unit tests (and any embedding caller) invoke `main()`
     in-process, and a library call must not rewrite the host process's signal
     disposition. Failures are ignored — signal handling is a recovery nicety, never a
     precondition for running a workflow.
     """
-    try:
-        signal.signal(signal.SIGTERM, _sigterm_to_exit)
-    except (ValueError, OSError, AttributeError):  # pragma: no cover - platform dependent
-        pass
+    for signum in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        # SIGHUP too (issue #250 PR-3, round 3): a terminal or ssh session closing sends
+        # it to the driver, and with the default disposition the driver dies with no
+        # `except` clause run — its single orchestration left `running`, and under
+        # `--jobs N` its members left detached with nobody reading their pipe. Converted,
+        # a hangup takes the same route as SIGTERM: the orchestration this driver has
+        # started, if any, is terminalized `driver_interrupted` (a `--jobs` driver in its
+        # member phase has none of its own yet), and its running members are stopped.
+        if signum is None:
+            continue
+        try:
+            signal.signal(signum, _sigterm_to_exit)
+        except (ValueError, OSError, AttributeError):  # pragma: no cover - platform dependent
+            pass
 
 
 if __name__ == "__main__":

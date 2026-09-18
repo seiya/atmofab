@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import tempfile
 import textwrap
 import time
@@ -5843,6 +5844,1109 @@ class DependencyClosureTests(unittest.TestCase):
                       and json.loads(line).get("event") == "prior_incomplete_orchestration"}
             self.assertEqual(warned, {"orch_c_abandoned", "orch_a_abandoned"},
                              f"a cold closure must warn for members AND the target; got {warned}")
+
+
+class ParallelClosureTests(unittest.TestCase):
+    """Issue #250 PR-3: `--jobs N` runs launchable closure members at once as child
+    `run_workflow.py --closure-member` processes; a member takes its claim WAITING and
+    re-asks its readiness once it holds it (duplicate-work suppression); the sequential
+    `--jobs 1` path is untouched."""
+
+    def _seed(self, repo_root: Path) -> None:
+        _seed_default_llm_config_into(repo_root)
+        _seed_shape_expr_schema_into(repo_root)
+        (repo_root / "tools").mkdir(parents=True, exist_ok=True)
+        (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
+        DependencyClosureTests._seed_diamond(self, repo_root)
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    # -- the closure carries its edges ------------------------------------------------
+
+    def test_the_closure_names_each_members_direct_dependencies(self) -> None:
+        """`direct_deps` is what the scheduler waits on: b waits for c, c waits for nothing.
+        A profile is expanded into the components it selects before the edge is recorded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            ordered, err = run_workflow._resolve_dependency_closure(repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            by_ref = {n["spec_ref"]: n["direct_deps"] for n in ordered}
+            self.assertEqual(by_ref, {"spec/component/c": [],
+                                      "spec/component/b": ["spec/component/c"]})
+
+    # -- flag validation -----------------------------------------------------------------
+
+    def test_jobs_must_be_a_positive_integer(self) -> None:
+        for raw in (0, -1, "x", None):
+            with self.assertRaises(ValueError):
+                run_workflow._validated_jobs(raw)
+        self.assertEqual(run_workflow._validated_jobs("3"), 3)
+
+    def test_closure_member_flags_are_checked_as_a_unit(self) -> None:
+        import argparse
+        base = dict(closure_member=None, closure_target_spec_ref=None,
+                    closure_until_phase=None, orchestration_id=None, with_deps=False, jobs=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            ns = argparse.Namespace(**base)
+            self.assertIsNone(run_workflow._validated_closure_member(ns, repo_root))
+            # a back-link flag without the member flag is a mistake, not ignored
+            ns = argparse.Namespace(**{**base, "closure_until_phase": "validate"})
+            with self.assertRaisesRegex(ValueError, "only meaningful"):
+                run_workflow._validated_closure_member(ns, repo_root)
+            full = {**base, "closure_member": "ORCHT", "closure_target_spec_ref": "spec/problem/a",
+                    "closure_until_phase": "validate", "orchestration_id": "orch_c"}
+            got = run_workflow._validated_closure_member(argparse.Namespace(**full), repo_root)
+            self.assertEqual(got, {"closure_id": "ORCHT", "target_spec_ref": "spec/problem/a",
+                                   "until_phase": "Validate"})
+            for missing in ("closure_target_spec_ref", "closure_until_phase", "orchestration_id"):
+                ns = argparse.Namespace(**{**full, missing: None})
+                with self.assertRaisesRegex(ValueError, "requires"):
+                    run_workflow._validated_closure_member(ns, repo_root)
+            with self.assertRaisesRegex(ValueError, "excludes --with-deps"):
+                run_workflow._validated_closure_member(
+                    argparse.Namespace(**{**full, "with_deps": True}), repo_root)
+            with self.assertRaisesRegex(ValueError, "--jobs applies to the driver"):
+                run_workflow._validated_closure_member(
+                    argparse.Namespace(**{**full, "jobs": 2}), repo_root)
+            # `--rederive` is target-only; a member REFUSES it rather than dropping it
+            # (round-1 probe: it was accepted and silently ignored).
+            with self.assertRaisesRegex(ValueError, "never forces a phase"):
+                run_workflow._validated_closure_member(
+                    argparse.Namespace(**{**full, "rederive": "build"}), repo_root)
+            self.assertIsNotNone(run_workflow._validated_closure_member(
+                argparse.Namespace(**{**full, "rederive": ""}), repo_root))
+
+    def test_main_refuses_a_bad_jobs_value_as_invalid_startup_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main(
+                    ["spec/problem/a", "validate", "--with-deps", "--jobs", "0",
+                     "--repo-root", str(repo_root), "--stdout-format", "jsonl"])
+            self.assertEqual(code, 2)
+            last = json.loads(buf.getvalue().splitlines()[-1])
+            self.assertEqual(last["reason"], "invalid_startup_input")
+            self.assertIn("--jobs", last["detail"])
+
+    # -- the child (member mode) -------------------------------------------------------
+
+    def _run_member(self, repo_root: Path, argv: list[str], *, ready: bool,
+                    hold_spec_claim_for: float = 0.0) -> tuple[int, list[dict], list[dict]]:
+        """Drive `main()` in member mode with `_run_node` captured and the member's readiness
+        faked: `ready` is what the node answers once the claim is HELD. With
+        `hold_spec_claim_for` > 0 another thread holds the spec claim first and the readiness
+        is not-ready until that holder lets go — the shape a second closure sharing the
+        dependency produces."""
+        captured: list[dict] = []
+        state = {"ready": ready and hold_spec_claim_for == 0.0}
+        holder_started = threading.Event()
+
+        def fake_run_node(**kw):
+            captured.append(kw)
+            return 0
+
+        def fake_ready(root, node, required_stages):
+            return {"ready": state["ready"], "version": node["spec_versions"][0],
+                    "failed_stage": None if state["ready"] else "ir_ref",
+                    "detail": None if state["ready"] else "fake: not derived"}
+
+        def hold() -> None:
+            with run_workflow._exclusive_claim(repo_root, "spec", "spec/component/c",
+                                               stdout_format="jsonl"):
+                holder_started.set()
+                time.sleep(hold_spec_claim_for)
+                state["ready"] = ready
+
+        holder = threading.Thread(target=hold) if hold_spec_claim_for > 0 else None
+        buf = io.StringIO()
+        with mock.patch.object(run_workflow, "_run_node", fake_run_node), \
+                mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready):
+            if holder is not None:
+                holder.start()
+                holder_started.wait(5)
+            with redirect_stdout(buf):
+                code = run_workflow.main(argv + ["--stdout-format", "jsonl"])
+        if holder is not None:
+            holder.join()
+        events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+        return code, captured, events
+
+    def _member_argv(self, repo_root: Path) -> list[str]:
+        return ["spec/component/c", "validate", "--repo-root", str(repo_root),
+                "--orchestration-id", "orch_c", "--closure-member", "ORCHT",
+                "--closure-target-spec-ref", "spec/problem/a",
+                "--closure-until-phase", "validate", "--no-run-conductor"]
+
+    def test_a_member_that_is_not_ready_runs_with_the_closure_back_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, captured, events = self._run_member(
+                repo_root, self._member_argv(repo_root), ready=False)
+            self.assertEqual(code, 0)
+            self.assertEqual(len(captured), 1)
+            kw = captured[0]
+            self.assertEqual(kw["orchestration_id"], "orch_c")
+            self.assertEqual(kw["spec_ref"], "spec/component/c")
+            self.assertEqual(kw["until_phase"], "Validate")
+            self.assertFalse(kw["resume_mode"])
+            self.assertTrue(kw["spec_claim_held"])
+            inv = kw["invocation"]
+            self.assertEqual(inv["closure_id"], "ORCHT")
+            self.assertEqual(inv["closure_target_spec_ref"], "spec/problem/a")
+            self.assertEqual(inv["closure_until_phase"], "Validate")
+            self.assertTrue(inv["with_deps"])
+            # the recorded command reproduces the member by itself
+            self.assertIn("--closure-member", inv["argv"])
+            self.assertFalse(any(e.get("event") == "closure_member_skipped" for e in events))
+
+    def test_a_member_waits_for_a_held_claim_and_skips_once_ready(self) -> None:
+        """The duplicate-work suppression: the spec claim is held (another closure is
+        deriving this dependency); the member WAITS (`start_claim_waiting`) rather than
+        refusing with `concurrent_orchestration_running`, and once it holds the claim the
+        node is ready, so it skips (`closure_member_skipped`, exit 0) — no second
+        derivation, no leaf."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, captured, events = self._run_member(
+                repo_root, self._member_argv(repo_root), ready=True, hold_spec_claim_for=0.6)
+            self.assertEqual(code, 0)
+            self.assertEqual(captured, [])
+            kinds = [e.get("event") or e.get("reason") for e in events]
+            self.assertIn("start_claim_waiting", kinds)
+            self.assertIn("closure_member_skipped", kinds)
+            self.assertNotIn("concurrent_orchestration_running", kinds)
+            self.assertLess(kinds.index("start_claim_waiting"),
+                            kinds.index("closure_member_skipped"))
+            skipped = next(e for e in events if e.get("event") == "closure_member_skipped")
+            self.assertEqual(skipped["orchestration_id"], "orch_c")
+            self.assertEqual(skipped["closure_id"], "ORCHT")
+
+    def test_a_member_that_is_ready_when_the_claim_was_free_skips_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, captured, events = self._run_member(
+                repo_root, self._member_argv(repo_root), ready=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(captured, [])
+            self.assertTrue(any(e.get("event") == "closure_member_skipped" for e in events))
+
+    def test_a_resumed_member_waits_for_its_orchestration_claim(self) -> None:
+        """The resume gate's claim is BLOCKING in member mode (the `blocking=` wiring in
+        `_run_main`): a resumed member whose orchestration another driver holds waits
+        (`start_claim_waiting`) rather than refusing with `concurrent_orchestration_running`,
+        then re-asks its readiness; here it is ready once the holder is gone, so it skips."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            state = {"ready": False}
+            holder_started = threading.Event()
+
+            def hold() -> None:
+                with run_workflow._exclusive_claim(repo_root, "orch", "orch_c",
+                                                   stdout_format="jsonl"):
+                    holder_started.set()
+                    time.sleep(0.6)
+                    state["ready"] = True
+
+            def fake_ready(root, node, required_stages):
+                return {"ready": state["ready"], "version": node["spec_versions"][0],
+                        "failed_stage": None if state["ready"] else "ir_ref",
+                        "detail": None if state["ready"] else "fake"}
+
+            captured: list[dict] = []
+            holder = threading.Thread(target=hold)
+            buf = io.StringIO()
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready):
+                holder.start()
+                holder_started.wait(5)
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                         "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                         "--closure-until-phase", "validate", "--no-run-conductor",
+                         "--stdout-format", "jsonl"])
+            holder.join()
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+            kinds = [e.get("event") or e.get("reason") for e in events]
+            self.assertEqual(code, 0, events)
+            self.assertEqual(captured, [])
+            self.assertIn("start_claim_waiting", kinds)
+            self.assertIn("closure_member_skipped", kinds)
+            self.assertNotIn("concurrent_orchestration_running", kinds)
+            waiting = next(e for e in events if e.get("event") == "start_claim_waiting")
+            self.assertEqual((waiting["claim_kind"], waiting["claim_key"]), ("orch", "orch_c"))
+
+    def test_a_resumed_member_that_is_not_ready_resumes_its_own_node_only(self) -> None:
+        """A member child's `--resume` drives ITS node (`resume_mode`, the orchestration claim
+        held by `_run_main`), not the closure its recorded back-link names — that is the
+        parent's job, and a child re-deriving it would run the closure twice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            captured: list[dict] = []
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_run_with_dependency_closure") as closure, \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}), \
+                    redirect_stdout(io.StringIO()):
+                code = run_workflow.main(
+                    ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                     "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                     "--closure-until-phase", "validate", "--no-run-conductor",
+                     "--stdout-format", "jsonl"])
+            self.assertEqual(code, 0)
+            closure.assert_not_called()
+            self.assertEqual(len(captured), 1)
+            kw = captured[0]
+            self.assertEqual(kw["spec_ref"], "spec/component/c")
+            self.assertEqual(kw["orchestration_id"], "orch_c")
+            self.assertTrue(kw["resume_mode"])
+            self.assertTrue(kw["orch_claim_held"])
+            self.assertFalse(kw["spec_claim_held"])
+            self.assertIsNone(kw["invocation"])
+            self.assertEqual(kw["closure_until_phase"], "Validate")
+
+    def test_a_resumed_member_takes_its_phase_from_the_closure_not_its_own_record(self) -> None:
+        """Round-1 finding: a member recorded at `Compile` (a closure first run with the
+        target at compile), resumed under a closure whose target now ends at `validate`
+        (the phase-override resume), must ask the readiness question the DRIVER will ask
+        after it exits — the closure's three stages, not its own record's one — and run to
+        the closure's dependency phase. Otherwise it skips on `[ir_ref]`, the driver refuses
+        `dependency_not_ready_after_run`, and the closure is never resumable under --jobs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Compile",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Compile"})
+            asked: list[list[str]] = []
+
+            def fake_ready(root, node, required_stages):
+                asked.append(list(required_stages))
+                # Compile stands; the execution stages do not — ready under `[ir_ref]` only.
+                ready = required_stages == ["ir_ref"]
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "pipeline_ref",
+                        "detail": None if ready else "fake: not built"}
+
+            captured: list[dict] = []
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready), \
+                    redirect_stdout(io.StringIO()):
+                code = run_workflow.main(
+                    ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                     "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                     "--closure-until-phase", "validate", "--no-run-conductor",
+                     "--stdout-format", "jsonl"])
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [["ir_ref", "pipeline_ref", "aggregate_verdict"]])
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["until_phase"], "Validate")
+            self.assertEqual(captured[0]["closure_until_phase"], "Validate")
+
+    def test_main_hands_jobs_to_the_closure_driver_on_both_paths(self) -> None:
+        """`--jobs` reaches `_run_with_dependency_closure` from the cold `--with-deps` path and
+        from the closure-aware resume path — which also hands the driver the entry claim's
+        release, so a child resuming the entry member does not wait on its own parent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, closure_kwargs, _ = RunWorkflowTests._run_main_with_closure_spy(
+                self, ["spec/problem/a", "validate", "--with-deps", "--jobs", "3",
+                       "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0)
+            self.assertEqual(closure_kwargs["jobs"], 3)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            code, closure_kwargs, _ = RunWorkflowTests._run_main_with_closure_spy(
+                self, ["--resume", "--orchestration-id", "orch_c", "--jobs", "2",
+                       "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0)
+            self.assertEqual(closure_kwargs["jobs"], 2)
+            self.assertEqual(closure_kwargs["preclaimed_orchestration_id"], "orch_c")
+            self.assertTrue(callable(closure_kwargs["release_preclaim"]))
+            # releasing it really frees the claim: a second taker succeeds without waiting
+            closure_kwargs["release_preclaim"]()
+            with run_workflow._exclusive_claim(repo_root, "orch", "orch_c",
+                                               stdout_format="jsonl") as held:
+                self.assertTrue(held)
+
+    def test_a_member_outside_the_closure_is_refused(self) -> None:
+        """A spec the recorded target does not depend on cannot be run as a member of that
+        closure (the readiness question has no entry to answer for it)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _write_deps(repo_root, "spec/component/z", "component", "z")
+            argv = ["spec/component/z", "validate", "--repo-root", str(repo_root),
+                    "--orchestration-id", "orch_z", "--closure-member", "ORCHT",
+                    "--closure-target-spec-ref", "spec/problem/a",
+                    "--closure-until-phase", "validate", "--no-run-conductor"]
+            code, captured, events = self._run_member(repo_root, argv, ready=False)
+            self.assertEqual(code, 2)
+            self.assertEqual(captured, [])
+            self.assertEqual(events[-1]["reason"], "closure_member_not_in_closure")
+
+    def test_the_member_command_line_names_the_member_and_nothing_else(self) -> None:
+        """What a `--jobs` child is launched with: the member's own node, phase, id and
+        back-link; a resumed member is named by its prior orchestration alone."""
+        cfg = _sample_config("claude")
+        cold = run_workflow._closure_member_argv(
+            repo_root=Path("/r"), spec_ref="spec/component/c", dep_until_phase="Validate",
+            orchestration_id="orch_c", resume=False, target_orchestration_id="ORCHT",
+            target_spec_ref="spec/problem/a", until_phase="Validate", llm_config=cfg,
+            workflow_mode="dev", status="running", run_conductor=False, wait_usage_reset=True)
+        self.assertEqual(cold[1], "/r/tools/run_workflow.py")
+        self.assertEqual(cold[2:4], ["spec/component/c", "Validate"])
+        for flag, value in (("--llm-config", str(cfg.path)), ("--mode", "dev"),
+                            ("--repo-root", "/r"), ("--orchestration-id", "orch_c"),
+                            ("--status", "running"), ("--stdout-format", "jsonl"),
+                            ("--closure-member", "ORCHT"),
+                            ("--closure-target-spec-ref", "spec/problem/a"),
+                            ("--closure-until-phase", "Validate")):
+            self.assertEqual(cold[cold.index(flag) + 1], value, flag)
+        self.assertIn("--no-run-conductor", cold)
+        self.assertIn("--wait-usage-reset", cold)
+        self.assertNotIn("--with-deps", cold)
+        self.assertNotIn("--resume", cold)
+        warm = run_workflow._closure_member_argv(
+            repo_root=Path("/r"), spec_ref="spec/component/c", dep_until_phase="Validate",
+            orchestration_id="orch_c", resume=True, target_orchestration_id="ORCHT",
+            target_spec_ref="spec/problem/a", until_phase="Validate", llm_config=cfg,
+            workflow_mode="dev", status="running", run_conductor=True, wait_usage_reset=False)
+        self.assertIn("--resume", warm)
+        self.assertNotIn("spec/component/c", warm)
+        self.assertNotIn("--llm-config", warm)
+        self.assertNotIn("--no-run-conductor", warm)
+        self.assertEqual(warm[warm.index("--orchestration-id") + 1], "orch_c")
+
+    # -- the driver (scheduler) ----------------------------------------------------------
+
+    _CHILD = (
+        "import json, sys, time, pathlib\n"
+        "spec, marks, delay, rc, skip = sys.argv[1], pathlib.Path(sys.argv[2]), "
+        "float(sys.argv[3]), int(sys.argv[4]), sys.argv[5] == 'skip'\n"
+        "name = spec.replace('/', '_')\n"
+        "(marks / (name + '.start')).write_text(repr(time.time()))\n"
+        "print(json.dumps({'status': 'info', 'event': 'node_start', 'spec_ref': spec}), flush=True)\n"
+        "time.sleep(delay)\n"
+        "if skip:\n"
+        "    print(json.dumps({'status': 'info', 'event': 'closure_member_skipped', "
+        "'orchestration_id': sys.argv[6], 'spec_ref': spec}), flush=True)\n"
+        "print('not json at all', flush=True)\n"
+        "(marks / (name + '.end')).write_text(repr(time.time()))\n"
+        "if rc == 0: (marks / (name + '.ready')).write_text('1')\n"
+        "sys.exit(rc)\n"
+    )
+
+    def _drive(self, repo_root: Path, *, jobs: int, delay: float = 0.4,
+               rc_by_spec: dict[str, int] | None = None, skip: set[str] = frozenset(),
+               pre_ready: set[str] = frozenset(), always_unready: bool = False,
+               resume: bool = False, prior: dict[str, str] | None = None,
+               stdout_format: str = "jsonl") -> tuple[int, list[dict], list[str], Path]:
+        """Run `_run_with_dependency_closure` with the children replaced by a script that
+        marks its start / end, prints a JSON line, a non-JSON line and (optionally) a
+        `closure_member_skipped`, and exits `rc_by_spec[spec]`. Readiness is a marker
+        file the child leaves (`pre_ready` seeds it; `always_unready` ignores it). Returns
+        (rc, the JSON events printed, every stdout line, the marks dir)."""
+        marks = repo_root / "marks"
+        marks.mkdir()
+        for spec in pre_ready:
+            (marks / (spec.replace("/", "_") + ".ready")).write_text("1")
+        rc_by_spec = rc_by_spec or {}
+        launched: list[list[str]] = []
+        prior_by_id = {v: k for k, v in (prior or {}).items()}
+
+        def fake_launch(argv, *, repo_root, env):
+            launched.append(argv)
+            # a cold launch names the spec positionally after the script; a resumed one
+            # names only its prior orchestration
+            spec = (argv[2] if "--resume" not in argv
+                    else prior_by_id[argv[argv.index("--orchestration-id") + 1]])
+            oid = argv[argv.index("--orchestration-id") + 1]
+            return subprocess.Popen(
+                [sys.executable, "-c", self._CHILD, spec, str(marks), str(delay),
+                 str(rc_by_spec.get(spec, 0)), "skip" if spec in skip else "run", oid],
+                stdout=subprocess.PIPE, text=True, bufsize=1)
+
+        def fake_ready(root, node, required_stages):
+            ready = (not always_unready
+                     and (marks / (node["spec_ref"].replace("/", "_") + ".ready")).exists())
+            return {"ready": ready, "version": node["spec_versions"][0],
+                    "failed_stage": None if ready else "ir_ref",
+                    "detail": None if ready else "fake: not derived"}
+
+        target_calls: list[dict] = []
+
+        def fake_run_node(**kw):
+            target_calls.append(kw)
+            return 0
+
+        buf = io.StringIO()
+        with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready), \
+                mock.patch.object(run_workflow, "_run_node", fake_run_node), \
+                mock.patch.object(run_workflow, "_closure_member_resume_rejection",
+                                  lambda *a, **k: None), \
+                redirect_stdout(buf):
+            rc = run_workflow._run_with_dependency_closure(
+                repo_root=repo_root, base_env={"PATH": os.environ.get("PATH", "")},
+                target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                target_source_dependency_ref="spec/problem/a/deps.yaml",
+                until_phase="Validate", llm="claude", llm_command="claude",
+                llm_config=_sample_config("claude"), workflow_mode="dev", agent_model=None,
+                status="running", run_conductor=False, stdout_format=stdout_format,
+                resume=resume, prior_orch_by_spec=prior,
+                raw_argv=["spec/problem/a", "validate", "--with-deps", "--jobs", str(jobs)],
+                jobs=jobs)
+        lines = buf.getvalue().splitlines()
+        self._last_target_calls = target_calls
+        self._last_launched = launched
+        return rc, [json.loads(l) for l in lines if l.startswith("{")], lines, marks
+
+    def _times(self, marks: Path, spec: str) -> tuple[float, float]:
+        name = spec.replace("/", "_")
+        return (float((marks / (name + ".start")).read_text()),
+                float((marks / (name + ".end")).read_text()))
+
+    def test_members_run_in_dependency_order_and_the_target_follows(self) -> None:
+        """b waits for c (its direct dependency) even with jobs to spare; the target runs
+        in-process once every member is ready, carrying `dependency_runs`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, events, lines, marks = self._drive(repo_root, jobs=4)
+            self.assertEqual(rc, 0)
+            c_start, c_end = self._times(marks, "spec/component/c")
+            b_start, _ = self._times(marks, "spec/component/b")
+            self.assertGreaterEqual(b_start, c_end)
+            self.assertEqual(len(self._last_target_calls), 1)
+            runs = self._last_target_calls[0]["extra_output"]["dependency_runs"]
+            self.assertEqual([r["spec_ref"] for r in runs],
+                             ["spec/component/c", "spec/component/b"])
+            self.assertTrue(all(r["exit_code"] == 0 and not r["skipped"] for r in runs))
+            self.assertEqual(self._last_target_calls[0]["invocation"]["jobs"], 4)
+            # every child line was relayed: the JSON one as an event, the other verbatim
+            self.assertEqual(sum(1 for e in events if e.get("event") == "node_start"), 2)
+            self.assertEqual(lines.count("not json at all"), 2)
+            begins = [e for e in events if e.get("event") == "dependency_node_begin"]
+            self.assertEqual([b["spec_ref"] for b in begins],
+                             ["spec/component/c", "spec/component/b"])
+            self.assertTrue(all(b["jobs"] == 4 for b in begins))
+
+    def _seed_wide(self, repo_root: Path) -> None:
+        """Widen the diamond: a → b, d, harness c; b → c; d → c. b and d share no edge."""
+        _write_catalog(repo_root, [
+            {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+             "deps_path": "spec/problem/a/deps.yaml"},
+            {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+             "deps_path": "spec/component/b/deps.yaml"},
+            {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+             "deps_path": "spec/component/c/deps.yaml"},
+            {"spec_kind": "component", "spec_id": "d", "spec_version": "0.1.0",
+             "deps_path": "spec/component/d/deps.yaml"},
+        ])
+        _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                    components=[("b", ">=0.1.0 <1.0.0"), ("d", ">=0.1.0 <1.0.0")],
+                    infrastructure=[("c", ">=0.1.0 <1.0.0")])
+        _write_deps(repo_root, "spec/component/d", "component", "d",
+                    infrastructure=[("c", ">=0.1.0 <1.0.0")])
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def test_independent_members_run_at_once_up_to_jobs(self) -> None:
+        """Two members with no edge between them overlap under `--jobs 2`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            rc, events, _lines, marks = self._drive(repo_root, jobs=2, delay=0.6)
+            self.assertEqual(rc, 0)
+            b = self._times(marks, "spec/component/b")
+            d = self._times(marks, "spec/component/d")
+            # b and d both wait for c, then overlap
+            self.assertLess(max(b[0], d[0]), min(b[1], d[1]))
+
+    def test_no_more_than_jobs_members_run_at_once(self) -> None:
+        """Three members with no edge among them (b, d, e after c) under `--jobs 2`: at
+        every instant at most two are running, and the third starts only after one ends."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+                {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "d", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/d/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "e", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/e/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        components=[("b", ">=0.1.0 <1.0.0"), ("d", ">=0.1.0 <1.0.0"),
+                                    ("e", ">=0.1.0 <1.0.0")],
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            _write_deps(repo_root, "spec/component/e", "component", "e",
+                        infrastructure=[("c", ">=0.1.0 <1.0.0")])
+            from tools.orchestration_runtime import _load_spec_catalog
+            _load_spec_catalog.cache_clear()
+            rc, _events, _lines, marks = self._drive(repo_root, jobs=2, delay=0.6)
+            self.assertEqual(rc, 0)
+            spans = sorted(self._times(marks, f"spec/component/{n}") for n in "bde")
+            # the members are sorted by start: the third starts after the first ends
+            self.assertGreaterEqual(spans[2][0], spans[0][1])
+            # ... and the first two overlap (the cap is 2, not 1)
+            self.assertLess(spans[1][0], spans[0][1])
+
+    def test_the_real_child_accepts_the_command_line_the_driver_builds(self) -> None:
+        """`_closure_member_argv` drives the real `tools/run_workflow.py`: the child parses
+        the flags, passes startup validation, takes the member branch and reaches its
+        node run (`node_start` for the member's own orchestration id). In a scratch tree
+        the run then stops at the runtime `init` (there is no `tools/` under the scratch
+        root), which is past every layer this row is about."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            argv = run_workflow._closure_member_argv(
+                repo_root=repo_root, spec_ref="spec/component/c", dep_until_phase="Validate",
+                orchestration_id="orch_c", resume=False, target_orchestration_id="ORCHT",
+                target_spec_ref="spec/problem/a", until_phase="Validate",
+                llm_config=lc.load_llm_config(repo_root / "llm.yaml"), workflow_mode="dev",
+                status="running", run_conductor=False, wait_usage_reset=False)
+            # the script path is the checkout's, not the scratch root's
+            argv[1] = str(REPO_ROOT / "tools" / "run_workflow.py")
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            proc = subprocess.run(argv, capture_output=True, text=True, env=env,
+                                  cwd=str(REPO_ROOT), timeout=300, check=False)
+            events = [json.loads(l) for l in proc.stdout.splitlines() if l.startswith("{")]
+            kinds = [e.get("event") or e.get("reason") for e in events]
+            self.assertIn("node_start", kinds, proc.stdout + proc.stderr)
+            start = next(e for e in events if e.get("event") == "node_start")
+            self.assertEqual(start["orchestration_id"], "orch_c")
+            self.assertEqual(start["spec_ref"], "spec/component/c")
+            self.assertNotIn("invalid_startup_input", kinds)
+            self.assertNotIn("concurrent_orchestration_running", kinds)
+
+    def test_a_member_the_child_skipped_is_recorded_as_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, events, _lines, _marks = self._drive(repo_root, jobs=2, skip={"spec/component/c"})
+            self.assertEqual(rc, 0)
+            runs = self._last_target_calls[0]["extra_output"]["dependency_runs"]
+            c = next(r for r in runs if r["spec_ref"] == "spec/component/c")
+            # A skip record — the shape the driver-side and sequential skips write — plus
+            # the child that answered it; no `rerun_reason` (nothing was re-run) and no
+            # `resumed`. Round-1 finding.
+            self.assertEqual(c, {"node": "infrastructure/c@0.1.0", "spec_ref": "spec/component/c",
+                                 "skipped": True, "status": "ready", "version": "0.1.0",
+                                 "orchestration_id": c["orchestration_id"], "exit_code": 0})
+            self.assertTrue(c["orchestration_id"].startswith("orch_"))
+
+    def test_the_first_failure_stops_launching_and_names_itself(self) -> None:
+        """c fails: b is never launched, the target is not run, the closure stops with
+        `dependency_node_failed` naming c and the child's exit code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, events, _lines, marks = self._drive(
+                repo_root, jobs=2, rc_by_spec={"spec/component/c": 3})
+            self.assertEqual(rc, 3)
+            self.assertFalse((marks / "spec_component_b.start").exists())
+            self.assertEqual(self._last_target_calls, [])
+            last = events[-1]
+            self.assertEqual(last["reason"], "dependency_node_failed")
+            self.assertEqual(last["spec_ref"], "spec/component/c")
+            self.assertEqual(last["exit_code"], 3)
+            self.assertEqual([r["spec_ref"] for r in last["dependency_runs"]],
+                             ["spec/component/c"])
+            self.assertTrue(any(e.get("event") == "closure_member_failed" for e in events))
+
+    def test_a_running_member_is_waited_for_after_another_fails(self) -> None:
+        """Rule 28 read for a parallel closure: the failure stops new launches, and the
+        members already running finish and are recorded — never killed mid-orchestration.
+        b and d run at once after c; b fails fast, d is still running and is waited for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            rc, events, _lines, marks = self._drive(
+                repo_root, jobs=2, delay=0.8, rc_by_spec={"spec/component/b": 1})
+            self.assertEqual(rc, 1)
+            self.assertTrue((marks / "spec_component_d.end").exists())
+            self.assertEqual(self._last_target_calls, [])
+            last = events[-1]
+            self.assertEqual(last["reason"], "dependency_node_failed")
+            self.assertEqual(last["spec_ref"], "spec/component/b")
+            self.assertEqual({r["spec_ref"] for r in last["dependency_runs"]},
+                             {"spec/component/c", "spec/component/b", "spec/component/d"})
+
+    def test_a_child_killed_by_a_signal_fails_the_closure_with_a_failure_code(self) -> None:
+        """`Popen.returncode` is negative for a signalled child; the driver's exit status is
+        a failure code (2), never a negative number the shell reads as another signal. The
+        envelope keeps the child's own `exit_code`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+
+            def fake_launch(argv, *, repo_root, env):
+                return subprocess.Popen(
+                    [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
+                    stdout=subprocess.PIPE, text=True, bufsize=1)
+            with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=False,
+                        prior_orch_by_spec={}, preclaimed_orchestration_id=None,
+                        release_preclaim=None, dependency_runs=[])
+            self.assertEqual(rc, 2)
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+            self.assertEqual(events[-1]["reason"], "dependency_node_failed")
+            self.assertEqual(events[-1]["exit_code"], -9)
+
+    def test_a_child_that_exits_clean_but_leaves_the_node_not_ready_fails_the_closure(self) -> None:
+        """The driver re-verifies after the child exits, as the sequential loop does: a
+        clean exit that produced no readiness is `dependency_not_ready_after_run`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, events, _lines, _marks = self._drive(repo_root, jobs=2, always_unready=True)
+            self.assertEqual(rc, 2)
+            self.assertEqual(self._last_target_calls, [])
+            last = events[-1]
+            self.assertEqual(last["reason"], "dependency_not_ready_after_run")
+            self.assertEqual(last["spec_ref"], "spec/component/c")
+            self.assertEqual(last["dependency_runs"][0]["status"], "not_ready_after_run")
+
+    def test_a_ready_member_is_skipped_by_the_driver_without_a_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, _events, _lines, marks = self._drive(
+                repo_root, jobs=2, pre_ready={"spec/component/c"})
+            self.assertEqual(rc, 0)
+            runs = self._last_target_calls[0]["extra_output"]["dependency_runs"]
+            c = next(r for r in runs if r["spec_ref"] == "spec/component/c")
+            self.assertEqual(c, {"node": "infrastructure/c@0.1.0", "spec_ref": "spec/component/c",
+                                 "skipped": True, "status": "ready", "version": "0.1.0"})
+            self.assertFalse((marks / "spec_component_c.start").exists())
+            self.assertTrue((marks / "spec_component_b.start").exists())
+            self.assertEqual(len(self._last_launched), 1)
+
+    def test_a_resumed_member_that_is_the_entry_claim_has_the_claim_released_first(self) -> None:
+        """A closure-aware `--resume` entered through a member holds that member's
+        orchestration claim; a `--jobs` child resuming it would wait on its own parent
+        forever, so the driver releases the claim before launching it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            released: list[str] = []
+            with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}), \
+                    mock.patch.object(run_workflow, "_closure_member_resume_rejection",
+                                      lambda *a, **k: None):
+                def fake_launch(argv, *, repo_root, env):
+                    return subprocess.Popen(
+                        [sys.executable, "-c", "import sys; sys.exit(7)"],
+                        stdout=subprocess.PIPE, text=True, bufsize=1)
+                launch.side_effect = fake_launch
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=True,
+                        prior_orch_by_spec={"spec/component/c": "orch_c"},
+                        preclaimed_orchestration_id="orch_c",
+                        release_preclaim=lambda: released.append("orch_c"),
+                        dependency_runs=[])
+            self.assertEqual(released, ["orch_c"])
+            argv = launch.call_args_list[0].args[0]
+            self.assertIn("--resume", argv)
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1], "orch_c")
+            self.assertEqual(rc, 7)
+
+    def test_a_resumed_member_pinned_to_another_config_is_refused_before_any_child_launches(self) -> None:
+        """Round-1 finding: the scheduler's resume twin-gate (`_closure_member_resume_rejection`)
+        had no witness — a mutant ignoring its result stayed green. The sequential loop's
+        pin (`test_closure_member_resume_is_refused_when_its_config_changed`) refuses a member
+        whose recorded leaf-LLM pin is not the closure's; the parallel scheduler must refuse
+        the same member, launch no child for it, and stop the closure with the rejection —
+        because the CHILD's own gate compares the member's recorded pin against itself and
+        would let it run on the old configuration beside a target on the new one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            path, cfg = DependencyClosureTests._closure_config(self, repo_root)
+            DependencyClosureTests._pin_member(self, repo_root, "orch_c_prev", "spec/component/c",
+                                               "closure.yaml", cfg.sha256)
+            path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
+                            encoding="utf-8")
+            with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=lc.load_llm_config(path),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=True,
+                        prior_orch_by_spec={"spec/component/c": "orch_c_prev"},
+                        preclaimed_orchestration_id=None, release_preclaim=None,
+                        dependency_runs=[])
+            self.assertEqual(rc, 2)
+            launch.assert_not_called()
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+            self.assertEqual(events[-1]["reason"], "llm_config_changed_since_launch")
+            self.assertEqual(events[-1]["failed_dependency_node"], "infrastructure/c@0.1.0")
+
+    _INTERRUPTIBLE_CHILD = (
+        "import os, signal, sys, time, json, pathlib\n"
+        "marks = pathlib.Path(sys.argv[1]); name = sys.argv[2]\n"
+        "def on_term(signum, frame):\n"
+        "    (marks / (name + '.term')).write_text('1'); sys.exit(143)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "(marks / (name + '.sid')).write_text(str(os.getsid(0)))\n"
+        "print(json.dumps({'status': 'info', 'event': 'node_start', 'spec_ref': name}), flush=True)\n"
+        "for _ in range(200):\n"
+        "    time.sleep(0.1)\n"
+        "(marks / (name + '.done')).write_text('1')\n"
+    )
+
+    def test_an_interrupted_driver_stops_its_members_and_records_them(self) -> None:
+        """Codex (round 2) / C2-1: a driver that simply exited on Ctrl-C or SIGTERM left its
+        members either sharing its process group (SIGINT cancels them at once) or writing
+        to a closed pipe (`BrokenPipeError` in their `_StdoutTee` at the next event — a
+        `driver_exception` failure at a moment nobody chose). Now the members run in their
+        own session, and the interrupted driver sends each running member SIGTERM (their
+        own converter terminalizes the orchestration, resumable), waits for them, records
+        them `status: interrupted`, and re-raises. Driven with two real children (b and d
+        after c) that mark the SIGTERM they receive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            marks = repo_root / "marks"
+            marks.mkdir()
+            (marks / "spec_component_c.ready").write_text("1")  # c ready: b and d launch
+
+            real_launch = run_workflow._launch_closure_member
+
+            def fake_launch(argv, *, repo_root, env):
+                spec = argv[2]
+                return real_launch(  # the REAL launcher: its session handling is under test
+                    [sys.executable, "-c", self._INTERRUPTIBLE_CHILD, str(marks),
+                     spec.replace("/", "_")], repo_root=repo_root, env=env)
+
+            def fake_ready(root, node, required_stages):
+                ready = (marks / (node["spec_ref"].replace("/", "_") + ".ready")).exists()
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "ir_ref",
+                        "detail": None if ready else "fake"}
+
+            real_sleep = time.sleep
+            polls = {"n": 0}
+
+            def interrupting_sleep(seconds):
+                polls["n"] += 1
+                if polls["n"] == 3:
+                    raise KeyboardInterrupt
+                real_sleep(seconds)
+
+            runs: list[dict] = []
+            buf = io.StringIO()
+            with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready), \
+                    mock.patch.object(run_workflow.time, "sleep", interrupting_sleep), \
+                    redirect_stdout(buf):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=False,
+                        prior_orch_by_spec={}, preclaimed_orchestration_id=None,
+                        release_preclaim=None, dependency_runs=runs)
+            for name in ("spec_component_b", "spec_component_d"):
+                self.assertTrue((marks / f"{name}.term").exists(), name)   # got SIGTERM
+                self.assertFalse((marks / f"{name}.done").exists(), name)  # did not run on
+                # its own session: a terminal Ctrl-C would not have reached it
+                self.assertNotEqual(int((marks / f"{name}.sid").read_text()), os.getsid(0))
+            interrupted = [r for r in runs if r.get("status") == "interrupted"]
+            self.assertEqual({r["spec_ref"] for r in interrupted},
+                             {"spec/component/b", "spec/component/d"})
+            self.assertTrue(all(r["exit_code"] == 143 for r in interrupted))
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+            self.assertEqual(
+                sum(1 for e in events if e.get("event") == "closure_member_interrupted"), 2)
+
+    def test_the_main_block_converts_sighup_like_sigterm(self) -> None:
+        """Round 3: a closing terminal / ssh session sends SIGHUP; with the default
+        disposition the driver died with no `except` clause run — its orchestration left
+        `running`, its `--jobs` members left detached. `_install_signal_handlers` (the
+        `__main__` block's) converts SIGHUP as it converts SIGTERM. Installed and restored
+        here so the test process keeps its own dispositions."""
+        import signal as _signal
+        saved = {sig: _signal.getsignal(sig) for sig in (_signal.SIGTERM, _signal.SIGHUP)}
+        try:
+            run_workflow._install_signal_handlers()
+            self.assertIs(_signal.getsignal(_signal.SIGTERM), run_workflow._sigterm_to_exit)
+            self.assertIs(_signal.getsignal(_signal.SIGHUP), run_workflow._sigterm_to_exit)
+        finally:
+            for sig, handler in saved.items():
+                _signal.signal(sig, handler)
+
+    def test_a_member_that_ignores_sigterm_is_killed_with_its_session_within_the_grace(self) -> None:
+        """Round 3 (N2): a member that outlives the grace is killed together with its
+        SESSION — a runtime call it had in flight would otherwise keep the relay pipe open
+        and the driver's reader would wait on it, not on the member. Driven with a member
+        that ignores SIGTERM and holds a grandchild on the pipe; the grace is shortened to
+        1 s for the row. The record is honest: `exit_code: -9`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            marks = repo_root / "marks"
+            marks.mkdir()
+            child = (
+                "import os, signal, subprocess, sys, time, pathlib\n"
+                "marks = pathlib.Path(sys.argv[1])\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "(marks / 'grandchild.pid').write_text(str(g.pid))\n"
+                "print('{\"status\": \"info\", \"event\": \"node_start\"}', flush=True)\n"
+                "time.sleep(60)\n"
+            )
+            real_launch = run_workflow._launch_closure_member
+
+            def fake_launch(argv, *, repo_root, env):
+                return real_launch([sys.executable, "-c", child, str(marks)],
+                                   repo_root=repo_root, env=env)
+
+            real_sleep = time.sleep
+            polls = {"n": 0}
+
+            def interrupting_sleep(seconds):
+                polls["n"] += 1
+                if polls["n"] == 3:
+                    raise KeyboardInterrupt
+                real_sleep(seconds)
+
+            runs: list[dict] = []
+            started = time.monotonic()
+            with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}), \
+                    mock.patch.object(run_workflow, "_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS", 1.0), \
+                    mock.patch.object(run_workflow.time, "sleep", interrupting_sleep), \
+                    redirect_stdout(io.StringIO()):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=1, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=False,
+                        prior_orch_by_spec={}, preclaimed_orchestration_id=None,
+                        release_preclaim=None, dependency_runs=runs)
+            self.assertLess(time.monotonic() - started, 10.0)
+            self.assertEqual([r["status"] for r in runs], ["interrupted"])
+            self.assertEqual(runs[0]["exit_code"], -9)
+            gpid = int((marks / "grandchild.pid").read_text())
+            # the grandchild went with the session (killpg): waitable as gone, or not ours
+            # any more (reparented and reaped) — either way not alive
+            try:
+                os.kill(gpid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            if alive:
+                # reparented zombie or still dying: give it one moment, then assert
+                real_sleep(0.5)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(gpid, 0)
+
+    def test_a_sigterm_to_a_real_driver_is_forwarded_to_its_members(self) -> None:
+        """Round 4 (B4): the interruption row injects `KeyboardInterrupt`; SIGTERM and SIGHUP
+        reach the driver as `SystemExit(143)` through `_sigterm_to_exit`, and a handler
+        catching `KeyboardInterrupt` alone would leave the documented `kill <driver>` route
+        detaching the members. A REAL driver subprocess with the handlers installed is sent
+        SIGTERM while two members run: both members get the forwarded SIGTERM, the driver
+        exits 143."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            marks = repo_root / "marks"
+            marks.mkdir()
+            (marks / "spec_component_c.ready").write_text("1")
+            driver_script = (
+                "import sys, json, io, pathlib\n"
+                "from unittest import mock\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "import tools.run_workflow as rw\n"
+                "import tools.llm_config as lc\n"
+                "repo_root = pathlib.Path(sys.argv[2]); marks = repo_root / 'marks'\n"
+                "child = sys.argv[3]\n"
+                "rw._install_signal_handlers()\n"
+                "real_launch = rw._launch_closure_member\n"
+                "def fake_launch(argv, *, repo_root, env):\n"
+                "    return real_launch([sys.executable, '-c', child, str(marks), argv[2].replace('/', '_')], repo_root=repo_root, env=env)\n"
+                "def fake_ready(root, node, required_stages):\n"
+                "    ready = (marks / (node['spec_ref'].replace('/', '_') + '.ready')).exists()\n"
+                "    return {'ready': ready, 'version': node['spec_versions'][0], 'failed_stage': None if ready else 'ir_ref', 'detail': None if ready else 'x'}\n"
+                "runs = []\n"
+                "with mock.patch.object(rw, '_launch_closure_member', fake_launch), mock.patch.object(rw, '_dependency_node_readiness', fake_ready):\n"
+                "    (marks / 'driver.ready').write_text('1')\n"
+                "    rw._run_closure_members_parallel(repo_root=repo_root, ordered=rw._resolve_dependency_closure(repo_root, 'spec/problem/a')[0], jobs=2, dep_until_phase='Validate', required_stages=['ir_ref', 'pipeline_ref', 'aggregate_verdict'], target_orchestration_id='ORCHT', target_spec_ref='spec/problem/a', until_phase='Validate', llm_config=lc.load_llm_config(repo_root / 'llm.yaml'), workflow_mode='dev', status='running', run_conductor=False, wait_usage_reset=False, stdout_format='jsonl', resume=False, prior_orch_by_spec={}, preclaimed_orchestration_id=None, release_preclaim=None, dependency_runs=runs)\n"
+            )
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            driver = subprocess.Popen(
+                [sys.executable, "-c", driver_script, str(REPO_ROOT), str(repo_root),
+                 self._INTERRUPTIBLE_CHILD],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            # wait for both members to have started (their `.sid` markers)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not all(
+                    (marks / f"spec_component_{n}.sid").exists() for n in "bd"):
+                time.sleep(0.05)
+            self.assertTrue(all((marks / f"spec_component_{n}.sid").exists() for n in "bd"))
+            driver.send_signal(signal.SIGTERM)
+            out, err = driver.communicate(timeout=60)
+            self.assertEqual(driver.returncode, 143, err)
+            for n in "bd":
+                self.assertTrue((marks / f"spec_component_{n}.term").exists(), n)
+                self.assertFalse((marks / f"spec_component_{n}.done").exists(), n)
+            events = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
+            self.assertEqual(
+                sum(1 for e in events if e.get("event") == "closure_member_interrupted"), 2)
+
+    def test_a_child_that_prints_a_skip_it_did_not_earn_is_not_recorded_as_a_skip(self) -> None:
+        """C2-2: the skip record is built only when the driver's own re-verify agrees; a
+        child that printed `closure_member_skipped` and left the node not ready is a
+        not-ready run record (`skipped: false`), and the closure fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            rc, events, _lines, _marks = self._drive(
+                repo_root, jobs=2, skip={"spec/component/c"}, always_unready=True)
+            self.assertEqual(rc, 2)
+            last = events[-1]
+            self.assertEqual(last["reason"], "dependency_not_ready_after_run")
+            c = last["dependency_runs"][0]
+            self.assertEqual(c["spec_ref"], "spec/component/c")
+            self.assertFalse(c["skipped"])
+            self.assertEqual(c["status"], "not_ready_after_run")
+            self.assertIn("rerun_reason", c)
+
+    def test_jobs_one_keeps_the_in_process_sequential_loop(self) -> None:
+        """`--jobs 1` (the default) never launches a child: the members run through
+        `_run_node` in this process, as before."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            ran: list[str] = []
+
+            def fake_run_node(**kw):
+                ran.append(kw["spec_ref"])
+                return 0
+
+            def fake_ready(root, node, required_stages):
+                ready = node["spec_ref"] in ran
+                return {"ready": ready, "version": node["spec_versions"][0],
+                        "failed_stage": None if ready else "ir_ref",
+                        "detail": None if ready else "fake"}
+            with mock.patch.object(run_workflow, "_run_node", fake_run_node), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready), \
+                    mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
+                    redirect_stdout(io.StringIO()):
+                rc = run_workflow._run_with_dependency_closure(
+                    repo_root=repo_root, base_env={}, target_orchestration_id="ORCHT",
+                    target_spec_ref="spec/problem/a",
+                    target_source_dependency_ref="spec/problem/a/deps.yaml",
+                    until_phase="Validate", llm="claude", llm_command="claude",
+                    llm_config=_sample_config("claude"), workflow_mode="dev",
+                    agent_model=None, status="running", run_conductor=False,
+                    stdout_format="jsonl", raw_argv=[], jobs=1)
+            self.assertEqual(rc, 0)
+            self.assertEqual(ran, ["spec/component/c", "spec/component/b", "spec/problem/a"])
+            launch.assert_not_called()
 
 
 class StdoutTeeTests(unittest.TestCase):
