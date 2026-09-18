@@ -26,6 +26,7 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import locale
 import queue
@@ -3393,6 +3394,20 @@ class Conductor:
     #: attempt is stamped with.
     _phase_derivations: dict[tuple[str, str], dict[str, Any]] = field(
         default_factory=dict, init=False, repr=False)
+    #: The closure bindings of each `(node_key, phase)` attempt in flight — for `generate` and
+    #: `build`, which certified source of every closure member the phase's key bound
+    #: (`closure[].source`), resolved by the SAME `DerivationResolver` that computed the key
+    #: (issue #250 PR-3). `_stage_dependency_sources` copies from these and from nothing
+    #: it resolves itself, so what is staged is what the key says even when a member is
+    #: re-certified between the key and the copy (a parallel closure does that).
+    _phase_closure_bindings: dict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False)
+    #: The artifact directories THIS conductor process created with an exclusive `mkdir`
+    #: (`_mint_seq_dir`): an id is this process's to write under exactly when its directory
+    #: is in this set (issue #250 PR-3). `_ensure_fresh_producer_id` rotates away from any
+    #: directory it did not mint, so two drivers that pick the same `<slug>_<date>_<seq>`
+    #: name never both write into it.
+    _minted_dirs: set[Path] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.llm_config is None:
@@ -9108,41 +9123,47 @@ clean:
             return ProcResult(1, "", f"deterministic_{phase}_error: {exc}")
         return ProcResult(int(out.get("returncode", 0)), out.get("stdout", ""), out.get("stderr", ""))
 
-    def _stage_dependency_sources(self, refs: NodeRefs, obj_dir: Path) -> list[dict[str, Any]]:
+    def _stage_dependency_sources(self, refs: NodeRefs, obj_dir: Path, *,
+                                  phase: str) -> list[dict[str, Any]]:
         """Model B (docs/design): stage each dependency-closure `<dep>_model.f90` into the
         per-run build tmp `$(OBJDIR)` so the conductor-authored dependency Makefile
         (`_write_makefile` non-leaf branch) compiles + links the closure. Never touches the
         canonical `src/` — phase_02 §41 carve-out: a transient `$(OBJDIR)` stage is not a
         canonical-tree copy, so it is not the forbidden dependency mix-in.
 
-        Each dep's model source is the dep's SELECTED certified Generate output under its
-        derivation key (`_resolve_certified_closure_binding` -> `DerivationResolver.select`),
-        `source/<source_id>/src/<dep>_model.f90` — the same selection this node's generate and
-        build keys bind by `closure[].source`, so the staged code is the source the key says
-        (issue #250 PR-2; the certified binary's `source_source_id` chain this used to follow
-        went with the id chain). node_keys carry `@<version>`, so the per-version workspace
-        path is unambiguous.
+        Each dep's model source is the one the running `phase` attempt's derivation key
+        BOUND (`closure[].source` of its `derivation_inputs`): the binding resolved at phase
+        start by `_phase_derivation`, through the resolver that computed the key, and held
+        in `_phase_closure_bindings` (issue #250 PR-3). Nothing is re-selected here. Under a
+        parallel closure a member can be re-certified between this attempt's key and this
+        copy; the staged bytes are still the bytes the key names, and the copy is hashed
+        AFTER it lands and refused if it is not (`model_source_sha256`). A `source_id`
+        directory's content is written once and never rewritten, so a mismatch is a copy
+        that did not read the file the binding hashed. `phase` is `generate` (the syntax
+        gate's staging) or `build`; an attempt that has not computed its derivation — a
+        caller outside `run_phase` — has no bindings and is refused rather than served a
+        fresh selection, which would be the re-selection this method exists to remove.
 
-        Returns the BINDING of each staged source (deepest-first, i.e. staging/compile order):
+        The closure ORDER is the sidecar's (`_dependency_closure_nodes`, deepest first —
+        the control file's object order, with the L6 basename guard); the SET must equal the
+        bound one, or the sidecar moved since the key was computed and staging refuses —
+        the first reader that pins `dependency_graph.json` between two reads, the sidecar
+        being outside the compile `artifact_hashes` byte-pin.
+
+        Returns the BINDING of each staged source in staging order:
         `{node_key, pipeline_ref, source_id, model_source_ref, model_source_sha256,
-        output_hash}`, as resolved by `orchestration_runtime._resolve_certified_closure_binding`.
-        The `sha256` and the copy read the same immutable file: a `source_id` directory's
-        content is written once and never rewritten, so the hash recorded in `binary_meta` is
-        the hash of the bytes compiled. (PR-3 of issue #250 makes the copy read from the
-        stamped `derivation_inputs.closure[]` and re-verify the bytes after copying, which is
-        what a parallel closure needs; here the selection is re-run.)
+        output_hash}`, as `orchestration_runtime._resolve_certified_closure_binding`
+        resolved it at phase start.
 
-        Raises on an unresolvable dependency: a missing dep source means the dependency was not
-        built ready (run `--with-deps` first), which is a build precondition failure routed to
-        transport fail_closed (operator --resume), NOT a content failure the generate retry
-        loop could fix.
+        Raises on an unresolvable dependency or a refused copy: a build precondition
+        failure routed to transport fail_closed (operator --resume), NOT a content failure
+        the generate retry loop could fix.
 
         No-op (returns []) unless the node is make ∧ fortran — staging is paired with the
         conductor-authored Fortran Makefile (`_write_makefile` non-leaf branch), which is the
         only consumer of the staged `<dep>_model.f90`. For a c/cpp/mixed dependency node the
         Generate child still owns the (LLM-authored) Makefile and its own dependency build, so
         the conductor must not stage Fortran sources (they do not exist under those names)."""
-        from tools.orchestration_runtime import _resolve_certified_closure_binding
         if not self._conductor_authors_makefile(refs):
             return []
         nodes = self._dependency_closure_nodes(refs)
@@ -9164,35 +9185,33 @@ clean:
                     f"means the sidecar is missing/unreadable/leaf-shaped (recompile to "
                     f"re-author it; phase_01 §V4 closure contract)")
             return []
+        bound = self._phase_closure_bindings.get((refs.node_key, phase))
+        if bound is None:
+            raise RuntimeError(
+                f"cannot stage the dependency closure of {refs.node_key} for {phase}: the "
+                f"phase attempt has no derivation record, so no closure binding to stage "
+                f"from (staging reads the bindings the phase's key bound, never a fresh "
+                f"selection)")
+        by_node = {b["node_key"]: b for b in bound}
+        if set(by_node) != set(nodes):
+            raise RuntimeError(
+                f"dependency closure of {refs.node_key} moved since its {phase} key was "
+                f"computed: the key bound {sorted(by_node)}, the sidecar now says "
+                f"{sorted(nodes)} (dependency_graph.json changed under the running "
+                f"attempt; --resume re-derives the key)")
         obj_dir.mkdir(parents=True, exist_ok=True)
         staged: list[dict[str, Any]] = []
         for nk in nodes:
-            sid = spec_id_of(nk)
-            # Stage the SELECTED certified source of the dependency (its Generate output
-            # under its derivation key), NOT the pipeline-level lineage.json: lineage tracks
-            # the latest GENERATED source, which a Generate retry may have advanced past the
-            # certified one (newer source, not yet rebuilt/validated) — staging from lineage
-            # would compile the depending node against UNVERIFIED dependency code.
-            # `_resolve_certified_closure_binding` is that single-sourced selection: the
-            # Generate-time interface hint (`_resolve_dependency_facts`) reads the same
-            # selection, so the interface a consumer is SHOWN equals the source Build
-            # COMPILES, and this node's build key binds the same output hash so
-            # CERTIFIED-AGAINST equals STAGED-NOW. It locates the dependency by its EXACT
-            # sidecar-pinned version: the sidecar pins the highest catalog version satisfying
-            # the consumer constraint (matching run_workflow's node_label / `--with-deps`
-            # scheduling), so a correctly built closure has that exact version's output. If it
-            # is absent, FAIL CLOSED rather than substitute a sibling version — staging a
-            # different version could link stale/constraint-incompatible dependency code, and
-            # the version-tolerant readiness gate (which accepts any matching version)
-            # diverging from exact-version staging is the L6-deferred multi-version concern.
-            # (All current specs are single-version, so the pinned version == the built
-            # version.)
-            binding, err = _resolve_certified_closure_binding(self.repo_root, nk)
-            if binding is None:
-                raise RuntimeError(f"dependency {nk}: {err}")
-            shutil.copy2(
-                self.repo_root / binding["model_source_ref"],
-                obj_dir / f"{sid}_model.f90")
+            binding = by_node[nk]
+            target = obj_dir / f"{spec_id_of(nk)}_model.f90"
+            shutil.copy2(self.repo_root / binding["model_source_ref"], target)
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            if digest != binding["model_source_sha256"]:
+                raise RuntimeError(
+                    f"dependency {nk}: the staged {binding['model_source_ref']} hashes to "
+                    f"{digest}, not the {binding['model_source_sha256']} the {phase} key of "
+                    f"{refs.node_key} bound (the certified source directory was rewritten "
+                    f"under the running attempt; refusing to compile bytes the key never saw)")
             staged.append(binding)
         return staged
 
@@ -9225,10 +9244,11 @@ clean:
         # stage never touches canonical src/ (phase_02 §41 carve-out). The returned bindings —
         # which certified source of each closure node was staged, and its sha256 — are recorded
         # in binary_meta below as the durable record of what was linked (the comparison lives
-        # in the build key's `closure[]`). They are resolved BEFORE the compile, so a failing
-        # build records them too: the binding describes what was linked, not whether linking
-        # succeeded.
-        closure_bindings = self._stage_dependency_sources(refs, obj_dir)
+        # in the build key's `closure[]`). They were resolved at phase START, by the resolver
+        # that computed this attempt's build key (`_phase_derivation`, issue #250 PR-3), and
+        # the copy is re-hashed against them; a failing build records them too: the binding
+        # describes what was linked, not whether linking succeeded.
+        closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
         from tools.orchestration_runtime import _ir_toolchain_identity
         toolchain_identity = _ir_toolchain_identity(ir)
 
@@ -9877,7 +9897,7 @@ clean:
             deps_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                         / "syntax" / "_deps")
             deps_dir.mkdir(parents=True, exist_ok=True)
-            staged_deps = self._stage_dependency_sources(refs, deps_dir)
+            staged_deps = self._stage_dependency_sources(refs, deps_dir, phase="generate")
             if not staged_deps and self._dependency_closure_nodes(refs):
                 raise RuntimeError(
                     f"generate.gate syntax check: cannot stage dependency modules for build_system="
@@ -11123,14 +11143,69 @@ clean:
         """The derivation record of `(refs.node_key, phase)` NOW — `phase_derivation` over
         this attempt's own upstream refs. The refs name what this run is standing on: the
         reserved / adopted IR, the source Generate produced (or adopted), the binary Validate
-        runs (`source_binary_id`). Raises `DerivationInputsUnresolvable`."""
-        return phase_derivation(
+        runs (`source_binary_id`). Raises `DerivationInputsUnresolvable`.
+
+        For `generate` and `build` the closure bindings are resolved here too, through the
+        resolver that computed the key, and kept in `_phase_closure_bindings` for
+        `_stage_dependency_sources` (issue #250 PR-3): one selection per member, read once,
+        so the key and the staged bytes cannot disagree. A member whose selected source
+        cannot be bound is the same unresolvable input as a member with no certified output
+        (`phase_derivation_inputs` raises for that first; this raise is the guard behind it),
+        and a binding whose output hash is not the one the key bound is refused outright —
+        it cannot happen with one memoised resolver, and if it did, staging would compile
+        bytes the key never saw."""
+        from tools.orchestration_runtime import DerivationResolver
+        resolver = DerivationResolver(self.repo_root)
+        derivation = phase_derivation(
             self.repo_root, node_key=refs.node_key, step=phase,
             spec_ref=refs.spec_path,
             ir_ref=refs.ir_ref,
             source_ref=refs.source_dir() if refs.source_id else None,
             binary_ref=(refs.binary_dir(refs.source_binary_id or refs.binary_id)
-                        if (refs.source_binary_id or refs.binary_id) else None))
+                        if (refs.source_binary_id or refs.binary_id) else None),
+            resolver=resolver)
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        if phase in ("generate", "build") and self._core_authors_control_file(
+                _ir_build_system(ir), _ir_language(ir)):
+            # Bound only where they are staged: `_stage_dependency_sources` is a no-op for a
+            # node whose control file the conductor does not author, and a member of such a
+            # node's closure need not carry a source under the staged name.
+            self._phase_closure_bindings[(refs.node_key, phase)] = self._bind_closure_sources(
+                refs, phase, derivation["derivation_inputs"].get("closure") or [],
+                resolver=resolver)
+        return derivation
+
+    def _bind_closure_sources(self, refs: NodeRefs, phase: str,
+                              closure: Sequence[dict[str, Any]], *,
+                              resolver: Any = None,
+                              ) -> list[dict[str, Any]]:
+        """The staging binding of every member of `closure` (the `closure[]` entries of a
+        `generate` / `build` derivation: `{node_key, source: <output hash>, ...}`), resolved
+        through `resolver` — the memo that computed the key, when called from
+        `_phase_derivation`. Each binding is `_resolve_certified_closure_binding`'s record;
+        its `output_hash` must be the `source` the key bound, or the binding is refused.
+        Raises `DerivationInputsUnresolvable`, phrased as the build precondition it is."""
+        from tools.orchestration_runtime import (
+            DerivationResolver,
+            _resolve_certified_closure_binding,
+        )
+        resolver = resolver or DerivationResolver(self.repo_root)
+        bindings: list[dict[str, Any]] = []
+        for entry in closure:
+            nk = str(entry.get("node_key") or "")
+            binding, err = _resolve_certified_closure_binding(
+                self.repo_root, nk, resolver=resolver)
+            if binding is None:
+                raise DerivationInputsUnresolvable(
+                    f"derivation_inputs_unresolvable: {phase} derivation of "
+                    f"{refs.node_key} cannot bind the closure member {nk}: {err}")
+            if binding["output_hash"] != entry.get("source"):
+                raise DerivationInputsUnresolvable(
+                    f"derivation_inputs_unresolvable: {phase} derivation of "
+                    f"{refs.node_key} bound {nk} to output {entry.get('source')!r} but "
+                    f"its staged source resolves to {binding['output_hash']!r}")
+            bindings.append(binding)
+        return bindings
 
     def _phase_derivation_key(self, node_key: str, phase: str) -> str | None:
         """The key of the phase attempt in flight for `(node_key, phase)`, or None when no
@@ -11241,31 +11316,66 @@ clean:
             return executor if isinstance(executor, str) and executor.strip() else None
         return None
 
+    def _claim_artifact_dir(self, path: Path) -> bool:
+        """Whether `path` is THIS process's to write under, taking it if it is free.
+
+        An artifact directory belongs to the process that CREATED it (issue #250 PR-3): a
+        directory this process minted (`_minted_dirs`) and has not written into yet is
+        its own — the one `prepare_node` minted for the phase, or the one a previous
+        `run_phase` entry took and then did not use; one it minted and did write into is a
+        prior attempt, so it is not; one it did not create is taken with an exclusive
+        `mkdir` and is its own only if that succeeds. Two drivers that computed the same
+        `<slug>_<date>_<seq>` name from the same directory listing therefore never both
+        write into it: exactly one `mkdir` wins, the other rotates (`_mint_seq_dir`).
+        Existence alone decided this before (`.exists()` → rotate), which was right for one
+        driver and a coin toss for two."""
+        resolved = path.resolve()
+        if resolved in self._minted_dirs:
+            return not any(resolved.iterdir())
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.mkdir()
+        except FileExistsError:
+            return False
+        self._minted_dirs.add(resolved)
+        return True
+
+    def _mint_dir(self, parent: Path, prefix: str) -> str:
+        """`_mint_seq_dir` for this process, recording the directory as its own."""
+        seq, minted = _mint_seq_dir(parent, prefix)
+        self._minted_dirs.add(minted.resolve())
+        return seq
+
     def _ensure_fresh_producer_id(self, refs: NodeRefs, phase: str) -> None:
-        """If a producing phase's output already exists (a prior attempt or a
-        cross-phase reopen re-run), allocate a fresh producer id so the re-run
-        writes to a new location instead of overwriting prior artifacts (which also
-        trips create-form guarded writes). No-op on the first run of a phase."""
+        """Make the producing phase's output directory THIS attempt's own before anything
+        is written under it: a directory holding a prior attempt (a retry, a cross-phase
+        reopen re-run), or one another driver created, is left alone and a fresh producer
+        id is minted — a re-run writes to a new location instead of overwriting prior
+        artifacts (which also trips create-form guarded writes). On the first run of a
+        phase the directory is created here, exclusively (`_claim_artifact_dir`), so the
+        id it names is settled by the filesystem and not by a directory listing two
+        drivers could read alike (issue #250 PR-3)."""
         date = _today()
         if phase == "compile":
-            if (self.repo_root / refs.ir_ref).exists():
+            if not self._claim_artifact_dir(self.repo_root / refs.ir_ref):
                 safe, slug = node_key_safe(refs.node_key), _slug_of(refs.spec_id)
-                seq = _next_seq(self.repo_root / "workspace" / "ir" / safe, f"{slug}_{date}")
+                seq = self._mint_dir(self.repo_root / "workspace" / "ir" / safe, f"{slug}_{date}")
                 refs.ir_id = f"{slug}_{date}_{seq}"
                 self.reserve_root(refs.node_key, "compile", refs.ir_id,
                                   self.orchestration_agent_run_id)
         elif phase == "generate":
-            if (self.repo_root / refs.source_dir()).exists():
-                seq = _next_seq(self.repo_root / refs.pipeline_ref / "source", f"src_{date}")
+            if not self._claim_artifact_dir(self.repo_root / refs.source_dir()):
+                seq = self._mint_dir(self.repo_root / refs.pipeline_ref / "source", f"src_{date}")
                 refs.source_id = f"src_{date}_{seq}"
         elif phase == "build":
-            if (self.repo_root / refs.binary_dir()).exists():
-                seq = _next_seq(self.repo_root / refs.pipeline_ref / "binary", f"bin_{date}")
+            if not self._claim_artifact_dir(self.repo_root / refs.binary_dir()):
+                seq = self._mint_dir(self.repo_root / refs.pipeline_ref / "binary", f"bin_{date}")
                 refs.binary_id = f"bin_{date}_{seq}"
                 refs.source_binary_id = refs.binary_id
         elif phase == "validate":
-            if (self.repo_root / refs.pipeline_ref / "runs" / str(refs.run_id)).exists():
-                seq = _next_seq(self.repo_root / refs.pipeline_ref / "runs", f"run_{date}")
+            if not self._claim_artifact_dir(
+                    self.repo_root / refs.pipeline_ref / "runs" / str(refs.run_id)):
+                seq = self._mint_dir(self.repo_root / refs.pipeline_ref / "runs", f"run_{date}")
                 refs.run_id = f"run_{date}_{seq}"
 
     def _repair_payload(self, decision: RouteDecision, target_arid: str | None,
@@ -13084,7 +13194,8 @@ def _today() -> str:
 
 
 def _next_seq(parent: Path, prefix: str) -> str:
-    """Next 3-digit sequence for <prefix>_<NNN> directories under parent."""
+    """Next 3-digit sequence for <prefix>_<NNN> directories under parent — a READ of the
+    listing, which two processes can take alike; `_mint_seq_dir` is what settles it."""
     mx = 0
     if parent.is_dir():
         pat = re.compile(re.escape(prefix) + r"_(\d{3})$")
@@ -13093,6 +13204,40 @@ def _next_seq(parent: Path, prefix: str) -> str:
             if m:
                 mx = max(mx, int(m.group(1)))
     return f"{mx + 1:03d}"
+
+
+#: How many `<prefix>_<NNN>` names `_mint_seq_dir` tries before giving up: the sequence is
+#: three digits, so a directory that already holds 999 of one day's prefix is full.
+_MINT_SEQ_MAX_ATTEMPTS = 999
+
+
+def _mint_seq_dir(parent: Path, prefix: str) -> tuple[str, Path]:
+    """Allocate the next `<prefix>_<NNN>` id under `parent` by CREATING its directory with
+    an exclusive `mkdir`, and return `(seq, directory)`.
+
+    The id grammar is unchanged (`<slug>_<YYYYMMDD>_<NNN>`); what changes is who settles the
+    number (issue #250 PR-3). `_next_seq` reads the listing, and two drivers preparing the
+    same node — two `--jobs` closures that share a dependency, two operators — read the same
+    listing and pick the same name; the directory that name denotes is then written by both.
+    `mkdir` is atomic on every filesystem this runs on: exactly one caller creates a given
+    name, and the other sees `FileExistsError` and takes the next number. The directory is
+    created EMPTY and stays so until the phase writes into it; every reader of the stage
+    trees selects by the certifying meta inside a directory, so an empty one is not a
+    candidate anywhere. Raises `RuntimeError` when the day's sequence is exhausted."""
+    parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(_MINT_SEQ_MAX_ATTEMPTS):
+        seq = _next_seq(parent, prefix)
+        if int(seq) > _MINT_SEQ_MAX_ATTEMPTS:
+            break
+        candidate = parent / f"{prefix}_{seq}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return seq, candidate
+    raise RuntimeError(
+        f"cannot mint a fresh `{prefix}_<NNN>` under {parent}: the three-digit sequence is "
+        f"exhausted for this prefix")
 
 
 _SPEC_REF_FILE_NAMES = frozenset({"controlled_spec.md", "tests.md", "deps.yaml"})
@@ -13289,14 +13434,19 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
                 pipeline_id = candidate.name
                 break
     if not ir_id:
-        ir_id = f"{slug}_{date}_{_next_seq(conductor.repo_root / 'workspace' / 'ir' / safe, f'{slug}_{date}')}"
+        # Minted by an exclusive `mkdir` (issue #250 PR-3): the id is settled by the
+        # filesystem, so two drivers preparing this node at once get two ids.
+        ir_id = (
+            f"{slug}_{date}_"
+            f"{conductor._mint_dir(conductor.repo_root / 'workspace' / 'ir' / safe, f'{slug}_{date}')}"
+        )
     if pipeline_id is None:
         # Either the IR was minted, or it is certified but no pipeline was ever built from it
         # (a run stopped at `--until-phase compile`). Keep the adopted IR and mint the
         # pipeline: Compile stays skippable and Generate runs, which is exactly the state.
         pipeline_id = (
             f"{slug}_{date}_"
-            f"{_next_seq(conductor.repo_root / 'workspace' / 'pipelines' / safe, f'{slug}_{date}')}"
+            f"{conductor._mint_dir(conductor.repo_root / 'workspace' / 'pipelines' / safe, f'{slug}_{date}')}"
         )
     lineage = _read_json(
         conductor.repo_root / "workspace" / "pipelines" / safe / str(pipeline_id)

@@ -22120,7 +22120,8 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         the bytes that landed in the build dir."""
         import tools.workflow_conductor as wc
         from tools.orchestration_runtime import (
-            _certify_and_collect_dep_artifacts, _resolve_certified_closure_binding)
+            DerivationResolver, _certify_and_collect_dep_artifacts,
+            _resolve_certified_closure_binding)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             refs = self._seed(repo_root)
@@ -22144,8 +22145,19 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 f'  direct_deps:\n    - node_key: "{self.DEP}"\n', encoding="utf-8")
             conductor = wc.Conductor.__new__(wc.Conductor)
             conductor.repo_root = repo_root
+            conductor._phase_closure_bindings = {}
             obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
-            staged = conductor._stage_dependency_sources(node_refs, obj_dir)
+            # Since issue #250 PR-3 the binding is taken at phase START through the key's
+            # resolver (`_phase_derivation` -> `_bind_closure_sources`) and staging copies
+            # from it; bind here as the phase start would, over the selection NOW.
+            resolver = DerivationResolver(repo_root)
+            conductor._phase_closure_bindings[(self.DEP_B, "build")] = (
+                conductor._bind_closure_sources(
+                    node_refs, "build",
+                    [{"node_key": self.DEP,
+                      "source": resolver.select(self.DEP, "generate").output_hash}],
+                    resolver=resolver))
+            staged = conductor._stage_dependency_sources(node_refs, obj_dir, phase="build")
             resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP)
             self.assertIsNone(err)
             self.assertEqual(staged, [resolved])

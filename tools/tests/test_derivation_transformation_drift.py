@@ -145,7 +145,7 @@ PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
 }
 PINNED_BUILD: dict[str, str] = {
-    "build-1": "c5fbb4bc9b9928f024e0030d2bf861673ffcf52ad74cf00da0a749fe84085641",
+    "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
