@@ -557,7 +557,7 @@ PINNED: dict[str, str] = {
     # no-metrics stubs 30 carried a fixed-length form and 4 the pinned one; every one of the 32
     # called `metric_compute`s the pinned one — round-1 census, `os.walk`). The
     # contract's §5 gains the same bullet; that slice reaches the `harness` producer only.
-    "pure-47": "6ad0c816ec1086f3e07949237d943ce9097e8dcf7928f295fcb8be864615992c",}
+    "pure-47": "f20af89bc0c32dbed7b720cb2921099d48606e8761ea91d9f644a4d03f5c6961",}
 
 
 def _contract_tuple() -> dict[str, object]:

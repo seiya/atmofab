@@ -1811,10 +1811,6 @@ class GfortranSmokeTest(unittest.TestCase):
             _rank34_metrics_ir(), RANK_SID, _RANK_CHECKS_STUB)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ChecksAbiDummyDeclarationTest(unittest.TestCase):
     """`checks_abi_dummy_violation` (issue #261): the one `metric_compute` dummy-argument fact
     the compiler cannot check against the rendered call. What is PINNED: the position the
@@ -2086,3 +2082,7 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
                      f"{RANK_SID}_runner.f90"],
                     cwd=d, capture_output=True, text=True, check=False)
                 self.assertEqual(0, r.returncode, (decl, r.stderr))
+
+
+if __name__ == "__main__":
+    unittest.main()

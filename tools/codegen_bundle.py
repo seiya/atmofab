@@ -1609,10 +1609,16 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     not check dummy-argument agreement in general; `Generate.gate` syntax check stages the runner with the source and
     owns call resolution. The ONE dummy-argument fact that call resolution cannot see — the
     attribute the runner's actual for `metric_compute`'s reason argument requires of the dummy,
-    which the compiler accepts either way and the program then faults on (a fixed-length
-    dummy) or silently records an empty reason for (an assumed-length one) — is asked of
-    the language backend that renders that call (`host_render.checks_abi_dummy_violation`,
-    issue #261), after the procedure clause and before the bound-state clause below.
+    which the compiler accepts without and the program then faults on at the first call — is
+    asked of the language backend that renders that call
+    (`host_render.checks_abi_dummy_violation`, issue #261), after the procedure clause and
+    before the bound-state clause below. That reader is a SECOND statement walker over the
+    same module, beside `checks_module_abi_facts` — the "one parser" promise above is about
+    the PUBLICATION facts the two gates share, and this clause consults the scan for nothing.
+    Measured (round-3 review, 23 shapes): the two disagree on a labelled header, an identifier
+    named `interface` or `type`, and a labelled earlier bare `end`, each in the direction
+    where the scan reports the name undefined and this walker judges it — safe for this
+    clause, and a leaf gains nothing from the scan's side (the syntax gate resolves the name).
 
     "Published" is the `Generate.gate` static check's own notion, deliberately, not a better one. Fortran has
     ways to export a callable name that neither gate models — a whole-module `use` re-export with

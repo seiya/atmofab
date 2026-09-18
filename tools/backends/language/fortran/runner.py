@@ -80,14 +80,17 @@ CHECKS_PUBLIC_NAMES = (
 # (`_render_metric_calls`), and the one of them whose declaration the compiler cannot check
 # against that call. The runner passes `mreason` — `character(len=:), allocatable`, UNALLOCATED
 # — for `reason_na`. Fortran lets an allocatable actual associate with a non-allocatable dummy,
-# so a `character(len=64)` or `character(len=*)` dummy resolves against the explicit interface
-# with no diagnostic from `gfortran -fsyntax-only` (measured, 11.4: rc=0 for both). At the
-# shipped build flags (`-std=f2008 -O2`, no `-fcheck`) the fixed-length form faults at the
-# first call (the assignment writes through a null descriptor: SIGSEGV) and the assumed-length
-# form does NOT fault — the unallocated actual's length is 0, so the assignment copies nothing
-# and the runner records `reason_na` as `''` (a false record rather than a crash; measured,
-# round-1 review). Under `-fcheck=all` both are "Allocatable actual argument 'mreason' is not
-# allocated". Only an
+# so a `character(len=64)` dummy resolves against the explicit interface with no diagnostic
+# from `gfortran -fsyntax-only` (measured, 11.4: rc=0), passes the lint gate (the declaration
+# earns no finding under the declared rule set, fortitude 0.8.0), and at the shipped build
+# flags (`-std=f2008 -O2`, no `-fcheck`) faults at the first call — the assignment writes
+# through a null descriptor: SIGSEGV; under `-fcheck=all`, "Allocatable actual argument
+# 'mreason' is not allocated". That fixed-length form is what this check exists for. The
+# assumed-length form (`character(len=*), intent(out)`) is refused by the LINT gate before
+# Build (C072, measured with `lint.check_argv`; contract §5 declares it illegal), so it never
+# reaches the compiler in a workflow — at the compiler alone it also passes and records an
+# empty reason, which is a fact about the compiler and not a reason for this check (a round-3
+# review found the earlier text presenting it as one). Only an
 # `allocatable` dummy is conforming, and once the dummy IS allocatable the compiler owns the
 # rest: a fixed-length allocatable dummy is refused ("must have a deferred length type
 # parameter if and only if the dummy has one"), a `pointer` one is refused too. So the one
@@ -698,10 +701,9 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     a("  ! The checks ABI is the same five subroutines for every node. metric_compute's")
     a(f"  ! `{METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY}` dummy MUST be declared")
     a("  ! `character(len=:), allocatable, intent(out)`: the runner of a node with metrics")
-    a("  ! passes an UNALLOCATED deferred-length allocatable for it; a fixed-length dummy")
-    a("  ! compiles and faults at the first call, an assumed-length one compiles and records")
-    a("  ! an empty reason. A no-metrics stub included: a deterministic gate refuses any")
-    a("  ! non-allocatable form.")
+    a("  ! passes an UNALLOCATED deferred-length allocatable for it, and a fixed-length dummy")
+    a("  ! compiles and faults at the first call. A no-metrics stub included: a deterministic")
+    a("  ! gate refuses any non-allocatable form.")
     # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
     # is unrecoverable: the lint gate imposes its rule set with `--ignore-allow-comments`
     # (`tools/backends/linter/fortitude/lint.py`), so a directive here would be reported as
@@ -1216,11 +1218,10 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
             return (f"metric_compute's dummy argument {name!r} (position {position + 1}) is "
                     f"declared without the `allocatable` attribute. The host-rendered runner "
                     f"passes an UNALLOCATED `character(len=:), allocatable` actual for it, "
-                    f"which a non-allocatable dummy accepts at compile time (no diagnostic from "
-                    f"the syntax check or the build): a fixed-length dummy then faults at the "
-                    f"first call (the assignment writes through a null descriptor) and an "
-                    f"assumed-length one silently truncates the reason to zero length. Declare "
-                    f"it as the ABI comment in the rendered runner states: "
+                    f"which a fixed-length dummy accepts at compile time (no diagnostic from "
+                    f"the syntax check or the build) and faults on at the first call (the "
+                    f"assignment writes through a null descriptor). Declare it as the ABI "
+                    f"comment in the rendered runner states: "
                     f"`character(len=:), allocatable, intent(out) :: {name}` — an assignment "
                     f"`{name} = '<short reason>'` then allocates it")
         return None

@@ -20816,7 +20816,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 18200->18600 (issue #261): §5 gains the bullet that `metric_compute`'s
         # `reason_na` carries `allocatable` on every node and that the bundle acceptance gate
         # refuses a non-allocatable one — the one §1 declaration no compiler check sees.
-        # Measured 18464.
+        # Measured 18464 at ee09daf6; 18571 after the round-1 and round-3 rewordings of that
+        # bullet.
         "docs/workflow/CHECKS_MODULE_CONTRACT.md": 18600,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).

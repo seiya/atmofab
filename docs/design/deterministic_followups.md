@@ -3093,7 +3093,7 @@ and `build_graph`) makes a mis-authored ABI a BOUNDED in-conversation repair ins
 requires every name in `runner_renderer.CHECKS_PUBLIC_NAMES` to be published by `module <spec_id>_checks` AND defined
 there as a SUBROUTINE. That is a conservative necessary condition which pre-empts BOTH downstream gates:
 the `Generate.gate` static check (`_validate_checks_source_files`) requires all ten published but cannot tell a subroutine from a
-function, and the `Generate.gate` syntax check rejects both an undefined name and a function-form one. Dummy-argument agreement stays
+function, and the `Generate.gate` syntax check rejects both an undefined name and a function-form one. Dummy-argument agreement stays (with the one `metric_compute` exception issue #261 added to this layer: the fifth dummy's `allocatable` attribute, which the compiler cannot check against the runner's call, and the dummy count)
 with the `Generate.gate` syntax check, which stages the runner with the source and owns it. The check is scoped to the ONE module the
 runner imports: a bundle may legally carry other `checks`-role files, and reading their text too would let a sibling
 module vouch for a name `use <spec_id>_checks` cannot resolve. The category `bundle_checks_abi_violation` joins
