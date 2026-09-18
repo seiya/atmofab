@@ -11311,12 +11311,31 @@ end program shallow_water2d_runner
                     "state_snapshots schema variables" in x]
             self.assertEqual(len(hits), 1, v)
         # the flat placement (what every real IR authors) is read the same way
+        flat = {
+            "state_variables": [{"name": "h", "shape_expr": "[2,2]"},
+                                {"name": "zz_uncaptured", "shape_expr": "[2,2]"}],
+            "required_update_paths": ["h", "zz_uncaptured"],
+            "diagnostics_from_state": True, "fallback_policy": "fail_closed"}
         with tempfile.TemporaryDirectory() as tmp:
-            v = self._compile_with_flat_contract(Path(tmp), {
-                "state_variables": [{"name": "h", "shape_expr": "[2,2]"},
-                                    {"name": "zz_uncaptured", "shape_expr": "[2,2]"}],
-                "required_update_paths": ["h", "zz_uncaptured"],
-                "diagnostics_from_state": True, "fallback_policy": "fail_closed"})
+            v = self._compile_with_flat_contract(Path(tmp), flat)
+            self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
+                                in x for x in v), v)
+        # ...and so is the `update_semantics` placement (the resolver's second stop), and a
+        # bare-string list — the round-2 reviewer's two surviving reader mutants
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), {"update_semantics": dict(flat)})
+            self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
+                                in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), dict(
+                flat, state_variables=["h", "zz_uncaptured"]))
+            self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
+                                in x for x in v), v)
+        # A document-level marker key inside `algorithm` (`schema_version`) is dropped for the
+        # read, as the multi-dimensional gate drops it: the clause stays live (a round-2
+        # reviewer measured it going dark — the raise was swallowed into an empty name list).
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), dict(flat, schema_version="1"))
             self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
                                 in x for x in v), v)
 

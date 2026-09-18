@@ -7656,10 +7656,15 @@ def _algorithm_state_variable_names(ir: Any) -> list[str]:
     algorithm = ir.get("algorithm") if isinstance(ir, dict) else None
     if not isinstance(algorithm, dict):
         return []
-    try:
-        contract = _algorithm_state_contract(algorithm)
-    except ValueError:
-        return []
+    # The same unwrapping `_validate_algorithm_contract_file` does before ITS read: a section that
+    # carries a document-level key (`schema_version`, `algorithm`) would trip `_require_ir_section`,
+    # and swallowing that raise here made this clause vacuous on exactly the shape the other gate
+    # tolerates — a round-2 reviewer planted `algorithm.schema_version` and the ⊆ clause went dark
+    # while the multi-dimensional gate still read the contract. Drop the markers, never the read.
+    markers = {"algorithm", *_IR_DOCUMENT_ONLY_KEYS} & set(algorithm)
+    if markers:
+        algorithm = {k: v for k, v in algorithm.items() if k not in markers}
+    contract = _algorithm_state_contract(algorithm)
     raw = contract.get("state_variables") if isinstance(contract, dict) else None
     out: list[str] = []
     for v in (raw if isinstance(raw, list) else []):
@@ -7965,8 +7970,9 @@ def _validate_io_contract_file(
     # Every declared primary state variable is captured: `algorithm.state_variables` ⊆ the
     # snapshot schema (Z6, issue #255). A state the IR declares and the runner never captures
     # is a state no host-evaluated predicate can reach, and the bundle binds the schema alone,
-    # so the gap would otherwise be named by nothing. Checked whenever the section is present
-    # — a `problem` IR's multi-dimensional contract carries it; others declare none.
+    # so the gap would otherwise be named by nothing. Checked when snapshots are required (like
+    # every other snapshot clause here; a `required: false` entry skips them all) — a `problem`
+    # IR's multi-dimensional contract carries the names; other kinds declare none.
     if snapshot_required:
         uncaptured = [v for v in declared_state_variables if v not in snapshot_variables]
         if uncaptured:
