@@ -650,6 +650,35 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
                 f"{distribution!r}), but requirements.txt does not install it")
 
+    #: Modules the conductor imports on the verdict path of EVERY run (`_author_execute_verdict`
+    #: imports them at the first Validate.execute), read as the third-party top-level imports of
+    #: each file. A distribution they need that the launch probe does not refuse a host for fails
+    #: a billed run one phase after the probe said it could start.
+    _RUNTIME_IMPORTERS = ("tools/primary_evidence.py", "tools/verdict_evaluator.py")
+
+    def test_the_launch_probe_refuses_a_host_for_every_third_party_module_the_verdict_imports(
+            self) -> None:
+        """Derived from the code, not typed: the top-level `import X` / `from X import` names of
+        `_RUNTIME_IMPORTERS`, minus the standard library and this repository, must each be an
+        import name of `REQUIRED_PYTHON_MODULES` (Z6 PR-2, issue #255: numpy)."""
+        import ast
+        probed = {import_name for import_name, _ in run_workflow.REQUIRED_PYTHON_MODULES}
+        stdlib = set(sys.stdlib_module_names)
+        found: set[str] = set()
+        for rel in self._RUNTIME_IMPORTERS:
+            tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    found |= {alias.name.split(".")[0] for alias in node.names}
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    found.add(node.module.split(".")[0])
+        third_party = {m for m in found if m not in stdlib and m != "tools"}
+        self.assertTrue(third_party, "the reader found no third-party import; it observes nothing")
+        self.assertEqual(
+            third_party - probed, set(),
+            "a module the verdict author imports on every run is not refused at launch by "
+            "REQUIRED_PYTHON_MODULES; a host without it fails at its first Validate.execute")
+
     def test_the_runbook_table_covers_every_module_the_launch_probe_names(self) -> None:
         """The knot between the two authorities themselves, which no test tied before this file.
 
