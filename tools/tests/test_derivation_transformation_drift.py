@@ -150,7 +150,7 @@ PINNED_RENDER: dict[str, str] = {
     # Z6 PR-1 (issue #255): the rendered runner reads bound storage (`sb_<var> => <var>`)
     # instead of calling getters, captures twice per case, and the build control file creates
     # `raw/state_snapshots/initial`.
-    "render-2": "ce863468c5a5091d1199ced945dd11ff4a4d982bc266e093f5b50b9d91b03af5",
+    "render-2": "374e7039c71d5d5d6a76e962e62e34e3a16501680608f9ee9b75b1bfe47323a5",
 }
 PINNED_BUILD: dict[str, str] = {
     "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",
