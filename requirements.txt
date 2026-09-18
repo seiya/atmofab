@@ -58,3 +58,10 @@ PyYAML>=5.4,<7
 # edit the constant, after re-running `structure_differential.py` (both halves).
 tree-sitter==0.26.0
 tree-sitter-fortran==0.6.0
+
+# PIN, measured on the development host: the value `python3 -c "import numpy; print(numpy.__version__)"`
+# printed on 2026-09-18, the day `tools/primary_evidence.py` (Z6, issue #255) made numpy a runtime
+# dependency of the conductor — `Validate.execute` values every `io_contract.primary_predicates`
+# expression through it. The whole suite at that commit runs on this build; no other numpy build
+# has been measured, so no floor is claimed.
+numpy==1.26.4

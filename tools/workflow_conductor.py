@@ -435,6 +435,30 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
                 if "rhs" in ev:
                     parts.append(f"rhs={ev['rhs']!r}")
                 lines.append("  - " + " ".join(parts))
+        # The host-evaluated corroborants (Z6): every unsatisfied primary record, with the value
+        # the host computed or the evaluation error, and whether the two kinds of evidence agree.
+        primary = basis.get("primary") if isinstance(basis, dict) else None
+        for rec in (primary if isinstance(primary, list) else []):
+            if not isinstance(rec, dict) or rec.get("satisfied"):
+                continue
+            for ev in (rec.get("evaluated") if isinstance(rec.get("evaluated"), list) else []):
+                if not isinstance(ev, dict) or ev.get("satisfied"):
+                    continue
+                parts = [f"primary quantity={rec.get('quantity')!r}",
+                         f"expr={rec.get('expr')!r}", f"op={rec.get('op')!r}"]
+                if ev.get("case") is not None:
+                    parts.append(f"case={ev['case']!r}")
+                if ev.get("reason"):
+                    parts.append(f"reason={ev['reason']}")
+                if ev.get("error"):
+                    parts.append(f"error={ev['error']!r}")
+                if "value" in ev:
+                    parts.append(f"value={ev['value']!r}")
+                if "rhs" in ev:
+                    parts.append(f"rhs={ev['rhs']!r}")
+                lines.append("  - " + " ".join(parts))
+        if isinstance(basis, dict) and basis.get("corroboration"):
+            lines.append(f"  corroboration={basis['corroboration']}")
     return "\n".join(lines)
 
 
@@ -10847,11 +10871,16 @@ clean:
     def _author_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any],
                                 run_diag: dict[str, Any]) -> dict[str, Any]:
         """R2: author verdict.json from ``io_contract.test_predicates`` + the runner's
-        diagnostics.json (``run_diag``). Returns the authored doc. A missing / malformed
-        predicate DSL (which the Compile-stage gate forbids) is authored as a
-        ``structural_violation`` verdict; classify_failure's execute branch then routes it to the
-        escalate diagnostician (prod) / fail_closed (dev) — the diagnostician can reopen Compile
-        for the IR defect — rather than crashing execute."""
+        diagnostics.json (``run_diag``), conjoined with the host-evaluated
+        ``io_contract.primary_predicates`` over the promoted captures under the run node
+        directory (Z6, issue #255: `tools/primary_evidence.py` reads
+        `raw/state_snapshots/{initial/,}<case_id>.json`, which `_promote_run_evidence` has
+        already placed there). Returns the authored doc. A missing / malformed predicate DSL
+        (which the Compile-stage gate forbids) is authored as a ``structural_violation``
+        verdict; classify_failure's execute branch then routes it to the escalate diagnostician
+        (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
+        rather than crashing execute."""
+        from tools.primary_evidence import evaluate_primary_predicates
         from tools.verdict_evaluator import evaluate_verdict, PredicateError
 
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
@@ -10860,14 +10889,19 @@ clean:
             if not isinstance(predicates, list) or not predicates:
                 raise PredicateError(
                     "io_contract.test_predicates missing/empty (Compile must author it)")
+            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
             doc = evaluate_verdict(predicates, run_diag,
-                                   run_id=refs.run_id, node_key=refs.node_key)
+                                   run_id=refs.run_id, node_key=refs.node_key,
+                                   primary=primary)
         except Exception as exc:  # noqa: BLE001 - any evaluation failure is an IR/contract defect
             # Catch broadly (not just PredicateError): a malformed IR must always route via the
             # deterministic structural_violation path (escalate/fail_closed), never crash execute
             # into a blunt transport fail_closed. evaluate_verdict provably raises only
-            # PredicateError today; catching Exception keeps that guarantee robust to evaluator
-            # evolution (e.g. a future op that could raise TypeError/ZeroDivisionError).
+            # PredicateError today and evaluate_primary_predicates only PrimaryEvidenceError (a
+            # per-case evaluation error — an interpreter or numpy exception included, which
+            # `evaluate` converts — is RECORDED on its predicate, not raised; what raises is a
+            # malformed predicate shape); catching Exception keeps that guarantee robust to
+            # evaluator evolution.
             doc = {
                 "node_key": refs.node_key,
                 "run_id": refs.run_id,

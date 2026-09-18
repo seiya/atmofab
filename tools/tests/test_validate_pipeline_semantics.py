@@ -11150,7 +11150,8 @@ end program shallow_water2d_runner
         )
 
     def _compile_with_io_contract(
-        self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True
+        self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True,
+        case_ids: tuple[str, ...] = ("c1",), case_inputs: dict | None = None,
     ):
         _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
@@ -11178,7 +11179,8 @@ end program shallow_water2d_runner
         ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                    "/shallow-water2d_20260415_001/spec.ir.yaml")
         doc = json.loads(ir_path.read_text())
-        doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
+        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": copy.deepcopy(case_inputs or {})}
+                                         for cid in case_ids]}
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",
@@ -11581,6 +11583,96 @@ end program shallow_water2d_runner
             io.pop("test_predicates")
             v = self._compile_with_io_contract(Path(tmp), io)
             self.assertTrue(any("test_predicates must be a non-empty list" in x for x in v), v)
+
+    def _primary_predicate(self, **override) -> dict:
+        return {"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
+                "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
+                "per_case": True, **override}
+
+    def _preds_with_quantity(self, quantity: object) -> list[dict]:
+        return [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                 "pass_when": {"all": [
+                     {"ref": "verdict.overall", "op": "eq", "value": "pass"},
+                     {"ref": "checks.g.status", "op": "eq", "value": "pass",
+                      "quantity": quantity}]}}]
+
+    def test_compile_gate_accepts_a_resolvable_primary_predicate(self) -> None:
+        """Z6 PR-2 (issue #255): `io_contract.primary_predicates` is gated at `--stage compile`
+        through the REAL wiring (`_validate_test_predicates` -> `validate_primary_predicate_schema`),
+        so a well-formed entry with a secondary `quantity` beside it passes the stage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+            io["primary_predicates"] = [self._primary_predicate()]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io), [])
+
+    def test_compile_gate_rejects_an_unresolvable_primary_predicate(self) -> None:
+        """Each refusal class the primary gate owns, observed at the stage: an unknown capture
+        variable, a bare name, a disallowed construct, a case input that is not a number in the
+        target case, an `at()` outside the target cases, and a malformed secondary `quantity`."""
+        rows = [
+            (self._primary_predicate(expr="sum(final.zeta)"), "not a snapshot schema variable"),
+            (self._primary_predicate(expr="nx"), "name 'nx' is not a coordinate"),
+            (self._primary_predicate(expr="final.h[0]"), "Subscript is not admitted"),
+            (self._primary_predicate(expr="inputs.grid.nx"), "in case 'c1': inputs.grid.nx"),
+            (self._primary_predicate(expr="sum(at('c2').final.h)"), "at('c2') is not one of"),
+            (self._primary_predicate(op="includes"), "op must be one of"),
+            (self._primary_predicate(test_id="t9"), "not a tests.md test_id"),
+        ]
+        for pred, fragment in rows:
+            with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(
+                    self._preds_with_quantity("mass_drift_rel"))
+                io["primary_predicates"] = [pred]
+                v = self._compile_with_io_contract(Path(tmp), io)
+                self.assertTrue(any(fragment in x for x in v), (fragment, v))
+                self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"))
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("quantity must match" in x for x in v), v)
+
+    def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
+        """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
+        accepted and recorded as corroboration of the whole test. Through the real wiring: the
+        secondary ranges over c1 and c2, the primary over c1 alone -> refused; over both -> not."""
+        preds = self._preds_with_quantity("mass_drift_rel")
+        preds[0]["target_cases"] = ["c1", "c2"]
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(copy.deepcopy(preds))
+            io["primary_predicates"] = [self._primary_predicate(target_cases=["c1"])]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("must equal the target_cases of test 't1'" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(copy.deepcopy(preds))
+            io["primary_predicates"] = [self._primary_predicate(target_cases=["c2", "c1"])]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
+
+    def test_compile_gate_resolves_input_paths_against_the_cases_it_is_given(self) -> None:
+        """Round 2 census: with every fixture case carrying `inputs: {}`, the wiring's
+        `cases=` argument was indistinguishable from `{}`. A numeric case input is accepted
+        through the real stage and a string one at the same path is refused."""
+        for value, expected in ((8, []), ("8", ["not a number"])):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+                io["primary_predicates"] = [
+                    self._primary_predicate(expr="sum(final.h) / inputs.grid.nx")]
+                v = self._compile_with_io_contract(Path(tmp), io,
+                                                   case_inputs={"grid": {"nx": value}})
+                if expected:
+                    self.assertTrue(any(expected[0] in x for x in v), v)
+                else:
+                    self.assertEqual(v, [])
+
+    def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+            io["primary_predicates"] = [self._primary_predicate()]
+            io["raw_requirements"]["required_evidence"] = [
+                {"artifact": "metrics_basis.json", "required": True}]
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("requires a state_snapshots required_evidence" in x
+                                for x in v), v)
 
     def test_compile_predicate_gate_rejects_unknown_case_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

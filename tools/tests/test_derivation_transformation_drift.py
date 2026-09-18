@@ -131,6 +131,8 @@ def verdict_tuple() -> dict[str, str]:
     author."""
     return {
         "tools/verdict_evaluator.py": _file_digest("tools/verdict_evaluator.py"),
+        # Z6 (issue #255): the host-evaluated primary predicates are half of the verdict.
+        "tools/primary_evidence.py": _file_digest("tools/primary_evidence.py"),
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
@@ -144,6 +146,17 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # state, bound in the checks module) and the identifier rule its name must satisfy — a
     # compile leaf reading it authors a different IR, so the key moves.
     "compile-docs-2": "1c4e903efb34e2ed8699159a0cac0a994573d4d8269cbab61223d93a82d6263a",
+    # Z6 PR-2 (issue #255): `phase_01_compile.md` gains `io_contract.primary_predicates`, the
+    # snapshot schema's `coordinates[]`, a condition's `quantity`, and the V3 fidelity rule over
+    # them — a compile leaf reading it authors the host-evaluated corroborants, so the key moves.
+    # Re-pinned in round 1 before shipping (the version is new on this branch): the grammar
+    # block gains the cross-case `at('<case>').inputs` / `.<coordinate>` roots, the operand
+    # pairing rule, the arity caps and the coordinate-name rule; V3 gains item (iv).
+    # Re-pinned again in round 2: a coordinate carries the state's shape, the time variable's
+    # provenance and the declared end time in the examples, finite thresholds.
+    # Re-pinned in rounds 3 and 4: every entry reads captured state (a bind `expr` reaches;
+    # syntactic), the xfail semantics, the depth bound, the end-state-minimum note.
+    "compile-docs-3": "569a188ed9fcad5b59c64bb90e5049b7e8d523636fc09505755a5575f2918eb5",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -163,6 +176,23 @@ PINNED_EXECUTE: dict[str, str] = {
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
+    # Z6 PR-2 (issue #255): the verdict conjoins `io_contract.primary_predicates`, valued by
+    # `tools/primary_evidence.py` from the captures under the run node directory, with the
+    # diagnostics predicates; `basis.primary[]` / `basis.corroboration` are new per-test keys.
+    # Re-pinned in round 1 before shipping (the version is new on this branch): every
+    # interpreter / numpy exception on admitted operands becomes a per-predicate structural
+    # record, the operand rule pairs shapes rather than ranks, `at()` reads a case's inputs
+    # and coordinates, and a record's `target_cases` must equal its test's.
+    # Re-pinned again in round 2: coordinates are expanded to the captured state's shape, a
+    # reduction over an unexpanded coordinate field is refused, a threshold must be finite, an
+    # empty capture is refused, and the module's own errors are kept verbatim.
+    # Re-pinned in round 3 (the sweep commit e3d97b4e broke this pin with a comment and did
+    # not re-pin — the suite was red at that commit): `basis.corroboration` gains
+    # `unevaluated`, the tree depth is bounded at parse, a predicate reading no captured state
+    # is refused, `na_allowed` / `expected_outcome` are refused as primary keys. Round 4: the
+    # state-read rule is transitive over the binds `expr` reaches, `unevaluated` covers a
+    # secondary-side gap too, the CLI's exit codes hold for an unreadable IR / run directory.
+    "verdict-2": "1594ef48dbb275d9ec64d345ebcdf500356f7a1f165740191d9616001260b715",
 }
 
 

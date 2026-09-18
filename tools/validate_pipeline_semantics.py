@@ -13938,6 +13938,39 @@ def _validate_test_predicates(
     ):
         violations.append(f"{derived_path}:{msg}")
 
+    # The host-evaluated corroborants (Z6, issue #255): when the IR carries
+    # `io_contract.primary_predicates`, every entry parses under the closed grammar and every
+    # name it uses resolves — a capture variable against the snapshot schema, an `inputs.<path>`
+    # to a number in every target case, an `at('<case>')` to one of its own target cases — so
+    # that Validate.execute never meets an expression it cannot value. Present-or-absent here;
+    # the per-test coverage rule (every secondary `quantity` has a corroborant) is a separate
+    # gate. The shape errors this reports are the ones `evaluate_primary_predicates` raises on.
+    if isinstance(io_contract, dict) and "primary_predicates" in io_contract:
+        from tools.primary_evidence import (
+            snapshot_schema,
+            validate_primary_predicate_schema,
+        )
+        cases_by_id = {
+            c["case_id"].strip(): c
+            for c in (tcs if isinstance(tcs, list) else [])
+            if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
+        }
+        test_target_cases = {
+            p["test_id"].strip(): [str(c) for c in p["target_cases"]]
+            for p in (predicates if isinstance(predicates, list) else [])
+            if isinstance(p, dict) and isinstance(p.get("test_id"), str) and p["test_id"].strip()
+            and isinstance(p.get("target_cases"), list)
+        }
+        for msg in validate_primary_predicate_schema(
+            io_contract.get("primary_predicates"),
+            case_ids=case_ids,
+            test_ids=test_ids,
+            schema=snapshot_schema(ir),
+            cases=cases_by_id,
+            test_target_cases=test_target_cases,
+        ):
+            violations.append(f"{derived_path}:{msg}")
+
     # A structurally-valid predicate set can still be DEGENERATE: if every pass test asserts only
     # `verdict.*`, the deterministic per-test judgment collapses to the runner's own verdict.overall
     # (the judge nondeterminism R2 removed). This is a separate necessary-condition gate from the
