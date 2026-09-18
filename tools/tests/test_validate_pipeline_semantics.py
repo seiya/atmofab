@@ -9713,10 +9713,10 @@ end program shallow_water2d_runner
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
             "a per-case runtime value is a state_snapshots variable with the value's shape_expr "
-            "(scalar for an enumerated input), valued numerically (the snapshot getters return "
-            "numbers, so an enumerated or string input is recorded as a numeric code whose meaning "
-            "the IR states in that entry's description), and metrics_basis.json rows are valued "
-            "from those same variables",
+            "(scalar for an enumerated input), valued numerically (a snapshot variable is a real(dp) "
+            "module variable the runner serializes, so an enumerated or string input is recorded as "
+            "a numeric code whose meaning the IR states in that entry's description), and "
+            "metrics_basis.json rows are valued from those same variables",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
@@ -9737,8 +9737,9 @@ end program shallow_water2d_runner
     def test_numeric_coded_scalar_snapshot_variable_passes_post_execute(self) -> None:
         """The premise behind retiring `execution_trace.json` (issue #235): an enumerated
         runtime input needs no evidence form of its own — it is a numeric-coded `scalar`
-        snapshot variable, which is the form the producer emits (the snapshot getters of
-        `CHECKS_MODULE_CONTRACT.md` return numbers; PR #236 round 1 corrected the remedy
+        snapshot variable, which is the form the producer emits (a snapshot variable is a
+        `real(dp)` module variable — `CHECKS_MODULE_CONTRACT.md` §1-b — so it is a number;
+        PR #236 round 1 corrected the remedy
         from "a string is scalar", which the validator accepts and no runner produces).
         Driven through `_validate_raw_evidence` via the full validator over the default
         fixture with one numeric-coded variable added to the IR schema, the on-disk
@@ -18993,9 +18994,10 @@ module bx_checks
   ! allow(C003)
   implicit none
   private
+  real(real64), allocatable :: u(:)
   public :: case_setup, case_run, get_time
-  public :: get_scalar, get_r1, get_r2, get_r3, get_r4
   public :: checks_compute, metric_compute
+  public :: u
 contains
   subroutine case_setup(case_id, ok)
     character(len=*), intent(in) :: case_id
@@ -19007,6 +19009,15 @@ end module bx_checks
 """
 
 _MODEL_OK = "module bx_model\n! allow(C003)\nimplicit none\nend module bx_model\n"
+
+
+def _abi_names() -> tuple[str, ...]:
+    from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
+    return CHECKS_PUBLIC_NAMES
+
+
+#: The fixed checks ABI, read from its authority (the runner renderer) rather than restated.
+_ABI_NAMES = _abi_names()
 
 
 class ChecksAbiSingleAuthorityTests(unittest.TestCase):
@@ -19187,7 +19198,8 @@ class ChecksSourceGateTests(unittest.TestCase):
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
                              exec_dir=tmp, pipeline_dir=tmp)
 
-    def _run(self, checks: str | None, model: str = _MODEL_OK) -> list[str]:
+    def _run(self, checks: str | None, model: str = _MODEL_OK,
+             bound_state: tuple[str, ...] = ()) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             src = tmp / "src"
@@ -19197,7 +19209,8 @@ class ChecksSourceGateTests(unittest.TestCase):
                 (src / "bx_checks.f90").write_text(checks)
             violations: list[str] = []
             vps._validate_checks_source_files(
-                self._exec(tmp), "fortran", src, [src / "bx_model.f90"], violations)
+                self._exec(tmp), "fortran", src, [src / "bx_model.f90"], violations,
+                bound_state=bound_state)
             return violations
 
     def test_clean_checks_passes(self) -> None:
@@ -19237,6 +19250,38 @@ class ChecksSourceGateTests(unittest.TestCase):
         v = self._run(bad)
         self.assertTrue(any("metric_compute" in x for x in v), v)
 
+    def test_bound_state_must_be_published(self) -> None:
+        # Z6 (issue #255): the host-rendered runner imports every IR snapshot variable as
+        # `sb_<var> => <var>`, so the static gate requires each one published under the same
+        # scan as the ABI names. `bound_state` is what the caller reads from the IR's snapshot
+        # schema; the default (no bound state) keeps every other row of this class as it was.
+        hidden = _CHECKS_OK.replace("  public :: u\n", "")
+        self.assertNotEqual(hidden, _CHECKS_OK)
+        v = self._run(hidden, bound_state=("u",))
+        self.assertTrue(any("must publish every bound state variable" in x and "['u']" in x
+                            for x in v), v)
+        self.assertEqual(self._run(_CHECKS_OK, bound_state=("u",)), [])
+        # explicit `private ::` hides it under the default-public module too
+        private = ("module bx_checks\n  implicit none\n  private :: u\n"
+                   "  real :: u(4)\ncontains\n"
+                   + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in _ABI_NAMES)
+                   + "end module bx_checks\n")
+        v = self._run(private, bound_state=("u",))
+        self.assertTrue(any("must publish every bound state variable" in x for x in v), v)
+        # ...while the default-public module with no statement publishes it (the language's
+        # rule; an undeclared name is the syntax gate's)
+        v = self._run(private.replace("  private :: u\n", ""), bound_state=("u",))
+        self.assertFalse(any("bound state" in x for x in v), v)
+
+    def test_bound_state_is_read_from_the_ir_snapshot_schema(self) -> None:
+        # Pin at the handler: `_validate_generate_outputs_for_generation` passes the IR's
+        # snapshot variables, not the default. Read its source for the wiring rather than
+        # driving the whole generate-output gate (which needs a staged tree this class lacks).
+        import inspect
+        src = inspect.getsource(vps._validate_generate_outputs_for_generation)
+        self.assertIn("bound_state=_state_snapshot_requirement_details(repo_root, execution)[0]",
+                      src)
+
     def test_checks_uses_harness_forbidden(self) -> None:
         bad = _CHECKS_OK.replace(
             "  private\n", "  private\n  use harness_fortran_cpu_model\n")
@@ -19261,12 +19306,10 @@ class ChecksSourceGateTests(unittest.TestCase):
         self.assertTrue(any("metric_compute" in x for x in v), v)
 
     def test_bare_public_all_defined_passes(self) -> None:
-        # A bare-`public` module that DEFINES all ten ABI names passes the name check.
+        # A bare-`public` module that DEFINES every ABI name passes the name check.
         body = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4",
-                      "checks_compute", "metric_compute"))
+            for n in _ABI_NAMES)
         ok = f"module bx_checks\n  implicit none\n  public\ncontains\n{body}end module bx_checks\n"
         # (only the ABI-name check is asserted here; other rules are satisfied)
         self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)))
@@ -19274,15 +19317,13 @@ class ChecksSourceGateTests(unittest.TestCase):
     def _module_defining_all(self, extra_spec: str = "", private_stmt: str = "") -> str:
         body = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4",
-                      "checks_compute", "metric_compute"))
+            for n in _ABI_NAMES)
         return (f"module bx_checks\n  implicit none\n{private_stmt}{extra_spec}"
                 f"contains\n{body}end module bx_checks\n")
 
     def test_no_accessibility_statement_all_defined_passes(self) -> None:
         # A module with NEITHER `private` NOR `public` is default-PUBLIC in Fortran; a
-        # conformant module that defines all ten ABI names must not be false-rejected.
+        # conformant module that defines every ABI name must not be false-rejected.
         ok = self._module_defining_all()
         self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)),
                          self._run(ok))
@@ -19304,8 +19345,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # (never defining it) must still be caught — an interface header is not a definition.
         body = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4", "checks_compute"))
+            for n in _ABI_NAMES if n != "metric_compute")
         proto = ("  abstract interface\n    subroutine metric_compute()\n"
                  "    end subroutine metric_compute\n  end interface\n")
         bad = f"module bx_checks\n  implicit none\n{proto}contains\n{body}end module bx_checks\n"
@@ -19318,8 +19358,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # procedure is not a module entity the host-rendered runner can `use ... only:`.
         nine = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4", "checks_compute"))
+            for n in _ABI_NAMES if n != "metric_compute")
         holder = ("  subroutine holder()\n  contains\n"
                   "    subroutine metric_compute()\n    end subroutine metric_compute\n"
                   "  end subroutine holder\n")
@@ -19333,9 +19372,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # definitions count, so an empty/partial target module must be caught.
         ten = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4",
-                      "checks_compute", "metric_compute"))
+            for n in _ABI_NAMES)
         bad = (f"module bx_checks\n  implicit none\nend module bx_checks\n"
                f"module other\n  implicit none\ncontains\n{ten}end module other\n")
         self.assertTrue(any("must publish the fixed ABI names" in v for v in self._run(bad)), bad)
@@ -19345,9 +19382,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # module-level definitions still count wherever it appears.
         ten = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4",
-                      "checks_compute", "metric_compute"))
+            for n in _ABI_NAMES)
         ok = ("module other\n  implicit none\ncontains\n"
               "  subroutine junk()\n  end subroutine junk\nend module other\n"
               f"module bx_checks\n  implicit none\ncontains\n{ten}end module bx_checks\n")
@@ -19355,13 +19390,11 @@ class ChecksSourceGateTests(unittest.TestCase):
                          self._run(ok))
 
     def test_module_level_proc_with_nested_helper_passes(self) -> None:
-        # Nesting alone must not cause a false-reject: all ten ABI names ARE module-level;
+        # Nesting alone must not cause a false-reject: every ABI name IS module-level;
         # one of them additionally carries an internal helper.
         ten = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in ("case_setup", "case_run", "get_time", "get_scalar",
-                      "get_r1", "get_r2", "get_r3", "get_r4",
-                      "checks_compute", "metric_compute"))
+            for n in _ABI_NAMES)
         extra = ("  subroutine another()\n  contains\n    subroutine inner()\n"
                  "    end subroutine inner\n  end subroutine another\n")
         ok = f"module bx_checks\n  implicit none\ncontains\n{ten}{extra}end module bx_checks\n"

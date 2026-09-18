@@ -514,7 +514,17 @@ PINNED: dict[str, str] = {
     # one clause and the version moves with it. Nothing else in the pinned surface moved — the
     # other round-3 document edits are outside it (`phase_01_compile.md` is excluded by design,
     # and the `phase_02_generate.md` lines are outside the severity-rubric slice).
-    "pure-43": "3d863920debf1e3e1767e1a6a952c88a64e80ff6e5450b20a9192307094a79f5",}
+    "pure-43": "3d863920debf1e3e1767e1a6a952c88a64e80ff6e5450b20a9192307094a79f5",
+    # issue #255 (Z6 PR-1): snapshot capture moves off the generated checks getters. The checks
+    # ABI is five names (`CHECKS_PUBLIC_NAMES` loses `get_scalar` / `get_r1..r4`), the
+    # `generate.generate` template's output contract requires `state_bindings` in the
+    # host-rendered convention (`sb_<var> => <var>`, bundle 1.2.0, `state_registration@1`) and
+    # its ABI / (C) / (E) paragraphs describe the bound state; the `generate.verify` G5 item
+    # judges the bound variables instead of getters; `CHECKS_MODULE_CONTRACT.md` §1-4 gains
+    # §1-b and loses the getter signatures; `RUNNER_OUTPUT_CONTRACT.md` §3 names the
+    # `initial/<case_id>.json` capture; the `harness` producer template's schema version and
+    # bindings bullet move with it.
+    "pure-44": "0415c56630471393452f0cd61dedd44e8673936b852ede042f2b79015646dcd8",}
 
 
 def _contract_tuple() -> dict[str, object]:

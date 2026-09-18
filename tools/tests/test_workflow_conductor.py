@@ -13060,6 +13060,35 @@ class SnapshotDeliverableGapTest(unittest.TestCase):
             self.assertEqual(
                 c._snapshot_deliverable_gap(sdir, [], ["state_snapshots"]), "")
 
+    def test_initial_captures_required_only_for_a_host_rendered_runner(self) -> None:
+        # Z6 (issue #255): the host-rendered runner writes `initial/<case_id>.json` right
+        # after `case_setup`; a hand-authored harness runner does not, so the requirement is
+        # keyed on `initial_required` (the caller's `_conductor_authors_runner`).
+        with tempfile.TemporaryDirectory() as tmp:
+            sdir = Path(tmp) / "raw" / "state_snapshots"
+            sdir.mkdir(parents=True)
+            for cid in ("l0_pass", "l0_xfail"):
+                (sdir / f"{cid}.json").write_text("{}", encoding="utf-8")
+            c = self._conductor(Path(tmp))
+            self.assertEqual(
+                c._snapshot_deliverable_gap(sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"]),
+                "")
+            msg = c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True)
+            self.assertIn("snapshot deliverable mismatch", msg)
+            self.assertIn("initial/<case_id>.json", msg)
+            self.assertIn("'initial/l0_pass.json'", msg)
+            self.assertIn("'initial/l0_xfail.json'", msg)
+            (sdir / "initial").mkdir()
+            (sdir / "initial" / "l0_pass.json").write_text("{}", encoding="utf-8")
+            msg = c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True)
+            self.assertIn("'initial/l0_xfail.json'", msg)
+            self.assertNotIn("'initial/l0_pass.json'", msg.split("missing=")[1])
+            (sdir / "initial" / "l0_xfail.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(c._snapshot_deliverable_gap(
+                sdir, ["l0_pass", "l0_xfail"], ["state_snapshots"], initial_required=True), "")
+
 
 class WriteMakefileTest(unittest.TestCase):
     """The conductor authors a leaf node's src/Makefile deterministically (runtime-owned,
@@ -19001,6 +19030,15 @@ class ExecutePromoterTest(unittest.TestCase):
         snap_outs = snap["allowed_output_paths"]
         self.assertTrue(any("/raw/state_snapshots/a.json" in p for p in snap_outs))
         self.assertTrue(any("snapshot_schema.json" in p for p in snap_outs))
+        # a node whose runner is not host-rendered (the harness self-test) owes no `initial/`
+        self.assertFalse(any("/raw/state_snapshots/initial/" in p for p in snap_outs))
+        # ...a host-rendered runner owes one per case (Z6, issue #255)
+        m3c = wc.build_launch_request(
+            refs, evidence_artifacts=("state_snapshots",), runner_host_authored=True, **common)
+        m3c_outs = m3c["allowed_output_paths"]
+        for cid in ("a", "b"):
+            self.assertTrue(any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json")
+                                for p in m3c_outs), m3c_outs)
 
         # metrics_basis.json alone: it is always an allowed output, and no snapshot
         # path is added for an IR that does not declare state_snapshots.
@@ -19029,6 +19067,7 @@ class ExecutePromoterTest(unittest.TestCase):
             self._write(run / "raw" / "metrics_basis.json", {"x": 1})
             self._write(run / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
             self._write(run / "raw" / "state_snapshots" / "caseB.json", {"u": [2]})
+            self._write(run / "raw" / "state_snapshots" / "initial" / "caseA.json", {"u": [0]})
             node = repo / "node"
             refs = c._promote_run_evidence(run, node, ["state_snapshots"])
             self.assertTrue((node / "diagnostics.json").exists())
@@ -19036,7 +19075,17 @@ class ExecutePromoterTest(unittest.TestCase):
             self.assertTrue((node / "raw" / "metrics_basis.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseA.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseB.json").exists())
+            # the host-rendered runner's initial capture is promoted beside the final one
+            self.assertTrue((node / "raw" / "state_snapshots" / "initial" / "caseA.json").exists())
+            self.assertIn("node/raw/state_snapshots/initial/caseA.json", refs)
             self.assertIn("node/raw/metrics_basis.json", refs)
+            # ...and an empty `initial/` (a harness node's own runner writes none) is not
+            # promoted as an empty directory
+            run2, node2 = repo / "run2", repo / "node2"
+            self._write(run2 / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
+            (run2 / "raw" / "state_snapshots" / "initial").mkdir()
+            c._promote_run_evidence(run2, node2, ["state_snapshots"])
+            self.assertFalse((node2 / "raw" / "state_snapshots" / "initial").exists())
 
     def test_promote_is_selective_and_drops_runner_aux_files(self) -> None:
         """Promotion is per artifact type, not a copytree: a file the runner leaves

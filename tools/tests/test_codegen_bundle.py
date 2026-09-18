@@ -46,8 +46,9 @@ def _file(path: str, role: str, member: str | None, modules: "list[str] | None" 
 
 
 def _minimal_bundle() -> dict:
-    """The current M3c shape: one member, a model + a checks module, the checks-getter
-    state capture, and the synchronous CPU harness."""
+    """The current M3c shape: one member, a model + a checks module, the harness-registration
+    state capture (bundle 1.2.0 — the checks module's module-level `q` is the storage the
+    host-rendered runner reads), and the synchronous CPU harness."""
     return {
         "bundle_schema_version": "1.0.0",
         "optimization_unit": {"members": [ADV]},
@@ -61,10 +62,11 @@ def _minimal_bundle() -> dict:
         ],
         "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                  "state_residency": "host"},
-        "capability_requirements": ["sync_single_case@1"],
+        "capability_requirements": ["sync_single_case@1", "state_registration@1"],
         "state_bindings": [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "get_r1",
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
+            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
         ],
     }
 
@@ -247,16 +249,24 @@ class CapabilityNegotiationTest(unittest.TestCase):
 
     def test_current_harness_satisfies_the_current_bundle(self) -> None:
         provided = cb.harness_provided_capabilities(HARNESS)
-        self.assertEqual(provided, frozenset({"sync_single_case@1"}))
-        self.assertEqual(
-            cb.unsatisfied_capability_requirements(["sync_single_case@1"], provided), [])
-
-    def test_state_registration_is_not_provided_by_the_current_harness(self) -> None:
-        provided = cb.harness_provided_capabilities(HARNESS)
+        self.assertEqual(provided, frozenset({"sync_single_case@1", "state_registration@1"}))
         self.assertEqual(
             cb.unsatisfied_capability_requirements(
-                ["sync_single_case@1", "state_registration@1"], provided),
-            ["state_registration@1"])
+                ["sync_single_case@1", "state_registration@1"], provided), [])
+
+    def test_state_registration_is_provided_by_the_current_harness(self) -> None:
+        # Z6 (issue #255): `state_registration@1` is the token every M3c bundle's bindings
+        # carry, so the one harness in the tree provides it — it is defined by what the
+        # host-rendered runner does with bound storage, and the harness version is unchanged.
+        provided = cb.harness_provided_capabilities(HARNESS)
+        self.assertIn(cb.STATE_REGISTRATION_TOKEN, provided)
+        self.assertEqual(cb.STATE_REGISTRATION_TOKEN, "state_registration@1")
+        self.assertEqual(
+            cb.unsatisfied_capability_requirements([cb.STATE_REGISTRATION_TOKEN], provided), [])
+        # ...and only that generation: @2 is not licensed by it.
+        self.assertEqual(
+            cb.unsatisfied_capability_requirements(["state_registration@2"], provided),
+            ["state_registration@2"])
 
     def test_version_skew_is_unsatisfied_no_ordering_is_assumed(self) -> None:
         # @2 is NOT satisfied by a harness providing @1: compatibility is declared by
@@ -735,7 +745,19 @@ class FieldGrammarTest(unittest.TestCase):
     def test_capture_enum(self) -> None:
         doc = _minimal_bundle()
         doc["state_bindings"][0]["capture"] = "raw_device_pointer"
-        self.assertIn("state_bindings[0].capture must be one of checks_getter, harness_registration",
+        self.assertIn("state_bindings[0].capture must be one of harness_registration",
+                      cb.validate_bundle(doc))
+
+    def test_checks_getter_capture_is_unrepresentable(self) -> None:
+        # Z6 fixture (b) at the bundle layer: bundle 1.1.0's `checks_getter` capture — a
+        # value read through a generated getter — is no longer a member of the enum, so a
+        # document declaring it is refused at the schema layer whatever else it says.
+        self.assertEqual(cb.STATE_CAPTURES, ("harness_registration",))
+        doc = _minimal_bundle()
+        doc["state_bindings"][0]["capture"] = "checks_getter"
+        doc["state_bindings"][0]["capability"] = None
+        doc["capability_requirements"] = ["sync_single_case@1"]
+        self.assertIn("state_bindings[0].capture must be one of harness_registration",
                       cb.validate_bundle(doc))
 
     def test_state_binding_symbols_must_be_identifiers(self) -> None:
@@ -2239,11 +2261,11 @@ class ContractPlumbingTest(unittest.TestCase):
             cb.unsatisfied_capability_requirements(frozenset({"gpu_magic@1"}), provided),
             ["gpu_magic@1"])
         self.assertEqual(
-            cb.unsatisfied_capability_requirements((t for t in ["state_registration@1"]), provided),
-            ["state_registration@1"])
+            cb.unsatisfied_capability_requirements((t for t in ["trusted_reductions@1"]), provided),
+            ["trusted_reductions@1"])
         self.assertEqual(
-            cb.unsatisfied_capability_requirements("state_registration@1", provided),
-            ["state_registration@1"])
+            cb.unsatisfied_capability_requirements("trusted_reductions@1", provided),
+            ["trusted_reductions@1"])
         self.assertEqual(cb.unsatisfied_capability_requirements(None, provided), ["None"])
         self.assertEqual(cb.unsatisfied_capability_requirements(5, provided), ["5"])
         # a satisfied set still negotiates cleanly
@@ -2402,7 +2424,7 @@ class ContractPlumbingTest(unittest.TestCase):
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("requires a async_device_resident@N capability" in v
                             for v in violations))
-        doc["capability_requirements"] = ["async_device_resident@1"]
+        doc["capability_requirements"] = ["async_device_resident@1", "state_registration@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_distributed_residency_requires_a_distributed_state_capability(self) -> None:
@@ -2410,20 +2432,17 @@ class ContractPlumbingTest(unittest.TestCase):
         doc["target_lowering_plan"]["state_residency"] = "distributed"
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("requires a distributed_state@N capability" in v for v in violations))
-        doc["capability_requirements"] = ["sync_single_case@1", "distributed_state@1"]
+        doc["capability_requirements"] = [
+            "sync_single_case@1", "distributed_state@1", "state_registration@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_harness_registration_binding_requires_its_capability(self) -> None:
         doc = _minimal_bundle()
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_storage",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
+        doc["capability_requirements"] = ["sync_single_case@1"]
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("is not declared in capability_requirements" in v
                             for v in violations))
-        # the Z6 shape is additive: declare the token and the same bundle validates
+        # declare the token and the same bundle validates
         doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
@@ -2431,7 +2450,7 @@ class ContractPlumbingTest(unittest.TestCase):
         # The coupling holds in both directions: an unused capability requirement would
         # make the negotiated ABI wider than the bundle's actual use.
         doc = _minimal_bundle()
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
+        doc["state_bindings"] = []
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("no state_bindings[] entry captures through" in v
                             for v in violations))
@@ -2472,11 +2491,14 @@ class ContractPlumbingTest(unittest.TestCase):
         doc["files"].append(_file("adv1d_extra_checks.f90", "checks", ADV))
         self.assertEqual(cb.validate_bundle(doc), [])  # the binding names its module
 
-    def test_checks_getter_binding_takes_no_capability(self) -> None:
+    def test_a_binding_without_a_capability_is_refused(self) -> None:
+        # Bundle 1.1.0 admitted `capability: null` for the retired `checks_getter` capture;
+        # the one remaining capture always names its token.
         doc = _minimal_bundle()
-        doc["state_bindings"][0]["capability"] = "state_registration@1"
+        doc["state_bindings"][0]["capability"] = None
         violations = cb.validate_bundle(doc)
-        self.assertTrue(any("must be null for capture 'checks_getter'" in v for v in violations))
+        self.assertTrue(any("requires a state_registration@N capability" in v
+                            for v in violations), violations)
 
     def test_binding_module_must_be_a_checks_module_of_its_member(self) -> None:
         # A binding reads/registers storage_symbol from `module`; that module must be defined
@@ -2491,17 +2513,16 @@ class ContractPlumbingTest(unittest.TestCase):
 
     def test_binding_module_may_not_belong_to_another_member(self) -> None:
         # The bypass Codex found: a binding for FLUX naming ADV's checks module captures ADV's
-        # storage as FLUX's state. Both members own a checks file, yet this must be rejected —
-        # for BOTH captures.
+        # storage as FLUX's state. Both members own a checks file, yet this must be rejected.
+        # (Written over both captures while `checks_getter` existed; one capture remains.)
         for capture, capability, requirements in (
-                ("checks_getter", None, ["sync_single_case@1"]),
                 ("harness_registration", "state_registration@1",
-                 ["sync_single_case@1", "state_registration@1"])):
+                 ["sync_single_case@1", "state_registration@1"]),):
             with self.subTest(capture=capture):
                 doc = _multi_node_bundle()
                 doc["capability_requirements"] = requirements
                 doc["state_bindings"] = [
-                    {"node_key": FLUX, "state_variable": "u", "storage_symbol": "get_r1",
+                    {"node_key": FLUX, "state_variable": "u", "storage_symbol": "u",
                      "module": "adv1d_checks",  # ADV's checks module, not FLUX's
                      "capture": capture, "capability": capability},
                 ]
@@ -2551,10 +2572,12 @@ class ContractPlumbingTest(unittest.TestCase):
         # mapping ambiguous — a consumer could register/read different storage for one state.
         doc = _minimal_bundle()
         doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "get_r1",
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "get_r2",
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
+            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
+            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_other",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
         ]
         self.assertIn(
             f"state_bindings[1].duplicate binding for state_variable 'q' of member {ADV!r}",
@@ -2563,11 +2586,14 @@ class ContractPlumbingTest(unittest.TestCase):
     def test_same_variable_name_on_distinct_members_is_allowed(self) -> None:
         # The identity is (node_key, state_variable): two members may each bind their own `q`.
         doc = _multi_node_bundle()
+        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
         doc["state_bindings"] = [
-            {"node_key": FLUX, "state_variable": "q", "storage_symbol": "get_r1",
-             "module": "adv_flux_checks", "capture": "checks_getter", "capability": None},
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "get_r1",
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
+            {"node_key": FLUX, "state_variable": "q", "storage_symbol": "q",
+             "module": "adv_flux_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
+            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
         ]
         self.assertEqual(cb.validate_bundle(doc), [])
 
@@ -2587,21 +2613,25 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertTrue(any("is already registered by state_variable" in v
                             for v in cb.validate_bundle(doc)))
 
-    def test_checks_getter_may_share_a_rank_getter_across_variables(self) -> None:
-        # A rank getter (`get_r1`) dispatches on the variable name, so two same-rank variables
-        # legitimately share it — this must NOT be flagged as a duplicate storage target.
+    def test_two_variables_bound_to_distinct_storage_are_accepted(self) -> None:
+        # Each state has its own storage; the duplicate-storage rule is about SHARED storage.
         doc = _minimal_bundle()
         doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "get_r1",
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
-            {"node_key": ADV, "state_variable": "p", "storage_symbol": "get_r1",  # shared getter
-             "module": "adv1d_checks", "capture": "checks_getter", "capability": None},
+            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
+            {"node_key": ADV, "state_variable": "p", "storage_symbol": "p",
+             "module": "adv1d_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"},
         ]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_state_bindings_may_be_absent(self) -> None:
+        # At the SCHEMA layer only (the harness shape omits the key); the pure contract's
+        # m3c layer requires it — `PureStateBindingLayerTests`.
         doc = _minimal_bundle()
         del doc["state_bindings"]
+        doc["capability_requirements"] = ["sync_single_case@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_invariants_do_not_run_on_a_structurally_broken_document(self) -> None:
@@ -2705,9 +2735,10 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         "  ! allow(C003)\n"
         "  implicit none\n"
         "  private\n"
+        "  real(real64), allocatable :: q(:)\n"
         "  public :: case_setup, case_run, get_time\n"
-        "  public :: get_scalar, get_r1, get_r2, get_r3, get_r4\n"
         "  public :: checks_compute, metric_compute\n"
+        "  public :: q\n"
         "contains\n"
         "  subroutine case_setup(case_id, ok)\n"
         "    character(len=*), intent(in) :: case_id\n"
@@ -2732,16 +2763,19 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
                  "defined_in": "bx_model.f90", "module": "bx_model"} for s in op_symbols],
             "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                      "state_residency": "host"},
-            "capability_requirements": ["sync_single_case@1"],
-            "state_bindings": [],
+            "capability_requirements": ["sync_single_case@1", "state_registration@1"],
+            "state_bindings": [
+                {"node_key": member, "state_variable": "q", "storage_symbol": "q",
+                 "module": "bx_checks", "capture": "harness_registration",
+                 "capability": "state_registration@1"}],
         }
 
     def _run(self, doc: dict, node_key: str, ir_published):
         return cb.pure_bundle_contract_violation(
             doc, node_key=node_key, spec_id="bx", shape="m3c",
-            runner_basename="bx_runner.f90", ir_state_variables=[],
-            harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
-            ir_published_operations=ir_published)
+            runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+            harness_provided={"sync_single_case@1", "state_registration@1"},
+            build_graph=lambda d: None, ir_published_operations=ir_published)
 
     _NK = "component/bx@0.1.0"
 
@@ -2901,6 +2935,181 @@ class RunnerRoleTest(unittest.TestCase):
         self.assertIn("object name collision", str(ctx.exception))
 
 
+class PureStateBindingLayerTests(unittest.TestCase):
+    """Z6 (issue #255): the m3c state-binding layer of `pure_bundle_contract_violation`. The
+    host-rendered runner is rendered from the IR alone as `use <spec_id>_checks, only:
+    sb_<var> => <var>` for every snapshot variable, so a bundle is accepted only when its
+    `state_bindings[]` DECLARE exactly that convention for exactly that set — and the checks
+    ABI layer then requires each bound variable to be published. Pinned at the handler
+    (`pure_bundle_contract_violation`), not the helper, so a caller that stopped passing the
+    snapshot set could not stay green."""
+
+    _CHECKS = PurePublishedSurfacePinTests._CHECKS_OK
+    _MODEL = PurePublishedSurfacePinTests._MODEL_OK
+    _NK = "problem/bx@0.1.0"
+
+    def _binding(self, var: str, **over) -> dict:
+        b = {"node_key": self._NK, "state_variable": var, "storage_symbol": var,
+             "module": "bx_checks", "capture": "harness_registration",
+             "capability": "state_registration@1"}
+        b.update(over)
+        return b
+
+    def _bundle(self, bindings: "list[dict] | None", checks: str | None = None) -> dict:
+        doc = {
+            "bundle_schema_version": "1.2.0",
+            "optimization_unit": {"members": [self._NK]},
+            "files": [
+                {"logical_path": "bx_model.f90", "role": "model", "language": "fortran",
+                 "member_node_key": self._NK, "content": self._MODEL, "modules": ["bx_model"]},
+                {"logical_path": "bx_checks.f90", "role": "checks", "language": "fortran",
+                 "member_node_key": self._NK, "content": checks or self._CHECKS,
+                 "modules": ["bx_checks"]},
+            ],
+            "entrypoints": [
+                {"symbol": "bx__apply", "kind": "operation", "node_key": self._NK,
+                 "defined_in": "bx_model.f90", "module": "bx_model"}],
+            "target_lowering_plan": {"precision": {"real_kind": "real64"},
+                                     "state_residency": "host"},
+            "capability_requirements": ["sync_single_case@1", "state_registration@1"],
+        }
+        if bindings is not None:
+            doc["state_bindings"] = bindings
+        if not bindings:  # no binding carries the token, so the bundle may not declare it
+            doc["capability_requirements"] = ["sync_single_case@1"]
+        return doc
+
+    def _run(self, doc: dict, snapshot_vars, shape: str = "m3c"):
+        return cb.pure_bundle_contract_violation(
+            doc, node_key=self._NK, spec_id="bx", shape=shape,
+            runner_basename="bx_runner.f90", ir_snapshot_variables=snapshot_vars,
+            harness_provided={"sync_single_case@1", "state_registration@1"},
+            build_graph=lambda d: None, ir_published_operations=None)
+
+    def test_the_convention_is_accepted(self) -> None:
+        self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
+        # the IR's object form is projected the same way
+        self.assertIsNone(self._run(self._bundle([self._binding("q")]),
+                                    [{"name": "q", "shape_expr": "[nx]"}]))
+
+    def test_missing_bindings_are_refused_on_m3c(self) -> None:
+        for doc in (self._bundle(None), self._bundle([])):
+            r = self._run(doc, ["q"])
+            self.assertIsNotNone(r)
+            self.assertEqual(r[0], "bundle_state_binding_mismatch")
+            self.assertIn("must bind every snapshot variable", r[1])
+            self.assertIn("'q'", r[1])
+
+    def test_set_equality_in_both_directions(self) -> None:
+        # an unbound snapshot variable (the runner's `use` would not resolve)
+        r = self._run(self._bundle([self._binding("q")]), ["q", "p"])
+        self.assertEqual(r[0], "bundle_state_binding_mismatch")
+        self.assertIn("with no binding: ['p']", r[1])
+        # a binding of an undeclared name (an invented registration)
+        r = self._run(self._bundle([self._binding("q"), self._binding("zz")]), ["q"])
+        self.assertEqual(r[0], "bundle_state_binding_mismatch")
+        self.assertIn("does not declare: ['zz']", r[1])
+        # an EMPTY declared set rejects any binding (fail-closed), never accepts all
+        r = self._run(self._bundle([self._binding("q")]), [])
+        self.assertEqual(r[0], "bundle_state_binding_mismatch")
+
+    def test_each_convention_field_is_pinned(self) -> None:
+        # Each case is built so the EARLIER layers accept it (a second checks-role module the
+        # member owns; a @2 token the harness under test provides), so the refusal observed is
+        # the convention layer's own.
+        for over, needle in (
+                ({"module": "bx_aux_checks"}, "module must be 'bx_checks'"),
+                ({"storage_symbol": "q_storage"}, "storage_symbol must equal its state_variable"),
+                ({"capability": "state_registration@2"},
+                 "capability must be 'state_registration@1'")):
+            with self.subTest(over=over):
+                doc = self._bundle([self._binding("q", **over)])
+                doc["files"].append(
+                    {"logical_path": "bx_aux_checks.f90", "role": "checks", "language": "fortran",
+                     "member_node_key": self._NK,
+                     "content": self._CHECKS.replace("bx_checks", "bx_aux_checks"),
+                     "modules": ["bx_aux_checks"]})
+                if "capability" in over:
+                    doc["capability_requirements"] = ["sync_single_case@1", over["capability"]]
+                r = cb.pure_bundle_contract_violation(
+                    doc, node_key=self._NK, spec_id="bx", shape="m3c",
+                    runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+                    harness_provided={"sync_single_case@1", "state_registration@1",
+                                      "state_registration@2"},
+                    build_graph=lambda d: None, ir_published_operations=None)
+                self.assertIsNotNone(r, over)
+                self.assertEqual(r[0], "bundle_state_binding_mismatch")
+                self.assertIn(needle, r[1])
+        # the module and the storage symbol compare case-insensitively (Fortran identifiers)
+        self.assertIsNone(self._run(
+            self._bundle([self._binding("q", module="BX_Checks", storage_symbol="Q")]), ["q"]))
+
+    def test_a_capture_other_than_harness_registration_is_unrepresentable(self) -> None:
+        # Refused one layer EARLIER (the schema enum) — the convention layer's own `capture`
+        # branch is then reachable only through a widened enum, which this pins as well.
+        doc = self._bundle([self._binding("q", capture="checks_getter", capability=None)])
+        r = self._run(doc, ["q"])
+        self.assertEqual(r[0], "bundle_schema_violation")
+        self.assertIn("capture must be one of harness_registration", r[1])
+        self.assertIn("checks_getter", cb._m3c_state_binding_mismatch(
+            [self._binding("q", capture="checks_getter")], ["q"], "bx"))
+
+    def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
+        # The ABI layer: a binding whose storage the module does not `public ::` is a `use`
+        # the runner cannot resolve. Same parser and same "published" as the ABI procedures.
+        unpublished = self._CHECKS.replace("  public :: q\n", "")
+        self.assertNotEqual(unpublished, self._CHECKS)
+        r = self._run(self._bundle([self._binding("q")], checks=unpublished), ["q"])
+        self.assertIsNotNone(r)
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("must publish every bound state variable", r[1])
+        self.assertIn("naming them): q.", r[1])
+        # an explicit `private :: q` hides it under either default
+        hidden = self._CHECKS.replace("  public :: q\n", "  private :: q\n")
+        r = self._run(self._bundle([self._binding("q")], checks=hidden), ["q"])
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("naming them): q.", r[1])
+        # under the default-public module nothing needs naming (the language publishes it;
+        # an undeclared name is the syntax gate's), and the comparison is case-insensitive
+        default_public = self._CHECKS.replace("  private\n", "").replace(
+            "  public :: q\n", "")
+        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=default_public),
+                                    ["q"]))
+        upper = self._CHECKS.replace("  public :: q\n", "  public :: Q\n")
+        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=upper), ["q"]))
+
+    def test_harness_shape_refuses_a_binding(self) -> None:
+        doc = BundleShapeAdmissibilityTest()._harness_doc()
+        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
+        doc["state_bindings"] = [{
+            "node_key": HARNESS, "state_variable": "x_out", "storage_symbol": "x_out",
+            "module": "harness_fortran_cpu_model", "capture": "harness_registration",
+            "capability": "state_registration@1"}]
+        r = cb.pure_bundle_contract_violation(
+            doc, node_key=HARNESS, spec_id="harness_fortran_cpu", shape="harness",
+            runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=["x_out"],
+            harness_provided={"sync_single_case@1", "state_registration@1"},
+            build_graph=lambda d: None, ir_published_operations=None)
+        self.assertIsNotNone(r)
+        # The schema layer refuses it first — a harness bundle has no checks-role file, so no
+        # binding's `module` can be owned by one — and the shape layer's own refusal (the
+        # `state_bindings must be omitted on the harness shape` clause) is a backstop that the
+        # ordered contract does not reach today; it is stated as such where it lives.
+        self.assertEqual(r[0], "bundle_schema_violation")
+        self.assertIn("must be defined by a checks-role file owned by member", r[1])
+
+    def test_snapshot_variables_from_ir(self) -> None:
+        ir = {"io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "metrics_basis.json"},
+            {"artifact": "state_snapshots", "schema": {"variables": [
+                {"name": "h", "shape_expr": "[nx, ny]"}, {"name": " hu ", "shape_expr": "[nx, ny]"},
+                {"name": "h", "shape_expr": "[nx, ny]"}, {"shape_expr": "[nx]"}, "junk"]}}]}}}
+        self.assertEqual(cb.snapshot_variables_from_ir(ir), ["h", "hu"])
+        for degenerate in ({}, {"io_contract": None}, {"io_contract": {"raw_requirements": 3}},
+                           "not a mapping", None):
+            self.assertEqual(cb.snapshot_variables_from_ir(degenerate), [])
+
+
 class BundleShapeAdmissibilityTest(unittest.TestCase):
     """`pure_bundle_contract_violation`'s `shape` argument: which file shape a node's bundle
     is judged against. Both callers (the producer's in-conversation gate and the
@@ -2916,7 +3125,7 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
     def _run(self, doc: dict, shape: str, **kw):
         params = dict(
             node_key=HARNESS, spec_id="harness_fortran_cpu", shape=shape,
-            runner_basename="harness_fortran_cpu_runner.f90", ir_state_variables=[],
+            runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=[],
             harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
             ir_published_operations=["harness_fortran_cpu__parse_cases"])
         params.update(kw)

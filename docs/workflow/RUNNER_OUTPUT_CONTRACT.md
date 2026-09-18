@@ -123,6 +123,12 @@ source; do not uniformly require a fixed minimal composition.
 
   When `required_evidence` does not declare `state_snapshots` as required,
   `raw/state_snapshots/` must not be required.
+- **`raw/state_snapshots/initial/<case_id>.json`** (host-rendered runners only) — the
+  glue the host renders for an M3c physics node writes a SECOND capture of each case,
+  taken right after `case_setup` and before `case_run`, under `initial/`, of exactly the
+  per-case shape above (Z6, issue #255). It is a deliverable of that runner and is
+  shape-checked like the final snapshot. A hand-authored runner (a harness self-test)
+  does not write it, and nothing requires it to.
 
 ## 4. JSON serialization (UTF-8, standard-parseable)
 

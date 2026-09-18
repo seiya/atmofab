@@ -11,14 +11,18 @@
 >
 > NO leaf reads this document from disk — none has held a tool to read one with since Z4
 > ([issue #171](https://github.com/seiya/atmofab/issues/171)), and the force-read set that used to
-> deliver it is deleted. It reaches its leaves two ways, both inlined by the host: the `generate.generate` producer is told the ten names and shown the rendered
-> runner, gated by `m3c_checks_abi_violation`, with the §2/§3 behavioral contract distilled into
+> deliver it is deleted. It reaches its leaves two ways, both inlined by the host: the `generate.generate` producer is told the five names and the binding
+> convention and shown the rendered runner, gated by `m3c_checks_abi_violation`, with the §2/§3
+> behavioral contract distilled into
 > `pure_generate_generate.txt`; the `generate.verify` reviewer receives §1-4 of this document
 > inlined as `checks_module_contract_document` (issue #142). (pure-8's runner-driven per-id `checks_compute`
 > takes each id as a literal actual, so a dropped id is impossible — the former
-> `m3c_checks_ids_violation` gate is gone.) All ten bind every node. The language backend that
+> `m3c_checks_ids_violation` gate is gone.) All five bind every node. The language backend that
 > renders the runner owns the ABI (`host_render.checks_public_names`) — keep it, this doc, and
-> the distilled paragraph in step.
+> the distilled paragraph in step. Since Z6 ([issue #255](https://github.com/seiya/atmofab/issues/255))
+> the module also carries the node's **bound state** (§1-b): the snapshot getters
+> (`get_scalar` / `get_r1..r4`) are retired, and the runner reads the snapshot variables straight
+> from module-level storage.
 >
 > **§5 (Fortran legality and gate guards) is the one section with a wider
 > scope**: it binds **every** `Generate` leaf that authors Fortran — including the
@@ -26,25 +30,28 @@
 > own `<spec_id>_runner.f90`. Sections
 > 1-4 (the checks-module ABI) apply to an M3c node only.
 
-The rendered runner is glue: it drives this module's callbacks and emits the
-standard runner outputs **through the certified `harness_fortran_cpu` plumbing**,
-which owns all JSON serialization and the verdict fold. So the checks module
-holds **no serialization and no I/O**: it computes honest per-case state, checks,
-and metrics; the harness folds and writes them. Getting this split right is what
-lets the runner be host-rendered (deterministic, no leaf regenerate loop).
+The rendered runner is glue: it drives this module's callbacks, captures the
+module's bound state, and emits the standard runner outputs **through the certified
+`harness_fortran_cpu` plumbing**, which owns all JSON serialization and the verdict
+fold. So the checks module holds **no serialization and no I/O**: it holds the
+case's state and computes honest per-case checks and metrics; the runner captures,
+and the harness folds and writes. Getting this split right is what lets the runner
+be host-rendered (deterministic, no leaf regenerate loop), and it is what makes the
+snapshot **primary evidence** (`docs/design/zero_base_architecture.md` §A4): the
+generated code contributes the binding — the declaration and the allocation of the
+state variables — and nothing downstream of it.
 
 ## 1. The fixed ABI
 
-`module <spec_id>_checks` publishes **exactly** these ten non-prefixed names
-(module scope makes them collision-free — the harness's symbols are all
+`module <spec_id>_checks` publishes **exactly** these five non-prefixed procedure
+names (module scope makes them collision-free — the harness's symbols are all
 `harness_fortran_cpu__*` and the model's are `<spec_id>__*`, so a bare
 `case_run` cannot clash; non-prefixed names keep every identifier under the
 f2008 63-character limit, which a `<spec_id>__checks_compute` would exceed for a
-long `spec_id`). Author them verbatim:
+long `spec_id`) plus the bound state variables of §1-b. Author them verbatim:
 
 ```fortran
 public :: case_setup, case_run, get_time
-public :: get_scalar, get_r1, get_r2, get_r3, get_r4
 public :: checks_compute, metric_compute
 
 ! Initialize this case's state from the spec's fixed inputs/constants. ok=.false.
@@ -63,28 +70,11 @@ subroutine case_run(case_id, steps, cells_updated, ok)
   logical, intent(out) :: ok
 end subroutine case_run
 
-! The scalar time value for this case's single snapshot (real(dp), 0.0 for an
-! untimed component).
+! The scalar time value of this case at the capture point (real(dp), 0.0 for an
+! untimed component). Called right before each of the two captures.
 subroutine get_time(t)
   real(dp), intent(out) :: t
 end subroutine get_time
-
-! Snapshot getters, one per rank. `name` is a state-snapshot variable name;
-! `found` is .true. iff this case owns that variable. The rank-N getters return
-! an ALLOCATABLE array the getter allocates to the variable's shape.
-subroutine get_scalar(name, val, found)
-  character(len=*), intent(in) :: name
-  real(dp), intent(out) :: val
-  logical, intent(out) :: found
-end subroutine get_scalar
-
-subroutine get_r1(name, arr, found)
-  character(len=*), intent(in) :: name
-  real(dp), allocatable, intent(out) :: arr(:)
-  logical, intent(out) :: found
-end subroutine get_r1
-! get_r2(name, arr(:,:), found), get_r3(name, arr(:,:,:), found),
-! get_r4(name, arr(:,:,:,:), found) — identical apart from the array rank.
 
 ! The honest per-case result for ONE check. The runner calls this once per
 ! (case, check id), supplying `check_id` (a literal from the IR's
@@ -114,25 +104,54 @@ Pinned width: `status` is `character(len=4)` (the rendered runner declares a
 matching actual). The check id is a runner-supplied `intent(in)` actual, so no
 width is pinned for it. `reason_na` is a deferred-length allocatable.
 
-The ten names must be published from `module <spec_id>_checks` **itself**. The
+The five names must be published from `module <spec_id>_checks` **itself**. The
 `Generate.gate` static check (`_validate_checks_source_files`) resolves the published set
 from that module alone: the names its `public` statements list, plus — only while
 the module keeps Fortran's default public accessibility — the procedures the module
 **defines at module level**, minus the names any `private`
-statement hides. Authoring the three `public ::` lines above verbatim, in the
+statement hides. Authoring the two `public ::` lines above verbatim, in the
 specification part (never inside a procedure body), satisfies the gate under either
 accessibility default; a bare module-level `private` without them publishes nothing
 and fails. Where the fallback applies, a name that is only prototyped in an
 `interface` block, defined as an internal procedure of another procedure, or defined
 in a submodule / a second module / after `end module` does not count as defined.
 
+### 1-b. The bound state
+
+Every variable the IR declares under
+`io_contract.raw_requirements.required_evidence[artifact: state_snapshots].schema.variables[]`
+is a **module-level `real(dp)` variable of `<spec_id>_checks`, named exactly as the IR
+names it** — a rank-N `shape_expr` as `real(dp), allocatable :: <name>(:, ...)` with N
+colons, a `shape_expr: scalar` as `real(dp) :: <name>` — and is listed in a `public ::`
+statement of the specification part. The host-rendered runner imports each one directly
+(`use <spec_id>_checks, only: sb_<name> => <name>`) and serializes it through the harness
+emitters at two capture points per case: right after `case_setup` (written to
+`raw/state_snapshots/initial/<case_id>.json`) and right after `case_run` (written to
+`raw/state_snapshots/<case_id>.json`), both **before** the first `checks_compute` /
+`metric_compute` call of that case. There is no getter: no procedure of this module
+computes, filters or returns a snapshot value, and a value the checks compute (a norm,
+a maximum, a flag, an echoed input) is a metric, not a snapshot variable.
+
+The bundle declares this convention as its `state_bindings[]` — one entry per snapshot
+variable, `storage_symbol == state_variable`, `module == <spec_id>_checks`,
+`capture: harness_registration`, `capability: state_registration@1`
+(`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §State bindings) — and the host checks the
+declaration against the IR, then requires each bound variable **published** under the
+same scan as the ABI names: under a bare `private` a `public ::` statement must name it;
+under the default-public accessibility it is published unless a `private ::` names it.
+An unallocated bound array at a capture point stops the run (`bound state <name> is not
+allocated at capture`), so `case_setup` allocates every array to its declared shape on
+every path, the rejected-input path included.
+
 ## 2. Semantics the harness relies on
 
-- **Snapshot getters return shape-valid values even for a rejected case.** A
-  guard/xfail case whose `case_setup` returned `ok=.false.` must STILL return a
-  shape-valid array/scalar for every snapshot variable that case requires (the
-  runner always emits the case's snapshot). Return a defined placeholder (e.g.
-  zeros of the right shape), never leave the array unallocated.
+- **Bound state is shape-valid at both capture points, even for a rejected case.** A
+  guard/xfail case whose `case_setup` returned `ok=.false.` must STILL leave every
+  bound array allocated to its declared shape and every bound scalar defined (the
+  runner always captures the case's state, right after `case_setup` and right after
+  `case_run`). Leave a defined placeholder (e.g. zeros of the right shape), never an
+  unallocated array. `case_run` updates the state in the bound variables in place —
+  a state kept in a private copy is one the capture never sees.
 - **`checks_compute` is honest, never judgmental.** The runner calls it once per
   (case, IR check id). Report `'fail'` when a check fails, even for an xfail case. The harness `__write_diagnostics` computes the
   per-case verdict (`overall == 'fail'` iff any of that case's checks is
@@ -163,20 +182,27 @@ in a submodule / a second module / after `end module` does not count as defined.
   Zero-padded resolutions (`n032` < `n064` < `n128`), zero-padded shifts, and suffix-extended
   derivatives satisfy this naturally; the trap is a derived case sorting ahead of its base
   (`..._dts050` before `..._dts100`). `test_case_set` declaration order is NOT the run order.
-- **Metrics-basis values must not be uniformly zero.** The harness fills
-  `raw/metrics_basis.json` from the values the snapshot getters return for each
-  test's `required_raw_variables`, so those getters must return the values the run
-  computed. The zeros a rejected guard case returns are admissible only alongside
-  cases that return real values; a metrics_basis zero-filled across the whole run
-  fails `post_execute` (`trivial placeholder detected`). The exact rejection
-  condition is canonical in `RUNNER_OUTPUT_CONTRACT.md` §3.
+- **Metrics-basis values must not be uniformly zero.** The runner fills
+  `raw/metrics_basis.json` from the final capture of each test's target cases (the
+  same serialized values as `raw/state_snapshots/<case_id>.json`, never a re-read of
+  the storage), so the bound variables must hold the values the run computed. The
+  zeros a rejected guard case leaves are admissible only alongside cases that hold
+  real values; a metrics_basis zero-filled across the whole run fails `post_execute`
+  (`trivial placeholder detected`). The exact rejection condition is canonical in
+  `RUNNER_OUTPUT_CONTRACT.md` §3.
+- **A callback cannot reach the snapshot.** Both captures of a case precede its first
+  `checks_compute` / `metric_compute` call, and the runner keeps the serialized copy —
+  whatever a callback writes into a bound variable afterwards is invisible to the
+  snapshot and to the metrics basis. Callbacks compute from the state; they do not
+  stage it.
 
 ## 3. Module-level state is expected
 
-The runner calls `case_setup` then `case_run` then the getters for one case at a
-time. Keeping the current case's fields (and any cross-case accumulators a metric
-needs) in **module-level variables** is the intended pattern — the getters read
-that state. Key any cross-case accumulation by `case_id`.
+The runner calls `case_setup`, captures, calls `case_run`, captures again, and then
+the check and metric callbacks, for one case at a time. The current case's state
+lives in the **bound module-level variables** of §1-b — that is what the captures
+read — and any cross-case accumulators a metric needs live in **other** module-level
+variables. Key any cross-case accumulation by `case_id`.
 
 A cross-case reduction (§2) uses exactly this: accumulate each case's contribution as it runs;
 when `metric_compute` is called for the case that completes the reduction, return the derived
@@ -230,10 +256,8 @@ node's self-test).
 - **`intent(out)` dummies the body never sets** are the same promoted class
   (`-Werror=unused-dummy-argument` also rejects *"Dummy argument … was declared INTENT(OUT)
   but was not set"*). Every `intent(out)` dummy of every leaf-authored procedure is assigned
-  on every path, including the degenerate one: an interface-fixed getter for a rank this
-  node owns no variable at reports `found = .false.` **and** still allocates its array
-  (`allocate (arr(0, 0, 0))`), and a `metric_compute` with no metric still assigns `val` /
-  `is_na` / `reason_na`.
+  on every path, including the degenerate one: a `metric_compute` with no metric still
+  assigns `val` / `is_na` / `reason_na` and `found = .false.`.
 - **A continued character literal resumes with a leading `&`** — the third promoted class
   (`-Werror=ampersand`). gfortran accepts a resume line without one as an extension, which
   put a counted-`do` spelling written inside a string at a physical line start, where the

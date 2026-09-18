@@ -127,14 +127,15 @@ class DerivationKeyTests(unittest.TestCase):
             self.assertNotEqual(base, d.derivation_key("build", inputs))
         with mock.patch.object(d, "DERIVATION_KEY_VERSION", d.DERIVATION_KEY_VERSION + 1):
             self.assertNotEqual(base, d.derivation_key("build", inputs))
-        with mock.patch.object(d, "COMPILE_INLINED_DOCUMENTS_VERSION", "compile-docs-2"):
+        current_docs = d.COMPILE_INLINED_DOCUMENTS_VERSION
+        with mock.patch.object(d, "COMPILE_INLINED_DOCUMENTS_VERSION", "compile-docs-99"):
             # The compile-docs version is COMPILE's axis only.
             self.assertEqual(base, d.derivation_key("build", inputs))
             self.assertNotEqual(d.derivation_key("compile", inputs),
                                 d.sha256_hex(d.canonical_json_bytes({
                                     "key_version": d.DERIVATION_KEY_VERSION, "step": "compile",
                                     "transformation": ["pure", PURE_PROMPT_CONTRACT_VERSION,
-                                                       "compile-docs-1"],
+                                                       current_docs],
                                     "inputs": inputs})))
 
     def test_refuses_an_unknown_step_and_non_mapping_inputs(self) -> None:

@@ -20746,7 +20746,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # one entry per case each test targets, and post_execute pins that matrix both ways.
         # A leaf that emitted one entry per test_id (the old shape) fails post_execute, so the
         # key + the multi-target rule + the `tests`-object deprecation must be stated here.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11000,
+        # Bumped 11000->11500 (Z6, issue #255): §3 gains the `raw/state_snapshots/initial/
+        # <case_id>.json` bullet — the host-rendered runner's second capture, which the judge's
+        # inlined slice must name because `post_execute` shape-checks it. Measured 11431.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11500,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
@@ -20803,7 +20806,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # and this document reaches its two leaves INLINED (§1-4 to the `m3c` reviewer, §5 to the
         # `harness` producer) — so the sentence was read, inside a prompt, by a leaf that force-
         # reads nothing. Replacing it cost ~120 bytes.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 15100,
+        # Bumped 15100->17600 (Z6, issue #255): the five snapshot getters leave §1 and §1-b
+        # arrives — the bound-state convention (`sb_<var> => <var>`, the two capture points,
+        # the publication rule, the allocate-on-every-path rule) the `m3c` reviewer judges the
+        # checks module against; §2 gains the "a callback cannot reach the snapshot" bullet.
+        # Measured 17441.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 17600,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -21069,7 +21077,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # gate's own words so a warm retry converges on it —
         # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` pins
         # the two spellings together.
-        "docs/workflow/phases/phase_01_compile.md": 72480,
+        # Bumped 72480->73800 (Z6, issue #255): the snapshot schema's `variables` entry now
+        # states what a snapshot variable IS (primary state the checks module holds, captured at
+        # two points — not a computed quantity, not an echoed input) and the identifier rule the
+        # render precondition enforces on its name (the compile leaf must be told what the gate
+        # refuses, in the gate's words). Measured 73592.
+        "docs/workflow/phases/phase_01_compile.md": 73800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
