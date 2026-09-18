@@ -11186,8 +11186,38 @@ end program shallow_water2d_runner
             repo_root, "workspace",
             "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
 
-    def _io_contract_with_predicates(self, predicates) -> dict:
-        return {
+    @staticmethod
+    def _corroborated(predicates: list) -> tuple[list, list]:
+        """The Z6 PR-3 coverage gate needs every condition to carry a `quantity` and every
+        (test, quantity) to have a primary predicate: give each untagged condition the quantity
+        `q` and each test one trivially satisfiable corroborant per quantity, so a fixture about
+        some OTHER gate passes the compile stage as a real IR does. Returns (predicates,
+        primary_predicates)."""
+        preds = copy.deepcopy(predicates)
+        primary: list[dict] = []
+        for pred in preds:
+            if not isinstance(pred, dict):
+                continue
+            conds = (pred.get("pass_when") or {}).get("all") if isinstance(
+                pred.get("pass_when"), dict) else None
+            quantities: list[str] = []
+            for cond in (conds if isinstance(conds, list) else []):
+                if isinstance(cond, dict):
+                    cond.setdefault("quantity", "q")
+                    if cond["quantity"] not in quantities:
+                        quantities.append(cond["quantity"])
+            for q in quantities:
+                primary.append({"test_id": pred.get("test_id"), "quantity": q,
+                                "target_cases": list(pred.get("target_cases") or []),
+                                "expr": "sum(final.h)", "op": "le", "value": 1.0e9,
+                                "per_case": True})
+        return preds, primary
+
+    def _io_contract_with_predicates(self, predicates, *, corroborate: bool = True) -> dict:
+        primary = None
+        if corroborate and isinstance(predicates, list):
+            predicates, primary = self._corroborated(predicates)
+        io = {
             "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml",
                         "evidence_ref": "spec.ir.yaml"}],
             "outputs": [{"name": "metric", "shape_expr": "scalar",
@@ -11212,6 +11242,9 @@ end program shallow_water2d_runner
                 {"test_id": "t1", "required_raw_variables": ["h", "time"]}],
             "test_predicates": predicates,
         }
+        if primary is not None:
+            io["primary_predicates"] = primary
+        return io
 
     def _compile_with_state_contract(self, repo_root: Path, state_contract: object):
         """Run the full compile stage over a multidimensional problem node whose algorithm
@@ -11592,7 +11625,8 @@ end program shallow_water2d_runner
     def _preds_with_quantity(self, quantity: object) -> list[dict]:
         return [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
                  "pass_when": {"all": [
-                     {"ref": "verdict.overall", "op": "eq", "value": "pass"},
+                     {"ref": "verdict.overall", "op": "eq", "value": "pass",
+                      "quantity": quantity},
                      {"ref": "checks.g.status", "op": "eq", "value": "pass",
                       "quantity": quantity}]}}]
 
@@ -11627,9 +11661,14 @@ end program shallow_water2d_runner
                 self.assertTrue(any(fragment in x for x in v), (fragment, v))
                 self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"))
+            # the SECONDARY refusal, through the stage (round 1: `corroborate=False`, or the
+            # helper's auto-added primary of the same malformed name answers the fragment)
+            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"),
+                                                   corroborate=False)
             v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("quantity must match" in x for x in v), v)
+            self.assertTrue(any("quantity must be present and match" in x for x in v), v)
+            self.assertFalse(any("primary_predicates[" in x and "quantity must match" in x
+                                 for x in v), v)
 
     def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
         """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
@@ -11679,8 +11718,12 @@ end program shallow_water2d_runner
             preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["nope"],
                       "pass_when": {"all": [{"ref": "checks.absent.status", "op": "eq",
                                              "value": "pass"}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            self.assertTrue(any("unknown case_id" in x for x in v), v)
+            # `corroborate=False` (round 2 census): the helper's auto-added corroborant copies
+            # `target_cases: ["nope"]` and the PRIMARY gate would answer the fragment too
+            v = self._compile_with_io_contract(
+                Path(tmp), self._io_contract_with_predicates(preds, corroborate=False))
+            self.assertTrue(any("test_predicates[0].target_cases references unknown case_id"
+                                in x for x in v), v)
             self.assertTrue(any("diagnostics_contract.checks" in x for x in v), v)
 
     def test_compile_predicate_gate_uses_test_evidence_requirements_fallback(self) -> None:
@@ -11775,32 +11818,91 @@ end program shallow_water2d_runner
             v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
             self.assertTrue(any("diagnostics_contract.metrics" in x for x in v), v)
 
-    def test_compile_predicate_gate_rejects_degenerate_verdict_only_pass_set(self) -> None:
-        # TODO Item 2 (orch_...154247Z_d82d283a class): a structurally-valid pass set that asserts
-        # only verdict.* collapses the per-test judgment to the runner's verdict.overall. It must be
-        # rejected THROUGH the full compile stage (routes to compile.generate as a
-        # compile_static_violation), not only by the unit-level gate.
+    def test_compile_coverage_gate_through_the_stage(self) -> None:
+        """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage
+        (`_validate_test_predicates` -> `primary_evidence.coverage_violations`), replacing the
+        set-level degenerate gate. A pass test asserting only `verdict.*` — the shape that gate
+        refused — is accepted once a corroborant of that quantity exists; what is refused is an
+        absent `primary_predicates`, an empty one, a condition with no `quantity`, and a
+        quantity no corroborant of the same test carries."""
+        verdict_only = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                         "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq",
+                                                "value": "pass", "quantity": "overall"}]}}]
+        corroborant = {"test_id": "t1", "quantity": "overall", "target_cases": ["c1"],
+                       "expr": "sum(final.h)", "op": "le", "value": 1.0e9, "per_case": True}
         with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            self.assertTrue(any("degenerate pass-test set" in x for x in v), v)
+            io = self._io_contract_with_predicates(verdict_only, corroborate=False)
+            io["primary_predicates"] = [corroborant]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io), [])
+        rows = [
+            ("absent", None, "io_contract.primary_predicates missing"),
+            ("empty", [], ("condition on 'verdict.overall' (quantity 'overall') has no "
+                           "host-evaluated corroborant")),
+            ("other quantity", [{**corroborant, "quantity": "mass"}],
+             ("condition on 'verdict.overall' (quantity 'overall') has no host-evaluated "
+              "corroborant: add a primary_predicates entry with test_id 't1' and quantity "
+              "'overall'")),
+        ]
+        for label, primary, fragment in rows:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(verdict_only, corroborate=False)
+                if primary is not None:
+                    io["primary_predicates"] = primary
+                v = self._compile_with_io_contract(Path(tmp), io)
+                self.assertTrue(any(fragment in x and "spec.ir.yaml:" in x for x in v),
+                                (fragment, v))
+        # round 1 (security axis): a `case:`-scoped corroborant of a per_case condition passed
+        # every gate through the stage; refused now, with the pinned scope named
+        per_case = copy.deepcopy(verdict_only)
+        per_case[0]["target_cases"] = ["c1", "c2"]
+        per_case[0]["pass_when"]["all"][0]["per_case"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(per_case, corroborate=False)
+            narrow = {**corroborant, "target_cases": ["c1", "c2"], "case": "c1"}
+            del narrow["per_case"]
+            io["primary_predicates"] = [narrow]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "spec.ir.yaml:" in x for x in v), v)
+            # round 2: the same corroborant against a SUITE-LEVEL condition over both cases
+            suite = copy.deepcopy(per_case)
+            del suite[0]["pass_when"]["all"][0]["per_case"]
+            io = self._io_contract_with_predicates(suite, corroborate=False)
+            io["primary_predicates"] = [narrow]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                for x in v), v)
+            # ... and a `case: c1` corroborant whose at('c2') reaches the other case passes
+            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) + sum(at('c2').final.h)"}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
+            io = self._io_contract_with_predicates(per_case, corroborate=False)
+            io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            no_q = copy.deepcopy(verdict_only)
+            del no_q[0]["pass_when"]["all"][0]["quantity"]
+            io = self._io_contract_with_predicates(no_q, corroborate=False)
+            io["primary_predicates"] = [corroborant]
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("quantity must be present" in x for x in v), v)
+            # and the coverage gate does not ALSO report the untagged condition
+            self.assertFalse(any("has no host-evaluated corroborant" in x for x in v), v)
 
-    def test_real_full_fidelity_predicate_set_is_not_degenerate(self) -> None:
-        # The degenerate gate must not fire on a real full-fidelity IR. The assertion is one bit
-        # — the pass set carries at least one non-`verdict.*` condition somewhere, and the
-        # verdict-only xfail is exempt — so the fixture's census (6 pass predicates, 1 xfail,
-        # per-case threshold maps, metric addresses) is not claimed here: trimming it to a single
-        # conforming predicate still passes.
-        #
-        # A clean run is not evidence on its own, because no *degenerate* violation is also what
-        # a document the gate cannot read produces: an unparseable or empty IR returns nothing at
-        # all, and `{}` returns a different complaint entirely, none of which this assertion
-        # inspects. Review overwrote the fixture and this test still passed. So the same fixture
-        # is driven twice — as captured, and with every pass predicate
-        # rewritten to `verdict.overall` — and the second drive must fire. That is what shows the
-        # gate reached real predicates rather than falling out early on a document it could not
-        # read. It is the mutation the reviewer had to apply by hand, kept where it cannot rot.
+    def test_real_predicate_set_is_reached_by_the_coverage_gate(self) -> None:
+        # The coverage gate (Z6 PR-3, replacing the degenerate gate this row used to calibrate)
+        # reaches a REAL full-fidelity IR's predicates. The tracked fixture predates Z6: it
+        # carries no `quantity` and no `primary_predicates`, which is exactly the shape every
+        # certified legacy IR has: the current validator refuses it (plan decision 10; in a
+        # real tree the version bumps' key mismatch precedes the validator clause of
+        # `_ir_certification`, and either way the node re-derives) — so the captured drive
+        # must name the absent corroborant set, and the
+        # same fixture with every condition tagged and corroborated must be clean of both
+        # complaints. Driving the fixture twice, in both directions, is what shows the gate
+        # reached real predicates rather than falling out early on a document it could not
+        # read (an unparseable or empty IR returns nothing at all, and `{}` a different
+        # complaint entirely).
         #
         # The input is a TRACKED fixture, not a live run directory. This test used to read
         # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
@@ -11828,33 +11930,38 @@ end program shallow_water2d_runner
                 return violations
 
         captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
-        clean = drive(captured)
-        self.assertFalse(any("degenerate" in v for v in clean), clean)
+        legacy = drive(captured)
+        self.assertTrue(any("io_contract.primary_predicates missing" in v for v in legacy),
+                        legacy)
+        self.assertTrue(any("quantity must be present" in v for v in legacy), legacy)
 
         # Parsed and shape-checked before mutating, so a fixture the gate cannot read fails on a
         # sentence naming what is wrong. Reviewers overwrote it with `{}` and with broken YAML;
         # both did fail, but on a raw KeyError/ParserError from building the mutant below — the
         # right outcome reached by a mechanism neither the test nor its comment named.
         try:
-            degenerate = yaml.safe_load(captured)
+            document = yaml.safe_load(captured)
         except yaml.YAMLError as exc:
-            self.fail(f"the calibration fixture no longer parses, so the clean drive above "
+            self.fail(f"the calibration fixture no longer parses, so the drive above "
                       f"asserted nothing: {exc}")
-        self.assertIsInstance(degenerate, dict, "calibration fixture is not a mapping")
-        predicates = degenerate.get("io_contract", {}).get("test_predicates")
+        self.assertIsInstance(document, dict, "calibration fixture is not a mapping")
+        predicates = document.get("io_contract", {}).get("test_predicates")
         self.assertTrue(predicates, "calibration fixture carries no io_contract.test_predicates, "
                                     "so the gate has nothing to read and a clean run is vacuous")
-        rewritten = 0
-        for predicate in predicates:
-            if predicate.get("expected_outcome") == "pass":
-                predicate["pass_when"] = {"all": [
-                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}
-                rewritten += 1
-        self.assertGreater(rewritten, 0, "fixture carries no pass predicate to calibrate against")
-        self.assertTrue(
-            any("degenerate" in v for v in drive(yaml.safe_dump(degenerate, sort_keys=False))),
-            "the gate did not reach this fixture's predicates, so the clean run above proves "
-            "nothing about it")
+        tagged, primary = self._corroborated(predicates)
+        self.assertGreater(len(primary), 0, "fixture carries no condition to corroborate")
+        document["io_contract"]["test_predicates"] = tagged
+        document["io_contract"]["primary_predicates"] = primary
+        covered = drive(yaml.safe_dump(document, sort_keys=False))
+        self.assertFalse(any("host-evaluated corroborant" in v or "quantity must be present" in v
+                             or "primary_predicates missing" in v for v in covered), covered)
+        # one corroborant removed -> exactly its test's conditions of that quantity are named
+        dropped = document["io_contract"]["primary_predicates"].pop()
+        partial = drive(yaml.safe_dump(document, sort_keys=False))
+        named = [v for v in partial if "host-evaluated corroborant" in v]
+        self.assertTrue(named, partial)
+        self.assertTrue(all(f"{dropped['test_id']}: condition on" in v
+                            and f"(quantity {dropped['quantity']!r})" in v for v in named), named)
 
     def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

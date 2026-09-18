@@ -21109,7 +21109,18 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 85300->86200 (Z6 PR-2 round 3): every entry reads captured state, the xfail
         # semantics, the depth bound, the end-state-minimum note on the positivity example.
         # Measured 86007 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 86200,
+        # Bumped 86200->88600 (Z6 PR-3): `quantity` is required and the coverage gate is stated
+        # at the condition, the COVERAGE block replaces the NOT DEGENERATE one, grammar 2's
+        # numeric-list inputs and the harness-shape capture errors, the same-name rule for a
+        # run-wide metric and the harness sentinel example, V3 (i)'s window / vacuity clauses.
+        # Measured 88398 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
+        # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Round 2: the rule is stated over the cases a corroborant reads; measured 89207, no bump.
+        # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
+        # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 90200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -26755,8 +26766,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:55d00f99d7336f34":
-            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected",
+        "tools/prompt_templates/pure_compile_generate.txt:497316dbffc61897":
+            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
+            "PR-3, which edited rule 7 of the same paragraph)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",
         "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":

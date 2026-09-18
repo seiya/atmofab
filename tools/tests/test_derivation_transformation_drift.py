@@ -157,6 +157,18 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in rounds 3 and 4: every entry reads captured state (a bind `expr` reaches;
     # syntactic), the xfail semantics, the depth bound, the end-state-minimum note.
     "compile-docs-3": "569a188ed9fcad5b59c64bb90e5049b7e8d523636fc09505755a5575f2918eb5",
+    # issue #255 (Z6 PR-3): `quantity` is required on every condition and the per-test coverage
+    # rule is stated at the condition; the COVERAGE block replaces the NOT DEGENERATE one;
+    # grammar 2 (a numeric-list input, the harness-shape capture errors); a run-wide metric
+    # shares its end-state primary's name (the positivity example) and the harness sentinel
+    # example; V3 (i) gains the window and vacuity clauses.
+    # Re-pinned in round 1 (the version is new on this branch): the coverage block and V3 state
+    # the scope rule, two "a number" sentences say "or a numeric list", "at least one per quantity".
+    # Re-pinned in round 2: the rule is stated over the cases a corroborant READS.
+    # Re-pinned in round 3 (disclosure): the harness self-test's snapshot variables and its
+    # tests.md-prescribed corroborants are carved out of the "primary state only" rule and
+    # V3 (iv); "names and cases read" at the condition.
+    "compile-docs-4": "0d5a96a95ea427fc505ca3572f99f2d3b719fa524ba4d1cbb176829d8f5abb4c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -193,6 +205,17 @@ PINNED_VERDICT: dict[str, str] = {
     # state-read rule is transitive over the binds `expr` reaches, `unevaluated` covers a
     # secondary-side gap too, the CLI's exit codes hold for an unreadable IR / run directory.
     "verdict-2": "1594ef48dbb275d9ec64d345ebcdf500356f7a1f165740191d9616001260b715",
+    # issue #255 (Z6 PR-3): every condition's `quantity` is required (`validate_predicate_schema`),
+    # `degenerate_predicate_violations` is deleted for `primary_evidence.coverage_violations`,
+    # grammar 2 — `inputs.<path>` may be a rectangular numeric list (an array), a capture carries
+    # the variables its file holds and `initial` is None where no `initial/` capture exists
+    # (a variable or capture a predicate names and the case lacks fails that predicate).
+    # Re-pinned in round 1 (new on this branch): the coverage gate's scope rule and its re-check in
+    # `evaluate_verdict`, a record's `case`, the overflow guard, the initial-capture message.
+    # Re-pinned in round 2: the rule is over the cases a corroborant READS (`cases_read` on the
+    # record replaces `case`), `per_case` / `na_allowed` must be booleans, one dead check gone.
+    # Re-pinned in round 3 (disclosure; comment / docstring wording only).
+    "verdict-3": "6fcdb58b9f7e969a34c577128aa9dbe0e71c763b09d1ebb913096b758b851d27",
 }
 
 

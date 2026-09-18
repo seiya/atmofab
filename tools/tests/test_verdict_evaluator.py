@@ -12,7 +12,6 @@ import unittest
 
 from tools.verdict_evaluator import (
     PredicateError,
-    degenerate_predicate_violations,
     evaluate_predicate,
     evaluate_verdict,
     validate_predicate_schema,
@@ -246,68 +245,6 @@ class CaseResolutionTest(unittest.TestCase):
         self.assertEqual(evaluate_predicate(pred, diag)[0], "fail")
 
 
-class DegeneratePredicateTest(unittest.TestCase):
-    @staticmethod
-    def _pred(test_id, outcome, refs):
-        return {
-            "test_id": test_id,
-            "expected_outcome": outcome,
-            "target_cases": ["c0"],
-            "pass_when": {"all": [{"ref": r, "op": "le", "value": 1.0} for r in refs]},
-        }
-
-    def test_all_verdict_only_pass_set_is_flagged(self) -> None:
-        preds = [
-            self._pred("t0", "pass", ["verdict.overall"]),
-            self._pred("t1", "pass", ["verdict.overall", "verdict.failed_checks"]),
-        ]
-        violations = degenerate_predicate_violations(preds)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("degenerate pass-test set", violations[0])
-
-    def test_one_metric_condition_clears_the_gate(self) -> None:
-        preds = [
-            self._pred("t0", "pass", ["verdict.overall"]),
-            self._pred("t1", "pass", ["cfl.max"]),  # a per-case metric address
-        ]
-        self.assertEqual(degenerate_predicate_violations(preds), [])
-
-    def test_verdict_only_pass_beside_a_concrete_one_is_deliberately_not_flagged(self) -> None:
-        # DELIBERATE set-level scope (do NOT change to per-predicate): a single verdict-only PASS
-        # predicate beside a concrete one must NOT be flagged. An individual pass test can legitimately
-        # assert an aggregate criterion — this is the shape of a harness-suite IR, where the
-        # multi-target `l0_multi_case_evidence_pass` may reduce to `verdict.*` while its sibling pass
-        # tests carry the `checks.*` / metric conditions. A per-predicate rule would false-reject it.
-        # Whether a specific test dropped a threshold it should carry is a per-test FIDELITY question
-        # owned by Compile.verify (which reads tests.md), not this deterministic gate.
-        preds = [
-            self._pred("l0_numeric_roundtrip_pass", "pass", ["checks.numeric_roundtrip.status"]),
-            self._pred("l0_multi_case_evidence_pass", "pass", ["verdict.overall"]),
-        ]
-        self.assertEqual(degenerate_predicate_violations(preds), [])
-
-    def test_one_checks_condition_clears_the_gate(self) -> None:
-        preds = [self._pred("t0", "pass", ["verdict.overall", "checks.mass_guard.status"])]
-        self.assertEqual(degenerate_predicate_violations(preds), [])
-
-    def test_verdict_only_xfail_is_not_flagged(self) -> None:
-        # A guard-rejection xfail legitimately asserts only verdict.*; with no pass predicate at all
-        # there is no pass set to be degenerate.
-        preds = [self._pred("t0", "xfail", ["verdict.overall"])]
-        self.assertEqual(degenerate_predicate_violations(preds), [])
-
-    def test_xfail_verdict_only_alongside_a_real_pass_set_is_ignored(self) -> None:
-        preds = [
-            self._pred("t0", "pass", ["metrics.mass_drift_rel"]),
-            self._pred("t1", "xfail", ["verdict.overall"]),  # exempt
-        ]
-        self.assertEqual(degenerate_predicate_violations(preds), [])
-
-    def test_malformed_predicates_do_not_raise(self) -> None:
-        self.assertEqual(degenerate_predicate_violations("not a list"), [])
-        self.assertEqual(degenerate_predicate_violations([{"expected_outcome": "pass"}]), [])
-
-
 class VerdictReduceTest(unittest.TestCase):
     def _mk(self, statuses):
         # build predicates that trivially yield the requested statuses via verdict.overall
@@ -462,12 +399,41 @@ class SchemaTest(unittest.TestCase):
 
     def _pred(self, **over):
         p = {"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-             "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}
+             "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass",
+                                    "quantity": "overall"}]}}
         p.update(over)
         return p
 
     def test_valid(self) -> None:
         self.assertEqual(validate_predicate_schema([self._pred()], **self._kwargs()), [])
+
+    def test_scope_and_na_flags_must_be_booleans(self) -> None:
+        """Round 2 (census): every reader of `per_case` / `na_allowed` uses `bool()`, so a
+        truthy string or `1` is admitted only if no gate refuses it; this one does, so the
+        coverage gate and the evaluator never read a scope the schema did not."""
+        for flag, bad in (("per_case", 1), ("per_case", "true"), ("na_allowed", "yes"),
+                          ("per_case", None)):
+            with self.subTest(flag=flag, bad=bad):
+                v = validate_predicate_schema([self._pred(pass_when={"all": [
+                    {"ref": "verdict.overall", "op": "eq", "value": "pass",
+                     "quantity": "overall", flag: bad}]})], **self._kwargs())
+                self.assertTrue(any(f"{flag} must be a boolean" in x for x in v), v)
+        v = validate_predicate_schema([self._pred(pass_when={"all": [
+            {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": "overall",
+             "per_case": True, "na_allowed": False}]})], **self._kwargs())
+        self.assertEqual(v, [])
+
+    def test_quantity_is_required_on_every_condition(self) -> None:
+        """Z6 PR-3 (issue #255): a condition with no `quantity` — a `verdict.*` one included —
+        is refused, since the coverage gate keys a condition's corroborant by that name; a
+        malformed name is refused by the same rule."""
+        for cond in ({"ref": "verdict.overall", "op": "eq", "value": "pass"},
+                     {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": "Bad Q"},
+                     {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": None}):
+            with self.subTest(cond=cond):
+                v = validate_predicate_schema([self._pred(pass_when={"all": [cond]})],
+                                              **self._kwargs())
+                self.assertTrue(any("quantity must be present and match" in x for x in v), v)
 
     def test_empty_required(self) -> None:
         self.assertTrue(validate_predicate_schema([], **self._kwargs()))
@@ -494,7 +460,8 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(any("unknown case_id" in x for x in v))
 
     def _case_scoped(self, **cond):
-        base = {"ref": "verdict.overall", "op": "eq", "value": "pass", "case": "c1"}
+        base = {"ref": "verdict.overall", "op": "eq", "value": "pass", "case": "c1",
+                "quantity": "overall"}
         base.update(cond)
         return self._pred(target_cases=["c1", "c2"], pass_when={"all": [base]})
 
@@ -561,7 +528,8 @@ class SchemaTest(unittest.TestCase):
         # once pinned it resolves
         self.assertEqual(validate_predicate_schema(
             [self._pred(pass_when={"all": [{"ref": "metrics.mass_drift_rel", "op": "le",
-                                            "value": 1e-10, "per_case": True}]})],
+                                            "value": 1e-10, "per_case": True,
+                                            "quantity": "mass_drift_rel"}]})],
             **self._kwargs(metric_addrs={"metrics.mass_drift_rel"})), [])
 
     def test_metric_addr_must_be_pinned_verbatim_not_by_head(self) -> None:
@@ -570,7 +538,7 @@ class SchemaTest(unittest.TestCase):
         # looks the whole ref up as a key -> ref_absent -> a permanent structural_violation on an
         # otherwise-correct run. Reject it at Compile, where it is repairable.
         pred = self._pred(pass_when={"all": [{"ref": "cfl.max", "op": "le", "value": 1.0,
-                                              "per_case": True}]})
+                                              "per_case": True, "quantity": "cfl"}]})
         v = validate_predicate_schema([pred], **self._kwargs(metric_addrs={"cfl"}))
         self.assertTrue(any("diagnostics_contract.metrics" in x for x in v), v)
         # the same ref pinned verbatim is accepted, and it is the key the runner emits
@@ -621,7 +589,8 @@ class SchemaTest(unittest.TestCase):
         self.assertEqual(validate_predicate_schema(
             [self._pred(target_cases=["c1", "c2"],
                         pass_when={"all": [{"ref": "metrics.m", "op": "le", "per_case": True,
-                                            "value": {"per_case": {"c1": 1.0, "c2": 2.0}}}]})],
+                                            "value": {"per_case": {"c1": 1.0, "c2": 2.0}},
+                                            "quantity": "m"}]})],
             **self._kwargs(case_ids={"c1", "c2"}, metric_addrs={"metrics.m"})), [])
 
     def test_ordered_op_requires_numeric_threshold(self) -> None:
@@ -640,7 +609,8 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(any("must be a number for the ordered op" in x for x in v2), v2)
         # a numeric threshold is accepted
         self.assertEqual(validate_predicate_schema(
-            [self._pred(pass_when={"all": [{"ref": "metrics.m", "op": "le", "value": 1e-10}]})],
+            [self._pred(pass_when={"all": [{"ref": "metrics.m", "op": "le", "value": 1e-10,
+                                            "quantity": "m"}]})],
             **self._kwargs(metric_addrs={"metrics.m"})), [])
 
     def test_verdict_ref_requires_declared_field_no_default(self) -> None:

@@ -49,8 +49,11 @@ Names, and where each resolves:
 - ``initial.<var>`` / ``final.<var>`` — a snapshot schema variable at the two capture points
   (a scalar `shape_expr` gives a float, an array one a float64 array of that rank);
   ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value.
-- ``inputs.<a>.<b>...`` — a NUMERIC value of the case's `case.test_case_set[].inputs`
-  (a string, a boolean, a list or a mapping at that path is refused at name resolution).
+- ``inputs.<a>.<b>...`` — a NUMERIC value of the case's `case.test_case_set[].inputs`: a
+  number, or (grammar 2) a rectangular nested list of numbers of rank 1 to 4, as a float64
+  array — a declared sentinel field a capture is compared against. A string, a boolean, a
+  mapping, an empty or ragged list, or a list holding a non-number is refused at name
+  resolution.
 - ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array of the STATE's
   shape carrying the axis's `count` cell-centre positions along `axis` (the same value on
   every other axis), so a field built from it — an analytic reference — has the state's
@@ -111,7 +114,7 @@ from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolv
 #: The version of the expression grammar: the allowed `ast` nodes, the function table, the
 #: name roots and the broadcasting rule. Bumped when any of them changes; recorded on every
 #: evaluated predicate so a verdict says which grammar valued it.
-GRAMMAR_VERSION = 1
+GRAMMAR_VERSION = 2
 
 #: `quantity` names: lowercase identifiers with dots, the same shape as a metric address.
 #: ONE definition, in the evaluator that reads it on the secondary side too.
@@ -344,9 +347,12 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
 # ----------------------------------------------------------------------------- environment
 
 class CaseEnv(NamedTuple):
-    """Everything an expression can name inside one case."""
+    """Everything an expression can name inside one case. A capture table holds the declared
+    variables the capture file carries; a variable it omits, and every ``initial.<var>`` of a
+    case with no ``initial/`` capture (``initial`` None — a harness self-test's own runner
+    writes none), is an evaluation error of the predicate that names it."""
     case_id: str
-    initial: dict[str, Any]     # variable -> float | ndarray (the time variable included)
+    initial: dict[str, Any] | None   # variable -> float | ndarray (the time variable included)
     final: dict[str, Any]
     inputs: dict[str, Any]      # the case's `inputs` mapping, as authored
     coordinates: dict[str, np.ndarray]
@@ -399,16 +405,49 @@ def _lookup_input(inputs: Any, dotted: str) -> tuple[bool, Any]:
     return (True, cur)
 
 
-def resolve_input_number(inputs: Any, dotted: str) -> float:
-    """The numeric value at ``inputs.<dotted>``; raises when absent or not a number."""
+#: The deepest nested list `resolve_input_value` admits: the rank the harness emitters and
+#: `roll` cover.
+MAX_INPUT_RANK = 4
+
+
+def resolve_input_value(inputs: Any, dotted: str) -> Any:
+    """The value at ``inputs.<dotted>`` as a float or a float64 array: a number, or a
+    non-empty rectangular nested list of numbers of rank 1..`MAX_INPUT_RANK`. Raises when
+    the key is absent or the value is anything else (a string, a boolean, a mapping, an
+    empty / ragged list, a list holding a non-number, a non-finite number)."""
     present, value = _lookup_input(inputs, dotted)
     if not present:
         raise PrimaryEvidenceError(f"inputs.{dotted} is not a key of this case's inputs")
-    if not _is_number(value):
-        raise PrimaryEvidenceError(
-            f"inputs.{dotted} is {type(value).__name__}, not a number (only a numeric case "
-            "input can enter an expression)")
-    return float(value)
+    if _is_number(value):
+        try:
+            return _finite(float(value), f"inputs.{dotted}")
+        except OverflowError:   # an integer literal beyond float64
+            raise PrimaryEvidenceError(f"inputs.{dotted} is too large for a float") from None
+    if isinstance(value, list):
+        if _contains_non_number(value) or not value:
+            raise PrimaryEvidenceError(
+                f"inputs.{dotted} is a list holding something other than numbers, or an "
+                "empty one (only a rectangular numeric list can enter an expression)")
+        try:
+            arr = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError):
+            arr = None
+        if arr is None or arr.size == 0 or arr.ndim > MAX_INPUT_RANK:
+            raise PrimaryEvidenceError(
+                f"inputs.{dotted} is not a rectangular numeric list of rank 1..{MAX_INPUT_RANK}")
+        return _finite(arr, f"inputs.{dotted}")
+    raise PrimaryEvidenceError(
+        f"inputs.{dotted} is {type(value).__name__}, not a number or a numeric list (only a "
+        "numeric case input can enter an expression)")
+
+
+def resolve_input_number(inputs: Any, dotted: str) -> float:
+    """The SCALAR numeric value at ``inputs.<dotted>``; raises when absent, not a number,
+    or a list (a coordinate parameter is one number)."""
+    value = resolve_input_value(inputs, dotted)
+    if not isinstance(value, float):
+        raise PrimaryEvidenceError(f"inputs.{dotted} is a list, not one number")
+    return value
 
 
 def _coordinate_param(spec: dict[str, Any], key: str, inputs: Any) -> float:
@@ -497,7 +536,11 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
         wanted[time_variable] = []
     for name, dims in wanted.items():
         if name not in doc:
-            raise PrimaryEvidenceError(f"{path.name}: variable {name!r} is not captured")
+            # A capture carries the variables its writer holds for this case: the
+            # host-rendered runner every declared one (it `error stop`s on an unbound one), a
+            # harness self-test's own runner the case's required set. A predicate naming an absent one
+            # fails at `_capture_value`, on that predicate.
+            continue
         raw = doc[name]
         try:
             arr = np.asarray(raw, dtype=np.float64)
@@ -547,11 +590,16 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any]) -
     tv = schema.get("time_variable")
     tv = tv.strip() if isinstance(tv, str) and tv.strip() else None
     sdir = Path(run_dir) / "raw" / "state_snapshots"
-    initial = _load_capture(sdir / "initial" / f"{case_id}.json", variables, tv)
+    initial_path = sdir / "initial" / f"{case_id}.json"
+    # A node whose own runner writes the snapshots (a harness self-test) writes no `initial/`
+    # capture; the host-rendered runner always does, and the conductor's
+    # `_snapshot_deliverable_gap(initial_required=True)` refuses a run without one before any
+    # verdict is authored (the `--stage post_execute` validator only shape-checks the file).
+    initial = _load_capture(initial_path, variables, tv) if initial_path.is_file() else None
     final = _load_capture(sdir / f"{case_id}.json", variables, tv)
     rank = state_rank(schema)
     shape = state_shape_of(final, rank)
-    if shape is not None and state_shape_of(initial, rank) != shape:
+    if shape is not None and initial is not None and state_shape_of(initial, rank) != shape:
         raise PrimaryEvidenceError(
             f"{case_id}: the initial and final captures disagree on the state shape")
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
@@ -692,7 +740,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         if isinstance(root, ast.Name) and root.id in CAPTURE_POINTS:
             return _capture_value(env, root.id, attrs[0])
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
-            return resolve_input_number(env.inputs, ".".join(attrs))
+            return resolve_input_value(env.inputs, ".".join(attrs))
         assert _is_at_call(root) and isinstance(root, ast.Call)
         case_id = str(root.args[0].value)  # type: ignore[attr-defined]
         if case_id not in at_envs:
@@ -702,7 +750,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
             return _capture_value(other, attrs[0], attrs[1])
         if attrs[0] == _INPUTS_ROOT:
-            return resolve_input_number(other.inputs, ".".join(attrs[1:]))
+            return resolve_input_value(other.inputs, ".".join(attrs[1:]))
         if attrs[0] in other.coordinates:
             return other.coordinates[attrs[0]]
         raise PrimaryEvidenceError(f"at({case_id!r}).{attrs[0]}: not a coordinate of that case")
@@ -715,8 +763,14 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
 
 def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
     table = env.initial if point == "initial" else env.final
+    if table is None:
+        raise PrimaryEvidenceError(
+            f"{point}.{var}: case {env.case_id!r} has no initial capture "
+            "(raw/state_snapshots/initial/<case_id>.json is absent: a node whose own runner "
+            "writes the snapshots writes none)")
     if var not in table:
-        raise PrimaryEvidenceError(f"{point}.{var}: not a snapshot schema variable")
+        raise PrimaryEvidenceError(
+            f"{point}.{var}: not captured in case {env.case_id!r}")
     return table[var]
 
 
@@ -870,6 +924,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
             "op": op, "scope": scope, "target_cases": list(targets),
+            # the cases this record reads the state of (`cases_read`), so the verdict
+            # evaluator can re-check the coverage rule against the records it is handed
+            "cases_read": sorted(cases_read({**pred, "target_cases": targets}) or []),
             "grammar_version": GRAMMAR_VERSION,
             "satisfied": True, "kind": "pass", "evaluated": [],
         }
@@ -921,7 +978,7 @@ def validate_primary_predicate_schema(
     the same forms as a `test_predicates` condition, exactly one scope, `target_cases` ⊆
     cases), parses `expr` and every `bind` under the closed grammar, and resolves every name:
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
-    number in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
+    number or a rectangular numeric list in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
     an `at('<case>')` case is one of the predicate's own target cases. `coordinates[]` is
     resolved against every declared case, since every case is captured. With
     ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a
@@ -1068,7 +1125,7 @@ def validate_primary_predicate_schema(
                         case = cases.get(cid)
                         inputs = case.get("inputs") if isinstance(case, dict) else None
                         try:
-                            resolve_input_number(inputs, ref.name)
+                            resolve_input_value(inputs, ref.name)
                         except PrimaryEvidenceError as exc:
                             v.append(f"{eloc}: in case {cid!r}: {exc}")
                 elif ref.case is not None:
@@ -1087,6 +1144,107 @@ def validate_primary_predicate_schema(
             v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
                      "expr or a bind expr reaches: a corroborant values the state the kernel "
                      "produced")
+    return v
+
+
+def cases_read(pred: dict[str, Any]) -> set[str] | None:
+    """The cases a primary predicate READS the state of: every target case under
+    `per_case: true`; under `case: X`, X plus every `at('<case>')` its `expr` or a `bind`
+    names. None when the scope or an expression is malformed (the primary schema gate refuses
+    those; they cover nothing here). Read the same way as `_predicate_scope`."""
+    targets = pred.get("target_cases")
+    if not isinstance(targets, list) or not all(isinstance(c, str) for c in targets):
+        return None
+    if pred.get("per_case") is True and "case" not in pred:
+        return {c.strip() for c in targets}
+    if "case" not in pred or pred.get("per_case") or not isinstance(pred.get("case"), str) \
+            or not pred["case"].strip():
+        return None
+    read = {pred["case"].strip()}
+    bind = pred.get("bind")
+    texts = ([t for t in bind.values()] if isinstance(bind, dict) else []) + [pred.get("expr")]
+    for text in texts:
+        try:
+            refs = expr_names(parse_expr(text))
+        except PrimaryEvidenceError:
+            return None
+        read |= {r.case for r in refs if r.case is not None}
+    return read
+
+
+def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[str]:
+    """The per-test coverage gate (Z6, issue #255; `zero_base_architecture.md` §A4 "every
+    test_id resting on secondary evidence has a same-quantity corroborant"). For every
+    `test_predicates[]` entry, every `pass_when.all[]` condition's `quantity` must be carried
+    by a `primary_predicates[]` entry of the same `test_id` that READS every case the
+    condition holds in — every target case for a `per_case: true` or a suite-level condition,
+    the one case for a `case: X` condition — where a corroborant reads every target case
+    under `per_case: true` and, under `case: X`, X plus the cases its `at('<case>')` names
+    (`cases_read`). Every condition is secondary evidence — a `verdict.*` or `checks.<id>` one
+    as much as a metric address — so every one needs a corroborant, and a test therefore
+    always has at least one primary predicate. `primary_predicates` absent is the same
+    omission for every test and is refused as such. Rounds 1 and 2 of PR-3's review each
+    found a corroborant pinned to one case standing for a condition over several — first
+    against a `per_case` condition, then a suite-level one — which is the "easiest case
+    alone" the target_cases pin says it closes; reading is what a corroborant does, so the
+    rule is stated over the cases read.
+
+    This compares names and cases read and nothing else: whether a same-named pair measures
+    the same quantity, and whether the primary expression can fail at all, is
+    `Compile.verify`'s judgment (V3). Malformed entries are left to the two schema gates
+    that run before this one: a condition with no `quantity` is skipped here (the secondary
+    schema gate refuses it), and so is a primary predicate with no `test_id` or `quantity`,
+    a malformed scope or an unparsable expression (each covers nothing)."""
+    if not isinstance(test_predicates, list):
+        return []
+    if not isinstance(primary_predicates, list):
+        return [("io_contract.primary_predicates missing: every test_predicates condition needs "
+                 "a host-evaluated corroborant of the same test_id and quantity")]
+    # test_id -> quantity -> the case sets its corroborants read
+    corroborated: dict[str, dict[str, list[set[str]]]] = {}
+    for pred in primary_predicates:
+        if not isinstance(pred, dict):
+            continue
+        test_id, quantity = pred.get("test_id"), pred.get("quantity")
+        if not (isinstance(test_id, str) and isinstance(quantity, str)):
+            continue
+        read = cases_read(pred)
+        if read is None:
+            continue
+        corroborated.setdefault(test_id.strip(), {}).setdefault(quantity, []).append(read)
+    v: list[str] = []
+    for pred in test_predicates:
+        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str):
+            continue
+        test_id = pred["test_id"].strip()
+        targets = pred.get("target_cases")
+        targets = {c.strip() for c in targets if isinstance(c, str)} \
+            if isinstance(targets, list) else set()
+        pass_when = pred.get("pass_when")
+        conds = pass_when.get("all") if isinstance(pass_when, dict) else None
+        for cond in (conds if isinstance(conds, list) else []):
+            if not isinstance(cond, dict) or not isinstance(cond.get("quantity"), str):
+                continue
+            reads = corroborated.get(test_id, {}).get(cond["quantity"], [])
+            if not reads:
+                v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
+                         f"{cond['quantity']!r}) has no host-evaluated corroborant: add a "
+                         f"primary_predicates entry with test_id {test_id!r} and quantity "
+                         f"{cond['quantity']!r} that values it from the captured state")
+                continue
+            if isinstance(cond.get("case"), str) and not cond.get("per_case"):
+                holds = {cond["case"].strip()}
+                where = f"is read in case {cond['case'].strip()!r}"
+            else:
+                holds = targets
+                where = "holds in every target case"
+            if not any(holds <= read for read in reads):
+                v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
+                         f"{cond['quantity']!r}) {where}, but no corroborant of that quantity "
+                         f"reads every such case (each reads {sorted(map(sorted, reads))}): "
+                         "give one primary_predicates entry `per_case: true`, or a `case:` "
+                         "whose at('<case>') references reach the rest — a corroborant "
+                         "reading one case would certify the test on that case alone")
     return v
 
 

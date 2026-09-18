@@ -13834,17 +13834,18 @@ def _validate_test_predicates(
     the TER gate is trusted to backstop). A degenerate IR carrying
     NEITHER (which fails the io_contract gate anyway) degrades to the predicate ids (a no-op).
 
-    A separate necessary-condition gate (``verdict_evaluator.degenerate_predicate_violations``)
-    additionally rejects a structurally-valid but DEGENERATE pass-test set — one where every
-    ``expected_outcome=pass`` predicate asserts only ``verdict.*``, so the per-test judgment
-    collapses back to the runner's own ``verdict.overall`` (the judge nondeterminism R2 removed).
+    The host-evaluated corroborants (Z6, issue #255) are gated here too, through
+    ``primary_evidence.validate_primary_predicate_schema`` (each entry's grammar and names)
+    and ``primary_evidence.coverage_violations`` (every condition's ``quantity`` has a primary
+    predicate of the same test and quantity, so no test's verdict rests on the generated checks
+    module alone). The coverage gate replaced the set-level ``degenerate_predicate_violations``
+    gate (Z6 PR-3): the harm that gate refused — a pass set asserting only ``verdict.*``, whose
+    per-test judgment reduced to the runner's own ``verdict.overall`` — cannot arise once every
+    condition, a ``verdict.*`` one included, is conjoined with a host-evaluated predicate.
 
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
     to re-author the predicates."""
-    from tools.verdict_evaluator import (
-        validate_predicate_schema,
-        degenerate_predicate_violations,
-    )
+    from tools.verdict_evaluator import validate_predicate_schema
 
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
@@ -13938,18 +13939,18 @@ def _validate_test_predicates(
     ):
         violations.append(f"{derived_path}:{msg}")
 
-    # The host-evaluated corroborants (Z6, issue #255): when the IR carries
-    # `io_contract.primary_predicates`, every entry parses under the closed grammar and every
-    # name it uses resolves — a capture variable against the snapshot schema, an `inputs.<path>`
-    # to a number in every target case, an `at('<case>')` to one of its own target cases — so
-    # that Validate.execute never meets an expression it cannot value. Present-or-absent here;
-    # the per-test coverage rule (every secondary `quantity` has a corroborant) is a separate
-    # gate. The shape errors this reports are the ones `evaluate_primary_predicates` raises on.
-    if isinstance(io_contract, dict) and "primary_predicates" in io_contract:
-        from tools.primary_evidence import (
-            snapshot_schema,
-            validate_primary_predicate_schema,
-        )
+    # The host-evaluated corroborants (Z6, issue #255): every `io_contract.primary_predicates`
+    # entry parses under the closed grammar and every name it uses resolves — a capture
+    # variable against the snapshot schema, an `inputs.<path>` to a number or a numeric list in
+    # every target case, an `at('<case>')` to one of its own target cases — so that
+    # Validate.execute never meets an expression it cannot value. The shape errors this
+    # reports are the ones `evaluate_primary_predicates` raises on.
+    from tools.primary_evidence import (
+        coverage_violations,
+        snapshot_schema,
+        validate_primary_predicate_schema,
+    )
+    if "primary_predicates" in io_contract:
         cases_by_id = {
             c["case_id"].strip(): c
             for c in (tcs if isinstance(tcs, list) else [])
@@ -13971,12 +13972,11 @@ def _validate_test_predicates(
         ):
             violations.append(f"{derived_path}:{msg}")
 
-    # A structurally-valid predicate set can still be DEGENERATE: if every pass test asserts only
-    # `verdict.*`, the deterministic per-test judgment collapses to the runner's own verdict.overall
-    # (the judge nondeterminism R2 removed). This is a separate necessary-condition gate from the
-    # schema check above; it routes back to compile.generate through the same compile_static_violation.
-    for msg in degenerate_predicate_violations(predicates):
-        violations.append(f"{derived_path}:{msg}")
+    # Coverage: every condition's `quantity` has a primary predicate of the same test and
+    # quantity (an absent `primary_predicates` is the same omission for every test). Names
+    # only; the same-quantity and can-fail judgments are Compile.verify's (V3).
+    for msg in coverage_violations(predicates, io_contract.get("primary_predicates")):
+        violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
 
 
 def _validate_ir_source_refs_tests(
