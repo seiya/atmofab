@@ -6031,6 +6031,132 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertEqual(captured, [])
             self.assertTrue(any(e.get("event") == "closure_member_skipped" for e in events))
 
+    def test_a_resumed_member_waits_for_its_orchestration_claim(self) -> None:
+        """The resume gate's claim is BLOCKING in member mode (the `blocking=` wiring in
+        `_run_main`): a resumed member whose orchestration another driver holds waits
+        (`start_claim_waiting`) rather than refusing with `concurrent_orchestration_running`,
+        then re-asks its readiness; here it is ready once the holder is gone, so it skips."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            state = {"ready": False}
+            holder_started = threading.Event()
+
+            def hold() -> None:
+                with run_workflow._exclusive_claim(repo_root, "orch", "orch_c",
+                                                   stdout_format="jsonl"):
+                    holder_started.set()
+                    time.sleep(0.6)
+                    state["ready"] = True
+
+            def fake_ready(root, node, required_stages):
+                return {"ready": state["ready"], "version": node["spec_versions"][0],
+                        "failed_stage": None if state["ready"] else "ir_ref",
+                        "detail": None if state["ready"] else "fake"}
+
+            captured: list[dict] = []
+            holder = threading.Thread(target=hold)
+            buf = io.StringIO()
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness", fake_ready):
+                holder.start()
+                holder_started.wait(5)
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                         "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                         "--closure-until-phase", "validate", "--no-run-conductor",
+                         "--stdout-format", "jsonl"])
+            holder.join()
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+            kinds = [e.get("event") or e.get("reason") for e in events]
+            self.assertEqual(code, 0, events)
+            self.assertEqual(captured, [])
+            self.assertIn("start_claim_waiting", kinds)
+            self.assertIn("closure_member_skipped", kinds)
+            self.assertNotIn("concurrent_orchestration_running", kinds)
+            waiting = next(e for e in events if e.get("event") == "start_claim_waiting")
+            self.assertEqual((waiting["claim_kind"], waiting["claim_key"]), ("orch", "orch_c"))
+
+    def test_a_resumed_member_that_is_not_ready_resumes_its_own_node_only(self) -> None:
+        """A member child's `--resume` drives ITS node (`resume_mode`, the orchestration claim
+        held by `_run_main`), not the closure its recorded back-link names — that is the
+        parent's job, and a child re-deriving it would run the closure twice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            captured: list[dict] = []
+            with mock.patch.object(run_workflow, "_run_node",
+                                   lambda **kw: captured.append(kw) or 0), \
+                    mock.patch.object(run_workflow, "_run_with_dependency_closure") as closure, \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}), \
+                    redirect_stdout(io.StringIO()):
+                code = run_workflow.main(
+                    ["--resume", "--orchestration-id", "orch_c", "--repo-root", str(repo_root),
+                     "--closure-member", "ORCHT", "--closure-target-spec-ref", "spec/problem/a",
+                     "--closure-until-phase", "validate", "--no-run-conductor",
+                     "--stdout-format", "jsonl"])
+            self.assertEqual(code, 0)
+            closure.assert_not_called()
+            self.assertEqual(len(captured), 1)
+            kw = captured[0]
+            self.assertEqual(kw["spec_ref"], "spec/component/c")
+            self.assertEqual(kw["orchestration_id"], "orch_c")
+            self.assertTrue(kw["resume_mode"])
+            self.assertTrue(kw["orch_claim_held"])
+            self.assertFalse(kw["spec_claim_held"])
+            self.assertIsNone(kw["invocation"])
+            self.assertEqual(kw["closure_until_phase"], "Validate")
+
+    def test_main_hands_jobs_to_the_closure_driver_on_both_paths(self) -> None:
+        """`--jobs` reaches `_run_with_dependency_closure` from the cold `--with-deps` path and
+        from the closure-aware resume path — which also hands the driver the entry claim's
+        release, so a child resuming the entry member does not wait on its own parent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, closure_kwargs, _ = RunWorkflowTests._run_main_with_closure_spy(
+                self, ["spec/problem/a", "validate", "--with-deps", "--jobs", "3",
+                       "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0)
+            self.assertEqual(closure_kwargs["jobs"], 3)
+            RunWorkflowTests._seed_resumable_orchestration(
+                self, repo_root, "orch_c", spec_ref="spec/component/c", until_phase="Validate",
+                mode="dev", backend="claude",
+                source_dependency_ref="spec/component/c/deps.yaml",
+                invocation={"spec_ref": "spec/component/c", "closure_id": "ORCHT",
+                            "closure_target_spec_ref": "spec/problem/a",
+                            "closure_until_phase": "Validate"})
+            code, closure_kwargs, _ = RunWorkflowTests._run_main_with_closure_spy(
+                self, ["--resume", "--orchestration-id", "orch_c", "--jobs", "2",
+                       "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0)
+            self.assertEqual(closure_kwargs["jobs"], 2)
+            self.assertEqual(closure_kwargs["preclaimed_orchestration_id"], "orch_c")
+            self.assertTrue(callable(closure_kwargs["release_preclaim"]))
+            # releasing it really frees the claim: a second taker succeeds without waiting
+            closure_kwargs["release_preclaim"]()
+            with run_workflow._exclusive_claim(repo_root, "orch", "orch_c",
+                                               stdout_format="jsonl") as held:
+                self.assertTrue(held)
+
     def test_a_member_outside_the_closure_is_refused(self) -> None:
         """A spec the recorded target does not depend on cannot be run as a member of that
         closure (the readiness question has no entry to answer for it)."""

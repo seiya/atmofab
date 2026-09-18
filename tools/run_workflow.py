@@ -2466,7 +2466,9 @@ def _run_main(
                 and target_recovered.get("until_phase")
             ):
                 closure_until_recovered = target_recovered.get("until_phase")
-        force_single_node = bool(spec_ref_arg)
+        # A `--closure-member` child resumes ONE node: its own, never the closure the
+        # recorded back-link names (the parent is driving that closure).
+        force_single_node = bool(spec_ref_arg) or bool(getattr(args, "closure_member", None))
         # All three closure fields are co-written by _build_invocation_record, so
         # require all three: if any is missing (corrupt/partial block), fall back to
         # single-node resume rather than driving the closure with a wrong until_phase
