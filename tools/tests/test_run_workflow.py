@@ -6468,9 +6468,13 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             runs = self._last_target_calls[0]["extra_output"]["dependency_runs"]
             c = next(r for r in runs if r["spec_ref"] == "spec/component/c")
-            self.assertTrue(c["skipped"])
-            self.assertEqual(c["status"], "ready")
-            self.assertEqual(c["exit_code"], 0)
+            # A skip record — the shape the driver-side and sequential skips write — plus
+            # the child that answered it; no `rerun_reason` (nothing was re-run) and no
+            # `resumed`. Round-1 finding.
+            self.assertEqual(c, {"node": "infrastructure/c@0.1.0", "spec_ref": "spec/component/c",
+                                 "skipped": True, "status": "ready", "version": "0.1.0",
+                                 "orchestration_id": c["orchestration_id"], "exit_code": 0})
+            self.assertTrue(c["orchestration_id"].startswith("orch_"))
 
     def test_the_first_failure_stops_launching_and_names_itself(self) -> None:
         """c fails: b is never launched, the target is not run, the closure stops with
@@ -6509,6 +6513,41 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertEqual(last["spec_ref"], "spec/component/b")
             self.assertEqual({r["spec_ref"] for r in last["dependency_runs"]},
                              {"spec/component/c", "spec/component/b", "spec/component/d"})
+
+    def test_a_child_killed_by_a_signal_fails_the_closure_with_a_failure_code(self) -> None:
+        """`Popen.returncode` is negative for a signalled child; the driver's exit status is
+        a failure code (2), never a negative number the shell reads as another signal. The
+        envelope keeps the child's own `exit_code`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+
+            def fake_launch(argv, *, repo_root, env):
+                return subprocess.Popen(
+                    [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
+                    stdout=subprocess.PIPE, text=True, bufsize=1)
+            with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=2, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=False,
+                        prior_orch_by_spec={}, preclaimed_orchestration_id=None,
+                        release_preclaim=None, dependency_runs=[])
+            self.assertEqual(rc, 2)
+            events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+            self.assertEqual(events[-1]["reason"], "dependency_node_failed")
+            self.assertEqual(events[-1]["exit_code"], -9)
 
     def test_a_child_that_exits_clean_but_leaves_the_node_not_ready_fails_the_closure(self) -> None:
         """The driver re-verifies after the child exits, as the sequential loop does: a

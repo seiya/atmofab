@@ -4719,8 +4719,15 @@ def _run_closure_members_parallel(
                     "detail": mp.readiness["detail"],
                 },
             }
-            if mp.skipped:
-                record["status"] = "ready"
+            if mp.skipped and rc == 0:
+                # The child found the node ready once it held the claim: the driver's
+                # pre-launch reading was overturned, so the record is a SKIP record — the
+                # shape the driver-side and sequential skips write — plus the child that
+                # answered it; a `rerun_reason` would name a stage that did not fail.
+                record = {
+                    "node": _label(node), "spec_ref": ref, "skipped": True, "status": "ready",
+                    "orchestration_id": mp.orchestration_id, "exit_code": rc,
+                }
             dependency_runs.append(record)
             if rc != 0:
                 _emit({
@@ -4738,6 +4745,8 @@ def _run_closure_members_parallel(
                                      "orchestration_id": mp.orchestration_id}
                 continue
             after = _dependency_node_readiness(repo_root, node, required_stages)
+            if after["ready"] and mp.skipped:
+                record["version"] = after["version"]
             if not after["ready"]:
                 record["status"] = "not_ready_after_run"
                 record["readiness"] = after
@@ -4794,7 +4803,10 @@ def _run_closure_members_parallel(
                 "dependency_runs": dependency_runs,
                 "target_spec_ref": target_spec_ref,
             })
-        return int(first_failure["rc"]) or 2
+        # A child killed by a signal exits negative (`Popen.returncode`); the driver's own
+        # exit status is a failure code, never a signal number shifted into one.
+        rc = int(first_failure["rc"])
+        return rc if rc > 0 else 2
     return 0
 
 
