@@ -11333,6 +11333,17 @@ end program shallow_water2d_runner
                 flat, state_variables=["h", "zz_uncaptured"]))
             self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
                                 in x for x in v), v)
+        # A second `state_snapshots` entry is refused outright: every runtime reader takes the
+        # first entry, so a name declared only in a second one would satisfy this clause and
+        # be captured by nothing (a round-3 reviewer constructed exactly that).
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), flat, extra_snapshot_entry={
+                "artifact": "state_snapshots", "required": True, "min_samples": 1,
+                "schema": {"variables": [{"name": "zz_uncaptured", "shape_expr": "[2,2]"}],
+                           "time_variable": "t", "time_shape_expr": "scalar"}})
+            self.assertTrue(any("declares state_snapshots a second time" in x for x in v), v)
+            self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
+                                in x for x in v), v)
         # A document-level marker key inside `algorithm` (`schema_version`) is dropped for the
         # read, as the multi-dimensional gate drops it: the clause stays live (a round-2
         # reviewer measured it going dark — the raise was swallowed into an empty name list).
@@ -11359,11 +11370,12 @@ end program shallow_water2d_runner
                 f"expected missing-state_contract violation; got: {v}",
             )
 
-    def _compile_with_flat_contract(self, repo_root: Path, overrides: dict):
+    def _compile_with_flat_contract(self, repo_root: Path, overrides: dict,
+                                    extra_snapshot_entry: dict | None = None):
         """The FLAT placement — the 5 contract fields as direct children of `algorithm`. This is
         what every real IR authors and what the docs mandate, so it is the shape that must be
         pinned; a suite that only ever nests them under `state_contract` tests a shape nothing
-        produces."""
+        produces. `extra_snapshot_entry` appends a second `required_evidence[]` entry."""
         contract = dict(self._valid_state_contract())
         contract.update(overrides)
         v = self._compile_with_state_contract(repo_root, None)  # seeds the tree, no nested block
@@ -11373,6 +11385,9 @@ end program shallow_water2d_runner
         doc = json.loads(ir_path.read_text())
         doc["algorithm"].pop("state_contract", None)
         doc["algorithm"].update(contract)  # direct children of `algorithm`
+        if extra_snapshot_entry is not None:
+            doc["io_contract"]["raw_requirements"]["required_evidence"].append(
+                extra_snapshot_entry)
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",

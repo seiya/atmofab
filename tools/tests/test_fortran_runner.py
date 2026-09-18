@@ -629,6 +629,19 @@ class RenderShapeTest(unittest.TestCase):
         self.assertNotIn("select case (cid)", self.txt)
         self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
 
+    def test_a_schema_variable_no_test_requires_is_still_captured(self) -> None:
+        # The set the runner reads is the SCHEMA, not the union of `required_raw_variables`:
+        # a declared state no test names is imported, its emitter imported, and captured for
+        # every case (the round-3 census's only corpus-dependent decision on the renderer).
+        ir = copy.deepcopy(_boundary_ir())
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("    sb_orphan_r1 => orphan_r1", txt)
+        self.assertIn("    harness_fortran_cpu__emit_array_r1, &", txt)
+        self.assertIn("    allocate(out(5))", txt)
+        self.assertIn("harness_fortran_cpu__emit_array_r1(sb_orphan_r1))", txt)
+
     def test_capture_points_bracket_case_run_and_precede_every_callback(self) -> None:
         # Z6 capture contract: initial capture right after case_setup, final capture right
         # after case_run, both BEFORE the first checks_compute / metric_compute of the case;
@@ -970,7 +983,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # the runner is host-rendered (unrepairable by a leaf), fail closed at render time.
         # The name must be a test_id, not a case_id: a long case_id now trips the earlier
         # `CASE_ID_LEN` bound instead, so it would never reach the column guard.
-        with self.assertRaisesRegex(RenderError, "exceeds 100 columns"):
+        with self.assertRaisesRegex(RenderError, "reaches the 100-column lint limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
             render_runner(ir, BOUNDARY_SID, HARNESS)
@@ -1278,7 +1291,7 @@ class LineWidthTest(unittest.TestCase):
                 name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
         with self.assertRaises(RenderError) as cm:
             render_runner(ir, BOUNDARY_SID, HARNESS)
-        self.assertIn("exceeds 100 columns (100)", str(cm.exception))
+        self.assertIn("reaches the 100-column lint limit (100 columns", str(cm.exception))
         # one char shorter renders, and every line is at most 99 wide
         ir2 = copy.deepcopy(ir)
         for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
@@ -1597,14 +1610,20 @@ class GfortranSmokeTest(unittest.TestCase):
             # `checks_compute`, which runs AFTER the final capture. Neither snapshot nor the
             # metrics basis may carry the sentinel — the captured value is the serialized copy
             # taken before any callback, not a later re-read of the storage.
-            initial = json.loads(
-                (d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json")
-                .read_text())
-            final = json.loads(
-                (d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json").read_text())
-            mb = json.loads((d / "raw" / "metrics_basis.json").read_text())
-            for doc in (initial, final, *mb["per_test"]):
-                self.assertNotIn("-9.9", json.dumps(doc), doc)
+            initial_path = d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json"
+            final_path = d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json"
+            mb_path = d / "raw" / "metrics_basis.json"
+            # On the RAW text: the harness writes `-9.9000000000000000E+001`, which a parsed
+            # document re-serializes as `-99.0` (a round-3 reviewer found the assertion on
+            # `json.dumps(doc)` vacuous for that reason and the metrics basis unpinned).
+            for path in (initial_path, final_path, mb_path):
+                self.assertNotIn("-9.9", path.read_text(), path)
+            initial = json.loads(initial_path.read_text())
+            final = json.loads(final_path.read_text())
+            mb = json.loads(mb_path.read_text())
+            for row in mb["per_test"]:
+                for value in row.values():
+                    self.assertNotEqual(value, -99.0, row)
             # initial = the case_setup state (ghost all zero), final = after case_run (the
             # interior copied into the ghost's centre): the two capture points differ.
             self.assertEqual(initial["field_ghost"][1][1], 0.0)

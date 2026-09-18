@@ -16339,6 +16339,10 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertIn("initial/c_alpha.json", meta["failure_excerpt"])
                 else:
                     self.assertNotEqual(meta.get("failure_category"), "snapshot_deliverable_gap")
+                # the in-process execute pre-creates the directory the host-rendered runner
+                # opens `initial/<case_id>.json` in (the binary runs directly here, not through
+                # the Makefile's `mkdir -p`; without it the harness's open fails with rc 2)
+                self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
 
     def test_execute_inproc_category_precedence_when_inputs_fail_together(self) -> None:
         # The categories differ only in report quality (all three route to generate/reuse), so the

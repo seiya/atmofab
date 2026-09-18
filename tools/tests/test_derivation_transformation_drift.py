@@ -143,14 +143,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Z6 PR-1 (issue #255): `phase_01_compile.md` now states what a snapshot variable IS (primary
     # state, bound in the checks module) and the identifier rule its name must satisfy — a
     # compile leaf reading it authors a different IR, so the key moves.
-    "compile-docs-2": "2031a459cd6f0ef494df64e30d913151fc6b8cc7ce3e3ef11a5fc1a2ed3ca413",
+    "compile-docs-2": "6fd6fed5d7d8cb6ec528ec8b5fcde1a0e618ca1b229336ddb55988c408ded223",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
     # Z6 PR-1 (issue #255): the rendered runner reads bound storage (`sb_<var> => <var>`)
     # instead of calling getters, captures twice per case, and the build control file creates
     # `raw/state_snapshots/initial`.
-    "render-2": "74479591df35a02c88cba84c6781b7d7b477718fc3b692cf08ecb0a967efc252",
+    "render-2": "8409184903c2dc3dca987c853f134fa24ec4cbd38b7623a08457a49ff1b501d3",
 }
 PINNED_BUILD: dict[str, str] = {
     "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",

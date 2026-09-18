@@ -21086,8 +21086,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # refuses, in the gate's words). Measured 73628 at 95149e39; round 1 added the
         # `algorithm.state_variables` ⊆ snapshot-variables gate under the render preconditions
         # and rewrote the V3 recompute-inputs sentence (a scalar case input is `inputs`, not a
-        # snapshot echo): 74417. Ceiling 74600.
-        "docs/workflow/phases/phase_01_compile.md": 74600,
+        # snapshot echo): 74417; 74455 after round 2; 74999 after round 3 said what
+        # `evidence_ref` a CASE input takes (`spec.ir.yaml`) versus a STATE input. Ceiling 75200.
+        "docs/workflow/phases/phase_01_compile.md": 75200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

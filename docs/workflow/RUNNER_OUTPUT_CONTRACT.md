@@ -98,9 +98,9 @@ source; do not uniformly require a fixed minimal composition.
   (`snapshot_0001.json`) or a single combined file: a string-literal name is
   flagged by `post_generate`; a wrong runtime-built name fails
   `Validate.execute`'s per-`<case_id>.json` deliverable gate. Each snapshot must
-  hold **every** state variable in *that case's*
+  hold **at least every** state variable in *that case's*
   `test_evidence_requirements.required_raw_variables` (not the union across
-  cases) **plus the declared `time_variable`**, each shape-matching its
+  cases; a host-rendered runner holds every declared variable) **plus the declared `time_variable`**, each shape-matching its
   `snapshot_schema.json` declaration (state variables their `shape_expr`, the
   `time_variable` its `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still

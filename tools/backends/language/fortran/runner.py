@@ -33,7 +33,7 @@ emitters twice per case — right after ``case_setup`` (``raw/state_snapshots/in
 the binding (the declaration and the allocation) and nothing downstream of it: there
 is no getter, so no generated procedure can filter, compute or rewrite a captured
 value (``zero_base_architecture.md`` §A4). It is authored lint-clean
-(``use only:``, a bare ``implicit none`` with NO allow directive, ≤100-column
+(``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column
 lines) so the deterministic
 Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
 
@@ -301,9 +301,10 @@ def _target_cases(ir: dict[str, Any], test_id: str) -> list[str]:
 
 
 def _per_case_vars(ir: dict[str, Any], schema_vars: dict[str, str]) -> dict[str, list[str]]:
-    """Map each case_id to the ordered snapshot variables it must emit — the
-    union of ``required_raw_variables`` over the tests targeting that case,
-    ordered by the snapshot schema declaration order (stable JSON key order)."""
+    """Map each case_id to the union of ``required_raw_variables`` over the tests targeting
+    that case, ordered by the snapshot schema declaration order. Since Z6 this is a
+    VALIDATION (each entry must be a schema variable) and the metrics-basis pick set — the
+    runner captures every schema variable for every case, not this per-case subset."""
     io = _dget(ir, "io_contract", {})
     req_by_test: dict[str, list[str]] = {}
     for r in _dget(io, "test_evidence_requirements", []) or []:
@@ -816,10 +817,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # the post_execute completeness matrix (`_validate_metrics_basis_per_test`) pins the entry
     # set against exactly this product, so partial evidence cannot pass.
     #
-    # Every target case emits its test's `required_raw_variables` BY CONSTRUCTION: `_per_case_vars`
-    # DEFINES a case's emitted set as the union of `required_raw_variables` over the tests
-    # targeting it, and already fail-closes there when one is absent from the snapshot schema.
-    # So each `pick` below resolves — there is no additional precondition to check here.
+    # Every target case's snapshot holds its test's `required_raw_variables` BY CONSTRUCTION:
+    # the runner captures EVERY schema variable for every case, and `_per_case_vars` already
+    # fail-closes when a required variable is absent from the schema. So each `pick` below
+    # resolves — there is no additional precondition to check here.
     mb_rows: list[tuple[str, str, list[str]]] = []
     for tid, req_vars in evidence:
         tcases = _target_cases(ir, tid)
@@ -944,7 +945,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
         for ln in entry.split("\n"):
             if len(ln) >= MAX_RENDERED_LINE:
                 raise RenderError(
-                    f"rendered runner line exceeds {MAX_RENDERED_LINE} columns ({len(ln)}): "
+                    f"rendered runner line reaches the {MAX_RENDERED_LINE}-column lint limit "
+                    f"({len(ln)} columns; 99 is the widest that lints everywhere): "
                     f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "
                     "variable) is too long for the lint column limit; shorten it")
     return "\n".join(lines) + "\n"

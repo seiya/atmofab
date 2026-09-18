@@ -513,8 +513,8 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
 # attempt that provably cannot converge (the C1/C2 "regenerating one side can't fix the other"
 # pattern). `post_execute_violation` and `quality_check_mismatch` stay on the Generate route even
-# on an M3c node: the renderer boxes that case's required variables unconditionally (it discards
-# the leaf registry's found-flag), so the key set and shapes are host-fixed by the IR, but every
+# on an M3c node: the renderer captures every declared variable for every case straight from
+# the checks module's bound storage, so the key set and shapes are host-fixed by the IR, but every
 # VALUE comes from the leaf's checks module — a trivial (all-zero) basis, a NaN, or a wrong metric
 # is exactly what a warm repair fixes.
 HOST_RENDERED_RUNNER_UNREPAIRABLE: frozenset[str] = frozenset({"snapshot_deliverable_gap"})

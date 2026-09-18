@@ -527,7 +527,7 @@ PINNED: dict[str, str] = {
     # on this branch): the judge template names the `initial` key of the excerpt, the harness
     # template no longer says "getter", and the producer template says the compile gate holds
     # `algorithm.state_variables` ⊆ snapshot variables.
-    "pure-44": "cdc20f409522b0b9876f82eacbbd54968cd995c58a8e02448b804d5dac0da4bf",}
+    "pure-44": "4df21305405aec16c229b698b262ec034c34ebd40b89e7a5b396bb3cf71d2473",}
 
 
 def _contract_tuple() -> dict[str, object]:

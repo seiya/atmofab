@@ -167,6 +167,7 @@ workspace/
               quality_check.json
               raw/
                 state_snapshots/
+                  initial/          # a host-rendered runner's capture right after case_setup, per case
                 metrics_basis.json
               verdict.json
               aggregate_verdict.json

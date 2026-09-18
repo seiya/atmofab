@@ -4407,8 +4407,9 @@ def _validate_raw_evidence(
                                 # (2) A per-CASE snapshot (the contract's `<case_id>.json`,
                                 # and everything a host-rendered runner writes) carries no
                                 # test_id. Its required set is the UNION over every test
-                                # ranging over the case — precisely what
-                                # the language backend runner's `_per_case_vars` emitted. Without this
+                                # ranging over the case — the language backend runner's
+                                # `_per_case_vars` (a host-rendered runner emits every declared
+                                # variable, a superset, since Z6). Without this
                                 # anchor an IR whose `case.test_case_set[]` omits `test_id`
                                 # (never a required field) falls through to "every declared
                                 # variable" and false-rejects a conformant per-case snapshot,
@@ -6770,11 +6771,12 @@ def _case_id_to_test_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
     """Map each case_id to every test_id ranging over it, from
     ``io_contract.test_predicates[].target_cases``.
 
-    This is the anchor a host-rendered runner is built from: the language backend runner's `_per_case_vars`
-    emits, per case, the union of `required_raw_variables` over exactly these tests. Reading
-    the same field here makes the post_execute snapshot check a mirror of what the renderer
-    wrote, rather than an independent guess (the `_validate_harness_render_preconditions`
-    discipline). It is also the only case -> test mapping every IR carries: `case.test_case_set[]`
+    This is the anchor a host-rendered runner is built from: the language backend runner's
+    `_per_case_vars` validates, per case, the union of `required_raw_variables` over exactly
+    these tests (and, since Z6, the runner captures every declared variable for every case —
+    a superset of that union). Reading the same field here makes the post_execute snapshot
+    check a mirror of what the renderer validated, rather than an independent guess (the
+    `_validate_harness_render_preconditions` discipline). It is also the only case -> test mapping every IR carries: `case.test_case_set[]`
     is not required to declare a `test_id` (`phase_01_compile.md`), so `_case_id_to_test_id`
     returns {} for an IR that omits it, and a case targeted by several tests has no single id
     at all. Empty dict when the IR declares no predicates.
@@ -7868,6 +7870,19 @@ def _validate_io_contract_file(
             )
 
         if artifact != "state_snapshots":
+            continue
+
+        # ONE `state_snapshots` entry. Every runtime reader of the schema — the runner
+        # renderer, the bundle gate's `snapshot_variables_from_ir`, the post-execute
+        # requirement details, the schema author — takes the FIRST entry; a second one would be
+        # read by nothing at runtime while this validator's own union over entries admitted its
+        # names, so a declared state could satisfy the ⊆ clause below through an entry no
+        # runner captures (a round-3 reviewer constructed it; zero occurrences in the corpus).
+        if snapshot_variables or snapshot_required:
+            violations.append(
+                f"{contract_path}:raw_requirements.required_evidence[{idx}] declares "
+                "state_snapshots a second time; declare the snapshot schema in ONE entry"
+            )
             continue
 
         if item.get("required") is not False:

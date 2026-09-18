@@ -254,6 +254,14 @@ class CapabilityNegotiationTest(unittest.TestCase):
             cb.unsatisfied_capability_requirements(
                 ["sync_single_case@1", "state_registration@1"], provided), [])
 
+    def test_manifest_schema_example_states_the_live_manifest(self) -> None:
+        # The example in `harness_capabilities.schema.json` is what a reader of the schema
+        # takes as the harness's capability set; keep it equal to the tool-side manifest
+        # (the round-3 census found nothing else reading it).
+        example = cb.load_harness_capabilities_schema()["examples"][0]
+        by_node = {m["node_key"]: set(m["provides"]) for m in example["manifests"]}
+        self.assertEqual(by_node, {k: set(v) for k, v in cb.HARNESS_CAPABILITY_MANIFESTS.items()})
+
     def test_state_registration_is_provided_by_the_current_harness(self) -> None:
         # Z6 (issue #255): `state_registration@1` is the token every M3c bundle's bindings
         # carry, so the one harness in the tree provides it — it is defined by what the
