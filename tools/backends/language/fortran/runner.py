@@ -697,10 +697,11 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # the fixed-length form has been observed (issue #261).
     a("  ! The checks ABI is the same five subroutines for every node. metric_compute's")
     a(f"  ! `{METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY}` dummy MUST be declared")
-    a("  ! `character(len=:), allocatable, intent(out)`: this program passes an UNALLOCATED")
-    a("  ! deferred-length allocatable for it; a fixed-length dummy compiles and faults at the")
-    a("  ! first call, an assumed-length one compiles and records an empty reason. A")
-    a("  ! no-metrics stub included: a deterministic gate refuses any non-allocatable form.")
+    a("  ! `character(len=:), allocatable, intent(out)`: the runner of a node with metrics")
+    a("  ! passes an UNALLOCATED deferred-length allocatable for it; a fixed-length dummy")
+    a("  ! compiles and faults at the first call, an assumed-length one compiles and records")
+    a("  ! an empty reason. A no-metrics stub included: a deterministic gate refuses any")
+    a("  ! non-allocatable form.")
     # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
     # is unrecoverable: the lint gate imposes its rule set with `--ignore-allow-comments`
     # (`tools/backends/linter/fortitude/lint.py`), so a directive here would be reported as
@@ -993,6 +994,10 @@ _DECL_TYPE_RE = re.compile(
 # executable statement.
 _LABEL_RE = re.compile(r"^\d+\s+")
 _UNIT_HEADER_RE = re.compile(r"^module\s+([a-z]\w*)$")
+# An `interface` block opener. `interface` is not a reserved word: `interface = 1` and
+# `interface(1) = 1` are assignments (round-2 review: read as an opener with no closer, they
+# hid every later definition), so a following `=` or `(` is excluded.
+_INTERFACE_OPEN_RE = re.compile(r"^(?:abstract\s+)?interface\b(?!\s*[=(])")
 # A procedure definition header over a string-masked statement (the type-spec prefix of a
 # function is greedy, exactly as the neutral ABI scan matches it).
 _PROC_HEADER_RE = re.compile(
@@ -1096,11 +1101,12 @@ def _declared_allocatable(spec_part: list[str], name: str) -> bool | None:
 def _specification_part(stmts: list[str]) -> list[str]:
     """The statements of one procedure's specification part that can declare a dummy: from
     the statement after its header up to its own `end`, its `contains`, or a nested procedure
-    header — with the bodies of a derived-type definition and an `interface` block skipped,
-    since a component or a prototype's dummy named like the dummy is not the dummy's
-    declaration (a round-1 review built both directions: a `type` component declared
-    allocatable vouching for a fixed-length dummy, and a `type` block whose `end type` cut the
-    reading short of the real declaration). An `enum` block needs no skip: an enumerator
+    header — with the bodies of a derived-type definition, an `interface` block and a
+    `block` construct skipped, since a component, a prototype's dummy or a block-local
+    variable named like the dummy is not the dummy's declaration (round-1 and round-2 reviews
+    built both directions: a `type` component or a `block` local declared allocatable vouching
+    for a fixed-length dummy, and a `type` block whose `end type` cut the reading short of the
+    real declaration). An `enum` block needs no skip: an enumerator
     cannot share the dummy's name, and only an `end` that names a procedure kind (or a bare
     one) ends the reading, so `end enum` is passed over."""
     out: list[str] = []
@@ -1114,8 +1120,11 @@ def _specification_part(stmts: list[str]) -> list[str]:
                 and not re.match(r"^type\s+is\b", s):
             skip_until = r"^end\s*type\b"
             continue
-        if re.match(r"^(?:abstract\s+)?interface\b", s):
+        if _INTERFACE_OPEN_RE.match(s):
             skip_until = r"^end\s*interface\b"
+            continue
+        if re.match(r"^(?:[a-z]\w*\s*:\s*)?block\s*$", s):
+            skip_until = r"^end\s*block\b"
             continue
         if (re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end"
                 or s == "contains"
@@ -1138,8 +1147,9 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
     is a designed limit rather than a hand-off: the syntax gate resolves the `use` but not
     the attribute, so a `metric_compute` reached by use association, a generic interface, a
     procedure pointer or a separate module procedure (`module subroutine` prototype plus
-    `submodule`) is accepted unjudged. None occurs in the 66 checks modules of the tree
-    (round-1 review, `os.walk`), and every certified module defines it inline. The required set is the FULL fixed ABI, so this runs whether or not
+    `submodule`) is accepted unjudged. None occurred in the 66 checks modules under the
+    operator's gitignored `workspace/` at review time (rounds 1-2, `os.walk`), and every
+    certified module defines it inline. The required set is the FULL fixed ABI, so this runs whether or not
     the node's runner imports `metric_compute` (a node with no metrics stubs it and the runner
     never calls it — the declaration is still the pinned one, and the check is uniform rather
     than conditioned on the IR).
@@ -1169,7 +1179,7 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
             in_target = False
             proc_depth, in_interface = 0, False
             continue
-        if not in_interface and re.match(r"^(?:abstract\s+)?interface\b", s):
+        if not in_interface and _INTERFACE_OPEN_RE.match(s):
             in_interface = True
             continue
         if in_interface:

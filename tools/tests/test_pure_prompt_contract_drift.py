@@ -551,7 +551,7 @@ PINNED: dict[str, str] = {
     "pure-46": "6f4b83cab5180201a6d9310ed6af643ea695eea44c9d98bce3c134db73c9c5b0",
     # pure-47 (issue #261): the `generate.generate` template's no-metrics stub sentence says
     # `reason_na` is declared exactly as the rendered runner's ABI comment states and that a
-    # deterministic gate refuses any other declaration of it, on every node — the m3c producer
+    # deterministic gate refuses a `reason_na` without that attribute, on every node — the m3c producer
     # is shown no section of the checks-module contract, so the runner (a backend render,
     # `render-3`) carries the declaration and the template only points at it (of the tree's 34
     # no-metrics stubs 30 carried a fixed-length form and 4 the pinned one; every one of the 32

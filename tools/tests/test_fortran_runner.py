@@ -1883,6 +1883,9 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
                 "character(len=:), intent(out) :: reason_na; allocatable :: reason_na",
                 "character(len=:), allocatable, intent(out) :: reason_na, extra",
                 "character(len=:), allocatable, intent(out) :: extra, reason_na",
+                # round 2: a `type(...)` declaration is not a derived-type definition
+                ("type :: tt\n      integer :: n\n    end type tt\n    type(tt) :: t1\n"
+                 "    character(len=:), allocatable, intent(out) :: reason_na"),
                 # a lookalike entity is not the dummy
                 ("character(len=64) :: xreason_na\n"
                  "    character(len=:), allocatable, intent(out) :: reason_na"),
@@ -1978,6 +1981,30 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
                 "  end interface\ncontains\n", 1),
             "labelled header": module.replace("  subroutine metric_compute(",
                                               "10 subroutine metric_compute("),
+            # round 2: `interface` is not reserved — an assignment to a variable of that name
+            # in an earlier procedure must not open an interface block that never closes
+            "interface as an identifier": module.replace(
+                "contains\n", "contains\n  subroutine get_time(t)\n"
+                "    real(8), intent(out) :: t\n    integer :: interface\n"
+                "    interface = 1\n    t = real(interface, 8)\n  end subroutine get_time\n", 1),
+            # round 2: a generic interface before `contains` (its `module procedure` line is
+            # not a `module` unit header)
+            "generic interface before contains": module.replace(
+                "contains\n", "  interface gt\n    module procedure get_time\n"
+                "  end interface gt\n  public :: gt\ncontains\n  subroutine get_time(t)\n"
+                "    real(8), intent(out) :: t\n    t = 0d0\n  end subroutine get_time\n", 1),
+            # round 2: a `block` local named like the dummy does not vouch for it
+            "block-local shadow": module.replace(
+                "    associate (u => case_id); end associate\n",
+                "    associate (u => case_id); end associate\n    block\n"
+                "      character(len=:), allocatable :: reason_na\n      reason_na = 'x'\n"
+                "      if (len(reason_na) < 0) val = 1.0d0\n    end block\n"),
+            "named block-local shadow, attribute statement": module.replace(
+                "    associate (u => case_id); end associate\n",
+                "    associate (u => case_id); end associate\n    b: block\n"
+                "      character(len=:) :: reason_na\n      allocatable :: reason_na\n"
+                "      reason_na = 'x'\n      if (len(reason_na) < 0) val = 1.0d0\n"
+                "    end block b\n"),
             "allocatable :: other": module.replace(
                 bad, "real(8), dimension(:) :: other\n    allocatable :: other\n    " + bad),
             "allocatable inside len spec": module.replace(
@@ -2017,9 +2044,10 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
         self.assertIsNone(v(nested, "bx"))
         self.assertIsNotNone(v(nested.replace(
             "character(len=:), allocatable, intent(out) :: reason_na", bad), "bx"))
-        # a bare `end` never closes the module, even when the walk's depth count is off — here
-        # a statement-labelled header the header pattern does not read, so its bare `end`
-        # arrives at depth 0; reading that as `end module` would skip the definition after it
+        # a bare `end` never closes the module. Since labels are stripped (round 1) this
+        # row's labelled header IS read, so its bare `end` arrives at depth 1 and the depth-0
+        # branch is defensive — no legal module-level header the pattern misses is known
+        # (round-2 review); the row stays as the regression guard for the labelled shape
         self.assertIsNotNone(v(self._MODULE.replace("{DECL}", bad).replace(
             "contains\n", "contains\n10 subroutine get_time(t)\n    real(8), intent(out) :: t\n"
             "    t = 0d0\n  end\n", 1), "bx"))
