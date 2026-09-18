@@ -52,10 +52,24 @@ The runner emits every numeric judgment already reduced to a diagnostics field (
 the predicate never does arithmetic — it only compares a resolved diagnostics value
 against a constant/set and conjoins the results. ``xfail_condition`` is a case-construction
 fact (verified at Compile), never an evaluated runtime predicate.
+
+Every value a ``test_predicates`` condition reads is SECONDARY evidence: the generated checks
+module computed it. Its corroborant is ``io_contract.primary_predicates`` (Z6, issue #255):
+expressions over the PRIMARY state the host-rendered runner captured, valued by the host in
+``tools/primary_evidence.py`` with no generated code in the path. ``evaluate_verdict`` takes
+those records as ``primary=`` — already evaluated, since this module reads no file — and
+conjoins them with the test's ``pass_when``: a test's ``status`` holds only when both hold,
+``basis.primary[]`` carries each record, and ``basis.corroboration`` says whether the two
+kinds of evidence agree (``agree`` when both are satisfied or both are not, ``disagree``
+otherwise — a kernel/checks inconsistency the judge is told about). A condition's optional
+``quantity: <name>`` names what it measures, so a primary predicate of the same ``quantity``
+on the same test is its corroborant; the per-test coverage rule over those names is a
+separate Compile gate.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Predicate comparison operators. `includes` is set/list membership (rhs in lhs);
@@ -63,6 +77,10 @@ from typing import Any
 _OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt", "includes"})
 _ORDERED_OPS: frozenset[str] = frozenset({"le", "ge", "lt", "gt"})
 _EXPECTED_OUTCOMES: frozenset[str] = frozenset({"pass", "xfail"})
+# A `quantity` name (shared with `tools.primary_evidence.QUANTITY_RE`, which imports this
+# module and so cannot be imported here): a lowercase dotted identifier, the shape of a
+# metric address.
+_QUANTITY_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 
 # A per-test evaluation result kind, folded into the top-level failure_class.
 _KIND_PASS = "pass"
@@ -322,16 +340,31 @@ def evaluate_predicate(pred: dict[str, Any],
 
 def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, Any], *,
                      run_id: str | None = None,
-                     node_key: str | None = None) -> dict[str, Any]:
+                     node_key: str | None = None,
+                     primary: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Author the deterministic ``verdict.json`` body from the IR predicates + the
     runner's ``diagnostics.json``. Returns a dict with ``per_test`` (one
     ``{test_id, status, basis}`` per predicate, in order), the reduced ``self_verdict``,
     and the ``failure_class`` (``pass`` / ``physics_fail`` / ``structural_violation``).
 
+    ``primary`` is the list ``tools.primary_evidence.evaluate_primary_predicates`` returned
+    for this run (one record per ``io_contract.primary_predicates[]`` entry). A test with at
+    least one record takes ``status`` = its ``pass_when`` result AND every record satisfied,
+    ``basis.primary`` = its records and ``basis.corroboration`` (``agree`` / ``disagree``); a
+    record's ``structural`` kind folds into ``structural_violation``, a ``physics`` one into
+    ``physics_fail``. A record whose ``test_id`` no predicate carries raises
+    ``PredicateError``. With ``primary`` None or empty the output is byte-identical to the
+    pre-Z6 one (no ``primary`` / ``corroboration`` key is written).
+
     The judge leaf no longer authors this — it authors ``semantic_review.json`` only.
     """
     if not isinstance(diagnostics, dict):
         diagnostics = {}
+    primary_by_test: dict[str, list[dict[str, Any]]] = {}
+    for rec in (primary if isinstance(primary, list) else []):
+        if not isinstance(rec, dict) or not isinstance(rec.get("test_id"), str):
+            raise PredicateError("each primary record must be a mapping with a test_id")
+        primary_by_test.setdefault(rec["test_id"].strip(), []).append(rec)
     # An empty predicate set is never a legitimate PASS: a node with no evaluable per-test rule
     # cannot certify. Fail structurally rather than reduce an empty per_test to `pass` (a footgun
     # for any direct caller; the conductor already guards this before calling, and Compile forbids
@@ -356,11 +389,29 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         if not isinstance(test_id, str) or not test_id.strip():
             raise PredicateError("test_predicates entry missing a non-empty test_id")
         status, kind, basis = evaluate_predicate(pred, diagnostics)
+        records = primary_by_test.pop(test_id.strip(), None)
+        if records:
+            secondary_ok = bool(basis.get("satisfied"))
+            primary_ok = all(bool(r.get("satisfied")) for r in records)
+            basis["primary"] = records
+            basis["corroboration"] = "agree" if secondary_ok == primary_ok else "disagree"
+            if not primary_ok:
+                status = "fail"
+                if any(r.get("kind") == _KIND_STRUCTURAL for r in records):
+                    kind = _KIND_STRUCTURAL
+                elif kind == _KIND_PASS:
+                    kind = _KIND_PHYSICS
         if kind == _KIND_STRUCTURAL:
             saw_structural = True
         elif kind == _KIND_PHYSICS:
             saw_physics = True
         per_test.append({"test_id": test_id.strip(), "status": status, "basis": basis})
+    if primary_by_test:
+        # A primary record for a test no predicate carries would silently judge nothing;
+        # Compile pins primary test_ids ⊆ tests.md == predicate test_ids, so this is an IR defect.
+        raise PredicateError(
+            f"primary_predicates name test_id(s) with no test_predicates entry: "
+            f"{sorted(primary_by_test)}")
 
     counts = {"pass": 0, "fail": 0, "xfail": 0, "skipped": 0, "blocked": 0}
     for item in per_test:
@@ -481,6 +532,13 @@ def validate_predicate_schema(
                 if bool(cond.get("per_case")):
                     v.append(f"{cloc} sets both `per_case` and `case` "
                              "(mutually exclusive condition scopes)")
+            if "quantity" in cond:
+                # The name a primary predicate corroborates this condition under (Z6). Optional
+                # until the per-test coverage gate lands; when present it must be a well-formed
+                # quantity name, so a later coverage comparison never reads a malformed one.
+                q = cond.get("quantity")
+                if not isinstance(q, str) or not _QUANTITY_RE.match(q):
+                    v.append(f"{cloc}.quantity must match {_QUANTITY_RE.pattern} (got {q!r})")
             if "value" not in cond or cond.get("value") is None:
                 # Every op needs a concrete rhs. A condition with no `value` (or an explicit
                 # null) would compare against None at execute and permanently fail its test —

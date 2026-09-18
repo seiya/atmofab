@@ -15646,6 +15646,74 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(doc2["self_verdict"], "fail")
             self.assertEqual(doc2["failure_class"], "physics_fail")
 
+    def test_author_execute_verdict_conjoins_the_primary_predicates(self) -> None:
+        """Z6 PR-2 (issue #255), pinned at the HANDLER: `_author_execute_verdict` reads the
+        promoted captures under the run node dir and conjoins the host-evaluated primary
+        predicates with the diagnostics predicates. A passing diagnostics with a tampered
+        final capture is `physics_fail` with `corroboration=disagree`, the `[execute fail:
+        verdict]` report names the primary quantity, and an unreadable capture is
+        `structural_violation` rather than a crash."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            ir = self._predicate_ir()
+            ir["case"] = {"test_case_set": [
+                {"case_id": "l0_scale_identity_pass", "inputs": {"n": 4}},
+                {"case_id": "l0_invalid_length_xfail", "inputs": {"n": 4}}]}
+            ir["io_contract"]["raw_requirements"] = {"required_evidence": [
+                {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+                 "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
+                            "time_variable": "t", "time_shape_expr": "scalar"}}]}
+            ir["io_contract"]["primary_predicates"] = [
+                {"test_id": "l0_scale_identity_pass", "quantity": "scale",
+                 "target_cases": ["l0_scale_identity_pass"],
+                 "expr": "maxabs(final.u - 2 * initial.u)", "op": "le", "value": 0.0,
+                 "per_case": True}]
+            sdir = repo / refs.run_node_dir() / "raw" / "state_snapshots"
+            (sdir / "initial").mkdir(parents=True)
+
+            def _write(cid: str, u0: list, u1: list) -> None:
+                (sdir / "initial" / f"{cid}.json").write_text(json.dumps({"u": u0, "t": 0.0}))
+                (sdir / f"{cid}.json").write_text(json.dumps({"u": u1, "t": 1.0}))
+
+            good = {"checks": {"scale_identity": {"pass": True}, "input_guard": {"pass": True}},
+                    "verdict": {"overall": "pass", "failed_checks": []}}
+            _write("l0_scale_identity_pass", [1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0])
+            _write("l0_invalid_length_xfail", [1.0] * 4, [1.0] * 4)
+            doc = c._author_execute_verdict(refs, ir, good)
+            self.assertEqual(doc["self_verdict"], "pass")
+            basis = doc["per_test"][0]["basis"]
+            self.assertEqual(basis["corroboration"], "agree")
+            self.assertEqual(basis["primary"][0]["evaluated"][0]["value"], 0.0)
+            on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
+            self.assertEqual(on_disk["per_test"][0]["basis"]["primary"][0]["quantity"], "scale")
+            self.assertNotIn("primary", on_disk["per_test"][1]["basis"])
+
+            # the generated checks report pass; the captured state says the kernel did not scale
+            _write("l0_scale_identity_pass", [1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 9.0])
+            doc = c._author_execute_verdict(refs, ir, good)
+            self.assertEqual(doc["self_verdict"], "fail")
+            self.assertEqual(doc["failure_class"], "physics_fail")
+            self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "disagree")
+            report = wc._verdict_failure_report(doc)
+            self.assertIn("primary quantity='scale'", report)
+            self.assertIn("value=1.0", report)
+            self.assertIn("corroboration=disagree", report)
+
+            (sdir / "l0_scale_identity_pass.json").write_text("{")
+            doc = c._author_execute_verdict(refs, ir, good)
+            self.assertEqual(doc["failure_class"], "structural_violation")
+            self.assertIn("unreadable", wc._verdict_failure_report(doc))
+
+            # a malformed primary shape (which Compile refuses) is the structural doc, not a crash
+            ir["io_contract"]["primary_predicates"][0]["op"] = "includes"
+            doc = c._author_execute_verdict(refs, ir, good)
+            self.assertEqual(doc["failure_class"], "structural_violation")
+            self.assertIn("PrimaryEvidenceError", doc["predicate_error"])
+
     def test_author_execute_verdict_missing_predicates_is_structural(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:

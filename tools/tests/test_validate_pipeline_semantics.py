@@ -11582,6 +11582,63 @@ end program shallow_water2d_runner
             v = self._compile_with_io_contract(Path(tmp), io)
             self.assertTrue(any("test_predicates must be a non-empty list" in x for x in v), v)
 
+    def _primary_predicate(self, **override) -> dict:
+        return {"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
+                "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
+                "per_case": True, **override}
+
+    def _preds_with_quantity(self, quantity: object) -> list[dict]:
+        return [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                 "pass_when": {"all": [
+                     {"ref": "verdict.overall", "op": "eq", "value": "pass"},
+                     {"ref": "checks.g.status", "op": "eq", "value": "pass",
+                      "quantity": quantity}]}}]
+
+    def test_compile_gate_accepts_a_resolvable_primary_predicate(self) -> None:
+        """Z6 PR-2 (issue #255): `io_contract.primary_predicates` is gated at `--stage compile`
+        through the REAL wiring (`_validate_test_predicates` -> `validate_primary_predicate_schema`),
+        so a well-formed entry with a secondary `quantity` beside it passes the stage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+            io["primary_predicates"] = [self._primary_predicate()]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io), [])
+
+    def test_compile_gate_rejects_an_unresolvable_primary_predicate(self) -> None:
+        """Each refusal class the primary gate owns, observed at the stage: an unknown capture
+        variable, a bare name, a disallowed construct, a case input that is not a number in the
+        target case, an `at()` outside the target cases, and a malformed secondary `quantity`."""
+        rows = [
+            (self._primary_predicate(expr="sum(final.zeta)"), "not a snapshot schema variable"),
+            (self._primary_predicate(expr="nx"), "name 'nx' is not a coordinate"),
+            (self._primary_predicate(expr="final.h[0]"), "Subscript is not admitted"),
+            (self._primary_predicate(expr="inputs.grid.nx"), "in case 'c1': inputs.grid.nx"),
+            (self._primary_predicate(expr="sum(at('c2').final.h)"), "at('c2') is not one of"),
+            (self._primary_predicate(op="includes"), "op must be one of"),
+            (self._primary_predicate(test_id="t9"), "not a tests.md test_id"),
+        ]
+        for pred, fragment in rows:
+            with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(
+                    self._preds_with_quantity("mass_drift_rel"))
+                io["primary_predicates"] = [pred]
+                v = self._compile_with_io_contract(Path(tmp), io)
+                self.assertTrue(any(fragment in x for x in v), (fragment, v))
+                self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"))
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("quantity must match" in x for x in v), v)
+
+    def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+            io["primary_predicates"] = [self._primary_predicate()]
+            io["raw_requirements"]["required_evidence"] = [
+                {"artifact": "metrics_basis.json", "required": True}]
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("requires a state_snapshots required_evidence" in x
+                                for x in v), v)
+
     def test_compile_predicate_gate_rejects_unknown_case_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["nope"],
