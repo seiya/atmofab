@@ -446,7 +446,12 @@ when a rule does not obviously apply:
 3. **Run the verification set** and record the measurements. The commands are in
    `.claude/skills/atmofab-enforcement-change/references/verification.md` (suite baseline, ruff
    diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for
-   enforcement machinery).
+   enforcement machinery). **Run it again after every later commit of the loop, a comment-only
+   one included**: a file that a derivation transformation tuple hashes
+   (`tools/tests/test_derivation_transformation_drift.py` — `tools/verdict_evaluator.py`,
+   `tools/primary_evidence.py`, the compile-inlined documents, the conductor methods it names)
+   moves its pin on ANY byte, and PR #257 shipped a three-line comment commit whose message said
+   the sweep was closed while the suite was red on that pin until the next round found it.
 
 4. **Leave the list of surfaces you touched** in the commit message or the pull request. That is where
    reviewers attack from.
@@ -636,7 +641,14 @@ no-op on an untracked file), and **run the baseline before trusting a green resu
 the first in round 2, on the fix commit's own tests — four uncommitted test edits destroyed, redone
 from context, an hour lost — with the rule sitting in this file in those words. `cp` the file to a
 scratch path first and restore from that, or mutate in a worktree; the discipline is the same at
-every point in the loop, not just at round 0.
+every point in the loop, not just at round 0. **`git stash` is the same move wearing a different
+name, and it has a second failure the checkout one does not: on a CLEAN tree it stashes nothing
+and exits 0, so the `stash pop` you wrote to undo it pops whatever stash the repository already
+held — another branch's work, dropped into your tree as conflict markers.** PR #257 did exactly
+that while comparing a ruff count against `origin/main` (every edit was committed, so one
+`git restore` recovered it and the foreign stash survived). Compare a file against another
+revision with `git show <rev>:<path> | <tool> --stdin-filename <path> -` or in a worktree;
+never by stashing the tree you are working in (`references/mutation-testing.md`).
 
 **A THIRD one, and it is the mid-loop mutation's own shape rather than a round-0 rule read late:
 the hand mutation you take to CONFIRM A FIX is the one nobody checks.** A round-0 mutant is
