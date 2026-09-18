@@ -4570,11 +4570,14 @@ def _launch_closure_member(argv: list[str], *, repo_root: Path,
     """Start one `--jobs` child. Its stdout is a pipe the driver relays; stderr is
     inherited, so a child's warnings reach the operator's terminal as the driver's do.
 
-    `start_new_session`: the child leaves the driver's process group, so a terminal Ctrl-C
-    (SIGINT to the foreground group) reaches the DRIVER alone; what then happens to the
-    members is one mechanism, `_stop_closure_members` — the driver forwards SIGTERM and
-    waits — rather than a race between the terminal's signal and the driver's (found by
-    the Codex pass of round 2)."""
+    `start_new_session`: the child leaves the driver's process group AND its controlling
+    terminal, so no terminal signal reaches a member directly — not Ctrl-C's SIGINT, not
+    the SIGHUP of a closing session; what happens to the members is one mechanism,
+    `_stop_closure_members` — the driver, which does receive those signals (SIGTERM and
+    SIGHUP converted by `_install_signal_handlers`), forwards SIGTERM and waits — rather
+    than a race between the terminal's signal and the driver's (found by the Codex pass
+    of round 2; the hangup half by round 3). The member's inherited stderr still reaches
+    the terminal while it is open."""
     return subprocess.Popen(
         argv, cwd=repo_root, env=env, stdout=subprocess.PIPE, stderr=None, text=True,
         encoding="utf-8", errors="backslashreplace", bufsize=1, start_new_session=True)
@@ -4613,9 +4616,17 @@ def _stop_closure_members(running: dict[str, "_ClosureMemberProcess"], *,
         try:
             rc = mp.proc.wait(timeout=_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            mp.proc.kill()
+            # The member is a session leader (`start_new_session`), so its whole session
+            # goes with it — a runtime call in flight would otherwise outlive it holding
+            # the relay pipe open, and the reader below would wait for that instead.
+            try:
+                os.killpg(mp.proc.pid, signal.SIGKILL)
+            except OSError:
+                mp.proc.kill()
             rc = mp.proc.wait()
-        mp.reader.join()
+        # Bounded: the pipe closes with the member's session; a stray holder of it is not
+        # worth waiting on when the driver is already on its way out.
+        mp.reader.join(timeout=_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS)
         dependency_runs.append({
             "node": label(mp.node), "spec_ref": ref, "skipped": False, "resumed": mp.resumed,
             "orchestration_id": mp.orchestration_id, "exit_code": rc,
@@ -5365,17 +5376,26 @@ def _sigterm_to_exit(signum: int, frame: Any) -> None:  # noqa: ARG001 - signal 
 
 
 def _install_signal_handlers() -> None:
-    """Install the SIGTERM converter. Called ONLY from the `__main__` block.
+    """Install the SIGTERM (and SIGHUP) converter. Called ONLY from the `__main__` block.
 
     Not from `main()`: the unit tests (and any embedding caller) invoke `main()`
     in-process, and a library call must not rewrite the host process's signal
     disposition. Failures are ignored — signal handling is a recovery nicety, never a
     precondition for running a workflow.
     """
-    try:
-        signal.signal(signal.SIGTERM, _sigterm_to_exit)
-    except (ValueError, OSError, AttributeError):  # pragma: no cover - platform dependent
-        pass
+    for signum in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        # SIGHUP too (issue #250 PR-3, round 3): a terminal or ssh session closing sends
+        # it to the driver, and with the default disposition the driver dies with no
+        # `except` clause run — its single orchestration left `running`, and under
+        # `--jobs N` its members left detached with nobody reading their pipe. Converted,
+        # a hangup takes the same route as SIGTERM: the orchestration is terminalized
+        # `driver_interrupted`, and a `--jobs` driver stops its members first.
+        if signum is None:
+            continue
+        try:
+            signal.signal(signum, _sigterm_to_exit)
+        except (ValueError, OSError, AttributeError):  # pragma: no cover - platform dependent
+            pass
 
 
 if __name__ == "__main__":

@@ -6752,6 +6752,96 @@ class ParallelClosureTests(unittest.TestCase):
             self.assertEqual(
                 sum(1 for e in events if e.get("event") == "closure_member_interrupted"), 2)
 
+    def test_the_main_block_converts_sighup_like_sigterm(self) -> None:
+        """Round 3: a closing terminal / ssh session sends SIGHUP; with the default
+        disposition the driver died with no `except` clause run — its orchestration left
+        `running`, its `--jobs` members left detached. `_install_signal_handlers` (the
+        `__main__` block's) converts SIGHUP as it converts SIGTERM. Installed and restored
+        here so the test process keeps its own dispositions."""
+        import signal as _signal
+        saved = {sig: _signal.getsignal(sig) for sig in (_signal.SIGTERM, _signal.SIGHUP)}
+        try:
+            run_workflow._install_signal_handlers()
+            self.assertIs(_signal.getsignal(_signal.SIGTERM), run_workflow._sigterm_to_exit)
+            self.assertIs(_signal.getsignal(_signal.SIGHUP), run_workflow._sigterm_to_exit)
+        finally:
+            for sig, handler in saved.items():
+                _signal.signal(sig, handler)
+
+    def test_a_member_that_ignores_sigterm_is_killed_with_its_session_within_the_grace(self) -> None:
+        """Round 3 (N2): a member that outlives the grace is killed together with its
+        SESSION — a runtime call it had in flight would otherwise keep the relay pipe open
+        and the driver's reader would wait on it, not on the member. Driven with a member
+        that ignores SIGTERM and holds a grandchild on the pipe; the grace is shortened to
+        1 s for the row. The record is honest: `exit_code: -9`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            marks = repo_root / "marks"
+            marks.mkdir()
+            child = (
+                "import os, signal, subprocess, sys, time, pathlib\n"
+                "marks = pathlib.Path(sys.argv[1])\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "(marks / 'grandchild.pid').write_text(str(g.pid))\n"
+                "print('{\"status\": \"info\", \"event\": \"node_start\"}', flush=True)\n"
+                "time.sleep(60)\n"
+            )
+            real_launch = run_workflow._launch_closure_member
+
+            def fake_launch(argv, *, repo_root, env):
+                return real_launch([sys.executable, "-c", child, str(marks)],
+                                   repo_root=repo_root, env=env)
+
+            real_sleep = time.sleep
+            polls = {"n": 0}
+
+            def interrupting_sleep(seconds):
+                polls["n"] += 1
+                if polls["n"] == 3:
+                    raise KeyboardInterrupt
+                real_sleep(seconds)
+
+            runs: list[dict] = []
+            started = time.monotonic()
+            with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                                       "failed_stage": "ir_ref", "detail": "x"}), \
+                    mock.patch.object(run_workflow, "_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS", 1.0), \
+                    mock.patch.object(run_workflow.time, "sleep", interrupting_sleep), \
+                    redirect_stdout(io.StringIO()):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_workflow._run_closure_members_parallel(
+                        repo_root=repo_root,
+                        ordered=run_workflow._resolve_dependency_closure(
+                            repo_root, "spec/problem/a")[0],
+                        jobs=1, dep_until_phase="Validate",
+                        required_stages=["ir_ref", "pipeline_ref", "aggregate_verdict"],
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate", llm_config=_sample_config("claude"),
+                        workflow_mode="dev", status="running", run_conductor=False,
+                        wait_usage_reset=False, stdout_format="jsonl", resume=False,
+                        prior_orch_by_spec={}, preclaimed_orchestration_id=None,
+                        release_preclaim=None, dependency_runs=runs)
+            self.assertLess(time.monotonic() - started, 10.0)
+            self.assertEqual([r["status"] for r in runs], ["interrupted"])
+            self.assertEqual(runs[0]["exit_code"], -9)
+            gpid = int((marks / "grandchild.pid").read_text())
+            # the grandchild went with the session (killpg): waitable as gone, or not ours
+            # any more (reparented and reaped) — either way not alive
+            try:
+                os.kill(gpid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            if alive:
+                # reparented zombie or still dying: give it one moment, then assert
+                real_sleep(0.5)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(gpid, 0)
+
     def test_a_child_that_prints_a_skip_it_did_not_earn_is_not_recorded_as_a_skip(self) -> None:
         """C2-2: the skip record is built only when the driver's own re-verify agrees; a
         child that printed `closure_member_skipped` and left the node not ready is a
