@@ -547,6 +547,11 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(rec["evaluated"][0]["value"], 0.0)
         [rec] = self._eval([self._one("sum(inputs.initial.r4) + final.s")])
         self.assertEqual(rec["evaluated"][0]["value"], 17.0)
+        # the same under at('<case>'): the OTHER case's list input, as an array of its shape
+        self.cases[0]["inputs"]["initial"]["h_ref"] = np.roll(h, 2, axis=0).tolist()
+        [rec] = self._eval([self._one("maxabs(at('a').final.h - at('a').inputs.initial.h_ref)")])
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual(rec["evaluated"][0]["value"], 0.0)
         # a [ny] row against the [nx, ny] state: refused by the shape rule like any array
         self._structural(self._one("maxabs(final.h - inputs.initial.row)"), "rank 2 and 1")
         for bad, fragment in ((h[0][:3].tolist() + [[1.0]], "rectangular"),
