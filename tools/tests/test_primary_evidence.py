@@ -448,6 +448,27 @@ class EvaluationTest(unittest.TestCase):
         pe.parse_expr("-" * pe.MAX_EXPR_DEPTH + "1")
         pe.parse_expr("abs(" * 30 + "final.h" + ")" * 30)
 
+    def test_a_predicate_that_reads_no_state_raises_at_evaluation_too(self) -> None:
+        """Round 4: the evaluator halves of the round-3 rule were unpinned."""
+        for pred in ({**HMIN, "expr": "1.0"}, {**HMIN, "expr": "final.t"},
+                     {**HMIN, "bind": {"unused": "final.h"}, "expr": "1.0"}):
+            with self.subTest(pred=pred), \
+                    self.assertRaisesRegex(pe.PrimaryEvidenceError, "reads no captured state"):
+                self._eval([pred])
+        [rec] = self._eval([{**HMIN, "bind": {"a": "sum(final.h)", "b": "a * 0"}, "expr": "b"}])
+        self.assertEqual(rec["kind"], "physics")   # evaluated (to 0): the rule is syntactic
+        for key in ("na_allowed", "expected_outcome"):
+            with self.subTest(key=key), \
+                    self.assertRaisesRegex(pe.PrimaryEvidenceError, f"{key} is not a primary"):
+                self._eval([{**HMIN, key: True}])
+
+    def test_a_grammar_refusal_is_not_prefixed_as_a_parse_error(self) -> None:
+        with self.assertRaises(pe.PrimaryEvidenceError) as cm:
+            pe.parse_expr("+1")
+        self.assertEqual(str(cm.exception), "unary UAdd is not admitted")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "nested too deeply to parse"):
+            pe.parse_expr("-" * 7000 + "1")   # ast.parse's own limit, not MAX_EXPR_DEPTH
+
     def test_physics_fail_stops_at_the_first_failing_case(self) -> None:
         strict = {**HMIN, "value": {"per_case": {"a": 2.0, "b": 2.0}}}
         [rec] = self._eval([strict])
@@ -710,6 +731,12 @@ class VerdictIntegrationTest(unittest.TestCase):
         primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
         doc = evaluate_verdict(self.predicates, diag, primary=primary)
         self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
+        # ... and a SECONDARY gap (a ref the runner never emitted) is `unevaluated` too
+        self.run.write_state("b", self.h, self.h)
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        doc = evaluate_verdict(self.predicates, {}, primary=primary)
+        self.assertEqual(doc["failure_class"], "structural_violation")
+        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
 
     def test_both_sides_failing_agree(self) -> None:
         self.run.write_state("a", self.h, self.h * 0.9)
@@ -870,8 +897,15 @@ class SchemaGateTest(unittest.TestCase):
             with self.subTest(expr=expr):
                 out = self._v([{**HMIN, "expr": expr}])
                 self.assertTrue(any("reads no captured state" in m for m in out), out)
-        # a state read inside a bind counts
+        # a state read inside a bind counts only when `expr` reaches that bind (transitively);
+        # the rule is SYNTACTIC — `m * 0` passes it and is V3's to judge
         self.assertEqual(self._v([{**HMIN, "bind": {"m": "sum(final.h)"}, "expr": "m * 0"}]), [])
+        self.assertEqual(self._v([{**HMIN, "bind": {"a": "sum(final.h)", "b": "a * 2"},
+                                   "expr": "b"}]), [])
+        out = self._v([{**HMIN, "bind": {"unused": "final.h"}, "expr": "1.0"}])
+        self.assertTrue(any("reads no captured state" in m for m in out), out)
+        out = self._v([{**HMIN, "bind": {"z": "at('b').final.h"}, "expr": "1"}])
+        self.assertTrue(any("reads no captured state" in m for m in out), out)
         # and the keys the secondary side has are refused here
         for key in ("na_allowed", "expected_outcome"):
             out = self._v([{**HMIN, key: "pass"}])
@@ -949,6 +983,20 @@ class CliTest(unittest.TestCase):
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([{**HMIN, "op": "includes"}])))
         with contextlib.redirect_stdout(out):
             self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root)]), 2)
+        # round 4: an unreadable IR (a YAML list, malformed YAML, a missing file) and a run
+        # directory without captures are exit 2 with a JSON error, never the exit code of
+        # "a predicate is unsatisfied" and never a traceback
+        for text in ("- a\n- b\n", "io_contract: [unclosed\n"):
+            (ir_dir / "spec.ir.yaml").write_text(text)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root)]), 2)
+            self.assertIn("error", json.loads(out.getvalue()))
+        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([MASS, HMIN])))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pe.main(["--ir", str(ir_dir / "missing.yaml"),
+                                      "--run", str(run.root)]), 2)
+            self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root / "nope")]), 2)
 
 
 if __name__ == "__main__":

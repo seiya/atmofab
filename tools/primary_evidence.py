@@ -292,12 +292,13 @@ def parse_expr(text: Any) -> ast.Expression:
         tree = ast.parse(text.strip(), mode="eval")
     except (SyntaxError, ValueError) as exc:
         raise PrimaryEvidenceError(f"expr does not parse: {exc}") from None
-    except RecursionError:
+    except (RecursionError, MemoryError):
+        # `ast.parse` itself gives up on a chain of some thousands of operators (measured on
+        # 3.10: RecursionError, then MemoryError past ~6000 unary minuses)
         raise PrimaryEvidenceError("expr is nested too deeply to parse") from None
-    try:
-        _check_node(tree.body, [])
-    except RecursionError:
-        raise PrimaryEvidenceError("expr is nested too deeply to parse") from None
+    # `_check_node` recurses once per level and refuses past MAX_EXPR_DEPTH, so it cannot
+    # reach the interpreter's limit: no guard around it.
+    _check_node(tree.body, [])
     return tree
 
 
@@ -309,10 +310,35 @@ def expr_names(tree: ast.Expression) -> list[NameRef]:
 
 
 def reads_captured_state(refs: list[NameRef], state_names: set[str]) -> bool:
-    """Whether any reference reads a captured STATE variable (the time variable excluded). A
-    predicate that reads none — a constant, an input, the time alone — values nothing the
-    kernel produced and corroborates nothing; the gate and the evaluator both refuse it."""
+    """Whether any reference reads a captured STATE variable (the time variable excluded)."""
     return any(r.kind == "capture" and r.name in state_names for r in refs)
+
+
+def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
+                          state_names: set[str]) -> bool:
+    """Whether a predicate's `expr`, or a `bind` that `expr` reaches (transitively), reads a
+    captured state variable. A predicate that reads none — a constant, an input, the time
+    alone, or a state read only in a bind the expression never uses — values nothing the
+    kernel produced and corroborates nothing; the gate and the evaluator both refuse it.
+
+    SYNTACTIC: the rule sees that the state is read, not that the value depends on it —
+    `sum(final.h) * 0` passes it. Whether the expression is the test's own quantity is
+    `Compile.verify` V3's judgment (`phase_01_compile.md`), which has no deterministic
+    backstop; PR-3's coverage gate over `quantity` names closes omission, not vacuity."""
+    if reads_captured_state(expr_refs, state_names):
+        return True
+    reached: set[str] = set()
+    frontier = [r.name for r in expr_refs if r.kind == "name" and r.name in bind_refs]
+    while frontier:
+        name = frontier.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        refs = bind_refs[name]
+        if reads_captured_state(refs, state_names):
+            return True
+        frontier.extend(r.name for r in refs if r.kind == "name" and r.name in bind_refs)
+    return False
 
 
 # ----------------------------------------------------------------------------- environment
@@ -833,13 +859,12 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
                 raise PrimaryEvidenceError(f"{loc}: {key} is not a primary predicate key")
         tree = parse_expr(pred.get("expr"))
         bind = pred.get("bind")
-        bind_trees = ([parse_expr(t) for t in bind.values()]
-                      if isinstance(bind, dict) else [])
-        state_names = set(schema_variables(schema))
-        if not any(reads_captured_state(expr_names(t), state_names)
-                   for t in (*bind_trees, tree)):
+        bind_refs = ({str(k): expr_names(parse_expr(t)) for k, t in bind.items()}
+                     if isinstance(bind, dict) else {})
+        if not predicate_reads_state(expr_names(tree), bind_refs, set(schema_variables(schema))):
             raise PrimaryEvidenceError(
-                f"{loc}: reads no captured state variable (initial.<var> / final.<var>)")
+                f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
+                "expr or a bind expr reaches")
         scope, contexts = _predicate_scope(pred, loc)
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
@@ -1012,7 +1037,8 @@ def validate_primary_predicate_schema(
                     bind_names.append(name)
         exprs.append((f"{loc}.expr", None, pred.get("expr")))
         seen_binds: set[str] = set()
-        state_read = False
+        bind_refs: dict[str, list[NameRef]] = {}
+        expr_refs: list[NameRef] = []
         parsed_all = True
         for eloc, bind_name, text in exprs:
             try:
@@ -1024,7 +1050,10 @@ def validate_primary_predicate_schema(
                     seen_binds.add(bind_name)
                 continue
             refs = expr_names(tree)
-            state_read = state_read or reads_captured_state(refs, set(variables))
+            if bind_name is None:
+                expr_refs = refs
+            else:
+                bind_refs[bind_name] = refs
             for ref in refs:
                 if ref.case is not None and ref.case not in targets:
                     v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
@@ -1054,9 +1083,10 @@ def validate_primary_predicate_schema(
                              "constant")
             if bind_name is not None:
                 seen_binds.add(bind_name)
-        if parsed_all and not state_read:
-            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>): "
-                     "a corroborant values the state the kernel produced")
+        if parsed_all and not predicate_reads_state(expr_refs, bind_refs, set(variables)):
+            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
+                     "expr or a bind expr reaches: a corroborant values the state the kernel "
+                     "produced")
     return v
 
 
@@ -1065,9 +1095,12 @@ def validate_primary_predicate_schema(
 def _read_ir(path: Path) -> dict[str, Any]:
     import yaml  # the host reader; PyYAML is a runtime dependency of the conductor
     target = path / "spec.ir.yaml" if path.is_dir() else path
-    doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+    try:
+        doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise PrimaryEvidenceError(f"{target}: unreadable IR ({exc})") from None
     if not isinstance(doc, dict):
-        raise SystemExit(f"{target}: not a mapping")
+        raise PrimaryEvidenceError(f"{target}: not a mapping")
     return doc
 
 
@@ -1088,9 +1121,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         ir = _read_ir(args.ir)
+        if not (Path(args.run) / "raw" / "state_snapshots").is_dir():
+            raise PrimaryEvidenceError(f"{args.run}: no raw/state_snapshots directory")
         records = evaluate_primary_predicates(ir, args.run)
-    except (PrimaryEvidenceError, OSError, ValueError) as exc:
-        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}, indent=2))
+    except PrimaryEvidenceError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2))
         return 2
     print(json.dumps(records, indent=2, ensure_ascii=False))
     return 0 if all(r["satisfied"] for r in records) else 1

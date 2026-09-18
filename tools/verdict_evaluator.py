@@ -61,8 +61,8 @@ those records as ``primary=`` — already evaluated, since this module reads no 
 conjoins them with the test's ``pass_when``: a test's ``status`` holds only when both hold,
 ``basis.primary[]`` carries each record, and ``basis.corroboration`` says whether the two
 kinds of evidence agree (``agree`` when both are satisfied or both are not, ``disagree``
-when exactly one is, ``unevaluated`` when a record is structural — the state could not be
-valued, so nothing was corroborated either way). A ``disagree`` — a kernel/checks
+when exactly one is, ``unevaluated`` when either half is structural — a record the host could
+not value, or a diagnostics ref absent — so nothing was corroborated either way). A ``disagree`` — a kernel/checks
 inconsistency — or an ``unevaluated`` fails the test, so the judge (not spawned on a failing
 verdict) never sees one; the operator's ``[execute fail: verdict]`` report and the escalate
 diagnostician do. A condition's optional
@@ -407,10 +407,10 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
             primary_ok = all(bool(r.get("satisfied")) for r in records)
             structural = any(r.get("kind") == _KIND_STRUCTURAL for r in records)
             basis["primary"] = records
-            # An evidence GAP is neither agreement nor disagreement: a record the host could
-            # not value says nothing about the kernel, and labelling it `agree` beside an
-            # `evaluation_error` would tell the operator the two halves concur (round 3).
-            if structural:
+            # An evidence GAP on EITHER side is neither agreement nor disagreement: a record
+            # the host could not value, or a diagnostics ref the checks module never emitted,
+            # says nothing about whether the two halves concur (rounds 3 and 4).
+            if structural or kind == _KIND_STRUCTURAL:
                 basis["corroboration"] = "unevaluated"
             else:
                 basis["corroboration"] = "agree" if secondary_ok == primary_ok else "disagree"

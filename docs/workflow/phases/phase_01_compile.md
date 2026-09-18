@@ -160,10 +160,11 @@ io_contract:
     # and the time_variable — plus the case's own `inputs.<dotted>` numbers and the `coordinates` above, valued
     # by the host (`tools/primary_evidence.py`) with no generated code in the path. Validate.execute conjoins
     # it with the test's pass_when: the test's status holds only when both hold, and verdict.json records
-    # `basis.primary[]` (each host-computed value) and `basis.corroboration` (agree / disagree).
+    # `basis.primary[]` (each host-computed value) and `basis.corroboration` (agree / disagree / unevaluated).
     # A test may carry several (one per quantity); a test may carry none until the coverage gate lands. Every
-    # entry reads captured state (`initial.<var>` / `final.<var>`, in `expr` or a `bind`): a constant, an input
-    # or the time alone values nothing the kernel produced and is refused. On an `expected_outcome: xfail`
+    # entry reads captured state (`initial.<var>` / `final.<var>`, in `expr` or a `bind` that `expr` reaches): a
+    # constant, an input or the time alone values nothing the kernel produced and is refused — a SYNTACTIC
+    # rule; whether the value depends on the state, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entry states the state fact the guard leaves behind (the state did not advance, the depth is
     # the initial depth), and must hold for the test to certify `xfail`; the key `expected_outcome` (like
     # `na_allowed`) is not a primary predicate key — the outcome is the test's, on its test_predicates entry.

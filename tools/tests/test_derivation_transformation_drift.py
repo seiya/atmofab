@@ -154,9 +154,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # pairing rule, the arity caps and the coordinate-name rule; V3 gains item (iv).
     # Re-pinned again in round 2: a coordinate carries the state's shape, the time variable's
     # provenance and the declared end time in the examples, finite thresholds.
-    # Re-pinned in round 3: every entry reads captured state, the xfail semantics, the depth
-    # bound, the end-state-minimum note.
-    "compile-docs-3": "87b4e4d0a17dfc9a1e3e9ec5a6e3c1bda2f8cfd76b629be1af82c1513f68ad8c",
+    # Re-pinned in rounds 3 and 4: every entry reads captured state (a bind `expr` reaches;
+    # syntactic), the xfail semantics, the depth bound, the end-state-minimum note.
+    "compile-docs-3": "569a188ed9fcad5b59c64bb90e5049b7e8d523636fc09505755a5575f2918eb5",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -189,8 +189,10 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in round 3 (the sweep commit e3d97b4e broke this pin with a comment and did
     # not re-pin — the suite was red at that commit): `basis.corroboration` gains
     # `unevaluated`, the tree depth is bounded at parse, a predicate reading no captured state
-    # is refused, `na_allowed` / `expected_outcome` are refused as primary keys.
-    "verdict-2": "de23326fd5f3c4fe9d25a503c485bd60c5493b8a0728c44c99ba717eeae84b11",
+    # is refused, `na_allowed` / `expected_outcome` are refused as primary keys. Round 4: the
+    # state-read rule is transitive over the binds `expr` reaches, `unevaluated` covers a
+    # secondary-side gap too, the CLI's exit codes hold for an unreadable IR / run directory.
+    "verdict-2": "1594ef48dbb275d9ec64d345ebcdf500356f7a1f165740191d9616001260b715",
 }
 
 
