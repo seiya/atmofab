@@ -34,7 +34,7 @@ Review checklist: your canonical sources are the tests document and the IO contr
 **`source_meta_document` — the generated program the build compiled:**
 <source_meta_document>
 
-**`raw_evidence_excerpt_document` — host-computed summary of `raw/` under a stamped policy version; no numeric array is inlined at any size, so these summaries are your whole view of the primary evidence:**
+**`raw_evidence_excerpt_document` — host-computed summary of `raw/` under a stamped policy version; no numeric array is inlined at any size, so these summaries are your whole view of the primary evidence. Each `state_snapshots.cases[]` entry summarizes the case's final capture (right after `case_run`) and, under `initial`, the same runner's capture right after `case_setup` (`null` on a node whose own runner writes none); a metric that claims to be a change over the run is supported only if the two captures differ the way it says:**
 <raw_evidence_excerpt_document>
 
 <dependency_facts>

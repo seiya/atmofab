@@ -11295,6 +11295,31 @@ end program shallow_water2d_runner
                 f"compile stage must reject object-form required_update_paths; got: {v}",
             )
 
+    def test_compile_stage_requires_every_declared_state_variable_captured(self) -> None:
+        """Z6 (issue #255): `algorithm.state_variables` ⊆ the state_snapshots schema, so a
+        declared primary state the runner never captures — one no host-evaluated predicate
+        could reach, and one the bundle (which binds the schema alone) never names — is a
+        `Compile fail`. A round-1 reviewer measured that no such check existed while three
+        documents said one did. Read through the same contract resolution as the
+        multi-dimensional gate; the fixture's snapshot schema declares `h`, `hu`, `hv`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            contract = self._valid_state_contract()
+            contract["state_variables"].append({"name": "zz_uncaptured", "shape_expr": "[2,2]"})
+            contract["required_update_paths"].append("zz_uncaptured")
+            v = self._compile_with_state_contract(Path(tmp), contract)
+            hits = [x for x in v if "algorithm.state_variables ['zz_uncaptured'] are not "
+                    "state_snapshots schema variables" in x]
+            self.assertEqual(len(hits), 1, v)
+        # the flat placement (what every real IR authors) is read the same way
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), {
+                "state_variables": [{"name": "h", "shape_expr": "[2,2]"},
+                                    {"name": "zz_uncaptured", "shape_expr": "[2,2]"}],
+                "required_update_paths": ["h", "zz_uncaptured"],
+                "diagnostics_from_state": True, "fallback_policy": "fail_closed"})
+            self.assertTrue(any("['zz_uncaptured'] are not state_snapshots schema variables"
+                                in x for x in v), v)
+
     def test_compile_stage_accepts_string_form_required_update_paths(self) -> None:
         """Negative twin: the canonical string-list form passes the compile stage cleanly, so the
         gate the previous test relies on is not simply rejecting everything."""

@@ -190,11 +190,13 @@ every path, the rejected-input path included.
   real values; a metrics_basis zero-filled across the whole run fails `post_execute`
   (`trivial placeholder detected`). The exact rejection condition is canonical in
   `RUNNER_OUTPUT_CONTRACT.md` §3.
-- **A callback cannot reach the snapshot.** Both captures of a case precede its first
-  `checks_compute` / `metric_compute` call, and the runner keeps the serialized copy —
-  whatever a callback writes into a bound variable afterwards is invisible to the
-  snapshot and to the metrics basis. Callbacks compute from the state; they do not
-  stage it.
+- **A callback cannot reach the snapshot through the state.** Both captures of a case
+  precede its first `get_time` / `checks_compute` / `metric_compute` call, and the runner
+  keeps the serialized copy — whatever a callback writes into a bound variable afterwards
+  is invisible to the snapshot and to the metrics basis. Callbacks compute from the state;
+  they do not stage it. (A callback that rewrote the snapshot FILE would be the §4 file-I/O
+  prohibition broken; the record of what the gate does and does not see is
+  `docs/design/zero_base_architecture.md`, the Z6 item.)
 
 ## 3. Module-level state is expected
 

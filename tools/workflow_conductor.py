@@ -3358,11 +3358,15 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     That is unchanged from before this was a function — both loops wrote the same literal — and
     it is inert. It was inert already when its only reader was `_payload_is_m3c_physics`, which
     narrowed the AGENTIC contract-doc set while a pure launch emptied `skill_must_read_refs`
-    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery, so
-    the stamp now has NO reader at all and is recorded provenance. It is written down because
-    this is the SEAM: the next author needs to know it already has a caller it does not fit,
-    and that adding a reader means deciding what the flag means for an `infrastructure` node
-    first.
+    regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery.
+    Since Z6 (issue #255) `build_launch_request` reads the flag again, for ONE decision on the
+    validate.execute request only: whether the `raw/state_snapshots/initial/<case_id>.json`
+    captures are deliverables — and THAT caller passes the node's real answer
+    (`_conductor_authors_runner`, in `run_substep`), never this constant, so the literal here
+    stays inert and recorded provenance on the compile path. It is written down because this
+    is the SEAM: the next author needs to know it already has a caller it does not fit, and
+    that reading it on the compile path means deciding what the flag means for an
+    `infrastructure` node first.
     """
     return (True, True)
 

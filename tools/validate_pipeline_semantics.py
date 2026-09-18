@@ -7647,6 +7647,28 @@ def _state_snapshot_required(repo_root: Path, execution: NodeExecution) -> bool:
     return default_required
 
 
+def _algorithm_state_variable_names(ir: Any) -> list[str]:
+    """The names the IR's state contract declares under `state_variables[]` (object form
+    `{name, ...}` or a bare string), in order, deduplicated; `[]` when the `algorithm` section
+    is absent or declares none. Read through `_algorithm_state_contract` — the same resolution
+    order the multi-dimensional contract gate uses (`state_contract`, then `update_semantics`,
+    then the direct children of `algorithm`) — so the two gates cannot read two contracts."""
+    algorithm = ir.get("algorithm") if isinstance(ir, dict) else None
+    if not isinstance(algorithm, dict):
+        return []
+    try:
+        contract = _algorithm_state_contract(algorithm)
+    except ValueError:
+        return []
+    raw = contract.get("state_variables") if isinstance(contract, dict) else None
+    out: list[str] = []
+    for v in (raw if isinstance(raw, list) else []):
+        name = v if isinstance(v, str) else (v.get("name") if isinstance(v, dict) else None)
+        if isinstance(name, str) and name.strip() and name.strip() not in out:
+            out.append(name.strip())
+    return out
+
+
 def _validate_io_contract_file(
     repo_root: Path, contract_path: Path, violations: list[str]
 ) -> None:
@@ -7666,6 +7688,9 @@ def _validate_io_contract_file(
     # tests.md is referenced from `meta.source_refs.tests`, which the io_contract flattening below
     # does not carry — resolve it from the document while we still hold it.
     tests_path = _tests_path_from_ir_document(repo_root, contract)
+    # `algorithm.state_variables` is not carried by the flattening either; keep the declared
+    # names for the snapshot-coverage rule below (Z6, issue #255).
+    declared_state_variables = _algorithm_state_variable_names(contract)
 
     # New IR: spec.ir.yaml has the io_contract section nested under
     # `io_contract:` and contains inputs / outputs / raw_requirements /
@@ -7937,6 +7962,19 @@ def _validate_io_contract_file(
         violations.append(
             f"{contract_path}:state_snapshots schema must declare variables with shape_expr when required"
         )
+    # Every declared primary state variable is captured: `algorithm.state_variables` ⊆ the
+    # snapshot schema (Z6, issue #255). A state the IR declares and the runner never captures
+    # is a state no host-evaluated predicate can reach, and the bundle binds the schema alone,
+    # so the gap would otherwise be named by nothing. Checked whenever the section is present
+    # — a `problem` IR's multi-dimensional contract carries it; others declare none.
+    if snapshot_required:
+        uncaptured = [v for v in declared_state_variables if v not in snapshot_variables]
+        if uncaptured:
+            violations.append(
+                f"{contract_path}:algorithm.state_variables {uncaptured} are not "
+                "state_snapshots schema variables; every declared state variable is captured "
+                "(add it to raw_requirements.required_evidence[state_snapshots].schema.variables)"
+            )
     if snapshot_required and not snapshot_time_variable:
         violations.append(
             f"{contract_path}:state_snapshots schema must declare time_variable when required"

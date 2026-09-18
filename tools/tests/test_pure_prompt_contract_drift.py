@@ -523,8 +523,11 @@ PINNED: dict[str, str] = {
     # judges the bound variables instead of getters; `CHECKS_MODULE_CONTRACT.md` §1-4 gains
     # §1-b and loses the getter signatures; `RUNNER_OUTPUT_CONTRACT.md` §3 names the
     # `initial/<case_id>.json` capture; the `harness` producer template's schema version and
-    # bindings bullet move with it.
-    "pure-44": "0415c56630471393452f0cd61dedd44e8673936b852ede042f2b79015646dcd8",}
+    # bindings bullet move with it. Re-pinned in round 1 before shipping (the version is new
+    # on this branch): the judge template names the `initial` key of the excerpt, the harness
+    # template no longer says "getter", and the producer template says the compile gate holds
+    # `algorithm.state_variables` ⊆ snapshot variables.
+    "pure-44": "bcf4a10baa4c00ca5ea05315e8bbe3821780e2d1946304c2fe8bc9392a2409c7",}
 
 
 def _contract_tuple() -> dict[str, object]:

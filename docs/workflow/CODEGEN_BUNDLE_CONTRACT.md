@@ -289,7 +289,7 @@ declares it.
 - **Symbol uniqueness**: a symbol is published at most once **per module**, compared
   case-insensitively (Fortran is case-insensitive in both). A symbol is module-qualified, so
   each member's checks module legitimately exports the same fixed ABI name (`case_run`,
-  `get_r1`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
+  `get_time`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
   same name in the same module is an unlinkable duplicate.
 - **Coverage invariant**: every unit member owns at least one `model` file and an
   `operation` entrypoint count set by its kind (see "Optimization unit"): a `problem` member
@@ -478,9 +478,10 @@ Agreement between `state_bindings[]` and the IR's snapshot variables (the set eq
 the convention above) is checked at assembly time (`Z2`), where the IR is in scope. This
 contract validates the bundle in isolation and therefore does not check it. (Through 1.1.0
 the assembly-time check was membership in `algorithm.state_variables`; the snapshot schema
-is the wider set — the compile gate keeps `algorithm.state_variables` ⊆ snapshot variables
-on the kinds that declare them — and it is the set the runner captures, so it is the one the
-binding must cover.)
+is the wider set — the compile gate requires `algorithm.state_variables` ⊆ snapshot variables
+(`_validate_io_contract_file`, added with Z6: a declared state the runner never captures is
+a `Compile fail`) — and it is the set the runner captures, so it is the one the binding must
+cover.)
 
 ## Build-graph derivation
 

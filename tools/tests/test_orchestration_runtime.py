@@ -20810,8 +20810,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # arrives — the bound-state convention (`sb_<var> => <var>`, the two capture points,
         # the publication rule, the allocate-on-every-path rule) the `m3c` reviewer judges the
         # checks module against; §2 gains the "a callback cannot reach the snapshot" bullet.
-        # Measured 17441.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 17600,
+        # Measured 17441; 17673 after round 1 scoped the §2 bullet to the state (the file is
+        # the §4 prohibition's, with the record pointer). Ceiling 17800.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 17800,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -21081,8 +21082,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # states what a snapshot variable IS (primary state the checks module holds, captured at
         # two points — not a computed quantity, not an echoed input) and the identifier rule the
         # render precondition enforces on its name (the compile leaf must be told what the gate
-        # refuses, in the gate's words). Measured 73592.
-        "docs/workflow/phases/phase_01_compile.md": 73800,
+        # refuses, in the gate's words). Measured 73628 at 95149e39; round 1 added the
+        # `algorithm.state_variables` ⊆ snapshot-variables gate under the render preconditions
+        # and rewrote the V3 recompute-inputs sentence (a scalar case input is `inputs`, not a
+        # snapshot echo): 74417. Ceiling 74600.
+        "docs/workflow/phases/phase_01_compile.md": 74600,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
