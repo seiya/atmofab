@@ -154,7 +154,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # pairing rule, the arity caps and the coordinate-name rule; V3 gains item (iv).
     # Re-pinned again in round 2: a coordinate carries the state's shape, the time variable's
     # provenance and the declared end time in the examples, finite thresholds.
-    "compile-docs-3": "7a30cbcfbf64fa6264aaa757cd727d114186876e087b58281372f5b5fed2efb1",
+    # Re-pinned in round 3: every entry reads captured state, the xfail semantics, the depth
+    # bound, the end-state-minimum note.
+    "compile-docs-3": "87b4e4d0a17dfc9a1e3e9ec5a6e3c1bda2f8cfd76b629be1af82c1513f68ad8c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -184,7 +186,11 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned again in round 2: coordinates are expanded to the captured state's shape, a
     # reduction over an unexpanded coordinate field is refused, a threshold must be finite, an
     # empty capture is refused, and the module's own errors are kept verbatim.
-    "verdict-2": "62e9b757f265fe3e049a2170af04b17035693dafaa607cb9a507c94355c20467",
+    # Re-pinned in round 3 (the sweep commit e3d97b4e broke this pin with a comment and did
+    # not re-pin — the suite was red at that commit): `basis.corroboration` gains
+    # `unevaluated`, the tree depth is bounded at parse, a predicate reading no captured state
+    # is refused, `na_allowed` / `expected_outcome` are refused as primary keys.
+    "verdict-2": "de23326fd5f3c4fe9d25a503c485bd60c5493b8a0728c44c99ba717eeae84b11",
 }
 
 

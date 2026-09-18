@@ -21106,7 +21106,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # norm over a reference field counts every cell), the time variable's provenance, the
         # `at()` case_id spelling, finite thresholds, the reference at the declared end time.
         # Measured 85136 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 85300,
+        # Bumped 85300->86200 (Z6 PR-2 round 3): every entry reads captured state, the xfail
+        # semantics, the depth bound, the end-state-minimum note on the positivity example.
+        # Measured 86007 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 86200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

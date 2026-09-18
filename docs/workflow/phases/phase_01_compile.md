@@ -161,7 +161,12 @@ io_contract:
     # by the host (`tools/primary_evidence.py`) with no generated code in the path. Validate.execute conjoins
     # it with the test's pass_when: the test's status holds only when both hold, and verdict.json records
     # `basis.primary[]` (each host-computed value) and `basis.corroboration` (agree / disagree).
-    # A test may carry several (one per quantity); a test may carry none until the coverage gate lands.
+    # A test may carry several (one per quantity); a test may carry none until the coverage gate lands. Every
+    # entry reads captured state (`initial.<var>` / `final.<var>`, in `expr` or a `bind`): a constant, an input
+    # or the time alone values nothing the kernel produced and is refused. On an `expected_outcome: xfail`
+    # test the entry states the state fact the guard leaves behind (the state did not advance, the depth is
+    # the initial depth), and must hold for the test to certify `xfail`; the key `expected_outcome` (like
+    # `na_allowed`) is not a primary predicate key — the outcome is the test's, on its test_predicates entry.
     - test_id: "<test_id>"                 # a tests.md test_id (⊆ the test_predicates set)
       quantity: "<name>"                   # the quantity the expression evaluates; matches the secondary condition it corroborates
       target_cases: ["<case_id>", ...]     # EXACTLY the target_cases of this test's test_predicates entry (set equality, gated): a corroborant ranges over every case its test ranges over, never over the easiest one alone
@@ -176,7 +181,7 @@ io_contract:
   # primary predicate grammar (closed; `tools/primary_evidence.py` GRAMMAR_VERSION 1 — gated at --stage compile
   # by parse + name resolution; what the gate cannot see — the captured arrays' extents, a division by zero —
   # is an evaluation error at Validate.execute, recorded on that predicate, never a crash):
-  #   operators   + - * / ** and unary -; finite numeric constants; `pi`, `e`
+  #   operators   + - * / ** and unary -; numeric constants; `pi`, `e`; a tree at most 64 levels deep
   #   names       initial.<var> / final.<var> (a snapshot schema variable, or the time_variable — the time the
   #               generated `get_time` reported at that capture; the case's end time as DECLARED is inputs.time.t_end
   #               or whichever input the case carries, and a reference field is evaluated at the declared value);
@@ -199,12 +204,12 @@ io_contract:
   #               first, or rolls a state of the SAME shape). A coordinate carries the state's shape, so a field
   #               built from one reduces over every cell; a reduction over a field with an extent-1 axis (a
   #               coordinate the host could not expand, because the captured arrays of the state's rank disagree
-  #               on shape) is refused until the field is paired with a state array
-  #   errors      a non-finite intermediate (a division by zero included), an array result, an unpaired operand
+  #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array
+  #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an array result, an unpaired operand
   #               shape, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank — each is a
   #               STRUCTURAL failure of that predicate at Validate.execute
   # worked translations of tests.md prose (the fidelity V3 reads):
-  #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05
+  #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05   (the END-STATE minimum; a runner metric that tracks the minimum over the whole run is a different quantity, so give this one its own quantity name — `h_min_final` — and the secondary condition on the run-wide metric keeps its own)
   #   lake at rest          expr: "maxabs(final.h - initial.h)"                   op: le  value: 1.0e-12
   #   analytic agreement    bind: {c0: "sqrt(inputs.constants.g * inputs.initial.H_0)", h_ref: "inputs.initial.H_0 + inputs.initial.eta0 * sin(2 * pi * (x - c0 * inputs.time.t_end) / inputs.grid.L_x)"}  (c0 is written before h_ref, which reads it; the reference is evaluated at the DECLARED end time, and every input path is spelled as this node's cases declare it — tests.md §5 is the formula's source, a shift or a second axis included)
   #                         expr: "norm2(final.h - h_ref) / norm2(h_ref)"          op: le  value: {per_case: {...}}

@@ -337,7 +337,7 @@ class EvaluationTest(unittest.TestCase):
         """When the captured arrays of the state's rank disagree on shape, a coordinate keeps
         extent 1 on the other axes and reducing over a field built from it is refused."""
         coords = [{"name": "x", "axis": 0, "count": NX, "length": 1.0, "placement": "cell_center"}]
-        ir = _ir([self._one("norm2(x)")], coordinates=coords, cases=self.cases)
+        ir = _ir([self._one("norm2(x) + final.s")], coordinates=coords, cases=self.cases)
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] \
             .append({"name": "w", "shape_expr": "[nx, nw]"})
         for path in (self.run.sdir / "initial" / "b.json", self.run.sdir / "b.json",
@@ -358,7 +358,7 @@ class EvaluationTest(unittest.TestCase):
     def test_a_coordinate_count_must_match_the_captured_extent(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": NX + 1, "length": 1.0,
                    "placement": "cell_center"}]
-        self._structural(self._one("x"), "does not match the captured state shape",
+        self._structural(self._one("final.s + sum(x)"), "does not match the captured state shape",
                          coordinates=coords)
 
     def _structural(self, pred: dict, fragment: str, **kw) -> dict:
@@ -398,8 +398,8 @@ class EvaluationTest(unittest.TestCase):
         # an intermediate that RECOVERS to a finite result (inf clipped by an elementwise min)
         # is still refused: the intermediate check is what these probes observe
         self._structural(self._one("min(sum(final.h) / (final.s - final.s), 5)"), "non-finite")
-        self._structural(self._one("min(1e400, 5)"), "non-finite")
-        self._structural(self._one("min(exp(1000), 3)"), "non-finite")
+        self._structural(self._one("min(1e400, final.s)"), "non-finite")
+        self._structural(self._one("min(exp(1000), final.s)"), "non-finite")
 
     def test_interpreter_exceptions_become_structural_records(self) -> None:
         """Round 1 (both axes): a Python-float division by zero, an integer literal beyond a
@@ -407,8 +407,8 @@ class EvaluationTest(unittest.TestCase):
         collapse the whole verdict to `per_test: []`."""
         self._structural(self._one("(final.s - initial.s) / (initial.s - initial.s)"),
                          "ZeroDivisionError")
-        self._structural(self._one("1 / 0"), "ZeroDivisionError")
-        self._structural(self._one("1" * 400), "OverflowError")
+        self._structural(self._one("final.s + 1 / 0"), "ZeroDivisionError")
+        self._structural(self._one("final.s + " + "1" * 400), "OverflowError")
         # equal rank, unequal extents between the two captures: named at load
         self.run.write("b", initial={"h": self.h.tolist(), "s": 1.0, "t": 0.0},
                        final={"h": self.h[:, :2].tolist(), "s": 1.0, "t": 0.2})
@@ -430,18 +430,23 @@ class EvaluationTest(unittest.TestCase):
                 self.assertTrue(rec["satisfied"], rec)
 
     def test_errors_this_module_names_are_kept_verbatim(self) -> None:
-        [rec] = self._eval([self._one("nope")])
+        [rec] = self._eval([self._one("nope + final.s")])
         self.assertEqual(rec["evaluated"][0]["error"],
                          "name 'nope' is not a bind, a coordinate or a constant")
-        [rec] = self._eval([self._one("1 / 0")])
+        [rec] = self._eval([self._one("final.s + 1 / 0")])
         self.assertEqual(rec["evaluated"][0]["error"],
                          "evaluation failed: ZeroDivisionError: float division by zero")
 
     def test_deep_nesting_is_a_parse_refusal(self) -> None:
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "nested too deeply|does not parse"):
-            pe.parse_expr("-" * 5000 + "1")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "nested too deeply|does not parse"):
-            pe.parse_expr(" + ".join(["1"] * 5000))
+        """Round 3: a 990-deep unary chain passed parse and recursed out of `evaluate`; the
+        tree is bounded at `MAX_EXPR_DEPTH` so no admitted expression recurses at evaluation."""
+        deep = "nested deeper than|nested too deeply|does not parse"
+        for src in ("-" * 5000 + "1", " + ".join(["1"] * 5000), "-" * 990 + "1",
+                    "-" * (pe.MAX_EXPR_DEPTH + 1) + "1", "abs(" * 70 + "1" + ")" * 70):
+            with self.subTest(src=src[:30]), self.assertRaisesRegex(pe.PrimaryEvidenceError, deep):
+                pe.parse_expr(src)
+        pe.parse_expr("-" * pe.MAX_EXPR_DEPTH + "1")
+        pe.parse_expr("abs(" * 30 + "final.h" + ")" * 30)
 
     def test_physics_fail_stops_at_the_first_failing_case(self) -> None:
         strict = {**HMIN, "value": {"per_case": {"a": 2.0, "b": 2.0}}}
@@ -465,7 +470,7 @@ class EvaluationTest(unittest.TestCase):
                                                self.run.root)
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual(rec["target_cases"], ["a", "b"])
-        bad = {**pred, "expr": "at('b').zeta"}
+        bad = {**pred, "expr": "at('b').zeta + final.s"}
         [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
                                                self.run.root)
         self.assertIn("not a coordinate of that case", rec["evaluated"][-1]["error"])
@@ -476,14 +481,14 @@ class EvaluationTest(unittest.TestCase):
         self.assertIn("do not pair", rec["evaluated"][-1]["error"])
         # the OTHER case's inputs are what `at('b').inputs` reads (round 2 census: the earlier
         # threshold straddled neither value)
-        exact = {**pred, "bind": {}, "expr": "inputs.grid.nx - at('b').inputs.grid.nx",
+        exact = {**pred, "bind": {}, "expr": "inputs.grid.nx - at('b').inputs.grid.nx + 0 * final.s",
                  "op": "eq", "value": float(NX)}
         [rec] = pe.evaluate_primary_predicates(_ir([exact], coordinates=coords, cases=cases),
                                                self.run.root)
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual(rec["evaluated"][0]["value"], float(NX))
         # a bind may not shadow a coordinate (the lookup order is binds first)
-        shadow = {**pred, "bind": {"x": "1"}, "expr": "sum(x)"}
+        shadow = {**pred, "bind": {"x": "1"}, "expr": "sum(x) + final.s"}
         [rec] = pe.evaluate_primary_predicates(_ir([shadow], coordinates=coords, cases=cases),
                                                self.run.root)
         self.assertIn("shadows a grammar name", rec["evaluated"][-1]["error"])
@@ -501,14 +506,14 @@ class EvaluationTest(unittest.TestCase):
         self._structural(pred, "outside this predicate's target_cases")
 
     def test_input_path_must_be_a_number(self) -> None:
-        self._structural(self._one("inputs.grid.arrangement"), "not a number")
-        self._structural(self._one("inputs.flag"), "not a number")
-        self._structural(self._one("inputs.grid"), "not a number")
-        self._structural(self._one("inputs.grid.missing"), "not a key")
+        self._structural(self._one("final.s + inputs.grid.arrangement"), "not a number")
+        self._structural(self._one("final.s + inputs.flag"), "not a number")
+        self._structural(self._one("final.s + inputs.grid"), "not a number")
+        self._structural(self._one("final.s + inputs.grid.missing"), "not a key")
 
     def test_unknown_name_and_capture_variable(self) -> None:
-        self._structural(self._one("final.zeta"), "not a snapshot schema variable")
-        self._structural(self._one("nope"), "not a bind, a coordinate or a constant")
+        self._structural(self._one("final.zeta + final.s"), "not a snapshot schema variable")
+        self._structural(self._one("nope + final.s"), "not a bind, a coordinate or a constant")
 
     def test_binds_evaluate_in_order_and_cannot_look_forward(self) -> None:
         pred = self._one("B", bind={"A": "sum(final.h)", "B": "A * 2"})
@@ -516,8 +521,8 @@ class EvaluationTest(unittest.TestCase):
         self.assertAlmostEqual(rec["evaluated"][0]["value"], 2 * float(self.h.sum()))
         self._structural(self._one("B", bind={"B": "A * 2", "A": "sum(final.h)"}),
                          "'A' is not a bind")
-        self._structural(self._one("pi", bind={"pi": "1"}), "shadows a grammar name")
-        self._structural(self._one("1", bind=[1]), "bind must be a mapping")
+        self._structural(self._one("pi + final.s", bind={"pi": "1"}), "shadows a grammar name")
+        self._structural(self._one("final.s", bind=[1]), "bind must be a mapping")
 
     def test_capture_file_defects_are_structural(self) -> None:
         (self.run.sdir / "initial" / "b.json").unlink()
@@ -586,7 +591,7 @@ class EvaluationTest(unittest.TestCase):
             (["x"], "must be mappings"),
         ):
             with self.subTest(coords=coords):
-                self._structural(self._one("x"), fragment, coordinates=coords)
+                self._structural(self._one("final.s + sum(x)"), fragment, coordinates=coords)
 
     def test_malformed_predicate_shape_raises(self) -> None:
         for pred, fragment in (
@@ -621,9 +626,9 @@ class EvaluationTest(unittest.TestCase):
             ("mean(final.h)", h.mean()), ("maxabs(-final.h)", np.abs(h).max()),
             ("norm2(final.h)", np.sqrt((h * h).sum())), ("max(final.h)", h.max()),
             ("min(sum(final.h), 1, 2)", min(h.sum(), 1, 2)),
-            ("max(min(final.h), 5)", 5.0), ("ceil(2.1) + floor(2.9)", 5.0),
-            ("exp(0) + log(e) + log2(8) + sin(0) + cos(0) + 2 ** 3", 1 + 1 + 3 + 0 + 1 + 8),
-            ("final.t - initial.t", 0.2),
+            ("max(min(final.h), 5)", 5.0), ("ceil(2.1) + floor(2.9) + 0 * final.s", 5.0),
+            ("exp(0) + log(e) + log2(8) + sin(0) + cos(0) + 2 ** 3 + 0 * final.s", 1 + 1 + 3 + 0 + 1 + 8),
+            ("final.t - initial.t + 0 * final.s", 0.2),
         ):
             with self.subTest(expr=expr):
                 [rec] = self._eval([self._one(expr)])
@@ -697,6 +702,14 @@ class VerdictIntegrationTest(unittest.TestCase):
         doc = self._verdict()
         self.assertEqual(doc["failure_class"], "structural_violation")
         self.assertEqual(doc["per_test"][0]["status"], "fail")
+        # an evidence gap is neither agreement nor disagreement (round 3): whichever way the
+        # secondary half went, the label is `unevaluated`
+        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
+        diag = _diag_all_pass()
+        diag["per_case"]["a"]["checks"]["mass"]["status"] = "fail"
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        doc = evaluate_verdict(self.predicates, diag, primary=primary)
+        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
 
     def test_both_sides_failing_agree(self) -> None:
         self.run.write_state("a", self.h, self.h * 0.9)
@@ -779,7 +792,7 @@ class SchemaGateTest(unittest.TestCase):
             ([{k: v for k, v in HMIN.items() if k != "per_case"}], "exactly one of"),
             ([{**HMIN, "case": "a"}], "exactly one of"),
             ([{**SYM, "case": "b", "target_cases": ["a"]}], "not one of its target_cases"),
-            ([{**HMIN, "na_allowed": True}], "na_allowed has no meaning"),
+            ([{**HMIN, "na_allowed": True}], "na_allowed is not a primary predicate key"),
             ([{**HMIN, "value": None}], "non-null"),
             ([{**HMIN, "value": "0.5"}], "value must be a finite number"),
             ([{**HMIN, "value": float("nan")}], "value must be a finite number"),
@@ -843,11 +856,26 @@ class SchemaGateTest(unittest.TestCase):
     def test_an_input_path_must_resolve_in_every_target_case(self) -> None:
         ir = _ir([HMIN])
         del ir["case"]["test_case_set"][1]["inputs"]["grid"]["dx"]
-        out = self._v([{**HMIN, "expr": "inputs.grid.dx"}], ir=ir)
+        out = self._v([{**HMIN, "expr": "inputs.grid.dx + final.s"}], ir=ir)
         self.assertEqual(len(out), 1, out)
         self.assertIn("in case 'b'", out[0])
         # under at('<case>') the path resolves in THAT case alone
-        self.assertEqual(self._v([{**HMIN, "expr": "at('a').inputs.grid.dx"}], ir=ir), [])
+        self.assertEqual(self._v([{**HMIN, "expr": "at('a').inputs.grid.dx + final.s"}],
+                                 ir=ir), [])
+
+    def test_a_predicate_that_reads_no_state_is_refused(self) -> None:
+        """Round 3 (leaf shortcut): `expr: "1.0"`, an input alone, or the time alone values
+        nothing the kernel produced; refused at the gate and at evaluation."""
+        for expr in ("1.0", "inputs.grid.nx * 0", "final.t", "sin(pi)", "at('a').inputs.grid.nx"):
+            with self.subTest(expr=expr):
+                out = self._v([{**HMIN, "expr": expr}])
+                self.assertTrue(any("reads no captured state" in m for m in out), out)
+        # a state read inside a bind counts
+        self.assertEqual(self._v([{**HMIN, "bind": {"m": "sum(final.h)"}, "expr": "m * 0"}]), [])
+        # and the keys the secondary side has are refused here
+        for key in ("na_allowed", "expected_outcome"):
+            out = self._v([{**HMIN, key: "pass"}])
+            self.assertTrue(any(f"{key} is not a primary predicate key" in m for m in out), out)
 
     def test_coordinates_resolve_in_every_case(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
@@ -860,7 +888,7 @@ class SchemaGateTest(unittest.TestCase):
         self.assertIn("inputs.grid.L_x", out[0])
 
     def test_time_variable_is_a_capture_name(self) -> None:
-        self.assertEqual(self._v([{**HMIN, "expr": "final.t - initial.t"}]), [])
+        self.assertEqual(self._v([{**HMIN, "expr": "final.t - initial.t + final.s"}]), [])
 
 
 # ------------------------------------------------------------------------- doc coupling

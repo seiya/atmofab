@@ -61,7 +61,11 @@ those records as ``primary=`` — already evaluated, since this module reads no 
 conjoins them with the test's ``pass_when``: a test's ``status`` holds only when both hold,
 ``basis.primary[]`` carries each record, and ``basis.corroboration`` says whether the two
 kinds of evidence agree (``agree`` when both are satisfied or both are not, ``disagree``
-otherwise — a kernel/checks inconsistency the judge is told about). A condition's optional
+when exactly one is, ``unevaluated`` when a record is structural — the state could not be
+valued, so nothing was corroborated either way). A ``disagree`` — a kernel/checks
+inconsistency — or an ``unevaluated`` fails the test, so the judge (not spawned on a failing
+verdict) never sees one; the operator's ``[execute fail: verdict]`` report and the escalate
+diagnostician do. A condition's optional
 ``quantity: <name>`` names what it measures, so a primary predicate of the same ``quantity``
 on the same test is its corroborant; the per-test coverage rule over those names is a
 separate Compile gate.
@@ -350,9 +354,9 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     ``primary`` is the list ``tools.primary_evidence.evaluate_primary_predicates`` returned
     for this run (one record per ``io_contract.primary_predicates[]`` entry). A test with at
     least one record takes ``status`` = its ``pass_when`` result AND every record satisfied,
-    ``basis.primary`` = its records and ``basis.corroboration`` (``agree`` / ``disagree``); a
-    record's ``structural`` kind folds into ``structural_violation``, a ``physics`` one into
-    ``physics_fail``. A record whose ``test_id`` no predicate carries raises
+    ``basis.primary`` = its records and ``basis.corroboration`` (``agree`` / ``disagree`` /
+    ``unevaluated``); a record's ``structural`` kind folds into ``structural_violation``, a
+    ``physics`` one into ``physics_fail``. A record whose ``test_id`` no predicate carries raises
     ``PredicateError``. With ``primary`` None or empty the output is byte-identical to the
     pre-Z6 one (no ``primary`` / ``corroboration`` key is written).
 
@@ -401,11 +405,18 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                         f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
             secondary_ok = bool(basis.get("satisfied"))
             primary_ok = all(bool(r.get("satisfied")) for r in records)
+            structural = any(r.get("kind") == _KIND_STRUCTURAL for r in records)
             basis["primary"] = records
-            basis["corroboration"] = "agree" if secondary_ok == primary_ok else "disagree"
+            # An evidence GAP is neither agreement nor disagreement: a record the host could
+            # not value says nothing about the kernel, and labelling it `agree` beside an
+            # `evaluation_error` would tell the operator the two halves concur (round 3).
+            if structural:
+                basis["corroboration"] = "unevaluated"
+            else:
+                basis["corroboration"] = "agree" if secondary_ok == primary_ok else "disagree"
             if not primary_ok:
                 status = "fail"
-                if any(r.get("kind") == _KIND_STRUCTURAL for r in records):
+                if structural:
                     kind = _KIND_STRUCTURAL
                 elif kind == _KIND_PASS:
                     kind = _KIND_PHYSICS

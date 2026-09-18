@@ -80,6 +80,11 @@ records on that predicate as a STRUCTURAL failure (the evidence could not be jud
 converts every arithmetic exception Python or numpy can raise on admitted operands into that
 error, so no evaluation escapes the per-predicate record.
 
+`verdict_evaluator.evaluate_verdict` labels each test's `basis.corroboration` `agree` /
+`disagree` / `unevaluated`; a `disagree` or an `unevaluated` fails the test, so the judge (never
+spawned on a failing verdict) never sees either — the `[execute fail: verdict]` report the
+operator reads and the escalate diagnostician do.
+
 A primary predicate ranges over EXACTLY the `target_cases` of its test's `test_predicates`
 entry — the gate pins set equality and `evaluate_verdict` re-checks it — so a corroborant
 cannot quietly cover the easiest case of a test alone.
@@ -138,6 +143,12 @@ _AT = "at"
 _BINOPS: dict[type, str] = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
                             ast.Pow: "**"}
 
+#: The deepest expression tree `parse_expr` admits. Evaluation recurses once per node, so a
+#: tree this deep never approaches the interpreter's recursion limit at any call site (the
+#: conductor's own stack included); a 990-deep unary chain used to pass parse and recurse
+#: out of `evaluate` (round 3). Far above any expression a test's judgment needs.
+MAX_EXPR_DEPTH = 64
+
 
 class PrimaryEvidenceError(ValueError):
     """A primary predicate could not be parsed, resolved or evaluated."""
@@ -174,9 +185,13 @@ def _is_at_call(node: ast.AST) -> bool:
             and node.func.id == _AT)
 
 
-def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
+def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
     """Walk one expression node against the allowlist, collecting the names it references.
-    Raises `PrimaryEvidenceError` on the first node outside the grammar."""
+    Raises `PrimaryEvidenceError` on the first node outside the grammar or deeper than
+    `MAX_EXPR_DEPTH`."""
+    if depth > MAX_EXPR_DEPTH:
+        raise PrimaryEvidenceError(
+            f"expr is nested deeper than {MAX_EXPR_DEPTH} levels")
     if isinstance(node, ast.Constant):
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
             raise PrimaryEvidenceError(
@@ -187,13 +202,13 @@ def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
         if type(node.op) not in _BINOPS:
             raise PrimaryEvidenceError(f"operator {type(node.op).__name__} is not admitted "
                                        f"(admitted: {' '.join(_BINOPS.values())})")
-        _check_node(node.left, refs)
-        _check_node(node.right, refs)
+        _check_node(node.left, refs, depth + 1)
+        _check_node(node.right, refs, depth + 1)
         return
     if isinstance(node, ast.UnaryOp):
         if not isinstance(node.op, ast.USub):
             raise PrimaryEvidenceError(f"unary {type(node.op).__name__} is not admitted")
-        _check_node(node.operand, refs)
+        _check_node(node.operand, refs, depth + 1)
         return
     if isinstance(node, ast.Name):
         if node.id in CAPTURE_POINTS or node.id in (_INPUTS_ROOT, _AT):
@@ -262,7 +277,7 @@ def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
         for arg in node.args:
             if isinstance(arg, ast.Starred):
                 raise PrimaryEvidenceError(f"{name}(): a starred argument is not admitted")
-            _check_node(arg, refs)
+            _check_node(arg, refs, depth + 1)
         return
     raise PrimaryEvidenceError(
         f"{type(node).__name__} is not admitted in a primary predicate expression")
@@ -275,9 +290,12 @@ def parse_expr(text: Any) -> ast.Expression:
         raise PrimaryEvidenceError("expr must be a non-empty string")
     try:
         tree = ast.parse(text.strip(), mode="eval")
-        _check_node(tree.body, [])
     except (SyntaxError, ValueError) as exc:
         raise PrimaryEvidenceError(f"expr does not parse: {exc}") from None
+    except RecursionError:
+        raise PrimaryEvidenceError("expr is nested too deeply to parse") from None
+    try:
+        _check_node(tree.body, [])
     except RecursionError:
         raise PrimaryEvidenceError("expr is nested too deeply to parse") from None
     return tree
@@ -288,6 +306,13 @@ def expr_names(tree: ast.Expression) -> list[NameRef]:
     refs: list[NameRef] = []
     _check_node(tree.body, refs)
     return refs
+
+
+def reads_captured_state(refs: list[NameRef], state_names: set[str]) -> bool:
+    """Whether any reference reads a captured STATE variable (the time variable excluded). A
+    predicate that reads none — a constant, an input, the time alone — values nothing the
+    kernel produced and corroborates nothing; the gate and the evaluator both refuse it."""
+    return any(r.kind == "capture" and r.name in state_names for r in refs)
 
 
 # ----------------------------------------------------------------------------- environment
@@ -545,7 +570,8 @@ def _reducible(name: str, value: Any) -> Any:
     if len(shape) >= 2 and 1 in shape:
         raise PrimaryEvidenceError(
             f"{name}(): reduction over a field of shape {list(shape)} with an extent-1 axis "
-            "(a coordinate-built field); pair it with a state array first")
+            "(a coordinate the host could not expand to the state's shape, or a state with "
+            "an axis of extent 1); pair it with a state array first")
     return value
 
 
@@ -671,9 +697,8 @@ def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
 #: What Python and numpy raise on admitted operands: a Python-float division by zero, an
 #: integer literal too large for a float, a numpy operation refused on its operands. Each
 #: becomes a PrimaryEvidenceError so the record names the predicate, not the interpreter.
-#: `RecursionError` is defence in depth and NOT pinned: `parse_expr` refuses an expression
-#: nested deeply enough to recurse here before it can be evaluated (measured: a 5000-term
-#: chain), so no test reaches this member.
+#: `RecursionError` is defence in depth and NOT pinned: `parse_expr` bounds the tree at
+#: `MAX_EXPR_DEPTH`, so no admitted expression recurses here, and no test reaches this member.
 _ARITHMETIC_ERRORS = (ZeroDivisionError, OverflowError, ValueError, FloatingPointError,
                       TypeError, MemoryError, RecursionError)
 
@@ -803,7 +828,18 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
             raise PrimaryEvidenceError(f"{loc}.op must be one of {sorted(PRIMARY_OPS)}")
         if "value" not in pred or pred.get("value") is None:
             raise PrimaryEvidenceError(f"{loc} must have a non-null value")
+        for key in ("na_allowed", "expected_outcome"):
+            if key in pred:
+                raise PrimaryEvidenceError(f"{loc}: {key} is not a primary predicate key")
         tree = parse_expr(pred.get("expr"))
+        bind = pred.get("bind")
+        bind_trees = ([parse_expr(t) for t in bind.values()]
+                      if isinstance(bind, dict) else [])
+        state_names = set(schema_variables(schema))
+        if not any(reads_captured_state(expr_names(t), state_names)
+                   for t in (*bind_trees, tree)):
+            raise PrimaryEvidenceError(
+                f"{loc}: reads no captured state variable (initial.<var> / final.<var>)")
         scope, contexts = _predicate_scope(pred, loc)
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
@@ -926,8 +962,11 @@ def validate_primary_predicate_schema(
                 _predicate_scope({**pred, "target_cases": targets}, loc)
             except PrimaryEvidenceError as exc:
                 v.append(str(exc))
-        if "na_allowed" in pred:
-            v.append(f"{loc}: na_allowed has no meaning for a host-evaluated predicate")
+        for key in ("na_allowed", "expected_outcome"):
+            if key in pred:
+                v.append(f"{loc}: {key} is not a primary predicate key (the test's "
+                         "expected_outcome is on its test_predicates entry; the host always "
+                         "has the state)")
         value = pred.get("value")
         if value is None:
             v.append(f"{loc} must have a non-null `value`")
@@ -973,15 +1012,20 @@ def validate_primary_predicate_schema(
                     bind_names.append(name)
         exprs.append((f"{loc}.expr", None, pred.get("expr")))
         seen_binds: set[str] = set()
+        state_read = False
+        parsed_all = True
         for eloc, bind_name, text in exprs:
             try:
                 tree = parse_expr(text)
             except PrimaryEvidenceError as exc:
                 v.append(f"{eloc}: {exc}")
+                parsed_all = False
                 if bind_name is not None:
                     seen_binds.add(bind_name)
                 continue
-            for ref in expr_names(tree):
+            refs = expr_names(tree)
+            state_read = state_read or reads_captured_state(refs, set(variables))
+            for ref in refs:
                 if ref.case is not None and ref.case not in targets:
                     v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
                              f"target_cases ({sorted(targets)})")
@@ -1010,6 +1054,9 @@ def validate_primary_predicate_schema(
                              "constant")
             if bind_name is not None:
                 seen_binds.add(bind_name)
+        if parsed_all and not state_read:
+            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>): "
+                     "a corroborant values the state the kernel produced")
     return v
 
 
@@ -1029,17 +1076,21 @@ def main(argv: list[str] | None = None) -> int:
     and print the records as JSON. The offline measurement the plan of issue #255 names."""
     parser = argparse.ArgumentParser(
         prog="python3 -m tools.primary_evidence",
-        description="Evaluate io_contract.primary_predicates against a run's captures.")
+        description="Evaluate io_contract.primary_predicates against a run's captures and "
+                    "print the records as JSON. Exit 0: every predicate satisfied (or none "
+                    "declared); 1: a predicate unsatisfied (a physics or structural record); "
+                    "2: the IR or the run directory could not be read, or a predicate is "
+                    "malformed.")
     parser.add_argument("--ir", required=True, type=Path,
                         help="the IR directory (holding spec.ir.yaml) or the file itself")
     parser.add_argument("--run", required=True, type=Path,
                         help="the run node directory holding raw/state_snapshots/")
     args = parser.parse_args(argv)
-    ir = _read_ir(args.ir)
     try:
+        ir = _read_ir(args.ir)
         records = evaluate_primary_predicates(ir, args.run)
-    except PrimaryEvidenceError as exc:
-        print(json.dumps({"error": str(exc)}, indent=2))
+    except (PrimaryEvidenceError, OSError, ValueError) as exc:
+        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}, indent=2))
         return 2
     print(json.dumps(records, indent=2, ensure_ascii=False))
     return 0 if all(r["satisfied"] for r in records) else 1

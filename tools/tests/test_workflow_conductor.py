@@ -15706,7 +15706,9 @@ class DeterministicBuildTest(unittest.TestCase):
             (sdir / "l0_scale_identity_pass.json").write_text("{")
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual(doc["failure_class"], "structural_violation")
-            self.assertIn("unreadable", wc._verdict_failure_report(doc))
+            report = wc._verdict_failure_report(doc)
+            self.assertIn("unreadable", report)
+            self.assertIn("corroboration=unevaluated", report)
 
             # a malformed primary shape (which Compile refuses) is the structural doc, not a crash
             ir["io_contract"]["primary_predicates"][0]["op"] = "includes"
