@@ -739,12 +739,15 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
     # state — read straight from the checks module's storage — right after `case_setup`
     # (initial) and right after `case_run` (final), and `snap_cache` holds the serialized
-    # STRINGS, so nothing a later `checks_compute` / `metric_compute` callback writes into that
-    # storage can reach a snapshot or the metrics basis. There is no getter in between.
+    # STRINGS, so nothing a later `checks_compute` / `metric_compute` / `get_time` callback
+    # writes into that storage can reach a snapshot or the metrics basis. There is no getter in
+    # between: `get_time` — generated code — is called AFTER the capture, for the time value
+    # the snapshot is written with, so no generated procedure runs between `case_setup` /
+    # `case_run` returning and the state being serialized.
     a("    ! --- initial state: bound storage serialized right after case_setup, before any")
     a("    ! --- callback of this case runs (raw/state_snapshots/initial/<case_id>.json) ---")
-    a("    call get_time(tval)")
     a("    call capture_state(trim(case_ids(ci)), vals)")
+    a("    call get_time(tval)")
     a(f"    call {H('write_snapshot')}('initial/'//trim(case_ids(ci)), vals, tval)")
     a("    deallocate(vals)")
     a("")
@@ -754,8 +757,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     a("")
     a("    ! --- final state: the same bound storage right after case_run, before any check")
     a("    ! --- or metric callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
-    a("    call get_time(tval)")
     a("    call capture_state(trim(case_ids(ci)), vals)")
+    a("    call get_time(tval)")
     a(f"    call {H('write_snapshot')}(trim(case_ids(ci)), vals, tval)")
     a("    snap_cache(ci)%case_id = trim(case_ids(ci))")
     a("    snap_cache(ci)%values = vals")
@@ -947,9 +950,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     # A few `lines` entries embed their own `&` continuations (the multi-line `_xfail_expr`),
     # so measure per PHYSICAL line (split on embedded newlines) — measuring the joined entry
     # would false-fail a valid render whose wrapped physical lines are each within the limit.
+    # `>=`, not `>`: on some supported linter builds S001 fires AT 100 columns (the same reason
+    # `_checks` bounds the check-id assignment strictly under the limit), and a host-authored
+    # line of exactly 100 columns is unrepairable by any leaf.
     for entry in lines:
         for ln in entry.split("\n"):
-            if len(ln) > MAX_RENDERED_LINE:
+            if len(ln) >= MAX_RENDERED_LINE:
                 raise RenderError(
                     f"rendered runner line exceeds {MAX_RENDERED_LINE} columns ({len(ln)}): "
                     f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "

@@ -633,9 +633,11 @@ class RenderShapeTest(unittest.TestCase):
         order = [
             "call case_setup(trim(case_ids(ci)), setup_ok)",
             "call capture_state(trim(case_ids(ci)), vals)",
+            "call get_time(tval)",  # generated code: only AFTER the capture
             "call harness_fortran_cpu__write_snapshot('initial/'//trim(case_ids(ci)), vals, tval)",
             "call case_run(trim(case_ids(ci)), steps_c, cells_c, run_ok)",
             "call capture_state(trim(case_ids(ci)), vals)",
+            "call get_time(tval)",
             "call harness_fortran_cpu__write_snapshot(trim(case_ids(ci)), vals, tval)",
             "snap_cache(ci)%values = vals",
             "call checks_compute(trim(case_ids(ci)), &",
@@ -647,6 +649,13 @@ class RenderShapeTest(unittest.TestCase):
             pos = nxt
         self.assertEqual(body.count("call capture_state("), 2)
         self.assertEqual(body.count("write_snapshot("), 2)
+        # no generated procedure runs between case_setup / case_run returning and the capture
+        setup_end = body.index("call case_setup(")
+        self.assertLess(body.index("call capture_state(", setup_end),
+                        body.index("call get_time(", setup_end))
+        run_end = body.index("call case_run(")
+        self.assertLess(body.index("call capture_state(", run_end),
+                        body.index("call get_time(", run_end))
 
     def test_per_id_checks_abi(self) -> None:
         # Per-id ABI: the runner sizes case_checks to the declared count and calls checks_compute
@@ -1244,6 +1253,33 @@ class LineWidthTest(unittest.TestCase):
         ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "a" * 54 + "'" * 9}]
         txt = render_runner(ir, BOUNDARY_SID, HARNESS)
         self.assertLessEqual(self._maxw(txt), 99)
+
+    def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
+        # The variable-name path had no `_checks`-style strict bound: a scalar name whose
+        # `out(k) = harness_fortran_cpu__box('<name>', &` line is EXACTLY 100 columns slipped a
+        # `> 100` backstop and failed S001 on a host-authored line (a round-1 reviewer measured
+        # it on fortitude 0.8.0). The backstop is `>=` now, so no rendered line reaches 100.
+        ir = copy.deepcopy(_boundary_ir())
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        name = "m" * (100 - len("      out(3) = harness_fortran_cpu__box('', &"))
+        for v in schema["variables"]:
+            if v["name"] == "max_abs_deviation":
+                v["name"] = name
+        for r in ir["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
+        with self.assertRaises(RenderError) as cm:
+            render_runner(ir, BOUNDARY_SID, HARNESS)
+        self.assertIn("exceeds 100 columns (100)", str(cm.exception))
+        # one char shorter renders, and every line is at most 99 wide
+        ir2 = copy.deepcopy(ir)
+        for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
+            if v["name"] == name:
+                v["name"] = name[:-1]
+        for r in ir2["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                name[:-1] if x == name else x for x in r["required_raw_variables"]]
+        self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS)), 99)
 
 
 class FortranLiteralEscapingTest(unittest.TestCase):
