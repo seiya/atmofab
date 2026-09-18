@@ -33,8 +33,9 @@ The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema
           per_case: true                         # exactly one of per_case: true / case: <id>
 
 **The grammar is closed** (`GRAMMAR_VERSION`): a Python expression restricted, by an allowlist
-over `ast` node types, to the arithmetic operators `+ - * / **`, unary `-`, numeric
-constants, the names below, and calls to the functions of `FUNCTIONS`. A subscript, a
+over `ast` node types, to the arithmetic operators `+ - * / **`, unary `-`, finite numeric
+constants, the names below, and calls to the functions of `FUNCTIONS` (positional arguments
+only, within each function's arity). A subscript, a
 slice, a comparison, a boolean operator, a lambda, a keyword argument, a starred argument,
 a string outside the one place a string is admitted (`at('<case_id>')`), an attribute of
 anything but the roots listed here — each is refused at parse, never evaluated. Adding a
@@ -50,21 +51,31 @@ Names, and where each resolves:
 - ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array carrying the
   axis's `count` cell-centre positions along `axis` and extent 1 on every other axis of the
   state's rank, so it broadcasts against a state array without a subscript.
-- ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>`` — another case of the
-  SAME predicate's `target_cases` (a cross-case reduction: a convergence order, a
-  translation pair).
+- ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>``,
+  ``at('<case_id>').inputs.<a>.<b>``, ``at('<case_id>').<coordinate name>`` — the same three
+  kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
+  reduction: a convergence order needs the coarse case's state, coordinates and inputs; a
+  translation pair needs the base case's state).
 - a `bind` name — a named sub-expression, evaluated in `bind` order; a bind may reference
   only the binds written before it (acyclic by construction).
 - ``pi`` / ``e``.
 
-Every intermediate result must be finite, and the predicate's result must be a finite
-SCALAR; a binary operator's operands must have equal rank or one must be a scalar (numpy's
-right-aligned broadcasting of unequal ranks is refused, so a `[nx]` array never silently
-pairs with a `[nx, ny]` one). Any of these — and an unallocated, ragged, non-numeric,
+Every intermediate result must be finite (a division by zero, an overflow, a literal
+`1e400`), and the predicate's result must be a finite SCALAR; the operands of a binary
+operator or of an elementwise `min` / `max` must be a scalar and anything, or two arrays of
+equal rank whose extents agree or are 1 on one side (a coordinate broadcasts against a state
+array; a `[nx]` array never silently pairs with a `[nx, ny]` one, and a 32×32 state never
+pairs with a 64×64 one). Any of these — and an unallocated, ragged, non-numeric,
 non-finite or wrong-rank snapshot array, a `roll` shift that is not an integer, a case whose
 capture file is absent — raises `PrimaryEvidenceError`, which `evaluate_primary_predicates`
 records on that predicate as a STRUCTURAL failure (the evidence could not be judged) and
-`verdict_evaluator.evaluate_verdict` folds into `structural_violation`.
+`verdict_evaluator.evaluate_verdict` folds into `structural_violation`. `evaluate` also
+converts every arithmetic exception Python or numpy can raise on admitted operands into that
+error, so no evaluation escapes the per-predicate record.
+
+A primary predicate ranges over EXACTLY the `target_cases` of its test's `test_predicates`
+entry — the gate pins set equality and `evaluate_verdict` re-checks it — so a corroborant
+cannot quietly cover the easiest case of a test alone.
 
 Pure with respect to the conductor: reads the run node directory it is given and nothing
 else, like `tools/raw_evidence_excerpt.py`. `evaluate_verdict` never reads a file; it takes
@@ -130,10 +141,10 @@ class PrimaryEvidenceError(ValueError):
 class NameRef(NamedTuple):
     """One name an expression references, as the resolver sees it.
 
-    ``kind`` is ``capture`` (``initial.<var>`` / ``final.<var>``; ``case`` is None for the
-    predicate's own case, else the ``at('<case>')`` case), ``inputs`` (``name`` is the dotted
-    path under ``inputs``), or ``name`` (a bare identifier: a coordinate, a bind or a
-    constant)."""
+    ``kind`` is ``capture`` (``initial.<var>`` / ``final.<var>``), ``inputs`` (``name`` is
+    the dotted path under ``inputs``), or ``name`` (a bare identifier: a coordinate, a bind or
+    a constant). ``case`` is None for the predicate's own case, else the ``at('<case>')``
+    case; under ``at()`` a ``name`` is a coordinate only."""
     kind: str
     name: str
     point: str | None = None
@@ -173,7 +184,7 @@ def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
         _check_node(node.right, refs)
         return
     if isinstance(node, ast.UnaryOp):
-        if not isinstance(node.op, (ast.USub, ast.UAdd)):
+        if not isinstance(node.op, ast.USub):
             raise PrimaryEvidenceError(f"unary {type(node.op).__name__} is not admitted")
         _check_node(node.operand, refs)
         return
@@ -205,14 +216,20 @@ def _check_node(node: ast.AST, refs: list[NameRef]) -> None:
                     or not isinstance(call.args[0].value, str)
                     or not call.args[0].value.strip()):
                 raise PrimaryEvidenceError("at(...) takes exactly one case_id string")
-            if len(attrs) != 2 or attrs[0] not in CAPTURE_POINTS:
-                raise PrimaryEvidenceError(
-                    f"at({call.args[0].value!r}).{'.'.join(attrs)}: a cross-case reference is "
-                    "exactly at('<case_id>').initial.<variable> or "
-                    "at('<case_id>').final.<variable>")
-            refs.append(NameRef("capture", attrs[1], point=attrs[0],
-                                case=call.args[0].value.strip()))
-            return
+            case_id = call.args[0].value.strip()
+            if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
+                refs.append(NameRef("capture", attrs[1], point=attrs[0], case=case_id))
+                return
+            if len(attrs) >= 2 and attrs[0] == _INPUTS_ROOT:
+                refs.append(NameRef("inputs", ".".join(attrs[1:]), case=case_id))
+                return
+            if len(attrs) == 1 and attrs[0] not in CAPTURE_POINTS + (_INPUTS_ROOT,):
+                refs.append(NameRef("name", attrs[0], case=case_id))
+                return
+            raise PrimaryEvidenceError(
+                f"at({case_id!r}).{'.'.join(attrs)}: a cross-case reference is exactly "
+                "at('<case_id>').initial.<variable>, at('<case_id>').final.<variable>, "
+                "at('<case_id>').inputs.<path> or at('<case_id>').<coordinate>")
         raise PrimaryEvidenceError(
             f"attribute chain rooted at {ast.dump(root)} is not admitted (roots: "
             f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, at('<case_id>'))")
@@ -352,6 +369,10 @@ def coordinate_arrays(schema: dict[str, Any], inputs: Any) -> dict[str, np.ndarr
         if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
             raise PrimaryEvidenceError("coordinates[] entries must be mappings with a name")
         name = spec["name"].strip()
+        if not name.isidentifier() or name in CONSTANTS or name in FUNCTIONS \
+                or name in CAPTURE_POINTS or name in (_INPUTS_ROOT, _AT):
+            raise PrimaryEvidenceError(
+                f"coordinates[{name!r}].name must be an identifier that is not a grammar name")
         axis = spec.get("axis")
         if not isinstance(axis, int) or isinstance(axis, bool) or not (0 <= axis < rank):
             raise PrimaryEvidenceError(
@@ -404,7 +425,7 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
             raise PrimaryEvidenceError(
                 f"{path.name}: variable {name!r} is not a rectangular numeric array "
                 f"({exc})") from None
-        if isinstance(raw, bool) or (isinstance(raw, list) and _contains_non_number(raw)):
+        if _contains_non_number(raw):
             raise PrimaryEvidenceError(f"{path.name}: variable {name!r} holds a non-numeric value")
         if arr.ndim != len(dims):
             raise PrimaryEvidenceError(
@@ -459,12 +480,22 @@ def _finite(value: Any, what: str) -> Any:
     return value
 
 
-def _rank_compatible(a: Any, b: Any, what: str) -> None:
-    ra, rb = np.ndim(a), np.ndim(b)
-    if ra != rb and ra != 0 and rb != 0:
+def _shape_compatible(a: Any, b: Any, what: str) -> None:
+    """The one broadcasting rule: a scalar pairs with anything; two arrays pair only at equal
+    rank with each extent equal or 1 on one side. Refused here, with the shapes named, rather
+    than left to numpy (which right-aligns unequal ranks, and raises a bare ValueError on
+    unequal extents)."""
+    sa, sb = np.shape(a), np.shape(b)
+    if not sa or not sb:
+        return
+    if len(sa) != len(sb):
         raise PrimaryEvidenceError(
-            f"{what}: operands of rank {ra} and {rb} (an operand must be a scalar or of equal "
-            "rank; right-aligned broadcasting is not admitted)")
+            f"{what}: operands of rank {len(sa)} and {len(sb)} (an operand must be a scalar or "
+            "of equal rank; right-aligned broadcasting is not admitted)")
+    if any(x != y and x != 1 and y != 1 for x, y in zip(sa, sb)):
+        raise PrimaryEvidenceError(
+            f"{what}: operands of shape {list(sa)} and {list(sb)} do not pair (extents must be "
+            "equal, or 1 on one side)")
 
 
 def _call(name: str, args: list[Any]) -> Any:
@@ -478,7 +509,7 @@ def _call(name: str, args: list[Any]) -> Any:
                 return np.min(args[0]) if name == "min" else np.max(args[0])
             acc = args[0]
             for other in args[1:]:
-                _rank_compatible(acc, other, f"{name}()")
+                _shape_compatible(acc, other, f"{name}()")
                 acc = np.minimum(acc, other) if name == "min" else np.maximum(acc, other)
             return acc
         if name == "abs":
@@ -524,12 +555,12 @@ def _call(name: str, args: list[Any]) -> Any:
 def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
                binds: dict[str, Any]) -> Any:
     if isinstance(node, ast.Constant):
-        return float(node.value)
+        return _finite(float(node.value), f"constant {node.value!r}")
     if isinstance(node, ast.BinOp):
         left = _eval_node(node.left, env, at_envs, binds)
         right = _eval_node(node.right, env, at_envs, binds)
         sym = _BINOPS[type(node.op)]
-        _rank_compatible(left, right, f"operator {sym}")
+        _shape_compatible(left, right, f"operator {sym}")
         with np.errstate(all="ignore"):
             if sym == "+":
                 out = left + right
@@ -543,8 +574,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
                 out = np.power(left, right)
         return _finite(out, f"operator {sym}")
     if isinstance(node, ast.UnaryOp):
-        val = _eval_node(node.operand, env, at_envs, binds)
-        return -val if isinstance(node.op, ast.USub) else +val
+        return -_eval_node(node.operand, env, at_envs, binds)
     if isinstance(node, ast.Name):
         if node.id in binds:
             return binds[node.id]
@@ -564,7 +594,14 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         if case_id not in at_envs:
             raise PrimaryEvidenceError(
                 f"at({case_id!r}) names a case outside this predicate's target_cases")
-        return _capture_value(at_envs[case_id], attrs[0], attrs[1])
+        other = at_envs[case_id]
+        if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
+            return _capture_value(other, attrs[0], attrs[1])
+        if attrs[0] == _INPUTS_ROOT:
+            return resolve_input_number(other.inputs, ".".join(attrs[1:]))
+        if attrs[0] in other.coordinates:
+            return other.coordinates[attrs[0]]
+        raise PrimaryEvidenceError(f"at({case_id!r}).{attrs[0]}: not a coordinate of that case")
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
         args = [_eval_node(a, env, at_envs, binds) for a in node.args]
@@ -579,10 +616,22 @@ def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
     return table[var]
 
 
+#: What Python and numpy raise on admitted operands: a Python-float division by zero, an
+#: integer literal too large for a float, a numpy operation refused on its operands. Each
+#: becomes a PrimaryEvidenceError so the record names the predicate, not the interpreter.
+_ARITHMETIC_ERRORS = (ZeroDivisionError, OverflowError, ValueError, FloatingPointError,
+                      TypeError, MemoryError)
+
+
 def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] | None = None,
              binds: dict[str, Any] | None = None) -> Any:
-    """Evaluate a parsed expression in ``env``. Returns a float or a float64 array."""
-    return _eval_node(tree.body, env, at_envs or {}, binds or {})
+    """Evaluate a parsed expression in ``env``. Returns a float or a float64 array. Raises
+    only `PrimaryEvidenceError`."""
+    try:
+        return _eval_node(tree.body, env, at_envs or {}, binds or {})
+    except _ARITHMETIC_ERRORS as exc:
+        raise PrimaryEvidenceError(
+            f"evaluation failed: {type(exc).__name__}: {str(exc)[:200]}") from None
 
 
 def evaluate_binds(bind: Any, env: CaseEnv, at_envs: dict[str, CaseEnv]) -> dict[str, Any]:
@@ -656,8 +705,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
     """Evaluate every `io_contract.primary_predicates[]` entry of ``ir`` against the captures
     under ``run_dir``. Returns one record per predicate, in order::
 
-        {test_id, quantity, expr, op, grammar_version, satisfied, kind, evaluated: [
-            {case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
+        {test_id, quantity, expr, op, scope, target_cases, grammar_version, satisfied, kind,
+         evaluated: [{case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
 
     ``kind`` is ``pass`` / ``physics`` (a comparison was false) / ``structural`` (the
     expression could not be evaluated: `PrimaryEvidenceError`). An empty list when the IR
@@ -702,7 +751,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
-            "op": op, "scope": scope, "grammar_version": GRAMMAR_VERSION,
+            "op": op, "scope": scope, "target_cases": list(targets),
+            "grammar_version": GRAMMAR_VERSION,
             "satisfied": True, "kind": "pass", "evaluated": [],
         }
         for cid in contexts:
@@ -744,6 +794,7 @@ def validate_primary_predicate_schema(
     test_ids: list[str],
     schema: dict[str, Any] | None,
     cases: dict[str, dict[str, Any]],
+    test_target_cases: dict[str, list[str]] | None = None,
 ) -> list[str]:
     """The Compile-stage gate over `io_contract.primary_predicates` (present-or-absent; the
     per-test coverage rule is a separate gate). Returns violation strings (empty == valid).
@@ -754,7 +805,10 @@ def validate_primary_predicate_schema(
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
     number in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
     an `at('<case>')` case is one of the predicate's own target cases. `coordinates[]` is
-    resolved against every declared case, since every case is captured."""
+    resolved against every declared case, since every case is captured. With
+    ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a
+    predicate's `target_cases` must equal its test's as a set: a corroborant over a subset
+    of the test's cases would certify the test on its easiest case alone."""
     v: list[str] = []
     if predicates is None:
         return v
@@ -803,6 +857,13 @@ def validate_primary_predicate_schema(
         for cid in targets:
             if cid not in case_ids:
                 v.append(f"{loc}.target_cases references unknown case_id ({cid!r})")
+        if targets and test_target_cases is not None and isinstance(test_id, str) \
+                and test_id.strip() in test_target_cases \
+                and set(targets) != set(test_target_cases[test_id.strip()]):
+            v.append(f"{loc}.target_cases {sorted(set(targets))} must equal the target_cases of "
+                     f"test {test_id.strip()!r} in test_predicates "
+                     f"({sorted(set(test_target_cases[test_id.strip()]))}): a corroborant "
+                     "ranges over every case its test ranges over")
         if targets:
             try:
                 _predicate_scope({**pred, "target_cases": targets}, loc)
@@ -864,21 +925,25 @@ def validate_primary_predicate_schema(
                     seen_binds.add(bind_name)
                 continue
             for ref in expr_names(tree):
+                if ref.case is not None and ref.case not in targets:
+                    v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
+                             f"target_cases ({sorted(targets)})")
+                    continue
                 if ref.kind == "capture":
                     if ref.name not in capture_names:
                         v.append(f"{eloc}: {ref.point}.{ref.name} is not a snapshot schema "
                                  f"variable ({sorted(capture_names)})")
-                    if ref.case is not None and ref.case not in targets:
-                        v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
-                                 f"target_cases ({sorted(targets)})")
                 elif ref.kind == "inputs":
-                    for cid in targets:
+                    for cid in ([ref.case] if ref.case is not None else targets):
                         case = cases.get(cid)
                         inputs = case.get("inputs") if isinstance(case, dict) else None
                         try:
                             resolve_input_number(inputs, ref.name)
                         except PrimaryEvidenceError as exc:
                             v.append(f"{eloc}: in case {cid!r}: {exc}")
+                elif ref.case is not None:
+                    if ref.name not in coord_names:
+                        v.append(f"{eloc}: at({ref.case!r}).{ref.name} is not a coordinate")
                 elif ref.name in seen_binds or ref.name in coord_names or ref.name in CONSTANTS:
                     continue
                 elif ref.name in bind_names:

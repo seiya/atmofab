@@ -10898,9 +10898,10 @@ clean:
             # deterministic structural_violation path (escalate/fail_closed), never crash execute
             # into a blunt transport fail_closed. evaluate_verdict provably raises only
             # PredicateError today and evaluate_primary_predicates only PrimaryEvidenceError (a
-            # per-case evaluation error is RECORDED on its predicate, not raised; what raises is a
+            # per-case evaluation error — an interpreter or numpy exception included, which
+            # `evaluate` converts — is RECORDED on its predicate, not raised; what raises is a
             # malformed predicate shape); catching Exception keeps that guarantee robust to
-            # evaluator evolution (e.g. a future op that could raise TypeError/ZeroDivisionError).
+            # evaluator evolution.
             doc = {
                 "node_key": refs.node_key,
                 "run_id": refs.run_id,

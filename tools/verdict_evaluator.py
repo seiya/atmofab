@@ -391,6 +391,14 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         status, kind, basis = evaluate_predicate(pred, diagnostics)
         records = primary_by_test.pop(test_id.strip(), None)
         if records:
+            for rec in records:
+                # The Compile gate pins this; re-checked here so a record over a subset of the
+                # test's cases never reads as corroboration of the whole test.
+                if "target_cases" in rec and set(map(str, rec["target_cases"])) != {
+                        str(c) for c in (pred.get("target_cases") or [])}:
+                    raise PredicateError(
+                        f"primary record for {test_id.strip()!r} ranges over "
+                        f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
             secondary_ok = bool(basis.get("satisfied"))
             primary_ok = all(bool(r.get("satisfied")) for r in records)
             basis["primary"] = records

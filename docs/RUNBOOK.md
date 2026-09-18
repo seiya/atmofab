@@ -52,8 +52,9 @@ They are needed by the HOST that runs the conductor, because `Generate.gate`'s s
 `python3 tools/validate_pipeline_semantics.py` there and `Validate.execute` authors `verdict.json`
 there; no leaf needs them. Without the `tree-sitter` pair that gate cannot read a Fortran source at
 all and fails closed — correctly, but only after lint and syntax have passed, i.e. part-way into a
-billed run — and without `numpy` the verdict author cannot import, one phase later still; so their
-absence is checked at launch instead.
+billed run — and without `numpy` the first IR that carries `primary_predicates` cannot be gated at
+`Compile.static`, nor any verdict authored at `Validate.execute`; so their absence is checked at
+launch instead.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`

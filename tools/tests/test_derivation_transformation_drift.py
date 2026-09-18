@@ -149,7 +149,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Z6 PR-2 (issue #255): `phase_01_compile.md` gains `io_contract.primary_predicates`, the
     # snapshot schema's `coordinates[]`, a condition's `quantity`, and the V3 fidelity rule over
     # them — a compile leaf reading it authors the host-evaluated corroborants, so the key moves.
-    "compile-docs-3": "c70caba88a6dfa233bdd961579c92942b48e2340fbfcace4b86e46d7bea45412",
+    # Re-pinned in round 1 before shipping (the version is new on this branch): the grammar
+    # block gains the cross-case `at('<case>').inputs` / `.<coordinate>` roots, the operand
+    # pairing rule, the arity caps and the coordinate-name rule; V3 gains item (iv).
+    "compile-docs-3": "415c072ce9451f76dcac2643c7d0f3ff3addbbcb91b5bc4ce840c41b484777a2",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -172,7 +175,11 @@ PINNED_VERDICT: dict[str, str] = {
     # Z6 PR-2 (issue #255): the verdict conjoins `io_contract.primary_predicates`, valued by
     # `tools/primary_evidence.py` from the captures under the run node directory, with the
     # diagnostics predicates; `basis.primary[]` / `basis.corroboration` are new per-test keys.
-    "verdict-2": "c41fa1a8ea78b35a6ffbe5604c76b41c7af23a9c6f8579965a3412f4cabf45c6",
+    # Re-pinned in round 1 before shipping (the version is new on this branch): every
+    # interpreter / numpy exception on admitted operands becomes a per-predicate structural
+    # record, the operand rule pairs shapes rather than ranks, `at()` reads a case's inputs
+    # and coordinates, and a record's `target_cases` must equal its test's.
+    "verdict-2": "2970ea6f3cd7e5f99163485f88ddb4dfac4c86904ccb655fecc77fdff213f042",
 }
 
 

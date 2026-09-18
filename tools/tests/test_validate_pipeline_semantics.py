@@ -11150,7 +11150,8 @@ end program shallow_water2d_runner
         )
 
     def _compile_with_io_contract(
-        self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True
+        self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True,
+        case_ids: tuple[str, ...] = ("c1",),
     ):
         _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
@@ -11178,7 +11179,7 @@ end program shallow_water2d_runner
         ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                    "/shallow-water2d_20260415_001/spec.ir.yaml")
         doc = json.loads(ir_path.read_text())
-        doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
+        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": {}} for cid in case_ids]}
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",
@@ -11628,6 +11629,23 @@ end program shallow_water2d_runner
             io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"))
             v = self._compile_with_io_contract(Path(tmp), io)
             self.assertTrue(any("quantity must match" in x for x in v), v)
+
+    def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
+        """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
+        accepted and recorded as corroboration of the whole test. Through the real wiring: the
+        secondary ranges over c1 and c2, the primary over c1 alone -> refused; over both -> not."""
+        preds = self._preds_with_quantity("mass_drift_rel")
+        preds[0]["target_cases"] = ["c1", "c2"]
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(copy.deepcopy(preds))
+            io["primary_predicates"] = [self._primary_predicate(target_cases=["c1"])]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("must equal the target_cases of test 't1'" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(copy.deepcopy(preds))
+            io["primary_predicates"] = [self._primary_predicate(target_cases=["c2", "c1"])]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

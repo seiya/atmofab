@@ -174,9 +174,11 @@ class GrammarAllowlistTest(unittest.TestCase):
                     "not 1", "~1"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
-        for src in ("1 + 2", "1 - 2", "1 * 2", "1 / 2", "1 ** 2", "-1", "+1"):
+        for src in ("1 + 2", "1 - 2", "1 * 2", "1 / 2", "1 ** 2", "-1"):
             with self.subTest(src=src):
                 pe.parse_expr(src)
+        with self.assertRaises(pe.PrimaryEvidenceError):
+            pe.parse_expr("+1")   # unary + is not in the documented grammar
 
     def test_constants_are_numbers_only(self) -> None:
         for src in ("'x'", "True", "None", "b'x'", "..."):
@@ -198,13 +200,16 @@ class GrammarAllowlistTest(unittest.TestCase):
                         pe.parse_expr(f"{name}({', '.join(['1'] * (lo - 1))})")
         with self.assertRaises(pe.PrimaryEvidenceError):
             pe.parse_expr("abs(x=1)")
+        with self.assertRaises(pe.PrimaryEvidenceError):
+            pe.parse_expr("max(final.h, axis=0)")   # arity satisfied; the keyword alone refuses
 
     def test_attribute_roots(self) -> None:
         for src in ("final.h", "initial.t", "inputs.grid.nx", "at('a').final.h",
-                    "at('a').initial.h"):
+                    "at('a').initial.h", "at('a').x", "at('a').inputs.grid.nx"):
             with self.subTest(src=src):
                 pe.parse_expr(src)
-        for src in ("final.h.T", "final", "at('a')", "at('a').h", "at('a').final",
+        for src in ("final.h.T", "final", "at('a')", "at('a').final", "at('a').inputs",
+                    "at('a').initial", "at('a').x.y",
                     "at('a').final.h.T", "at(1).final.h", "at('').final.h", "at().final.h",
                     "at('a', 'b').final.h", "pi.real", "abs(1).real", "x.y", "final.h.shape",
                     "at(case='a').final.h", "np.pi", "__builtins__.open"):
@@ -225,6 +230,8 @@ class GrammarAllowlistTest(unittest.TestCase):
             pe.NameRef("inputs", "grid.dx"),
             pe.NameRef("name", "x"), pe.NameRef("name", "M0"), pe.NameRef("name", "pi"),
         ])
+        self.assertEqual(pe.expr_names(pe.parse_expr("at('c').x + at('c').inputs.grid.nx")), [
+            pe.NameRef("name", "x", case="c"), pe.NameRef("inputs", "grid.nx", case="c")])
 
 
 # --------------------------------------------------------------------------- evaluation
@@ -318,6 +325,58 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("sum(final.h) / (final.s - final.s)"), "non-finite")
         self._structural(self._one("log(final.s - final.s)"), "non-finite")
         self._structural(self._one("sqrt(-final.s)"), "non-finite")
+        # an intermediate that RECOVERS to a finite result (inf clipped by an elementwise min)
+        # is still refused: the intermediate check is what these probes observe
+        self._structural(self._one("min(sum(final.h) / (final.s - final.s), 5)"), "non-finite")
+        self._structural(self._one("min(1e400, 5)"), "non-finite")
+        self._structural(self._one("min(exp(1000), 3)"), "non-finite")
+
+    def test_interpreter_exceptions_become_structural_records(self) -> None:
+        """Round 1 (both axes): a Python-float division by zero, an integer literal beyond a
+        float, and a numpy refusal on unequal extents used to escape as bare exceptions and
+        collapse the whole verdict to `per_test: []`."""
+        self._structural(self._one("(final.s - initial.s) / (initial.s - initial.s)"),
+                         "ZeroDivisionError")
+        self._structural(self._one("1 / 0"), "ZeroDivisionError")
+        self._structural(self._one("1" * 400), "OverflowError")
+        # equal rank, unequal extents: the shape rule names the shapes instead of numpy raising
+        self.run.write("b", initial={"h": self.h.tolist(), "s": 1.0, "t": 0.0},
+                       final={"h": self.h[:, :2].tolist(), "s": 1.0, "t": 0.2})
+        self._structural(self._one("sum(final.h - initial.h)"), "do not pair")
+        self._structural(self._one("sum(min(final.h, initial.h))"), "do not pair")
+        self._structural(self._one("sum(final.h ** initial.h)"), "do not pair")
+
+    def test_physics_fail_stops_at_the_first_failing_case(self) -> None:
+        strict = {**HMIN, "value": {"per_case": {"a": 2.0, "b": 2.0}}}
+        [rec] = self._eval([strict])
+        self.assertEqual([e["case"] for e in rec["evaluated"]], ["a"])
+        self.assertEqual(rec["kind"], "physics")
+
+    def test_cross_case_coordinates_and_inputs(self) -> None:
+        """A convergence order needs the COARSE case's coordinates and inputs under `at()`."""
+        coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
+                   "placement": "cell_center"}]
+        fine = np.random.default_rng(1).uniform(0.6, 1.0, (2 * NX, NY))
+        self.run.write_state("a", fine, fine)
+        cases = [_case("a"), _case("b")]
+        cases[0]["inputs"]["grid"]["nx"] = 2 * NX
+        pred = {"test_id": "t_mass", "quantity": "q", "target_cases": ["a", "b"],
+                "bind": {"xc": "at('b').x", "nc": "at('b').inputs.grid.nx"},
+                "expr": "sum(at('b').final.h * xc) / nc - sum(final.h * x) / inputs.grid.nx",
+                "op": "le", "value": 10.0, "case": "a"}
+        [rec] = pe.evaluate_primary_predicates(_ir([pred], coordinates=coords, cases=cases),
+                                               self.run.root)
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual(rec["target_cases"], ["a", "b"])
+        bad = {**pred, "expr": "at('b').zeta"}
+        [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
+                                               self.run.root)
+        self.assertIn("not a coordinate of that case", rec["evaluated"][-1]["error"])
+        # the coarse state against the fine state: named as a shape mismatch, not a numpy raise
+        bad = {**pred, "expr": "sum(at('b').final.h - final.h)"}
+        [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
+                                               self.run.root)
+        self.assertIn("do not pair", rec["evaluated"][-1]["error"])
 
     def test_roll_shift_must_be_integer_and_per_axis(self) -> None:
         self._structural(self._one("sum(roll(final.h, 1.5, 0))"), "not an integer")
@@ -375,6 +434,9 @@ class EvaluationTest(unittest.TestCase):
         self.run.write("b", initial={"h": self.h.tolist(), "s": True, "t": 0.0},
                        final={"h": self.h.tolist(), "s": 1.0, "t": 0.2})
         self._structural(self._one("final.s"), "non-numeric")
+        self.run.write("b", initial={"h": self.h.tolist(), "s": "2.5", "t": 0.0},
+                       final={"h": self.h.tolist(), "s": 1.0, "t": 0.2})
+        self._structural(self._one("final.s"), "non-numeric")
         self.run.write_state("b", self.h, self.h)
         (self.run.sdir / "b.json").write_text("[]")
         self._structural(self._one("final.s"), "not a JSON object")
@@ -403,6 +465,11 @@ class EvaluationTest(unittest.TestCase):
             ([{**base, "axis": 0, "length": 0}], "not a positive number"),
             ([{**base, "axis": 0, "count": "inputs.grid.arrangement"}], "not a number"),
             ([{**base, "axis": 0, "count": "nx"}], "must be a number or inputs.<path>"),
+            ([{**base, "axis": 0, "count": 0}], "not a positive integer"),
+            ([{**base, "axis": 0, "name": "pi"}], "not a grammar name"),
+            ([{**base, "axis": 0, "name": "sum"}], "not a grammar name"),
+            ([{**base, "axis": 0, "name": "initial"}], "not a grammar name"),
+            ([{**base, "axis": 0, "name": "1x"}], "not a grammar name"),
             (["x"], "must be mappings"),
         ):
             with self.subTest(coords=coords):
@@ -547,6 +614,14 @@ class VerdictIntegrationTest(unittest.TestCase):
         self.assertNotIn("primary", base["per_test"][0]["basis"])
         self.assertNotIn("corroboration", base["per_test"][0]["basis"])
 
+    def test_a_record_over_a_subset_of_the_tests_cases_raises(self) -> None:
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        primary[0]["target_cases"] = ["a"]
+        with self.assertRaisesRegex(PredicateError, "not the test's target_cases"):
+            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+        del primary[0]["target_cases"]   # a record without the key is accepted as before
+        evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+
     def test_unknown_test_id_raises(self) -> None:
         primary = [{"test_id": "nope", "satisfied": True, "kind": "pass"}]
         with self.assertRaisesRegex(PredicateError, "no test_predicates entry"):
@@ -558,12 +633,14 @@ class VerdictIntegrationTest(unittest.TestCase):
 # ---------------------------------------------------------------------------- schema gate
 
 class SchemaGateTest(unittest.TestCase):
-    def _v(self, preds, *, ir: dict | None = None) -> list[str]:
+    def _v(self, preds, *, ir: dict | None = None, pin_targets: bool = True) -> list[str]:
         ir = ir or _ir(preds)
         cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+        targets = {p["test_id"]: p["target_cases"]
+                   for p in ir["io_contract"]["test_predicates"]} if pin_targets else None
         return pe.validate_primary_predicate_schema(
             preds, case_ids=set(cases), test_ids=["t_mass", "t_sym"],
-            schema=pe.snapshot_schema(ir), cases=cases)
+            schema=pe.snapshot_schema(ir), cases=cases, test_target_cases=targets)
 
     def test_reference_set_is_valid(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
@@ -608,11 +685,24 @@ class SchemaGateTest(unittest.TestCase):
             ([{**HMIN, "expr": "zz"}], "name 'zz' is not a coordinate"),
             ([{**HMIN, "expr": "B", "bind": {"B": "A", "A": "1"}}],
              "bind 'A' is referenced before it is defined"),
+            ([{**HMIN, "expr": "at('a').zz"}], "at('a').zz is not a coordinate"),
+            ([{**HMIN, "expr": "at('a').inputs.flag"}], "in case 'a': inputs.flag"),
+            ([{**HMIN, "expr": "sum(at('zz').x)"}], "at('zz') is not one of"),
+            ([{**HMIN, "target_cases": ["a"]}], "must equal the target_cases of test 't_mass'"),
         ]
         for preds, fragment in rows:
             with self.subTest(fragment=fragment):
                 out = self._v(preds)
                 self.assertTrue(any(fragment in m for m in out), (fragment, out))
+
+    def test_target_cases_equality_is_pinned_only_when_the_test_set_is_given(self) -> None:
+        """Round 1 (security axis): a corroborant over a SUBSET of its test's cases certified
+        the test on its easiest case alone; the gate pins set equality, in either order."""
+        subset = {**HMIN, "target_cases": ["a"]}
+        self.assertTrue(any("must equal" in m for m in self._v([subset])))
+        self.assertEqual(self._v([subset], pin_targets=False), [])
+        reordered = {**HMIN, "target_cases": ["b", "a"]}
+        self.assertEqual(self._v([reordered]), [])
 
     def test_a_bind_that_fails_to_parse_still_counts_as_defined(self) -> None:
         out = self._v([{**HMIN, "expr": "A", "bind": {"A": "final.h["}}])
@@ -638,6 +728,38 @@ class SchemaGateTest(unittest.TestCase):
 
     def test_time_variable_is_a_capture_name(self) -> None:
         self.assertEqual(self._v([{**HMIN, "expr": "final.t - initial.t"}]), [])
+
+
+# ------------------------------------------------------------------------- doc coupling
+
+class CompileContractCouplingTest(unittest.TestCase):
+    """The grammar is stated twice — in `FUNCTIONS` and in the compile contract's grammar block
+    the leaf reads — so the block is coupled to the code by POINTER and by MEMBERS: it names
+    `FUNCTIONS`, every key appears on its function lines, and the elementwise arity cap and the
+    `roll` rank cap it states are the constants' values."""
+
+    _DOC = Path(__file__).resolve().parents[2] / "docs/workflow/phases/phase_01_compile.md"
+
+    def _function_block(self) -> str:
+        text = self._DOC.read_text(encoding="utf-8")
+        start = text.index("  #   functions   ")
+        end = text.index("  #   refused     ", start)
+        return text[start:end]
+
+    def test_every_function_is_named_on_the_functions_lines_and_the_pointer_is_present(self):
+        block = self._function_block()
+        self.assertIn("keys of `FUNCTIONS`", block)
+        import re
+        words = set(re.findall(r"\b[a-z][a-z0-9]*\b", block))
+        self.assertEqual(set(pe.FUNCTIONS) - words, set())
+
+    def test_the_stated_arity_caps_are_the_constants(self):
+        block = self._function_block()
+        cap = pe.FUNCTIONS["max"][1]
+        names = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+        self.assertIn(f"two to {names[cap]} are elementwise", block)
+        self.assertEqual(pe.FUNCTIONS["min"], pe.FUNCTIONS["max"])
+        self.assertIn(f"rank ≤ {pe.FUNCTIONS['roll'][1] - 1}", block)
 
 
 # ----------------------------------------------------------------------------------- CLI

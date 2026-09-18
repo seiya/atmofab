@@ -13955,12 +13955,19 @@ def _validate_test_predicates(
             for c in (tcs if isinstance(tcs, list) else [])
             if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
         }
+        test_target_cases = {
+            p["test_id"].strip(): [str(c) for c in p["target_cases"]]
+            for p in (predicates if isinstance(predicates, list) else [])
+            if isinstance(p, dict) and isinstance(p.get("test_id"), str) and p["test_id"].strip()
+            and isinstance(p.get("target_cases"), list)
+        }
         for msg in validate_primary_predicate_schema(
             io_contract.get("primary_predicates"),
             case_ids=case_ids,
             test_ids=test_ids,
             schema=snapshot_schema(ir),
             cases=cases_by_id,
+            test_target_cases=test_target_cases,
         ):
             violations.append(f"{derived_path}:{msg}")
 

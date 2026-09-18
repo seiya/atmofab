@@ -21096,7 +21096,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # reads), and the V3 rule itself. A grammar stated anywhere but here reaches no leaf
         # (a pure leaf reads only what is inlined). Measured 82034 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack.
-        "docs/workflow/phases/phase_01_compile.md": 82200,
+        # Bumped 82200->84200 (Z6 PR-2 round 1): the grammar block gains the cross-case
+        # `at('<case>').inputs` / `at('<case>').<coordinate>` roots, the operand-pairing rule
+        # (what a leaf must reduce before comparing two resolutions), the arity caps and the
+        # coordinate-name rule; the worked examples spell the cell size from the inputs the
+        # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in /home/seiya/atmofab
+        # at the commit that takes this bump, plus this entry's ~150 B slack.
+        "docs/workflow/phases/phase_01_compile.md": 84200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
