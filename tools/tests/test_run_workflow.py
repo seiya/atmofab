@@ -6842,6 +6842,61 @@ class ParallelClosureTests(unittest.TestCase):
                 with self.assertRaises(ProcessLookupError):
                     os.kill(gpid, 0)
 
+    def test_a_sigterm_to_a_real_driver_is_forwarded_to_its_members(self) -> None:
+        """Round 4 (B4): the interruption row injects `KeyboardInterrupt`; SIGTERM and SIGHUP
+        reach the driver as `SystemExit(143)` through `_sigterm_to_exit`, and a handler
+        catching `KeyboardInterrupt` alone would leave the documented `kill <driver>` route
+        detaching the members. A REAL driver subprocess with the handlers installed is sent
+        SIGTERM while two members run: both members get the forwarded SIGTERM, the driver
+        exits 143."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._seed_wide(repo_root)
+            marks = repo_root / "marks"
+            marks.mkdir()
+            (marks / "spec_component_c.ready").write_text("1")
+            driver_script = (
+                "import sys, json, io, pathlib\n"
+                "from unittest import mock\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "import tools.run_workflow as rw\n"
+                "import tools.llm_config as lc\n"
+                "repo_root = pathlib.Path(sys.argv[2]); marks = repo_root / 'marks'\n"
+                "child = sys.argv[3]\n"
+                "rw._install_signal_handlers()\n"
+                "real_launch = rw._launch_closure_member\n"
+                "def fake_launch(argv, *, repo_root, env):\n"
+                "    return real_launch([sys.executable, '-c', child, str(marks), argv[2].replace('/', '_')], repo_root=repo_root, env=env)\n"
+                "def fake_ready(root, node, required_stages):\n"
+                "    ready = (marks / (node['spec_ref'].replace('/', '_') + '.ready')).exists()\n"
+                "    return {'ready': ready, 'version': node['spec_versions'][0], 'failed_stage': None if ready else 'ir_ref', 'detail': None if ready else 'x'}\n"
+                "runs = []\n"
+                "with mock.patch.object(rw, '_launch_closure_member', fake_launch), mock.patch.object(rw, '_dependency_node_readiness', fake_ready):\n"
+                "    (marks / 'driver.ready').write_text('1')\n"
+                "    rw._run_closure_members_parallel(repo_root=repo_root, ordered=rw._resolve_dependency_closure(repo_root, 'spec/problem/a')[0], jobs=2, dep_until_phase='Validate', required_stages=['ir_ref', 'pipeline_ref', 'aggregate_verdict'], target_orchestration_id='ORCHT', target_spec_ref='spec/problem/a', until_phase='Validate', llm_config=lc.load_llm_config(repo_root / 'llm.yaml'), workflow_mode='dev', status='running', run_conductor=False, wait_usage_reset=False, stdout_format='jsonl', resume=False, prior_orch_by_spec={}, preclaimed_orchestration_id=None, release_preclaim=None, dependency_runs=runs)\n"
+            )
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            driver = subprocess.Popen(
+                [sys.executable, "-c", driver_script, str(REPO_ROOT), str(repo_root),
+                 self._INTERRUPTIBLE_CHILD],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            # wait for both members to have started (their `.sid` markers)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not all(
+                    (marks / f"spec_component_{n}.sid").exists() for n in "bd"):
+                time.sleep(0.05)
+            self.assertTrue(all((marks / f"spec_component_{n}.sid").exists() for n in "bd"))
+            driver.send_signal(signal.SIGTERM)
+            out, err = driver.communicate(timeout=60)
+            self.assertEqual(driver.returncode, 143, err)
+            for n in "bd":
+                self.assertTrue((marks / f"spec_component_{n}.term").exists(), n)
+                self.assertFalse((marks / f"spec_component_{n}.done").exists(), n)
+            events = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
+            self.assertEqual(
+                sum(1 for e in events if e.get("event") == "closure_member_interrupted"), 2)
+
     def test_a_child_that_prints_a_skip_it_did_not_earn_is_not_recorded_as_a_skip(self) -> None:
         """C2-2: the skip record is built only when the driver's own re-verify agrees; a
         child that printed `closure_member_skipped` and left the node not ready is a

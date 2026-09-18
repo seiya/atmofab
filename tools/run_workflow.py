@@ -5388,8 +5388,9 @@ def _install_signal_handlers() -> None:
         # it to the driver, and with the default disposition the driver dies with no
         # `except` clause run — its single orchestration left `running`, and under
         # `--jobs N` its members left detached with nobody reading their pipe. Converted,
-        # a hangup takes the same route as SIGTERM: the orchestration is terminalized
-        # `driver_interrupted`, and a `--jobs` driver stops its members first.
+        # a hangup takes the same route as SIGTERM: the orchestration this driver has
+        # started, if any, is terminalized `driver_interrupted` (a `--jobs` driver in its
+        # member phase has none of its own yet), and its running members are stopped.
         if signum is None:
             continue
         try:
