@@ -78,6 +78,7 @@ The discretization holds the following invariants.
 - **Wet domain.** $h>0$ in every interior cell at every stage and every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope. A cell reaching $h\le0$ is a runtime error, and the run stops with an error before the value reaches the flux `component`, whose contract treats `h<=0` as an error; it must not be handled by clipping or flooring the state.
 - **Mass conservation.** The mirror ghost makes the mass flux through each wall interface exactly zero (the bottom and top states have equal `h` and opposite `hv`), the `x` interfaces are periodic, and the Coriolis source has no `h` component, so $\sum_{i,j}h_{i,j}$ is conserved up to round-off.
 - **Zonal uniformity.** An initial state uniform in `x` stays uniform in `x` up to round-off: every `x`-interface flux difference vanishes identically and every remaining operation acts row-wise.
+- **Translation equivariance in `x`.** `f` depends on `y` alone and the `x` boundary is periodic, so shifting the initial state by a whole number of cells in `x` shifts the solution by the same number of cells, up to round-off.
 - **No work by the Coriolis source.** $(hu)\,S_2+(hv)\,S_3=0$ at every cell (the source `component`'s §3).
 
 The stability index is defined as
@@ -105,7 +106,7 @@ f_0=2\,\Omega\sin\theta_0,\qquad
 $$
 evaluated once at setup at the cell centres $y_j$.
 
-The initial condition is specified by `flow_profile`, and only the 2 values `tc2_zonal_uniform` and `tc3_compact_jet` are allowed. Both are steady, `x`-uniform, geostrophically balanced states with $v=0$ and $g\,\partial_y h=-f\,u$, discretized at the cell centres $y_j$ with $hu=h\,u$, $hv=0$.
+The initial condition is specified by `flow_profile`, and only the 3 values `tc2_zonal_uniform`, `tc3_compact_jet` and `tc2_zonal_perturbed` are allowed. The first two are steady, `x`-uniform, geostrophically balanced states with $v=0$ and $g\,\partial_y h=-f\,u$, discretized at the cell centres $y_j$ with $hu=h\,u$, $hv=0$; the third is the first with an `x`-dependent depth perturbation, and is not steady.
 - `tc2_zonal_uniform` (Test Case 2): $u(y)=u_0$ and
 $$
 h(y)=h_0-\frac{u_0}{g}\left[f_0\left(y-\tfrac{L_y}{2}\right)+\frac{\beta}{2}\left(y-\tfrac{L_y}{2}\right)^2\right]
@@ -115,17 +116,23 @@ $$
 u(y)=u_0\,b(s)\,b(x_e-s)\,e^{4/x_e},\qquad
 h(y)=h_0-\frac{1}{g}\int_0^{y}f(y')\,u(y')\,dy'
 $$
+- `tc2_zonal_perturbed`: with $h_{TC2}(y)$ the `tc2_zonal_uniform` depth above and the parameters `eta0` (`m`) and `shift_x_fraction` (dimensionless),
+$$
+h(x,y)=h_{TC2}(y)+\eta_0\,\sin\left(2\pi\left(\frac{x}{L_x}-\mathrm{shift\_x\_fraction}\right)\right),\qquad u=u_0,\qquad v=0
+$$
+discretized at the cell centres $(x_i, y_j)$ with $hu=h\,u_0$, $hv=0$. The perturbation is a wavenumber-one gravity-wave excitation of the channel: it is the only initial condition of this `problem` that is not uniform in `x`, so it is the one that exercises the `x`-interface flux and the periodic `x` mapping.
+
 The integral is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $dy/64$ from $y'=0$ to the cell centre $y_j$, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u$ has compact support in $(y_b, y_e)$ and its maximum is $u_0$ at $s=x_e/2$. The branch-free form $b(s)=\exp\left(-1/\max(s,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(s)$ at every cell centre in double precision (for $s\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $s=0$, because $y_b$ and $y_e$ lie on cell edges when `ny` is a multiple of 8, and the sweep of `tests.md` uses such `ny`), and either form may be used.
 
 The runtime input requires the following.
 - `L_x`, `L_y`, `nx`, `ny`
 - `coriolis_profile`
-- `flow_profile`
+- `flow_profile`, and for `tc2_zonal_perturbed` its parameters `eta0`, `shift_x_fraction`
 - `t_start`, `t_end`
 - `dt_rule`
 - `output_schedule`
 
-In the initial state, `h>0` in all cells is required. For `tc2_zonal_uniform` this bounds the channel width: $h(y)>0$ at the northern wall requires $L_y$ below about $7.5\times10^6\ \mathrm{m}$ with the constants above, and a wider channel is an error at setup, not a value to clip. An undefined parameter is an error without implicit completion.
+In the initial state, `h>0` in all cells is required. For `tc2_zonal_uniform` this bounds the channel width: $h$ is smallest at the northern wall, $h(L_y)=h_0-\dfrac{u_0}{g}\left[\dfrac{f_0 L_y}{2}+\dfrac{\beta L_y^2}{8}\right]$, which is positive for $L_y<1.046\times10^7\ \mathrm{m}$ with the constants above ($h(L_y)=1493\ \mathrm{m}$ at $L_y=6\times10^6\ \mathrm{m}$); for `tc2_zonal_perturbed` the bound is $h(L_y)>\eta_0$. A channel outside the bound is an error at setup, not a value to clip. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid a boundary treatment other than the channel of §3 — a periodic `y` boundary, a wall in `x`, or a wall realized by anything but the mirror ghost — the introduction of a bottom topography, the introduction of a forcing term other than the Coriolis source, a Coriolis profile or a flow profile other than the allowed values, automatic switching of `flow_profile` or `coriolis_profile`, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. Forbid passing anything other than the internal procedure of §5 as the `rhs` argument of the time-update `component` — a dependency operation passed directly is refused by the generated model's dataflow gate and is not the tendency of §5.
