@@ -10,12 +10,12 @@
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` `dynamics_shallow_water_boundary_2d_channel_mirror__apply` at `L0`: the `x`-direction periodic ghost mapping, the `y`-direction even mirror (`odd_at_wall=false`), the `y`-direction odd mirror (`odd_at_wall=true`), the corner ghost cells, and the input guard for an invalid grid size (`ny<2`).
+This suite verifies the published `operation` `dynamics_shallow_water_boundary_2d_channel_mirror__apply` at `L0`: the `x`-direction periodic ghost mapping, the `y`-direction even mirror (`odd_at_wall=false`), the `y`-direction odd mirror (`odd_at_wall=true`), the corner ghost cells, and the input guard for an invalid grid size (`ny<2`) and for a ghost width the interior cannot supply (`ng>ny`, `ng>nx`).
 
 ## 2. Input-defaulting rules
 - The normal cases use `nx=4`, `ny=3`, `ng=1`, `nx_total=6`, `ny_total=5`. The interior of `U_in` is filled with pairwise-distinct values, `U_in(i,j) = 10*i + j` for the interior indices, so that every ghost cell identifies the interior cell it was mapped from. The ghost cells of `U_in` are filled with a sentinel value (`-999`) that no interior cell holds, so that a ghost cell of `U_in` read by mistake is visible in the output.
 - The even-mirror case uses `odd_at_wall=false`; the odd-mirror case and the corner case use `odd_at_wall=true`. The `x`-wrap case uses `odd_at_wall=false`.
-- The abnormal case uses `ny=1` (`ny<2`) with `ny_total=3`, `nx=4`, `ng=1`, `nx_total=6`, and `odd_at_wall=false`.
+- The abnormal cases use `odd_at_wall=false` and the sentinel-filled ghost cells of the normal cases. The invalid-`ny` case uses `ny=1` (`ny<2`) with `ny_total=3`, `nx=4`, `ng=1`, `nx_total=6`. The invalid-`ng`-over-`ny` case uses `ng=3`, `nx=4`, `ny=2`, `nx_total=10`, `ny_total=8` (`ng>ny`, `ng<=nx`). The invalid-`ng`-over-`nx` case uses `ng=3`, `nx=2`, `ny=4`, `nx_total=8`, `ny_total=10` (`ng>nx`, `ng<=ny`).
 
 ## 3. Execution-control rules
 `N/A`: this `component` applies a boundary mapping to a provided field and defines no time-stepping or iteration. Execution control is the responsibility of the `problem` runner.
@@ -52,6 +52,18 @@ This suite verifies the published `operation` `dynamics_shallow_water_boundary_2
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny<2`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+- `test_id`: `l0_invalid_ng_over_ny_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `ng>ny`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+- `test_id`: `l0_invalid_ng_over_nx_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `ng>nx`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
 
 ## 7. Pass/fail aggregation rules

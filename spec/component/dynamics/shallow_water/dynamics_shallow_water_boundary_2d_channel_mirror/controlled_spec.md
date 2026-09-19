@@ -40,7 +40,7 @@ $$
 Step 2 reads the rows that step 1 has already completed, so the corner ghost cells are the `y` mirror of the `x`-periodic images, and every cell of `U_out` is defined. The ghost rows and ghost columns of `U_in` are never read.
 
 ## 4. Failure conditions and constraints
-Treat `nx<2`, `ny<2`, `ng<1`, and `ng>ny` as invalid input and an error: `grid_valid` is false and `U_out` is not a valid mapping. `ng>ny` is invalid because a mirror of width `ng` reads `ng` interior rows, which the interior does not hold.
+Treat `nx<2`, `ny<2`, `ng<1`, `ng>nx`, and `ng>ny` as invalid input and an error: `grid_valid` is false and `U_out` is not a valid mapping. `ng>nx` is invalid because a periodic wrap of width `ng` reads `ng` interior columns, and `ng>ny` because a mirror of width `ng` reads `ng` interior rows, which the interior does not hold; either would read a ghost cell of `U_in`, which §3 never does.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_shallow_water_boundary_2d_channel_mirror__apply`.
