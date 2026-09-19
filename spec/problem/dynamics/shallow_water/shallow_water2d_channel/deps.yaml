@@ -1,0 +1,18 @@
+spec_id: shallow_water2d_channel
+spec_kind: problem
+dependencies:
+  # Empty by rule, not by accident (issue #175): a component has exactly ONE source.
+  # Every component this node builds against is selected by the adopted `profile`
+  # below, and the host expands that selection into this node's direct dependencies
+  # at closure resolution. Declare a component here only if no adopted profile
+  # selects it; declaring one twice is refused (`profile_component_declared_twice`).
+  components: []
+  profiles:
+    - profile_id: dynamics_shallow_water_profile_2d_channel_p0_rk4
+      version_constraint: ">=0.1.0 <1.0.0"
+  # R1/M3c-β → M3d: the (fortran, cpu) runner harness. Promotes this to an M3c node —
+  # its runner is host-rendered glue over the certified harness plumbing + the
+  # leaf-authored <spec_id> checks module (Fortran realization: docs/workflow/CHECKS_MODULE_CONTRACT.md).
+  infrastructure:
+    - infrastructure_id: harness_fortran_cpu
+      version_constraint: ">=0.3.0 <1.0.0"
