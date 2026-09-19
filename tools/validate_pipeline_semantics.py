@@ -1788,12 +1788,14 @@ def _validate_problem_model_dependency_dataflow(
 
     RESIDUES, reproduced and NOT fixed. (a) A bare `use other_module` can import a VARIABLE whose
     name this file also declares as a constant; nothing in one file can see that. (b) An
-    implicitly typed local is not declared at all, so it cannot disqualify a name — unreachable
-    through `Generate.gate`, which requires `implicit none` (fortitude **C001**, verified by
-    running it; C003 is a different rule, and since issue #111 it is not in the
-    gate's declared rule set at all — when this note was written the phase document instructed
-    the leaf to suppress it, and either way citing it would have pointed a future reader at a
-    check that never fires). (c) The candidate
+    implicitly typed local is not declared at all, so it cannot disqualify a name. An earlier
+    version of this note called that unreachable because the lint gate (fortitude C001)
+    requires the module-level `implicit none`; a round-2 reviewer of issue #266 PR-2 measured
+    that a routine-local `implicit real(dp) (s)` under it compiles under the gate's standard
+    and passes the declared lint set, so a local named after a constant or a procedure
+    elsewhere in the file can be an undeclared, exempted, discarded output — reachable, zero
+    in the corpus, and the same class as (a). (C003 is a different rule and, since issue
+    #111, not in the gate's declared rule set.) (c) The candidate
     rule still treats a variable written by an earlier `call` as a candidate, and the consumption
     closure still cannot cross a call; the measured instance is the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
@@ -5539,21 +5541,25 @@ _COMPONENT_PUBLISHED_SUB_RE = re.compile(
     r"subroutine\s+(?P<name>[A-Za-z]\w*)",
     re.IGNORECASE,
 )
-# An `interface` block's span. A procedure header inside one is a PROTOTYPE (issue #266: the
-# shape of a procedure a caller passes), not a published operation, whatever its name begins
-# with — so the scan below skips the span. The opener is the whole statement: `interface`,
-# `abstract interface`, a generic `interface <name>` / `interface operator(...)`; a variable
-# named `interface` (`interface = 3`, `interface(2) = 1`) opens nothing. Mirrored VERBATIM in
-# the runtime's prefixed-name scanner, which the parity test pins.
-_INTERFACE_SPAN_OPEN_RE = re.compile(
-    r"^\s*(?:abstract\s+)?interface(?:\s*$|\s+[A-Za-z])", re.IGNORECASE)
+# An ABSTRACT interface block's span. A procedure header inside one is a PROTOTYPE (issue
+# #266: the shape of a procedure a caller passes), not a published operation, whatever its
+# name begins with — so the scan below skips the span. A NON-abstract interface body is
+# different: it declares an external procedure the module can re-export, which is a callable
+# a consumer links, so the scan counts it exactly as it did before this rule (a round-2
+# reviewer measured the wider skip letting a module publish an extra `<spec_id>__` external
+# through a sibling file). The opener is the whole statement, so a variable named
+# `interface` opens nothing. Mirrored VERBATIM in the runtime's prefixed-name scanner, which
+# the parity test pins.
+_ABSTRACT_INTERFACE_SPAN_OPEN_RE = re.compile(r"^\s*abstract\s+interface\s*$", re.IGNORECASE)
 _INTERFACE_SPAN_END_RE = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
 
 
 def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
     """Distinct, first-appearance-ordered ``subroutine`` names in ``text`` whose name begins
     (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. A
-    header inside an ``interface`` block is a prototype and is not counted (issue #266). The
+    header inside an ``abstract interface`` block is a prototype and is not counted (issue
+    #266); one inside a plain ``interface`` body is an external the module may re-export and
+    counts, as before. The
     validator may NOT import ``orchestration_runtime`` (module-boundary rule), so this is a
     separate mirror of that module's ``_list_prefixed_subroutines``; the cross-scanner parity
     test pins the two implementations to the same result.
@@ -5576,7 +5582,7 @@ def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
             if _INTERFACE_SPAN_END_RE.match(stmt):
                 in_interface = max(0, in_interface - 1)
                 continue
-            if _INTERFACE_SPAN_OPEN_RE.match(stmt):
+            if _ABSTRACT_INTERFACE_SPAN_OPEN_RE.match(stmt):
                 in_interface += 1
                 continue
             if in_interface:

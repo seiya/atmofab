@@ -21663,6 +21663,17 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             "  end subroutine\nend module\n")
         self.assertEqual(self._run(public_api={"published_operations": [
             {"operation_id": "dep_base__scale"}]}, model_text=model), [])
+        # A plain (non-abstract) interface body declares an EXTERNAL the module can re-export
+        # through a sibling file — a callable, so it is still an extra published operation,
+        # exactly as before the span rule (round-2 red-then-green, restored).
+        external = model.replace(
+            "contains\n",
+            "interface\n  subroutine dep_base__ext(y)\n    real, intent(in) :: y\n"
+            "  end subroutine dep_base__ext\nend interface\ncontains\n")
+        v = self._run(public_api={"published_operations": [
+            {"operation_id": "dep_base__scale"}]}, model_text=external)
+        self.assertTrue(any("'dep_base__ext'" in x and "NOT in the IR public_api" in x
+                            for x in v), v)
         # Fail-closed control: a real extra prefixed procedure after the block still fires.
         extra = model.replace("end module\n",
                               "  subroutine dep_base__extra(y)\n  end subroutine\nend module\n")
@@ -21786,8 +21797,11 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             ("a prefixed prototype in an abstract interface block", "dep_base",
              ("module m\nabstract interface\n  subroutine dep_base__cb(x)\n"
               "    real, intent(in) :: x\n  end subroutine dep_base__cb\nend interface\n"
-              "contains\n  subroutine dep_base__scale(f)\n    procedure(dep_base__cb) :: f\n"
-              "    interface = 3\n  end subroutine\nend module\n")),
+              "interface\n  subroutine dep_base__ext(y)\n    real, intent(in) :: y\n"
+              "  end subroutine dep_base__ext\nend interface\n"
+              "contains\n  subroutine other(a)\n    interface = 3\n  end subroutine\n"
+              "  subroutine dep_base__scale(f)\n    procedure(dep_base__cb) :: f\n"
+              "  end subroutine\nend module\n")),
             ("comment / interface-block / parenless / case / mixed-prefix edges", "dep_base",
              "module m\ncontains\n"
              "  ! a comment mentioning subroutine dep_base__ghost\n"
@@ -25906,6 +25920,22 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
             api = self._public_api(); api["interfaces"].append(copy.deepcopy(api["interfaces"][0]))
             v = self._compile(api)
             self.assertTrue(any("more than once" in x for x in v), v)
+        # Round-2 census: the branches below were fail-closed by hand and unwitnessed.
+        with self.subTest(drift="an entry that is not a mapping"):
+            v = self._compile(self._public_api(interfaces=["junk"]))
+            self.assertTrue(any("interfaces[0] is not a mapping" in x for x in v), v)
+        with self.subTest(drift="a nameless entry"):
+            v = self._compile(self._public_api(interfaces=[{"name": " ", "signature": {"kind": "subroutine"}}]))
+            self.assertTrue(any("missing a non-empty 'name'" in x for x in v), v)
+        with self.subTest(drift="an unrenderable signature"):
+            api = self._public_api()
+            api["interfaces"][0]["signature"]["args"][0]["spec"] = {"type": "mystery"}
+            v = self._compile(api)
+            self.assertTrue(any("signature is not renderable" in x for x in v), v)
+        with self.subTest(drift="an empty list while §5.1 declares one"):
+            v = self._compile(self._public_api(interfaces=[]))
+            self.assertTrue(any("omits controlled_spec §5.1 prototype 'hx_rhs_1d'" in x
+                                for x in v), v)
 
     # --- the Generate.static gate ------------------------------------------------------------
     def _generate(self, source: str, *, public_api: dict | None = None) -> list[str]:
