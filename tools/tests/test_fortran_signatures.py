@@ -575,6 +575,17 @@ class InterfaceBlockStanzaTests(unittest.TestCase):
                 self.assertEqual(errs, [])
                 self.assertEqual(stanza_atoms(ifaces2["rhs_2d"]), atoms)
 
+    def test_a_use_statement_inside_a_prototype_is_an_atom(self) -> None:
+        # Only the two scope statements are noise; anything else a prototype body carries is
+        # ABI-adjacent and stays (a `use` rebinding the kind is exactly what the set-equality
+        # pin must see). A round-1 mutant widening the noise pattern to `use` survived.
+        block = self._BLOCK.replace("    import :: dp\n",
+                                    "    use, intrinsic :: iso_fortran_env, only: dp => real32\n")
+        _o, _t, ifaces, errs = parse_interface_stanzas(block)
+        self.assertEqual(errs, [])
+        self.assertTrue(any(a.startswith("use") for a in stanza_atoms(ifaces["rhs_2d"])),
+                        stanza_atoms(ifaces["rhs_2d"]))
+
     def test_generic_interface_module_procedure_lines_are_dropped(self) -> None:
         block = ("interface hx__gen\n  module procedure hx__real\n  procedure hx__int\n"
                  "end interface hx__gen\n"

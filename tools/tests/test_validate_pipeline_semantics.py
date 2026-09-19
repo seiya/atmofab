@@ -5335,6 +5335,29 @@ end module chan_model
             v = self._dataflow(variable, ["hx"])
             self.assertTrue(any("does not propagate dependency operation outputs" in x
                                 and "'scratch'" in x for x in v), v)
+        # A procedure name is scope-local: a variable that shares it in another scope is a
+        # variable, and the exemption must not reach it (round-1 finding on the first version,
+        # which exempted every envelope name: both shapes compile and both passed).
+        discarded = self._PROCEDURE_ACTUAL_MODEL.replace(
+            "  real(dp), intent(out) :: u_out(:)\n",
+            "  real(dp), intent(out) :: u_out(:)\n  real(dp) :: NAME(size(u))\n").replace(
+            "  call hx__advance(u, my_rhs, dt, u_out)\n",
+            "  call hx__advance(u, my_rhs, dt, NAME)\n  u_out = u\n")
+        shapes = {
+            "an internal procedure of ANOTHER routine": discarded.replace("NAME", "scratch").replace(
+                "end module chan_model\n",
+                "subroutine other(a)\n  real(dp), intent(in) :: a\ncontains\n"
+                "  subroutine scratch(y)\n    real(dp), intent(in) :: y\n  end subroutine scratch\n"
+                "end subroutine other\nend module chan_model\n"),
+            "a module procedure the local shadows": discarded.replace("NAME", "helper").replace(
+                "end module chan_model\n",
+                "subroutine helper()\nend subroutine helper\nend module chan_model\n"),
+        }
+        for label, src in shapes.items():
+            with self.subTest(shape=label):
+                v = self._dataflow(src, ["hx"])
+                self.assertTrue(any("does not propagate dependency operation outputs" in x
+                                    for x in v), v)
 
     def test_discarded_dep_result_flagged_even_when_call_shares_an_input(self) -> None:
         # Check 1 must flag a discarded dependency result even when the dep call shares an input

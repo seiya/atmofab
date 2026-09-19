@@ -174,7 +174,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # the key outright before PR-1 and refused the prototype until this PR) — so for every IR
     # the previous version could certify, what a valid IR is has not changed. A bump would
     # re-derive every node's Compile for an instruction none of them reaches.
-    "compile-docs-4": "bc2b500152e4424df5f7d0f4edc978c7d0abb04817401be9b80ab71d04ce1283",
+    # Re-pinned in round 1: the IR example's comment names the `interfaces` key beside the two
+    # it listed (same conditional).
+    "compile-docs-4": "9d3696f7f9bf8ebdf9c5de9c704dd2e521dce267a0ef9c959f8800e1f0b00347",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

@@ -1760,8 +1760,21 @@ class PureRenderTests(unittest.TestCase):
                            {"name": "rhs", "type": "procedure(bc_rhs_1d)", "intent": None,
                             "rank": 0, "dimension": None}],
              "procedure_interfaces": {"bc_rhs_1d": [
-                 "subroutine bc_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                 "subroutine bc_rhs_1d(u, dudt)",
                  "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]}},
+        ],
+    }
+    # (e) a procedure-typed argument whose prototype could NOT be read host-side (round-1 of
+    # issue #266 PR-2: the argument line must not promise a listing that does not follow).
+    _RENDER_DEP_PROCEDURE_UNREAD: ClassVar[dict[str, object]] = {
+        **_RENDER_DEP_BASE,
+        "published_operations": [
+            {"operation": "bc__advance", "interface": "subroutine bc__advance(U, rhs)",
+             "argument_order": ["U", "rhs"],
+             "arguments": [{"name": "U", "type": "real(dp)", "intent": "inout",
+                            "rank": 1, "dimension": ":"},
+                           {"name": "rhs", "type": "procedure(bc_rhs_1d)", "intent": None,
+                            "rank": 0, "dimension": None}]},
         ],
     }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
@@ -1790,6 +1803,7 @@ class PureRenderTests(unittest.TestCase):
         "pure-cold-no-arg-detail": "_RENDER_DEP_NO_DETAIL",
         "pure-cold-partial-arg-detail": "_RENDER_DEP_PARTIAL",
         "pure-cold-procedure-arg": "_RENDER_DEP_PROCEDURE",
+        "pure-cold-procedure-arg-unread": "_RENDER_DEP_PROCEDURE_UNREAD",
     }
 
     def _host_built_launch_requests(self) -> list[tuple[str, dict]]:

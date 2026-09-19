@@ -565,7 +565,9 @@ PINNED: dict[str, str] = {
     # producer's rule (1) carries the same rule in its shorter form; the `compile.generate`
     # template's rule (8) says the prototypes are transcribed into `public_api.interfaces` and
     # pinned. Every other pinned surface is unchanged.
-    "pure-48": "d2ac85367c9e3bc4a03dddc3d6428aea52290472e12cee2f33c26240a76c5467",}
+    # Re-pinned in round 1: the harness rule (1) states the ORDER of the two scope statements
+    # (the compiler refuses the implicit-typing statement before the host-association one).
+    "pure-48": "0f9715ba7082b9f4f58407c80595138c0d8e6e0e07e45598512c3d526c230ba0",}
 
 
 def _contract_tuple() -> dict[str, object]:

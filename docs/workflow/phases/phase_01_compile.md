@@ -265,8 +265,10 @@ dependency:
                                              #   `infrastructure` dep: `[]` (leaf never calls the harness API).
 
 public_api:
-  # This FULL shape (signatures + module_parameters) is required on EVERY spec_kind that publishes an
-  # exact surface — `infrastructure` and, since issue #153, `component` (V8). A `problem` OMITS it.
+  # This FULL shape (signatures + module_parameters; plus `interfaces`, each `{name, signature}`,
+  # when §5.1 declares named procedure prototypes — see the authoring bullet) is required on EVERY
+  # spec_kind that publishes an exact surface — `infrastructure` and, since issue #153, `component`
+  # (V8). A `problem` OMITS it.
   # The COMPLETE published surface controlled_spec §5 declares ("operation_ids are exactly: ...") —
   # every operation incl. helper emitters/writers no test exercises directly — so Generate
   # publishes all of them and the runner CALLS them, not reimplements. The --stage compile gate

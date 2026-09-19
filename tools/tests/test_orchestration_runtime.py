@@ -12719,7 +12719,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
                 {"name": "u_next", "type": "real(dp)", "intent": "out", "rank": 1,
                  "dimension": ":"}],
             "procedure_interfaces": {"hx_rhs_1d": [
-                "subroutine hx_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                "subroutine hx_rhs_1d(u, dudt)",
                 "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]},
         }])
         block = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[dep]))
@@ -12728,11 +12728,15 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("prototype `hx_rhs_1d`", block)
         self.assertIn("      real(dp), intent(out) :: dudt(:)", block)
         self.assertIn("takes a procedure, not data", block)
-        # Control: without a prototype the header sentence stays out.
+        # Control: without a prototype the header sentence stays out, and the argument line
+        # no longer promises a listing that does not follow.
         plain = dict(self.DEP, published_operations=[dict(
             dep["published_operations"][0], procedure_interfaces=None)])
-        self.assertNotIn("takes a procedure, not data",
-                         _build_dependency_facts(dict(self.BASE, resolved_dependencies=[plain])))
+        plain_block = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[plain]))
+        self.assertNotIn("takes a procedure, not data", plain_block)
+        self.assertNotIn("listed under this operation", plain_block)
+        self.assertIn("could not be read host-side", plain_block)
+        self.assertNotIn("could not be read host-side", block)
 
     def test_published_operations_render_falls_back_to_header_when_no_arguments(self) -> None:
         # A published op without `arguments` (older/unparseable) renders header-only: no
@@ -13335,9 +13339,37 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             rhs = op["arguments"][1]
             self.assertEqual((rhs["type"], rhs["rank"], rhs["intent"]),
                              ("procedure(hx_rhs_1d)", 0, None))
+            # The two scope statements of the interface body are NOT carried (a consumer
+            # copying them into its own procedure would earn a syntax refusal).
             self.assertEqual(op["procedure_interfaces"]["hx_rhs_1d"], [
-                "subroutine hx_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                "subroutine hx_rhs_1d(u, dudt)",
                 "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"])
+        # A function-kind prototype is read too (the header is found by name, not by kind):
+        # round-1 measured that the first version listed nothing for one while the argument
+        # line promised a listing.
+        fn_model = model.replace(
+            "  end interface\n",
+            "    function hx_norm(u) result(r)\n      import :: dp\n      implicit none\n"
+            "      real(dp), intent(in) :: u(:)\n      real(dp) :: r\n    end function hx_norm\n"
+            "  end interface\n").replace(
+            "    procedure(hx_rhs_1d) :: rhs\n",
+            "    procedure(hx_rhs_1d) :: rhs\n    procedure(hx_norm) :: nrm\n").replace(
+            "subroutine hx__advance(u, rhs, dt, u_next)", "subroutine hx__advance(u, rhs, dt, u_next, nrm)")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__hx__0.2.0", "p_20260601_002", "bin_20260601_002",
+                "run_20260601_002", source_id="src_20260601_001", spec_id="hx",
+                model_text=fn_model)
+            self._write_ir(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001",
+                [{"node_key": "component/hx@0.2.0", "kind": "component",
+                  "operations": ["hx__advance"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            op = _resolve_dependency_facts(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")[0]["published_operations"][0]
+            self.assertEqual(op["procedure_interfaces"]["hx_norm"], [
+                "function hx_norm(u) result(r)", "real(dp), intent(in) :: u(:)", "real(dp) :: r"])
 
     def test_non_fortran_consumer_gets_no_interfaces_but_keeps_verdict(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts
@@ -21208,7 +21240,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 90200->91000 (issue #266 PR-2): the `public_api.interfaces` carrier in the
         # authoring bullet and its V8 pin (name set and argument set; a legacy IR passes only
         # when §5.1 declares no prototype). Measured 90688 with `wc -c` in /home/seiya/atmofab
-        # at the commit that takes this bump.
+        # at the commit that takes this bump. Round 1: the IR example names the key; measured
+        # 90818, no bump.
         "docs/workflow/phases/phase_01_compile.md": 91000,
     }
 

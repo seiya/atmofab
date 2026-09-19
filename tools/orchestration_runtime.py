@@ -3045,12 +3045,16 @@ def _procedure_interface_name(type_text: Any) -> str | None:
 def _extract_interface_prototype(logical: list[str], proto_name: str) -> list[str] | None:
     """The statements of the prototype named ``proto_name`` inside an ``interface`` block of
     ``logical`` (comment-stripped, continuation-joined statements): its header and every
-    statement up to its own terminator, verbatim. A prototype body carries specification
-    statements only, so the first statement opening with ``end`` closes it. ``None`` when no
-    interface block declares that name — which includes a prototype of the OTHER procedure
-    kind (a function): only the header shape this module already reads is matched, so such a
-    dummy is shown with its ``procedure(<name>)`` type and no prototype rows. Orientation
-    only; pure over a list of statement strings (its one caller's own envelope catches)."""
+    declaration up to its own terminator, verbatim. The header is found by NAME — the
+    statement inside a block that names the prototype followed by its argument list (or
+    nothing) and carries no ``::`` — so both procedure kinds are read; a prototype body
+    carries specification statements only, so the first statement opening with ``end``
+    closes it, and its two scope statements (host association, the implicit-typing rule) are
+    left out: they belong to an interface body, and a consumer's leaf that copied them into
+    the procedure it writes would earn a syntax refusal. ``None`` when no interface block
+    declares that name. Orientation only; pure over a list of statement strings (its one
+    caller's own envelope catches)."""
+    header_re = re.compile(r"(?<![\w%])" + re.escape(proto_name) + r"\s*(?:\(|$)", re.IGNORECASE)
     in_interface = 0
     for idx, line in enumerate(logical):
         if _INTERFACE_SPAN_END_RE.match(line):
@@ -3061,16 +3065,21 @@ def _extract_interface_prototype(logical: list[str], proto_name: str) -> list[st
             continue
         if not in_interface:
             continue
-        m = _FORTRAN_SUBROUTINE_RE.match(line)
-        if m is None or m.group("name").lower() != proto_name.lower():
+        head = line.strip()
+        if "::" in head or not head or head.lower().split("(", 1)[0].split()[0].startswith("end"):
             continue
-        out = [line.strip()]
+        if not header_re.search(head):
+            continue
+        out = [head]
         for body in logical[idx + 1:]:
             stripped = body.strip()
             if not stripped:
                 continue
-            if stripped.lower().split("(", 1)[0].split()[0].startswith("end"):
+            first = stripped.lower().split("(", 1)[0].split()[0]
+            if first.startswith("end"):
                 break
+            if first in ("import", "implicit"):
+                continue
             out.append(stripped)
         return out
     return None
@@ -9858,14 +9867,16 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
                         "so author against it, and report the disagreement in your prose so a "
                         "reviewer sees it."
                     )
-            detail = _argument_detail_lines(op.get("arguments"))
+            prototypes = op.get("procedure_interfaces")
+            detail = _argument_detail_lines(
+                op.get("arguments"),
+                carried_prototypes=frozenset(prototypes) if isinstance(prototypes, dict) else frozenset())
             if detail:
                 any_detail = True
                 rows.extend(detail)
             # The prototype each procedure-typed argument references (issue #266), verbatim
             # from the dependency's certified source, so the consumer's leaf writes a procedure
             # of exactly that shape rather than inferring one from the dummy's name.
-            prototypes = op.get("procedure_interfaces")
             if isinstance(prototypes, dict):
                 for proto_name, proto_lines in prototypes.items():
                     spelled = [str(x).strip() for x in proto_lines
@@ -9877,7 +9888,9 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
                     rows.append(
                         f"    prototype `{proto_name.strip()}` — the procedure you pass for the "
                         "argument above must declare EXACTLY these dummies (names may differ; "
-                        "type, kind, rank and intent may not):")
+                        "type, kind, rank and intent may not; write it as an ordinary "
+                        "procedure of yours, with these declarations and nothing an interface "
+                        "body needs):")
                     rows.extend(f"      {line}" for line in spelled)
     if not rows:
         return []
@@ -9918,11 +9931,15 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
     return [header, *rows]
 
 
-def _argument_detail_lines(arguments: Any) -> list[str]:
+def _argument_detail_lines(
+    arguments: Any, *, carried_prototypes: frozenset[str] = frozenset()
+) -> list[str]:
     """Render indented per-dummy-argument ``type / intent / rank-N (shape)`` lines for one
     published operation, or ``[]`` when `arguments` is absent or every entry is unresolved
     (fully backward-compatible header-only fallback). Orientation-only: an unresolved rank is
-    marked explicitly and NEVER implied as a number.
+    marked explicitly and NEVER implied as a number. A procedure-typed dummy names its
+    prototype; ``carried_prototypes`` says which prototypes the caller renders under the
+    operation, so the line promises a listing only when one follows.
     """
     if not isinstance(arguments, list) or not arguments:
         return []
@@ -9943,11 +9960,14 @@ def _argument_detail_lines(arguments: Any) -> list[str]:
             continue
         proto_name = _procedure_interface_name(arg.get("type"))
         if proto_name:
+            where = ("listed under this operation" if proto_name in carried_prototypes else
+                     "the dependency declares (it could not be read host-side, so match the "
+                     "argument's role and let Build verify the shape)")
             lines.append(
                 f"    {name}: {str(arg.get('type')).strip()} — a PROCEDURE argument: pass a "
-                f"procedure whose interface is EXACTLY the prototype `{proto_name}` listed "
-                "under this operation (your own module or internal procedure; it may reach "
-                "your grid, parameters and fields by host association)")
+                f"procedure whose interface is EXACTLY the prototype `{proto_name}` {where} "
+                "(your own module or internal procedure; it may reach your grid, parameters "
+                "and fields by host association)")
             continue
         if not _known_rank(arg):
             # Rank could not be resolved host-side. Do NOT tell the leaf to read the

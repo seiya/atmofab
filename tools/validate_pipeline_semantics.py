@@ -1841,14 +1841,19 @@ def _validate_problem_model_dependency_dataflow(
     # fail-OPEN at exactly the candidate rule below. The blanking stays inside the envelopes.
     file_constants, file_other_names = _fortran_declared_names(lowered)
     parameter_names = file_constants - file_other_names
-    # The name of any procedure this file DEFINES — at module level or internal to one —
+    # The name of a procedure this file DEFINES — at module level or internal to one —
     # passed as an actual is the procedure itself (a dependency operation taking a
     # procedure-typed dummy, issue #266: the caller hands it the tendency to integrate). Such an
-    # actual can carry nothing back, so it is not an output candidate. Exact by construction:
-    # a name cannot be both a procedure and a variable in one file, so nothing a dependency
-    # could write is exempted here. The envelopes are one per definition, internal ones
-    # included (see the envelope class), which is the set this needs.
-    procedure_names = {envelope.name for envelope in envelopes}
+    # actual can carry nothing back, so it is not an output candidate. The envelopes are one
+    # per definition, internal ones included (see the envelope class). The SAME file-wide,
+    # scope-free rule as the constant clause above, for the same reason: a procedure name is
+    # scope-local (an internal procedure of ANOTHER routine, or a module-level procedure a local
+    # declaration shadows — both compile), so a name this file also declares as a variable
+    # anywhere is NOT exempt. Two round-1 reviewers each built a shape where the plain
+    # envelope set hid a discarded result origin/main flagged; subtracting the declared names
+    # costs a false violation on a file that uses one name both ways, the direction this
+    # gate accepts.
+    procedure_names = {envelope.name for envelope in envelopes} - file_other_names
 
     for envelope in envelopes:
         sub_name = envelope.name
