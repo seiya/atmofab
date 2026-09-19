@@ -1,5 +1,5 @@
 catalog_version: 0.2.0
-updated_at: 2026-09-17
+updated_at: 2026-09-19
 specs:
   - spec_kind: problem
     spec_id: advdiff1d_linear
@@ -97,6 +97,28 @@ specs:
     controlled_spec_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md
     tests_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/tests.md
     deps_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/deps.yaml
+    official_releases: []
+
+  - spec_kind: component
+    spec_id: dynamics_shallow_water_boundary_2d_channel_mirror
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: dynamics
+    family: shallow_water
+    controlled_spec_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/controlled_spec.md
+    tests_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/tests.md
+    deps_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/deps.yaml
+    official_releases: []
+
+  - spec_kind: component
+    spec_id: dynamics_shallow_water_source_2d_coriolis
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: dynamics
+    family: shallow_water
+    controlled_spec_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/controlled_spec.md
+    tests_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md
+    deps_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/deps.yaml
     official_releases: []
 
   - spec_kind: profile
