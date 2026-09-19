@@ -6722,9 +6722,16 @@ def _parse_canonical_interface_from_controlled_spec(
         rendered = render_signatures_to_fortran(struct)
     except SignatureParseError as exc:
         return ({}, {}, f"§5.1 structured block could not render to Fortran: {exc}")
-    op_stanzas, type_stanzas, errors = fortran_signatures.parse_interface_stanzas(rendered)
+    op_stanzas, type_stanzas, iface_stanzas, errors = (
+        fortran_signatures.parse_interface_stanzas(rendered))
     if errors:
         return (op_stanzas, type_stanzas, "; ".join(errors))
+    if iface_stanzas:
+        # The backend lowers `interfaces:` (issue #266 PR-1); the gates that pin a prototype
+        # against the IR and the generated source land in PR-2. Until then a §5.1 that declares
+        # one is refused here rather than passed through with the prototype unpinned.
+        return ({}, {}, (f"§5.1 declares interfaces {sorted(iface_stanzas)}, which this "
+                         "validator does not pin yet"))
     if not op_stanzas and not type_stanzas:
         return ({}, {}, "§5.1 canonical interface block parsed 0 signatures")
     return (op_stanzas, type_stanzas, None)
@@ -13015,9 +13022,11 @@ def _validate_ir_signatures_against_section51(
             violations.append(
                 f"{derived_path}:public_api.signatures['{symbol}'] signature is not renderable: {exc}")
             continue
-        e_ops, e_types, e_errors = fortran_signatures.parse_interface_stanzas(interface)
+        e_ops, e_types, _e_ifaces, e_errors = fortran_signatures.parse_interface_stanzas(interface)
         for err in e_errors:
             violations.append(f"{derived_path}:public_api.signatures['{symbol}'] {err}")
+        # The single-symbol renderer above emits a procedure or a type, never an interface
+        # block, so the prototype dict is empty by construction and is not read.
         parsed = {**e_ops, **e_types}
         if len(parsed) != 1:
             violations.append(
@@ -13448,7 +13457,14 @@ def _validate_generated_signatures(
     combined = "\n".join(
         model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
     )
-    src_ops, src_types, src_errors = fortran_signatures.parse_interface_stanzas(combined)
+    # A prototype the source declares inside an `interface` block is neither a published
+    # procedure nor a type; the splitter files it separately. Here it is read for one purpose:
+    # a §5.1 procedure the source only prototypes is reported as undefined (below). Pinning
+    # §5.1 `interfaces:` against it is issue #266 PR-2. A prototype that shares a published
+    # name with a definition is still a `duplicate signature` error from the splitter, so the
+    # decoy defence below is unchanged.
+    src_ops, src_types, src_ifaces, src_errors = (
+        fortran_signatures.parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
     # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
     # overwrite", and this caller discarded them while the §5.1 side and the IR side both honour
@@ -13469,8 +13485,10 @@ def _validate_generated_signatures(
                 "module defines is one) and re-emit")
         return
     src_lists: dict[str, tuple[str, ...]] = {}
-    for name, lines in {**src_ops, **src_types}.items():
-        src_lists[name] = fortran_signatures.stanza_line_list(lines)
+    src_proto_lists: dict[str, tuple[str, ...]] = {}  # the prototypes, kept apart (see the loop)
+    for atom_lists, stanzas in ((src_lists, {**src_ops, **src_types}), (src_proto_lists, src_ifaces)):
+        for name, lines in stanzas.items():
+            atom_lists[name] = fortran_signatures.stanza_line_list(lines)
 
     # PUBLISHING A HEADER IS NOT IMPLEMENTING IT, and everything above this line only compares
     # HEADERS. `parse_interface_stanzas` reads a header wherever it stands, so a model that
@@ -13577,13 +13595,27 @@ def _validate_generated_signatures(
         is_type = name in type_stanzas
         kind = "derived type" if is_type else "procedure"
         have = src_lists.get(name)
+        # A published procedure the source declares only as a PROTOTYPE inside an `interface`
+        # block. The stanza splitter files it under the prototypes, so it is not in `src_lists`;
+        # it is still the header the leaf wrote for this name, so it is compared for drift below
+        # and reported as undefined by the same arm a bodiless definition reaches. That
+        # "undefined" needs no structure reading: a module cannot carry an interface body AND a
+        # definition of one name (the compiler refuses the pair as "already defined"), and the
+        # splitter reports the pair as a duplicate before this loop in any case. It does need
+        # ONE publisher, like the structural arm: with several files combined, a prototype here
+        # and a prefixed definition in another file is the no-single-publisher refusal above,
+        # not a definedness verdict.
+        prototyped = not is_type and have is None and name in src_proto_lists
+        if prototyped:
+            have = src_proto_lists[name]
         if have is None:
             violations.append(
                 f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
                 f"'{name}' (no {kind} of that name/header found — the published surface must match "
                 "the pinned §5.1 signature)")
             continue
-        if not is_type and defined_names is not None and name.lower() not in defined_names:
+        if (prototyped and len(model_files) == 1) or (
+                not is_type and defined_names is not None and name.lower() not in defined_names):
             # NOT `continue`. A first version reported this INSTEAD OF the stanza comparison, on
             # the reasoning that "the header is present by construction, so every atom matches" —
             # which is false, and a round-2 reviewer measured it: `have` is keyed on the NAME, not

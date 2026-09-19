@@ -13,9 +13,12 @@ renderer pin uses. Drift tests confirm the structured form keeps the gate's disc
 from __future__ import annotations
 
 import copy
+import re
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from tools.backends.language.fortran import signatures as fortran_signatures
 from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import (
     SignatureParseError,
@@ -25,6 +28,7 @@ from tools.backends.language.fortran.signatures import (
     normalized_stanza_index,
     parse_interface_stanzas,
     parse_signatures_from_fortran,
+    render_interface_to_fortran,
     render_module_parameter_to_fortran,
     render_signatures_to_fortran,
     render_symbol_to_fortran,
@@ -38,6 +42,7 @@ HARNESS_SPEC = (
     REPO_ROOT
     / "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md"
 )
+CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
 
 
 def _real_section51_struct() -> dict:
@@ -180,7 +185,7 @@ class FortranStanzaParserTests(unittest.TestCase):
             "function hx__a(x) result(s)\n  real, intent(in) :: x\n  real :: s\nend\n"
             "function hx__b(y) result(s)\n  real, intent(in) :: y\n  real :: s\n"
             "end function hx__b\n")
-        ops, _types, errors = parse_interface_stanzas(block)
+        ops, _types, _ifaces, errors = parse_interface_stanzas(block)
         self.assertEqual(set(ops), {"hx__a", "hx__b"})
         # ... and it is ACCEPTED, not merely found: a bare `end` legally closes a module
         # procedure, so the termination branch must mark the stanza closed. Deleting that one
@@ -370,7 +375,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # pin the property it is named for. Both halves are asserted now.
         block = ("SUBROUTINE Hx__Foo(a)\n  INTEGER, INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n"
                  "TYPE :: Hx__T\n  INTEGER :: a\nEND TYPE Hx__T\n")
-        ops, types, errors = parse_interface_stanzas(block)
+        ops, types, _ifaces, errors = parse_interface_stanzas(block)
         self.assertEqual(errors, [])
         self.assertEqual(sorted(ops), ["Hx__Foo"])
         self.assertEqual(sorted(types), ["Hx__T"])
@@ -383,7 +388,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # reported unterminated: a fail-closed refusal of legal Fortran, the over-rejection
         # direction.
         lone = "PURE SUBROUTINE Hx__Bar(a)\n  REAL, INTENT(IN) :: a\nENDSUBROUTINE Hx__Bar\n"
-        ops_lone, _types_lone, errors_lone = parse_interface_stanzas(lone)
+        ops_lone, _types_lone, _ifaces_lone, errors_lone = parse_interface_stanzas(lone)
         self.assertEqual(errors_lone, [])
         self.assertEqual(ops_lone["Hx__Bar"], ["PURE SUBROUTINE Hx__Bar(a)", "REAL, INTENT(IN) :: a"])
 
@@ -433,7 +438,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # relocated without changing.
         block = ("type, public :: hx__t\n  integer :: a\nend type hx__t\n"
                  "type, public, abstract :: hx__u\n  integer :: b\nend type hx__u\n")
-        _ops, types, errors = parse_interface_stanzas(block)
+        _ops, types, _ifaces, errors = parse_interface_stanzas(block)
         self.assertEqual(errors, [])
         self.assertEqual(sorted(types), ["hx__t", "hx__u"])
 
@@ -442,7 +447,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # false stanza OPEN: `type :: a, b` is not a derived-type definition, but an unanchored
         # pattern reads it as one named `a` and swallows what follows into its stanza. Absent from
         # the corpus; the anchor is cheap to observe, so it is observed rather than recorded.
-        _ops, types, errors = parse_interface_stanzas(
+        _ops, types, _ifaces, errors = parse_interface_stanzas(
             "type :: hx__a, hx__b\n  integer :: x\nend type hx__a\n")
         self.assertEqual(types, {})
         self.assertEqual(errors, [])
@@ -464,7 +469,7 @@ class FortranStanzaParserTests(unittest.TestCase):
                  "  type(hx__inner), allocatable :: parts(:)\n"
                  "  integer :: n\n"
                  "end type hx__outer\n")
-        _ops, types, errors = parse_interface_stanzas(block)
+        _ops, types, _ifaces, errors = parse_interface_stanzas(block)
         self.assertEqual(errors, [])
         self.assertEqual(sorted(types), ["hx__outer"])
         self.assertEqual(len(types["hx__outer"]), 4)
@@ -513,9 +518,149 @@ class FortranStanzaParserTests(unittest.TestCase):
 
 
 def _type_lines(block: str, suffix: str) -> list[str]:
-    _ops, types, _errs = parse_interface_stanzas(block)
+    _ops, types, _ifaces, _errs = parse_interface_stanzas(block)
     name = next(n for n in types if n.endswith(suffix))
     return [normalize_fortran_line(ln) for ln in types[name] if normalize_fortran_line(ln)]
+
+
+class InterfaceBlockStanzaTests(unittest.TestCase):
+    """`parse_interface_stanzas` reads an `interface` / `abstract interface` block: a procedure
+    header inside one is a PROTOTYPE and lands in the third dict (``iface_stanzas``), never in
+    ``op_stanzas`` (issue #266). Before this, a prototype was read as a published procedure —
+    measured at `021d6165`: the prototype entered `op_stanzas` with its `import` / `implicit none`
+    lines as atoms, and a same-named definition was a `duplicate signature` error.
+
+    What is PINNED: the routing (prototype -> iface dict, not op dict), the two noise lines
+    dropped, the generic listing dropped, the shared duplicate check, the unterminated-block
+    error, and that an `end interface` outside a block closes nothing. What is SAMPLED: the
+    spellings of each construct."""
+
+    _BLOCK = (
+        "integer, parameter :: dp = real64\n"
+        "abstract interface\n"
+        "  subroutine rhs_2d(u, dudt)\n"
+        "    import :: dp\n"
+        "    implicit none\n"
+        "    real(dp), intent(in) :: u(:,:)\n"
+        "    real(dp), intent(out) :: dudt(:,:)\n"
+        "  end subroutine rhs_2d\n"
+        "end interface\n"
+        "subroutine hx__advance(u, rhs, u_next)\n"
+        "  real(dp), intent(in) :: u(:,:)\n"
+        "  procedure(rhs_2d) :: rhs\n"
+        "  real(dp), intent(out) :: u_next(:,:)\n"
+        "end subroutine hx__advance\n")
+
+    def test_abstract_interface_prototypes_land_in_iface_stanzas_not_ops(self) -> None:
+        ops, types, ifaces, errors = parse_interface_stanzas(self._BLOCK)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(ops), ["hx__advance"])
+        self.assertEqual(types, {})
+        self.assertEqual(sorted(ifaces), ["rhs_2d"])
+        self.assertEqual(ifaces["rhs_2d"][0], "subroutine rhs_2d(u, dudt)")
+
+    def test_import_and_implicit_none_are_not_atoms_of_a_prototype(self) -> None:
+        _ops, _types, ifaces, _errors = parse_interface_stanzas(self._BLOCK)
+        atoms = stanza_atoms(ifaces["rhs_2d"])
+        self.assertFalse(any(a.startswith(("import", "implicit")) for a in atoms),
+                         atoms)
+        # ... while the ABI lines are kept (the drop is by line kind, not a truncation).
+        self.assertEqual(len(atoms), 3, atoms)
+        # And the spellings the leaf may write for the same plumbing: bare `import`, `import, all`,
+        # `implicit none (type, external)`.
+        for noise in ("import", "import, all", "implicit none (type, external)"):
+            with self.subTest(noise=noise):
+                block = self._BLOCK.replace("    import :: dp\n", f"    {noise}\n")
+                _o, _t, ifaces2, errs = parse_interface_stanzas(block)
+                self.assertEqual(errs, [])
+                self.assertEqual(stanza_atoms(ifaces2["rhs_2d"]), atoms)
+
+    def test_generic_interface_module_procedure_lines_are_dropped(self) -> None:
+        block = ("interface hx__gen\n  module procedure hx__real\n  procedure hx__int\n"
+                 "end interface hx__gen\n"
+                 "subroutine hx__real(a)\n  real, intent(in) :: a\nend subroutine hx__real\n")
+        ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(ifaces, {})
+        self.assertEqual(sorted(ops), ["hx__real"])
+
+    def test_prototype_sharing_a_defined_name_is_a_duplicate_error(self) -> None:
+        # The decoy defence `_validate_generated_signatures` relies on: a prototype of a name the
+        # module also DEFINES is refused by the splitter, whichever comes first.
+        proto = ("interface\n  subroutine hx__advance(u)\n    real, intent(in) :: u\n"
+                 "  end subroutine hx__advance\nend interface\n")
+        defn = "subroutine hx__advance(u, v)\n  real, intent(in) :: u, v\nend subroutine hx__advance\n"
+        for order, text in (("prototype first", proto + defn), ("definition first", defn + proto)):
+            with self.subTest(order=order):
+                _ops, _types, _ifaces, errors = parse_interface_stanzas(text)
+                self.assertTrue(any("duplicate signature for symbol 'hx__advance'" in e
+                                    for e in errors), errors)
+
+    def test_unterminated_interface_block_errors(self) -> None:
+        block = "abstract interface\n  subroutine rhs(u)\n    real, intent(in) :: u\n  end subroutine rhs\n"
+        _ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertTrue(any("unterminated interface block" in e for e in errors), errors)
+        self.assertEqual(sorted(ifaces), ["rhs"])  # the prototype itself was read
+
+    def test_unterminated_prototype_errors_and_the_block_still_closes(self) -> None:
+        block = ("abstract interface\n  subroutine rhs(u)\n    real, intent(in) :: u\n"
+                 "end interface\n"
+                 "subroutine hx__f(a)\n  real, intent(in) :: a\nend subroutine hx__f\n")
+        ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertTrue(any("unterminated interface prototype 'rhs'" in e for e in errors), errors)
+        self.assertFalse(any("unterminated interface block" in e for e in errors), errors)
+        self.assertEqual(sorted(ops), ["hx__f"])  # the procedure after the block is still read
+        self.assertEqual(sorted(ifaces), ["rhs"])
+
+    def test_end_interface_does_not_close_a_procedure_stanza(self) -> None:
+        # Outside a block, `end interface` is an ordinary non-header line: it neither closes the
+        # enclosing procedure stanza nor errors.
+        block = ("subroutine hx__f(a)\n  real, intent(in) :: a\n  end interface\n"
+                 "  real :: local\nend subroutine hx__f\n")
+        ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(ifaces, {})
+        self.assertIn("real :: local", ops["hx__f"])
+
+    def test_an_interface_block_inside_a_procedure_body_yields_prototypes(self) -> None:
+        # Generated source: an explicit interface for an external, written inside a procedure
+        # body. The block terminates the procedure stanza (the declarations before it are kept)
+        # and its prototype is a prototype, not a second published procedure.
+        block = ("subroutine hx__f(a)\n  real, intent(in) :: a\n"
+                 "  interface\n    subroutine ext(x)\n      real, intent(in) :: x\n"
+                 "    end subroutine ext\n  end interface\n"
+                 "  call ext(a)\nend subroutine hx__f\n")
+        ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(ops), ["hx__f"])
+        self.assertEqual(sorted(ifaces), ["ext"])
+        self.assertIn("real, intent(in) :: a", ops["hx__f"])
+
+    def test_a_variable_named_interface_opens_no_block(self) -> None:
+        # Keywords are not reserved words: `interface = 3` / `interface(2) = 1` are assignments.
+        block = ("subroutine hx__f(a)\n  real, intent(in) :: a\n  interface = 3\n"
+                 "  interface(2) = 1\nend subroutine hx__f\n")
+        ops, _types, ifaces, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(ifaces, {})
+        self.assertIn("interface = 3", ops["hx__f"])
+
+    def test_the_block_opener_spellings(self) -> None:
+        # Each opener form the pattern admits, one per subtest; a `module procedure` listing may
+        # follow a generic opener and is dropped.
+        for opener in ("interface", "abstract interface", "interface hx__gen",
+                       "interface operator(+)", "interface assignment(=)", "ABSTRACT INTERFACE"):
+            with self.subTest(opener=opener):
+                block = (f"{opener}\n  subroutine p(u)\n    real, intent(in) :: u\n"
+                         "  end subroutine p\nend interface\n")
+                ops, _types, ifaces, errors = parse_interface_stanzas(block)
+                self.assertEqual(errors, [])
+                self.assertEqual(ops, {})
+                self.assertEqual(sorted(ifaces), ["p"])
+
+    def test_normalized_stanza_index_includes_prototypes(self) -> None:
+        index = normalized_stanza_index(self._BLOCK)
+        self.assertEqual(set(index), {"hx__advance", "rhs_2d"})
 
 
 class MalformedStructFailClosedTest(unittest.TestCase):
@@ -821,6 +966,171 @@ class Round2HardeningTest(unittest.TestCase):
                  "spec": {"type": "real", "kind": "dp", "len": None, "name": None, "alloc": False}}]})
 
 
+class ProcedureTypedArgumentTest(unittest.TestCase):
+    """The neutral vocabulary's `interfaces:` section and `{type: procedure, interface: <name>}`
+    argument spec (issue #266). The correctness contract is the round-trip
+    (`parse(render(x)) == x` over the normalized stanza index) and a fail-closed matrix that
+    raises `SignatureParseError` — never a `KeyError` — for every malformed shape.
+
+    PINNED: the round-trip through an abstract-interface block; each refusal below by its
+    message; that every member of `_VALID_SPEC_TYPES` has an inapplicable-field row (the
+    `KeyError` mutant of PR-1). SAMPLED: the argument spellings of each malformed shape."""
+
+    def _struct(self) -> dict:
+        real = {"type": "real", "kind": "dp"}
+        return {
+            "module_parameters": [{"name": "dp", "base": "integer", "value": "float64"}],
+            "types": [],
+            "interfaces": [{
+                "kind": "subroutine", "name": "rhs_2d",
+                "args": [{"name": "u", "rank": 2, "intent": "in", "spec": dict(real)},
+                         {"name": "dudt", "rank": 2, "intent": "out", "spec": dict(real)}],
+                "result": None}],
+            "procedures": [{
+                "kind": "subroutine", "name": "hx__advance",
+                "args": [{"name": "u", "rank": 2, "intent": "in", "spec": dict(real)},
+                         {"name": "rhs", "spec": {"type": "procedure", "interface": "rhs_2d"}},
+                         {"name": "dt", "rank": 0, "intent": "in", "spec": dict(real)},
+                         {"name": "u_next", "rank": 2, "intent": "out", "spec": dict(real)}],
+                "result": None}],
+        }
+
+    def _assert_raises(self, struct: dict, pattern: str) -> None:
+        with self.assertRaisesRegex(SignatureParseError, pattern):
+            render_signatures_to_fortran(struct)
+
+    def test_procedure_arg_round_trips(self) -> None:
+        rendered = render_signatures_to_fortran(self._struct())
+        self.assertIn("abstract interface", rendered)
+        self.assertIn("procedure(rhs_2d) :: rhs", rendered)
+        self.assertNotIn("import", rendered)          # the canonical form carries no plumbing
+        self.assertNotIn("implicit none", rendered)
+        parsed = parse_signatures_from_fortran(rendered)
+        self.assertEqual(normalized_stanza_index(rendered),
+                         normalized_stanza_index(render_signatures_to_fortran(parsed)))
+        self.assertEqual([i["name"] for i in parsed["interfaces"]], ["rhs_2d"])
+        rhs = parsed["procedures"][0]["args"][1]
+        self.assertEqual(rhs["spec"]["type"], "procedure")
+        self.assertEqual(rhs["spec"]["interface"], "rhs_2d")
+        self.assertEqual((rhs["rank"], rhs["intent"]), (0, None))
+        # stable under a second parse (the full-form struct is a fixed point)
+        self.assertEqual(parsed, parse_signatures_from_fortran(render_signatures_to_fortran(parsed)))
+
+    def test_render_interface_to_fortran_yields_one_prototype_stanza(self) -> None:
+        text = render_interface_to_fortran(self._struct()["interfaces"][0])
+        ops, types, ifaces, errors = parse_interface_stanzas(text)
+        self.assertEqual((errors, ops, types), ([], {}, {}))
+        self.assertEqual(sorted(ifaces), ["rhs_2d"])
+
+    def test_intent_on_procedure_arg_fails_closed(self) -> None:
+        s = self._struct(); s["procedures"][0]["args"][1]["intent"] = "in"
+        self._assert_raises(s, "intent is not applicable to a procedure-typed argument")
+        with self.assertRaisesRegex(SignatureParseError, "intent is not applicable"):
+            parse_signatures_from_fortran(
+                render_signatures_to_fortran(self._struct()).replace(
+                    "procedure(rhs_2d) :: rhs", "procedure(rhs_2d), intent(in) :: rhs"))
+
+    def test_dims_or_rank_on_procedure_arg_fails_closed(self) -> None:
+        s = self._struct(); s["procedures"][0]["args"][1]["rank"] = 1
+        self._assert_raises(s, "rank must be 0")
+        s = self._struct(); s["procedures"][0]["args"][1]["dims"] = ["3"]
+        self._assert_raises(s, "dims is not applicable to a procedure-typed argument")
+
+    def test_unknown_interface_reference_fails_closed(self) -> None:
+        s = self._struct(); s["procedures"][0]["args"][1]["spec"]["interface"] = "nope"
+        self._assert_raises(s, "does not name an entry of interfaces")
+
+    def test_unreferenced_interface_fails_closed(self) -> None:
+        s = self._struct()
+        s["interfaces"].append({"kind": "subroutine", "name": "unused_iface", "args": [], "result": None})
+        self._assert_raises(s, r"\['unused_iface'\] are referenced by no procedure argument")
+
+    def test_interface_name_colliding_with_a_published_name_fails_closed(self) -> None:
+        for collide_with in ("hx__advance", "dp", "HX__ADVANCE"):  # case-insensitive
+            with self.subTest(collide_with=collide_with):
+                s = self._struct()
+                s["interfaces"][0]["name"] = collide_with
+                s["procedures"][0]["args"][1]["spec"]["interface"] = collide_with
+                self._assert_raises(s, "collides with another published name")
+        s = self._struct(); s["types"] = [{"name": "rhs_2d", "components": []}]
+        self._assert_raises(s, "collides with another published name")
+        s = self._struct(); s["interfaces"].append(dict(s["interfaces"][0]))
+        self._assert_raises(s, "collides with another published name")
+
+    def test_procedure_type_in_component_or_result_fails_closed(self) -> None:
+        proc_spec = {"type": "procedure", "interface": "rhs_2d"}
+        s = self._struct(); s["types"] = [{"name": "hx__t", "components": [{"name": "f", "spec": proc_spec}]}]
+        self._assert_raises(s, "allowed only for a procedure's argument")
+        s = self._struct()
+        s["procedures"][0] = {"kind": "function", "name": "hx__g", "args": [],
+                              "result": {"name": "r", "spec": proc_spec}}
+        self._assert_raises(s, "allowed only for a procedure's argument")
+
+    def test_nested_procedure_arg_in_interface_fails_closed(self) -> None:
+        s = self._struct()
+        s["interfaces"][0]["args"].append({"name": "inner", "spec": {"type": "procedure", "interface": "rhs_2d"}})
+        self._assert_raises(s, r"interfaces\[0\].args\[2\].spec.type 'procedure' is allowed only")
+
+    def test_inapplicable_fields_on_procedure_spec_fail_closed(self) -> None:
+        # The `_inapplicable` matrix extended: kind/len/name/alloc on `procedure`, and
+        # `interface` on every other type.
+        for field, value in (("kind", "dp"), ("len", "4"), ("name", "t"), ("alloc", True)):
+            with self.subTest(field=field):
+                s = self._struct(); s["procedures"][0]["args"][1]["spec"][field] = value
+                self._assert_raises(s, f"spec.{field} is not applicable to type 'procedure'")
+        for other in ("real", "integer", "logical", "string", "derived"):
+            with self.subTest(other=other):
+                spec = {"type": other, "interface": "rhs_2d"}
+                spec.update({"string": {"len": "4"}, "derived": {"name": "t"}}.get(other, {}))
+                with self.assertRaisesRegex(SignatureParseError,
+                                            f"spec.interface is not applicable to type '{other}'"):
+                    render_symbol_to_fortran({"kind": "subroutine", "name": "hx__f",
+                                              "args": [{"name": "x", "spec": spec}]})
+
+    def test_missing_interface_name_fails_closed(self) -> None:
+        s = self._struct(); del s["procedures"][0]["args"][1]["spec"]["interface"]
+        self._assert_raises(s, "spec.interface .*is required")
+
+    def test_every_spec_type_has_an_inapplicable_row(self) -> None:
+        # `_validate_spec` indexes a dict by `type`; a member of `_VALID_SPEC_TYPES` with no row
+        # would escape as a `KeyError` — a gate crash, not a fail-closed violation. Pinned two
+        # ways: set identity of the table's keys, and the crash itself when a row is removed.
+        self.assertEqual(set(fortran_signatures._INAPPLICABLE_SPEC_FIELDS),
+                         set(fortran_signatures._VALID_SPEC_TYPES))
+        for t in sorted(fortran_signatures._VALID_SPEC_TYPES):
+            with self.subTest(type=t):
+                spec = {"type": t}
+                spec.update({"string": {"len": "4"}, "derived": {"name": "t"},
+                             "procedure": {"interface": "i"}}.get(t, {}))
+                render_symbol_to_fortran({"kind": "subroutine", "name": "hx__f",
+                                          "args": [{"name": "x", "spec": spec}]})  # accepted
+                table = dict(fortran_signatures._INAPPLICABLE_SPEC_FIELDS); del table[t]
+                with mock.patch.object(fortran_signatures, "_INAPPLICABLE_SPEC_FIELDS", table), \
+                        self.assertRaises(KeyError):  # the shape the identity assertion forbids
+                    render_symbol_to_fortran({"kind": "subroutine", "name": "hx__f",
+                                              "args": [{"name": "x", "spec": spec}]})
+
+    def test_unsupported_procedure_type_specs_fail_closed(self) -> None:
+        # Fortran admits more than the neutral form models: an implicit interface, an intrinsic
+        # type-spec. Each fails closed rather than parsing to a named prototype.
+        for decl in ("procedure() :: rhs", "procedure :: rhs", "procedure(real) :: rhs"):
+            with self.subTest(decl=decl), \
+                    self.assertRaisesRegex(SignatureParseError, "unsupported procedure type-spec"):
+                parse_signatures_from_fortran(
+                    f"subroutine hx__g(rhs)\n  {decl}\nend subroutine hx__g\n")
+
+    def test_loader_accepts_the_interfaces_key(self) -> None:
+        struct, err = load_structured_signatures(
+            "interfaces:\n  - kind: subroutine\n    name: rhs\n    args: []\n"
+            "procedures:\n  - kind: subroutine\n    name: hx__f\n"
+            "    args:\n      - name: r\n        spec: {type: procedure, interface: rhs}\n")
+        self.assertIsNone(err)
+        self.assertEqual([i["name"] for i in struct["interfaces"]], ["rhs"])
+        render_signatures_to_fortran(struct)  # and the loaded struct renders
+        _s, err = load_structured_signatures("interfaces:\n")
+        self.assertIn("'interfaces' must be a list", err or "")
+
+
 class NeutralVocabularyTest(unittest.TestCase):
     """C2: the §5.1 / IR leaf vocabulary is language-neutral — string lengths are
     `deferred`/`assumed` (not the Fortran `:`/`*`) and kind values are `float64`/`float32`
@@ -888,6 +1198,22 @@ class NeutralVocabularyTest(unittest.TestCase):
         self.assertIn("character(len=*), intent(in) :: b", out)
         self.assertNotIn("deferred", out)
         self.assertNotIn("assumed", out)
+
+    def test_controlled_spec_type_list_matches_the_backend(self) -> None:
+        # docs/CONTROLLED_SPEC.md §5.1 enumerates the neutral `type` vocabulary in prose, and the
+        # backend defines it (`_VALID_SPEC_TYPES`). Coupled element by element AT the statement
+        # position: the enumeration is read from the parenthesis that follows the anchor text
+        # "neutral `type` (" inside the "**5.1 Canonical interface block**" subsection — the
+        # anchor precedes the list and is byte-identical in every wording, so a token added to
+        # the code or dropped from the document reddens this row (witnessed by removing one
+        # token from the document). The count comes from the code, not the prose.
+        md = CONTROLLED_SPEC_DOC.read_text(encoding="utf-8")
+        section = md.split("**5.1 Canonical interface block**", 1)[1].split("\n6. ", 1)[0]
+        m = re.search(r"neutral `type` \(([^)]*)\)", section)
+        self.assertIsNotNone(m, "§5.1 no longer states the neutral `type` enumeration")
+        tokens = re.findall(r"`([a-z_]+)`", m.group(1))
+        self.assertEqual(len(tokens), len(fortran_signatures._VALID_SPEC_TYPES))
+        self.assertEqual(set(tokens), set(fortran_signatures._VALID_SPEC_TYPES))
 
     def test_real_section51_fence_text_has_no_fortran_tokens(self) -> None:
         # (#5) A hand-edit that reintroduces a Fortran token into the real §5.1 fence is caught:
@@ -1272,7 +1598,7 @@ class Section51StanzaLayerTests(unittest.TestCase):
                        "    real, intent(in) :: a\n"
                        "  end subroutine\n"
                        "end module\n")
-                ops, types, errors = parse_interface_stanzas(src)
+                ops, types, _ifaces, errors = parse_interface_stanzas(src)
                 self.assertEqual(errors, [], f"a {name} must not end the comment")
                 self.assertEqual(sorted(ops), ["hx__real"])
                 self.assertEqual(types, {})

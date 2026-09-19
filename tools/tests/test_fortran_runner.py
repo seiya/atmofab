@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.backends.language.fortran import lines as fortran_lines
@@ -1379,6 +1380,21 @@ class HarnessPinTest(unittest.TestCase):
             assert_harness_pin(self.ir, BOUNDARY_SID, "harness_other", self.sigs, self.src)
         self.assertIn("is not the pinned", str(cm.exception))
         self.assertIn("the renderer only targets that harness", str(cm.exception))
+
+    def test_embedded_interface_carrying_a_prototype_is_a_renderer_bug(self) -> None:
+        # The pinned harness surface is 13 operations and 5 types and no interface PROTOTYPE
+        # (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`); the stanza splitter reads prototypes into
+        # a dict of their own since issue #266, and the pin refuses a non-empty one as a
+        # renderer bug rather than letting a prototype ride along unpinned.
+        from tools.backends.language.fortran import runner as fortran_runner
+        with_proto = _HARNESS_V3_INTERFACE + (
+            "\nabstract interface\n  subroutine ghost(x)\n    real, intent(in) :: x\n"
+            "  end subroutine ghost\nend interface\n")
+        with mock.patch.object(fortran_runner, "_HARNESS_V3_INTERFACE", with_proto), \
+                self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
+        self.assertIn("carries no interface prototype", str(cm.exception))
+        self.assertIn("ghost", str(cm.exception))
 
     def test_ir_signature_drift(self) -> None:
         bad = copy.deepcopy(self.sigs)

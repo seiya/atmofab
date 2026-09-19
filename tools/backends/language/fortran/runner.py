@@ -1416,9 +1416,11 @@ def assert_harness_pin(
             f"harness_spec_id {harness_spec_id!r} is not the pinned "
             f"{EXPECTED_HARNESS_SPEC_ID!r}; the renderer only targets that harness")
 
-    exp_ops, exp_types, exp_errs = parse_interface_stanzas(_HARNESS_V3_INTERFACE)
-    if exp_errs:  # a renderer bug, not an input problem
-        raise RenderError(f"embedded harness interface failed to parse: {exp_errs}")
+    exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(_HARNESS_V3_INTERFACE)
+    if exp_errs or exp_ifaces:  # a renderer bug, not an input problem
+        raise RenderError(
+            f"embedded harness interface failed to parse: {exp_errs} (the pinned harness "
+            f"surface carries no interface prototype; found {sorted(exp_ifaces)})")
 
     # Module parameter VALUES (see `_HARNESS_V3_PARAMETERS`). Per-entity atoms, so a combined
     # `integer, parameter :: dp = real64, case_id_len = 64` declaration matches — the same
@@ -1466,7 +1468,7 @@ def assert_harness_pin(
             "artifact (or a caller that failed to resolve it), NOT interface drift; re-certify "
             "the harness IR (run_workflow.py --with-deps) so its public_api.signatures is present")
 
-    src_ops, src_types, _src_errs = parse_interface_stanzas(harness_source or "")
+    src_ops, src_types, _src_ifaces, _src_errs = parse_interface_stanzas(harness_source or "")
 
     for symbol in used_symbols:
         exp_stanza = exp_ops.get(symbol) or exp_types.get(symbol)
@@ -1484,7 +1486,7 @@ def assert_harness_pin(
         if not ir_text:
             raise RenderError(
                 f"certified harness IR public_api.signatures omits {symbol!r}: {_PIN_DRIFT_HINT}")
-        ir_ops, ir_types, _ = parse_interface_stanzas(ir_text)
+        ir_ops, ir_types, _ir_ifaces, _ = parse_interface_stanzas(ir_text)
         ir_stanza = ir_ops.get(symbol) or ir_types.get(symbol)
         ir_ok = ir_stanza is not None and (
             stanza_line_list(ir_stanza) == stanza_line_list(exp_stanza) if is_type
