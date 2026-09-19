@@ -17800,6 +17800,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("does not pin yet", err)
         self.assertIn("rhs_1d", err)
+        self.assertFalse(err.startswith("§5.1"), err)  # the caller prefixes the section itself
 
     def test_missing_fence_errors(self) -> None:
         _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))

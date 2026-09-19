@@ -6731,8 +6731,8 @@ def _parse_canonical_interface_from_controlled_spec(
         # The backend lowers `interfaces:` (issue #266 PR-1); the gates that pin a prototype
         # against the IR and the generated source land in PR-2. Until then a §5.1 that declares
         # one is refused here rather than passed through with the prototype unpinned.
-        return ({}, {}, (f"§5.1 declares interfaces {sorted(iface_stanzas)}, which this "
-                         "validator does not pin yet"))
+        return ({}, {}, (f"declares interfaces {sorted(iface_stanzas)}, which this validator "
+                         "does not pin yet (issue #266 PR-2)"))
     if not op_stanzas and not type_stanzas:
         return ({}, {}, "§5.1 canonical interface block parsed 0 signatures")
     return (op_stanzas, type_stanzas, None)
@@ -13462,8 +13462,10 @@ def _validate_generated_signatures(
     # procedure nor a type; the splitter files it separately. Here it is read for one purpose:
     # a §5.1 procedure the source only prototypes is reported as undefined (below). Pinning
     # §5.1 `interfaces:` against it is issue #266 PR-2. A prototype that shares a published
-    # name with a definition is still a `duplicate signature` error from the splitter, so the
-    # decoy defence below is unchanged.
+    # name with an unprefixed definition is still a `duplicate signature` error from the
+    # splitter, so the decoy defence below is unchanged — and unchanged means the prefixed
+    # variant it never covered is still open (the per-symbol loop says which, and TODO.md
+    # carries it).
     src_ops, src_types, src_ifaces, src_errors = (
         fortran_signatures.parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
@@ -13599,14 +13601,21 @@ def _validate_generated_signatures(
         # A published procedure the source declares only as a PROTOTYPE inside an `interface`
         # block. The stanza splitter files it under the prototypes, so it is not in `src_lists`;
         # it is still the header the leaf wrote for this name, so it is compared for drift below
-        # and reported as undefined by the same arm a bodiless definition reaches. That
-        # "undefined" needs no structure reading: a module cannot carry an interface body AND a
-        # definition of one name (the compiler refuses the pair as "already defined"), and the
-        # splitter reports the pair as a duplicate before this loop in any case. Setting `have`
-        # is the whole of it: the structural arm below then answers "undefined" for the
-        # prototype on its own (an interface-body header is not a module-level procedure to the
-        # structure reader — a round-1 reviewer measured that a clause repeating the verdict
-        # here was unobservable), and the drift comparison after it reads the prototype's atoms.
+        # and reported as undefined by the structural arm (an interface-body header is not a
+        # module-level procedure to the structure reader; a round-1 reviewer measured that a
+        # clause repeating that verdict here was unobservable). Setting `have` is the whole of
+        # it. What the prototype-plus-definition PAIR gets, stated by shape because a round-2
+        # reviewer found the previous sentence here claiming a defence that does not exist: an
+        # UNPREFIXED pair is the splitter's `duplicate signature` above, whichever comes first;
+        # a pair in the module's specification part is refused by the compiler ("already
+        # defined") at `Generate.syntax` whatever the prefix; a prototype inside another
+        # procedure's BODY plus a module-level definition carrying a prefix the splitter does
+        # not model (`impure elemental`) is refused by NEITHER — measured 0 violations here and
+        # rc=0 from the syntax check, at origin/main and at this revision — because this arm
+        # compares the prototype's atoms while the structural arm credits the prefixed
+        # definition. That is the name-keyed-versus-unit-keyed hole TODO.md records (the
+        # contained-decoy variant is the other spelling of it), and it is out of this issue's
+        # scope: a leaf could take it before this branch and can take it after.
         if not is_type and have is None and name in src_proto_lists:
             have = src_proto_lists[name]
         if have is None:
