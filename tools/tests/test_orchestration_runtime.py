@@ -12703,6 +12703,50 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("LOOP over the extra component/dimension", block)
         self.assertIn("EXACTLY this argument order", block)
 
+    def test_a_procedure_argument_renders_its_prototype(self) -> None:
+        # Issue #266: a procedure-typed dummy is shown as such, with the prototype it names
+        # rendered verbatim under the operation and one header sentence saying what to pass.
+        from tools.orchestration_runtime import _build_dependency_facts
+        dep = dict(self.DEP, published_operations=[{
+            "operation": "demo_dep_base__advance",
+            "interface": "subroutine demo_dep_base__advance(u, rhs, dt, u_next)",
+            "argument_order": ["u", "rhs", "dt", "u_next"],
+            "arguments": [
+                {"name": "u", "type": "real(dp)", "intent": "in", "rank": 1, "dimension": ":"},
+                {"name": "rhs", "type": "procedure(hx_rhs_1d)", "intent": None, "rank": 0,
+                 "dimension": None},
+                {"name": "dt", "type": "real(dp)", "intent": "in", "rank": 0, "dimension": None},
+                {"name": "u_next", "type": "real(dp)", "intent": "out", "rank": 1,
+                 "dimension": ":"}],
+            "procedure_interfaces": {"hx_rhs_1d": [
+                "subroutine hx_rhs_1d(u, dudt)",
+                "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]},
+        }])
+        block = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[dep]))
+        self.assertIn("rhs: procedure(hx_rhs_1d) — a PROCEDURE argument", block)
+        self.assertNotIn("rhs: procedure(hx_rhs_1d), rank-0", block)  # not rendered as data
+        self.assertIn("prototype `hx_rhs_1d`", block)
+        self.assertIn("write it as an ordinary procedure of yours", block)  # not an interface body
+        self.assertIn("      real(dp), intent(out) :: dudt(:)", block)
+        self.assertIn("takes a procedure, not data", block)
+        # Without a prototype READ the argument line no longer promises a listing that does
+        # not follow — while the header's procedure sentence stays (it keys on the ARGUMENT,
+        # which exists either way; round 2 measured it absent in this shape).
+        plain = dict(self.DEP, published_operations=[dict(
+            dep["published_operations"][0], procedure_interfaces=None)])
+        plain_block = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[plain]))
+        self.assertIn("takes a procedure, not data", plain_block)
+        self.assertNotIn("listed under this operation", plain_block)
+        self.assertIn("could not be read host-side", plain_block)
+        self.assertNotIn("could not be read host-side", block)
+        # ... and with no procedure argument at all, no procedure sentence.
+        data_only = dict(self.DEP, published_operations=[dict(
+            dep["published_operations"][0], procedure_interfaces=None,
+            arguments=[a for a in dep["published_operations"][0]["arguments"]
+                       if a["name"] != "rhs"])])
+        self.assertNotIn("takes a procedure, not data",
+                         _build_dependency_facts(dict(self.BASE, resolved_dependencies=[data_only])))
+
     def test_published_operations_render_falls_back_to_header_when_no_arguments(self) -> None:
         # A published op without `arguments` (older/unparseable) renders header-only: no
         # per-argument lines, fully backward-compatible.
@@ -13279,6 +13323,100 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(u["rank"], 2)
             self.assertEqual(u["intent"], "inout")
 
+    def test_a_procedure_dummy_resolves_with_its_prototype(self) -> None:
+        # Issue #266, end to end over the tracked fixture component: the procedure-typed dummy
+        # resolves to `procedure(<prototype>)` (rank 0, no intent) and the prototype's own
+        # statements are carried on the operation, read from the certified source.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model = (Path(__file__).parent / "data" / "hx_procedure_typed_model.f90").read_text(
+            encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__hx__0.2.0", "p_20260601_002", "bin_20260601_002",
+                "run_20260601_002", source_id="src_20260601_001", spec_id="hx",
+                model_text=model)
+            self._write_ir(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001",
+                [{"node_key": "component/hx@0.2.0", "kind": "component",
+                  "operations": ["hx__advance"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")
+            op = facts[0]["published_operations"][0]
+            self.assertEqual(op["argument_order"], ["u", "rhs", "dt", "u_next"])
+            rhs = op["arguments"][1]
+            self.assertEqual((rhs["type"], rhs["rank"], rhs["intent"]),
+                             ("procedure(hx_rhs_1d)", 0, None))
+            # The two scope statements of the interface body are NOT carried (a consumer
+            # copying them into its own procedure would earn a syntax refusal).
+            self.assertEqual(op["procedure_interfaces"]["hx_rhs_1d"], [
+                "subroutine hx_rhs_1d(u, dudt)",
+                "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"])
+        # A function-kind prototype is read too (the header is found by name, not by kind):
+        # round-1 measured that the first version listed nothing for one while the argument
+        # line promised a listing.
+        fn_model = model.replace(
+            "  end interface\n",
+            "    function hx_norm(u) result(r)\n      import :: dp\n      implicit none\n"
+            "      real(dp), intent(in) :: u(:)\n      real(dp) :: r\n    end function hx_norm\n"
+            "  end interface\n").replace(
+            "    procedure(hx_rhs_1d) :: rhs\n",
+            "    procedure(hx_rhs_1d) :: rhs\n    procedure(hx_norm) :: nrm\n").replace(
+            "subroutine hx__advance(u, rhs, dt, u_next)", "subroutine hx__advance(u, rhs, dt, u_next, nrm)")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__hx__0.2.0", "p_20260601_002", "bin_20260601_002",
+                "run_20260601_002", source_id="src_20260601_001", spec_id="hx",
+                model_text=fn_model)
+            self._write_ir(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001",
+                [{"node_key": "component/hx@0.2.0", "kind": "component",
+                  "operations": ["hx__advance"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            op = _resolve_dependency_facts(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")[0]["published_operations"][0]
+            self.assertEqual(op["procedure_interfaces"]["hx_norm"], [
+                "function hx_norm(u) result(r)", "real(dp), intent(in) :: u(:)", "real(dp) :: r"])
+        # Round 2: a statement that merely MENTIONS the name before the real header is not the
+        # header (`external <name>`, a generic block's `module procedure <name>` listing), and
+        # every spelling of the two scope statements is left out (`import::dp`,
+        # `import, only: dp`); a dummy typed by a prototype no interface block declares (a
+        # module procedure of that name) carries no prototype and the line says so.
+        from tools.orchestration_runtime import (
+            _extract_interface_prototype,
+            _fortran_logical_lines,
+            _published_operations_lines,
+        )
+        tricky = (
+            "module m\ninterface hx_gen\n  module procedure hx_rhs_1d\nend interface\n"
+            "abstract interface\n  subroutine hx_other(hx_rhs_1d)\n    external hx_rhs_1d\n"
+            "  end subroutine hx_other\n"
+            "  subroutine hx_rhs_1d(u)\n    import::dp\n    IMPLICIT NONE (type, external)\n"
+            "    import, only: dp\n    real(dp), intent(in) :: u(:)\n  end subroutine hx_rhs_1d\n"
+            "end interface\nend module\n")
+        self.assertEqual(_extract_interface_prototype(_fortran_logical_lines(tricky), "hx_rhs_1d"),
+                         ["subroutine hx_rhs_1d(u)", "real(dp), intent(in) :: u(:)"])
+        no_block = model.replace("    procedure(hx_rhs_1d) :: rhs\n", "    procedure(hx_mod) :: rhs\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__hx__0.2.0", "p_20260601_002", "bin_20260601_002",
+                "run_20260601_002", source_id="src_20260601_001", spec_id="hx",
+                model_text=no_block)
+            self._write_ir(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001",
+                [{"node_key": "component/hx@0.2.0", "kind": "component",
+                  "operations": ["hx__advance"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            facts = _resolve_dependency_facts(repo_root, "workspace/ir/problem__chan__0.1.0/top_001")
+            op = facts[0]["published_operations"][0]
+            self.assertNotIn("procedure_interfaces", op)
+            rendered = "\n".join(_published_operations_lines(facts))
+            self.assertIn("could not be read host-side", rendered)
+            self.assertNotIn("listed under this operation", rendered)
+
     def test_non_fortran_consumer_gets_no_interfaces_but_keeps_verdict(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts
         with tempfile.TemporaryDirectory() as tmp:
@@ -13763,6 +13901,32 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
             "subroutine dep__op(a)\nend subroutine\n"
         )
         self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__op"])
+
+    def test_a_prefixed_prototype_inside_an_interface_block_is_not_an_entry_point(self) -> None:
+        # Issue #266: `dep__cb` exists only as a prototype (the shape of a procedure a caller
+        # passes); listing it would hand the consumer's leaf a symbol nothing defines.
+        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.validate_pipeline_semantics import (
+            _list_component_published_subroutines,
+        )
+        src = (
+            "module m\n"
+            "abstract interface\n  subroutine dep__cb(x)\n    real, intent(in) :: x\n"
+            "  end subroutine dep__cb\nend interface\n"
+            "interface\n  subroutine dep__ext(y)\n    real, intent(in) :: y\n"
+            "  end subroutine dep__ext\nend interface\n"
+            "contains\n"
+            "subroutine other(a)\n  interface = 3\nend subroutine other\n"
+            "subroutine dep__op(f)\n  procedure(dep__cb) :: f\nend subroutine dep__op\n"
+            "end module\n")
+        # The abstract prototype is skipped; the plain interface body (an external the module
+        # can re-export — a callable) still counts, as it did before the span rule; and the
+        # variable named `interface`, placed BEFORE the entry point, hides nothing (a round-2
+        # mutant widening the opener survived the earlier ordering).
+        self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__ext", "dep__op"])
+        # ... and the validator's mirror agrees on the same input (the parity test proper is
+        # `test_cross_scanner_parity_with_runtime`; this is the row for the new span rule).
+        self.assertEqual(_list_component_published_subroutines(src, "dep"), ["dep__ext", "dep__op"])
 
     def test_pure_and_module_prefixes(self) -> None:
         from tools.orchestration_runtime import _list_prefixed_subroutines
@@ -21125,7 +21289,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
         # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 90200,
+        # Bumped 90200->91000 (issue #266 PR-2): the `public_api.interfaces` carrier in the
+        # authoring bullet and its V8 pin (name set and argument set; a legacy IR passes only
+        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in /home/seiya/atmofab
+        # at the commit that takes this bump. Round 1: the IR example names the key; measured
+        # 90818, no bump.
+        "docs/workflow/phases/phase_01_compile.md": 91000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -26771,9 +26940,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:497316dbffc61897":
+        "tools/prompt_templates/pure_compile_generate.txt:6f0b533e3ffed994":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
-            "PR-3, which edited rule 7 of the same paragraph)",
+            "PR-3, which edited rule 7 of the same paragraph, and at issue #266 PR-2, which "
+            "edited rule 8 of it — rule 3 unchanged both times)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",
         "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":

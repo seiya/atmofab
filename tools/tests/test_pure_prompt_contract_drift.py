@@ -557,7 +557,17 @@ PINNED: dict[str, str] = {
     # no-metrics stubs 30 carried a fixed-length form and 4 the pinned one; every one of the 32
     # called `metric_compute`s the pinned one — round-1 census, `os.walk`). The
     # contract's §5 gains the same bullet; that slice reaches the `harness` producer only.
-    "pure-47": "f20af89bc0c32dbed7b720cb2921099d48606e8761ea91d9f644a4d03f5c6961",}
+    "pure-47": "f20af89bc0c32dbed7b720cb2921099d48606e8761ea91d9f644a4d03f5c6961",
+    # pure-48 (issue #266 PR-2): the `generate.generate` template's rule (6a) says how a
+    # `spec.type: procedure` argument and the `public_api.interfaces` prototypes lower (a dummy
+    # procedure with no intent; one abstract-interface block of prototypes, each carrying the two
+    # scope statements, none defined) and rule (1) names C002 for a prototype body; the `harness`
+    # producer's rule (1) carries the same rule in its shorter form; the `compile.generate`
+    # template's rule (8) says the prototypes are transcribed into `public_api.interfaces` and
+    # pinned. Every other pinned surface is unchanged.
+    # Re-pinned in round 1: the harness rule (1) states the ORDER of the two scope statements
+    # (the compiler refuses the implicit-typing statement before the host-association one).
+    "pure-48": "0f9715ba7082b9f4f58407c80595138c0d8e6e0e07e45598512c3d526c230ba0",}
 
 
 def _contract_tuple() -> dict[str, object]:

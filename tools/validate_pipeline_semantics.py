@@ -1751,9 +1751,11 @@ def _validate_problem_model_dependency_dataflow(
     "each intent(out) reaches the required_sources", backed by the runtime. Check 1 below (a
     dependency RESULT reaching intent(out)) is assignment-only, sound, and kept.
 
-    The candidate rule has three clauses: an actual of a dependency `call` is a candidate OUTPUT
+    The candidate rule has four clauses: an actual of a dependency `call` is a candidate OUTPUT
     unless it is a dummy of the enclosing subroutine, OR was assigned earlier in the same view, OR
-    is a NAMED CONSTANT. The third clause is not a relaxation of a sound rule — it removes an
+    is a NAMED CONSTANT, OR is the name of a procedure this file defines (a procedure passed as
+    the actual for a procedure-typed dummy — issue #266; a procedure name is not definable
+    either). The third clause is not a relaxation of a sound rule — it removes an
     over-approximation the rule never intended. F2008 requires the actual associated with an
     `intent(out)` / `intent(inout)` dummy to be definable, and a named constant is not, so a
     `parameter` can never be a dependency-call output. Verified against the compiler rather than
@@ -1786,12 +1788,14 @@ def _validate_problem_model_dependency_dataflow(
 
     RESIDUES, reproduced and NOT fixed. (a) A bare `use other_module` can import a VARIABLE whose
     name this file also declares as a constant; nothing in one file can see that. (b) An
-    implicitly typed local is not declared at all, so it cannot disqualify a name — unreachable
-    through `Generate.gate`, which requires `implicit none` (fortitude **C001**, verified by
-    running it; C003 is a different rule, and since issue #111 it is not in the
-    gate's declared rule set at all — when this note was written the phase document instructed
-    the leaf to suppress it, and either way citing it would have pointed a future reader at a
-    check that never fires). (c) The candidate
+    implicitly typed local is not declared at all, so it cannot disqualify a name. An earlier
+    version of this note called that unreachable because the lint gate (fortitude C001)
+    requires the module-level `implicit none`; a round-2 reviewer of issue #266 PR-2 measured
+    that a routine-local `implicit real(dp) (s)` under it compiles under the gate's standard
+    and passes the declared lint set, so a local named after a constant or a procedure
+    elsewhere in the file can be an undeclared, exempted, discarded output — reachable, zero
+    in the corpus, and the same class as (a). (C003 is a different rule and, since issue
+    #111, not in the gate's declared rule set.) (c) The candidate
     rule still treats a variable written by an earlier `call` as a candidate, and the consumption
     closure still cannot cross a call; the measured instance is the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
@@ -1839,6 +1843,19 @@ def _validate_problem_model_dependency_dataflow(
     # fail-OPEN at exactly the candidate rule below. The blanking stays inside the envelopes.
     file_constants, file_other_names = _fortran_declared_names(lowered)
     parameter_names = file_constants - file_other_names
+    # The name of a procedure this file DEFINES — at module level or internal to one —
+    # passed as an actual is the procedure itself (a dependency operation taking a
+    # procedure-typed dummy, issue #266: the caller hands it the tendency to integrate). Such an
+    # actual can carry nothing back, so it is not an output candidate. The envelopes are one
+    # per definition, internal ones included (see the envelope class). The SAME file-wide,
+    # scope-free rule as the constant clause above, for the same reason: a procedure name is
+    # scope-local (an internal procedure of ANOTHER routine, or a module-level procedure a local
+    # declaration shadows — both compile), so a name this file also declares as a variable
+    # anywhere is NOT exempt. Two round-1 reviewers each built a shape where the plain
+    # envelope set hid a discarded result origin/main flagged; subtracting the declared names
+    # costs a false violation on a file that uses one name both ways, the direction this
+    # gate accepts.
+    procedure_names = {envelope.name for envelope in envelopes} - file_other_names
 
     for envelope in envelopes:
         sub_name = envelope.name
@@ -1867,7 +1884,7 @@ def _validate_problem_model_dependency_dataflow(
                 # A named constant cannot be an output: F2008 requires the actual associated with
                 # an `intent(out)`/`intent(inout)` dummy to be definable. See the docstring for
                 # the compiler diagnostic this rests on.
-                if var in arg_names or var in parameter_names:
+                if var in arg_names or var in parameter_names or var in procedure_names:
                     continue
                 assigned_before_call = any(
                     lhs == var and pos < call_pos for lhs, _, pos in assignments
@@ -5524,11 +5541,25 @@ _COMPONENT_PUBLISHED_SUB_RE = re.compile(
     r"subroutine\s+(?P<name>[A-Za-z]\w*)",
     re.IGNORECASE,
 )
+# An ABSTRACT interface block's span. A procedure header inside one is a PROTOTYPE (issue
+# #266: the shape of a procedure a caller passes), not a published operation, whatever its
+# name begins with — so the scan below skips the span. A NON-abstract interface body is
+# different: it declares an external procedure the module can re-export, which is a callable
+# a consumer links, so the scan counts it exactly as it did before this rule (a round-2
+# reviewer measured the wider skip letting a module publish an extra `<spec_id>__` external
+# through a sibling file). The opener is the whole statement, so a variable named
+# `interface` opens nothing. Mirrored VERBATIM in the runtime's prefixed-name scanner, which
+# the parity test pins.
+_ABSTRACT_INTERFACE_SPAN_OPEN_RE = re.compile(r"^\s*abstract\s+interface\s*$", re.IGNORECASE)
+_INTERFACE_SPAN_END_RE = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
 
 
 def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
     """Distinct, first-appearance-ordered ``subroutine`` names in ``text`` whose name begins
-    (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. The
+    (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. A
+    header inside an ``abstract interface`` block is a prototype and is not counted (issue
+    #266); one inside a plain ``interface`` body is an external the module may re-export and
+    counts, as before. The
     validator may NOT import ``orchestration_runtime`` (module-boundary rule), so this is a
     separate mirror of that module's ``_list_prefixed_subroutines``; the cross-scanner parity
     test pins the two implementations to the same result.
@@ -5546,7 +5577,16 @@ def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
         prefix = f"{spec_id}__".lower()
         out: list[str] = []
         seen: set[str] = set()
+        in_interface = 0
         for _lineno, stmt in _iter_fortran_logical_lines(text):
+            if _INTERFACE_SPAN_END_RE.match(stmt):
+                in_interface = max(0, in_interface - 1)
+                continue
+            if _ABSTRACT_INTERFACE_SPAN_OPEN_RE.match(stmt):
+                in_interface += 1
+                continue
+            if in_interface:
+                continue
             m = _COMPONENT_PUBLISHED_SUB_RE.match(stmt)
             if m is None:
                 continue
@@ -6694,7 +6734,7 @@ def _section51_parameter_lines(controlled_spec_path: Path) -> list[str]:
 
 def _parse_canonical_interface_from_controlled_spec(
     controlled_spec_path: Path,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], str | None]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], str | None]:
     """Extract and parse an infrastructure node's §5.1 canonical interface block.
 
     §5.1 is a language-neutral *structured* signature block (Objective B). The Fortran-language
@@ -6703,10 +6743,11 @@ def _parse_canonical_interface_from_controlled_spec(
     (``fortran_signatures.parse_interface_stanzas`` on the rendered block reproduces the exact
     stanza shape).
 
-    Returns ``(op_stanzas, type_stanzas, error)``. ``error`` is non-``None`` when the block is
-    missing, duplicated, not valid structured YAML, renders to zero signatures, or declares an
-    ``interfaces`` prototype (refused until issue #266 PR-2 pins it) — every such case is
-    fail-closed at the gate (a spec that fails to pin its own surface cannot certify)."""
+    Returns ``(op_stanzas, type_stanzas, iface_stanzas, error)`` — the published procedures,
+    the published types, and the named prototypes of the ``interfaces`` section (issue #266),
+    each keyed by name. ``error`` is non-``None`` when the block is missing, duplicated, not
+    valid structured YAML, or renders to zero signatures — every such case is fail-closed at the
+    gate (a spec that fails to pin its own surface cannot certify)."""
     from tools.backends.language.fortran.signatures import (
         SignatureParseError,
         load_structured_signatures,
@@ -6715,27 +6756,21 @@ def _parse_canonical_interface_from_controlled_spec(
 
     body, err = _section51_fence_body(controlled_spec_path)
     if err or body is None:
-        return ({}, {}, err)
+        return ({}, {}, {}, err)
     struct, perr = load_structured_signatures(body)
     if perr:
-        return ({}, {}, perr)
+        return ({}, {}, {}, perr)
     try:
         rendered = render_signatures_to_fortran(struct)
     except SignatureParseError as exc:
-        return ({}, {}, f"§5.1 structured block could not render to Fortran: {exc}")
+        return ({}, {}, {}, f"§5.1 structured block could not render to Fortran: {exc}")
     op_stanzas, type_stanzas, iface_stanzas, errors = (
         fortran_signatures.parse_interface_stanzas(rendered))
     if errors:
-        return (op_stanzas, type_stanzas, "; ".join(errors))
-    if iface_stanzas:
-        # The backend lowers `interfaces:` (issue #266 PR-1); the gates that pin a prototype
-        # against the IR and the generated source land in PR-2. Until then a §5.1 that declares
-        # one is refused here rather than passed through with the prototype unpinned.
-        return ({}, {}, (f"declares interfaces {sorted(iface_stanzas)}, which this validator "
-                         "does not pin yet (issue #266 PR-2)"))
+        return (op_stanzas, type_stanzas, iface_stanzas, "; ".join(errors))
     if not op_stanzas and not type_stanzas:
-        return ({}, {}, "§5.1 canonical interface block parsed 0 signatures")
-    return (op_stanzas, type_stanzas, None)
+        return ({}, {}, {}, "§5.1 canonical interface block parsed 0 signatures")
+    return (op_stanzas, type_stanzas, iface_stanzas, None)
 
 
 def _case_id_to_test_id(
@@ -12935,12 +12970,16 @@ def _validate_published_surface(
     # IR's public_api.signatures AND public_api.module_parameters == §5.1 so the Generate.generate
     # leaf — walled off from controlled_spec.md — carries the exact signatures and parameter values
     # to publish in its IR.
-    op_stanzas, type_stanzas, iface_err = _parse_canonical_interface_from_controlled_spec(cs_path)
+    op_stanzas, type_stanzas, proto_stanzas, iface_err = (
+        _parse_canonical_interface_from_controlled_spec(cs_path))
     if iface_err:
         violations.append(
             f"{derived_path}:controlled_spec ({cs_ref}) §5.1 {iface_err} — the canonical "
             "interface block must fence exactly the §5 published surface")
         return
+    # The §5 ↔ §5.1 cross-check reads procedures and types only. A prototype (§5.1
+    # `interfaces`) is not an operation a consumer calls and is not listed in §5 by design —
+    # a prose copy there would be a second statement of the same list with no reader.
     iface_ops = set(op_stanzas)
     iface_types = set(type_stanzas)
     for missing in sorted(spec_ops - iface_ops):
@@ -12961,7 +13000,8 @@ def _validate_published_surface(
             "the §5 derived-type list")
 
     _validate_ir_signatures_against_section51(
-        derived_path, kind, public_api, op_stanzas, type_stanzas, violations)
+        derived_path, kind, public_api, op_stanzas, type_stanzas, violations,
+        iface_stanzas=proto_stanzas)
     _validate_ir_module_parameters_against_section51(
         derived_path, kind, public_api, cs_path, violations)
 
@@ -12973,6 +13013,8 @@ def _validate_ir_signatures_against_section51(
     op_stanzas: dict[str, list[str]],
     type_stanzas: dict[str, list[str]],
     violations: list[str],
+    *,
+    iface_stanzas: dict[str, list[str]] | None = None,
 ) -> None:
     """Pin the IR's ``public_api.signatures`` == the controlled_spec §5.1 canonical interface
     block. Each entry is ``{symbol, signature}`` (``symbol`` names the published op/type;
@@ -12983,12 +13025,26 @@ def _validate_ir_signatures_against_section51(
     fail-closed); no symbol is declared twice; the symbol set equals §5.1's; and each symbol's
     normalized stanza LIST equals §5.1's (ordered — a derived type's component layout is part of the
     §5 compatibility contract, so a component reorder must NOT be accepted). A drift here becomes a
-    drift in the model the Generate leaf transcribes, so it is a Compile fail to Compile.generate."""
-    from tools.backends.language.fortran.signatures import SignatureParseError, render_symbol_to_fortran
+    drift in the model the Generate leaf transcribes, so it is a Compile fail to Compile.generate.
+
+    ``iface_stanzas`` (issue #266) is §5.1's ``interfaces`` section — the named prototypes a
+    procedure-typed argument references — and its IR carrier is ``public_api.interfaces``
+    (each ``{name, signature}``, the entry itself). The two are pinned the same way: the name
+    set equal, each prototype's atom SET equal (a prototype has no body, so nothing is
+    order-dependent past the header line, which is itself an atom). A legacy IR that carries
+    no ``interfaces`` key passes only when §5.1 declares no prototype — additive on today's
+    corpus, where no §5.1 declares one — and an IR carrying the key when §5.1 has no section
+    is a drift too. Every refusal names the remedy the leaf can act on: transcribe the
+    ``interfaces`` list into ``public_api.interfaces`` verbatim."""
+    from tools.backends.language.fortran.signatures import (
+        SignatureParseError, render_symbol_to_fortran,
+        render_interface_to_fortran as _render_prototype,
+        parse_interface_stanzas as _split_stanzas,
+        stanza_line_list as _atom_list, stanza_line_set as _atom_set)
 
     spec51: dict[str, tuple[str, ...]] = {}
     for name, lines in {**op_stanzas, **type_stanzas}.items():
-        spec51[name] = fortran_signatures.stanza_line_list(lines)
+        spec51[name] = _atom_list(lines)
 
     sigs_raw = public_api.get("signatures")
     if not isinstance(sigs_raw, list) or not sigs_raw:
@@ -13066,6 +13122,84 @@ def _validate_ir_signatures_against_section51(
             violations.append(
                 f"{derived_path}:public_api.signatures['{name}'] does not match controlled_spec "
                 "§5.1 (argument name/type/rank/intent/result or component-layout/order drift)")
+
+    # --- the prototypes (§5.1 `interfaces` == IR `public_api.interfaces`) ---------------------
+    spec_protos: dict[str, frozenset[str]] = {
+        name: _atom_set(lines) for name, lines in (iface_stanzas or {}).items()}
+    remedy = ("transcribe controlled_spec §5.1's `interfaces` list into `public_api.interfaces` "
+              "verbatim, one `{name, signature}` entry per prototype, the `signature` being the "
+              "§5.1 entry itself in its neutral form")
+    protos_raw = public_api.get("interfaces")
+    if protos_raw is None:
+        if spec_protos:
+            violations.append(
+                f"{derived_path}:public_api.interfaces missing — controlled_spec §5.1 declares "
+                f"the prototype(s) {sorted(spec_protos)}; {remedy}")
+        return
+    if not isinstance(protos_raw, list):
+        violations.append(
+            f"{derived_path}:public_api.interfaces must be a list of {{name, signature}} "
+            f"entries (got {type(protos_raw).__name__}); {remedy}")
+        return
+    ir_protos: dict[str, frozenset[str]] = {}
+    for idx, entry in enumerate(protos_raw):
+        if not isinstance(entry, dict):
+            violations.append(
+                f"{derived_path}:public_api.interfaces[{idx}] is not a mapping "
+                f"(expected {{name, signature}}); {remedy}")
+            continue
+        name = entry.get("name")
+        signature = entry.get("signature")
+        if not isinstance(name, str) or not name.strip():
+            violations.append(
+                f"{derived_path}:public_api.interfaces[{idx}] missing a non-empty 'name'; {remedy}")
+            continue
+        name = name.strip()
+        if not isinstance(signature, dict) or not signature:
+            violations.append(
+                f"{derived_path}:public_api.interfaces['{name}'] missing a mapping 'signature' "
+                f"(the prototype in its neutral form); {remedy}")
+            continue
+        try:
+            block = _render_prototype(signature)
+        except SignatureParseError as exc:
+            violations.append(
+                f"{derived_path}:public_api.interfaces['{name}'] signature is not renderable: "
+                f"{exc}; {remedy}")
+            continue
+        _p_ops, _p_types, p_ifaces, p_errors = _split_stanzas(block)
+        for err in p_errors:
+            violations.append(f"{derived_path}:public_api.interfaces['{name}'] {err}")
+        if len(p_ifaces) != 1:
+            violations.append(
+                f"{derived_path}:public_api.interfaces['{name}'].signature must render to "
+                f"exactly one prototype (found {len(p_ifaces)}); {remedy}")
+            continue
+        (parsed_name, parsed_lines), = p_ifaces.items()
+        if parsed_name != name:
+            violations.append(
+                f"{derived_path}:public_api.interfaces['{name}'].signature declares a different "
+                f"prototype name '{parsed_name}'; {remedy}")
+            continue
+        if name in ir_protos:
+            violations.append(
+                f"{derived_path}:public_api.interfaces declares prototype '{name}' more than once")
+            continue
+        ir_protos[name] = _atom_set(parsed_lines)
+    for missing in sorted(set(spec_protos) - set(ir_protos)):
+        violations.append(
+            f"{derived_path}:public_api.interfaces omits controlled_spec §5.1 prototype "
+            f"'{missing}'; {remedy}")
+    for extra in sorted(set(ir_protos) - set(spec_protos)):
+        violations.append(
+            f"{derived_path}:public_api.interfaces declares a prototype '{extra}' absent from "
+            f"controlled_spec §5.1's `interfaces` (delete it, or add it to §5.1 and reference "
+            "it from an argument)")
+    for name in sorted(set(spec_protos) & set(ir_protos)):
+        if ir_protos[name] != spec_protos[name]:
+            violations.append(
+                f"{derived_path}:public_api.interfaces['{name}'] does not match controlled_spec "
+                f"§5.1's prototype (argument name/type/rank/intent/result drift); {remedy}")
 
 
 def _validate_ir_module_parameters_against_section51(
@@ -13401,7 +13535,8 @@ def _validate_generated_signatures(
             f"{loc}: this {ir_kind} node's signatures cannot be pinned — {unsupported}")
         return
 
-    op_stanzas, type_stanzas, iface_err = _parse_canonical_interface_from_controlled_spec(cs_path)
+    op_stanzas, type_stanzas, proto_stanzas, iface_err = (
+        _parse_canonical_interface_from_controlled_spec(cs_path))
     if iface_err:
         violations.append(
             f"{cs_path}: §5.1 canonical interface block {iface_err} — cannot pin the generated "
@@ -13434,7 +13569,7 @@ def _validate_generated_signatures(
     # violation's TYPE, which `main` maps to a dedicated exit code.
     _validate_ir_signatures_against_section51(
         ir_path, ir_kind, pub if isinstance(pub, dict) else {},
-        op_stanzas, type_stanzas, stale_ir_violations)
+        op_stanzas, type_stanzas, stale_ir_violations, iface_stanzas=proto_stanzas)
     if stale_ir_violations:
         loc = model_files[0] if model_files else ir_path
         violations.append(StaleDependencyIRViolation(
@@ -13459,13 +13594,13 @@ def _validate_generated_signatures(
         model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
     )
     # A prototype the source declares inside an `interface` block is neither a published
-    # procedure nor a type; the splitter files it separately. Here it is read for one purpose:
-    # a §5.1 procedure the source only prototypes is reported as undefined (below). Pinning
-    # §5.1 `interfaces:` against it is issue #266 PR-2. A prototype that shares a published
-    # name with an unprefixed definition is still a `duplicate signature` error from the
-    # splitter, so the decoy defence below is unchanged — and unchanged means the prefixed
-    # variant it never covered is still open (the per-symbol loop says which, and TODO.md
-    # carries it).
+    # procedure nor a type; the splitter files it separately. It is read for two purposes: a
+    # §5.1 procedure the source only prototypes is reported as undefined (the per-symbol loop),
+    # and each §5.1 `interfaces` prototype is pinned against the source's prototype of that
+    # name (after the loop; issue #266). A prototype that shares a published name with an
+    # unprefixed definition is still a `duplicate signature` error from the splitter, so the
+    # decoy defence below is unchanged — and unchanged means the prefixed variant it never
+    # covered is still open (the per-symbol loop says which, and TODO.md carries it).
     src_ops, src_types, src_ifaces, src_errors = (
         fortran_signatures.parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
@@ -13489,7 +13624,10 @@ def _validate_generated_signatures(
         return
     src_lists: dict[str, tuple[str, ...]] = {}
     src_proto_lists: dict[str, tuple[str, ...]] = {}  # the prototypes, kept apart (see the loop)
-    for atom_lists, stanzas in ((src_lists, {**src_ops, **src_types}), (src_proto_lists, src_ifaces)):
+    spec_proto_lists: dict[str, tuple[str, ...]] = {}  # §5.1's prototypes, same currency
+    for atom_lists, stanzas in ((src_lists, {**src_ops, **src_types}),
+                                (src_proto_lists, src_ifaces),
+                                (spec_proto_lists, proto_stanzas)):
         for name, lines in stanzas.items():
             atom_lists[name] = fortran_signatures.stanza_line_list(lines)
 
@@ -13675,6 +13813,46 @@ def _validate_generated_signatures(
                     "result drift from the published surface, OR a procedure prefix on the header "
                     "that §5.1 does not declare — the header is compared as published, so a prefix "
                     "is a difference even when every argument is right)")
+
+    # The §5.1 PROTOTYPES (issue #266): each `interfaces` entry must appear in the source as a
+    # prototype of the same name — inside an `interface` block, never as a definition — with
+    # the same atom SET (a prototype has no body, so the comparison is equality both ways,
+    # unlike a published procedure's membership check: an extra declaration line in a
+    # prototype is a different interface the compiler checks the passed actual against). A
+    # prototype the source declares that §5.1 does not is allowed — a module-private
+    # interface is not published surface. The "never as a definition" half asks the structure
+    # reader, like the definedness arm above, and is skipped on the same conditions (no single
+    # publisher, or a source the front end could not resolve, both already refused above).
+    # The two scope statements a source prototype must carry (host association of the kind
+    # symbol, and the implicit-typing rule the lint gate requires) are not atoms — the
+    # splitter drops them — so they cannot drift the comparison either way.
+    proto_remedy = (
+        "declare it in an abstract interface block of the model module, as a prototype only "
+        "(no body), matching the §5.1 `interfaces` entry argument for argument — every "
+        "argument name, type, kind, rank, intent and the result — carrying inside the "
+        "prototype the two scope statements authoring rule (6a) of the generate template "
+        "requires")
+    for name in sorted(spec_proto_lists):
+        want = frozenset(spec_proto_lists[name])
+        have_proto = src_proto_lists.get(name)
+        if have_proto is None:
+            violations.append(
+                f"{target}: generated model source does not declare the controlled_spec §5.1 "
+                f"prototype '{name}' (no interface block carries a prototype of that name) — "
+                f"{proto_remedy}")
+        elif frozenset(have_proto) != want:
+            missing = sorted(a for a in want if a not in have_proto)
+            extra = sorted(a for a in have_proto if a not in want)
+            violations.append(
+                f"{target}: prototype '{name}' drifts from controlled_spec §5.1's `interfaces` "
+                f"entry — missing {missing}, extra {extra} (compared as normalized "
+                f"declaration atoms; the header line is one of them) — {proto_remedy}")
+        if defined_names is not None and name.lower() in defined_names:
+            violations.append(
+                f"{target}: generated model source DEFINES '{name}', which controlled_spec §5.1 "
+                "declares as a prototype (an `interfaces` entry) — a prototype is the shape of "
+                "the procedure a CALLER passes, and the model must not implement it; remove the "
+                f"definition and {proto_remedy}")
 
     # The §5.1 module-level `parameter` declarations (dp / case_id_len) are part of the published
     # ABI but are not stanzas; pin their exact declaration (name AND value) against the source —
