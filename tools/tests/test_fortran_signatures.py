@@ -1129,6 +1129,13 @@ class ProcedureTypedArgumentTest(unittest.TestCase):
         render_signatures_to_fortran(struct)  # and the loaded struct renders
         _s, err = load_structured_signatures("interfaces:\n")
         self.assertIn("'interfaces' must be a list", err or "")
+        # an absent key loads as the empty list (the struct always carries all four keys) ...
+        struct, err = load_structured_signatures("procedures: []\n")
+        self.assertIsNone(err)
+        self.assertEqual(struct["interfaces"], [])
+        # ... and the not-a-mapping refusal names the key among the allowed ones
+        _s, err = load_structured_signatures("- 1\n")
+        self.assertIn("module_parameters / types / interfaces / procedures", err or "")
 
 
 class NeutralVocabularyTest(unittest.TestCase):
