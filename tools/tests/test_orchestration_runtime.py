@@ -12726,6 +12726,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("rhs: procedure(hx_rhs_1d) — a PROCEDURE argument", block)
         self.assertNotIn("rhs: procedure(hx_rhs_1d), rank-0", block)  # not rendered as data
         self.assertIn("prototype `hx_rhs_1d`", block)
+        self.assertIn("write it as an ordinary procedure of yours", block)  # not an interface body
         self.assertIn("      real(dp), intent(out) :: dudt(:)", block)
         self.assertIn("takes a procedure, not data", block)
         # Control: without a prototype the header sentence stays out, and the argument line
