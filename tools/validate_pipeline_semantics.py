@@ -6704,8 +6704,9 @@ def _parse_canonical_interface_from_controlled_spec(
     stanza shape).
 
     Returns ``(op_stanzas, type_stanzas, error)``. ``error`` is non-``None`` when the block is
-    missing, duplicated, not valid structured YAML, or renders to zero signatures — every such case
-    is fail-closed at the gate (a spec that fails to pin its own surface cannot certify)."""
+    missing, duplicated, not valid structured YAML, renders to zero signatures, or declares an
+    ``interfaces`` prototype (refused until issue #266 PR-2 pins it) — every such case is
+    fail-closed at the gate (a spec that fails to pin its own surface cannot certify)."""
     from tools.backends.language.fortran.signatures import (
         SignatureParseError,
         load_structured_signatures,
@@ -13601,12 +13602,12 @@ def _validate_generated_signatures(
         # and reported as undefined by the same arm a bodiless definition reaches. That
         # "undefined" needs no structure reading: a module cannot carry an interface body AND a
         # definition of one name (the compiler refuses the pair as "already defined"), and the
-        # splitter reports the pair as a duplicate before this loop in any case. It does need
-        # ONE publisher, like the structural arm: with several files combined, a prototype here
-        # and a prefixed definition in another file is the no-single-publisher refusal above,
-        # not a definedness verdict.
-        prototyped = not is_type and have is None and name in src_proto_lists
-        if prototyped:
+        # splitter reports the pair as a duplicate before this loop in any case. Setting `have`
+        # is the whole of it: the structural arm below then answers "undefined" for the
+        # prototype on its own (an interface-body header is not a module-level procedure to the
+        # structure reader — a round-1 reviewer measured that a clause repeating the verdict
+        # here was unobservable), and the drift comparison after it reads the prototype's atoms.
+        if not is_type and have is None and name in src_proto_lists:
             have = src_proto_lists[name]
         if have is None:
             violations.append(
@@ -13614,8 +13615,7 @@ def _validate_generated_signatures(
                 f"'{name}' (no {kind} of that name/header found — the published surface must match "
                 "the pinned §5.1 signature)")
             continue
-        if (prototyped and len(model_files) == 1) or (
-                not is_type and defined_names is not None and name.lower() not in defined_names):
+        if not is_type and defined_names is not None and name.lower() not in defined_names:
             # NOT `continue`. A first version reported this INSTEAD OF the stanza comparison, on
             # the reasoning that "the header is present by construction, so every atom matches" —
             # which is false, and a round-2 reviewer measured it: `have` is keyed on the NAME, not

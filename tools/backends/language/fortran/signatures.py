@@ -28,7 +28,8 @@ signature comparison byte-for-byte unchanged — the gate renders the structured
 Fortran lines it already knows how to compare against a generated ``.f90``.
 
 The struct vocabulary is language-neutral throughout: the neutral ``type`` names (``real`` /
-``integer`` / ``logical`` / ``string`` / ``derived`` — not ``character`` / ``type(...)``), the
+``integer`` / ``logical`` / ``string`` / ``derived`` / ``procedure`` — not ``character`` /
+``type(...)`` / ``procedure(...)``), the
 string-length tokens (``deferred`` / ``assumed`` — not ``:`` / ``*``), and the module-parameter
 kind values (``float64`` / ``float32`` — not ``real64`` / ``real32``). The Fortran spellings are
 produced only by the renderer here; the old Fortran tokens fail closed in the neutral form.
@@ -1113,8 +1114,9 @@ def render_signatures_to_fortran(struct: dict[str, Any]) -> str:
 def _render_interface_block(interfaces: list[dict[str, Any]]) -> list[str]:
     """One ``abstract interface`` block holding every prototype. The canonical form carries no
     ``import`` / ``implicit none`` line: it exists to be compared (the stanza splitter drops both
-    from a source prototype anyway), not to be compiled — the source the leaf writes needs both,
-    and the Generate template says so."""
+    from a source prototype anyway), not to be compiled. The source a leaf writes needs both
+    (the kind symbol is host-associated only through ``import``; the lint gate's C002 wants
+    ``implicit none``), which is the Generate template's business, not this renderer's."""
     lines = ["abstract interface"]
     for iface in interfaces:
         lines.extend(f"  {ln}" for ln in _render_procedure(iface))

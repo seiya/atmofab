@@ -1022,6 +1022,16 @@ class ProcedureTypedArgumentTest(unittest.TestCase):
         self.assertEqual((errors, ops, types), ([], {}, {}))
         self.assertEqual(sorted(ifaces), ["rhs_2d"])
 
+    def test_render_interface_to_fortran_fails_closed_on_a_malformed_entry(self) -> None:
+        # The single-entry renderer validates before it renders (a round-1 mutant deleting that
+        # call survived): a malformed entry is a SignatureParseError, never a KeyError, and a
+        # nested procedure-typed argument is refused there too.
+        with self.assertRaisesRegex(SignatureParseError, "kind must be"):
+            render_interface_to_fortran({"name": "rhs", "args": []})
+        with self.assertRaisesRegex(SignatureParseError, "allowed only for a procedure's argument"):
+            render_interface_to_fortran({"kind": "subroutine", "name": "rhs", "args": [
+                {"name": "f", "spec": {"type": "procedure", "interface": "g"}}]})
+
     def test_intent_on_procedure_arg_fails_closed(self) -> None:
         s = self._struct(); s["procedures"][0]["args"][1]["intent"] = "in"
         self._assert_raises(s, "intent is not applicable to a procedure-typed argument")
@@ -1219,8 +1229,8 @@ class NeutralVocabularyTest(unittest.TestCase):
         m = re.search(r"neutral `type` \(([^)]*)\)", section)
         self.assertIsNotNone(m, "§5.1 no longer states the neutral `type` enumeration")
         tokens = re.findall(r"`([a-z_]+)`", m.group(1))
-        self.assertEqual(len(tokens), len(fortran_signatures._VALID_SPEC_TYPES))
-        self.assertEqual(set(tokens), set(fortran_signatures._VALID_SPEC_TYPES))
+        self.assertEqual(set(tokens), set(fortran_signatures._VALID_SPEC_TYPES))  # names the token
+        self.assertEqual(len(tokens), len(fortran_signatures._VALID_SPEC_TYPES))  # no repeat
 
     def test_real_section51_fence_text_has_no_fortran_tokens(self) -> None:
         # (#5) A hand-edit that reintroduces a Fortran token into the real §5.1 fence is caught:
