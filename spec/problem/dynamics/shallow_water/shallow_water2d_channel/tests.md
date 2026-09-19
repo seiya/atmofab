@@ -25,7 +25,7 @@ The constants are those of the Controlled Spec §6, in SI units: `g=9.80616`, `O
 - `tc2_zonal_perturbed`: $h(x,y)=h_{TC2}(y)+\eta_0\sin\left(2\pi\,(x/L_x-\mathrm{shift\_x\_fraction})\right)$ with $h_{TC2}$ the `tc2_zonal_uniform` depth, $u=u_0$, $v=0$, `eta0=30.0` (`m`), with `L_x=L_y=6.0e6`.
 
 ### 2-4. Theoretical solution (with applicability condition)
-`tc2_zonal_uniform` and `tc3_compact_jet` are steady solutions of the continuous equations, so the reference at $t_{end}$ is the initial state: for `tc2_zonal_uniform` the closed form of 2-3 evaluated at the cell centres, $h_{ref}(y)=h(y)$; for `tc3_compact_jet` the discrete initial state itself, $h_{ref}=h(t=0)$ (its $h$ has no closed form). The theoretical-agreement judgment at $t_{end}$ targets `h`; a judgment for `hu` / `hv` against the reference at $t_{end}$ is not required in this suite, and the wall-normal velocity is judged by its own metric (2-5). `tc2_zonal_perturbed` has no steady reference; it is judged by 2-6. The initial state is judged against its closed form for every profile: `h` for `tc2_zonal_uniform` and `tc2_zonal_perturbed` (2-3, at the cell centres), `u` for all three, `v=0` for all three, and for `tc3_compact_jet` — whose `h` is defined by the quadrature — the depth of the rows south of the jet, where $u=0$ on $[0,y]$ and the integral is exactly zero, so $h=h_0$ and it is the maximum of $h$ over the domain.
+`tc2_zonal_uniform` and `tc3_compact_jet` are steady solutions of the continuous equations, so the reference at $t_{end}$ is the initial state: for `tc2_zonal_uniform` the closed form of 2-3 evaluated at the cell centres, $h_{ref}(y)=h(y)$; for `tc3_compact_jet` the discrete initial state itself, $h_{ref}=h(t=0)$ (its $h$ has no closed form). The theoretical-agreement judgment at $t_{end}$ targets `h`; a judgment for `hu` / `hv` against the reference at $t_{end}$ is not required in this suite, and the wall-normal velocity is judged by its own metric (2-5). `tc2_zonal_perturbed` has no steady reference; it is judged by 2-6. The initial state is judged against its closed form for every profile: `h` for `tc2_zonal_uniform` and `tc2_zonal_perturbed` (2-3, at the cell centres), `u` for all three, `v=0` for all three, and for `tc3_compact_jet` — whose `h` is defined by the quadrature — the depth of the rows south of the jet, where $u=0$ on $[0,y]$ and the integral is exactly zero, so $h=h_0$ and it is the maximum of $h$ over the domain — and the depth of the rows north of the jet, where the integral is complete and equals the closed-form constant $h_N$ of the Controlled Spec §6, the minimum of $h$ over the domain. The two pin the constant of integration and the quadrature: the composite Simpson rule of the Controlled Spec §6 reproduces $h_N$ to round-off, while a trapezoid rule on the same sub-grid deviates by about $2\times10^{-7}$ relative and a Simpson rule on a `dy/4` sub-grid by about $8\times10^{-8}$, both above the $10^{-9}$ tolerance.
 
 ### 2-5. Wall-normal velocity
 The exact solution has $v=0$ everywhere. The mirror ghost yields a non-zero $v$ of order $dy$ in the wall-adjacent rows (the boundary `component`'s §2), so a "zero `hv` at the wall" judgment is not applicable to this discretization; the judged quantity is $\max_{i,j}|v_{i,j}(t_{end})|$ over the whole domain, with a per-case threshold decreasing with refinement.
@@ -41,7 +41,7 @@ The `x`-uniform profiles exercise no `x`-interface flux and no periodic `x` mapp
   3. $\mathrm{n\_step}=\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$.
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 - $\mathrm{cfl\_target}=0.45$.
-- The stop condition is $n=\mathrm{n\_step}$.
+- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `RK4` steps performed after the run, incremented by the step loop at each step), and it is emitted as the diagnostic `run.n_step`.
 - The output times are $0,\ 21600,\ 43200,\ 64800,\ 86400$ (`s`); a case with an overridden `t_end` outputs at the same interval of $21600$ up to its $t_{end}$.
 
 ## 4. Case-expansion rules
@@ -83,6 +83,8 @@ The `sweep` and fixed values per `family` are defined below.
 - `extrema.v.max_abs`
 - `errors.initial_h.linf_rel`
 - `errors.initial_h.south_rel`
+- `errors.initial_h.north_rel`
+- `run.n_step`
 - `errors.initial_u.linf_rel`
 - `errors.initial_v.linf`
 - `errors.symmetry_h.l2_rel`
@@ -95,7 +97,7 @@ The `sweep` and fixed values per `family` are defined below.
 ### 5-3. `N/A` rule
 - When a diagnostic item is incomputable or non-applicable, make the output value `null` and require `reason_na`.
 - `errors.initial_h.linf_rel` is `N/A` for `flow_profile=tc3_compact_jet` (its initial `h` is defined by the quadrature and has no independent closed form); it is computed for `tc2_zonal_uniform` and `tc2_zonal_perturbed`.
-- `errors.initial_h.south_rel` is `N/A` for anything other than `flow_profile=tc3_compact_jet`.
+- `errors.initial_h.south_rel` and `errors.initial_h.north_rel` are `N/A` for anything other than `flow_profile=tc3_compact_jet`.
 - `errors.initial_u.linf_rel` and `errors.initial_v.linf` are computed for every profile (`u(y)` is `u0` for the two `tc2_*` profiles and the closed form of 2-3 for `tc3_compact_jet`; `v=0` for all three).
 - `errors.symmetry_h.l2_rel` is `N/A` for anything other than the shifted case of a translation pair; it is carried by `chan_tc2_xpert_n064_dts100_sx025`, which sorts after its base case, and reads the base case's final state.
 - `xstructure.decay_ratio` is `N/A` for anything other than `flow_profile=tc2_zonal_perturbed`.
@@ -117,14 +119,15 @@ Here $M_0$ is the field `conserved.mass.initial` and $M_{end}$ is `conserved.mas
 The initial-state errors are defined by the following, with $h_{ref}$ the closed form of 2-3 at the cell centres ($h_{ref}(y_j)$ for `tc2_zonal_uniform`, $h_{ref}(x_i,y_j)$ for `tc2_zonal_perturbed`), $u(y)$ the closed form of 2-3 ($u_0$ for the two `tc2_*` profiles), $u_{i,j}=(hu)_{i,j}/h_{i,j}$ and $v_{i,j}=(hv)_{i,j}/h_{i,j}$.
 $$
 \mathrm{initial\_h\_linf\_rel}=\frac{\max_{i,j}|h_{i,j}(0)-h_{ref,i,j}|}{\max_{i,j}|h_{ref,i,j}|},\qquad
-\mathrm{initial\_h\_south\_rel}=\frac{\left|\max_{i,j}h_{i,j}(0)-h_0\right|}{h_0}
+\mathrm{initial\_h\_south\_rel}=\frac{\left|\max_{i,j}h_{i,j}(0)-h_0\right|}{h_0},\qquad
+\mathrm{initial\_h\_north\_rel}=\frac{\left|\min_{i,j}h_{i,j}(0)-h_N\right|}{h_0}
 \quad(\texttt{tc3\_compact\_jet})
 $$
 $$
 \mathrm{initial\_u\_linf\_rel}=\frac{\max_{i,j}|u_{i,j}(0)-u(y_j)|}{u_0},\qquad
 \mathrm{initial\_v\_linf}=\max_{i,j}|v_{i,j}(0)|
 $$
-They are emitted as `errors.initial_h.linf_rel`, `errors.initial_h.south_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf` (`m/s`). `initial_h_south_rel` pins the constant of integration of the `tc3_compact_jet` quadrature: $u=0$ on $[0,y_j]$ for every row south of the jet, the integral is exactly zero there, $h=h_0$, and $h$ is non-increasing northward ($f\,u\ge0$), so the maximum of $h(0)$ over the domain is $h_0$.
+They are emitted as `errors.initial_h.linf_rel`, `errors.initial_h.south_rel`, `errors.initial_h.north_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf` (`m/s`). $h_N$ is the closed-form constant of the Controlled Spec §6, $h_N=h_0-f_0\,u_0\,e^{4/x_e}\,(y_e-y_b)\,C/(g\,x_e)$ with $C=1.12064479227927\times10^{-7}$ ($h_N=2436.2126\ \mathrm{m}$ with the constants of 2-1 and $L_y=8.0\times10^6\ \mathrm{m}$). `initial_h_south_rel` pins the constant of integration of the `tc3_compact_jet` quadrature: $u=0$ on $[0,y_j]$ for every row south of the jet, the integral is exactly zero there, $h=h_0$, and $h$ is non-increasing northward ($f\,u\ge0$), so the maximum of $h(0)$ over the domain is $h_0$; `initial_h_north_rel` pins the quadrature itself, since every row north of $y_e$ carries the complete integral and $h_N$ is its closed form.
 
 The steady-solution errors are defined by the following, with $h_{ref}$ as in 2-4.
 $$
@@ -133,6 +136,8 @@ $$
 \mathrm{steady\_h\_linf}=\max_{i,j}\left|h_{i,j}(t_{end})-h_{ref,i,j}\right|
 $$
 They are emitted as `errors.steady_h.l2_rel_tend` and `errors.steady_h.linf_tend` (`m`).
+
+`run.n_step` is the state variable `n_step` after the run (§3); its judged value is the $\mathrm{n\_step}$ of the §3 procedure evaluated from the case's inputs, $\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$ with $\mathrm{dt\_raw}$ from the initial state, which a `dt` other than the §3 one (a halved step count at `cfl` $0.90$, say) changes while every other judged quantity stays inside its band.
 
 The wall-normal velocity metric is $\mathrm{v\_max\_abs}=\max_{i,j}|(hv)_{i,j}(t_{end})/h_{i,j}(t_{end})|$ (`m/s`), emitted as `extrema.v.max_abs`.
 
@@ -150,11 +155,11 @@ $$
 `convergence_order` is a cross-case reduction over `errors.steady_h.l2_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it, within one family. It is emitted as a per-case field of the finer case of each pair: `chan_tc2_ref_n064_dts100` and `chan_tc3_ref_n064_dts100` carry `convergence.n032_to_n064.l2_order`, and `chan_tc2_ref_n128_dts100` and `chan_tc3_ref_n128_dts100` carry `convergence.n064_to_n128.l2_order`. The cases preceding the one that completes a reduction omit that field; the override case `chan_tc2_ref_n128_dts100_tend5d` is not a member of a pair and omits both.
 
 ### 5-5. Default thresholds
-The thresholds are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #265, calibration comment): the per-case error thresholds are about 1.5 times the reference values, the orders are the reference orders minus 0.1 to 0.15. The reference `l2` orders are 0.89 / 0.94 for `tc2_zonal_uniform` and 0.49 / 0.57 for `tc3_compact_jet` (the jet's numerical diffusion dominates under `p0`, so its observed order is below one).
-- $\mathrm{cfl.max} \le 1.0$
-- `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and $\ge 2.0e3$ for `tc3_compact_jet` (`m`)
+The thresholds are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #265, calibration comment): the per-case `l2` upper bounds are 1.5 to 1.6 times the reference values, the `v_max_abs` bounds 1.5 to 2.2 times, and the orders are 0.14 to 0.22 below the reference orders. The reference `l2` orders are 0.89 / 0.94 for `tc2_zonal_uniform` and 0.49 / 0.57 for `tc3_compact_jet` (the jet's numerical diffusion dominates under `p0`, so its observed order is below one).
+- $\mathrm{cfl.max} \le 1.0$, and `run.n_step` equals the §3 $\mathrm{n\_step}$ of the case (an integer; judged as $|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$)
+- `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and `tc2_zonal_perturbed`, and $\ge 2.0e3$ for `tc3_compact_jet` (`m`)
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$ ($\le 5.0e{-10}$ for the five-day case)
-- `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_south_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf` $\le 1.0e{-12}$ (`m/s`)
+- `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_south_rel` $\le 1.0e{-9}$, `initial_h_north_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf` $\le 1.0e{-12}$ (`m/s`)
 - `steady_h_l2_rel` is judged as a two-sided band. The Controlled Spec §5 fixes every term of the discretization (`p0` reconstruction, Rusanov flux, mirror ghost, explicit Coriolis source, `RK4`, the `dt` rule of §3), so the error against the steady solution at $t_{end}$ is a property of that discretization — its numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state left at its initial value has zero error against a steady solution and passes an upper bound alone). The upper bound is about 1.5 times the reference value and the lower bound about 0.5 times it. The lower bound and the upper bound are two DISTINCT judged quantities of the test — each names its own `quantity` and each requires its own host-evaluated corroborant over the captured state — not two thresholds on one quantity: a corroborant that reads only the upper bound leaves the lower bound to the checks module's own report, and a state left at its initial value with a reported value inside the band would then pass. For `chan_tc2_ref` the band is $[2.6e{-2},\ 8.0e{-2}]$ for `nx=32`, $[1.4e{-2},\ 4.5e{-2}]$ for `nx=64`, and $[7.3e{-3},\ 2.3e{-2}]$ for `nx=128`; for `chan_tc3_ref` it is $[1.7e{-2},\ 5.5e{-2}]$, $[1.2e{-2},\ 4.0e{-2}]$, and $[8.2e{-3},\ 2.6e{-2}]$; for the five-day case it is $[3.2e{-2},\ 9.5e{-2}]$
 - `convergence_order` requires $\ge 0.75$ for both pairs of `chan_tc2_ref` and $\ge 0.35$ for both pairs of `chan_tc3_ref`
 - `v_max_abs` (`m/s`) for `chan_tc2_ref` is $\le 3.0$ for `nx=32`, $\le 2.0$ for `nx=64`, and $\le 1.3$ for `nx=128`; for `chan_tc3_ref` it is $\le 0.30$, $\le 0.28$, and $\le 0.20$; for the five-day case it is $\le 1.0$
@@ -170,7 +175,7 @@ The thresholds are calibrated against an independent reference implementation of
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The initial-state judgment is applied. The evaluation expressions are `errors.initial_h.linf_rel` with the threshold $\le 1.0e{-9}$, `errors.initial_u.linf_rel` with the threshold $\le 1.0e{-9}$, and `errors.initial_v.linf` with the threshold $\le 1.0e{-12}$.
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is not applied. The non-application basis is "because the test judges the initial state and the conservation judgment belongs to 6-3".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because the test judges the initial state and the steady-solution judgment belongs to 6-3".
@@ -180,13 +185,13 @@ The thresholds are calibrated against an independent reference implementation of
 
 ### 6-2. `l0_tc3_initial_jet_matches_analytic`
 - `level`: `L0`
-- `objective`: confirm that the discrete initial state of `tc3_compact_jet` is the closed form of 2-3 at the cell centres: the velocity, and the depth's constant of integration.
+- `objective`: confirm that the discrete initial state of `tc3_compact_jet` is the closed form of 2-3 at the cell centres: the velocity, the depth's constant of integration, and the depth north of the jet, which is the quadrature's closed-form value.
 - target cases:
   - `chan_tc3_ref_n064_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_u.linf_rel` with the threshold $\le 1.0e{-9}$, `errors.initial_v.linf` with the threshold $\le 1.0e{-12}$, and `errors.initial_h.south_rel` with the threshold $\le 1.0e{-9}$. `errors.initial_h.linf_rel` is not judged: it is `N/A` for this profile (5-3).
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_u.linf_rel` with the threshold $\le 1.0e{-9}$, `errors.initial_v.linf` with the threshold $\le 1.0e{-12}$, `errors.initial_h.south_rel` with the threshold $\le 1.0e{-9}$, and `errors.initial_h.north_rel` with the threshold $\le 1.0e{-9}$. `errors.initial_h.linf_rel` is not judged: it is `N/A` for this profile (5-3).
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 2.0e3$.
   - The mass-conservation judgment is not applied. The non-application basis is "because the test judges the initial state and the conservation judgment belongs to 6-4".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because the test judges the initial state and the steady-solution judgment belongs to 6-4".
@@ -203,7 +208,7 @@ The thresholds are calibrated against an independent reference implementation of
   - `chan_tc2_ref_n128_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case band of 5-5 as two judged quantities (lower bound $2.6e{-2}$, $1.4e{-2}$, $7.3e{-3}$ and upper bound $8.0e{-2}$, $4.5e{-2}$, $2.3e{-2}$), and `convergence_order` requires $\ge 0.75$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc2_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc2_ref_n128_dts100`).
@@ -221,7 +226,7 @@ The thresholds are calibrated against an independent reference implementation of
   - `chan_tc3_ref_n128_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 2.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case band of 5-5 as two judged quantities (lower bound $1.7e{-2}$, $1.2e{-2}$, $8.2e{-3}$ and upper bound $5.5e{-2}$, $4.0e{-2}$, $2.6e{-2}$), and `convergence_order` requires $\ge 0.35$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc3_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc3_ref_n128_dts100`).
@@ -237,7 +242,7 @@ The thresholds are calibrated against an independent reference implementation of
   - `chan_tc2_ref_n128_dts100_tend5d`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 5.0e{-10}$.
   - The theoretical-comparison judgment is applied. The evaluation expression is `errors.steady_h.l2_rel_tend`, and the band is $[3.2e{-2},\ 9.5e{-2}]$ as two judged quantities. `convergence_order` is not judged: the case is not a member of a refinement pair.
@@ -255,7 +260,7 @@ The thresholds are calibrated against an independent reference implementation of
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The initial-state judgment is applied to both cases. The evaluation expressions are `errors.initial_h.linf_rel` with the threshold $\le 1.0e{-9}$ (against the closed form of 2-3 at the cell centres $(x_i,y_j)$, shift included), `errors.initial_u.linf_rel` with the threshold $\le 1.0e{-9}$, and `errors.initial_v.linf` with the threshold $\le 1.0e{-12}$.
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The translation-equivariance judgment is applied. The evaluation expression is `errors.symmetry_h.l2_rel` (carried by the shifted case), and the threshold is $\le 2.0e{-11}$.
@@ -272,7 +277,7 @@ The thresholds are calibrated against an independent reference implementation of
 - `xfail_condition`: `cfl.max > 1.0`
 - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied and its real `extrema.h.min` value and status are reported against the threshold $\ge 1.0e3$ (it is never `N/A`; the 5-3 rule does not apply to it). It is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome.
   - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the can-continue-execution evaluation is done before the theoretical-agreement judgment".

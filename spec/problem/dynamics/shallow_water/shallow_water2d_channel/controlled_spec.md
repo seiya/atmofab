@@ -116,13 +116,17 @@ $$
 u(y)=u_0\,b(s)\,b(x_e-s)\,e^{4/x_e},\qquad
 h(y)=h_0-\frac{1}{g}\int_0^{y}f(y')\,u(y')\,dy'
 $$
-- `tc2_zonal_perturbed`: with $h_{TC2}(y)$ the `tc2_zonal_uniform` depth above and the parameters `eta0` (`m`) and `shift_x_fraction` (dimensionless),
+- `tc2_zonal_perturbed`: with $h_{TC2}(y)$ the `tc2_zonal_uniform` depth above and the parameters `eta0` (`m`, $\eta_0>0$) and `shift_x_fraction` (dimensionless, in $[0,1)$),
 $$
 h(x,y)=h_{TC2}(y)+\eta_0\,\sin\left(2\pi\left(\frac{x}{L_x}-\mathrm{shift\_x\_fraction}\right)\right),\qquad u=u_0,\qquad v=0
 $$
 discretized at the cell centres $(x_i, y_j)$ with $hu=h\,u_0$, $hv=0$. The perturbation is a wavenumber-one gravity-wave excitation of the channel: it is the only initial condition of this `problem` that is not uniform in `x`, so it is the one that exercises the `x`-interface flux and the periodic `x` mapping.
 
-The integral is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $dy/64$ from $y'=0$ to the cell centre $y_j$, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u$ has compact support in $(y_b, y_e)$ and its maximum is $u_0$ at $s=x_e/2$. The branch-free form $b(s)=\exp\left(-1/\max(s,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(s)$ at every cell centre in double precision (for $s\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $s=0$, because $y_b$ and $y_e$ lie on cell edges when `ny` is a multiple of 8, and the sweep of `tests.md` uses such `ny`), and either form may be used.
+The integral is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $dy/64$ from $y'=0$ to the cell centre $y_j$, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u$ has compact support in $(y_b, y_e)$ and its maximum is $u_0$ at $s=x_e/2$. Because $y_b+y_e=L_y$ and $u$ is symmetric about $L_y/2$, the $\beta$ term of $f$ integrates to zero over the support, and the depth north of the jet is the constant
+$$
+h_N=h_0-\frac{f_0\,u_0\,e^{4/x_e}}{g}\,\frac{y_e-y_b}{x_e}\,C,\qquad C=\int_0^{x_e}e^{-1/s-1/(x_e-s)}\,ds=1.12064479227927\times10^{-7}
+$$
+which the discrete initial state reproduces at every row north of $y_e$ to round-off (the quadrature above is exact to round-off for this integrand at every `ny` of `tests.md`). The branch-free form $b(s)=\exp\left(-1/\max(s,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(s)$ at every cell centre in double precision (for $s\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $s=0$, because $y_b$ and $y_e$ lie on cell edges when `ny` is a multiple of 8, and the sweep of `tests.md` uses such `ny`), and either form may be used.
 
 The runtime input requires the following.
 - `L_x`, `L_y`, `nx`, `ny`
