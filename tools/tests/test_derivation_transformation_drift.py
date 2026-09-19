@@ -180,7 +180,10 @@ PINNED_RENDER: dict[str, str] = {
     # `use <spec_id>_checks`, the `metric_compute` dummy declaration the compiler cannot check
     # against its call; `runner.py` also gained `checks_abi_dummy_violation`, the bundle
     # acceptance reader of that declaration, beside the renderer.
-    "render-3": "6afc716af61f96ff712ccdc14013db4ba4a4227631cb5509d709fbd3f93a917c",
+    # Re-pinned (issue #266 PR-1), behaviour-preserving: `runner.py` unpacks the stanza
+    # splitter's new 4-tuple in `assert_harness_pin` and refuses a prototype in the embedded
+    # harness surface; nothing the renderer emits changed.
+    "render-3": "20c14201fa66ab4a77528d1df6179211bfbac5de5e43d6c43dffc285d9c9d052",
 }
 PINNED_BUILD: dict[str, str] = {
     "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",

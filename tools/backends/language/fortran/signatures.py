@@ -13,7 +13,7 @@ splitting a §5.1 block into per-symbol stanzas and reducing a stanza to its com
 Fortran knowledge, and the gates that compare them are neutral.
 
 - ``parse_signatures_from_fortran(block_body)`` — a §5.1 Fortran interface block → the structured
-  representation (``{module_parameters, types, procedures}``). Built on this module's own stanza
+  representation (``{module_parameters, types, interfaces, procedures}``). Built on this module's own stanza
   splitter (``parse_interface_stanzas``) over the shared logical-line scanner in ``lines``, so it
   inherits their comment / continuation / case / whitespace handling.
 - ``render_signatures_to_fortran(struct)`` — the inverse: the structured representation → a canonical
@@ -28,7 +28,8 @@ signature comparison byte-for-byte unchanged — the gate renders the structured
 Fortran lines it already knows how to compare against a generated ``.f90``.
 
 The struct vocabulary is language-neutral throughout: the neutral ``type`` names (``real`` /
-``integer`` / ``logical`` / ``string`` / ``derived`` — not ``character`` / ``type(...)``), the
+``integer`` / ``logical`` / ``string`` / ``derived`` / ``procedure`` — not ``character`` /
+``type(...)`` / ``procedure(...)``), the
 string-length tokens (``deferred`` / ``assumed`` — not ``:`` / ``*``), and the module-parameter
 kind values (``float64`` / ``float32`` — not ``real64`` / ``real32``). The Fortran spellings are
 produced only by the renderer here; the old Fortran tokens fail closed in the neutral form.
@@ -69,6 +70,25 @@ _IFACE_PROC_END = re.compile(r"^\s*end\s*(?:subroutine|function)\b", re.IGNORECA
 # about. The stanza parser and `_parse_type` must agree on what a type header IS — a header the
 # splitter accepts and the parser rejects is a stanza with no lowering — so they read one pattern.
 _IFACE_TYPE_END = re.compile(r"^\s*end\s*type\b", re.IGNORECASE)
+# An `interface` BLOCK (`abstract interface`, a bare `interface`, or a generic `interface <name>`
+# / `interface operator(...)` / `interface assignment(=)`). The whole logical line is matched:
+# `interface = 3` / `interface(2) = 1` — a VARIABLE named `interface`, which Fortran permits
+# because keywords are not reserved — do not open a block. Inside the block a procedure header is
+# a PROTOTYPE (a named interface with no body), not a published procedure, and it lands in
+# ``iface_stanzas`` rather than ``op_stanzas``.
+_IFACE_OPEN_RE = re.compile(
+    r"^\s*(?:abstract\s+interface|interface(?:\s+(?:operator\s*\(.*\)|assignment\s*\(\s*=\s*\)"
+    r"|[A-Za-z][A-Za-z0-9_]*))?)\s*$",
+    re.IGNORECASE,
+)
+_IFACE_BLOCK_END = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
+# Lines of a prototype body that carry no ABI: `import [:: names]` brings host entities into the
+# interface body's scope and `implicit none` is the mapping rule. Both are legal (and `implicit
+# none` is required by the lint gate, C002) in a prototype the leaf writes, and neither belongs
+# in the stanza a gate compares, so the splitter drops them. A generic interface's `module
+# procedure <name>` / `procedure <name>` listing is likewise not a prototype; it is dropped by
+# position (it sits inside the block but outside any prototype), not by this pattern.
+_IFACE_BODY_NOISE_RE = re.compile(r"^\s*(?:import\b|implicit\s+none\b)", re.IGNORECASE)
 
 # The `subroutine` / `function` alternatives are REACHED — `source_atoms` runs
 # `canonicalize_end_line` over every logical line of real model source, which rewrites
@@ -94,23 +114,29 @@ def canonicalize_end_line(line: str) -> str:
 
 def parse_interface_stanzas(
     block_body: str,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], list[str]]:
     """Parse a §5.1 canonical Fortran interface block into per-symbol *stanzas*.
 
-    Returns ``(op_stanzas, type_stanzas, errors)``. Each stanza value is the ordered list of that
-    symbol's interface logical lines (comment-stripped, continuation-joined, but NOT yet
-    whitespace-normalized — kept readable for gate messages):
+    Returns ``(op_stanzas, type_stanzas, iface_stanzas, errors)``. Each stanza value is the
+    ordered list of that symbol's interface logical lines (comment-stripped, continuation-joined,
+    but NOT yet whitespace-normalized — kept readable for gate messages):
     - a procedure stanza is its ``subroutine``/``function`` header + every dummy-argument /
       ``result`` declaration up to (but excluding) the ``end`` line;
     - a type stanza is its ``type :: name`` header + component declarations + the ``end type``
-      line (inclusive, so the closing name is pinned too).
+      line (inclusive, so the closing name is pinned too);
+    - an interface stanza is a PROTOTYPE — a procedure header found inside an ``interface`` /
+      ``abstract interface`` block — with the same shape as a procedure stanza, minus the
+      ``import`` / ``implicit none`` lines a prototype body legally carries (they are scope
+      plumbing, not ABI). A generic interface's ``module procedure`` listing is dropped.
     Lines outside any stanza (the public ``parameter`` declarations, comments, blanks) are
-    ignored. An unterminated stanza OR a duplicate symbol name is reported in ``errors``
-    (fail-closed at the caller — a duplicate must never silently overwrite, which would let a
-    malformed first copy hide behind a correct second)."""
+    ignored. An unterminated stanza or interface block, OR a duplicate symbol name — across all
+    three kinds, so a prototype sharing a defined procedure's name is a duplicate too — is
+    reported in ``errors`` (fail-closed at the caller — a duplicate must never silently overwrite,
+    which would let a malformed first copy hide behind a correct second)."""
     lines = fortran_lines.fortran_logical_line_texts(block_body)
     op_stanzas: dict[str, list[str]] = {}
     type_stanzas: dict[str, list[str]] = {}
+    iface_stanzas: dict[str, list[str]] = {}
     errors: list[str] = []
     seen: set[str] = set()
     i = 0
@@ -119,6 +145,11 @@ def parse_interface_stanzas(
         line = lines[i].strip()
         if not line:
             i += 1
+            continue
+        if _IFACE_OPEN_RE.match(line):
+            i, closed = _collect_interface_block(lines, i + 1, iface_stanzas, seen, errors)
+            if not closed:
+                errors.append(f"unterminated interface block opened by '{line}'")
             continue
         m_type = _TYPE_HEADER_RE.match(line)
         m_proc = _IFACE_PROC_START.match(line)
@@ -165,8 +196,12 @@ def parse_interface_stanzas(
                     i += 1
                     break
                 # A bare `end` (legal for a module procedure) is not matched above; terminate on the
-                # next stanza header so it cannot swallow the following symbol (reprocess it).
-                if cur and (_IFACE_PROC_START.match(cur) or _TYPE_HEADER_RE.match(cur)):
+                # next stanza header so it cannot swallow the following symbol (reprocess it). An
+                # `interface` block opening inside a procedure body (an explicit interface for an
+                # external the body calls) terminates the stanza the same way, so its prototypes
+                # are read as prototypes and not as published procedures.
+                if cur and (_IFACE_PROC_START.match(cur) or _TYPE_HEADER_RE.match(cur)
+                            or _IFACE_OPEN_RE.match(cur)):
                     closed = True
                     break
                 if cur:
@@ -180,7 +215,55 @@ def parse_interface_stanzas(
             op_stanzas[name] = stanza
         else:
             i += 1
-    return op_stanzas, type_stanzas, errors
+    return op_stanzas, type_stanzas, iface_stanzas, errors
+
+
+def _collect_interface_block(
+    lines: list[str],
+    i: int,
+    iface_stanzas: dict[str, list[str]],
+    seen: set[str],
+    errors: list[str],
+) -> tuple[int, bool]:
+    """Read one ``interface`` block starting at the line AFTER its opener. Every prototype inside
+    it lands in ``iface_stanzas``; returns ``(index after the block, closed)`` where ``closed`` is
+    False when the input ended before ``end interface``. A prototype must close with its own
+    ``end subroutine`` / ``end function``: reaching ``end interface`` or another prototype header
+    first reports it unterminated (that line is then reprocessed, so the block still closes)."""
+    n = len(lines)
+    while i < n:
+        cur = lines[i].strip()
+        if not cur:
+            i += 1
+            continue
+        if _IFACE_BLOCK_END.match(cur):
+            return i + 1, True
+        m_proc = _IFACE_PROC_START.match(cur)
+        if not m_proc:
+            i += 1  # `module procedure x`, a generic-listing `procedure x`, a comment-only line
+            continue
+        name = m_proc.group(2)
+        stanza = [cur]
+        i += 1
+        closed = False
+        while i < n:
+            body = lines[i].strip()
+            if body and _IFACE_PROC_END.match(body):
+                closed = True
+                i += 1
+                break
+            if body and (_IFACE_PROC_START.match(body) or _IFACE_BLOCK_END.match(body)):
+                break
+            if body and not _IFACE_BODY_NOISE_RE.match(body):
+                stanza.append(body)
+            i += 1
+        if not closed:
+            errors.append(f"unterminated interface prototype '{name}'")
+        if name in seen:
+            errors.append(f"duplicate signature for symbol '{name}'")
+        seen.add(name)
+        iface_stanzas[name] = stanza
+    return i, False
 
 
 def declaration_atoms(logical_line: str) -> list[str]:
@@ -271,22 +354,34 @@ def source_atoms(text: str) -> frozenset[str]:
 # --- struct vocabulary (documentation) ----------------------------------------------------------
 #
 # A ``spec`` (the type of an argument / result / component) is a mapping:
-#   {"type": "real"|"integer"|"logical"|"string"|"derived",
+#   {"type": "real"|"integer"|"logical"|"string"|"derived"|"procedure",
 #    "kind":  <str|None>,     # numeric KIND for real/integer/logical, e.g. "dp"; None = default kind
 #    "len":   <str|None>,     # NEUTRAL string length token: "deferred", "assumed", "4",
 #                             #   "case_id_len", ...  (NOT the Fortran ":" / "*")
 #    "name":  <str|None>,     # derived-type name for "derived"
-#    "alloc": <bool>}         # the ALLOCATABLE attribute
+#    "alloc": <bool>,         # the ALLOCATABLE attribute (never for "procedure")
+#    "interface": <str|None>} # for "procedure": the name of the ``interfaces[]`` entry whose
+#                             #   prototype the passed procedure must match
 #
 # An ``entity`` (a dummy argument, a function result, or a derived-type component):
 #   {"name": <str>,
 #    "rank": <int>,           # 0 scalar, 1 => (:), 2 => (:,:), ...  (assumed-shape / deferred)
 #    "intent": "in"|"out"|"inout"|None,   # arguments only; None for results and components
 #    "spec": <spec>}
+#   A "procedure"-typed entity is a dummy PROCEDURE: it is allowed only as a procedure's argument
+#   (not a result, not a component, not an argument of an interface prototype), its rank is 0,
+#   it carries no dims, and it carries no intent — Fortran forbids the intent attribute on a
+#   dummy procedure (gfortran: "PROCEDURE attribute conflicts with INTENT attribute").
 #
 # A ``procedure``:
 #   {"kind": "subroutine"|"function", "name": <str>, "args": [entity, ...],
 #    "result": <entity|None>}   # result present iff kind == "function"
+#
+# An ``interface`` (a named procedure PROTOTYPE that a "procedure"-typed argument references):
+#   the same mapping as a procedure. It is rendered as an abstract-interface prototype, never
+#   defined, and its own arguments may not be "procedure"-typed. Every entry must be referenced
+#   by at least one argument (an unreferenced prototype is a surface nothing reads), and its
+#   name must not collide with a procedure / type / module parameter.
 #
 # A ``type`` (published derived type):
 #   {"name": <str>, "components": [entity, ...]}   # each entity has intent None
@@ -299,6 +394,7 @@ def source_atoms(text: str) -> frozenset[str]:
 # The whole signature block:
 #   {"module_parameters": [module_parameter, ...],
 #    "types": [type, ...],
+#    "interfaces": [interface, ...],
 #    "procedures": [procedure, ...]}
 #
 # --- neutral <-> Fortran token maps --------------------------------------------------------------
@@ -369,6 +465,19 @@ def _parse_type_spec(head: str) -> dict[str, Any]:
         if not m:
             raise SignatureParseError(f"derived type-spec missing name: {head!r}")
         return {"type": "derived", "kind": None, "len": None, "name": m.group(1), "alloc": False}
+    if low.startswith("procedure"):
+        # `procedure(<interface-name>)` — a dummy procedure with an explicit interface. A bare
+        # `procedure()` / `procedure` (implicit interface) or `procedure(real)` (an intrinsic
+        # type-spec standing for an implicit-interface function) has no neutral form: the
+        # neutral vocabulary references a NAMED prototype only. Lifted to `interface: <name>`;
+        # the reference is resolved against `interfaces[]` by `_validate_struct`.
+        m = re.fullmatch(r"procedure\s*\(\s*([A-Za-z][A-Za-z0-9_]*)\s*\)", head, re.IGNORECASE)
+        if not m or m.group(1).lower() in ("real", "integer", "logical", "character", "type"):
+            raise SignatureParseError(
+                f"unsupported procedure type-spec {head!r}; the neutral signature models a dummy "
+                "procedure only as `procedure(<interface name>)` referencing a named prototype")
+        return {"type": "procedure", "kind": None, "len": None, "name": None, "alloc": False,
+                "interface": m.group(1)}
     for base in ("real", "integer", "logical"):
         if low.startswith(base):
             m = re.search(r"\(\s*(?:kind\s*=\s*)?([A-Za-z0-9_]+)\s*\)", head, re.IGNORECASE)
@@ -491,7 +600,7 @@ def parse_signatures_from_fortran(block_body: str) -> dict[str, Any]:
     derived-type stanzas become ``procedures`` / ``types``. Raises ``SignatureParseError`` on any
     stanza the backend cannot lower (fail-closed — a caller must not silently accept a partial parse).
     """
-    op_stanzas, type_stanzas, errors = parse_interface_stanzas(block_body)
+    op_stanzas, type_stanzas, iface_stanzas, errors = parse_interface_stanzas(block_body)
     if errors:
         raise SignatureParseError("; ".join(errors))
 
@@ -510,9 +619,13 @@ def parse_signatures_from_fortran(block_body: str) -> dict[str, Any]:
     types = [
         _parse_type(lines[0], lines[1:-1]) for lines in type_stanzas.values()
     ]
+    interfaces = [
+        _parse_procedure(lines[0], lines[1:]) for lines in iface_stanzas.values()
+    ]
     struct = {
         "module_parameters": module_parameters,
         "types": types,
+        "interfaces": interfaces,
         "procedures": procedures,
     }
     # Parse must not emit a struct that render/validate would reject (the "parse-accepts /
@@ -546,9 +659,20 @@ def _fortran_param_value_to_neutral(value: str) -> str:
 # (the "gate-only field fabricated by the leaf -> conductor crash" bug-class). Both render entry
 # points validate first, so every downstream ``dict``/``list`` index is known-safe.
 
-_VALID_SPEC_TYPES = frozenset({"real", "integer", "logical", "string", "derived"})
+_VALID_SPEC_TYPES = frozenset({"real", "integer", "logical", "string", "derived", "procedure"})
 _VALID_INTENTS = frozenset({"in", "out", "inout"})
-_SPEC_KEYS = frozenset({"type", "kind", "len", "name", "alloc"})
+_SPEC_KEYS = frozenset({"type", "kind", "len", "name", "alloc", "interface"})
+# The fields the renderer does NOT read for each `type`. Indexed by every member of
+# `_VALID_SPEC_TYPES` — a type with no row would `KeyError` out of `_validate_spec` instead of
+# failing closed, which `test_every_spec_type_has_an_inapplicable_row` pins.
+_INAPPLICABLE_SPEC_FIELDS = {
+    "string": ("kind", "name", "interface"),
+    "derived": ("kind", "len", "interface"),
+    "real": ("len", "name", "interface"),
+    "integer": ("len", "name", "interface"),
+    "logical": ("len", "name", "interface"),
+    "procedure": ("kind", "len", "name"),
+}
 _ENTITY_KEYS = frozenset({"name", "rank", "intent", "dims", "spec"})
 _PROC_KEYS = frozenset({"kind", "name", "args", "result"})
 _TYPE_KEYS = frozenset({"name", "components"})
@@ -670,13 +794,9 @@ def _validate_spec(spec: Any, ctx: str) -> None:
             f"{ctx}.spec.type must be one of {sorted(_VALID_SPEC_TYPES)} (got {t!r})")
     # A field the renderer does not use for this `type` would be SILENTLY DROPPED at render — so
     # §5.1 and the IR could carry different authored info yet render/compare equal (fail-open).
-    # Reject any inapplicable field (present and non-None); `alloc` applies to every type.
-    _inapplicable = {
-        "string": ("kind", "name"),
-        "derived": ("kind", "len"),
-        "real": ("len", "name"), "integer": ("len", "name"), "logical": ("len", "name"),
-    }[t]
-    for bad in _inapplicable:
+    # Reject any inapplicable field (present and non-None); `alloc` applies to every type but
+    # `procedure`, where it is checked below.
+    for bad in _INAPPLICABLE_SPEC_FIELDS[t]:
         if spec.get(bad) is not None:
             raise SignatureParseError(
                 f"{ctx}.spec.{bad} is not applicable to type '{t}' (it would be silently dropped at "
@@ -685,6 +805,9 @@ def _validate_spec(spec: Any, ctx: str) -> None:
         _require_len_token(spec.get("len"), f"{ctx}.spec.len (string length is required)")
     elif t == "derived":
         _require_identifier(spec.get("name"), f"{ctx}.spec.name (derived type name is required)")
+    elif t == "procedure":
+        _require_identifier(
+            spec.get("interface"), f"{ctx}.spec.interface (the referenced prototype name is required)")
     else:  # real / integer / logical: kind optional but a safe token when present
         if spec.get("kind") is not None:
             _require_safe_token(spec.get("kind"), f"{ctx}.spec.kind")
@@ -693,13 +816,38 @@ def _validate_spec(spec: Any, ctx: str) -> None:
         # `not in (None, True, False)` would accept `alloc: 1` (1 == True) and render by truthiness;
         # require a real boolean.
         raise SignatureParseError(f"{ctx}.spec.alloc must be a boolean (got {alloc!r})")
+    if t == "procedure" and alloc:
+        raise SignatureParseError(
+            f"{ctx}.spec.alloc is not applicable to type 'procedure' (a dummy procedure is not "
+            "allocatable)")
 
 
-def _validate_entity(ent: Any, ctx: str, *, allow_intent: bool) -> None:
+def _validate_entity(
+    ent: Any, ctx: str, *, allow_intent: bool, allow_procedure: bool = False
+) -> None:
     if not isinstance(ent, dict):
         raise SignatureParseError(f"{ctx} must be a mapping (got {type(ent).__name__})")
     _reject_unknown_keys(ent, _ENTITY_KEYS, ctx)
     _require_identifier(ent.get("name"), f"{ctx}.name")
+    _validate_spec(ent.get("spec"), ctx)
+    if ent["spec"].get("type") == "procedure":
+        # A dummy PROCEDURE: scalar, no dims, no intent, and only where a dummy procedure can
+        # stand — a procedure's own argument list. Each refusal names the rule so a leaf's warm
+        # retry can converge on it.
+        if not allow_procedure:
+            raise SignatureParseError(
+                f"{ctx}.spec.type 'procedure' is allowed only for a procedure's argument (not a "
+                "result, a derived-type component, or an argument of an interface prototype)")
+        if ent.get("rank", 0) != 0 or isinstance(ent.get("rank", 0), bool):
+            raise SignatureParseError(
+                f"{ctx}.rank must be 0 (omitted) for a procedure-typed argument "
+                f"(got {ent.get('rank')!r})")
+        if ent.get("dims") is not None:
+            raise SignatureParseError(f"{ctx}.dims is not applicable to a procedure-typed argument")
+        if ent.get("intent") is not None:
+            raise SignatureParseError(
+                f"{ctx}.intent is not applicable to a procedure-typed argument (Fortran forbids "
+                f"intent on a dummy procedure; got {ent.get('intent')!r})")
     rank = ent.get("rank", 0)
     if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
         raise SignatureParseError(f"{ctx}.rank must be a non-negative integer (got {rank!r})")
@@ -728,10 +876,12 @@ def _validate_entity(ent: Any, ctx: str, *, allow_intent: bool) -> None:
         if not isinstance(intent, str) or intent not in _VALID_INTENTS:  # isinstance guards unhashable
             raise SignatureParseError(
                 f"{ctx}.intent must be one of {sorted(_VALID_INTENTS)} (got {intent!r})")
-    _validate_spec(ent.get("spec"), ctx)
 
 
-def _validate_procedure(proc: Any, ctx: str) -> None:
+def _validate_procedure(proc: Any, ctx: str, *, allow_procedure_args: bool = True) -> None:
+    """Validate a procedure entry, or — with ``allow_procedure_args=False`` — an ``interfaces[]``
+    prototype, whose arguments may not themselves be dummy procedures (no nesting: the renderer
+    and every comparison would otherwise recurse, and no consumer needs it)."""
     if not isinstance(proc, dict):
         raise SignatureParseError(f"{ctx} must be a mapping (got {type(proc).__name__})")
     _reject_unknown_keys(proc, _PROC_KEYS, ctx)
@@ -743,7 +893,8 @@ def _validate_procedure(proc: Any, ctx: str) -> None:
     if not isinstance(args, list):
         raise SignatureParseError(f"{ctx}.args must be a list (got {type(args).__name__})")
     for i, arg in enumerate(args):
-        _validate_entity(arg, f"{ctx}.args[{i}]", allow_intent=True)
+        _validate_entity(arg, f"{ctx}.args[{i}]", allow_intent=True,
+                         allow_procedure=allow_procedure_args)
     result = proc.get("result")
     if kind == "function":
         if not isinstance(result, dict):
@@ -801,13 +952,53 @@ def _validate_symbol(sig: Any, ctx: str = "signature") -> None:
 
 
 def _validate_struct(struct: dict[str, Any]) -> None:
-    """Validate a whole ``{module_parameters, types, procedures}`` struct, fail-closed."""
+    """Validate a whole ``{module_parameters, types, interfaces, procedures}`` struct, fail-closed.
+
+    Beyond each entry's own shape, the struct-level rules for ``interfaces[]``: every
+    ``spec.interface`` reference resolves to an entry; every entry is referenced by at least one
+    argument; and no entry's name collides (case-insensitively — Fortran identifiers are) with a
+    procedure, a type, or a module parameter. A single-symbol render (``render_symbol_to_fortran``)
+    cannot see the interface list, so these rules live here and nowhere else."""
     for i, mp in enumerate(struct.get("module_parameters") or []):
         _validate_module_parameter(mp, f"module_parameters[{i}]")
     for i, tdef in enumerate(struct.get("types") or []):
         _validate_type(tdef, f"types[{i}]")
+    for i, iface in enumerate(struct.get("interfaces") or []):
+        _validate_procedure(iface, f"interfaces[{i}]", allow_procedure_args=False)
     for i, proc in enumerate(struct.get("procedures") or []):
         _validate_procedure(proc, f"procedures[{i}]")
+    # Reference integrity (every entry is shape-valid at this point, so the reads are safe).
+    other_names = {
+        str(e["name"]).lower()
+        for key in ("module_parameters", "types", "procedures")
+        for e in (struct.get(key) or [])
+    }
+    iface_names: dict[str, str] = {}
+    for i, iface in enumerate(struct.get("interfaces") or []):
+        low = iface["name"].lower()
+        if low in other_names or low in iface_names:
+            raise SignatureParseError(
+                f"interfaces[{i}].name '{iface['name']}' collides with another published name "
+                "(a prototype must not share a procedure / type / module-parameter / interface name)")
+        iface_names[low] = iface["name"]
+    referenced: set[str] = set()
+    for i, proc in enumerate(struct.get("procedures") or []):
+        for j, arg in enumerate(proc.get("args") or []):
+            spec = arg["spec"]
+            if spec.get("type") != "procedure":
+                continue
+            ref = spec["interface"].lower()
+            if ref not in iface_names:
+                raise SignatureParseError(
+                    f"procedures[{i}].args[{j}].spec.interface '{spec['interface']}' does not name "
+                    f"an entry of interfaces[] (declared: {sorted(iface_names.values())})")
+            referenced.add(ref)
+    unreferenced = sorted(iface_names[k] for k in iface_names if k not in referenced)
+    if unreferenced:
+        raise SignatureParseError(
+            f"interfaces[] entries {unreferenced} are referenced by no procedure argument (an "
+            "unreferenced prototype is a published surface nothing reads; delete it or reference "
+            "it from an argument's `spec: {type: procedure, interface: <name>}`)")
 
 
 # --- render: structured signatures -> Fortran interface block ------------------------------------
@@ -847,6 +1038,8 @@ def _render_spec(spec: dict[str, Any]) -> str:
         base = f"type({spec['name']})"
     elif t in ("real", "integer", "logical"):
         base = t if not spec.get("kind") else f"{t}({spec['kind']})"
+    elif t == "procedure":
+        base = f"procedure({spec['interface']})"
     else:
         raise SignatureParseError(f"cannot render spec type {t!r}")
     if spec.get("alloc"):
@@ -911,9 +1104,33 @@ def render_signatures_to_fortran(struct: dict[str, Any]) -> str:
         blocks.append(render_module_parameter_to_fortran(mp))
     for t in struct.get("types", []):
         blocks.append("\n".join(_render_type(t)))
+    if struct.get("interfaces"):
+        blocks.append("\n".join(_render_interface_block(struct["interfaces"])))
     for proc in struct.get("procedures", []):
         blocks.append("\n".join(_render_procedure(proc)))
     return "\n\n".join(blocks) + "\n"
+
+
+def _render_interface_block(interfaces: list[dict[str, Any]]) -> list[str]:
+    """One ``abstract interface`` block holding every prototype. The canonical form carries no
+    ``import`` / ``implicit none`` line: it exists to be compared (the stanza splitter drops both
+    from a source prototype anyway), not to be compiled. The source a leaf writes needs both
+    (the kind symbol is host-associated only through ``import``; the lint gate's C002 wants
+    ``implicit none``), which is the Generate template's business, not this renderer's."""
+    lines = ["abstract interface"]
+    for iface in interfaces:
+        lines.extend(f"  {ln}" for ln in _render_procedure(iface))
+    lines.append("end interface")
+    return lines
+
+
+def render_interface_to_fortran(iface: dict[str, Any]) -> str:
+    """Render ONE ``interfaces[]`` prototype to its own ``abstract interface`` block, so a single
+    IR ``public_api.interfaces`` entry can be compared against §5.1 in the same stanza currency
+    (``parse_interface_stanzas`` puts it in ``iface_stanzas``). Fail-closed on a malformed entry;
+    the struct-level reference rules are not checked here (there is no struct to check against)."""
+    _validate_procedure(iface, "interface", allow_procedure_args=False)
+    return "\n".join(_render_interface_block([iface])) + "\n"
 
 
 def render_symbol_to_fortran(sig: dict[str, Any]) -> str:
@@ -927,7 +1144,7 @@ def render_symbol_to_fortran(sig: dict[str, Any]) -> str:
     return "\n".join(_render_type(sig)) + "\n"
 
 
-_STRUCT_TOP_KEYS = ("module_parameters", "types", "procedures")
+_STRUCT_TOP_KEYS = ("module_parameters", "types", "interfaces", "procedures")
 
 
 def load_structured_signatures(body: str) -> tuple[dict[str, Any], str | None]:
@@ -943,12 +1160,12 @@ def load_structured_signatures(body: str) -> tuple[dict[str, Any], str | None]:
         return ({}, f"structured §5.1 block is not valid YAML: {exc}")
     if not isinstance(data, dict):
         return ({}, "structured §5.1 block must be a YAML mapping "
-                    "with keys module_parameters / types / procedures")
+                    "with keys module_parameters / types / interfaces / procedures")
     unknown = sorted(set(data) - set(_STRUCT_TOP_KEYS), key=str)  # key=str: mixed key types (a YAML
     if unknown:                                                    # `1:` next to `foo:`) must not
         return ({}, f"structured §5.1 block has unknown key(s) {unknown}; "  # TypeError-crash sorted
                     f"allowed: {list(_STRUCT_TOP_KEYS)}")
-    struct: dict[str, Any] = {"module_parameters": [], "types": [], "procedures": []}
+    struct: dict[str, Any] = {key: [] for key in _STRUCT_TOP_KEYS}
     for key in _STRUCT_TOP_KEYS:
         if key not in data:
             continue  # ABSENT key -> that category is empty (a pruned §5.1 may omit e.g. types)
@@ -970,12 +1187,12 @@ def normalized_stanza_index(block_body: str) -> dict[str, frozenset[str]]:
     per-symbol comparison key: symbol identity + a whitespace/case/comment-insensitive line set.
     Used to compare a rendered structured block against a generated ``.f90`` (or two structured
     forms) with the exact semantics the current gates use for procedures."""
-    op_stanzas, type_stanzas, errors = parse_interface_stanzas(block_body)
+    op_stanzas, type_stanzas, iface_stanzas, errors = parse_interface_stanzas(block_body)
     if errors:
         raise SignatureParseError("; ".join(errors))
     index: dict[str, frozenset[str]] = {}
     normalize = fortran_lines.normalize_fortran_line
-    for name, lines in {**op_stanzas, **type_stanzas}.items():
+    for name, lines in {**op_stanzas, **type_stanzas, **iface_stanzas}.items():
         index[name] = frozenset(
             normalize(ln) for ln in lines if normalize(ln)
         )

@@ -17786,6 +17786,22 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # a top-level `parameter` declaration is not a stanza
         self.assertNotIn("dp", ops)
 
+    def test_a_section51_with_interfaces_is_refused_until_pinned(self) -> None:
+        # Issue #266 PR-1: the backend lowers `interfaces:` (a named prototype, referenced by a
+        # `{type: procedure, interface: <name>}` argument), and the gates that pin a prototype
+        # against the IR and the generated source are PR-2. Until they land, a §5.1 declaring
+        # one is refused here — a prototype must not pass through unpinned — and the refusal
+        # names the prototype. Expected to be REPLACED by PR-2's pass row.
+        fence = ("```yaml\ninterfaces:\n  - kind: subroutine\n    name: rhs_1d\n"
+                 "    args:\n      - {name: u, rank: 1, intent: in, spec: {type: real, kind: dp}}\n"
+                 "procedures:\n  - kind: subroutine\n    name: hx__advance\n"
+                 "    args:\n      - {name: rhs, spec: {type: procedure, interface: rhs_1d}}\n```\n")
+        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(fence))
+        self.assertIsNotNone(err)
+        self.assertIn("does not pin yet", err)
+        self.assertIn("rhs_1d", err)
+        self.assertFalse(err.startswith("§5.1"), err)  # the caller prefixes the section itself
+
     def test_missing_fence_errors(self) -> None:
         _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
