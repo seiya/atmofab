@@ -36,12 +36,12 @@ This suite verifies the published `operation` `dynamics_shallow_water_boundary_2
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `odd_at_wall=false`, for every interior column `i` the `y` ghost cells satisfy `U_out(i,ng) = U_out(i,ng+1)` and `U_out(i,ng+ny+1) = U_out(i,ng+ny)` exactly (`ng=1`; the ghost value equals the adjacent interior value).
+  - `judgment`: with `odd_at_wall=false`, for every interior column `i` the `y` ghost cells satisfy `U_out(i,ng) = U_in(i,ng+1)` and `U_out(i,ng+ny+1) = U_in(i,ng+ny)` exactly (`ng=1`; the ghost value equals the adjacent interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly.
 - `test_id`: `l0_wall_odd_mirror_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `odd_at_wall=true`, for every interior column `i` the `y` ghost cells satisfy `U_out(i,ng) = -U_out(i,ng+1)` and `U_out(i,ng+ny+1) = -U_out(i,ng+ny)` exactly (`ng=1`; the ghost value equals the negated adjacent interior value).
+  - `judgment`: with `odd_at_wall=true`, for every interior column `i` the `y` ghost cells satisfy `U_out(i,ng) = -U_in(i,ng+1)` and `U_out(i,ng+ny+1) = -U_in(i,ng+ny)` exactly (`ng=1`; the ghost value equals the negated adjacent interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly (the sign reversal applies to the ghost cells only).
 - `test_id`: `l0_corner_defined_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
