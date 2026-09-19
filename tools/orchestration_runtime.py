@@ -3054,8 +3054,9 @@ def _extract_interface_prototype(logical: list[str], proto_name: str) -> list[st
     nothing) and carries no ``::`` — so both procedure kinds are read; a prototype body
     carries specification statements only, so the first statement opening with ``end``
     closes it, and its two scope statements (host association, the implicit-typing rule) are
-    left out: they belong to an interface body, and a consumer's leaf that copied them into
-    the procedure it writes would earn a syntax refusal. ``None`` when no interface block
+    left out: they belong to an interface body — a consumer's leaf that copied the
+    host-association one into the procedure it writes would earn a syntax refusal (the other
+    is merely redundant there). ``None`` when no interface block
     declares that name. Orientation only; pure over a list of statement strings (its one
     caller's own envelope catches)."""
     # A HEADER of that name — the existing header pattern for one kind, and `function <name>`
