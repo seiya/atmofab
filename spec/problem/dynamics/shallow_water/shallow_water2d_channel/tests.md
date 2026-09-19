@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 2D shallow water equation on a channel with the Coriolis force, the discrete initial state against the analytic profiles, the error against the steady analytic solution and its decrease with refinement (Williamson et al. (1992) Test Cases 2 and 3 on the channel), mass conservation, depth positivity, the wall-normal velocity, a long-time integration, and the `CFL` guard. The judgment targets are `L0` to `L2`, and include an expected failure (`xfail`).
+This suite verifies, for the discrete implementation of the 2D shallow water equation on a channel with the Coriolis force, the discrete initial state against the analytic profiles, the error against the steady analytic solution — bounded on both sides, since the fully fixed discretization makes it a property of the scheme — and its decrease with refinement (Williamson et al. (1992) Test Cases 2 and 3 on the channel), mass conservation, depth positivity, the wall-normal velocity, a long-time integration, and the `CFL` guard. The judgment targets are `L0` to `L2`, and include an expected failure (`xfail`).
 
 ## 2. Input-defaulting rules
 ### 2-1. Basic constants
@@ -126,7 +126,7 @@ The thresholds are calibrated against an independent reference implementation of
 - `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and $\ge 2.0e3$ for `tc3_compact_jet` (`m`)
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$ ($\le 5.0e{-10}$ for the five-day case)
 - `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$
-- `steady_h_l2_rel` for `chan_tc2_ref` is $\le 8.0e{-2}$ for `nx=32`, $\le 4.5e{-2}$ for `nx=64`, and $\le 2.3e{-2}$ for `nx=128`; for `chan_tc3_ref` it is $\le 5.5e{-2}$, $\le 4.0e{-2}$, and $\le 2.6e{-2}$; for the five-day case it is $\le 9.5e{-2}$
+- `steady_h_l2_rel` is judged as a two-sided band. The Controlled Spec §5 fixes every term of the discretization (`p0` reconstruction, Rusanov flux, mirror ghost, explicit Coriolis source, `RK4`, the `dt` rule of §3), so the error against the steady solution at $t_{end}$ is a property of that discretization — its numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state left at its initial value has zero error against a steady solution and passes an upper bound alone). The upper bound is about 1.5 times the reference value and the lower bound about 0.5 times it. For `chan_tc2_ref` the band is $[2.6e{-2},\ 8.0e{-2}]$ for `nx=32`, $[1.4e{-2},\ 4.5e{-2}]$ for `nx=64`, and $[7.3e{-3},\ 2.3e{-2}]$ for `nx=128`; for `chan_tc3_ref` it is $[1.7e{-2},\ 5.5e{-2}]$, $[1.2e{-2},\ 4.0e{-2}]$, and $[8.2e{-3},\ 2.6e{-2}]$; for the five-day case it is $[3.2e{-2},\ 9.5e{-2}]$
 - `convergence_order` requires $\ge 0.75$ for both pairs of `chan_tc2_ref` and $\ge 0.35$ for both pairs of `chan_tc3_ref`
 - `v_max_abs` (`m/s`) for `chan_tc2_ref` is $\le 3.0$ for `nx=32`, $\le 2.0$ for `nx=64`, and $\le 1.3$ for `nx=128`; for `chan_tc3_ref` it is $\le 0.30$, $\le 0.28$, and $\le 0.20$; for the five-day case it is $\le 1.0$
 
@@ -171,7 +171,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
-  - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case threshold of 5-5 ($\le 8.0e{-2}$, $\le 4.5e{-2}$, $\le 2.3e{-2}$), and `convergence_order` requires $\ge 0.75$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc2_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc2_ref_n128_dts100`).
+  - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case band of 5-5 (lower bound $2.6e{-2}$, $1.4e{-2}$, $7.3e{-3}$ and upper bound $8.0e{-2}$, $4.5e{-2}$, $2.3e{-2}$; both bounds are judged), and `convergence_order` requires $\ge 0.75$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc2_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc2_ref_n128_dts100`).
   - The wall-normal-velocity judgment is applied. The evaluation expression is `extrema.v.max_abs`, and the per-case threshold is $\le 3.0$, $\le 2.0$, $\le 1.3$.
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-1".
 
@@ -187,7 +187,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 2.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
-  - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case threshold of 5-5 ($\le 5.5e{-2}$, $\le 4.0e{-2}$, $\le 2.6e{-2}$), and `convergence_order` requires $\ge 0.35$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc3_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc3_ref_n128_dts100`).
+  - The theoretical-comparison judgment is applied. `errors.steady_h.l2_rel_tend` applies the per-case band of 5-5 (lower bound $1.7e{-2}$, $1.2e{-2}$, $8.2e{-3}$ and upper bound $5.5e{-2}$, $4.0e{-2}$, $2.6e{-2}$; both bounds are judged), and `convergence_order` requires $\ge 0.35$ for `convergence.n032_to_n064.l2_order` (carried by `chan_tc3_ref_n064_dts100`) and for `convergence.n064_to_n128.l2_order` (carried by `chan_tc3_ref_n128_dts100`).
   - The wall-normal-velocity judgment is applied. The evaluation expression is `extrema.v.max_abs`, and the per-case threshold is $\le 0.30$, $\le 0.28$, $\le 0.20$.
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-2".
 
@@ -201,7 +201,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 5.0e{-10}$.
-  - The theoretical-comparison judgment is applied. The evaluation expression is `errors.steady_h.l2_rel_tend`, and the threshold is $\le 9.5e{-2}$. `convergence_order` is not judged: the case is not a member of a refinement pair.
+  - The theoretical-comparison judgment is applied. The evaluation expression is `errors.steady_h.l2_rel_tend`, and the band is $[3.2e{-2},\ 9.5e{-2}]$; both bounds are judged. `convergence_order` is not judged: the case is not a member of a refinement pair.
   - The wall-normal-velocity judgment is applied. The evaluation expression is `extrema.v.max_abs`, and the threshold is $\le 1.0$.
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-1".
 
