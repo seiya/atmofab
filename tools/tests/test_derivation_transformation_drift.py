@@ -168,7 +168,13 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 3 (disclosure): the harness self-test's snapshot variables and its
     # tests.md-prescribed corroborants are carved out of the "primary state only" rule and
     # V3 (iv); "names and cases read" at the condition.
-    "compile-docs-4": "0d5a96a95ea427fc505ca3572f99f2d3b719fa524ba4d1cbb176829d8f5abb4c",
+    # Re-pinned (issue #266 PR-2), and NOT bumped, on this reasoning: `phase_01_compile.md`
+    # gains the `public_api.interfaces` carrier and its V8 pin, both conditional on a §5.1
+    # `interfaces` list, and no §5.1 the previous validator accepted carries one (it refused
+    # the key outright before PR-1 and refused the prototype until this PR) — so for every IR
+    # the previous version could certify, what a valid IR is has not changed. A bump would
+    # re-derive every node's Compile for an instruction none of them reaches.
+    "compile-docs-4": "bc2b500152e4424df5f7d0f4edc978c7d0abb04817401be9b80ab71d04ce1283",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

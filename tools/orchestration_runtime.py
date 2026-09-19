@@ -2831,6 +2831,13 @@ _FORTRAN_SUBROUTINE_RE = re.compile(
     r"subroutine\s+(?P<name>[A-Za-z]\w*)\s*(?P<lparen>\()?",
     re.IGNORECASE,
 )
+# An `interface` block's span (issue #266). Mirrored VERBATIM from
+# `validate_pipeline_semantics._INTERFACE_SPAN_OPEN_RE` / `_INTERFACE_SPAN_END_RE` (that module
+# may not be imported here); the cross-scanner parity test pins the two. The opener is the whole
+# statement, so a variable named `interface` opens nothing.
+_INTERFACE_SPAN_OPEN_RE = re.compile(
+    r"^\s*(?:abstract\s+)?interface(?:\s*$|\s+[A-Za-z])", re.IGNORECASE)
+_INTERFACE_SPAN_END_RE = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
 
 
 def _split_fortran_statements(logical_line: str) -> list[str]:
@@ -2900,15 +2907,24 @@ def _list_prefixed_subroutines(source_text: str, prefix: str) -> list[str]:
     so surfacing them all lets the pure leaf build its ``call``s against real symbol names /
     argument orders instead of inventing ones ``Generate.gate`` rejects. Surfacing an extra
     interface fact never forces a call, so an over-broad match is orientation-only, not a gate.
-    De-duplicates repeat declarations (a subroutine also declared in an ``interface``
-    block appears twice). NEVER raises (``[]`` on any error)."""
+    A header inside an ``interface`` block is a PROTOTYPE, not an entry point, and is skipped
+    (issue #266); de-duplicates repeat declarations. NEVER raises (``[]`` on any error)."""
     try:
         if not isinstance(prefix, str) or not prefix:
             return []
         pfx = prefix.lower()
         out: list[str] = []
         seen: set[str] = set()
+        in_interface = 0
         for line in _fortran_logical_lines(source_text):
+            if _INTERFACE_SPAN_END_RE.match(line):
+                in_interface = max(0, in_interface - 1)
+                continue
+            if _INTERFACE_SPAN_OPEN_RE.match(line):
+                in_interface += 1
+                continue
+            if in_interface:
+                continue
             m = _FORTRAN_SUBROUTINE_RE.match(line)
             if m is None:
                 continue
@@ -2940,7 +2956,7 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
     (the generate SKILL forces wrapping at <=100 cols for fortitude S001), ``!`` comments
     (incl. full-line comment between continuations), case-insensitivity, leading
     ``pure``/``impure``/``elemental``/``recursive``/``module`` prefixes, several subroutines
-    in one file (selects by name, not the first), and a zero-argument subroutine declared
+    in one file (selects by name, not the first), and a zero-argument one declared
     WITHOUT a parameter list (``subroutine dep__ping`` -> ``argument_order: []``). NEVER raises.
     """
     try:
@@ -2994,14 +3010,70 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
                 }
                 for a in args
             ]
-            return {
+            out: dict[str, Any] = {
                 "interface": header,
                 "argument_order": args,
                 "arguments": arguments,
             }
+            # 4) A procedure-typed dummy (issue #266) names a prototype; the consumer must pass
+            #    a procedure of exactly that shape, so the prototype's own lines ride along.
+            #    Keyed by prototype name; a name the source does not declare in an interface
+            #    block is simply absent (orientation, never a gate).
+            prototypes: dict[str, list[str]] = {}
+            for arg in arguments:
+                proto_name = _procedure_interface_name(arg.get("type"))
+                if proto_name and proto_name not in prototypes:
+                    lines = _extract_interface_prototype(logical, proto_name)
+                    if lines:
+                        prototypes[proto_name] = lines
+            if prototypes:
+                out["procedure_interfaces"] = prototypes
+            return out
         return None
     except Exception:
         return None
+
+
+def _procedure_interface_name(type_text: Any) -> str | None:
+    """The prototype name a resolved dummy type ``procedure(<name>)`` references, else None."""
+    if not isinstance(type_text, str):
+        return None
+    m = re.fullmatch(r"procedure\s*\(\s*([A-Za-z]\w*)\s*\)", type_text.strip(), re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _extract_interface_prototype(logical: list[str], proto_name: str) -> list[str] | None:
+    """The statements of the prototype named ``proto_name`` inside an ``interface`` block of
+    ``logical`` (comment-stripped, continuation-joined statements): its header and every
+    statement up to its own terminator, verbatim. A prototype body carries specification
+    statements only, so the first statement opening with ``end`` closes it. ``None`` when no
+    interface block declares that name — which includes a prototype of the OTHER procedure
+    kind (a function): only the header shape this module already reads is matched, so such a
+    dummy is shown with its ``procedure(<name>)`` type and no prototype rows. Orientation
+    only; pure over a list of statement strings (its one caller's own envelope catches)."""
+    in_interface = 0
+    for idx, line in enumerate(logical):
+        if _INTERFACE_SPAN_END_RE.match(line):
+            in_interface = max(0, in_interface - 1)
+            continue
+        if _INTERFACE_SPAN_OPEN_RE.match(line):
+            in_interface += 1
+            continue
+        if not in_interface:
+            continue
+        m = _FORTRAN_SUBROUTINE_RE.match(line)
+        if m is None or m.group("name").lower() != proto_name.lower():
+            continue
+        out = [line.strip()]
+        for body in logical[idx + 1:]:
+            stripped = body.strip()
+            if not stripped:
+                continue
+            if stripped.lower().split("(", 1)[0].split()[0].startswith("end"):
+                break
+            out.append(stripped)
+        return out
+    return None
 
 
 # Type keywords that open a Fortran declaration. `double precision` is two words and must be
@@ -3015,6 +3087,10 @@ _FORTRAN_TYPE_KEYWORDS = (
     "character",
     "type",
     "class",
+    # A dummy PROCEDURE, `procedure(<prototype>) :: f` (issue #266): resolved with the
+    # `procedure(<prototype>)` text as its type, rank 0 and no intent, so the consumer's leaf
+    # sees which prototype the procedure it passes must match.
+    "procedure",
 )
 
 
@@ -9733,6 +9809,7 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
     """
     rows: list[str] = []
     any_detail = False
+    any_prototype = False
     for dep in deps:
         if not isinstance(dep, dict):
             continue
@@ -9785,6 +9862,23 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
             if detail:
                 any_detail = True
                 rows.extend(detail)
+            # The prototype each procedure-typed argument references (issue #266), verbatim
+            # from the dependency's certified source, so the consumer's leaf writes a procedure
+            # of exactly that shape rather than inferring one from the dummy's name.
+            prototypes = op.get("procedure_interfaces")
+            if isinstance(prototypes, dict):
+                for proto_name, proto_lines in prototypes.items():
+                    spelled = [str(x).strip() for x in proto_lines
+                               if isinstance(x, str) and x.strip()] \
+                        if isinstance(proto_lines, list) else []
+                    if not isinstance(proto_name, str) or not proto_name.strip() or not spelled:
+                        continue
+                    any_prototype = True
+                    rows.append(
+                        f"    prototype `{proto_name.strip()}` — the procedure you pass for the "
+                        "argument above must declare EXACTLY these dummies (names may differ; "
+                        "type, kind, rank and intent may not):")
+                    rows.extend(f"      {line}" for line in spelled)
     if not rows:
         return []
     # The rank/shape guidance is only added when per-argument detail lines are actually
@@ -9804,6 +9898,14 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
             "Generate). For generate.generate this is authoring-binding; for verify/validate "
             "it is the authoritative order to check the emitted `call` against."
         )
+        if any_prototype:
+            header += (
+                " An argument marked as a PROCEDURE argument takes a procedure, not data: "
+                "write one (an internal procedure of the calling routine, or a module "
+                "procedure) with exactly the prototype listed under that operation and pass "
+                "its NAME as the actual; the compiler checks the shape, and a mismatch fails "
+                "the build the same way."
+            )
     else:
         header = (
             "**Published dependency operations (conductor-resolved from each dependency's "
@@ -9838,6 +9940,14 @@ def _argument_detail_lines(arguments: Any) -> list[str]:
             continue
         name = str(arg.get("name", "")).strip()
         if not name:
+            continue
+        proto_name = _procedure_interface_name(arg.get("type"))
+        if proto_name:
+            lines.append(
+                f"    {name}: {str(arg.get('type')).strip()} — a PROCEDURE argument: pass a "
+                f"procedure whose interface is EXACTLY the prototype `{proto_name}` listed "
+                "under this operation (your own module or internal procedure; it may reach "
+                "your grid, parameters and fields by host association)")
             continue
         if not _known_rank(arg):
             # Rank could not be resolved host-side. Do NOT tell the leaf to read the

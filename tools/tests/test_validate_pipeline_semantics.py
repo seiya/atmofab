@@ -5283,6 +5283,59 @@ end module shallow_water2d_model
             violations,
         )
 
+    def _dataflow(self, source: str, dep_spec_ids: list[str]) -> list[str]:
+        execution = NodeExecution(
+            node_key="problem/chan@0.1.0", node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"), pipeline_dir=Path("/nonexistent/pipeline"))
+        violations: list[str] = []
+        _validate_problem_model_dependency_dataflow(
+            execution=execution, model_file=Path("chan_model.f90"), lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            dep_spec_ids=dep_spec_ids, violations=violations)
+        return violations
+
+    _PROCEDURE_ACTUAL_MODEL = """module chan_model
+use hx_model, only: hx__advance, dp
+implicit none
+contains
+subroutine solve(u, dt, u_out)
+  real(dp), intent(in) :: u(:)
+  real(dp), intent(in) :: dt
+  real(dp), intent(out) :: u_out(:)
+  call hx__advance(u, my_rhs, dt, u_out)
+contains
+  subroutine my_rhs(v, dvdt)
+    real(dp), intent(in) :: v(:)
+    real(dp), intent(out) :: dvdt(:)
+    dvdt = -v
+  end subroutine my_rhs
+end subroutine solve
+end module chan_model
+"""
+
+    def test_a_procedure_passed_as_an_actual_is_not_a_discarded_result(self) -> None:
+        # Issue #266: `my_rhs` is an internal procedure handed to a procedure-typed dummy, and
+        # the state output is the intent(out) dummy itself, so the procedure name is the ONLY
+        # non-dummy actual. Measured at 021d6165: "does not propagate ... (candidates=['my_rhs'])"
+        # — a false violation on the shape every consumer of an integrator writes.
+        self.assertEqual(self._dataflow(self._PROCEDURE_ACTUAL_MODEL, ["hx"]), [])
+        with self.subTest(shape="a module procedure as the actual"):
+            hoisted = self._PROCEDURE_ACTUAL_MODEL.replace(
+                "  call hx__advance(u, my_rhs, dt, u_out)\ncontains\n",
+                "  call hx__advance(u, my_rhs, dt, u_out)\nend subroutine solve\n").replace(
+                "  end subroutine my_rhs\nend subroutine solve\n", "  end subroutine my_rhs\n")
+            self.assertEqual(self._dataflow(hoisted, ["hx"]), [])
+        # Fail-closed direction: the same call with an ordinary unassigned local in that
+        # position is still a candidate the closure must reach — and here it does not.
+        with self.subTest(shape="an unassigned variable in the same position still flags"):
+            variable = self._PROCEDURE_ACTUAL_MODEL.replace(
+                "  real(dp), intent(out) :: u_out(:)\n",
+                "  real(dp), intent(out) :: u_out(:)\n  real(dp) :: scratch(size(u))\n").replace(
+                "call hx__advance(u, my_rhs, dt, u_out)", "call hx__advance(u, scratch, dt, u_out)")
+            v = self._dataflow(variable, ["hx"])
+            self.assertTrue(any("does not propagate dependency operation outputs" in x
+                                and "'scratch'" in x for x in v), v)
+
     def test_discarded_dep_result_flagged_even_when_call_shares_an_input(self) -> None:
         # Check 1 must flag a discarded dependency result even when the dep call shares an input
         # (dt/dx) with the intent(out) formula: `unext` is produced by the ssprk2 call but never
@@ -17774,7 +17827,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         return tmp / "cs.md"
 
     def test_parses_op_and_type_stanzas(self) -> None:
-        ops, types, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(self._FENCE))
+        ops, types, _protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(self._FENCE))
         self.assertIsNone(err)
         self.assertEqual(set(ops), {"hx__emit_real", "hx__emit_int", "hx__write_metrics_basis"})
         self.assertEqual(set(types), {"hx__h_named"})
@@ -17786,53 +17839,52 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # a top-level `parameter` declaration is not a stanza
         self.assertNotIn("dp", ops)
 
-    def test_a_section51_with_interfaces_is_refused_until_pinned(self) -> None:
-        # Issue #266 PR-1: the backend lowers `interfaces:` (a named prototype, referenced by a
-        # `{type: procedure, interface: <name>}` argument), and the gates that pin a prototype
-        # against the IR and the generated source are PR-2. Until they land, a §5.1 declaring
-        # one is refused here — a prototype must not pass through unpinned — and the refusal
-        # names the prototype. Expected to be REPLACED by PR-2's pass row.
+    def test_a_section51_with_interfaces_yields_prototype_stanzas(self) -> None:
+        # Issue #266 PR-2: a §5.1 `interfaces` entry comes back as a prototype stanza of its
+        # own, beside the procedures and types, and is an error to nobody here (PR-1 refused it
+        # with "does not pin yet"; the gates that consume the third dict are the pin now).
         fence = ("```yaml\ninterfaces:\n  - kind: subroutine\n    name: rhs_1d\n"
                  "    args:\n      - {name: u, rank: 1, intent: in, spec: {type: real, kind: dp}}\n"
                  "procedures:\n  - kind: subroutine\n    name: hx__advance\n"
                  "    args:\n      - {name: rhs, spec: {type: procedure, interface: rhs_1d}}\n```\n")
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(fence))
-        self.assertIsNotNone(err)
-        self.assertIn("does not pin yet", err)
-        self.assertIn("rhs_1d", err)
-        self.assertFalse(err.startswith("§5.1"), err)  # the caller prefixes the section itself
+        ops, types, protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(fence))
+        self.assertIsNone(err)
+        self.assertEqual(sorted(ops), ["hx__advance"])
+        self.assertEqual(types, {})
+        self.assertEqual(sorted(protos), ["rhs_1d"])
+        self.assertEqual(protos["rhs_1d"][0], "subroutine rhs_1d(u)")
 
     def test_missing_fence_errors(self) -> None:
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
         self.assertIn("missing", err)
 
     def test_multiple_fences_errors(self) -> None:
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
             self._cs(self._FENCE + "```yaml\nprocedures: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("multiple", err)
 
     def test_invalid_yaml_errors(self) -> None:
         bad = "```yaml\nprocedures: [unterminated\n```\n"
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("not valid YAML", err)
 
     def test_non_mapping_yaml_errors(self) -> None:
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\n- procedures\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("must be a YAML mapping", err)
 
     def test_unknown_top_key_errors(self) -> None:
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\nprocedurez: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("unknown key", err)
 
     def test_zero_signature_block_errors(self) -> None:
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\nmodule_parameters: []\ntypes: []\nprocedures: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("parsed 0 signatures", err)
@@ -17841,7 +17893,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         bad = (
             "```yaml\nprocedures:\n- kind: function\n  name: hx__bad\n"
             "  args: []\n  result:\n    name: value\n    spec:\n      type: mystery\n```\n")
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("could not render", err)
 
@@ -17855,7 +17907,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n"
             "- kind: function\n  name: hx__dup\n  args: []\n"
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n```\n")
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(dup))
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(dup))
         self.assertIsNotNone(err)
         self.assertIn("duplicate", err.lower())
 
@@ -17865,7 +17917,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         bad = (
             "```yaml\nprocedures:\n- kind: function\n  name: hx__bad\n  args: []\n"
             "  result: null\n```\n")
-        _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("could not render", err)
 
@@ -17906,7 +17958,7 @@ end program p
     def test_unrelated_fence_before_subsection_ignored(self) -> None:
         # A code fence in §5 prose BEFORE ### 5.1 must not be mistaken for the interface block.
         body = "```text\nan illustrative example\n```\n" + self._FENCE
-        ops, types, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(body))
+        ops, types, _protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(body))
         self.assertIsNone(err)
         self.assertEqual(set(ops), {"hx__emit_real", "hx__emit_int", "hx__write_metrics_basis"})
         self.assertEqual(set(types), {"hx__h_named"})
@@ -20865,7 +20917,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
             with self.subTest(spec=tag):
                 ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
                 self.assertTrue(ops, f"{tag}: §5 parsed no published operation")
-                op_stanzas, type_stanzas, err = \
+                op_stanzas, type_stanzas, _protos, err = \
                     vps._parse_canonical_interface_from_controlled_spec(cs)
                 self.assertIsNone(err, f"{tag}: §5.1 {err}")
                 self.assertEqual(set(op_stanzas), ops, f"{tag}: §5.1 procedures != §5 operations")
@@ -20909,7 +20961,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         entry = self._pinned_entries()[0]
         cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
         ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
-        op_stanzas, _t, err = vps._parse_canonical_interface_from_controlled_spec(cs)
+        op_stanzas, _t, _p, err = vps._parse_canonical_interface_from_controlled_spec(cs)
         self.assertIsNone(err)
         # The corpus really does present a non-empty comparison on both sides.
         self.assertTrue(ops)
@@ -21576,6 +21628,25 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             self._run(public_api={"published_operations": [
                 {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL), [])
 
+    def test_a_prefixed_prototype_is_not_an_extra_published_operation(self) -> None:
+        # Issue #266: the published operation takes a procedure whose prototype the model
+        # declares under a `<spec_id>__` name. Before the span rule the prototype read as a
+        # published subroutine absent from the IR ("NOT in the IR public_api").
+        model = (
+            "module dep_base_model\n"
+            "abstract interface\n  subroutine dep_base__rhs(x)\n    real, intent(in) :: x\n"
+            "  end subroutine dep_base__rhs\nend interface\n"
+            "contains\n  subroutine dep_base__scale(f)\n    procedure(dep_base__rhs) :: f\n"
+            "  end subroutine\nend module\n")
+        self.assertEqual(self._run(public_api={"published_operations": [
+            {"operation_id": "dep_base__scale"}]}, model_text=model), [])
+        # Fail-closed control: a real extra prefixed procedure after the block still fires.
+        extra = model.replace("end module\n",
+                              "  subroutine dep_base__extra(y)\n  end subroutine\nend module\n")
+        v = self._run(public_api={"published_operations": [
+            {"operation_id": "dep_base__scale"}]}, model_text=extra)
+        self.assertTrue(any("'dep_base__extra'" in x for x in v), v)
+
     def test_missing_published_op_flagged(self) -> None:
         v = self._run(
             public_api={"published_operations": [
@@ -21687,6 +21758,13 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         from tools.orchestration_runtime import _list_prefixed_subroutines
         cases = [
             ("the shared good model", "dep_base", self._GOOD_MODEL),
+            # Issue #266: a prefixed PROTOTYPE inside an abstract interface block (and a
+            # variable named `interface`, which opens no span) — both scanners skip the span.
+            ("a prefixed prototype in an abstract interface block", "dep_base",
+             ("module m\nabstract interface\n  subroutine dep_base__cb(x)\n"
+              "    real, intent(in) :: x\n  end subroutine dep_base__cb\nend interface\n"
+              "contains\n  subroutine dep_base__scale(f)\n    procedure(dep_base__cb) :: f\n"
+              "    interface = 3\n  end subroutine\nend module\n")),
             ("comment / interface-block / parenless / case / mixed-prefix edges", "dep_base",
              "module m\ncontains\n"
              "  ! a comment mentioning subroutine dep_base__ghost\n"
@@ -24407,7 +24485,7 @@ class IrFixtureShapeTests(unittest.TestCase):
             self.assertEqual(
                 _parse_public_api_from_controlled_spec(unreadable, "spec_x"), (set(), set())
             )
-            _, _, err = _parse_canonical_interface_from_controlled_spec(unreadable)
+            _, _, _, err = _parse_canonical_interface_from_controlled_spec(unreadable)
             self.assertIsNotNone(err)
 
     def test_unreadable_tests_md_degrades_to_no_test_ids(self) -> None:
@@ -25672,6 +25750,230 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
         with tempfile.TemporaryDirectory() as tmp:
             path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
         self.assertIn(f"{path}: must be json object", violations)
+
+
+class ProcedureTypedSurfaceGateTests(unittest.TestCase):
+    """Issue #266: a §5.1 with an `interfaces` prototype and a `{type: procedure, interface}`
+    argument, through the three gates that read §5.1 — the `--stage compile` cross-check and IR
+    pin (`_validate_published_surface`), and the Generate.static source pin
+    (`_validate_generated_signatures`). One fixture component (`hx`, `component` kind): the §5.1
+    block is authored as readable Fortran and lowered by `parse_signatures_from_fortran`, the IR
+    is what Compile is contracted to transcribe, and the model source is the tracked
+    `tools/tests/data/hx_procedure_typed_model.f90` (syntax-clean under `-std=f2008`, lint-clean
+    under the declared rule set — both measured when the fixture was written).
+
+    PINNED: the pass on all three gates; for the IR pin each of missing / extra / drifted /
+    legacy-without-key-but-§5.1-declares / non-list; for the source pin missing prototype /
+    prototype drift / prototype defined instead of declared / a published procedure whose dummy
+    references another prototype; and that the §5 cross-check does NOT report a prototype as an
+    operation absent from §5. SAMPLED: the spellings of each drift."""
+
+    _SECTION_51_FORTRAN = (
+        "integer, parameter :: dp = real64\n"
+        "abstract interface\n"
+        "  subroutine hx_rhs_1d(u, dudt)\n"
+        "    real(dp), intent(in) :: u(:)\n"
+        "    real(dp), intent(out) :: dudt(:)\n"
+        "  end subroutine hx_rhs_1d\n"
+        "end interface\n"
+        "subroutine hx__advance(u, rhs, dt, u_next)\n"
+        "  real(dp), intent(in) :: u(:)\n"
+        "  procedure(hx_rhs_1d) :: rhs\n"
+        "  real(dp), intent(in) :: dt\n"
+        "  real(dp), intent(out) :: u_next(:)\n"
+        "end subroutine hx__advance\n"
+    )
+    _SECTION_51 = _structured_section51_from_fortran(_SECTION_51_FORTRAN)
+    _STRUCT = parse_signatures_from_fortran(_SECTION_51_FORTRAN)
+    _MODEL = (Path(__file__).parent / "data" / "hx_procedure_typed_model.f90").read_text(
+        encoding="utf-8")
+
+    def _controlled_spec(self, section_51: str | None = None) -> str:
+        return (
+            "# Controlled Spec\n"
+            "## 5. Public API and compatibility\n"
+            "The published `operation_id`s are exactly: `hx__advance`. No derived type is "
+            "published.\n"
+            + (self._SECTION_51 if section_51 is None else section_51)
+            + "## 6. Prohibitions\n- none.\n")
+
+    def _public_api(self, *, interfaces: object = None) -> dict:
+        api = {
+            "published_operations": [{"operation_id": "hx__advance"}],
+            "published_types": [],
+            "signatures": [{"symbol": p["name"], "signature": copy.deepcopy(p)}
+                           for p in self._STRUCT["procedures"]],
+            "module_parameters": copy.deepcopy(self._STRUCT["module_parameters"]),
+        }
+        if interfaces is None:
+            api["interfaces"] = [{"name": i["name"], "signature": copy.deepcopy(i)}
+                                 for i in self._STRUCT["interfaces"]]
+        elif interfaces is not _OMIT:
+            api["interfaces"] = interfaces
+        return api
+
+    # --- the compile-stage gate --------------------------------------------------------------
+    def _compile(self, public_api: dict, section_51: str | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = _seed_surface_tree(tmp, self._controlled_spec(section_51))
+            _write_json(ir_dir / "spec.ir.yaml", {
+                "meta": {"spec_kind": "component", "spec_id": "hx",
+                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
+                "public_api": public_api})
+            violations: list[str] = []
+            _validate_published_surface(tmp, ir_dir, violations)
+            return violations
+
+    def test_compile_pin_passes_and_the_prototype_is_not_an_absent_operation(self) -> None:
+        self.assertEqual(self._compile(self._public_api()), [])
+        # The witness for the cross-check's scope (a prototype is not a §5 operation): with the
+        # cross-check widened to the prototypes, the message below would appear.
+        with self.subTest(control="the §5 cross-check still fires for a real extra procedure"):
+            extra = self._SECTION_51_FORTRAN + (
+                "subroutine hx__extra(x)\n  real(dp), intent(in) :: x\nend subroutine hx__extra\n")
+            v = self._compile(self._public_api(),
+                              section_51=_structured_section51_from_fortran(extra))
+            self.assertTrue(any("declares a procedure signature 'hx__extra' absent from the §5"
+                                in x for x in v), v)
+            self.assertFalse(any("hx_rhs_1d" in x and "absent from the §5" in x for x in v), v)
+
+    def test_ir_missing_interfaces_key_is_refused_when_section51_declares_one(self) -> None:
+        v = self._compile(self._public_api(interfaces=_OMIT))
+        self.assertTrue(any("public_api.interfaces missing" in x and "hx_rhs_1d" in x
+                            for x in v), v)
+
+    def test_legacy_ir_without_the_key_passes_when_section51_declares_none(self) -> None:
+        # Today's whole corpus: no §5.1 declares a prototype and no IR carries the key.
+        plain = ("integer, parameter :: dp = real64\n"
+                 "subroutine hx__advance(u, dt, u_next)\n"
+                 "  real(dp), intent(in) :: u(:)\n  real(dp), intent(in) :: dt\n"
+                 "  real(dp), intent(out) :: u_next(:)\nend subroutine hx__advance\n")
+        struct = parse_signatures_from_fortran(plain)
+        api = {"published_operations": [{"operation_id": "hx__advance"}], "published_types": [],
+               "signatures": [{"symbol": "hx__advance", "signature": struct["procedures"][0]}],
+               "module_parameters": struct["module_parameters"]}
+        self.assertEqual(self._compile(api, section_51=_structured_section51_from_fortran(plain)),
+                         [])
+        with self.subTest(control="an IR that carries a prototype §5.1 does not declare"):
+            api2 = dict(api, interfaces=[{"name": "hx_rhs_1d",
+                                          "signature": self._STRUCT["interfaces"][0]}])
+            v = self._compile(api2, section_51=_structured_section51_from_fortran(plain))
+            self.assertTrue(any("declares a prototype 'hx_rhs_1d' absent" in x for x in v), v)
+
+    def test_ir_prototype_drift_is_refused(self) -> None:
+        api = self._public_api()
+        api["interfaces"][0]["signature"]["args"][0]["intent"] = "inout"   # was in
+        v = self._compile(api)
+        self.assertTrue(any("public_api.interfaces['hx_rhs_1d'] does not match" in x
+                            for x in v), v)
+        with self.subTest(drift="a different name"):
+            api = self._public_api()
+            api["interfaces"][0]["name"] = "other"
+            v = self._compile(api)
+            self.assertTrue(any("declares a different prototype name 'hx_rhs_1d'" in x
+                                for x in v), v)
+        with self.subTest(drift="the key is not a list"):
+            v = self._compile(self._public_api(interfaces="junk"))
+            self.assertTrue(any("public_api.interfaces must be a list" in x for x in v), v)
+        with self.subTest(drift="an entry with no signature"):
+            v = self._compile(self._public_api(interfaces=[{"name": "hx_rhs_1d"}]))
+            self.assertTrue(any("missing a mapping 'signature'" in x for x in v), v)
+        with self.subTest(drift="declared twice"):
+            api = self._public_api(); api["interfaces"].append(copy.deepcopy(api["interfaces"][0]))
+            v = self._compile(api)
+            self.assertTrue(any("more than once" in x for x in v), v)
+
+    # --- the Generate.static gate ------------------------------------------------------------
+    def _generate(self, source: str, *, public_api: dict | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_ref = "workspace/ir/x"
+            ir_dir = tmp / ir_ref
+            ir_dir.mkdir(parents=True)
+            (tmp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
+            _write_json(ir_dir / "spec.ir.yaml", {
+                "meta": {"spec_kind": "component", "spec_id": "hx",
+                         "source_refs": {"controlled_spec": "cs.md"}},
+                "public_api": self._public_api() if public_api is None else public_api})
+            pipe = tmp / "pipe"
+            src_dir = pipe / "src"
+            src_dir.mkdir(parents=True)
+            (pipe / "lineage.json").write_text(json.dumps({"ir_ref": ir_ref}), encoding="utf-8")
+            model = src_dir / "hx_model.f90"
+            model.write_text(source, encoding="utf-8")
+            ex = NodeExecution(node_key="component/hx@0.2.0", node_dir=pipe, exec_dir=pipe,
+                               pipeline_dir=pipe)
+            violations: list[str] = []
+            vps._validate_generated_signatures(tmp, ex, [model], violations)
+            return violations
+
+    def test_faithful_source_passes(self) -> None:
+        self.assertEqual(self._generate(self._MODEL), [])
+
+    def test_a_private_prototype_the_spec_does_not_declare_is_allowed(self) -> None:
+        extra = self._MODEL.replace(
+            "  end interface\n",
+            "    subroutine hx_private_cb(x)\n      import :: dp\n      implicit none\n"
+            "      real(dp), intent(in) :: x\n    end subroutine hx_private_cb\n  end interface\n")
+        self.assertNotEqual(extra, self._MODEL)
+        self.assertEqual(self._generate(extra), [])
+
+    def test_missing_prototype_is_refused(self) -> None:
+        # Delete the whole abstract interface block (the dummy declaration then references an
+        # unknown interface, which the compiler would refuse; this gate refuses first).
+        start = self._MODEL.index("  abstract interface\n")
+        end = self._MODEL.index("  end interface\n") + len("  end interface\n")
+        v = self._generate(self._MODEL[:start] + self._MODEL[end:])
+        self.assertTrue(any("does not declare the controlled_spec §5.1 prototype 'hx_rhs_1d'"
+                            in x for x in v), v)
+
+    def test_prototype_drift_is_refused(self) -> None:
+        drift = self._MODEL.replace("      real(dp), intent(out) :: dudt(:)\n",
+                                    "      real(dp), intent(inout) :: dudt(:)\n")
+        self.assertNotEqual(drift, self._MODEL)
+        v = self._generate(drift)
+        self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "missing" in x
+                            for x in v), v)
+        with self.subTest(drift="an extra declaration line in the prototype (set equality)"):
+            wider = self._MODEL.replace(
+                "      real(dp), intent(out) :: dudt(:)\n",
+                "      real(dp), intent(out) :: dudt(:)\n      real(dp), intent(in) :: t\n")
+            v = self._generate(wider)
+            self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "extra" in x
+                                for x in v), v)
+
+    def test_a_prototype_defined_as_a_procedure_is_refused(self) -> None:
+        # The model implements the callback itself instead of declaring its shape: the
+        # prototype block is gone and a module procedure of that name appears.
+        start = self._MODEL.index("  abstract interface\n")
+        end = self._MODEL.index("  end interface\n") + len("  end interface\n")
+        defined = self._MODEL[:start] + self._MODEL[end:]
+        defined = defined.replace(
+            "contains\n",
+            "contains\n\n  subroutine hx_rhs_1d(u, dudt)\n    real(dp), intent(in) :: u(:)\n"
+            "    real(dp), intent(out) :: dudt(:)\n    dudt = -u\n  end subroutine hx_rhs_1d\n", 1)
+        v = self._generate(defined)
+        self.assertTrue(any("DEFINES 'hx_rhs_1d'" in x for x in v), v)
+
+    def test_a_published_procedure_referencing_another_prototype_is_refused(self) -> None:
+        # The published dummy names a different interface: the existing atom-membership check
+        # on the procedure catches it (`procedure(hx_rhs_1d)::rhs` is an atom like any other).
+        other = self._MODEL.replace("    procedure(hx_rhs_1d) :: rhs\n",
+                                    "    procedure(hx_private_cb) :: rhs\n").replace(
+            "  end interface\n",
+            "    subroutine hx_private_cb(u, dudt)\n      import :: dp\n      implicit none\n"
+            "      real(dp), intent(in) :: u(:)\n      real(dp), intent(out) :: dudt(:)\n"
+            "    end subroutine hx_private_cb\n  end interface\n")
+        v = self._generate(other)
+        self.assertTrue(any("procedure 'hx__advance' drifts" in x and "procedure(hx_rhs_1d)" in x
+                            for x in v), v)
+
+    def test_stale_ir_without_the_key_is_terminal_at_generate(self) -> None:
+        # A `--resume` into Generate on an IR certified before the carrier existed: the same
+        # guard the signatures / module_parameters halves take (terminal by TYPE).
+        v = self._generate(self._MODEL, public_api=self._public_api(interfaces=_OMIT))
+        self.assertTrue(any(isinstance(x, vps.StaleDependencyIRViolation) for x in v), v)
 
 if __name__ == "__main__":
     unittest.main()

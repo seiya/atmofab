@@ -12703,6 +12703,37 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("LOOP over the extra component/dimension", block)
         self.assertIn("EXACTLY this argument order", block)
 
+    def test_a_procedure_argument_renders_its_prototype(self) -> None:
+        # Issue #266: a procedure-typed dummy is shown as such, with the prototype it names
+        # rendered verbatim under the operation and one header sentence saying what to pass.
+        from tools.orchestration_runtime import _build_dependency_facts
+        dep = dict(self.DEP, published_operations=[{
+            "operation": "demo_dep_base__advance",
+            "interface": "subroutine demo_dep_base__advance(u, rhs, dt, u_next)",
+            "argument_order": ["u", "rhs", "dt", "u_next"],
+            "arguments": [
+                {"name": "u", "type": "real(dp)", "intent": "in", "rank": 1, "dimension": ":"},
+                {"name": "rhs", "type": "procedure(hx_rhs_1d)", "intent": None, "rank": 0,
+                 "dimension": None},
+                {"name": "dt", "type": "real(dp)", "intent": "in", "rank": 0, "dimension": None},
+                {"name": "u_next", "type": "real(dp)", "intent": "out", "rank": 1,
+                 "dimension": ":"}],
+            "procedure_interfaces": {"hx_rhs_1d": [
+                "subroutine hx_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]},
+        }])
+        block = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[dep]))
+        self.assertIn("rhs: procedure(hx_rhs_1d) — a PROCEDURE argument", block)
+        self.assertNotIn("rhs: procedure(hx_rhs_1d), rank-0", block)  # not rendered as data
+        self.assertIn("prototype `hx_rhs_1d`", block)
+        self.assertIn("      real(dp), intent(out) :: dudt(:)", block)
+        self.assertIn("takes a procedure, not data", block)
+        # Control: without a prototype the header sentence stays out.
+        plain = dict(self.DEP, published_operations=[dict(
+            dep["published_operations"][0], procedure_interfaces=None)])
+        self.assertNotIn("takes a procedure, not data",
+                         _build_dependency_facts(dict(self.BASE, resolved_dependencies=[plain])))
+
     def test_published_operations_render_falls_back_to_header_when_no_arguments(self) -> None:
         # A published op without `arguments` (older/unparseable) renders header-only: no
         # per-argument lines, fully backward-compatible.
@@ -13279,6 +13310,35 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(u["rank"], 2)
             self.assertEqual(u["intent"], "inout")
 
+    def test_a_procedure_dummy_resolves_with_its_prototype(self) -> None:
+        # Issue #266, end to end over the tracked fixture component: the procedure-typed dummy
+        # resolves to `procedure(<prototype>)` (rank 0, no intent) and the prototype's own
+        # statements are carried on the operation, read from the certified source.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model = (Path(__file__).parent / "data" / "hx_procedure_typed_model.f90").read_text(
+            encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__hx__0.2.0", "p_20260601_002", "bin_20260601_002",
+                "run_20260601_002", source_id="src_20260601_001", spec_id="hx",
+                model_text=model)
+            self._write_ir(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001",
+                [{"node_key": "component/hx@0.2.0", "kind": "component",
+                  "operations": ["hx__advance"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")
+            op = facts[0]["published_operations"][0]
+            self.assertEqual(op["argument_order"], ["u", "rhs", "dt", "u_next"])
+            rhs = op["arguments"][1]
+            self.assertEqual((rhs["type"], rhs["rank"], rhs["intent"]),
+                             ("procedure(hx_rhs_1d)", 0, None))
+            self.assertEqual(op["procedure_interfaces"]["hx_rhs_1d"], [
+                "subroutine hx_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"])
+
     def test_non_fortran_consumer_gets_no_interfaces_but_keeps_verdict(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts
         with tempfile.TemporaryDirectory() as tmp:
@@ -13763,6 +13823,26 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
             "subroutine dep__op(a)\nend subroutine\n"
         )
         self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__op"])
+
+    def test_a_prefixed_prototype_inside_an_interface_block_is_not_an_entry_point(self) -> None:
+        # Issue #266: `dep__cb` exists only as a prototype (the shape of a procedure a caller
+        # passes); listing it would hand the consumer's leaf a symbol nothing defines.
+        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.validate_pipeline_semantics import (
+            _list_component_published_subroutines,
+        )
+        src = (
+            "module m\n"
+            "abstract interface\n  subroutine dep__cb(x)\n    real, intent(in) :: x\n"
+            "  end subroutine dep__cb\nend interface\n"
+            "contains\n"
+            "subroutine dep__op(f)\n  procedure(dep__cb) :: f\nend subroutine dep__op\n"
+            "subroutine other(a)\n  interface = 3\nend subroutine other\n"
+            "end module\n")
+        self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__op"])
+        # ... and the validator's mirror agrees on the same input (the parity test proper is
+        # `test_cross_scanner_parity_with_runtime`; this is the row for the new span rule).
+        self.assertEqual(_list_component_published_subroutines(src, "dep"), ["dep__op"])
 
     def test_pure_and_module_prefixes(self) -> None:
         from tools.orchestration_runtime import _list_prefixed_subroutines
@@ -21125,7 +21205,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
         # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 90200,
+        # Bumped 90200->91000 (issue #266 PR-2): the `public_api.interfaces` carrier in the
+        # authoring bullet and its V8 pin (name set and argument set; a legacy IR passes only
+        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in /home/seiya/atmofab
+        # at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 91000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -26771,9 +26855,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:497316dbffc61897":
+        "tools/prompt_templates/pure_compile_generate.txt:6f0b533e3ffed994":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
-            "PR-3, which edited rule 7 of the same paragraph)",
+            "PR-3, which edited rule 7 of the same paragraph, and at issue #266 PR-2, which "
+            "edited rule 8 of it — rule 3 unchanged both times)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",
         "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":

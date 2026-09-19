@@ -1748,6 +1748,22 @@ class PureRenderTests(unittest.TestCase):
                            {"name": "f", "type": "real(dp)", "intent": "in", "rank": 0}]},
         ],
     }
+    # (d) a procedure-typed argument with the prototype it names (issue #266): drives the
+    # PROCEDURE-argument line, the prototype rows, and the header's procedure sentence.
+    _RENDER_DEP_PROCEDURE: ClassVar[dict[str, object]] = {
+        **_RENDER_DEP_BASE,
+        "published_operations": [
+            {"operation": "bc__advance", "interface": "subroutine bc__advance(U, rhs)",
+             "argument_order": ["U", "rhs"],
+             "arguments": [{"name": "U", "type": "real(dp)", "intent": "inout",
+                            "rank": 1, "dimension": ":"},
+                           {"name": "rhs", "type": "procedure(bc_rhs_1d)", "intent": None,
+                            "rank": 0, "dimension": None}],
+             "procedure_interfaces": {"bc_rhs_1d": [
+                 "subroutine bc_rhs_1d(u, dudt)", "import :: dp", "implicit none",
+                 "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]}},
+        ],
+    }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
     # is required by `test_every_prose_statement_of_a_pinned_builder_is_driven`; round 1 found
     # that nothing else observed it.
@@ -1773,6 +1789,7 @@ class PureRenderTests(unittest.TestCase):
         "pure-cold": "_RENDER_DEP",
         "pure-cold-no-arg-detail": "_RENDER_DEP_NO_DETAIL",
         "pure-cold-partial-arg-detail": "_RENDER_DEP_PARTIAL",
+        "pure-cold-procedure-arg": "_RENDER_DEP_PROCEDURE",
     }
 
     def _host_built_launch_requests(self) -> list[tuple[str, dict]]:
@@ -2065,6 +2082,7 @@ class PureRenderTests(unittest.TestCase):
         "_substitute_pure_placeholders",     # `<key>` substitution, adds no text of its own
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
+        "_procedure_interface_name",         # returns a prototype NAME read from a type text
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
         "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)
