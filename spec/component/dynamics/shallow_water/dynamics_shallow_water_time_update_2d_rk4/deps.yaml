@@ -1,0 +1,11 @@
+spec_id: dynamics_shallow_water_time_update_2d_rk4
+spec_kind: component
+dependencies:
+  components: []
+  profiles: []
+  # R1/M3c-β: the (fortran, cpu) runner harness. This makes the node an M3c node —
+  # its runner is host-rendered glue over the certified harness plumbing + the
+  # leaf-authored <spec_id> checks module (Fortran realization: docs/workflow/CHECKS_MODULE_CONTRACT.md).
+  infrastructure:
+    - infrastructure_id: harness_fortran_cpu
+      version_constraint: ">=0.3.0 <1.0.0"

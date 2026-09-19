@@ -1,0 +1,76 @@
+# Tests: 2D `RK4` update (L0)
+
+## 0. Meta information
+- `test_profile_id`: `dynamics_shallow_water_time_update_2d_rk4_l0`
+- `test_profile_version`: `0.1.0`
+- `status`: `draft`
+- `spec_ref.spec_kind`: `component`
+- `spec_ref.spec_id`: `dynamics_shallow_water_time_update_2d_rk4`
+- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/controlled_spec.md`
+
+## 1. Test purpose
+This suite verifies the published `operation` `dynamics_shallow_water_time_update_2d_rk4__advance` at `L0`: the zero-tendency invariance, the one-step closed form for a linear tendency, the fourth-order global convergence, the stage sequence (the four `rhs` calls per step, their times and their states), and the input guard for an invalid time step (`dt<=0`, at `dt=0` and at `dt<0`), including that the guard makes no `rhs` call. The tendency procedures the tests pass as `rhs` are supplied by the checks module; the `operation` under test is the only code that calls them.
+
+## 2. Input-defaulting rules
+- The normal cases use `ncomp=3`, `nx=4`, `ny=3` and the state `U_n(c,i,j) = 1 + 0.5*c + 0.1*i - 0.2*j` (every value in `[1.0, 2.7]`). Every case starts at a non-zero `t`, so that a stage time computed from `0` instead of `t` is visible, and the two cases whose stage times are judged start at different `t` with different `dt`, so that stage times written as constants (the values of one case) are visible in the other.
+- The zero-tendency case passes an `rhs` that returns `dUdt=0` at every call, with `t=0.75` and `dt=0.4`, and calls the `operation` once.
+- The linear-tendency cases pass an `rhs` that returns `dUdt = lam*U` with `lam=-1.0`, and start at `t=2.5`. The one-step case uses `dt=0.1` and calls the `operation` once. The convergence case integrates from `t=2.5` to `t=3.5` twice, with `n=10` steps of `dt=0.1` and with `n=20` steps of `dt=0.05`, each step's `t` being the running time, so the `operation` is called `30` times.
+- Every `rhs` the checks module supplies records, in module-level state of the checks module, the number of calls made since the case was set up and the `t` and `U` it received at each of the first four calls; the checks module also records the `guard_pass` the last call of the `operation` returned. Those records are state variables of the case (§5), so the judgment reads them from the captured state and not from a status the checks module computes.
+- The tests `l0_linear_ode_one_step_pass` and `l0_stage_states_pass` read the same case (the linear tendency, `t=2.5`, `dt=0.1`, one call of the `operation`). `l0_fourth_order_pass` reads its own case (the two integrations), and `l0_zero_rhs_invariance_pass` its own (`t=0.75`, `dt=0.4`); the check `checks.stage_sequence` is computed on both of the one-call normal cases (§5).
+- The abnormal cases each violate the `dt<=0` clause of the Controlled Spec §4 on one side of its boundary, `dt=0.0` and `dt=-0.1`, with the linear tendency, `t=2.5`, and one call of the `operation`; their state is the normal `U_n` and the records above. Both sides are needed: a guard written as `dt<0` accepts the first and a guard written as `dt/=0` accepts the second. The extent clauses `ncomp<1` / `nx<1` / `ny<1` of the Controlled Spec §4 have no case: a state of zero extent has no snapshot the judgment could read, so those clauses are stated by the Controlled Spec and not observed by this suite.
+
+## 3. Execution-control rules
+`N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. The convergence case's loop of `n` steps is a fixed input of §2 and is driven by the checks module, not by the `component`. Execution control is the responsibility of the `problem` runner.
+
+## 4. Case-expansion rules
+`N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
+
+## 5. Diagnostics contract
+- Require outputting `checks.zero_rhs_invariance`, `checks.one_step_closed_form`, `checks.global_order`, `checks.stage_sequence`, `checks.call_count`, `checks.input_guard`, and `checks.rhs_not_called_on_guard` in `diagnostics.json`.
+- The state of a case, captured after setup and after the run, consists of `U_n` (`ncomp` × `nx` × `ny`, the input state), `U_np1` (`ncomp` × `nx` × `ny`, the result of the one call of the `operation`; zero in the convergence case), `U_end_n10` and `U_end_n20` (`ncomp` × `nx` × `ny`, the states after the `n=10` and `n=20` integrations; zero outside the convergence case), `guard_pass` (scalar, `1` when the last call of the `operation` returned true and `0` when it returned false), `n_calls` (scalar, the total number of `rhs` calls made during the case's run), `stage_t` (4 values, the `t` received at calls 1–4; zero for a call not made), and `stage_U1`, `stage_U2`, `stage_U3`, `stage_U4` (`ncomp` × `nx` × `ny` each, the `U` received at calls 1–4; zero for a call not made). Every variable is zero at the capture after setup, `U_n` excepted. `U_np1`, `U_end_n10` and `U_end_n20` are arrays the `operation` wrote; `guard_pass` is the value the `operation` returned, recorded as `1` / `0` because a state variable is real-valued; `n_calls`, `stage_t` and `stage_U1..4` are written by the `rhs` the checks module supplies, at the moment of each call, from what the `operation` passed to it. No state variable is derived by the checks module after the run: a norm, a maximum or a residual over these variables is a `checks.<id>` status, never a state variable. Every judgment of §6 is a statement about these variables and the §2 inputs.
+- Each check is computed on the case named here and is `na` on every other case: `checks.zero_rhs_invariance` on the zero-tendency case; `checks.one_step_closed_form` on the one-step case; `checks.stage_sequence` on the zero-tendency case and on the one-step case, each against that case's own `t` and `dt`; `checks.global_order` on the convergence case; `checks.call_count` on every case the guard accepts (`pass` when `n_calls` equals four times the number of calls of the `operation` the case makes: `4` for the zero-tendency and one-step cases, `120` for the convergence case); `checks.input_guard` on every case (`pass` when `guard_pass = 1`, `fail` when `guard_pass = 0`); `checks.rhs_not_called_on_guard` on each abnormal case (`pass` when `n_calls = 0`, `fail` otherwise).
+
+## 6. Test definitions
+- `test_id`: `l0_zero_rhs_invariance_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `pass`
+  - `judgment`: with the zero tendency, `t=0.75`, `dt=0.4`, satisfy `U_np1 = U_n` within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`) and `guard_pass = 1` (`checks.zero_rhs_invariance`), `n_calls = 4` (`checks.call_count`), and the recorded stage times `stage_t` are `0.75`, `0.95`, `0.95`, `1.15` and the recorded stage states `stage_U1..4` are each `U_n` (the stage states of the Controlled Spec §3 for `R = 0`), each within an absolute tolerance of `1e-12` (`checks.stage_sequence`). Together with `l0_stage_states_pass` this judges the stage times at two `(t, dt)` points, `(0.75, 0.4)` and `(2.5, 0.1)`, so a model whose stage times are constants rather than `t`, `t + dt/2`, `t + dt/2`, `t + dt` fails one of the two.
+- `test_id`: `l0_linear_ode_one_step_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `pass`
+  - `judgment`: with the linear tendency, `lam=-1.0`, `dt=0.1`, satisfy `U_np1 = (1 + z + z^2/2 + z^3/6 + z^4/24)*U_n` with `z = lam*dt = -0.1` (the factor is `0.9048375`) within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`), and `guard_pass = 1` (`checks.one_step_closed_form`). The factor differs from `exp(z) = 0.90483741803...` by `8.2e-8`, from the three-stage third-order factor `1 + z + z^2/2 + z^3/6` by `4.2e-6`, and from the forward-Euler factor `1 + z` by `4.8e-3`, so the tolerance excludes `exp(z)`, a third-order and a first-order composition. It does not by itself single out the classical stage points: every explicit four-stage fourth-order method has the same one-step factor for a linear tendency (the 3/8-rule, with the stage state `(1 + z/3)*U_n` at its second call, gives `0.9048375` too), so the stage points of the Controlled Spec §3 are pinned by `l0_stage_states_pass`, not by this test.
+- `test_id`: `l0_fourth_order_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `pass`
+  - `judgment`: with the linear tendency, let `E(10)` be the component-wise max of `|U_end_n10 - exp(-1.0)*U_n|` and `E(20)` that of `|U_end_n20 - exp(-1.0)*U_n|`. The observed order `p = log(E(10)/E(20))/log(2)` satisfies `p >= 3.9` (`checks.global_order`; the closed form gives `E(10) = 3.33e-7*max|U_n|`, `E(20) = 2.00e-8*max|U_n|`, `p = 4.06`; a third-order method gives `p = 3.06`), and `n_calls = 120` (`checks.call_count`: four `rhs` calls in each of the `30` steps).
+- `test_id`: `l0_stage_states_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `pass`
+  - `judgment`: with the linear tendency, `t=2.5`, `dt=0.1`, one call of the `operation` makes exactly `4` calls of `rhs` (`n_calls = 4`, `checks.call_count`), and the recorded stage times `stage_t` are `2.5`, `2.55`, `2.55`, `2.6` and the recorded stage states `stage_U1..4` are `U_n`, `(1 + z/2)*U_n`, `(1 + z/2 + z^2/4)*U_n`, `(1 + z + z^2/2 + z^3/4)*U_n` with `z = lam*dt = -0.1` — the stage states of the Controlled Spec §3 for `R(t,U) = lam*U`, written in terms of `U_n` alone — each within an absolute tolerance of `1e-12` (`checks.stage_sequence`). A model that calls `rhs` once and reuses the tendency, that evaluates a stage at `U_n`, or that passes a stage time computed from `0` instead of `t`, fails this judgment.
+- `test_id`: `l0_invalid_dt_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dt<=0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rhs_not_called_on_guard.status == pass`
+  - `judgment`: with `dt=0.0`, the `operation` returns `guard_pass = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and makes no `rhs` call (`n_calls = 0`, `checks.rhs_not_called_on_guard` is `pass`). A model that evaluates `rhs` before or despite the guard, or whose guard is `dt<0`, fails this test.
+- `test_id`: `l0_negative_dt_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_rk4__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dt<0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rhs_not_called_on_guard.status == pass`
+  - `judgment`: with `dt=-0.1`, the same as `l0_invalid_dt_xfail`: `guard_pass = 0` and `n_calls = 0`. A model whose guard is `dt/=0` fails this test.
+
+## 7. Pass/fail aggregation rules
+- `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and `pass_when` is satisfied.
+- `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
+
+## 8. Traceability
+- Record `test_profile_id` and `test_profile_version` in `trial_meta.json`.

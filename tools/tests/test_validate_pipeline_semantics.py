@@ -20969,6 +20969,12 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
                         "module_parameters": struct["module_parameters"],
                     },
                 }
+                if struct["interfaces"]:
+                    # Issue #266: a §5.1 `interfaces:` prototype is carried as
+                    # `public_api.interfaces` (`{name, signature}`), and the gate refuses an
+                    # IR that omits one §5.1 declares — so the implied IR carries it too.
+                    ir["public_api"]["interfaces"] = [
+                        {"name": i["name"], "signature": i} for i in struct["interfaces"]]
                 with tempfile.TemporaryDirectory() as tmp:
                     ir_dir = Path(tmp)
                     (ir_dir / "spec.ir.yaml").write_text(
