@@ -13,7 +13,7 @@
 This suite verifies the published `operation` `dynamics_shallow_water_source_2d_coriolis__apply` at `L0`: the zero source for `f=0`, the pointwise formula with a row-dependent `f`, the discrete no-work property, and the input guard for an invalid component count (`ncomp/=3`).
 
 ## 2. Input-defaulting rules
-- The normal cases use `ncomp=3`, `nx=4`, `ny=3`. The state is `h=1`, `hu(i,j) = 0.1*i - 0.2*j`, `hv(i,j) = 0.3*j - 0.05*i` (unit scale, so an absolute tolerance is a relative one). The row-dependent Coriolis parameter is `f(j) = 1.0e-4 + 2.0e-5*(j-1)`.
+- The normal cases use `ncomp=3`, `nx=4`, `ny=3`. The state is `h(i,j) = 1 + 0.1*i + 0.05*j`, `hu(i,j) = 0.1*i - 0.2*j`, `hv(i,j) = 0.3*j - 0.05*i`. `h` is non-uniform and non-unit at every cell so that the momentum-form source `f*hv` differs from the velocity form `f*hv/h` and from `f*h*hv`, and `hu` and `hv` differ at every cell so that a swap is visible. `hu` and `hv` are of order 1 and `f` of order `1e-4`, so `S` is of order `1e-4` and the absolute tolerance `1e-12` of §6 is a relative tolerance of order `1e-8` on `S`. The row-dependent Coriolis parameter is `f(j) = 1.0e-4 + 2.0e-5*(j-1)`.
 - The zero-`f` case uses the same state with `f(j) = 0` for every `j`.
 - The abnormal case uses `ncomp=2` with `nx=4`, `ny=3`, the same `f`, and a state of two components.
 
