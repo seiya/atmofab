@@ -142,7 +142,7 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `superbee`) or by the unlimited central difference, and forbid omitting the limiter. Forbid using a slope other than the cell's own on either of its faces (a slope taken from a neighbouring cell, or a slope re-evaluated per face). Forbid reading a cell of `U_in` outside the padded columns $ng-1..ng+nx+2$ and the padded rows $ng-1..ng+ny+2$ of §2, and forbid re-deriving or overwriting a ghost value of `U_in` in place of the value the caller filled. Forbid dividing the slope by a grid spacing.
+Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `superbee`) or by the unlimited central difference, and forbid omitting the limiter. Forbid using a slope other than the cell's own on either of its faces (a slope taken from a neighbouring cell, or a slope evaluated from different inputs on the two faces of one cell; evaluating the same function of the same three cell values once per face is the same slope). Forbid reading a cell of `U_in` outside the padded columns $ng-1..ng+nx+2$ and the padded rows $ng-1..ng+ny+2$ of §2, and forbid re-deriving or overwriting a ghost value of `U_in` in place of the value the caller filled. Forbid dividing the slope by a grid spacing.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
