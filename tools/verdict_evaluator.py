@@ -142,15 +142,17 @@ CHECK_STATUS_VALUES: tuple[str, ...] = ("pass", "fail")
 #: The one op a status condition admits. An ordered op on a string is always false at
 #: execute; `ne` is refused too, because `ne "fail"` is satisfied by the per-case `na` a
 #: check reports where it does not apply — a pass on an unevaluated check — and every
-#: certified predicate says what it means with `eq` (547 of 547, 2026-09-22).
+#: `.status` predicate in `workspace/ir` says what it means with `eq` (547 of 547 across
+#: every ir_meta status, 2026-09-22).
 CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq"})
 #: The verdict fields whose value shape the gate pins (issue #269 round 2 — the `verdict` arm
 #: is the `checks` arm's twin: the same fold writes both). `verdict.overall` is the same
 #: `"pass"|"fail"` enum as a check status, compared by the same one op; `verdict.failed_checks`
-#: is the list of failing check ids, read by `includes` against a DECLARED id — a member no
-#: runner ever writes is a condition that can never be satisfied (and under `ne`, never fail).
-#: A declared field outside this table is admitted with any op and value (none exists in the
-#: corpus; `_verify_verdict_fields` pins the M3c set to these two).
+#: is the list of failing check ids, read by `includes` against a DECLARED id, or by `eq`
+#: against a list of declared ids (`eq []` says "no check fails") — an undeclared id is a
+#: member no runner ever writes, so the condition can never be satisfied. A declared field
+#: outside this table is admitted with any op and value (none exists in the corpus; the host's
+#: render of the runner pins the M3c field set to these two).
 VERDICT_ENUM_FIELD = "overall"
 VERDICT_LIST_FIELD = "failed_checks"
 
@@ -672,11 +674,13 @@ def validate_predicate_schema(
             # "1e-10" (or a per-case map of strings) passes the null check but at execute
             # `_apply_op` needs both sides numeric, so it deterministically returns false and a
             # correct run is misreported physics_fail. Catch the wrong-typed threshold here.
-            # A status / list ref owns its op refusal above (one repair per retry: a leaf told
+            # A status / list ref — a refused tail on one included — owns its op refusal above
+            # (one repair per retry: a leaf told
             # both "write op eq" and "make the value a number" can follow the wrong half).
             is_status_or_list = (isinstance(ref, str) and (
                 ref.strip().split(".", 1)[0] == "checks"
-                or ref.strip() in (f"verdict.{VERDICT_ENUM_FIELD}", f"verdict.{VERDICT_LIST_FIELD}")))
+                or ref.strip().startswith((f"verdict.{VERDICT_ENUM_FIELD}",
+                                           f"verdict.{VERDICT_LIST_FIELD}"))))
             if isinstance(op, str) and op in _ORDERED_OPS and value is not None \
                     and not is_status_or_list:
                 if isinstance(value, dict) and set(value.keys()) == {"per_case"} \
@@ -723,7 +727,7 @@ def _check_status_condition(loc: str, what: str, cond: dict[str, Any]) -> list[s
     `value: true`, and the half-follow (`checks.<id>.status eq true`) passed the gate and
     reported a correct kernel `physics_fail` (`_values_equal` never equates a bool to a str).
     Refused here, where it is repairable, together with `ne` (see `CHECK_STATUS_OPS`), and
-    `na_allowed` (a status leaf is never absent — the runner writes every declared id per
+    `na_allowed` (a status leaf is never absent — the host-rendered runner writes every declared id per
     case — so the flag never fires; a leaf reaching for it to cover a per-case `na` gets a
     correct kernel `physics_fail`). A `{per_case: {...}}` value map is judged leaf by leaf (the
     schema's own per-case-map rules judge its keys)."""
@@ -733,8 +737,8 @@ def _check_status_condition(loc: str, what: str, cond: dict[str, Any]) -> list[s
                  f"{'|'.join(sorted(CHECK_STATUS_OPS))} against {_status_vocabulary()} "
                  f"{_status_remedy()}")]
     if bool(cond.get("na_allowed")):
-        return [(f"{loc}.na_allowed has no meaning on {what}: the runner writes it for every "
-                 f"declared id in every case, so the leaf is never absent and the flag never "
+        return [(f"{loc}.na_allowed has no meaning on {what}: the host-rendered runner writes it "
+                 f"for every declared id in every case, so the leaf is never absent and the flag never "
                  f"fires — remove na_allowed (a case whose check does not apply is not targeted)")]
     if value is None:  # the schema's own non-null rule already names this one
         return []
@@ -751,20 +755,30 @@ def _check_status_condition(loc: str, what: str, cond: dict[str, Any]) -> list[s
 
 def _check_failed_checks_condition(loc: str, cond: dict[str, Any], check_ids: set[str]) -> list[str]:
     """`verdict.failed_checks` is the list of failing check ids: read by `includes` against a
-    declared id. Any other op compares a list to a scalar (always false, or always true under
-    `ne`), and an undeclared id is a member no runner writes (issue #269 round 2)."""
+    declared id, or by `eq` against a list of declared ids (`_values_equal` compares two lists
+    by `==`, so `eq []` is a real "no check fails"; round 3 restored it — round 2 had refused
+    it with a remedy that cannot say it). `ne` is refused as on a status (a misspelt member
+    never fails); an ordered op compares a list to a number (always false); an undeclared id
+    is a member no runner writes (issue #269 round 2)."""
     op, value = cond.get("op"), cond.get("value")
     what = f"verdict.{VERDICT_LIST_FIELD}"
-    if isinstance(op, str) and op in _OPS and op != "includes":
-        return [(f"{loc}.op {op} is not a membership test: {what} is the list of failing check "
-                 f"ids — write op includes with value <a diagnostics_contract.checks id>")]
+    if isinstance(op, str) and op in _OPS and op not in ("includes", "eq"):
+        return [(f"{loc}.op {op} is not a comparison of {what}, the list of failing check ids — "
+                 f"write op includes with value <a diagnostics_contract.checks id>, or op eq "
+                 f"with value <a list of them>")]
     if bool(cond.get("na_allowed")):
         return [(f"{loc}.na_allowed has no meaning on {what}: the runner writes the list in every "
                  f"run — remove na_allowed")]
     if value is None:
         return []
-    if not (isinstance(value, str) and value in check_ids):
-        return [(f"{loc}.value {value!r} is not a declared check id ({what} holds ids from "
+    members = value if (op == "eq" and isinstance(value, list)) else [value]
+    if op == "eq" and not isinstance(value, list):
+        return [(f"{loc}.value {value!r} is not a list: {what} eq compares the whole list of "
+                 f"failing check ids — write op eq with value <a list of declared ids> (`[]` for "
+                 f"none), or op includes with one id")]
+    bad = [m for m in members if not (isinstance(m, str) and m in check_ids)]
+    if bad:
+        return [(f"{loc}.value {bad[0]!r} is not a declared check id ({what} holds ids from "
                  f"diagnostics_contract.checks: {sorted(check_ids)}) — write one of them")]
     return []
 

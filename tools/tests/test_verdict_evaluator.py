@@ -705,9 +705,22 @@ class SchemaTest(unittest.TestCase):
                 self.assertEqual(len(v), 1, v)
                 self.assertIn(frag, v[0])
         self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "includes", "g"), [])
+        # `eq <list of declared ids>` is a real comparison (`eq []` says "no check fails");
+        # round 2 refused it, round 3 restored it — origin/main admitted it.
+        self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "eq", []), [])
+        self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "eq", ["g"]), [])
+        diag_none = {"verdict": {"overall": "pass", "failed_checks": []}}
+        self.assertEqual(evaluate_predicate(self._pred(pass_when={"all": [
+            {"ref": f"verdict.{VERDICT_LIST_FIELD}", "op": "eq", "value": []}]}), diag_none)[:2],
+            ("pass", "pass"))
+        self.assertEqual(evaluate_predicate(self._pred(pass_when={"all": [
+            {"ref": f"verdict.{VERDICT_LIST_FIELD}", "op": "eq", "value": []}]}), diag)[:2],
+            ("fail", "physics"))
         for op, value, frag in (("includes", "bogus", "is not a declared check id"),
-                                ("ne", "g", "is not a membership test"),
-                                ("eq", ["g"], "is not a membership test"),
+                                ("ne", "g", "is not a comparison of"),
+                                ("le", 0, "is not a comparison of"),
+                                ("eq", "g", "is not a list"),
+                                ("eq", ["g", "bogus"], "is not a declared check id"),
                                 ("includes", True, "is not a declared check id")):
             with self.subTest(field="failed_checks", op=op, value=value):
                 v = one(f"verdict.{VERDICT_LIST_FIELD}", op, value)
@@ -966,8 +979,6 @@ class TwelveSpecExpressibilityTest(unittest.TestCase):
         self.assertEqual(evaluate_predicate(pred, diag)[0], "xfail")
 
 
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
 
 
 class CheckRefLeafStatementSitesTest(unittest.TestCase):
@@ -975,7 +986,8 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
     ref reads is defined ONCE, as `verdict_evaluator.CHECK_REF_LEAF`, and every document that
     states it is checked against the constant. Before #269 the compile-inlined phase contract
     offered `checks.<id>.pass|status`, a spelling half of which the runner never emits, and
-    nothing compared the two: four certified IRs carried `.pass`.
+    nothing compared the two: four IRs in `workspace/ir` carried `.pass` (three certified,
+    one revoked).
 
     Each surface is read inside a window opened by an ANCHOR that precedes the statement and
     is byte-identical in the wording being refused (so restoring the old wording fails on the
@@ -1124,3 +1136,7 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
         bad = _check_ref("L", "checks.g.other", {"g"}, set(), set())
         self.assertEqual(len(bad), 1, bad)
         self.assertIn(f"— write checks.g.{CHECK_REF_LEAF} compared by", bad[0])
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

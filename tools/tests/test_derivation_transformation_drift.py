@@ -178,11 +178,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # it listed (same conditional).
     # Re-pinned (issue #269), and NOT bumped, on this reasoning: the ref-vocabulary line stops
     # offering `checks.<id>.pass`, a shape the runner never emitted (`ref_absent` at execute on
-    # every run). The four certified IRs that carried it are refused by the SAME `_check_ref`
+    # every run). The three certified IRs that carried it (a fourth is revoked, refused
+    # before any validator runs) are refused by the SAME `_check_ref`
     # rule at readiness (`ir_rejected_by_current_validator`, issue #238) and re-derive under
     # their own key — and `DerivationResolver.select` already prefers a newer `.status`
     # sibling for each of their three nodes (measured 2026-09-22), so no production node
-    # re-derives; every other certified IR already reads `.status` (547 of 566 `checks` refs
+    # re-derives; every other IR in the corpus already reads `.status` (547 of 566 `checks` refs
     # in `workspace/ir`, 2026-09-22) and is unchanged by the instruction. A bump would
     # re-derive every node's Compile for an instruction they already satisfy.
     # Re-pinned in round 1 (not bumped, same reasoning): the line also states how the status
@@ -190,7 +191,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # already does — 547 of 547, 2026-09-22) and that a per-case slice may hold `na`.
     # Re-pinned in round 2: the per-case `na` is spelled unquoted (the harness releases in the
     # corpus write both `"na"` and `"na  "`; the statement names the state, not a spelling).
-    "compile-docs-4": "68e1b882e03cbaff94eed249158f75e94c7590c7f0e184b49a30b3c965f5db63",
+    # Re-pinned in round 3: the per-case sentence tells the leaf to read a non-applying
+    # check with `case:` at the case computing it (17 certified predicates do exactly that)
+    # instead of "do not target that case", which contradicted the `case:` scope rule.
+    "compile-docs-4": "55a12fc15fa5c311c213a4ff6d2f14f47dc45fed931328580c750de4554a28ac",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -248,7 +252,7 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned (issue #269), behaviour-preserving for this transformation: `_check_ref` gained
     # the `checks.<id>.status` pin and `CHECK_REF_LEAF`; it runs at `--stage compile` only
     # (its one production caller is `validate_predicate_schema` <- `_validate_test_predicates`
-    # <- the compile stage), and `evaluate_verdict` / `evaluate_predicate` / `primary_evidence`
+    # <- the compile stage), and `evaluate_verdict` / `evaluate_predicate` / the `primary_evidence` module
     # are byte-identical, so every run's `verdict.json` is unchanged. (The digest was taken
     # after the refusal's return statement was parenthesised for ruff ISC004 — the pin hashes
     # bytes, so a lint-only edit moves it; the first digest of this re-pin never landed.)
@@ -261,7 +265,9 @@ PINNED_VERDICT: dict[str, str] = {
     # fields' op / value pins; a per-case value map is judged leaf by leaf; `na_allowed` on a
     # status ref is refused; the ordered-op numeric rule stands down on a status ref. All at
     # --stage compile; evaluator unchanged.
-    "verdict-3": "2583e0d95db94cda52007690a9e30345186f77a1b39318efe873b587dfed3fdd",
+    # Re-pinned in round 3: `verdict.failed_checks eq <list of declared ids>` admitted again
+    # (origin/main admitted it; round 2 over-refused); comment wording. Evaluator unchanged.
+    "verdict-3": "04832862db97fa774546f4689271e6d0e42b09e6f764e95d5adf6c236bcd7897",
 }
 
 

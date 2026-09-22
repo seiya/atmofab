@@ -11688,7 +11688,7 @@ end program shallow_water2d_runner
 
     def test_a_certified_ir_carrying_a_pass_leaf_ref_is_refused_at_readiness(self) -> None:
         """Issue #269's witness for NOT bumping `COMPILE_INLINED_DOCUMENTS_VERSION`: a certified
-        IR whose predicate reads `checks.<id>.pass` — the spelling the four certified IRs in
+        IR whose predicate reads `checks.<id>.pass` — the spelling four IRs in
         `workspace/ir` carried — is refused by the same `_check_ref` rule at readiness
         (`ir_rejected_by_current_validator`, issue #238) and re-derives under its own key, so no
         version bump is needed to retire it. Same seeding as the row above, `_ir_certification`
