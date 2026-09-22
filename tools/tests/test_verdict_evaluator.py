@@ -9,8 +9,15 @@ Two concerns:
 """
 
 import unittest
+from pathlib import Path
 
+from tools import verdict_evaluator
 from tools.verdict_evaluator import (
+    CHECK_REF_LEAF,
+    CHECK_STATUS_OPS,
+    CHECK_STATUS_VALUES,
+    VERDICT_ENUM_FIELD,
+    VERDICT_LIST_FIELD,
     PredicateError,
     evaluate_predicate,
     evaluate_verdict,
@@ -20,8 +27,8 @@ from tools.verdict_evaluator import (
 
 class OpsAndResolutionTest(unittest.TestCase):
     def test_ops(self) -> None:
-        diag = {"metrics": {"metrics.m": 0.5, "metrics.s": "pass"},
-                "checks": {"b": {"pass": True}},
+        diag = {"metrics": {"metrics.m": 0.5, "metrics.s": "pass", "metrics.flag": True},
+                "checks": {"b": {"status": "pass"}},
                 "verdict": {"overall": "pass", "failed_checks": ["cfl", "input_guard"]}}
 
         def one(ref, op, value):
@@ -35,15 +42,18 @@ class OpsAndResolutionTest(unittest.TestCase):
         self.assertEqual(one("metrics.m", "gt", 0.4), "pass")
         self.assertEqual(one("metrics.s", "eq", "pass"), "pass")
         self.assertEqual(one("metrics.s", "ne", "fail"), "pass")
-        self.assertEqual(one("checks.b.pass", "eq", True), "pass")
+        self.assertEqual(one("checks.b.status", "eq", "pass"), "pass")
+        # the bool branch of `_values_equal`, observed through a metric address (the runner
+        # writes a check's leaf as a `status` enum, never as a bool — issue #269)
+        self.assertEqual(one("metrics.flag", "eq", True), "pass")
         self.assertEqual(one("verdict.failed_checks", "includes", "cfl"), "pass")
         self.assertEqual(one("verdict.failed_checks", "includes", "nope"), "fail")
 
     def test_bool_and_number_do_not_collide(self) -> None:
-        # True must not equal 1; a boolean check compared to a numeric literal fails cleanly.
-        diag = {"checks": {"b": {"pass": True}}}
+        # True must not equal 1; a boolean metric compared to a numeric literal fails cleanly.
+        diag = {"metrics": {"metrics.flag": True}}
         pred = {"test_id": "t", "expected_outcome": "pass", "target_cases": [],
-                "pass_when": {"all": [{"ref": "checks.b.pass", "op": "eq", "value": 1}]}}
+                "pass_when": {"all": [{"ref": "metrics.flag", "op": "eq", "value": 1}]}}
         self.assertEqual(evaluate_predicate(pred, diag)[0], "fail")
 
     def test_ordered_op_on_non_number_is_false(self) -> None:
@@ -56,7 +66,7 @@ class OpsAndResolutionTest(unittest.TestCase):
 
     def test_absent_ref_is_structural(self) -> None:
         pred = {"test_id": "t", "expected_outcome": "pass", "target_cases": [],
-                "pass_when": {"all": [{"ref": "checks.gone.pass", "op": "eq", "value": True}]}}
+                "pass_when": {"all": [{"ref": "checks.gone.status", "op": "eq", "value": "pass"}]}}
         status, kind, _ = evaluate_predicate(pred, {"verdict": {"overall": "pass"}})
         self.assertEqual((status, kind), ("fail", "structural"))
 
@@ -171,10 +181,10 @@ class MetricAddressResolutionTest(unittest.TestCase):
 
 class CaseResolutionTest(unittest.TestCase):
     def test_map_cases(self) -> None:
-        diag = {"cases": {"c1": {"checks": {"profile_selected": True}}}}
+        diag = {"cases": {"c1": {"checks": {"profile_selected": {"status": "pass"}}}}}
         pred = {"test_id": "t", "expected_outcome": "pass", "target_cases": ["c1"],
-                "pass_when": {"all": [{"ref": "checks.profile_selected", "op": "eq",
-                                       "value": True, "per_case": True}]}}
+                "pass_when": {"all": [{"ref": "checks.profile_selected.status", "op": "eq",
+                                       "value": "pass", "per_case": True}]}}
         self.assertEqual(evaluate_predicate(pred, diag)[0], "pass")
 
     def test_array_cases(self) -> None:
@@ -509,9 +519,239 @@ class SchemaTest(unittest.TestCase):
 
     def test_unknown_check_ref(self) -> None:
         v = validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "checks.nope.status", "op": "eq",
+                                            "value": "pass"}]})], **self._kwargs())
+        self.assertTrue(any("diagnostics_contract.checks" in x for x in v))
+        # The id is judged FIRST and short-circuits: an unknown id WITH a refused tail and a
+        # refused value earns the id message ALONE — never the tail's or the value's (issue
+        # #269; round 1 found the row observing this on a clean tail, where neither ordering
+        # nor short-circuit is reachable).
+        v = validate_predicate_schema(
             [self._pred(pass_when={"all": [{"ref": "checks.nope.pass", "op": "eq",
                                             "value": True}]})], **self._kwargs())
-        self.assertTrue(any("diagnostics_contract.checks" in x for x in v))
+        about_nope = [x for x in v if "checks.nope" in x or ".value" in x]
+        self.assertEqual(len(about_nope), 1, v)
+        self.assertIn("checks.nope not in diagnostics_contract.checks", about_nope[0])
+
+    def _check_ref_violations(self, ref: str, value: object = "pass") -> list[str]:
+        return validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": ref, "op": "eq", "value": value,
+                                            "quantity": "g"}]})], **self._kwargs())
+
+    def test_check_ref_pass_leaf_is_refused(self) -> None:
+        # The spelling `phase_01_compile.md` offered before issue #269; the runner never
+        # emits a `pass` leaf, so at execute it was `ref_absent` -> structural_violation ->
+        # Generate, which cannot repair the IR.
+        v = self._check_ref_violations("checks.g.pass", True)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("reads a `pass` leaf", v[0])
+        self.assertIn("— write checks.g.status", v[0])
+
+    def test_check_ref_bare_id_is_refused(self) -> None:
+        # Worse than `.pass`: the dict IS present, so every op compares false and the test
+        # fails as `physics_fail` with no structural record at all.
+        v = self._check_ref_violations("checks.g", True)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("names the check object", v[0])
+        self.assertIn("— write checks.g.status", v[0])
+
+    def test_check_ref_extra_tail_is_refused(self) -> None:
+        # Two different spellings of "some other tail" (rule 1-b: not one counterexample).
+        # `checks.g.Status` is round 1's surviving mutant: a case-folding comparison passed
+        # every row while `_resolve_ref` is case-exact, so the ref was `ref_absent` at execute.
+        for ref in ("checks.g.status.x", "checks.g.result", "checks.g.Status"):
+            with self.subTest(ref=ref):
+                v = self._check_ref_violations(ref)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("has the tail", v[0])
+                self.assertIn("— write checks.g.status", v[0])
+
+    def test_check_ref_status_leaf_resolves(self) -> None:
+        self.assertEqual(self._check_ref_violations("checks.g.status"), [])
+
+    def test_check_status_condition_pins_op_and_value(self) -> None:
+        """Round 1 (issue #269): the ref remedy alone was followable by half — every corpus
+        `.pass` predicate carried `value: true`, and `checks.<id>.status eq true` passed the
+        gate while `_values_equal` never equates a bool to a str, so a correct kernel was
+        reported `physics_fail`. PINNED: a non-member value (bool / number / misspelt member)
+        and a non-status op (including `ne`) are each refused with one violation naming the
+        repair; both members under `eq` pass. SAMPLED: the spellings below, not the whole
+        value space."""
+        def one(op, value):
+            return validate_predicate_schema(
+                [self._pred(pass_when={"all": [{"ref": "checks.g.status", "op": op,
+                                                "value": value, "quantity": "g"}]})],
+                **self._kwargs())
+        # `"pass "` is round 2's census gap: a `.strip()` on the member test survived every
+        # row while `_values_equal` is exact.
+        for value in (True, 1, "failed", "PASS", "na", ["pass"], "pass "):
+            with self.subTest(value=value):
+                v = one("eq", value)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("is not a status", v[0])
+                self.assertIn('— write op eq with value "pass" or "fail"', v[0])
+        # a null value is the schema's own rule (`must have a non-null value`), stated once
+        v = one("eq", None)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("non-null", v[0])
+        # an op outside the DSL vocabulary is the schema's own rule too, stated once (round 2
+        # census: the `op in _OPS` guard had no witness)
+        v = one("equals", "pass")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("op must be one of", v[0])
+        # `ne` is refused as an op (round 1, second pass): `ne "fail"` is satisfied by the
+        # per-case `na` of a check that does not apply — a pass on an unevaluated check.
+        with self.subTest(op="ne", value="fail"):
+            v = one("ne", "fail")
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("is not a status comparison", v[0])
+        for op in sorted(set(verdict_evaluator._OPS) - set(CHECK_STATUS_OPS)):
+            with self.subTest(op=op):
+                # exactly ONE message: the schema's "must be a number for the ordered op" rule
+                # stands down on a status ref, so a leaf is not told two repairs (round 2)
+                v = one(op, "pass")
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("is not a status comparison", v[0])
+                self.assertIn('— write op eq with value "pass" or "fail"', v[0])
+        # the members are the literal, not whatever the constant says (round 2: a mutant
+        # `{"eq", "includes"}` survived a self-referential loop)
+        self.assertEqual(set(CHECK_STATUS_OPS), {"eq"})
+        self.assertEqual(CHECK_STATUS_VALUES, ("pass", "fail"))
+        for op in sorted(CHECK_STATUS_OPS):
+            for value in CHECK_STATUS_VALUES:
+                with self.subTest(op=op, value=value):
+                    self.assertEqual(one(op, value), [])
+        # the op/value half is judged only once the ref half is clean: a refused ref with a
+        # bad value earns the ref message ALONE (one repair at a time, ordered by reachability)
+        v = self._check_ref_violations("checks.g.pass", True)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("reads a `pass` leaf", v[0])
+        # a metric ref is never judged as a status
+        self.assertEqual(validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "metrics.m", "op": "le", "value": 1.0,
+                                            "quantity": "m"}]})],
+            **self._kwargs(metric_addrs={"metrics.m"})), [])
+
+    def test_status_condition_takes_a_per_case_value_map_leaf_by_leaf(self) -> None:
+        """Round 2 over-refusal: a `{per_case: {...}}` value map is a construct phase_01
+        offers and the evaluator handles; the value pin refused it whole and its remedy
+        destroyed the map. Now each leaf is judged as a status."""
+        kw = self._kwargs(case_ids={"c1", "c2"})
+        def one(table):
+            return validate_predicate_schema(
+                [self._pred(target_cases=["c1", "c2"],
+                            pass_when={"all": [{"ref": "checks.g.status", "op": "eq",
+                                                "value": {"per_case": table},
+                                                "per_case": True, "quantity": "g"}]})], **kw)
+        self.assertEqual(one({"c1": "pass", "c2": "fail"}), [])
+        v = one({"c1": "pass", "c2": True})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("value True is not a status", v[0])
+        # and the evaluator agrees with the gate on the accepted map
+        pred = self._pred(target_cases=["c1", "c2"],
+                          pass_when={"all": [{"ref": "checks.g.status", "op": "eq",
+                                              "value": {"per_case": {"c1": "pass", "c2": "fail"}},
+                                              "per_case": True}]})
+        diag = {"cases": {"c1": {"checks": {"g": {"status": "pass"}}},
+                          "c2": {"checks": {"g": {"status": "fail"}}}}}
+        self.assertEqual(evaluate_predicate(pred, diag)[:2], ("pass", "pass"))
+
+    def test_na_allowed_on_a_status_ref_is_refused(self) -> None:
+        """Round 2: `na_allowed` fires only on an ABSENT leaf, and the runner writes every
+        declared id in every case, so on a status ref it never fires — a leaf reconciling
+        "a per-case slice may hold na" with the DSL's na_allowed by setting it gets a correct
+        kernel `physics_fail`. Refused with the repair; the evaluator side is driven too."""
+        v = validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "checks.g.status", "op": "eq", "value": "pass",
+                                            "per_case": True, "na_allowed": True,
+                                            "quantity": "g"}]})], **self._kwargs())
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("na_allowed has no meaning", v[0])
+        self.assertIn("— remove na_allowed", v[0])
+        pred = self._pred(pass_when={"all": [{"ref": "checks.g.status", "op": "eq", "value": "pass",
+                                              "per_case": True, "na_allowed": True}]})
+        diag = {"cases": {"c1": {"checks": {"g": {"status": "na  "}}}}}
+        self.assertEqual(evaluate_predicate(pred, diag)[:2], ("fail", "physics"))
+
+    def test_verdict_ref_is_a_leaf_and_its_fields_are_pinned(self) -> None:
+        """Round 2 (the `checks` arm's twin): `verdict.<field>.<tail>` was admitted and is
+        `ref_absent` on every run — satisfied on every run under `na_allowed`; and
+        `verdict.overall` / `verdict.failed_checks` took any op and value (`ne "xyz"` never
+        fails, `eq true` never passes, `includes "bogus"` names an id no runner writes).
+        PINNED: the tail refusal; `overall` as a status enum under the same rule as a check;
+        `failed_checks` as `includes` against a declared id. SAMPLED: the spellings below."""
+        def one(ref, op, value, **extra):
+            return validate_predicate_schema(
+                [self._pred(pass_when={"all": [{"ref": ref, "op": op, "value": value,
+                                                "quantity": "q", **extra}]})], **self._kwargs())
+        for ref in ("verdict.overall.x", "verdict.overall.", "verdict.failed_checks.0"):
+            with self.subTest(ref=ref):
+                v = one(ref, "eq", "pass", na_allowed=True)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("has the tail", v[0])
+                self.assertIn("— write verdict.", v[0])
+        diag = {"verdict": {"overall": "fail", "failed_checks": ["g"]}}
+        pred = self._pred(pass_when={"all": [{"ref": "verdict.overall.x", "op": "eq",
+                                              "value": "pass", "na_allowed": True}]})
+        self.assertEqual(evaluate_predicate(pred, diag)[:2], ("pass", "pass"))  # the hole
+        self.assertEqual(one(f"verdict.{VERDICT_ENUM_FIELD}", "eq", "pass"), [])
+        self.assertEqual(one(f"verdict.{VERDICT_ENUM_FIELD}", "eq", "fail"), [])
+        for op, value, frag in (("ne", "xyz", "is not a status comparison"),
+                                ("eq", True, "is not a status"),
+                                ("eq", "PASS", "is not a status"),
+                                ("includes", "pass", "is not a status comparison")):
+            with self.subTest(field="overall", op=op, value=value):
+                v = one(f"verdict.{VERDICT_ENUM_FIELD}", op, value)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(frag, v[0])
+        self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "includes", "g"), [])
+        # `eq <list of declared ids>` is a real comparison (`eq []` says "no check fails");
+        # round 2 refused it, round 3 restored it — origin/main admitted it.
+        self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "eq", []), [])
+        self.assertEqual(one(f"verdict.{VERDICT_LIST_FIELD}", "eq", ["g"]), [])
+        diag_none = {"verdict": {"overall": "pass", "failed_checks": []}}
+        self.assertEqual(evaluate_predicate(self._pred(pass_when={"all": [
+            {"ref": f"verdict.{VERDICT_LIST_FIELD}", "op": "eq", "value": []}]}), diag_none)[:2],
+            ("pass", "pass"))
+        self.assertEqual(evaluate_predicate(self._pred(pass_when={"all": [
+            {"ref": f"verdict.{VERDICT_LIST_FIELD}", "op": "eq", "value": []}]}), diag)[:2],
+            ("fail", "physics"))
+        for op, value, frag in (("includes", "bogus", "is not a declared check id"),
+                                ("ne", "g", "is not a comparison of"),
+                                ("le", 0, "is not a comparison of"),
+                                ("eq", "g", "is not a list"),
+                                ("eq", ["g", "bogus"], "is not a declared check id"),
+                                ("includes", True, "is not a declared check id")):
+            with self.subTest(field="failed_checks", op=op, value=value):
+                v = one(f"verdict.{VERDICT_LIST_FIELD}", op, value)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(frag, v[0])
+        v = one(f"verdict.{VERDICT_LIST_FIELD}", "includes", "g", na_allowed=True)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("na_allowed has no meaning", v[0])
+        # a declared field outside the pinned two is admitted with any op / value
+        self.assertEqual(validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "verdict.n_fail", "op": "le", "value": 0,
+                                            "quantity": "q"}]})],
+            **self._kwargs(verdict_fields={"overall", "failed_checks", "n_fail"})), [])
+        self.assertEqual((VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD), ("overall", "failed_checks"))
+
+    def test_padded_ref_is_refused_because_the_evaluator_does_not_strip(self) -> None:
+        """Round 1 (issue #269): the gate used to validate `ref.strip()` while `_eval_condition`
+        resolves `ref` verbatim, so a padded `checks.<id>.status` passed --stage compile and was
+        `ref_absent` on every run — satisfied on every run under `na_allowed`. Pinned at the
+        gate, and the asymmetry is pinned by driving both sides on the same input."""
+        diag = {"cases": {"c1": {"checks": {"g": {"status": "fail"}}}}}
+        for ref in (" checks.g.status", "checks.g.status ", "\tchecks.g.status\n"):
+            with self.subTest(ref=ref):
+                v = self._check_ref_violations(ref)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("whitespace", v[0])
+                self.assertIn("— write 'checks.g.status'", v[0])
+                pred = self._pred(pass_when={"all": [{"ref": ref, "op": "eq", "value": "pass",
+                                                      "per_case": True, "na_allowed": True}]})
+                # what the evaluator would have done with it: satisfied although the check FAILED
+                self.assertEqual(evaluate_predicate(pred, diag)[:2], ("pass", "pass"))
 
     def test_unknown_verdict_field(self) -> None:
         v = validate_predicate_schema(
@@ -632,19 +872,20 @@ class SchemaTest(unittest.TestCase):
 class TwelveSpecExpressibilityTest(unittest.TestCase):
     """Each real tests.md pass-rule shape reduces to the DSL and evaluates correctly."""
 
-    def test_component_boolean_check_and_guard(self) -> None:
+    def test_component_status_check_and_guard(self) -> None:
         # demo_dep_base: a passing check + a standard "inverted" xfail guard (guard fires,
-        # verdict stays pass).
-        diag = {"checks": {"scale_identity": {"pass": True}, "input_guard": {"pass": True}},
+        # verdict stays pass). Each check is read at its `status` leaf, the one leaf the
+        # runner writes (issue #269).
+        diag = {"checks": {"scale_identity": {"status": "pass"}, "input_guard": {"status": "pass"}},
                 "verdict": {"overall": "pass", "failed_checks": []}}
         preds = [
             {"test_id": "l0_scale_identity_pass", "expected_outcome": "pass",
              "target_cases": ["l0_scale_identity_pass"],
-             "pass_when": {"all": [{"ref": "checks.scale_identity.pass", "op": "eq", "value": True},
+             "pass_when": {"all": [{"ref": "checks.scale_identity.status", "op": "eq", "value": "pass"},
                                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}},
             {"test_id": "l0_invalid_length_xfail", "expected_outcome": "xfail",
              "target_cases": ["l0_invalid_length_xfail"],
-             "pass_when": {"all": [{"ref": "checks.input_guard.pass", "op": "eq", "value": True},
+             "pass_when": {"all": [{"ref": "checks.input_guard.status", "op": "eq", "value": "pass"},
                                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}},
         ]
         doc = evaluate_verdict(preds, diag)
@@ -671,16 +912,16 @@ class TwelveSpecExpressibilityTest(unittest.TestCase):
         # as a `spec` this tree still carries.
         # profile: per-case checks + guard membership on component_compatibility.
         diag = {"cases": {
-            "profile_select_default": {"checks": {"profile_selected": True},
+            "profile_select_default": {"checks": {"profile_selected": {"status": "pass"}},
                                        "verdict": {"overall": "pass", "failed_checks": []}},
             "profile_guard_incompatible_version": {
-                "checks": {"component_compatibility": False},
+                "checks": {"component_compatibility": {"status": "fail"}},
                 "verdict": {"overall": "fail", "failed_checks": ["component_compatibility"]}}}}
         preds = [
             {"test_id": "l0_select_default_profile_pass", "expected_outcome": "pass",
              "target_cases": ["profile_select_default"],
-             "pass_when": {"all": [{"ref": "checks.profile_selected", "op": "eq", "value": True,
-                                    "per_case": True},
+             "pass_when": {"all": [{"ref": "checks.profile_selected.status", "op": "eq",
+                                    "value": "pass", "per_case": True},
                                    {"ref": "verdict.overall", "op": "eq", "value": "pass",
                                     "per_case": True}]}},
             {"test_id": "l0_guard_incompatible_component_version_xfail", "expected_outcome": "xfail",
@@ -736,6 +977,165 @@ class TwelveSpecExpressibilityTest(unittest.TestCase):
                                       {"ref": "verdict.failed_checks", "op": "includes",
                                        "value": "cfl", "per_case": True}]}}
         self.assertEqual(evaluate_predicate(pred, diag)[0], "xfail")
+
+
+
+
+class CheckRefLeafStatementSitesTest(unittest.TestCase):
+    """Issue #269 (`atmofab-enforcement-change` rule 3-a): the leaf a `checks.<id>` predicate
+    ref reads is defined ONCE, as `verdict_evaluator.CHECK_REF_LEAF`, and every document that
+    states it is checked against the constant. Before #269 the compile-inlined phase contract
+    offered `checks.<id>.pass|status`, a spelling half of which the runner never emits, and
+    nothing compared the two: four IRs in `workspace/ir` carried `.pass` (three certified,
+    one revoked).
+
+    Each surface is read inside a window opened by an ANCHOR that precedes the statement and
+    is byte-identical in the wording being refused (so restoring the old wording fails on the
+    missing token, not on the anchor) and closed by the head of the next block; both are
+    self-tested to occur exactly once, in order. The window must hold exactly one statement
+    line, that line must carry the token derived from the constant, and the refused
+    spellings must be absent FROM THE WINDOW — never tree-wide, because `checks.<x>.pass` is
+    a legitimate preflight.json vocabulary in another namespace.
+
+    Two of the three surfaces are READERS of the leaf (the phase contract, the generate
+    template) and go red when their prose drifts from the code; the third is the PRODUCER
+    (the certified harness spec, which the rendered runner carries verbatim) and goes red
+    when the CONSTANT drifts from what the runner writes — the witness in the other
+    direction."""
+
+    _REPO = Path(verdict_evaluator.__file__).resolve().parents[1]
+
+    # (surface, anchor, bound, statement-line marker, required token) — the two `{leaf}`
+    # holes are filled from the constant at run time, never spelled here.
+    _SURFACES: tuple[tuple[str, str, str, str, str], ...] = (
+        ("docs/workflow/phases/phase_01_compile.md",
+         "# test_predicates ref vocabulary (all resolvable at --stage compile):",
+         "# condition scope — the three ways",
+         "#   checks.<id>",
+         "checks.<id>.{leaf}"),
+        ("tools/prompt_templates/pure_generate_generate.txt",
+         "(A) Author an honest `status` for each id.",
+         "(B) `metric_compute(",
+         "checks.<id>",
+         "reads `checks.<id>.{leaf}`"),
+        ("spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md",
+         "- **`diagnostics.json`** — a JSON object with a top-level `checks` object",
+         "- **`perf.json`**",
+         "diagnostics_contract.checks[].id",
+         '{{ "{leaf}": "pass"|"fail" }}'),
+    )
+    _REFUSED: tuple[str, ...] = ("pass|status", "checks.<id>.pass", "checks.<id>...",
+                                 "`checks.<id>`", "checks.<id> ")
+
+    def _window(self, rel: str, anchor: str, bound: str) -> str:
+        text = (self._REPO / rel).read_text(encoding="utf-8")
+        self.assertEqual(text.count(anchor), 1,
+                         f"{rel}: the anchor {anchor!r} occurs {text.count(anchor)} times, "
+                         f"not once — this check would read a window it did not mean to")
+        self.assertEqual(text.count(bound), 1,
+                         f"{rel}: the bound {bound!r} occurs {text.count(bound)} times, not once")
+        start, end = text.index(anchor), text.index(bound)
+        self.assertLess(start, end, f"{rel}: the bound precedes the anchor")
+        window = text[start:end]
+        self.assertTrue(window.strip(), f"{rel}: the window is empty")
+        self.assertLess(len(window), len(text), f"{rel}: the window is the whole file")
+        return window
+
+    @staticmethod
+    def _statement(window: str, first_line: str) -> str:
+        """The marker line and its hard-wrapped continuation: every following line whose
+        indentation is deeper than the marker's (a Markdown / comment wrap), stopping at the
+        first line that is not."""
+        def indent(ln: str) -> int:  # past a comment marker, which the wrapped line repeats
+            return len(ln) - len(ln.lstrip(" #"))
+        lines = window.splitlines()
+        i = lines.index(first_line)
+        out = [first_line]
+        for ln in lines[i + 1:]:
+            if not ln.strip(" #") or indent(ln) <= indent(first_line):
+                break
+            out.append(ln)
+        return "\n".join(out)
+
+    def test_statement_reader_takes_the_wrap_and_stops_at_the_next_item(self) -> None:
+        # Self-test of the continuation rule (rule 3-a: "read the STATEMENT, not the line —
+        # prose WRAPS"; and not across an item boundary).
+        window = ("  #   checks.<id>.status -> first\n"
+                  "  #                        continued\n"
+                  "  #   <metric address>  -> next item\n")
+        stmt = self._statement(window, "  #   checks.<id>.status -> first")
+        self.assertIn("continued", stmt)
+        self.assertNotIn("next item", stmt)
+
+    def test_surface_list_is_the_literal(self) -> None:
+        # A loop over an emptied tuple asserts nothing and stays green.
+        self.assertEqual({rel for rel, *_ in self._SURFACES},
+                         {"docs/workflow/phases/phase_01_compile.md",
+                          "tools/prompt_templates/pure_generate_generate.txt",
+                          "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md"})
+        for rel, *_ in self._SURFACES:
+            self.assertTrue((self._REPO / rel).is_file(), f"{rel}: a surface the code names "
+                            f"is not in the tree — a rename or move shrank this scan")
+        # the refused spellings too (round 2 census: `_REFUSED = ()` stayed green)
+        self.assertEqual(set(self._REFUSED), {"pass|status", "checks.<id>.pass", "checks.<id>...",
+                                              "`checks.<id>`", "checks.<id> "})
+
+    def test_every_statement_site_names_the_status_leaf(self) -> None:
+        for rel, anchor, bound, marker, token_tpl in self._SURFACES:
+            with self.subTest(surface=rel):
+                window = self._window(rel, anchor, bound)
+                statements = [ln for ln in window.splitlines() if marker in ln]
+                self.assertEqual(len(statements), 1,
+                                 f"{rel}: expected exactly one statement line carrying "
+                                 f"{marker!r} between the anchor and the bound, found "
+                                 f"{len(statements)}: {statements}")
+                token = token_tpl.format(leaf=CHECK_REF_LEAF)
+                # On the STATEMENT, not anywhere in the window: round 1 planted a bare
+                # `checks.<id>` statement with the token appended to an unrelated line of the
+                # same window, and the window-wide read passed it. The statement is the marker
+                # line plus its continuation lines (those up to the next line that opens an
+                # item of the same block).
+                self.assertIn(token, self._statement(window, statements[0]),
+                              f"{rel}: the statement does not name the one leaf a `checks.<id>` "
+                              f"ref may read — `checks.<id>.{CHECK_REF_LEAF}` "
+                              f"(verdict_evaluator.CHECK_REF_LEAF); the code and the document "
+                              f"must agree, and the code is canonical")
+                for refused in self._REFUSED:
+                    self.assertNotIn(refused, window,
+                                     f"{rel}: the window still offers {refused!r}, a shape "
+                                     f"`_check_ref` refuses at --stage compile")
+
+    # The surfaces that state the VALUE vocabulary in the `"pass"|"fail"` spelling (the generate
+    # template says it in Fortran-literal form inside clause (A) and is not coupled for it).
+    _VALUE_SURFACES: tuple[str, ...] = (
+        "docs/workflow/phases/phase_01_compile.md",
+        "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md",
+    )
+
+    def test_value_vocabulary_sites_name_the_members_in_order(self) -> None:
+        # Round 1 (issue #269): the gate now pins a status condition's value to
+        # `CHECK_STATUS_VALUES`; the documents that spell the vocabulary are checked against
+        # the constant, in the constant's order, inside the same anchored windows.
+        token = "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
+        by_rel = {rel: (anchor, bound) for rel, anchor, bound, *_ in self._SURFACES}
+        self.assertEqual(set(self._VALUE_SURFACES), set(by_rel) - {
+            "tools/prompt_templates/pure_generate_generate.txt"})
+        for rel in self._VALUE_SURFACES:
+            with self.subTest(surface=rel):
+                window = self._window(rel, *by_rel[rel])
+                self.assertIn(token, window,
+                              f"{rel}: the window does not spell the status values as {token} "
+                              f"(verdict_evaluator.CHECK_STATUS_VALUES, in order)")
+
+    def test_constant_is_what_the_gate_pins(self) -> None:
+        # The constant the documents are coupled to is the one the gate reads: a `checks`
+        # ref with exactly that tail passes, the same id with any other tail is refused with
+        # the repair spelled from the constant.
+        from tools.verdict_evaluator import _check_ref
+        self.assertEqual(_check_ref("L", f"checks.g.{CHECK_REF_LEAF}", {"g"}, set(), set()), [])
+        bad = _check_ref("L", "checks.g.other", {"g"}, set(), set())
+        self.assertEqual(len(bad), 1, bad)
+        self.assertIn(f"— write checks.g.{CHECK_REF_LEAF} compared by", bad[0])
 
 
 if __name__ == "__main__":  # pragma: no cover

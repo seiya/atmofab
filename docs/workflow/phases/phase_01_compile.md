@@ -234,7 +234,9 @@ io_contract:
   #   predicate, never reduced to the runner's own verdict.overall.
   # test_predicates ref vocabulary (all resolvable at --stage compile):
   #   verdict.<field>   -> a diagnostics_contract.verdict.fields entry (overall/failed_checks)
-  #   checks.<id>...    -> an id in diagnostics_contract.checks (the runner emits checks.<id>.pass|status)
+  #   checks.<id>.status -> a diagnostics_contract.checks id — the ONLY checks ref that resolves;
+  #                        compare by eq with "pass"|"fail" (a check that does not apply in a case
+  #                        reports na: read it with case: at the case computing it)
   #   <metric address>  -> any other head (metrics.*/errors.*/cfl.*/convergence.*) MUST be pinned in
   #                        diagnostics_contract.metrics (below). The runner emits every numeric judgment
   #                        already reduced to a field, so predicates do no arithmetic.

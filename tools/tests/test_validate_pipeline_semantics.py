@@ -11686,6 +11686,86 @@ end program shallow_water2d_runner
                 f"ir_rejected_by_current_validator:{len(direct)}:{ir_ref}/spec.ir.yaml:"), reason)
             self.assertNotIn(str(repo.resolve()), reason)
 
+    def test_a_certified_ir_carrying_a_pass_leaf_ref_is_refused_at_readiness(self) -> None:
+        """Issue #269's witness for NOT bumping `COMPILE_INLINED_DOCUMENTS_VERSION`: a certified
+        IR whose predicate reads `checks.<id>.pass` — the spelling four IRs in
+        `workspace/ir` carried — is refused by the same `_check_ref` rule at readiness
+        (`ir_rejected_by_current_validator`, issue #238) and re-derives under its own key, so no
+        version bump is needed to retire it. Same seeding as the row above, `_ir_certification`
+        UNPATCHED; only the selection seam is stubbed (pinned on its own in
+        `DerivationKeyCertificationTests`)."""
+        from unittest import mock
+
+        from tools import orchestration_runtime as ort
+        from tools.tests.orchestration_fixtures import _sha256
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                      "pass_when": {"all": [
+                          {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
+            self.assertEqual(
+                self._compile_with_io_contract(repo, self._io_contract_with_predicates(preds)),
+                [], "the seeded tree must pass --stage compile or the witness observes nothing")
+            ir_ref = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
+            ir_path = repo / ir_ref / "spec.ir.yaml"
+            node_key = "problem/shallow_water2d@0.3.0"
+
+            def _stamp() -> None:
+                _write_json(repo / ir_ref / "ir_meta.json", {
+                    "ir_id": "shallow-water2d_20260415_001", "node_key": node_key,
+                    "attempt_count": 1, "verification_status": "pass",
+                    "last_fail_reason": None, "debug_mode": False, "context_isolated": True,
+                    "artifact_hashes": {f"{ir_ref}/spec.ir.yaml": _sha256(ir_path)},
+                })
+
+            def _selected(self_resolver, nk, step):
+                sel = ort.DerivationSelection(nk, step)
+                sel.ok, sel.ir_ref, sel.ir_id = True, ir_ref, "shallow-water2d_20260415_001"
+                sel.meta_path = repo / ir_ref / "ir_meta.json"
+                return sel
+
+            _stamp()
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
+            self.assertTrue(ok, detail)
+
+            doc = json.loads(ir_path.read_text())
+            cond = doc["io_contract"]["test_predicates"][0]["pass_when"]["all"][0]
+            self.assertEqual(cond["ref"], "checks.g.status")
+            cond["ref"], cond["value"] = "checks.g.pass", True
+            ir_path.write_text(json.dumps(doc))
+            _stamp()
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
+            self.assertFalse(ok, detail)
+            reason = detail["reason"]
+            self.assertTrue(reason.startswith(
+                f"ir_rejected_by_current_validator:1:{ir_ref}/spec.ir.yaml:"
+                "test_predicates[0].pass_when.all[0].ref checks.g.pass reads a `pass` leaf"),
+                reason)
+            # The readiness reason quotes a 200-character HEAD of the finding (measured: the
+            # `— write checks.g.status` remedy lies past it under this ir_ref), and it is read
+            # by nobody who repairs — the refused IR re-derives. The full sentence is the
+            # compile-stage verdict, which is what the operator's `--stage compile` prints.
+            self.assertFalse(detail["revoked"])
+            direct = validate_compile_stage(repo, "workspace", ir_ref)
+            self.assertEqual(len(direct), 1, direct)
+            self.assertIn("— write checks.g.status compared by eq against", str(direct[0]))
+            # Round 2: the `verdict` arm's twin refusal reaches readiness by the same route.
+            doc = json.loads(ir_path.read_text())
+            cond = doc["io_contract"]["test_predicates"][0]["pass_when"]["all"][0]
+            cond["ref"], cond["value"], cond["na_allowed"] = "verdict.overall.status", "pass", True
+            ir_path.write_text(json.dumps(doc))
+            _stamp()
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
+            self.assertFalse(ok, detail)
+            self.assertIn("verdict.overall.status has the tail", detail["reason"])
+
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             io = self._io_contract_with_predicates([])
@@ -11835,7 +11915,7 @@ end program shallow_water2d_runner
                 "- `test_id`: `l0_scale_identity_pass`\n"
                 "  - `expected_outcome`: `pass`\n"
                 "- `test_id`: `l0_invalid_length_xfail`\n"
-                "- `pass_when`: `checks.input_guard.pass == true`\n", encoding="utf-8")
+                "- `pass_when`: `checks.input_guard.status == pass`\n", encoding="utf-8")
             self.assertEqual(_parse_test_ids_from_tests_md(bullet),
                              ["l0_scale_identity_pass", "l0_invalid_length_xfail"])
 
@@ -11893,6 +11973,44 @@ end program shallow_water2d_runner
                                              "value": 0.2, "per_case": True}]}}]
             v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
             self.assertTrue(any("diagnostics_contract.metrics" in x for x in v), v)
+
+    def test_compile_predicate_gate_rejects_check_ref_without_status_leaf(self) -> None:
+        """Issue #269, through the production entry (`validate_compile_stage` ->
+        `_validate_test_predicates` -> `validate_predicate_schema` -> `_check_ref`): a `checks`
+        ref is exactly `checks.<id>.status`, the one leaf the runner writes. The three refused
+        shapes are the spelling `phase_01_compile.md` offered before #269 (`.pass`), the bare
+        object (present at execute, so every op compared false as a `physics_fail`), and any
+        other tail. The control spelling passes the stage. Each condition is corroborated
+        (`_io_contract_with_predicates` default) so the coverage gate stays silent and the
+        only violation this row sees is the ref gate's."""
+        loc = ("workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
+               "/spec.ir.yaml:test_predicates[0].pass_when.all[0].ref ")
+        for ref, value in (("checks.g.pass", True), ("checks.g", True),
+                           ("checks.g.status.x", "pass")):
+            with self.subTest(ref=ref), tempfile.TemporaryDirectory() as tmp:
+                preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                          "pass_when": {"all": [{"ref": ref, "op": "eq", "value": value}]}}]
+                v = self._compile_with_io_contract(
+                    Path(tmp), self._io_contract_with_predicates(preds))
+                # the validator spells its subject as an ABSOLUTE path under the tmp checkout
+                hits = [x for x in v if f"/{loc}{ref} " in str(x)]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("— write checks.g.status", hits[0])
+        # Round 1: the half-follow of the remedy — the ref corrected, the corpus's `value: true`
+        # kept — is refused through the same entry, on the value.
+        with tempfile.TemporaryDirectory() as tmp:
+            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                      "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
+                                             "value": True}]}}]
+            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
+            hits = [x for x in v if ".pass_when.all[0].value True is not a status" in str(x)]
+            self.assertEqual(len(hits), 1, v)
+        with tempfile.TemporaryDirectory() as tmp:
+            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                      "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
+                                             "value": "pass"}]}}]
+            self.assertEqual(self._compile_with_io_contract(
+                Path(tmp), self._io_contract_with_predicates(preds)), [])
 
     def test_compile_coverage_gate_through_the_stage(self) -> None:
         """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage

@@ -14038,7 +14038,7 @@ def _validate_test_predicates(
     carries a ``value``); the predicate ``test_id`` set equals the node's canonical test-id set;
     every ``target_cases`` entry is a declared ``case.test_case_set`` case; and every predicate
     ``ref`` resolves against the declared diagnostics vocabulary — ``verdict.<field>`` /
-    ``checks.<id>`` / a per-case metric address pinned in ``diagnostics_contract.metrics``.
+    ``checks.<id>.status`` / a per-case metric address pinned in ``diagnostics_contract.metrics``.
 
     The canonical test-id set is resolved robustly (this gate is the SOLE enforcer of
     predicate-set == tests.md, so it must not silently no-op): the ``tests.md`` set via
