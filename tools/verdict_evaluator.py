@@ -41,7 +41,8 @@ A multi-target test (a convergence sweep, a base/shifted equivariance pair) rang
 A ``ref`` resolves by its HEAD, over the same closed head vocabulary the Compile-stage gate
 (``_check_ref``) validates:
 
-- ``checks`` / ``verdict`` — a dotted path nested inside the diagnostics slice.
+- ``checks`` / ``verdict`` — a dotted path nested inside the diagnostics slice (a ``checks``
+  ref is exactly ``checks.<id>.status``).
 - any other head — an opaque per-case **metric address** (``metrics.*`` / ``errors.*`` /
   ``cfl.*`` / ``convergence.*``, pinned in ``diagnostics_contract.metrics``), looked up as a
   whole-string KEY of the slice's ``metrics`` map. The runner writes that map flat, keyed by the
@@ -120,8 +121,16 @@ def _resolve_ref(obj: Any, ref: str) -> tuple[bool, Any]:
 # metric ADDRESS — the runner keys its `metrics` map by the whole dotted address, so decomposing
 # it into path segments would never resolve. Exactly mirrors `_check_ref`'s Compile-stage
 # vocabulary: that gate pins a metric ref against the declared addresses by whole-string equality,
-# which is the same key this resolves.
+# which is the same key this resolves, and pins a `checks` ref to the one three-segment path
+# (`checks.<id>.CHECK_REF_LEAF`) the nested resolution can reach.
 _NESTED_REF_HEADS: frozenset[str] = frozenset({"checks", "verdict"})
+
+#: The one leaf a `checks.<id>` predicate ref may read. The certified harness writes each
+#: check as `{"status": "pass"|"fail"}` (the harness spec's controlled_spec §2) and the
+#: rendered runner carries `checks_compute`'s `status` there verbatim. Defined ONCE here; the
+#: documents that state the vocabulary are coupled to it by
+#: `test_verdict_evaluator.CheckRefLeafStatementSitesTest` (issue #269).
+CHECK_REF_LEAF = "status"
 
 
 def _resolve_predicate_ref(obj: Any, ref: str) -> tuple[bool, Any]:
@@ -669,6 +678,22 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
         if not cid or cid not in check_ids:
             return [f"{loc}.ref checks.{cid} not in diagnostics_contract.checks "
                     f"({sorted(check_ids)})"]
+        # The runner writes each check as `{"status": ...}` and `_resolve_ref` needs every
+        # segment, so `checks.<id>.status` is the ONLY shape that resolves. Any other tail is
+        # `ref_absent` at execute — a structural_violation routed to Generate, which cannot
+        # repair the IR — and a BARE `checks.<id>` is worse: the dict is present, every
+        # `_apply_op` compares it false, and the test fails as `physics_fail` with no
+        # structural record. Refuse here, where it is repairable (the metric arm's reasoning).
+        tail = parts[2:]
+        if tail != [CHECK_REF_LEAF]:
+            if tail == ["pass"]:          # the spelling phase_01_compile.md stated before #269
+                what = "reads a `pass` leaf the runner never emits"
+            elif not tail:
+                what = "names the check object, not its status leaf, so every op compares false"
+            else:
+                what = f"has the tail `.{'.'.join(tail)}` where only `.{CHECK_REF_LEAF}` resolves"
+            return [(f"{loc}.ref {ref} {what} (the runner writes each check as "
+                     f"{{\"{CHECK_REF_LEAF}\": \"pass\"|\"fail\"}}) — write checks.{cid}.{CHECK_REF_LEAF}")]
         return []
     # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
     # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,

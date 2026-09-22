@@ -176,7 +176,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # re-derive every node's Compile for an instruction none of them reaches.
     # Re-pinned in round 1: the IR example's comment names the `interfaces` key beside the two
     # it listed (same conditional).
-    "compile-docs-4": "9d3696f7f9bf8ebdf9c5de9c704dd2e521dce267a0ef9c959f8800e1f0b00347",
+    # Re-pinned (issue #269), and NOT bumped, on this reasoning: the ref-vocabulary line stops
+    # offering `checks.<id>.pass`, a shape the runner never emitted (`ref_absent` at execute on
+    # every run). The four certified IRs that carried it are refused by the SAME `_check_ref`
+    # rule at readiness (`ir_rejected_by_current_validator`, issue #238) and re-derive under
+    # their own key — and `DerivationResolver.select` already prefers a newer `.status`
+    # sibling for each of their three nodes (measured 2026-09-22), so no production node
+    # re-derives; every other certified IR already reads `.status` (547 of 566 `checks` refs
+    # in `workspace/ir`, 2026-09-22) and is unchanged by the instruction. A bump would
+    # re-derive every node's Compile for an instruction they already satisfy.
+    "compile-docs-4": "3742b6d09fd026cc87d49e31b005ba8588ddf4edfb24b7bdd80f5169d36b0d36",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -231,7 +240,14 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in round 2: the rule is over the cases a corroborant READS (`cases_read` on the
     # record replaces `case`), `per_case` / `na_allowed` must be booleans, one dead check gone.
     # Re-pinned in round 3 (disclosure; comment / docstring wording only).
-    "verdict-3": "6fcdb58b9f7e969a34c577128aa9dbe0e71c763b09d1ebb913096b758b851d27",
+    # Re-pinned (issue #269), behaviour-preserving for this transformation: `_check_ref` gained
+    # the `checks.<id>.status` pin and `CHECK_REF_LEAF`; it runs at `--stage compile` only
+    # (its one production caller is `validate_predicate_schema` <- `_validate_test_predicates`
+    # <- the compile stage), and `evaluate_verdict` / `evaluate_predicate` / `primary_evidence`
+    # are byte-identical, so every run's `verdict.json` is unchanged. (The digest was taken
+    # after the refusal's return statement was parenthesised for ruff ISC004 — the pin hashes
+    # bytes, so a lint-only edit moves it; the first digest of this re-pin never landed.)
+    "verdict-3": "286d1b44da25c442dd87a05da6b6ca9d6cdc6f11a5c769159da2e50ec94f28c4",
 }
 
 

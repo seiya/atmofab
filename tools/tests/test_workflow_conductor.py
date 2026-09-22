@@ -15615,11 +15615,11 @@ class DeterministicBuildTest(unittest.TestCase):
         return {"io_contract": {"test_predicates": [
             {"test_id": "l0_scale_identity_pass", "expected_outcome": "pass",
              "target_cases": ["l0_scale_identity_pass"],
-             "pass_when": {"all": [{"ref": "checks.scale_identity.pass", "op": "eq", "value": True},
+             "pass_when": {"all": [{"ref": "checks.scale_identity.status", "op": "eq", "value": "pass"},
                                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}},
             {"test_id": "l0_invalid_length_xfail", "expected_outcome": "xfail",
              "target_cases": ["l0_invalid_length_xfail"],
-             "pass_when": {"all": [{"ref": "checks.input_guard.pass", "op": "eq", "value": True},
+             "pass_when": {"all": [{"ref": "checks.input_guard.status", "op": "eq", "value": "pass"},
                                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]}}
 
     def test_author_execute_verdict_pass_and_physics(self) -> None:
@@ -15632,7 +15632,7 @@ class DeterministicBuildTest(unittest.TestCase):
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             ir = self._predicate_ir()
-            good = {"checks": {"scale_identity": {"pass": True}, "input_guard": {"pass": True}},
+            good = {"checks": {"scale_identity": {"status": "pass"}, "input_guard": {"status": "pass"}},
                     "verdict": {"overall": "pass", "failed_checks": []}}
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual(doc["self_verdict"], "pass")
@@ -15640,7 +15640,7 @@ class DeterministicBuildTest(unittest.TestCase):
             on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
             self.assertEqual([p["status"] for p in on_disk["per_test"]], ["pass", "xfail"])
             # a physics failure (scale check false) -> self_verdict fail / physics_fail
-            bad = {"checks": {"scale_identity": {"pass": False}, "input_guard": {"pass": True}},
+            bad = {"checks": {"scale_identity": {"status": "fail"}, "input_guard": {"status": "pass"}},
                    "verdict": {"overall": "fail", "failed_checks": ["scale_identity"]}}
             doc2 = c._author_execute_verdict(refs, ir, bad)
             self.assertEqual(doc2["self_verdict"], "fail")
@@ -15679,7 +15679,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 (sdir / "initial" / f"{cid}.json").write_text(json.dumps({"u": u0, "t": 0.0}))
                 (sdir / f"{cid}.json").write_text(json.dumps({"u": u1, "t": 1.0}))
 
-            good = {"checks": {"scale_identity": {"pass": True}, "input_guard": {"pass": True}},
+            good = {"checks": {"scale_identity": {"status": "pass"}, "input_guard": {"status": "pass"}},
                     "verdict": {"overall": "pass", "failed_checks": []}}
             _write("l0_scale_identity_pass", [1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0])
             _write("l0_invalid_length_xfail", [1.0] * 4, [1.0] * 4)
