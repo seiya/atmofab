@@ -215,10 +215,21 @@ actually receive cannot happen. **The trigger is the count; the audience is the 
 or more statement sites is when discipline has already lost, and a site read by a leaf or an
 operator does not lower the count — it decides which site you check first.
 
-**Reach for the pattern this repository already uses three times** (`_SCRATCH_SURFACES`,
-`_REDIRECT_RULE_SURFACES`, `_SURFACES` in `tools/tests/test_hooks_cli.py`) — but they are three
-DIFFERENT shapes and **they duplicate each other**, so read the one nearest your rule and treat
-copying as the starting point. The eleven traps, each of which cost a round (the count has now been wrong here TWICE, both times by addition and both times caught late: "four" over five bullets until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself; then "ten" over eleven, when issue #180 added the STATEMENTS-per-site bullet and did not re-count — the same trap, a third time, in the same sentence. Issue #175 added four of them, all found by a witness census run against a coupling check written the SAME DAY, three demonstrated by planting the defect the check was built to refuse. **Re-count this sentence whenever you add a bullet; nothing compares it to the list.**):
+**Reach for the pattern this repository already uses** — but the instances are DIFFERENT
+shapes, so read the one nearest your rule and treat copying as the starting point. The live
+ones (the three in `tools/tests/test_hooks_cli.py` that this paragraph used to name went with
+the leaf hook layer in Z4, issue #171 PR-1; their episode stays in
+`references/judgment-episodes.md` §Rule 3-a): `tools/tests/test_pure_leaf_wiring.py`
+`test_phase_02_states_the_scope_rule_with_its_bound` (anchor on text that precedes the rule,
+byte-identical in the refused wording, plus the refused spelling asserted absent) and
+`_RUBRIC_POINTER_SURFACES` (the surface tuple asserted as a literal first, the anchor's count
+pinned to one, the reader bounded to that line); and
+`tools/tests/test_verdict_evaluator.py::CheckRefLeafStatementSitesTest` (issue #269: an
+anchored window with a self-tested bound, a statement reader that takes a hard-wrapped
+continuation and stops at the next item, the token DERIVED from the constant, the refused
+spellings asserted absent inside the window rather than tree-wide because one of them is a
+legitimate vocabulary elsewhere, and a PRODUCER surface beside the reader surfaces so the
+check is red in both directions). The eleven traps, each of which cost a round (the count has now been wrong here TWICE, both times by addition and both times caught late: "four" over five bullets until issue #143 added the sixth, which is this rule's own enumeration trap turned on itself; then "ten" over eleven, when issue #180 added the STATEMENTS-per-site bullet and did not re-count — the same trap, a third time, in the same sentence. Issue #175 added four of them, all found by a witness census run against a coupling check written the SAME DAY, three demonstrated by planting the defect the check was built to refuse. **Re-count this sentence whenever you add a bullet; nothing compares it to the list.**):
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
   Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
