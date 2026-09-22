@@ -138,10 +138,12 @@ refuses a `Glob` pattern beginning with `/` or with `~`, and **five canonical st
 measurement — so `docs/AGENT_CONTRACT.md`, the one document EVERY leaf reads, told a leaf that
 a refusal it can actually receive cannot happen.
 
-**Reach for the pattern this repository already uses three times** rather than inventing one.
-`tools/tests/test_hooks_cli.py` holds `_SCRATCH_SURFACES`, `_REDIRECT_RULE_SURFACES` and
-`_SURFACES` — but they are three DIFFERENT shapes, so read the one nearest your rule before
-copying it: `_SURFACES` is `(file, anchor)`; `_SCRATCH_SURFACES` is `(file, anchor, scope)` and
+**Reach for the pattern this repository already uses** rather than inventing one. At the time of
+this episode `tools/tests/test_hooks_cli.py` held `_SCRATCH_SURFACES`, `_REDIRECT_RULE_SURFACES`
+and `_SURFACES`; that file went with the leaf hook layer in Z4 (issue #171 PR-1, `fcf0db85`), so
+what follows is the record of the shapes and SKILL.md names the live instances
+(`tools/tests/test_pure_leaf_wiring.py`, `tools/tests/test_verdict_evaluator.py`). They were
+three DIFFERENT shapes, so read the one nearest your rule before copying it: `_SURFACES` is `(file, anchor)`; `_SCRATCH_SURFACES` is `(file, anchor, scope)` and
 that third column IS the bound; `_REDIRECT_RULE_SURFACES` has no anchor at all and couples by a
 phrase regex over a paragraph. **They also duplicate each other** — two near-identical
 anchored-window readers with two different window constants live in that one file — so copying
@@ -163,9 +165,9 @@ is the starting point and not the goal. The four traps, each of which cost a rou
 - **Pin the members, not the source line.** A legitimate extraction to a named constant must
   not turn a true statement red — the exemplar `_trigger_prefixes` FAILED this when written — it read
   `pattern.startswith((…))` with the tuple inline, so extracting it to a named constant, a
-  refactor that changes nothing, raised its assertion and named no repair. It resolves a named
-  constant today (`tools/tests/test_hooks_cli.py`, its own docstring records the episode), so copy
-  the current version. Resolve a named constant before giving up, and make the failure name the
+  refactor that changes nothing, raised its assertion and named no repair. The corrected
+  version resolved a named constant and its docstring recorded the episode, until the file went
+  with Z4 (above). Resolve a named constant before giving up, and make the failure name the
   repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
   three lines and pinning the members is fifteen
 

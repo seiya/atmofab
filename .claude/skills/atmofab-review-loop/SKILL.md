@@ -1358,6 +1358,16 @@ that tells you how it closed.
   the same input WITHOUT the mechanism must lose exactly what the mechanism was supposed to keep.
   This is `atmofab-enforcement-change`'s surface 5 — caller-controlled data mixed into a
   classification channel — asked of a TEST rather than of a gate
+- **You appended a test class to the END of a file** → check where the `if __name__ ==
+  "__main__": unittest.main()` guard sits. A class defined below it is collected by pytest
+  (CI) and by `python3 -m unittest <module>`, and is silently absent under the module's own
+  entry `python3 -m <module>` — the instrument a maintainer reaches for when one file is in
+  question. Issue #269's coupling class shipped that way for six commits and a disclosure
+  reviewer found it by running all three entries and comparing the counts. **Criterion, one
+  command pair**: `python3 -m tools.tests.<module> 2>&1 | grep '^Ran'` against
+  `python3 -m pytest tools/tests/<module>.py --co -q | tail -1`; the two numbers agree or the
+  guard is in the wrong place. This is the file-position case of "name any script, harness or
+  fixture generator the branch committed as review surface" under Stopping conditions
 - **You added a prose pin: construct the document SAYING THE OPPOSITE and run it** → a pin that a
   document mentions the rule is not a pin that it states the rule. On PR #116 three leaf-read
   contracts were held to not CARRYING a forbidden directive and to citing where the rule lives;
