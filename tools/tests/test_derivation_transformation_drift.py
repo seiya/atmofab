@@ -188,7 +188,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 1 (not bumped, same reasoning): the line also states how the status
     # is compared (`eq` against `"pass"|"fail"`, which every certified `.status` predicate
     # already does — 547 of 547, 2026-09-22) and that a per-case slice may hold `na`.
-    "compile-docs-4": "1e0c190d9afcaa9ff80208bb146ba9cd5e7d0fe6e2d59a5673f03136f71405be",
+    # Re-pinned in round 2: the per-case `na` is spelled unquoted (the harness releases in the
+    # corpus write both `"na"` and `"na  "`; the statement names the state, not a spelling).
+    "compile-docs-4": "68e1b882e03cbaff94eed249158f75e94c7590c7f0e184b49a30b3c965f5db63",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -255,7 +257,11 @@ PINNED_VERDICT: dict[str, str] = {
     # unchanged).
     # Re-pinned in round 1 (second): `_check_status_condition` pins a `checks` condition's op to
     # `eq` and its value to `CHECK_STATUS_VALUES` at --stage compile; evaluator unchanged.
-    "verdict-3": "3bf1958a53b4fddc54a3ab3f10f87efce67fcd0952a171b4fbc5b010b43d31bd",
+    # Re-pinned in round 2: the `verdict` arm gets the `checks` arm's tail pin and its two
+    # fields' op / value pins; a per-case value map is judged leaf by leaf; `na_allowed` on a
+    # status ref is refused; the ordered-op numeric rule stands down on a status ref. All at
+    # --stage compile; evaluator unchanged.
+    "verdict-3": "2583e0d95db94cda52007690a9e30345186f77a1b39318efe873b587dfed3fdd",
 }
 
 

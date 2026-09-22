@@ -144,6 +144,15 @@ CHECK_STATUS_VALUES: tuple[str, ...] = ("pass", "fail")
 #: check reports where it does not apply — a pass on an unevaluated check — and every
 #: certified predicate says what it means with `eq` (547 of 547, 2026-09-22).
 CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq"})
+#: The verdict fields whose value shape the gate pins (issue #269 round 2 — the `verdict` arm
+#: is the `checks` arm's twin: the same fold writes both). `verdict.overall` is the same
+#: `"pass"|"fail"` enum as a check status, compared by the same one op; `verdict.failed_checks`
+#: is the list of failing check ids, read by `includes` against a DECLARED id — a member no
+#: runner ever writes is a condition that can never be satisfied (and under `ne`, never fail).
+#: A declared field outside this table is admitted with any op and value (none exists in the
+#: corpus; `_verify_verdict_fields` pins the M3c set to these two).
+VERDICT_ENUM_FIELD = "overall"
+VERDICT_LIST_FIELD = "failed_checks"
 
 
 def _resolve_predicate_ref(obj: Any, ref: str) -> tuple[bool, Any]:
@@ -582,8 +591,14 @@ def validate_predicate_schema(
             else:
                 ref_v = _check_ref(cloc, ref, check_ids, verdict_fields, metric_addrs)
                 v.extend(ref_v)
-                if not ref_v and ref.split(".", 1)[0] == "checks":
-                    v.extend(_check_status_condition(cloc, op, cond.get("value")))
+                if not ref_v:
+                    if ref.split(".", 1)[0] == "checks":
+                        v.extend(_check_status_condition(
+                            cloc, f"checks.<id>.{CHECK_REF_LEAF}", cond))
+                    elif ref == f"verdict.{VERDICT_ENUM_FIELD}":
+                        v.extend(_check_status_condition(cloc, ref, cond))
+                    elif ref == f"verdict.{VERDICT_LIST_FIELD}":
+                        v.extend(_check_failed_checks_condition(cloc, cond, check_ids))
             # isinstance guard BEFORE the frozenset membership: a malformed `op` authored as a
             # YAML list/map is unhashable and `op in _OPS` would raise TypeError, crashing the
             # gate instead of reporting an actionable violation for warm-resume repair.
@@ -657,7 +672,13 @@ def validate_predicate_schema(
             # "1e-10" (or a per-case map of strings) passes the null check but at execute
             # `_apply_op` needs both sides numeric, so it deterministically returns false and a
             # correct run is misreported physics_fail. Catch the wrong-typed threshold here.
-            if isinstance(op, str) and op in _ORDERED_OPS and value is not None:
+            # A status / list ref owns its op refusal above (one repair per retry: a leaf told
+            # both "write op eq" and "make the value a number" can follow the wrong half).
+            is_status_or_list = (isinstance(ref, str) and (
+                ref.strip().split(".", 1)[0] == "checks"
+                or ref.strip() in (f"verdict.{VERDICT_ENUM_FIELD}", f"verdict.{VERDICT_LIST_FIELD}")))
+            if isinstance(op, str) and op in _ORDERED_OPS and value is not None \
+                    and not is_status_or_list:
                 if isinstance(value, dict) and set(value.keys()) == {"per_case"} \
                         and isinstance(value["per_case"], dict):
                     for cid, tv in value["per_case"].items():
@@ -688,22 +709,63 @@ def _status_vocabulary() -> str:
     return "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
 
 
-def _check_status_condition(loc: str, op: object, value: object) -> list[str]:
-    """The op / value half of a `checks.<id>.status` condition (issue #269 round 1). The ref
-    refusal's remedy used to name the ref alone; every `.pass` predicate in the corpus carried
+def _status_remedy() -> str:
+    """`— write op eq with value "pass" or "fail"`, derived from the two constants."""
+    ops = "|".join(sorted(CHECK_STATUS_OPS))
+    vals = " or ".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
+    return f"— write op {ops} with value {vals}"
+
+
+def _check_status_condition(loc: str, what: str, cond: dict[str, Any]) -> list[str]:
+    """The op / value half of a status-enum condition — `checks.<id>.status` (issue #269 round
+    1) and `verdict.overall` (round 2, the same enum from the same fold). The ref refusal's
+    remedy used to name the ref alone; every `.pass` predicate in the corpus carried
     `value: true`, and the half-follow (`checks.<id>.status eq true`) passed the gate and
     reported a correct kernel `physics_fail` (`_values_equal` never equates a bool to a str).
-    Refused here, where it is repairable, together with `ne` (see `CHECK_STATUS_OPS`)."""
+    Refused here, where it is repairable, together with `ne` (see `CHECK_STATUS_OPS`), and
+    `na_allowed` (a status leaf is never absent — the runner writes every declared id per
+    case — so the flag never fires; a leaf reaching for it to cover a per-case `na` gets a
+    correct kernel `physics_fail`). A `{per_case: {...}}` value map is judged leaf by leaf (the
+    schema's own per-case-map rules judge its keys)."""
+    op, value = cond.get("op"), cond.get("value")
     if isinstance(op, str) and op in _OPS and op not in CHECK_STATUS_OPS:
-        return [(f"{loc}.op {op} is not a status comparison: checks.<id>.{CHECK_REF_LEAF} is an "
-                 f"enum, compared by {'|'.join(sorted(CHECK_STATUS_OPS))} against "
-                 f"{_status_vocabulary()} — write op eq with value \"pass\" or \"fail\"")]
+        return [(f"{loc}.op {op} is not a status comparison: {what} is an enum, compared by "
+                 f"{'|'.join(sorted(CHECK_STATUS_OPS))} against {_status_vocabulary()} "
+                 f"{_status_remedy()}")]
+    if bool(cond.get("na_allowed")):
+        return [(f"{loc}.na_allowed has no meaning on {what}: the runner writes it for every "
+                 f"declared id in every case, so the leaf is never absent and the flag never "
+                 f"fires — remove na_allowed (a case whose check does not apply is not targeted)")]
     if value is None:  # the schema's own non-null rule already names this one
         return []
-    if not (isinstance(value, str) and value in CHECK_STATUS_VALUES):
-        return [(f"{loc}.value {value!r} is not a check status (checks.<id>.{CHECK_REF_LEAF} holds "
-                 f"{_status_vocabulary()}; a bool, a number or a misspelt member is never "
-                 f"equal to it) — write value \"pass\" or \"fail\"")]
+    leaves = (list(value["per_case"].values())
+              if isinstance(value, dict) and set(value) == {"per_case"}
+              and isinstance(value["per_case"], dict) else [value])
+    bad = [lv for lv in leaves if not (isinstance(lv, str) and lv in CHECK_STATUS_VALUES)]
+    if bad:
+        return [(f"{loc}.value {bad[0]!r} is not a status ({what} holds {_status_vocabulary()}; a "
+                 f"bool, a number, a padded or a misspelt member is never equal to it) "
+                 f"{_status_remedy()}")]
+    return []
+
+
+def _check_failed_checks_condition(loc: str, cond: dict[str, Any], check_ids: set[str]) -> list[str]:
+    """`verdict.failed_checks` is the list of failing check ids: read by `includes` against a
+    declared id. Any other op compares a list to a scalar (always false, or always true under
+    `ne`), and an undeclared id is a member no runner writes (issue #269 round 2)."""
+    op, value = cond.get("op"), cond.get("value")
+    what = f"verdict.{VERDICT_LIST_FIELD}"
+    if isinstance(op, str) and op in _OPS and op != "includes":
+        return [(f"{loc}.op {op} is not a membership test: {what} is the list of failing check "
+                 f"ids — write op includes with value <a diagnostics_contract.checks id>")]
+    if bool(cond.get("na_allowed")):
+        return [(f"{loc}.na_allowed has no meaning on {what}: the runner writes the list in every "
+                 f"run — remove na_allowed")]
+    if value is None:
+        return []
+    if not (isinstance(value, str) and value in check_ids):
+        return [(f"{loc}.value {value!r} is not a declared check id ({what} holds ids from "
+                 f"diagnostics_contract.checks: {sorted(check_ids)}) — write one of them")]
     return []
 
 
@@ -712,12 +774,19 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
     """Resolve a predicate ``ref`` head against the declared diagnostics vocabulary."""
     head = ref.split(".", 1)[0]
     if head == "verdict":
-        field = ref.split(".", 2)[1] if "." in ref else ""
+        parts = ref.split(".")
+        field = parts[1] if len(parts) > 1 else ""
         if not field:
             return [f"{loc}.ref `verdict` needs a field (e.g. verdict.overall)"]
         if field not in verdict_fields:
             return [f"{loc}.ref verdict.{field} not in diagnostics_contract.verdict.fields "
                     f"({sorted(verdict_fields)})"]
+        # The `checks` arm's twin (round 2): `_resolve_ref` needs every segment, and a verdict
+        # field is a leaf, so any further tail is `ref_absent` on every run — satisfied on
+        # every run under `na_allowed`. Refuse it here, where it is repairable.
+        if len(parts) > 2:
+            return [(f"{loc}.ref {ref} has the tail `.{'.'.join(parts[2:])}` after verdict.{field}, "
+                     f"a leaf the runner writes with no members — write verdict.{field}")]
         return []
     if head == "checks":
         parts = ref.split(".")
@@ -741,7 +810,7 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
                 what = f"has the tail `.{'.'.join(tail)}` where only `.{CHECK_REF_LEAF}` resolves"
             return [(f"{loc}.ref {ref} {what} (the runner writes each check as "
                      f"{{\"{CHECK_REF_LEAF}\": {_status_vocabulary()}}}) — write checks.{cid}.{CHECK_REF_LEAF} "
-                     f"compared by eq against {_status_vocabulary()}")]
+                     f"compared by {'|'.join(sorted(CHECK_STATUS_OPS))} against {_status_vocabulary()}")]
         return []
     # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
     # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,

@@ -11754,6 +11754,17 @@ end program shallow_water2d_runner
             direct = validate_compile_stage(repo, "workspace", ir_ref)
             self.assertEqual(len(direct), 1, direct)
             self.assertIn("— write checks.g.status compared by eq against", str(direct[0]))
+            # Round 2: the `verdict` arm's twin refusal reaches readiness by the same route.
+            doc = json.loads(ir_path.read_text())
+            cond = doc["io_contract"]["test_predicates"][0]["pass_when"]["all"][0]
+            cond["ref"], cond["value"], cond["na_allowed"] = "verdict.overall.status", "pass", True
+            ir_path.write_text(json.dumps(doc))
+            _stamp()
+            with mock.patch.object(ort.DerivationResolver, "select", _selected):
+                ok, detail = ort._ir_certification(
+                    repo, node_key, resolver=ort.DerivationResolver(repo))
+            self.assertFalse(ok, detail)
+            self.assertIn("verdict.overall.status has the tail", detail["reason"])
 
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11992,7 +12003,7 @@ end program shallow_water2d_runner
                       "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
                                              "value": True}]}}]
             v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            hits = [x for x in v if ".pass_when.all[0].value True is not a check status" in str(x)]
+            hits = [x for x in v if ".pass_when.all[0].value True is not a status" in str(x)]
             self.assertEqual(len(hits), 1, v)
         with tempfile.TemporaryDirectory() as tmp:
             preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
