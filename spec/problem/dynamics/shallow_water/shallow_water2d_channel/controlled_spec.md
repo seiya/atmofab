@@ -126,7 +126,7 @@ The integral is evaluated by composite Simpson quadrature on a uniform sub-grid 
 $$
 h_N=h_0-\frac{f_0\,u_0\,e^{4/x_e}}{g}\,\frac{y_e-y_b}{x_e}\,C,\qquad C=\int_0^{x_e}e^{-1/s-1/(x_e-s)}\,ds=1.12064479227927\times10^{-7}
 $$
-which the discrete initial state reproduces at every row north of $y_e$ to round-off (the quadrature above is exact to round-off for this integrand at every `ny` of `tests.md`). The branch-free form $b(s)=\exp\left(-1/\max(s,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(s)$ at every cell centre in double precision (for $s\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $s=0$, because $y_b$ and $y_e$ lie on cell edges when `ny` is a multiple of 8, and the sweep of `tests.md` uses such `ny`), and either form may be used.
+which the discrete initial state reproduces at every row north of $y_e$ to round-off: the integrand is smooth with compact support inside $[0,y_j]$ for those rows, so the composite rule's error on the complete integral is below round-off. Inside the jet the rule's error against the exact partial integral is below $2\times10^{-12}$ relative at every `ny` of `tests.md`. $C$ has no closed form; its value is defined by the digits given. The branch-free form $b(s)=\exp\left(-1/\max(s,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(s)$ at every cell centre in double precision (for $s\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $s=0$, because $y_b$ and $y_e$ lie on cell edges when `ny` is a multiple of 8, and the sweep of `tests.md` uses such `ny`), and either form may be used.
 
 The runtime input requires the following.
 - `L_x`, `L_y`, `nx`, `ny`
