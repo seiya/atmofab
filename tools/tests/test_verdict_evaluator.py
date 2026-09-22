@@ -520,11 +520,16 @@ class SchemaTest(unittest.TestCase):
             [self._pred(pass_when={"all": [{"ref": "checks.nope.status", "op": "eq",
                                             "value": "pass"}]})], **self._kwargs())
         self.assertTrue(any("diagnostics_contract.checks" in x for x in v))
-        # The id is judged FIRST and short-circuits: an unknown id earns the id message ALONE,
-        # never a second violation about its leaf (issue #269).
-        about_nope = [x for x in v if "checks.nope" in x]
+        # The id is judged FIRST and short-circuits: an unknown id WITH a refused tail and a
+        # refused value earns the id message ALONE — never the tail's or the value's (issue
+        # #269; round 1 found the row observing this on a clean tail, where neither ordering
+        # nor short-circuit is reachable).
+        v = validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "checks.nope.pass", "op": "eq",
+                                            "value": True}]})], **self._kwargs())
+        about_nope = [x for x in v if "checks.nope" in x or ".value" in x]
         self.assertEqual(len(about_nope), 1, v)
-        self.assertIn("not in diagnostics_contract.checks", about_nope[0])
+        self.assertIn("checks.nope not in diagnostics_contract.checks", about_nope[0])
 
     def _check_ref_violations(self, ref: str, value: object = "pass") -> list[str]:
         return validate_predicate_schema(
@@ -550,7 +555,9 @@ class SchemaTest(unittest.TestCase):
 
     def test_check_ref_extra_tail_is_refused(self) -> None:
         # Two different spellings of "some other tail" (rule 1-b: not one counterexample).
-        for ref in ("checks.g.status.x", "checks.g.result"):
+        # `checks.g.Status` is round 1's surviving mutant: a case-folding comparison passed
+        # every row while `_resolve_ref` is case-exact, so the ref was `ref_absent` at execute.
+        for ref in ("checks.g.status.x", "checks.g.result", "checks.g.Status"):
             with self.subTest(ref=ref):
                 v = self._check_ref_violations(ref)
                 self.assertEqual(len(v), 1, v)
@@ -897,7 +904,8 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
          "diagnostics_contract.checks[].id",
          '{{ "{leaf}": "pass"|"fail" }}'),
     )
-    _REFUSED: tuple[str, ...] = ("pass|status", "checks.<id>.pass", "checks.<id>...")
+    _REFUSED: tuple[str, ...] = ("pass|status", "checks.<id>.pass", "checks.<id>...",
+                                 "`checks.<id>`", "checks.<id> ")
 
     def _window(self, rel: str, anchor: str, bound: str) -> str:
         text = (self._REPO / rel).read_text(encoding="utf-8")
@@ -912,6 +920,32 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
         self.assertTrue(window.strip(), f"{rel}: the window is empty")
         self.assertLess(len(window), len(text), f"{rel}: the window is the whole file")
         return window
+
+    @staticmethod
+    def _statement(window: str, first_line: str) -> str:
+        """The marker line and its hard-wrapped continuation: every following line whose
+        indentation is deeper than the marker's (a Markdown / comment wrap), stopping at the
+        first line that is not."""
+        def indent(ln: str) -> int:  # past a comment marker, which the wrapped line repeats
+            return len(ln) - len(ln.lstrip(" #"))
+        lines = window.splitlines()
+        i = lines.index(first_line)
+        out = [first_line]
+        for ln in lines[i + 1:]:
+            if not ln.strip(" #") or indent(ln) <= indent(first_line):
+                break
+            out.append(ln)
+        return "\n".join(out)
+
+    def test_statement_reader_takes_the_wrap_and_stops_at_the_next_item(self) -> None:
+        # Self-test of the continuation rule (rule 3-a: "read the STATEMENT, not the line —
+        # prose WRAPS"; and not across an item boundary).
+        window = ("  #   checks.<id>.status -> first\n"
+                  "  #                        continued\n"
+                  "  #   <metric address>  -> next item\n")
+        stmt = self._statement(window, "  #   checks.<id>.status -> first")
+        self.assertIn("continued", stmt)
+        self.assertNotIn("next item", stmt)
 
     def test_surface_list_is_the_literal(self) -> None:
         # A loop over an emptied tuple asserts nothing and stays green.
@@ -933,7 +967,12 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
                                  f"{marker!r} between the anchor and the bound, found "
                                  f"{len(statements)}: {statements}")
                 token = token_tpl.format(leaf=CHECK_REF_LEAF)
-                self.assertIn(token, window,
+                # On the STATEMENT, not anywhere in the window: round 1 planted a bare
+                # `checks.<id>` statement with the token appended to an unrelated line of the
+                # same window, and the window-wide read passed it. The statement is the marker
+                # line plus its continuation lines (those up to the next line that opens an
+                # item of the same block).
+                self.assertIn(token, self._statement(window, statements[0]),
                               f"{rel}: the statement does not name the one leaf a `checks.<id>` "
                               f"ref may read — `checks.<id>.{CHECK_REF_LEAF}` "
                               f"(verdict_evaluator.CHECK_REF_LEAF); the code and the document "
