@@ -26958,6 +26958,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         "spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md:"
         "fa62fb936e108ecb":
             "§4: the same sentence",
+        "spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md:"
+        "447f416b882ae9c6":
+            "§4: the same sentence (issue #265 PR-3)",
         "docs/GLOSSARY.md:cb366ac6efb20346":
             "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
         "docs/GLOSSARY.md:41add5d95394fae2":

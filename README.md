@@ -121,9 +121,9 @@ workspace/    trial artifacts
 
 | spec_kind | spec_id |
 |---|---|
-| `problem` | `advdiff1d_linear`, `shallow_water2d` |
+| `problem` | `advdiff1d_linear`, `shallow_water2d`, `shallow_water2d_channel` |
 | `component` | `dynamics_advdiff_flux_1d_upwind_center2`, `dynamics_advection_diffusion_boundary_1d_periodic_copy`, `dynamics_advection_diffusion_time_update_1d_euler1`, `dynamics_shallow_water_flux_2d_rusanov_p0`, `dynamics_shallow_water_boundary_2d_periodic_copy`, `dynamics_shallow_water_time_update_2d_ssprk2`, `dynamics_shallow_water_boundary_2d_channel_mirror`, `dynamics_shallow_water_source_2d_coriolis`, `dynamics_shallow_water_time_update_2d_rk4` |
-| `profile` | `dynamics_advdiff_profile_1d_upwind_center2_euler1`, `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` |
+| `profile` | `dynamics_advdiff_profile_1d_upwind_center2_euler1`, `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, `dynamics_shallow_water_profile_2d_channel_p0_rk4` |
 | `infrastructure` | `harness_fortran_cpu` |
 
 `spec/registry/spec_catalog.yaml` is the registry of record for placement and state.
