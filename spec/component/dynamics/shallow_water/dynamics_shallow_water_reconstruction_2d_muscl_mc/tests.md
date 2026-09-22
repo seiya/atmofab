@@ -63,35 +63,35 @@ This suite verifies the published `operation` `dynamics_shallow_water_reconstruc
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ng<2`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `ng=1`, the `operation` returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes exactly `0` into every element of `U_L`, `U_R`, `U_B` and `U_T` (`checks.rejected_outputs_zero`: no element is the setup sentinel `-999`). The captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause fails this test. A model that reconstructs from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_nx_total_above_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `nx_total>nx+2*ng`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `nx_total=11`, the `operation` returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes exactly `0` into every element of `U_L`, `U_R`, `U_B` and `U_T` (`checks.rejected_outputs_zero`: no element is the setup sentinel `-999`). The captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause fails this test. A model that reconstructs from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_nx_total_below_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `nx_total<nx+2*ng`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `nx_total=9`, the `operation` returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes exactly `0` into every element of `U_L`, `U_R`, `U_B` and `U_T` (`checks.rejected_outputs_zero`: no element is the setup sentinel `-999`). The captured `grid_valid` is `0`, not the setup value `-1`. A model whose `nx_total` clause is the inequality `nx_total<=nx+2*ng` fails this test. A model that reconstructs from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_ny_total_above_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny_total>ny+2*ng`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `ny_total=9`, the `operation` returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes exactly `0` into every element of `U_L`, `U_R`, `U_B` and `U_T` (`checks.rejected_outputs_zero`: no element is the setup sentinel `-999`). The captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause fails this test. A model that reconstructs from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_ny_total_below_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny_total<ny+2*ng`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `ny_total=7`, the `operation` returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes exactly `0` into every element of `U_L`, `U_R`, `U_B` and `U_T` (`checks.rejected_outputs_zero`: no element is the setup sentinel `-999`). The captured `grid_valid` is `0`, not the setup value `-1`. A model whose `ny_total` clause is the inequality `ny_total<=ny+2*ng` fails this test. A model that reconstructs from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 
 ## 7. Pass/fail aggregation rules

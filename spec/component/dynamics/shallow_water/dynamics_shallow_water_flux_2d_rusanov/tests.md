@@ -58,56 +58,56 @@ This suite verifies the published `operation` `dynamics_shallow_water_flux_2d_ru
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h==0` in `U_L`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_L = [0, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard on `U_L` is `h<0` fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_l_negative_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<0` in `U_L`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_L = [-0.5, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard on `U_L` is `h==0` fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_r_zero_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h==0` in `U_R`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_R = [0, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_R`, or whose guard on `U_R` is `h<0`, fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_r_negative_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<0` in `U_R`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_R = [-0.5, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_R` fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_b_zero_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h==0` in `U_B`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_B = [0, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_B`, or whose guard on `U_B` is `h<0`, fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_b_negative_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<0` in `U_B`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_B = [-0.5, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_B` fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_t_zero_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h==0` in `U_T`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_T = [0, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_T`, or whose guard on `U_T` is `h<0`, fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 - `test_id`: `l0_invalid_dry_state_t_negative_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<0` in `U_T`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard' and checks.rejected_outputs_zero.status == pass`
   - `judgment`: with `U_T = [-0.5, 0, 0]` and the other three states those of the first distinct-state case, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`) and writes `0` into `F_star`, `G_star`, `a_x` and `a_y` (`checks.rejected_outputs_zero`: every component of `F_star` and `G_star` and both wave speeds are exactly `0`, none of them the setup sentinel `-999`). The captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard omits `U_T` fails this test. A model that computes a flux from the rejected input, and a checks module that does not call the `operation` on this case and leaves the flag at its setup value, both fail this test.
 
 ## 7. Pass/fail aggregation rules
