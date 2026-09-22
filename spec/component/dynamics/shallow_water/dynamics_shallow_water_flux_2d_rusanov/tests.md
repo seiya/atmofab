@@ -27,8 +27,8 @@ This suite verifies the published `operation` `dynamics_shallow_water_flux_2d_ru
 
 ## 5. Diagnostics contract
 - Require outputting `checks.equal_state_consistency`, `checks.distinct_state_closed_form`, `checks.still_water`, `checks.wave_speed_nonnegative`, and `checks.input_guard` in `diagnostics.json`.
-- The state of a case, captured after setup and after the run, consists of `U_L`, `U_R`, `U_B`, `U_T` (3 values each, the supplied states), `F_star`, `G_star` (3 values each), `a_x`, `a_y` (scalars), and `guard_ok` (scalar, `1` when the `operation` returned true and `0` when it returned false). The four states are set at setup; `F_star`, `G_star`, `a_x`, `a_y` are zero at the capture after setup and are the values the `operation` wrote at the capture after the run; `guard_ok` is the value the `operation` returned, recorded as `1` / `0` because a state variable is real-valued. No state variable is derived by the checks module after the run: a residual or a deviation over these variables is a `checks.<id>` status, never a state variable. Every judgment of §6 is a statement about these variables and the §2 inputs.
-- Each check is computed on the case named here and is `na` on every other case: `checks.equal_state_consistency` on the equal-state case; `checks.distinct_state_closed_form` on the distinct-state case; `checks.still_water` on the still-water case; `checks.wave_speed_nonnegative` on every case the guard accepts; `checks.input_guard` on every case (`pass` when `guard_ok = 1`, `fail` when `guard_ok = 0`).
+- The state of a case, captured after setup and after the run, consists of `U_L`, `U_R`, `U_B`, `U_T` (3 values each, the supplied states), `F_star`, `G_star` (3 values each), `a_x`, `a_y` (scalars), and `guard_ok` (scalar: `-1` at setup, before the `operation` is called; `1` when the `operation` returned true; `0` when it returned false). The four states are set at setup; `F_star`, `G_star`, `a_x`, `a_y` are zero at the capture after setup and are the values the `operation` wrote at the capture after the run; `guard_ok` is set to `-1` at setup and to the value the `operation` returned at the call, recorded as `1` / `0` because a state variable is real-valued. The setup value `-1` is distinct from both values the `operation` can return, so a captured `guard_ok` of `0` is evidence that the `operation` was called and rejected the input; a case whose `operation` was never called captures `-1`, and no judgment of §6 accepts it. No state variable is derived by the checks module after the run: a residual or a deviation over these variables is a `checks.<id>` status, never a state variable. Every judgment of §6 is a statement about these variables and the §2 inputs.
+- Each check is computed on the case named here and is `na` on every other case: `checks.equal_state_consistency` on the equal-state case; `checks.distinct_state_closed_form` on the distinct-state case; `checks.still_water` on the still-water case; `checks.wave_speed_nonnegative` on every case the guard accepts; `checks.input_guard` on every case (`pass` when `guard_ok = 1`, `fail` when `guard_ok = 0` and when `guard_ok = -1`).
 
 ## 6. Test definitions
 - `test_id`: `l0_equal_state_consistency_pass`
@@ -57,14 +57,14 @@ This suite verifies the published `operation` `dynamics_shallow_water_flux_2d_ru
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<=0` in `U_L`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
-  - `judgment`: with `U_L = [0, 0, 0]`, the `operation` returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`). A model whose guard is `h<0` fails this test.
+  - `judgment`: with `U_L = [0, 0, 0]`, the `operation` is called and returns `guard_ok = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`); the captured `guard_ok` is `0`, not the setup value `-1`. A model whose guard is `h<0`, and a checks module that does not call the `operation` on this case, both fail this test.
 - `test_id`: `l0_invalid_dry_state_y_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<=0` in `U_T`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
-  - `judgment`: with `U_T = [-0.5, 0, 0]`, the same as `l0_invalid_dry_state_xfail`: `guard_ok = 0`. A model whose guard reads the `x` states only fails this test.
+  - `judgment`: with `U_T = [-0.5, 0, 0]`, the same as `l0_invalid_dry_state_xfail`: the `operation` is called and the captured `guard_ok` is `0`. A model whose guard reads the `x` states only fails this test.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.

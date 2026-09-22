@@ -29,8 +29,8 @@ This suite verifies the published `operation` `dynamics_shallow_water_reconstruc
 
 ## 5. Diagnostics contract
 - Require outputting `checks.linear_exact`, `checks.constant`, `checks.extremum`, `checks.step_bounded`, `checks.slope_value`, and `checks.input_guard` in `diagnostics.json`.
-- The state of a case, captured after setup and after the run, consists of `U_in` (`nx_total` × `ny_total`, the input field, ghost cells included), `U_L` and `U_R` (`nx+1` × `ny` each), `U_B` and `U_T` (`nx` × `ny+1` each), and `grid_valid` (scalar, `1` when the `operation` returned true and `0` when it returned false). `U_in` is set at setup; the four interface arrays are zero at the capture after setup and are the arrays the `operation` wrote at the capture after the run; `grid_valid` is the value the `operation` returned, recorded as `1` / `0` because a state variable is real-valued. No state variable is derived by the checks module after the run: a deviation, a maximum or a bound over these variables is a `checks.<id>` status, never a state variable. Every judgment of §6 is a statement about these variables and the §2 inputs.
-- Each check is computed on the case named here and is `na` on every other case: `checks.linear_exact` on the linear case; `checks.constant` on the constant case; `checks.extremum` on the extremum case; `checks.step_bounded` on the step case; `checks.slope_value` on the cubic case; `checks.input_guard` on every case (`pass` when `grid_valid = 1`, `fail` when `grid_valid = 0`).
+- The state of a case, captured after setup and after the run, consists of `U_in` (`nx_total` × `ny_total`, the input field, ghost cells included), `U_L` and `U_R` (`nx+1` × `ny` each), `U_B` and `U_T` (`nx` × `ny+1` each), and `grid_valid` (scalar: `-1` at setup, before the `operation` is called; `1` when the `operation` returned true; `0` when it returned false). `U_in` is set at setup; the four interface arrays are zero at the capture after setup and are the arrays the `operation` wrote at the capture after the run; `grid_valid` is set to `-1` at setup and to the value the `operation` returned at the call, recorded as `1` / `0` because a state variable is real-valued. The setup value `-1` is distinct from both values the `operation` can return, so a captured `grid_valid` of `0` is evidence that the `operation` was called and rejected the input; a case whose `operation` was never called captures `-1`, and no judgment of §6 accepts it. No state variable is derived by the checks module after the run: a deviation, a maximum or a bound over these variables is a `checks.<id>` status, never a state variable. Every judgment of §6 is a statement about these variables and the §2 inputs.
+- Each check is computed on the case named here and is `na` on every other case: `checks.linear_exact` on the linear case; `checks.constant` on the constant case; `checks.extremum` on the extremum case; `checks.step_bounded` on the step case; `checks.slope_value` on the cubic case; `checks.input_guard` on every case (`pass` when `grid_valid = 1`, `fail` when `grid_valid = 0` and when `grid_valid = -1`).
 
 ## 6. Test definitions
 - `test_id`: `l0_linear_field_exact_pass`
@@ -64,18 +64,21 @@ This suite verifies the published `operation` `dynamics_shallow_water_reconstruc
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ng<2`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: with `ng=1`, the `operation` is called and returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`); the captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause, and a checks module that does not call the `operation` on this case, both fail this test.
 - `test_id`: `l0_invalid_nx_total_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `nx_total/=nx+2*ng`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: with `nx_total=11`, the `operation` is called and returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`); the captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause, and a checks module that does not call the `operation` on this case, both fail this test.
 - `test_id`: `l0_invalid_ny_total_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny_total/=ny+2*ng`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: with `ny_total=9`, the `operation` is called and returns `grid_valid = 0` (`checks.input_guard` is `fail`, which makes the case's `verdict.overall` `fail`); the captured `grid_valid` is `0`, not the setup value `-1`. A model without this guard clause, and a checks module that does not call the `operation` on this case, both fail this test.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
