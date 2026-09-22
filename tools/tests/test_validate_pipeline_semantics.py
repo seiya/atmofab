@@ -11753,7 +11753,7 @@ end program shallow_water2d_runner
             self.assertFalse(detail["revoked"])
             direct = validate_compile_stage(repo, "workspace", ir_ref)
             self.assertEqual(len(direct), 1, direct)
-            self.assertTrue(str(direct[0]).endswith("— write checks.g.status"), direct)
+            self.assertIn("— write checks.g.status compared by eq|ne", str(direct[0]))
 
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11985,6 +11985,15 @@ end program shallow_water2d_runner
                 hits = [x for x in v if f"/{loc}{ref} " in str(x)]
                 self.assertEqual(len(hits), 1, v)
                 self.assertIn("— write checks.g.status", hits[0])
+        # Round 1: the half-follow of the remedy — the ref corrected, the corpus's `value: true`
+        # kept — is refused through the same entry, on the value.
+        with tempfile.TemporaryDirectory() as tmp:
+            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                      "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
+                                             "value": True}]}}]
+            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
+            hits = [x for x in v if ".pass_when.all[0].value True is not a check status" in str(x)]
+            self.assertEqual(len(hits), 1, v)
         with tempfile.TemporaryDirectory() as tmp:
             preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
                       "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",

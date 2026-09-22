@@ -14,6 +14,8 @@ from pathlib import Path
 from tools import verdict_evaluator
 from tools.verdict_evaluator import (
     CHECK_REF_LEAF,
+    CHECK_STATUS_OPS,
+    CHECK_STATUS_VALUES,
     PredicateError,
     evaluate_predicate,
     evaluate_verdict,
@@ -558,6 +560,54 @@ class SchemaTest(unittest.TestCase):
     def test_check_ref_status_leaf_resolves(self) -> None:
         self.assertEqual(self._check_ref_violations("checks.g.status"), [])
 
+    def test_check_status_condition_pins_op_and_value(self) -> None:
+        """Round 1 (issue #269): the ref remedy alone was followable by half — every corpus
+        `.pass` predicate carried `value: true`, and `checks.<id>.status eq true` passed the
+        gate while `_values_equal` never equates a bool to a str, so a correct kernel was
+        reported `physics_fail`. PINNED: a non-member value (bool / number / misspelt member —
+        the last is always TRUE under `ne`) and a non-status op are each refused with one
+        violation naming the repair; both members under both ops pass. SAMPLED: the
+        spellings below, not the whole value space."""
+        def one(op, value):
+            return validate_predicate_schema(
+                [self._pred(pass_when={"all": [{"ref": "checks.g.status", "op": op,
+                                                "value": value, "quantity": "g"}]})],
+                **self._kwargs())
+        for value in (True, 1, "failed", "PASS", "na", ["pass"]):
+            with self.subTest(value=value):
+                v = one("eq", value)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("is not a check status", v[0])
+                self.assertIn('— write value "pass" or "fail"', v[0])
+        # a null value is the schema's own rule (`must have a non-null value`), stated once
+        v = one("eq", None)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("non-null", v[0])
+        with self.subTest(op="ne", value="failed"):
+            v = one("ne", "failed")
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("always true under ne", v[0])
+        for op in sorted(set(verdict_evaluator._OPS) - set(CHECK_STATUS_OPS)):
+            with self.subTest(op=op):
+                # an ordered op also earns the schema's own "must be a number" rule; this row
+                # pins the status refusal, stated exactly once
+                v = [x for x in one(op, "pass") if "is not a status comparison" in x]
+                self.assertEqual(len(v), 1, v)
+        for op in sorted(CHECK_STATUS_OPS):
+            for value in CHECK_STATUS_VALUES:
+                with self.subTest(op=op, value=value):
+                    self.assertEqual(one(op, value), [])
+        # the op/value half is judged only once the ref half is clean: a refused ref with a
+        # bad value earns the ref message ALONE (one repair at a time, ordered by reachability)
+        v = self._check_ref_violations("checks.g.pass", True)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("reads a `pass` leaf", v[0])
+        # a metric ref is never judged as a status
+        self.assertEqual(validate_predicate_schema(
+            [self._pred(pass_when={"all": [{"ref": "metrics.m", "op": "le", "value": 1.0,
+                                            "quantity": "m"}]})],
+            **self._kwargs(metric_addrs={"metrics.m"})), [])
+
     def test_padded_ref_is_refused_because_the_evaluator_does_not_strip(self) -> None:
         """Round 1 (issue #269): the gate used to validate `ref.strip()` while `_eval_condition`
         resolves `ref` verbatim, so a padded `checks.<id>.status` passed --stage compile and was
@@ -893,6 +943,28 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
                                      f"{rel}: the window still offers {refused!r}, a shape "
                                      f"`_check_ref` refuses at --stage compile")
 
+    # The surfaces that state the VALUE vocabulary in the `"pass"|"fail"` spelling (the generate
+    # template says it in Fortran-literal form inside clause (A) and is not coupled for it).
+    _VALUE_SURFACES: tuple[str, ...] = (
+        "docs/workflow/phases/phase_01_compile.md",
+        "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md",
+    )
+
+    def test_value_vocabulary_sites_name_the_members_in_order(self) -> None:
+        # Round 1 (issue #269): the gate now pins a status condition's value to
+        # `CHECK_STATUS_VALUES`; the documents that spell the vocabulary are checked against
+        # the constant, in the constant's order, inside the same anchored windows.
+        token = "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
+        by_rel = {rel: (anchor, bound) for rel, anchor, bound, *_ in self._SURFACES}
+        self.assertEqual(set(self._VALUE_SURFACES), set(by_rel) - {
+            "tools/prompt_templates/pure_generate_generate.txt"})
+        for rel in self._VALUE_SURFACES:
+            with self.subTest(surface=rel):
+                window = self._window(rel, *by_rel[rel])
+                self.assertIn(token, window,
+                              f"{rel}: the window does not spell the status values as {token} "
+                              f"(verdict_evaluator.CHECK_STATUS_VALUES, in order)")
+
     def test_constant_is_what_the_gate_pins(self) -> None:
         # The constant the documents are coupled to is the one the gate reads: a `checks`
         # ref with exactly that tail passes, the same id with any other tail is refused with
@@ -901,4 +973,4 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
         self.assertEqual(_check_ref("L", f"checks.g.{CHECK_REF_LEAF}", {"g"}, set(), set()), [])
         bad = _check_ref("L", "checks.g.other", {"g"}, set(), set())
         self.assertEqual(len(bad), 1, bad)
-        self.assertTrue(bad[0].endswith(f"— write checks.g.{CHECK_REF_LEAF}"), bad)
+        self.assertIn(f"— write checks.g.{CHECK_REF_LEAF} compared by", bad[0])

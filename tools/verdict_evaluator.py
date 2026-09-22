@@ -132,6 +132,16 @@ _NESTED_REF_HEADS: frozenset[str] = frozenset({"checks", "verdict"})
 #: `test_verdict_evaluator.CheckRefLeafStatementSitesTest` (issue #269).
 CHECK_REF_LEAF = "status"
 
+#: The values a `checks.<id>.status` condition may compare against, in the order the documents
+#: state them. The top-level fold writes exactly these; a per-case slice may also hold `na` for
+#: a check that case cannot evaluate, which a predicate does not target — and a predicate
+#: comparing against anything else (`True`, `1`, a misspelt enum member) is either always
+#: false (a correct kernel reported `physics_fail`) or, under `ne`, always true. Coupled to the
+#: documents by the same test as `CHECK_REF_LEAF`.
+CHECK_STATUS_VALUES: tuple[str, ...] = ("pass", "fail")
+#: The two ops a status enum admits; an ordered op on a string is always false at execute.
+CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq", "ne"})
+
 
 def _resolve_predicate_ref(obj: Any, ref: str) -> tuple[bool, Any]:
     """Resolve a predicate ``ref`` against one diagnostics slice, dispatching on its head.
@@ -567,7 +577,10 @@ def validate_predicate_schema(
                 v.append(f"{cloc}.ref {ref!r} has leading or trailing whitespace, which the "
                          f"evaluator does not strip — write {ref.strip()!r}")
             else:
-                v.extend(_check_ref(cloc, ref, check_ids, verdict_fields, metric_addrs))
+                ref_v = _check_ref(cloc, ref, check_ids, verdict_fields, metric_addrs)
+                v.extend(ref_v)
+                if not ref_v and ref.split(".", 1)[0] == "checks":
+                    v.extend(_check_status_condition(cloc, op, cond.get("value")))
             # isinstance guard BEFORE the frozenset membership: a malformed `op` authored as a
             # YAML list/map is unhashable and `op in _OPS` would raise TypeError, crashing the
             # gate instead of reporting an actionable violation for warm-resume repair.
@@ -667,6 +680,30 @@ def validate_predicate_schema(
     return v
 
 
+def _status_vocabulary() -> str:
+    """`"pass"|"fail"` — the spelling the documents use, derived from the constant."""
+    return "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
+
+
+def _check_status_condition(loc: str, op: object, value: object) -> list[str]:
+    """The op / value half of a `checks.<id>.status` condition (issue #269 round 1). The ref
+    refusal's remedy used to name the ref alone; every `.pass` predicate in the corpus carried
+    `value: true`, and the half-follow (`checks.<id>.status eq true`) passed the gate and
+    reported a correct kernel `physics_fail` (`_values_equal` never equates a bool to a str).
+    Refused here, where it is repairable, together with the always-true `ne <misspelling>`."""
+    if isinstance(op, str) and op in _OPS and op not in CHECK_STATUS_OPS:
+        return [(f"{loc}.op {op} is not a status comparison: checks.<id>.{CHECK_REF_LEAF} is an "
+                 f"enum, compared by {'|'.join(sorted(CHECK_STATUS_OPS))} against "
+                 f"{_status_vocabulary()} — write op eq with value \"pass\" or \"fail\"")]
+    if value is None:  # the schema's own non-null rule already names this one
+        return []
+    if not (isinstance(value, str) and value in CHECK_STATUS_VALUES):
+        return [(f"{loc}.value {value!r} is not a check status (checks.<id>.{CHECK_REF_LEAF} holds "
+                 f"{_status_vocabulary()}; a bool, a number or a misspelt member is always "
+                 f"false under eq and always true under ne) — write value \"pass\" or \"fail\"")]
+    return []
+
+
 def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str],
                metric_addrs: set[str]) -> list[str]:
     """Resolve a predicate ``ref`` head against the declared diagnostics vocabulary."""
@@ -700,7 +737,8 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
             else:
                 what = f"has the tail `.{'.'.join(tail)}` where only `.{CHECK_REF_LEAF}` resolves"
             return [(f"{loc}.ref {ref} {what} (the runner writes each check as "
-                     f"{{\"{CHECK_REF_LEAF}\": \"pass\"|\"fail\"}}) — write checks.{cid}.{CHECK_REF_LEAF}")]
+                     f"{{\"{CHECK_REF_LEAF}\": {_status_vocabulary()}}}) — write checks.{cid}.{CHECK_REF_LEAF} "
+                     f"compared by eq|ne against {_status_vocabulary()}")]
         return []
     # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
     # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,
