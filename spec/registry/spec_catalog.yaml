@@ -165,6 +165,17 @@ specs:
     deps_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov/deps.yaml
     official_releases: []
 
+  - spec_kind: component
+    spec_id: dynamics_shallow_water_source_2d_tc4_forcing
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: dynamics
+    family: shallow_water
+    controlled_spec_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/controlled_spec.md
+    tests_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md
+    deps_path: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/deps.yaml
+    official_releases: []
+
   - spec_kind: profile
     spec_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
     spec_version: 0.1.1
