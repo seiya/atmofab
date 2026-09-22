@@ -558,6 +558,23 @@ class SchemaTest(unittest.TestCase):
     def test_check_ref_status_leaf_resolves(self) -> None:
         self.assertEqual(self._check_ref_violations("checks.g.status"), [])
 
+    def test_padded_ref_is_refused_because_the_evaluator_does_not_strip(self) -> None:
+        """Round 1 (issue #269): the gate used to validate `ref.strip()` while `_eval_condition`
+        resolves `ref` verbatim, so a padded `checks.<id>.status` passed --stage compile and was
+        `ref_absent` on every run — satisfied on every run under `na_allowed`. Pinned at the
+        gate, and the asymmetry is pinned by driving both sides on the same input."""
+        diag = {"cases": {"c1": {"checks": {"g": {"status": "fail"}}}}}
+        for ref in (" checks.g.status", "checks.g.status ", "\tchecks.g.status\n"):
+            with self.subTest(ref=ref):
+                v = self._check_ref_violations(ref)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("whitespace", v[0])
+                self.assertIn("— write 'checks.g.status'", v[0])
+                pred = self._pred(pass_when={"all": [{"ref": ref, "op": "eq", "value": "pass",
+                                                      "per_case": True, "na_allowed": True}]})
+                # what the evaluator would have done with it: satisfied although the check FAILED
+                self.assertEqual(evaluate_predicate(pred, diag)[:2], ("pass", "pass"))
+
     def test_unknown_verdict_field(self) -> None:
         v = validate_predicate_schema(
             [self._pred(pass_when={"all": [{"ref": "verdict.mystery", "op": "eq",

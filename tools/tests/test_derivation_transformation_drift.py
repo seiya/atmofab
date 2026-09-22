@@ -247,7 +247,10 @@ PINNED_VERDICT: dict[str, str] = {
     # are byte-identical, so every run's `verdict.json` is unchanged. (The digest was taken
     # after the refusal's return statement was parenthesised for ruff ISC004 — the pin hashes
     # bytes, so a lint-only edit moves it; the first digest of this re-pin never landed.)
-    "verdict-3": "286d1b44da25c442dd87a05da6b6ca9d6cdc6f11a5c769159da2e50ec94f28c4",
+    # Re-pinned in round 1: `validate_predicate_schema` refuses a whitespace-padded `ref`
+    # instead of validating its stripped spelling (compile-stage only; the evaluator is
+    # unchanged).
+    "verdict-3": "039a372632db1b8de68ca8d2eaa28659ecdf90fb2f7a045114d7f720eca0103d",
 }
 
 

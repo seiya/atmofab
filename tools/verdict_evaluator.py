@@ -559,8 +559,15 @@ def validate_predicate_schema(
             op = cond.get("op")
             if not isinstance(ref, str) or not ref.strip():
                 v.append(f"{cloc}.ref must be a non-empty string")
+            elif ref != ref.strip():
+                # `_eval_condition` resolves the ref VERBATIM: a padded head is no nested head
+                # and no metric address, so the condition is `ref_absent` on every run — and
+                # with `na_allowed` it is satisfied on every run. Refuse it here rather than
+                # validate the stripped spelling the evaluator never sees (issue #269 round 1).
+                v.append(f"{cloc}.ref {ref!r} has leading or trailing whitespace, which the "
+                         f"evaluator does not strip — write {ref.strip()!r}")
             else:
-                v.extend(_check_ref(cloc, ref.strip(), check_ids, verdict_fields, metric_addrs))
+                v.extend(_check_ref(cloc, ref, check_ids, verdict_fields, metric_addrs))
             # isinstance guard BEFORE the frozenset membership: a malformed `op` authored as a
             # YAML list/map is unhashable and `op in _OPS` would raise TypeError, crashing the
             # gate instead of reporting an actionable violation for warm-resume repair.
