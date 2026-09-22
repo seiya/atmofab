@@ -12,9 +12,9 @@
 This `component` is responsible only for evaluating the external forcing that makes one prescribed flow — a geostrophic background given per interior row plus a translating Gaussian low — an exact solution of the forced 2D shallow water equations in conservation form, at the interior cell centres and at one time. The prescribed flow is the channel form of the forced translating low of Williamson et al. (1992) §4 (test case 4). The forcing is a function of position and time and does not read the state of the run that applies it. It does not integrate in time, does not apply a boundary condition, does not evaluate the Coriolis source, and does not define the background: the profile of the background over `y` is the vocabulary of the `problem` that evaluates it, and this `component` receives only its values.
 
 ## 2. input/output contract
-The inputs are the extents `ncomp`, `nx`, `ny`, the interior cell-centre coordinates `x` (`nx` values, unit `m`) and `y` (`ny` values, unit `m`), the time `t` (unit `s`), the background given per interior row — the Coriolis parameter `f` (`ny` values, unit `1/s`), its derivative `dfdy` (`ny` values, unit `1/(m s)`), the background velocity `ubar` (`ny` values, unit `m/s`), its derivative `dubar` (`ny` values, unit `1/s`), and the background depth `hbar` (`ny` values, unit `m`) — the gravitational acceleration `g` (unit `m/s2`), the channel length `L_x` (unit `m`), and the four parameters of the low: its streamfunction amplitude `psi0` (unit `m2/s`), its radius `R_low` (unit `m`), its translation speed `c_tr` (unit `m/s`), and its centre at `t=0`, `x_c0` and `y_c` (unit `m`). The outputs are the forcing field `F` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells; unit of the `h` component `m/s`, of the `hu` and `hv` components `m2/s2`) and the input guard `guard_pass` (§4).
+The inputs are the extents `ncomp`, `nx`, `ny`, the interior cell-centre coordinates `x` (`nx` values, unit `m`) and `y` (`ny` values, unit `m`), the time `t` (unit `s`), the background given per interior row — the Coriolis parameter `f` (`ny` values, unit `1/s`), its derivative `dfdy` (`ny` values, unit `1/(m s)`), the background velocity `ubar` (`ny` values, unit `m/s`), its derivative `dubar` (`ny` values, unit `1/s`), and the background depth `hbar` (`ny` values, unit `m`) — the gravitational acceleration `g` (unit `m/s2`), the channel length `L_x` (unit `m`), and the four parameters of the low: its streamfunction amplitude `psi0` (unit `m2/s`), its radius `R_low` (unit `m`), its translation speed `c_tr` (unit `m/s`), and its centre at `t=0`, `x_c0` and `y_c` (unit `m`). The outputs are the forcing field `S` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells; unit of the `h` component `m/s`, of the `hu` and `hv` components `m2/s2`) and the input guard `guard_pass` (§4).
 
-**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are exactly those twenty, in that order: `ncomp`, `nx`, `ny`, `x`, `y`, `t`, `f`, `dfdy`, `ubar`, `dubar`, `hbar`, `g`, `L_x`, `psi0`, `R_low`, `c_tr`, `x_c0`, `y_c`, `F`, `guard_pass`. The extents `ncomp`, `nx`, `ny` and the row-wise Coriolis parameter `f` are the vocabulary of `dynamics_shallow_water_source_2d_coriolis`, whose source is added to this forcing by the caller. `F` is the only array the operation writes, and it is not among its inputs, so the operation never reads a cell it has written.
+**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are exactly those twenty, in that order: `ncomp`, `nx`, `ny`, `x`, `y`, `t`, `f`, `dfdy`, `ubar`, `dubar`, `hbar`, `g`, `L_x`, `psi0`, `R_low`, `c_tr`, `x_c0`, `y_c`, `S`, `guard_pass`. The extents `ncomp`, `nx`, `ny` and the row-wise Coriolis parameter `f` are the vocabulary of `dynamics_shallow_water_source_2d_coriolis`, whose source is added to this forcing by the caller. `S` is the only array the operation writes, and it is not among its inputs, so the operation never reads a cell it has written.
 
 The row-wise inputs have the interior extent `ny` and no ghost cells, as `x` has the interior extent `nx`: the forcing is evaluated on interior cells only, so a ghost value would be a value nothing reads. The sign convention of `f` is that of a `y` axis pointing north, the convention of `dynamics_shallow_water_source_2d_coriolis` §2.
 
@@ -22,7 +22,7 @@ The row-wise inputs have the interior extent `ny` and no ghost cells, as `x` has
 
 **Known property at a wall.** The low is a Gaussian in the distance from its centre and is not zero anywhere. At a channel wall a distance $L_y/2$ from the centre row `y_c`, the streamfunction of the low is $\psi_0 e^{-(L_y/2)^2/R_{low}^2}$, which is $1.1\times10^{-7}\,\psi_0$ at $L_y/2=4R_{low}$; the velocity and depth the low contributes there are of that order. The prescribed flow is therefore an exact solution of the forced equations in the interior and is not a solution of a wall condition that sets the normal velocity to zero: the residual of such a wall condition is the wall value of the low, and a `problem` adopting this `component` states its own wall treatment and the size of that residual.
 
-Units: `F` carries the units stated above, which are the units of a source of the conservation-form equations: the `h` component is a depth tendency and the `hu` / `hv` components are momentum tendencies.
+Units: `S` carries the units stated above, which are the units of a source of the conservation-form equations: the `h` component is a depth tendency and the `hu` / `hv` components are momentum tendencies.
 
 ## 3. Operation definition
 The published `operation` is `dynamics_shallow_water_source_2d_tc4_forcing__apply`. The prescribed flow is built from the streamfunction of the low, at the interior cell $(i,j)$, $i=1..nx$, $j=1..ny$, and the time $t$:
@@ -32,14 +32,14 @@ x_c(t)=x_{c0}+c_{tr}\,t,\qquad
 r^2_{ij}=\left(\frac{L_x}{\pi}\right)^2\sin^2\xi_i+(y_j-y_c)^2,\qquad
 \psi_{ij}=\psi_0\,e^{-r^2_{ij}/R_{low}^2}
 $$
-which is periodic in `x` with the period `L_x` and is the Gaussian $\psi_0 e^{-d^2/R_{low}^2}$ of the distance `d` from the centre wherever $|x_i-x_c(t)|\ll L_x$. With $k=L_x/(\pi R_{low}^2)$ the derivatives of $\psi$ are
+which is periodic in `x` with the period `L_x` and is the Gaussian $\psi_0 e^{-d^2/R_{low}^2}$ of the distance `d` from the centre wherever $|x_i-x_c(t)|\ll L_x$. With $k_\psi=L_x/(\pi R_{low}^2)$ the derivatives of $\psi$ are
 $$
-\psi_x=-k\sin 2\xi\;\psi,\qquad
+\psi_x=-k_\psi\sin 2\xi\;\psi,\qquad
 \psi_y=-\frac{2(y-y_c)}{R_{low}^2}\;\psi,\qquad
 \psi_t=-c_{tr}\,\psi_x
 $$
 $$
-\psi_{xx}=\left(-\frac{2}{R_{low}^2}\cos 2\xi+k^2\sin^2 2\xi\right)\psi,\qquad
+\psi_{xx}=\left(-\frac{2}{R_{low}^2}\cos 2\xi+k_\psi^2\sin^2 2\xi\right)\psi,\qquad
 \psi_{xy}=\frac{2(y-y_c)L_x}{\pi R_{low}^4}\sin 2\xi\;\psi,\qquad
 \psi_{yy}=\left(-\frac{2}{R_{low}^2}+\frac{4(y-y_c)^2}{R_{low}^4}\right)\psi
 $$
@@ -66,14 +66,14 @@ F_h=\tilde h_t+\tilde u\,\tilde h_x+\tilde v\,\tilde h_y+\tilde h\,(\tilde u_x+\
 $$
 and the published forcing is their conservation form
 $$
-F_{1,i,j}=F_h,\qquad
-F_{2,i,j}=\tilde h\,F_u+\tilde u\,F_h,\qquad
-F_{3,i,j}=\tilde h\,F_v+\tilde v\,F_h
+S_{1,i,j}=F_h,\qquad
+S_{2,i,j}=\tilde h\,F_u+\tilde u\,F_h,\qquad
+S_{3,i,j}=\tilde h\,F_v+\tilde v\,F_h
 $$
-Each of the three residuals is written as the full residual of its equation and is not reduced by a cancellation the prescribed flow satisfies: $g\tilde h_x-f\tilde v$ is zero and $g\tilde h_y+f\tilde u$ is $f'\psi$ for this flow, and both are evaluated as written. The evaluation is pointwise: $F_{\cdot,i,j}$ depends on $x_i$, $y_j$, $t$, the row-wise background at `j` and the scalar parameters only, and on no element of `F`. With $\psi_0=0$ the prescribed flow is the geostrophic background, $F_u$, $F_v$ and $F_h$ are each zero, and `F` is zero at every cell. The divergence $\tilde u_x+\tilde v_y$ of the prescribed flow is zero at every cell, because the low contributes a streamfunction flow and the background has no `y` component; the term is written because the definition is the residual of the conservation-form equation, and it contributes nothing for this flow.
+Each of the three residuals is written as the full residual of its equation and is not reduced by a cancellation the prescribed flow satisfies: $g\tilde h_x-f\tilde v$ is zero and $g\tilde h_y+f\tilde u$ is $f'\psi$ for this flow, and both are evaluated as written. The evaluation is pointwise: $S_{\cdot,i,j}$ depends on $x_i$, $y_j$, $t$, the row-wise background at `j` and the scalar parameters only, and on no element of `S`. With $\psi_0=0$ the prescribed flow is the geostrophic background, $F_u$, $F_v$ and $F_h$ are each zero, and `S` is zero at every cell. The divergence $\tilde u_x+\tilde v_y$ of the prescribed flow is zero at every cell, because the low contributes a streamfunction flow and the background has no `y` component; the term is written because the definition is the residual of the conservation-form equation, and it contributes nothing for this flow.
 
 ## 4. Failure conditions and constraints
-Treat `ncomp/=3`, `nx<1`, `ny<1`, `R_low<=0`, and `L_x<=0` as invalid input and an error: `guard_pass` is false, and every element of `F` is set to zero. The zero is what the operation publishes on a rejected input — not a valid forcing, and stated so that the rejection has an observable consequence in the output; a caller reads `guard_pass`, not the zeros. No element of the input arrays is read on a rejected input. `R_low<=0` and `L_x<=0` are invalid because the formulas of §3 divide by $R_{low}^2$ and by `L_x`. `h<=0` is not checked here: the state does not enter the forcing, and the dry-state guard belongs to the flux `component` and to the `problem`.
+Treat `ncomp/=3`, `nx<1`, `ny<1`, `R_low<=0`, and `L_x<=0` as invalid input and an error: `guard_pass` is false, and every element of `S` is set to zero. The zero is what the operation publishes on a rejected input — not a valid forcing, and stated so that the rejection has an observable consequence in the output; a caller reads `guard_pass`, not the zeros. No element of the input arrays is read on a rejected input. `R_low<=0` and `L_x<=0` are invalid because the formulas of §3 divide by $R_{low}^2$ and by `L_x`. `h<=0` is not checked here: the state does not enter the forcing, and the dry-state guard belongs to the flux `component` and to the `problem`.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_shallow_water_source_2d_tc4_forcing__apply`.
@@ -213,7 +213,7 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: F
+  - name: S
     rank: 3
     intent: out
     spec:
