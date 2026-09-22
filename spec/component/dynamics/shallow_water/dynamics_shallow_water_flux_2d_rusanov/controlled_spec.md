@@ -44,7 +44,7 @@ $$
 each velocity and wave speed being evaluated from the state on its own side. The wave speed is one scalar per interface, the same for the three components of the flux, and it is non-negative by construction. With equal states on the two sides the dissipation term vanishes and the numerical flux equals the physical flux of that state, $F^*(U,U)=F(U)$, $G^*(U,U)=G(U)$.
 
 ## 4. Failure conditions and constraints
-Treat `h<=0` in any of the four supplied states as invalid input and an error: `guard_ok` is false and `F*`, `G*`, `a_x`, `a_y` are not a valid flux. The guard is evaluated before any division by `h`.
+Treat `h<=0` in any of the four supplied states as invalid input and an error: `guard_ok` is false, and every component of `F*` and `G*` and both wave speeds are set to zero. The zero is what the operation publishes on a rejected input — not a valid flux, and stated so that the rejection has an observable consequence in the outputs; a caller reads `guard_ok`, not the zeros. The guard is evaluated before any division by `h`.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_shallow_water_flux_2d_rusanov__compute_flux`.
