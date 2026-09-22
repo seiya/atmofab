@@ -571,10 +571,10 @@ class SchemaTest(unittest.TestCase):
         """Round 1 (issue #269): the ref remedy alone was followable by half — every corpus
         `.pass` predicate carried `value: true`, and `checks.<id>.status eq true` passed the
         gate while `_values_equal` never equates a bool to a str, so a correct kernel was
-        reported `physics_fail`. PINNED: a non-member value (bool / number / misspelt member —
-        the last is always TRUE under `ne`) and a non-status op are each refused with one
-        violation naming the repair; both members under both ops pass. SAMPLED: the
-        spellings below, not the whole value space."""
+        reported `physics_fail`. PINNED: a non-member value (bool / number / misspelt member)
+        and a non-status op (including `ne`) are each refused with one violation naming the
+        repair; both members under `eq` pass. SAMPLED: the spellings below, not the whole
+        value space."""
         def one(op, value):
             return validate_predicate_schema(
                 [self._pred(pass_when={"all": [{"ref": "checks.g.status", "op": op,
@@ -590,10 +590,12 @@ class SchemaTest(unittest.TestCase):
         v = one("eq", None)
         self.assertEqual(len(v), 1, v)
         self.assertIn("non-null", v[0])
-        with self.subTest(op="ne", value="failed"):
-            v = one("ne", "failed")
+        # `ne` is refused as an op (round 1, second pass): `ne "fail"` is satisfied by the
+        # per-case `na` of a check that does not apply — a pass on an unevaluated check.
+        with self.subTest(op="ne", value="fail"):
+            v = one("ne", "fail")
             self.assertEqual(len(v), 1, v)
-            self.assertIn("always true under ne", v[0])
+            self.assertIn("is not a status comparison", v[0])
         for op in sorted(set(verdict_evaluator._OPS) - set(CHECK_STATUS_OPS)):
             with self.subTest(op=op):
                 # an ordered op also earns the schema's own "must be a number" rule; this row

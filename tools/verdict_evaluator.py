@@ -139,8 +139,11 @@ CHECK_REF_LEAF = "status"
 #: false (a correct kernel reported `physics_fail`) or, under `ne`, always true. Coupled to the
 #: documents by the same test as `CHECK_REF_LEAF`.
 CHECK_STATUS_VALUES: tuple[str, ...] = ("pass", "fail")
-#: The two ops a status enum admits; an ordered op on a string is always false at execute.
-CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq", "ne"})
+#: The one op a status condition admits. An ordered op on a string is always false at
+#: execute; `ne` is refused too, because `ne "fail"` is satisfied by the per-case `na` a
+#: check reports where it does not apply — a pass on an unevaluated check — and every
+#: certified predicate says what it means with `eq` (547 of 547, 2026-09-22).
+CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq"})
 
 
 def _resolve_predicate_ref(obj: Any, ref: str) -> tuple[bool, Any]:
@@ -690,7 +693,7 @@ def _check_status_condition(loc: str, op: object, value: object) -> list[str]:
     refusal's remedy used to name the ref alone; every `.pass` predicate in the corpus carried
     `value: true`, and the half-follow (`checks.<id>.status eq true`) passed the gate and
     reported a correct kernel `physics_fail` (`_values_equal` never equates a bool to a str).
-    Refused here, where it is repairable, together with the always-true `ne <misspelling>`."""
+    Refused here, where it is repairable, together with `ne` (see `CHECK_STATUS_OPS`)."""
     if isinstance(op, str) and op in _OPS and op not in CHECK_STATUS_OPS:
         return [(f"{loc}.op {op} is not a status comparison: checks.<id>.{CHECK_REF_LEAF} is an "
                  f"enum, compared by {'|'.join(sorted(CHECK_STATUS_OPS))} against "
@@ -699,8 +702,8 @@ def _check_status_condition(loc: str, op: object, value: object) -> list[str]:
         return []
     if not (isinstance(value, str) and value in CHECK_STATUS_VALUES):
         return [(f"{loc}.value {value!r} is not a check status (checks.<id>.{CHECK_REF_LEAF} holds "
-                 f"{_status_vocabulary()}; a bool, a number or a misspelt member is always "
-                 f"false under eq and always true under ne) — write value \"pass\" or \"fail\"")]
+                 f"{_status_vocabulary()}; a bool, a number or a misspelt member is never "
+                 f"equal to it) — write value \"pass\" or \"fail\"")]
     return []
 
 
@@ -738,7 +741,7 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
                 what = f"has the tail `.{'.'.join(tail)}` where only `.{CHECK_REF_LEAF}` resolves"
             return [(f"{loc}.ref {ref} {what} (the runner writes each check as "
                      f"{{\"{CHECK_REF_LEAF}\": {_status_vocabulary()}}}) — write checks.{cid}.{CHECK_REF_LEAF} "
-                     f"compared by eq|ne against {_status_vocabulary()}")]
+                     f"compared by eq against {_status_vocabulary()}")]
         return []
     # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
     # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,

@@ -235,7 +235,7 @@ io_contract:
   # test_predicates ref vocabulary (all resolvable at --stage compile):
   #   verdict.<field>   -> a diagnostics_contract.verdict.fields entry (overall/failed_checks)
   #   checks.<id>.status -> an id in diagnostics_contract.checks — the ONLY checks ref that resolves;
-  #                        compare by eq|ne with "pass"|"fail" (a per-case slice may also hold "na"
+  #                        compare it by eq with "pass"|"fail" (a per-case slice may also hold "na"
   #                        where the check does not apply: do not target that case)
   #   <metric address>  -> any other head (metrics.*/errors.*/cfl.*/convergence.*) MUST be pinned in
   #                        diagnostics_contract.metrics (below). The runner emits every numeric judgment

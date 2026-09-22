@@ -11753,7 +11753,7 @@ end program shallow_water2d_runner
             self.assertFalse(detail["revoked"])
             direct = validate_compile_stage(repo, "workspace", ir_ref)
             self.assertEqual(len(direct), 1, direct)
-            self.assertIn("— write checks.g.status compared by eq|ne", str(direct[0]))
+            self.assertIn("— write checks.g.status compared by eq against", str(direct[0]))
 
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

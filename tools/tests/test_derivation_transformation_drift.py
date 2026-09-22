@@ -186,9 +186,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # in `workspace/ir`, 2026-09-22) and is unchanged by the instruction. A bump would
     # re-derive every node's Compile for an instruction they already satisfy.
     # Re-pinned in round 1 (not bumped, same reasoning): the line also states how the status
-    # is compared (`eq|ne` against `"pass"|"fail"`, which every certified `.status` predicate
+    # is compared (`eq` against `"pass"|"fail"`, which every certified `.status` predicate
     # already does — 547 of 547, 2026-09-22) and that a per-case slice may hold `na`.
-    "compile-docs-4": "7b2223462988c09d2f9d1bbb1e5a689b89aa98879b085904dcd74b9f93fe14bc",
+    "compile-docs-4": "1e0c190d9afcaa9ff80208bb146ba9cd5e7d0fe6e2d59a5673f03136f71405be",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -254,8 +254,8 @@ PINNED_VERDICT: dict[str, str] = {
     # instead of validating its stripped spelling (compile-stage only; the evaluator is
     # unchanged).
     # Re-pinned in round 1 (second): `_check_status_condition` pins a `checks` condition's op to
-    # `eq|ne` and its value to `CHECK_STATUS_VALUES` at --stage compile; evaluator unchanged.
-    "verdict-3": "7781d984047520b53b6044e2f3ad98cb4babcdc8503c680cf19312e68f03f164",
+    # `eq` and its value to `CHECK_STATUS_VALUES` at --stage compile; evaluator unchanged.
+    "verdict-3": "3bf1958a53b4fddc54a3ab3f10f87efce67fcd0952a171b4fbc5b010b43d31bd",
 }
 
 
