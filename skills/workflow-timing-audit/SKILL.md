@@ -222,8 +222,8 @@ Decision criteria when reading a comparison:
   attempt-1 median of THAT `step.substep`, in both windows.
 - A change aimed at the first-attempt pass rate is judged by the retry share and by the cause
   rows it targets.
-- The `output_tokens` share is the headline; `total_tokens` and `cost_usd` weigh a warm-resumed
-  retry less, because it re-reads a cached prompt.
+- The `output_tokens` share is the headline. The `total_tokens` and `cost_usd` shares differ from
+  it on real runs; a quoted figure names which of the three it is.
 - The measured retry share and its decomposition are recorded as comments on issue #94. Take a
   new figure with the script rather than quoting an old one.
 

@@ -23,10 +23,10 @@ same run that precedes it -- the verdict, gate or leaf failure that sent the run
 deterministic substeps (`compile.static`, `generate.gate`, ...) are counted here as causes even
 though they carry no usage of their own.
 
-TOKENS: `output_tokens` is the headline, because it is what bills the time (thinking included)
-and it is the unit the 2026-07-12 audit quoted; `total_tokens` and the provider-reported
-`cost_usd` are printed beside it because a warm-resumed retry re-reads a cached prompt and so
-weighs less in them than in output.
+TOKENS: `output_tokens` is the headline, because it is what bills the time (thinking included).
+`total_tokens` (which also counts input and cache reads/writes) and the provider-reported
+`cost_usd` are printed beside it; the three shares differ on real runs, so a figure quoted from
+this report names which of the three it is.
 
 Usage:  python3 attempt_cost_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
 """
