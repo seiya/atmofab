@@ -19220,8 +19220,9 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
     def test_each_definition_is_split_alone(self) -> None:
         # The witness for the per-definition split, which no other row observes alone: with a
         # readable upper-case definition that drifts and a lower-case DTIO decoy in ANOTHER
-        # procedure, a split over every definition's text together keeps the decoy (last wins)
-        # and passes the first-line requirement (PR #279 round 3: origin/main 0 violations).
+        # procedure, a split over every definition's text together reports the source as an
+        # unread header rather than as the drift it is (PR #279 rounds 3-4; origin/main answered
+        # 0 violations). The split keeps the answer right; the refusal itself does not rest on it.
         # The decoy comes AFTER the definition: the splitter keeps the last stanza of a name.
         drifted = ("  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"
                    "    type(hx__h_named), intent(in) :: entries(:)\n"
@@ -19239,6 +19240,25 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
         self.assertTrue(any("'hx__write_metrics_basis' drifts from controlled_spec" in v
                             for v in violations), violations)
+
+    def test_a_splitter_error_about_another_name_does_not_unread_the_definition(self) -> None:
+        # Two BLOCK-local interfaces of one external procedure, spelled `Ext_a` and `ext_a`: legal,
+        # and the definition's own stanza is correct. The lowercased view makes the splitter report
+        # a duplicate of `ext_a`; refusing on it turned this correct source away (PR #279 round 4:
+        # origin/main 0 violations, a2130c44 refused it).
+        iface = ("    block\n"
+                 "      interface\n"
+                 "        subroutine {n}(k)\n"
+                 "          integer, intent(in) :: k\n"
+                 "        end subroutine {n}\n"
+                 "      end interface\n"
+                 "    end block\n")
+        correct = self._DEF.replace(
+            "  end subroutine hx__write_metrics_basis\n",
+            iface.format(n="Ext_a") + iface.format(n="ext_a")
+            + "  end subroutine hx__write_metrics_basis\n")
+        self.assertNotEqual(correct, self._DEF)
+        self.assertEqual(self._gate(self._C._GOOD_SOURCE.replace(self._DEF, correct)), [])
 
     def test_a_contained_procedures_declarations_are_not_the_definitions(self) -> None:
         # The definition's stanza stops at its own `contains`. The whole-file splitter did not

@@ -133,8 +133,8 @@ class Procedure:
     """One procedure DEFINITION, with its body located as offsets into the view.
 
     ``header_start`` is the start of the line holding the header statement, ``body_start`` the
-    start of the line after it, and ``body_end`` the start of the line holding the END statement, which is what makes ``view[body_start:body_end]`` the
-    body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
+    start of the line after it, and ``body_end`` the start of the line holding the END statement,
+    which is what makes ``view[body_start:body_end]`` the body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
     (None when it has none): declarations before it are this procedure's, procedures after it are
     its own contained ones whose dummies are NOT its.
     """
@@ -546,16 +546,19 @@ def module_level_definition_stanzas(
     name-keyed lookup again one level down: a prototype inside another definition's body that the
     splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
     splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
-    0 violations). Two requirements close it, and each covers what the other does not. The
-    split is per definition, and the stanza taken must start at that definition's own first line.
-    The second is the one that holds when the decoy is inside the definition itself: a BLOCK makes
+    0 violations). What refuses a decoy is that the stanza taken must start at the definition's
+    own first line and carry no splitter error for its name. The per-definition split is what
+    keeps the ANSWER right rather than what refuses: split together, every decoy shape measured
+    in PR #279's round 4 was still refused, but as an unread header instead of the drift it is,
+    and a correct source with a same-named stanza elsewhere was refused too. The first-line
+    requirement is the one that holds when the decoy is inside the definition itself: a BLOCK makes
     a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
     -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
     from legal source, on the strength of one probe without the BLOCK. The fragment also stops
     at the definition's own `contains`, so a contained procedure's declarations are not the
     definition's.
 
-    A fragment the splitter reports ANY error on answers None, and that is the third
+    A fragment the splitter reports an error on FOR THIS NAME answers None, and that is the third
     requirement, not a tidy-up. The splitter keeps the LAST stanza of a name, and its duplicate
     report was being discarded. So a readable definition header spelled in another case, or
     carrying a label, followed by a decoy with the pinned header inside a BLOCK in the same body,
@@ -563,7 +566,11 @@ def module_level_definition_stanzas(
     line equals the definition's, and the first-line requirement passed (PR #279 round 3,
     0 violations, rc=0). The whole-file splitter did not report the duplicate either, because it
     reads the raw text, where `HX__…` and `hx__…` are different keys and `10 subroutine` is not
-    a header.
+    a header. The error must name the procedure: an error about ANOTHER name says nothing about
+    this definition's stanza, and refusing on it turned away a correct source whose body holds two
+    BLOCK-local interfaces of one external procedure spelled `Ext_a` / `ext_a` — accepted on
+    origin/main, refused with a remedy naming none of its causes at PR #279's a2130c44
+    (round 4).
 
     None is the answer for a definition whose own header the splitter cannot read, and for an
     abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
@@ -584,8 +591,9 @@ def module_level_definition_stanzas(
         ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas(text)
         stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
         first = text.split("\n", 1)[0].strip()
+        own_error = any(f"'{name}'" in error for error in errors)
         stanzas[name] = (fortran_signatures.stanza_line_list(stanza)
-                         if stanza and stanza[0] == first and not errors else None)
+                         if stanza and stanza[0] == first and not own_error else None)
     return stanzas
 
 
