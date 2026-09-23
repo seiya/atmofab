@@ -57,7 +57,10 @@ proves it parses it RIGHT.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from tools.backends.language.fortran import signatures as fortran_signatures
 
 #: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
 #: backend that depends on them, because the value is a property of THIS code: the module drives a
@@ -478,6 +481,16 @@ UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
     "the prototype"
 )
 
+#: What a leaf is told when the publishing module DEFINES a §5.1 operation but the definition's
+#: header is not one the §5.1 comparison reads. Here for the same reason as the constant above:
+#: every form it names is this language's.
+UNREAD_DEFINITION_HEADER_REMEDY = (
+    "its header is not one the §5.1 comparison reads (a prefix other than `pure` / `elemental` / "
+    "`recursive`, a type before `function`, or an abbreviated `module procedure`, which repeats "
+    "no header); write the header exactly as §5.1 pins it, in the module's own `contains`, with "
+    "the result declared in the body"
+)
+
 #: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
 #: the shapes it names are spellings of THIS language. The class is not closed — see the module
 #: docstring, which is canonical for why an enumeration is the wrong instrument.
@@ -505,6 +518,63 @@ def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
         unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
         for unit in tree.units
     )
+
+
+def module_level_definition_stanzas(
+    tree: StructureTree,
+    unit_name: str,
+    text_between: Callable[[int, int], str],
+) -> dict[str, tuple[str, ...] | None]:
+    """The stanza of each procedure ``tree`` DEFINES at the top level of ``unit_name`` — its
+    header and specification part, read from the definition itself. ``text_between(start,
+    stop)`` returns the caller's view text between two of ``tree``'s offsets (the caller owns
+    the translation when it parsed a label-preserving twin).
+
+    This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
+    The splitter reads a header wherever it stands and keys it by NAME, while the definedness
+    answer is about ONE procedure; a source can satisfy each with a different one. Measured
+    (found by issue #266 PR-1's review): the pinned header written as a procedure CONTAINED in
+    another, or as a prototype in an `interface` block in another procedure's body, beside a
+    module-level definition whose prefix (`impure elemental`) the splitter does not model and
+    whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer failing
+    at its own compile.
+
+    EACH DEFINITION IS SPLIT ON ITS OWN, and only the stanza its OWN HEADER opens is taken. A
+    first version split every definition's text together and looked the name up, which is the
+    name-keyed lookup again one level down: a prototype inside another definition's body that the
+    splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
+    splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
+    0 violations). Two requirements close it, and each covers what the other does not. The
+    split is per definition, and the stanza taken must start at that definition's own first line.
+    The second is the one that holds when the decoy is inside the definition itself: a BLOCK makes
+    a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
+    -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
+    from legal source, on the strength of one probe without the BLOCK. The fragment also stops
+    at the definition's own `contains`, so a contained procedure's declarations are not the
+    definition's.
+
+    None is the answer for a definition whose own header the splitter cannot read, and for an
+    abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
+    all. An earlier version left that form out of the answer so the caller kept the name-keyed
+    lookup for it, which turned out to mean "the correct form is refused (the splitter does not
+    read the `module subroutine` prototype either) and a decoy is accepted" (PR #279 round 1).
+    Returns each stanza as `signatures.stanza_line_list` gives it — the currency the §5.1
+    comparison reads — keyed by lowercased name."""
+    stanzas: dict[str, tuple[str, ...] | None] = {}
+    for procedure in module_level_procedures(tree, unit_name):
+        name = procedure.name.strip().lower()
+        if procedure.kind not in ("subroutine", "function"):
+            stanzas[name] = None
+            continue
+        stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
+        text = (text_between(procedure.header_start, stop).rstrip("\n")
+                + f"\nend {procedure.kind} {procedure.name}")
+        ops, _types, _ifaces, _errors = fortran_signatures.parse_interface_stanzas(text)
+        stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
+        first = text.split("\n", 1)[0].strip()
+        stanzas[name] = (fortran_signatures.stanza_line_list(stanza)
+                         if stanza and stanza[0] == first else None)
+    return stanzas
 
 
 def module_level_procedure_names(

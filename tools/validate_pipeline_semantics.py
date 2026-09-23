@@ -1537,55 +1537,18 @@ def _module_level_procedure_names(
 
 def _module_level_definition_headers(
     lowered: str, unit_name: str
-) -> dict[str, list[str] | None]:
-    """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name`` — its
-    header and specification part, read from the definition the structure reader found.
+) -> dict[str, tuple[str, ...] | None]:
+    """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name``, read
+    from the definition the structure reader found — the header the §5.1 comparison must read.
 
-    This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
-    The splitter reads a header wherever it stands and keys it by NAME, while the definedness
-    answer is about ONE procedure; a source can satisfy each with a different one. Measured
-    (found by issue #266 PR-1's review): the pinned header written as a procedure CONTAINED in
-    another, or as a prototype in an `interface` block in another procedure's body, beside a
-    module-level definition whose prefix (`impure elemental`) the splitter does not model and
-    whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer failing
-    at its own compile.
-
-    EACH DEFINITION IS SPLIT ON ITS OWN, and only the stanza its OWN HEADER opens is taken. A
-    first version split every definition's text together and looked the name up, which is the
-    name-keyed lookup again one level down: a prototype inside another definition's body that the
-    splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
-    splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
-    0 violations). Two requirements close it, and each covers what the other does not. The
-    split is per definition, and the stanza taken must start at that definition's own first line.
-    The second is the one that holds when the decoy is inside the definition itself: a BLOCK makes
-    a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
-    -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
-    from legal source, on the strength of one probe without the BLOCK. The fragment also stops
-    at the definition's own `contains`, so a contained procedure's declarations are not the
-    definition's.
-
-    None is the answer for a definition whose own header the splitter cannot read, and for an
-    abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
-    all. An earlier version left that form out of the answer so the caller kept the name-keyed
-    lookup for it, which turned out to mean "the correct form is refused (the splitter does not
-    read the `module subroutine` prototype either) and a decoy is accepted" (PR #279 round 1).
-    Returns the stanzas keyed by lowercased name. Raises the same two errors as
+    The reading is this module's (`_structure_reading`, which picks the stripped or the
+    label-preserving view); what counts as a definition's header and specification part is the
+    backend's, and `structure.module_level_definition_stanzas` is canonical for it and for why
+    the whole-file stanza splitter's answer is the wrong one. Raises the same two errors as
     `_structure_reading`."""
     view, tree, to_view = _structure_reading(lowered)
-    stanzas: dict[str, list[str] | None] = {}
-    for procedure in fortran_structure.module_level_procedures(tree, unit_name):
-        name = procedure.name.strip().lower()
-        if procedure.kind not in ("subroutine", "function"):
-            stanzas[name] = None
-            continue
-        stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
-        text = (view[to_view(procedure.header_start):to_view(stop)].rstrip("\n")
-                + f"\nend {procedure.kind} {procedure.name}")
-        ops, _types, _ifaces, _errors = fortran_signatures.parse_interface_stanzas(text)
-        stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
-        first = text.split("\n", 1)[0].strip()
-        stanzas[name] = stanza if stanza and stanza[0] == first else None
-    return stanzas
+    return fortran_structure.module_level_definition_stanzas(
+        tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
 
 
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
@@ -13772,10 +13735,7 @@ def _validate_generated_signatures(
                     _structure_reading(source_text)[1], model_file.stem):
                 unit_absent = model_file.stem
             defined_names = _module_level_procedure_names(source_text, model_file.stem)
-            definition_lists = {
-                name: None if lines is None else fortran_signatures.stanza_line_list(lines)
-                for name, lines in _module_level_definition_headers(
-                    source_text, model_file.stem).items()}
+            definition_lists = _module_level_definition_headers(source_text, model_file.stem)
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
@@ -13801,9 +13761,9 @@ def _validate_generated_signatures(
         kind = "derived type" if is_type else "procedure"
         have = src_lists.get(name)
         # A procedure the publishing module DEFINES is compared by ITS header, not by whichever
-        # stanza of that name the splitter met (`_module_level_definition_headers` says why). A
-        # definition whose header the splitter cannot read leaves `have` None, and the source is
-        # told it publishes no such header — the answer a lone definition of that shape gets.
+        # stanza of that name the splitter met (`structure.module_level_definition_stanzas` says
+        # why). A definition whose header the splitter cannot read leaves `have` None, and the
+        # source is told so.
         if not is_type and name.lower() in definition_lists:
             have = definition_lists[name.lower()]
         # A published procedure the source declares only as a PROTOTYPE inside an `interface`
@@ -13829,11 +13789,8 @@ def _validate_generated_signatures(
         if have is None and not is_type and name.lower() in definition_lists:
             violations.append(
                 f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
-                f"'{name}' in the pinned form — the module defines '{name}', but its header is not "
-                "one the §5.1 comparison reads (a prefix other than `pure` / `elemental` / "
-                "`recursive`, a type before `function`, or an abbreviated `module procedure`, "
-                "which repeats no header); write the header exactly as §5.1 pins it, in the "
-                "module's own `contains`, with the result declared in the body")
+                f"'{name}' in the pinned form — the module defines '{name}', but "
+                f"{fortran_structure.UNREAD_DEFINITION_HEADER_REMEDY}")
             continue
         if have is None:
             violations.append(
