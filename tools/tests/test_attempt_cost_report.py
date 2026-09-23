@@ -204,11 +204,13 @@ class AttemptCostReportTests(unittest.TestCase):
         # The decoy event alone (no resume) would leave one segment: 1 first, 3 retries.
         self.assertEqual(self._report()["causes"]["compile.verify fail -> compile.generate"]["n"], 2)
 
-    def _cumulative_session(self, *, turn2_usage=None, target="t1", warm=True):
+    def _cumulative_session(self, *, turn2_usage=None, target="t1", warm=True,
+                            turn2_recorded=None):
         t1 = {"input_tokens": 2, "output_tokens": 100, "cache_read_input_tokens": 0,
               "cache_creation_input_tokens": 50, "total_tokens": 152, "cost_usd": 1.0}
-        t2 = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 50,
-              "cache_creation_input_tokens": 80, "total_tokens": 264, "cost_usd": 1.5}
+        t2 = turn2_recorded or {
+            "input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 50,
+            "cache_creation_input_tokens": 80, "total_tokens": 264, "cost_usd": 1.5}
         r1 = _row("compile", "generate", "2026-09-01T00:01:00Z", usage=t1)
         r1["agent_run_id"] = "t1"
         fail = _row("compile", "verify", "2026-09-01T00:02:00Z", status="fail", out=5)
@@ -227,6 +229,21 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual((retry["output_tokens"], retry["total_tokens"]), (30, 112))
         self.assertAlmostEqual(retry["cost_usd"], 0.5)
         self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (1, 0))
+
+    def test_a_row_the_conductor_already_decumulated_is_left_alone(self):
+        # Issue #281: the recorded row is already the turn, and says so. The envelope's
+        # `usage` is deliberately a third value, so without the marker this row would be
+        # counted in `uncorrected_warm_resumes`.
+        report = self._cumulative_session(
+            turn2_usage={"input_tokens": 9, "output_tokens": 9, "cache_read_input_tokens": 9,
+                         "cache_creation_input_tokens": 9},
+            turn2_recorded={"input_tokens": 2, "output_tokens": 30,
+                            "cache_read_input_tokens": 50, "cache_creation_input_tokens": 30,
+                            "total_tokens": 112, "cost_usd": 0.5,
+                            "provider_details": {"decumulated_against": "t1",
+                                                 "session_running_total": {}}})
+        self.assertEqual(report["per_substep"]["compile.generate"]["retry"]["output_tokens"], 30)
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 0))
 
     def test_a_per_turn_warm_resumed_row_is_left_alone(self):
         # Recorded usage already equals the turn's envelope usage: an older CLI.

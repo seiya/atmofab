@@ -1057,6 +1057,44 @@ class PureProducerSubstepTests(unittest.TestCase):
         meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
         self.assertEqual(meta["per_attempt"][0]["usage"], row["usage"])
 
+    def test_a_warm_repair_turns_usage_is_its_own_turn_not_the_sessions_total(self) -> None:
+        """Issue #281, through the loop: the repair turn warm-resumes `child-1`, and on CLI
+        >= 2.1.278 its envelope's `modelUsage` / `total_cost_usd` are the session's running
+        total. The row and `per_attempt[1].usage` must carry the turn — the difference
+        against `child-1`'s envelope as `_persist_leaf_output` wrote it to disk."""
+        def env(bundle, mu, usage, cost):
+            return json.dumps({
+                "result": json.dumps(bundle), "is_error": False, "session_id": "s",
+                "total_cost_usd": cost, "usage": usage,
+                "modelUsage": {"claude-opus-5[1m]": {
+                    "inputTokens": mu[0], "outputTokens": mu[1],
+                    "cacheReadInputTokens": mu[2], "cacheCreationInputTokens": mu[3]}}})
+
+        def usage(i, o, cr, cc):
+            return {"input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr,
+                    "cache_creation_input_tokens": cc}
+
+        bad = _valid_bundle()
+        del bad["capability_requirements"]  # schema violation -> warm repair
+        a, b = (2, 100, 0, 1000), (3, 50, 1000, 200)
+        total = tuple(x + y for x, y in zip(a, b))
+        c, refs, oc = self._run([env(bad, a, usage(*a), 1.0),
+                                 env(_valid_bundle(), total, usage(*b), 1.5)])
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(oc.attempts, 2)
+        rows = [cap["--agent-run-json"] for sub, cap in c.calls
+                if sub == "finalize-child" and "--agent-run-json" in cap]
+        self.assertEqual(rows[1]["usage"], {
+            **usage(*b), "total_tokens": sum(b), "usage_source": "cli_result_envelope",
+            "cost_usd": 0.5,
+            "provider_details": {"session_running_total": {**usage(*total), "cost_usd": 1.5},
+                                 "decumulated_against": "child-1"}})
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["per_attempt"][1]["usage"], rows[1]["usage"])
+        self.assertEqual(meta["per_attempt"][0]["usage"], rows[0]["usage"])
+        self.assertEqual(rows[0]["usage"]["output_tokens"], 100)
+        self.assertNotIn("provider_details", rows[0]["usage"])
+
     def test_a_pure_envelope_with_a_partial_modelusage_drops_the_cost(self) -> None:
         """The pure twin of the agentic cost-suppression pin: `total_cost_usd` is the sum
         across every model, so a token count that covers only some of them must not be paired

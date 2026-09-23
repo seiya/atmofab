@@ -49,6 +49,9 @@ warm-resumed row whose recorded usage already equals its envelope `usage` is per
 Any other warm-resumed row -- no envelope to read (an HTTP leaf writes none), or neither
 equality holds -- is left as recorded and counted in `uncorrected_warm_resumes`, so a row this
 rule could not decide is visible rather than silently summed.
+Since issue #281 the conductor records a warm-resumed turn as its own turn, and that row carries
+`usage.provider_details.decumulated_against`; such a row is left alone and counted nowhere. This
+correction is for the rows recorded before issue #281.
 
 TOKENS: `output_tokens` is the headline, because it is what bills the time (thinking included).
 `total_tokens` (which also counts input and cache reads/writes) and the provider-reported
@@ -144,6 +147,9 @@ def decumulate(rows, orch_dir):
     recorded = {r.get("agent_run_id"): dict(r["usage"]) for r in rows if measured(r)}
     for row in rows:
         cur = recorded.get(row.get("agent_run_id"))
+        details = cur.get("provider_details") if cur else None
+        if isinstance(details, dict) and details.get("decumulated_against"):
+            continue  # the conductor already recorded this warm turn as its own (issue #281)
         request = _request(orch_dir, row.get("agent_run_id")) if cur else None
         if not request or not (request.get("warm_resume") is True
                                or request.get("repair_strategy") == "reuse"):

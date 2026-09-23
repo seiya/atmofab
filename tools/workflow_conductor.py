@@ -2762,6 +2762,9 @@ class ProcResult:
 # of them that carry a usable `modelUsage`, taking `usage` alone loses a
 # median 25.8% of the tokens (max 43.7%) — and `total_cost_usd`, on the same envelope, is the
 # sum across ALL of them, so the row would carry a cost that includes tokens it does not show.
+# On CLI 2.1.278 and later every recorded envelope lists one row, and on a warm-resumed turn
+# that row and `total_cost_usd` are the resumed SESSION's running total rather than this turn's
+# (issue #281), so `_leaf_usage_row` takes the difference against the resumed turn's envelope.
 _MODEL_USAGE_KEYS: dict[str, str] = {
     "inputTokens": "input_tokens",
     "outputTokens": "output_tokens",
@@ -2813,12 +2816,37 @@ def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
     return (usage if isinstance(usage, dict) else {}), False
 
 
+def _is_token_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_money(value: Any) -> bool:
+    """The same test `normalize_leaf_usage` applies to `cost_usd`, sign aside."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _usage_totals_equal(totals: Any, usage: Any) -> bool:
+    """True when both sides carry all four token classes as counts, and they are equal.
+
+    A class missing or uncountable on EITHER side answers False: an unknown count is not
+    equal to anything, so an incomplete block can never certify an envelope as per-turn.
+    """
+    if not (isinstance(totals, dict) and isinstance(usage, dict)):
+        return False
+    for key in _MODEL_USAGE_KEYS.values():
+        a, b = totals.get(key), usage.get(key)
+        if not (_is_token_count(a) and _is_token_count(b)) or a != b:
+            return False
+    return True
+
+
 def _leaf_usage_row(
     proc: ProcResult,
     entry: ResolvedLeafEntry,
     *,
     envelope: Any = None,
     deterministic: bool = False,
+    resumed: "tuple[str, Any] | None" = None,
 ) -> dict[str, Any]:
     """The `usage` value recorded for ONE launch. ALWAYS a dict, never absent.
 
@@ -2840,6 +2868,21 @@ def _leaf_usage_row(
 
     `envelope` is the parsed result envelope when the CALLER holds one — the two pure loops
     parse it themselves, which since Z4 (issue #171) is every claude leaf there is.
+
+    `resumed` is `(resumed_agent_run_id, its persisted result envelope)` for a warm-resumed
+    claude turn, and only `_spawn_pure_turn` passes it. On CLI 2.1.278 and later such a
+    turn's `modelUsage` and `total_cost_usd` are the resumed session's running total, while
+    the top-level `usage` stays this turn's primary-model block (issue #281). Three cases:
+
+    - the `modelUsage` totals equal `usage` in all four classes — a per-turn envelope (the
+      older CLI's shape); recorded as it stands, and the resumed envelope is not consulted;
+    - the totals minus the resumed envelope's totals equal `usage` in all four classes — a
+      running total; the difference is recorded, `cost_usd` is the difference of the two
+      `total_cost_usd` (omitted when either is missing or it would be negative), and
+      `provider_details` names the running total and the turn it was taken against;
+    - neither holds, the resumed envelope is unreadable, either total is partial, or a class
+      of the difference is negative — `unavailable`, with both sets of numbers in the
+      reason. A guessed number is not written.
     """
     if deterministic:
         return leaf_usage_not_measured(
@@ -2854,9 +2897,38 @@ def _leaf_usage_row(
                 f"{proc.returncode})")
         raw = envelope.raw if isinstance(envelope.raw, dict) else {}
         totals, covers_every_model = _envelope_usage_totals(raw)
+        cost = raw.get("total_cost_usd") if covers_every_model else None
+        details = None
+        turn = raw.get("usage")
+        if resumed is not None and not _usage_totals_equal(totals, turn):
+            resumed_arid, resumed_envelope = resumed
+            if not resumed_envelope.parsed:
+                return leaf_usage_unavailable(
+                    f"warm-resumed turn: envelope totals {totals} differ from its per-turn "
+                    f"usage {turn} and the resumed turn {resumed_arid} has no readable "
+                    f"result envelope ({resumed_envelope.parse_error})")
+            prev_raw = resumed_envelope.raw if isinstance(resumed_envelope.raw, dict) else {}
+            prev, prev_covers = _envelope_usage_totals(prev_raw)
+            diff = {key: totals.get(key, 0) - prev.get(key, 0)
+                    for key in _MODEL_USAGE_KEYS.values()}
+            if (not (covers_every_model and prev_covers)
+                    or min(diff.values()) < 0 or not _usage_totals_equal(diff, turn)):
+                return leaf_usage_unavailable(
+                    f"warm-resumed turn: envelope totals {totals} are neither this turn's "
+                    f"usage {turn} nor the resumed turn {resumed_arid}'s totals {prev} "
+                    f"plus it")
+            session_cost = raw.get("total_cost_usd")
+            prev_cost = prev_raw.get("total_cost_usd")
+            cost = (session_cost - prev_cost
+                    if _is_money(session_cost) and _is_money(prev_cost)
+                    and session_cost >= prev_cost else None)
+            details = {"session_running_total": {
+                           **totals,
+                           "cost_usd": session_cost if _is_money(session_cost) else None},
+                       "decumulated_against": resumed_arid}
+            totals = diff
         usage = normalize_leaf_usage(
-            totals, source=LEAF_USAGE_SOURCE_ENVELOPE,
-            cost_usd=raw.get("total_cost_usd") if covers_every_model else None)
+            totals, source=LEAF_USAGE_SOURCE_ENVELOPE, cost_usd=cost, details=details)
         return usage or leaf_usage_unavailable(
             "result envelope carried no usable usage object")
     # Everything else already carries its numbers on the ProcResult: the claude envelope was
@@ -7086,9 +7158,16 @@ clean:
         # The claude envelope is the one parsed just above — this loop owns it, unlike the
         # agentic path where the capture boundary already consumed it; the other providers'
         # numbers arrive normalized on `proc` itself.
+        # A warm claude turn's envelope may be the resumed session's running total (issue
+        # #281); the resumed turn's own envelope, persisted by its launch, is the baseline.
+        # `warm` is the post-GC-check value, so a cold fallback carries no `resumed`.
+        resumed = None
+        if warm and entry.provider == "claude_cli" and resume_session_id:
+            resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
         usage = _leaf_usage_row(
             proc, entry,
-            envelope=envelope if entry.provider == "claude_cli" else None)
+            envelope=envelope if entry.provider == "claude_cli" else None,
+            resumed=resumed)
         return self._PureTurn(proc, token, envelope, model, usage, launched_monotonic)
 
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -11146,11 +11225,25 @@ clean:
         drain)."""
         time.sleep(seconds)
 
+    def _dialogs_dir(self, child_arid: str) -> Path:
+        return (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                / "agents" / child_arid / "dialogs")
+
+    def _persisted_result_envelope(self, child_arid: str) -> Any:
+        """The result envelope `_persist_leaf_output` stored for a claude leaf. Never raises."""
+        from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
+        try:
+            text = (self._dialogs_dir(child_arid) / "leaf.stdout.log").read_text(
+                encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return ResultEnvelope(False, _MISSING, _MISSING, _MISSING, _MISSING, _MISSING,
+                                  None, f"no persisted stdout for {child_arid}: {exc}")
+        return parse_result_envelope(text)
+
     def _persist_leaf_output(self, child_arid: str, proc: ProcResult,
                              prefix: str = "leaf") -> None:
         """Write the leaf process stdout/stderr to the child's dialogs dir."""
-        dialogs = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                   / "agents" / child_arid / "dialogs")
+        dialogs = self._dialogs_dir(child_arid)
         dialogs.mkdir(parents=True, exist_ok=True)
         # A redacted copy takes the place of stdout when the transport supplied one: the
         # validators need the true document, the artifact must not hold the API key.
