@@ -20684,16 +20684,36 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertEqual(row["status"], "unavailable")
 
     def test_a_partial_total_on_either_side_is_unavailable(self) -> None:
-        partial = json.dumps({"result": "{}", "session_id": "s", "usage": self.TURN2_USAGE,
-                              "total_cost_usd": 3.0,
-                              "modelUsage": {"m": {"inputTokens": 4, "outputTokens": 74526,
-                                                   "cacheReadInputTokens": 72846}}})
-        self.assertEqual(self._row(partial)["status"], "unavailable")
-        turn1 = json.dumps({"result": "{}", "session_id": "s", "total_cost_usd": 1.8,
-                            "usage": _u(2, 43861, 0, 72846),
-                            "modelUsage": {"m": {"inputTokens": 2, "outputTokens": 43861,
-                                                 "cacheReadInputTokens": 0}}})
-        self.assertEqual(self._row(self._turn2(), turn1)["status"], "unavailable")
+        # A helper-model row that counts only `inputTokens: 0` leaves both sums unchanged, so
+        # the difference still equals `usage` in all four classes: the coverage flag is the
+        # ONLY reason to refuse, on each side in turn. A partial sum is not a known total.
+        helper = {"claude-haiku-4-5-20251001": {"inputTokens": 0}}
+        turn2 = json.loads(self._turn2())
+        turn2["modelUsage"].update(helper)
+        row = self._row(json.dumps(turn2))
+        self.assertEqual(row["status"], "unavailable")
+        turn1 = json.loads(self.TURN1)
+        turn1["modelUsage"].update(helper)
+        row = self._row(self._turn2(), json.dumps(turn1))
+        self.assertEqual(row["status"], "unavailable")
+        # The control: without the helper row the same pair is decumulated.
+        self.assertEqual(self._row(self._turn2())["provider_details"]["decumulated_against"],
+                         "t1")
+
+    def test_a_difference_off_in_any_one_class_is_unavailable(self) -> None:
+        for key, value in self.TURN2_USAGE.items():
+            with self.subTest(token_class=key):
+                row = self._row(self._turn2(usage={**self.TURN2_USAGE, key: value + 1}))
+                self.assertEqual(row["status"], "unavailable")
+
+    def test_a_class_missing_from_usage_is_not_equal_to_zero(self) -> None:
+        # A per-turn envelope whose `usage` omits a class `modelUsage` reports as 0. An absent
+        # count is unknown, so the envelope is not certified per-turn, and it is no running
+        # total over turn 1 either.
+        usage = {k: v for k, v in _u(2, 30665, 0, 44769).items()
+                 if k != "cache_read_input_tokens"}
+        per_turn = _warm_envelope(_mu(2, 30665, 0, 44769), usage, cost=1.25)
+        self.assertEqual(self._row(per_turn)["status"], "unavailable")
 
     def test_a_cold_turn_is_unchanged_by_the_resumed_keyword(self) -> None:
         row = self._row(self._turn2(), resumed=False)
