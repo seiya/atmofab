@@ -17811,7 +17811,10 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": api})
             violations: list[str] = []
             _validate_published_surface(Path(tmp), _ir, violations)
-            self.assertTrue(any("§5.1 declares module parameter 'dp' more than once" in v
+            # Refused by the render check (`_validate_struct`'s one name space), which runs before
+            # the module-parameter pin's own duplicate check and returns; that check is kept as
+            # defense in depth and is not what this row reaches.
+            self.assertTrue(any("module_parameters[1].name 'dp' collides with" in v
                                 for v in violations), violations)
 
     def test_section51_case_only_duplicate_module_parameter_name_flagged(self) -> None:
@@ -17836,8 +17839,8 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": api})
             violations: list[str] = []
             _validate_published_surface(Path(tmp), _ir, violations)
-            self.assertTrue(any("more than once (case-insensitively)" in v for v in violations),
-                            violations)
+            self.assertTrue(any("module_parameters[1].name 'DP' collides with" in v
+                                for v in violations), violations)
 
     def test_module_parameters_case_only_name_variant_passes(self) -> None:
         # §5.1 declares `dp`, the IR transcribes it as `DP` (same Fortran symbol, same value) — a
@@ -18039,9 +18042,10 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertIn("could not render", err)
 
     def test_duplicate_symbol_errors(self) -> None:
-        # Two procedures sharing a name render to two same-named stanzas; the render -> stanza
-        # duplicate detection (still live on the rendered Fortran) must fail closed rather than
-        # silently keep one — a structured-form duplicate is as unsafe as a Fortran-form one.
+        # Two procedures sharing a name must fail closed rather than silently keep one — a
+        # structured-form duplicate is as unsafe as a Fortran-form one. The struct validator's
+        # name space refuses it before render, so the rendered block's stanza-level duplicate
+        # detection is not what this row reaches.
         dup = (
             "```yaml\nprocedures:\n"
             "- kind: function\n  name: hx__dup\n  args: []\n"
@@ -18050,7 +18054,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n```\n")
         _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(dup))
         self.assertIsNotNone(err)
-        self.assertIn("duplicate", err.lower())
+        self.assertIn("procedures[1].name 'hx__dup' collides with", err)
 
     def test_malformed_signature_fails_closed_not_crash(self) -> None:
         # A leaf-fabricated malformed struct (function with a null result) must surface as a clean
@@ -19046,6 +19050,58 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(
             any("hx__write_metrics_basis" in v and "never DEFINES it" in v for v in violations),
             violations)
+
+    # A module-level definition the stanza splitter cannot read (its prefix is not modelled) and
+    # whose argument list drifts from §5.1. Paired with a decoy carrying the pinned header, the
+    # header comparison used to take the decoy's stanza while the definedness arm credited this
+    # definition — two answers about two procedures, 0 violations, `-fsyntax-only` rc=0.
+    _DRIFTED_DEF = ("  impure elemental subroutine hx__write_metrics_basis(n)\n"
+                    "    integer, intent(in) :: n\n"
+                    "  end subroutine hx__write_metrics_basis\n")
+
+    def _assert_drift_not_hidden_by(self, decoy: str) -> None:
+        # Two things: the drifted definition alone is refused (the control), and the decoy does
+        # not change that.
+        for label, replacement in (("alone", self._DRIFTED_DEF),
+                                   ("with decoy", decoy + self._DRIFTED_DEF)):
+            with self.subTest(label):
+                violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, replacement))
+                self.assertTrue(
+                    any("does not publish controlled_spec §5.1 procedure "
+                        "'hx__write_metrics_basis' in the pinned form" in v for v in violations),
+                    violations)
+
+    def test_a_contained_decoy_does_not_stand_in_for_the_module_level_definition(self) -> None:
+        self._assert_drift_not_hidden_by(
+            "  subroutine hx__other()\n  contains\n"
+            "    subroutine hx__write_metrics_basis(entries, n)\n"
+            "      type(hx__h_named), intent(in) :: entries(:)\n"
+            "      integer,           intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end subroutine hx__other\n")
+
+    def test_a_body_local_prototype_does_not_stand_in_for_the_module_level_definition(
+            self) -> None:
+        self._assert_drift_not_hidden_by(
+            "  subroutine hx__other()\n    interface\n"
+            "      subroutine hx__write_metrics_basis(entries, n)\n"
+            "        import :: hx__h_named\n"
+            "        type(hx__h_named), intent(in) :: entries(:)\n"
+            "        integer,           intent(in) :: n\n"
+            "      end subroutine hx__write_metrics_basis\n"
+            "    end interface\n  end subroutine hx__other\n")
+
+    def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
+        # The comparison reads the definition's header from the structure reader's view, which is
+        # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements
+        # split); a faithful definition must still compare clean through it. The upper-case
+        # spelling is a correction as well as a control: the name-keyed lookup this replaced
+        # missed `HX__WRITE_METRICS_BASIS` and refused the legal source as publishing nothing
+        # (measured on origin/main 1671710a).
+        self.assertEqual(self._gate(self._C._GOOD_SOURCE), [])
+        spaced = self._C._GOOD_SOURCE.replace(self._DEF, self._DEF.upper().replace(
+            "HX__H_NAMED", "hx__h_named"))
+        self.assertEqual(self._gate(spaced), [], spaced)
 
     def test_unresolvable_structure_is_a_content_violation_not_a_silent_pass(self) -> None:
         # The check must not be behind a switch the LEAF holds. A source the front end cannot

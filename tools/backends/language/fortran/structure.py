@@ -129,8 +129,8 @@ class StructureError:
 class Procedure:
     """One procedure DEFINITION, with its body located as offsets into the view.
 
-    ``body_start`` is the start of the line after the header statement and ``body_end`` the start
-    of the line holding the END statement, which is what makes ``view[body_start:body_end]`` the
+    ``header_start`` is the start of the line holding the header statement, ``body_start`` the
+    start of the line after it, and ``body_end`` the start of the line holding the END statement, which is what makes ``view[body_start:body_end]`` the
     body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
     (None when it has none): declarations before it are this procedure's, procedures after it are
     its own contained ones whose dummies are NOT its.
@@ -140,6 +140,7 @@ class Procedure:
     name: str
     dummy_args_text: str
     result_name: str | None
+    header_start: int
     body_start: int
     body_end: int
     contains_at: int | None
@@ -410,6 +411,7 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
         name=name,
         dummy_args_text=dummy_args_text,
         result_name=result_name,
+        header_start=_line_start(view, to_char(header.start_byte)),
         body_start=body_start,
         body_end=body_end,
         contains_at=contains_at,
@@ -508,7 +510,16 @@ def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
 def module_level_procedure_names(
     tree: StructureTree, unit_name: str | None = None
 ) -> frozenset[str]:
-    """The names ``tree`` DEFINES at module level, lowercased.
+    """The names of `module_level_procedures`, lowercased."""
+    return frozenset(
+        procedure.name.strip().lower()
+        for procedure in module_level_procedures(tree, unit_name))
+
+
+def module_level_procedures(
+    tree: StructureTree, unit_name: str | None = None
+) -> tuple[Procedure, ...]:
+    """The procedures ``tree`` DEFINES at module level.
 
     THREE exclusions, and they answer one question from three sides: does this name have an
     implementation that the module publishing it actually carries?
@@ -548,7 +559,7 @@ def module_level_procedure_names(
     reach the descendant, which it does not: scoping to `mid` returns the empty set.
 
     ``unit_name`` matching is by the unit's own declared name, lowercased. A source declaring no
-    unit of that name yields the empty set, which fails every published procedure — fail-closed,
+    unit of that name yields none, which fails every published procedure — fail-closed,
     and the right answer: the module the node is contracted to publish is not there.
 
     An abbreviated separate module subprogram (`module procedure solve`, in a submodule) IS an
@@ -564,9 +575,9 @@ def module_level_procedure_names(
             if unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
         ]
         if not scope:
-            return frozenset()
+            return ()
     bodies = [(p.body_start, p.body_end) for p in tree.procedures]
-    names: set[str] = set()
+    found: list[Procedure] = []
     for index, procedure in enumerate(tree.procedures):
         if scope and not any(
             start <= procedure.body_start < end for start, end in scope
@@ -578,5 +589,5 @@ def module_level_procedure_names(
             if other != index
         )
         if not nested:
-            names.add(procedure.name.strip().lower())
-    return frozenset(names)
+            found.append(procedure)
+    return tuple(found)

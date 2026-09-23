@@ -1535,6 +1535,42 @@ def _module_level_procedure_names(
     return fortran_structure.module_level_procedure_names(tree, unit_name)
 
 
+def _module_level_definition_headers(
+    lowered: str, unit_name: str
+) -> tuple[dict[str, list[str] | None], list[str]]:
+    """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name`` — its
+    header and specification part, read from the definition the structure reader found.
+
+    This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
+    The splitter reads a header wherever it stands and keys it by NAME, while the definedness
+    answer is about ONE procedure; a source can satisfy each with a different one. Measured
+    (TODO.md, found by issue #266 PR-1's review): the pinned header written as a procedure
+    CONTAINED in another, or as a prototype in an `interface` block in another procedure's body,
+    beside a module-level definition whose prefix (`impure elemental`) the splitter does not model
+    and whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer
+    failing at its own compile. Reading the header from the definition makes the two answers be
+    about the same procedure.
+
+    An abbreviated separate module subprogram (`module procedure <name>`) repeats no header, so
+    it has no key here and the caller keeps the name-keyed lookup for it. Returns the stanzas keyed
+    by lowercased name — None for a definition whose header the splitter cannot read — and the
+    splitter's errors. Raises the same two errors as `_structure_reading`."""
+    view, tree, to_view = _structure_reading(lowered)
+    texts = []
+    names = set()
+    for procedure in fortran_structure.module_level_procedures(tree, unit_name):
+        if procedure.kind not in ("subroutine", "function"):
+            continue
+        names.add(procedure.name.strip().lower())
+        stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
+        texts.append(
+            view[to_view(procedure.header_start):to_view(stop)].rstrip("\n")
+            + f"\nend {procedure.kind} {procedure.name}")
+    ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas("\n".join(texts))
+    read = {name.lower(): lines for name, lines in ops.items()}
+    return {name: read.get(name) for name in names}, errors
+
+
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
@@ -13260,6 +13296,9 @@ def _validate_ir_module_parameters_against_section51(
     # the case-only `dp`/`DP`) would pass this map yet require BOTH contradictory `integer, parameter`
     # lines in the source at Generate.static (which renders the full list, un-deduped) — an
     # unsatisfiable contract that wedges Generate. Catch it here at Compile with a clear message.
+    # Both callers render §5.1 first (`_parse_canonical_interface_from_controlled_spec`), and the
+    # struct validator's one name space refuses a duplicate there and returns, so this check is
+    # defense in depth that no row reaches through a caller today.
     spec_params: dict[str, Any] = {}
     spec_dupe_names: list[str] = []
     for mp in _section51_module_parameters(cs_path):
@@ -13598,9 +13637,9 @@ def _validate_generated_signatures(
     # §5.1 procedure the source only prototypes is reported as undefined (the per-symbol loop),
     # and each §5.1 `interfaces` prototype is pinned against the source's prototype of that
     # name (after the loop; issue #266). A prototype that shares a published name with an
-    # unprefixed definition is still a `duplicate signature` error from the splitter, so the
-    # decoy defence below is unchanged — and unchanged means the prefixed variant it never
-    # covered is still open (the per-symbol loop says which, and TODO.md carries it).
+    # unprefixed definition is still a `duplicate signature` error from the splitter; the
+    # prefixed variant that error never covered is closed in the per-symbol loop, which compares
+    # a defined procedure by its own definition's header.
     src_ops, src_types, src_ifaces, src_errors = (
         fortran_signatures.parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
@@ -13668,7 +13707,10 @@ def _validate_generated_signatures(
     # independently before it was fixed. The duplicate-symbol backstop that should have caught two headers of one name did
     # not, because the decoy's header carried a prefix (`impure elemental`) or a statement label
     # that the stanza reader does not model — so narrowing to that spelling would have closed one
-    # decoy and left the family. Scoping removes the family.
+    # decoy and left the family. Scoping removes the family FOR THE DEFINEDNESS ANSWER, and only
+    # there: a decoy in the published unit itself — contained in another procedure, or a prototype
+    # in another procedure's body — still carried the header the comparison below read, until
+    # that comparison took its header from the same definition (`_module_level_definition_headers`).
     #
     # The unit is named by the source's own basename with its extension dropped, which is the
     # convention this repository already relies on when it resolves the model source at all.
@@ -13686,6 +13728,7 @@ def _validate_generated_signatures(
     # ONE module either way, so a set of files this gate cannot resolve to one publisher is
     # fail-closed rather than unioned.
     defined_names: frozenset[str] | None = None
+    definition_lists: dict[str, tuple[str, ...] | None] = {}
     unit_absent: str | None = None
     if op_stanzas and len(model_files) != 1:
         # APPENDED DIRECTLY, and NOT via `_fail_closed_if_pinned`, and NOT followed by a
@@ -13712,6 +13755,16 @@ def _validate_generated_signatures(
                     _structure_reading(source_text)[1], model_file.stem):
                 unit_absent = model_file.stem
             defined_names = _module_level_procedure_names(source_text, model_file.stem)
+            definition_stanzas, definition_errors = _module_level_definition_headers(
+                source_text, model_file.stem)
+            for err in definition_errors:
+                violations.append(
+                    f"{target}: the published module's procedure definitions cannot be compared "
+                    f"with controlled_spec §5.1 ({err}) — define each published procedure exactly "
+                    "once, at the top level of the module")
+            definition_lists = {
+                name: None if lines is None else fortran_signatures.stanza_line_list(lines)
+                for name, lines in definition_stanzas.items()}
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
@@ -13736,6 +13789,12 @@ def _validate_generated_signatures(
         is_type = name in type_stanzas
         kind = "derived type" if is_type else "procedure"
         have = src_lists.get(name)
+        # A procedure the publishing module DEFINES is compared by ITS header, not by whichever
+        # stanza of that name the splitter met (`_module_level_definition_headers` says why). A
+        # definition whose header the splitter cannot read leaves `have` None, and the source is
+        # told it publishes no such header — the answer a lone definition of that shape gets.
+        if not is_type and name.lower() in definition_lists:
+            have = definition_lists[name.lower()]
         # A published procedure the source declares only as a PROTOTYPE inside an `interface`
         # block. The stanza splitter files it under the prototypes, so it is not in `src_lists`;
         # it is still the header the leaf wrote for this name, so it is compared for drift below
@@ -13750,12 +13809,20 @@ def _validate_generated_signatures(
         # procedure's BODY plus a module-level definition carrying a prefix the splitter does
         # not model (`impure elemental`) is refused by NEITHER — measured 0 violations here and
         # rc=0 from the syntax check, at origin/main and at this revision — because this arm
-        # compares the prototype's atoms while the structural arm credits the prefixed
-        # definition. That is the name-keyed-versus-unit-keyed hole TODO.md records (the
-        # contained-decoy variant is the other spelling of it), and it is out of this issue's
-        # scope: a leaf could take it before this branch and can take it after.
-        if not is_type and have is None and name in src_proto_lists:
+        # compared the prototype's atoms while the structural arm credited the prefixed
+        # definition. That pair, and its contained-decoy spelling, is closed by the arm above: a
+        # name the module DEFINES never falls back to a prototype's header.
+        if (not is_type and have is None and name in src_proto_lists
+                and name.lower() not in definition_lists):
             have = src_proto_lists[name]
+        if have is None and not is_type and name.lower() in definition_lists:
+            violations.append(
+                f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
+                f"'{name}' in the pinned form — the module defines '{name}', but its header is not "
+                "one the §5.1 comparison reads (a prefix other than `pure` / `elemental` / "
+                "`recursive`, or a type before `function`); write the header exactly as §5.1 pins "
+                "it, with the result declared in the body")
+            continue
         if have is None:
             violations.append(
                 f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
