@@ -20651,6 +20651,19 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertEqual(self._row(per_turn), expected)
         self.assertEqual(self._row(per_turn, ""), expected)
 
+    def test_a_per_turn_warm_envelope_with_a_helper_model_is_recorded_whole(self) -> None:
+        # An older CLI's warm turn that also ran a helper model: `usage` is the primary row
+        # alone, so only the primary ROW equals it. Recorded as a cold turn is — every model
+        # summed, with the cost — and the resumed envelope is not consulted (Codex, round 2).
+        env = json.loads(_warm_envelope(_mu(2, 30665, 72846, 44769), self.TURN2_USAGE,
+                                        cost=1.4))
+        env["modelUsage"]["claude-haiku-4-5-20251001"] = _mu(6, 400, 0, 0)
+        expected = {"input_tokens": 8, "output_tokens": 31065, "cache_read_input_tokens": 72846,
+                    "cache_creation_input_tokens": 44769, "total_tokens": 148688,
+                    "usage_source": "cli_result_envelope", "cost_usd": 1.4}
+        self.assertEqual(self._row(json.dumps(env)), expected)
+        self.assertEqual(self._row(json.dumps(env), ""), expected)
+
     def test_a_warm_turn_that_reconciles_neither_way_is_unavailable(self) -> None:
         row = self._row(self._turn2(usage=_u(2, 30666, 72846, 44769)))
         self.assertEqual(row["status"], "unavailable")

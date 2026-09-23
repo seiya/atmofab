@@ -2840,6 +2840,26 @@ def _usage_totals_equal(totals: Any, usage: Any) -> bool:
     return True
 
 
+def _envelope_is_per_turn(envelope: dict[str, Any], totals: dict[str, Any], turn: Any) -> bool:
+    """Whether a warm-resumed turn's envelope reports THIS turn: its `modelUsage` sum, or one
+    of its model rows, equals the per-turn top-level `usage` in all four classes.
+
+    The row test is what keeps an older CLI's per-turn envelope with a helper model beside
+    the primary recorded: `usage` is the primary row alone, so the sum cannot equal it. On a
+    running total the primary row is the session's, and equals `usage` only when every
+    earlier turn of the session spent nothing.
+    """
+    if _usage_totals_equal(totals, turn):
+        return True
+    model_usage = envelope.get("modelUsage")
+    rows = model_usage.values() if isinstance(model_usage, dict) else ()
+    return any(
+        isinstance(row, dict) and _usage_totals_equal(
+            {canonical: row.get(reported) for reported, canonical in _MODEL_USAGE_KEYS.items()},
+            turn)
+        for row in rows)
+
+
 def _leaf_usage_row(
     proc: ProcResult,
     entry: ResolvedLeafEntry,
@@ -2874,8 +2894,9 @@ def _leaf_usage_row(
     turn's `modelUsage` and `total_cost_usd` are the resumed session's running total, while
     the top-level `usage` stays this turn's primary-model block (issue #281). Three cases:
 
-    - the `modelUsage` totals equal `usage` in all four classes — a per-turn envelope (the
-      older CLI's shape); recorded as it stands, and the resumed envelope is not consulted;
+    - the `modelUsage` totals, or one model's row, equal `usage` in all four classes — a
+      per-turn envelope (the older CLI's shape, `_envelope_is_per_turn`); recorded as it
+      stands, every model summed, and the resumed envelope is not consulted;
     - the totals minus the resumed envelope's totals equal `usage` in all four classes — a
       running total; the difference is recorded, `cost_usd` is the difference of the two
       `total_cost_usd` (omitted when either is missing or it would be negative), and
@@ -2900,7 +2921,7 @@ def _leaf_usage_row(
         cost = raw.get("total_cost_usd") if covers_every_model else None
         details = None
         turn = raw.get("usage")
-        if resumed is not None and not _usage_totals_equal(totals, turn):
+        if resumed is not None and not _envelope_is_per_turn(raw, totals, turn):
             resumed_arid, resumed_envelope = resumed
             if not resumed_envelope.parsed:
                 return leaf_usage_unavailable(
