@@ -197,9 +197,9 @@ only at a fixed granularity.
 granularity BEFORE reading any figure. A node's total cost is the sum of every substep and every
 retry, so it moves whenever the workload moves — a spec version bump, a new dependency in the
 closure, a larger harness — and a per-leaf reduction landing in the same period nets to
-"no effect". Issue #94 records the case: three per-leaf reductions of 41–61% each plus the
-removal of two leaves per node, and a node median that did not move, because a concurrent scope
-increase grew two other substeps by 21% and 36%.
+"no effect". Issue #94 records the case: per-leaf token reductions of 43–61% on three substeps
+plus the removal of two leaves per node, and a node median that did not move, because a
+concurrent scope increase grew two other substeps' tokens by 21% and 36%.
 
 Retries are a separate figure, not noise to be averaged in. A retry's cost is decided by whether
 the FIRST attempt passed, which is a different lever (contract clarity, exemplar reach) from what
@@ -212,12 +212,14 @@ python3 skills/workflow-timing-audit/scripts/attempt_cost_report.py --since YYYY
 It reads the in-repo `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` and
 prints, for the window: the retry share of `output_tokens` / `total_tokens` / `cost_usd`, the
 attempt-1 median `output_tokens` per `step.substep`, and the retry cost attributed to the failure
-that sent the run back (for example `compile.verify fail -> compile.generate`). Its docstring
-states what counts as an attempt and what is excluded; it cuts a run at each operator `--resume`,
-and it corrects a warm-resumed row that the conductor recorded as the session's running total
-(a `TODO.md` item), printing how many rows it corrected and how many it could not decide. A run recorded before issue #47 has no
-usage rows and contributes nothing; its figures come from `analyze_timing.py` and the
-transcripts.
+that sent the run back (for example `compile.verify fail -> compile.generate`). Here an attempt
+is one leaf launch of a substep, not the `docs/GLOSSARY.md` `attempt` of a whole phase; the
+script's docstring states what counts as one and what is excluded. It cuts a run at each
+operator `--resume`, and it corrects a warm-resumed row that the conductor recorded as the
+session's running total (issue #94), printing how many rows it corrected and how many it could
+not decide. Most runs recorded before issue #47 carry usage markers rather than numbers and
+contribute nothing; their figures come from `analyze_timing.py` and the transcripts. Quote a
+figure with both `--since` and `--until`, so that a later run does not change it.
 
 Decision criteria when reading a comparison:
 - A change to a leaf (prompt, injected facts, a hoisted deterministic check) is judged by the

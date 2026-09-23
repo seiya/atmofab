@@ -268,7 +268,8 @@ class AttemptCostReportTests(unittest.TestCase):
                               total=900)]
             self._orch(f"orch_{i}", rows)
         text = attempt_cost_report.render(self._report())
-        self.assertIn("3 orchestrations, 5 measured leaf launches (1 retries)", text)
+        self.assertIn("3 orchestrations with a measured row, 5 measured leaf launches (1 retries)",
+                      text)
         self.assertIn(f"{'compile.generate':<22} {3:>5} {1:>5} {'45.5%':>9} {'20':>21}", text)
         self.assertIn(f"{'compile.verify':<22} {1:>5} {0:>5} {'0.0%':>9} {'1':>21}", text)
         self.assertIn(f"{100:>12,} {1:>4}  compile.verify fail -> compile.generate", text)
@@ -283,6 +284,131 @@ class AttemptCostReportTests(unittest.TestCase):
         totals = self._report()["totals"]
         self.assertEqual((totals["first"]["n"], totals["first"]["output_tokens"]), (1, 10))
         self.assertEqual(totals["retry"]["n"], 0)
+
+    def test_a_three_turn_chain_subtracts_the_RECORDED_previous_turn(self):
+        # Turn 3 resumed turn 2, which was itself corrected: turn 3's own tokens are its
+        # recorded total minus turn 2's RECORDED total, not minus turn 2's corrected value.
+        def usage(out, cost):
+            return {"input_tokens": 0, "output_tokens": out, "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0, "total_tokens": out, "cost_usd": cost}
+        rows = []
+        for arid, t, out, cost in (("t1", "01", 100, 1.0), ("t2", "03", 130, 1.3),
+                                   ("t3", "05", 170, 1.7)):
+            row = _row("compile", "generate", f"2026-09-01T00:{t}:00Z", usage=usage(out, cost))
+            row["agent_run_id"] = arid
+            rows.append(row)
+        for arid, t in (("v1", "02"), ("v2", "04")):
+            fail = _row("compile", "verify", f"2026-09-01T00:{t}:00Z", status="fail", out=1)
+            fail["agent_run_id"] = arid
+            rows.append(fail)
+        d = self._orch("orch_a", rows)
+        for arid, target, out in (("t2", "t1", 30), ("t3", "t2", 40)):
+            self._warm(d, arid, target, {"input_tokens": 0, "output_tokens": out,
+                                         "cache_read_input_tokens": 0,
+                                         "cache_creation_input_tokens": 0})
+        report = self._report()
+        retry = report["per_substep"]["compile.generate"]["retry"]
+        self.assertEqual(retry["output_tokens"], 70)
+        self.assertAlmostEqual(retry["cost_usd"], 0.7)
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (2, 0))
+
+    def test_a_failing_retry_is_not_its_own_cause(self):
+        self._orch("orch_a", [
+            _row("compile", "generate", "2026-09-01T00:01:00Z", out=10),
+            _row("compile", "static", "2026-09-01T00:02:00Z", status="fail"),
+            _row("compile", "generate", "2026-09-01T00:03:00Z", status="fail", out=20),
+        ])
+        self.assertEqual(list(self._report()["causes"]),
+                         ["compile.static fail -> compile.generate"])
+
+    def test_an_even_count_median_is_printed_exactly(self):
+        for i, out in enumerate((10, 20, 31, 90)):
+            self._orch(f"orch_{i}", [_row("compile", "generate", f"2026-09-0{i + 1}T00:00:00Z",
+                                          out=out)])
+        report = self._report()
+        self.assertEqual(report["per_substep"]["compile.generate"]
+                         ["attempt1_median_output_tokens"], 25.5)
+        self.assertIn(f"{'25.5':>21}", attempt_cost_report.render(report))
+
+    def test_a_window_edge_does_not_turn_a_retry_into_a_first_attempt(self):
+        self._orch("orch_a", [
+            _row("compile", "generate", "2026-08-31T23:50:00Z", out=100),
+            _row("compile", "verify", "2026-08-31T23:55:00Z", status="fail", out=5),
+            _row("compile", "generate", "2026-09-01T00:05:00Z", out=40),
+        ])
+        report = self._report(since="2026-09-01")
+        entry = report["per_substep"]["compile.generate"]
+        self.assertEqual((entry["first"]["n"], entry["retry"]["n"]), (0, 1))
+        self.assertEqual(list(report["causes"]), ["compile.verify fail -> compile.generate"])
+        self.assertNotIn("compile.verify", report["per_substep"])
+
+    def test_a_warm_resumed_row_with_no_envelope_is_counted_not_guessed(self):
+        r1 = _row("compile", "generate", "2026-09-01T00:01:00Z", out=100)
+        r1["agent_run_id"] = "t1"
+        r2 = _row("compile", "generate", "2026-09-01T00:03:00Z", out=130)
+        r2["agent_run_id"] = "t2"
+        d = self._orch("orch_a", [r1, r2])
+        (d / "launches").mkdir()
+        (d / "launches" / "t2.request.json").write_text(json.dumps(
+            {"warm_resume": True, "repair_target_agent_run_id": "t1"}), encoding="utf-8")
+        report = self._report()
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 1))
+
+    def test_a_non_output_class_mismatch_is_not_decided_on_output_alone(self):
+        # Output agrees with the envelope turn, cache reads do not: neither "already per
+        # turn" nor a decidable difference.
+        off = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 49,
+               "cache_creation_input_tokens": 80}
+        report = self._cumulative_session(turn2_usage=off)
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 1))
+        off = {"input_tokens": 2, "output_tokens": 30, "cache_read_input_tokens": 50,
+               "cache_creation_input_tokens": 29}
+        report = self._cumulative_session_again(off)
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 1))
+
+    def _cumulative_session_again(self, turn2_usage):
+        self.tmp.cleanup()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        return self._cumulative_session(turn2_usage=turn2_usage)
+
+    def test_a_resumed_turn_without_cost_leaves_the_corrected_cost_unknown(self):
+        t1 = {"input_tokens": 2, "output_tokens": 100, "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 50, "total_tokens": 152}
+        t2 = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 50,
+              "cache_creation_input_tokens": 80, "total_tokens": 264, "cost_usd": 1.5}
+        r1 = _row("compile", "generate", "2026-09-01T00:01:00Z", usage=t1)
+        r1["agent_run_id"] = "t1"
+        r2 = _row("compile", "generate", "2026-09-01T00:03:00Z", usage=t2)
+        r2["agent_run_id"] = "t2"
+        d = self._orch("orch_a", [r1, r2])
+        self._warm(d, "t2", "t1", {"input_tokens": 2, "output_tokens": 30,
+                                   "cache_read_input_tokens": 50,
+                                   "cache_creation_input_tokens": 30})
+        report = self._report()
+        self.assertEqual(report["decumulated_rows"], 1)
+        retry = report["per_substep"]["compile.generate"]["retry"]
+        self.assertEqual((retry["n_cost_usd"], retry["cost_usd"]), (0, 0.0))
+        self.assertIn("cost_usd n/a (2 of 2 rows carry no cost_usd)",
+                      attempt_cost_report.render(report))
+
+    def test_a_row_without_a_secondary_figure_makes_that_share_na_not_a_smaller_sum(self):
+        pre47 = _row("compile", "generate", "2026-09-01T00:01:00Z",
+                     usage={"input_tokens": 1, "output_tokens": 100})
+        self._orch("orch_a", [
+            pre47,
+            _row("compile", "verify", "2026-09-01T00:02:00Z", status="fail", out=10,
+                 total=10, cost=0.1),
+            _row("compile", "generate", "2026-09-01T00:03:00Z", out=100, total=200, cost=2.0),
+        ])
+        report = self._report()
+        first, retry = report["totals"]["first"], report["totals"]["retry"]
+        self.assertAlmostEqual(attempt_cost_report.share(first, retry, "output_tokens"),
+                               100 / 210)
+        self.assertIsNone(attempt_cost_report.share(first, retry, "total_tokens"))
+        self.assertIsNone(attempt_cost_report.share(first, retry, "cost_usd"))
+        self.assertIn("total_tokens n/a (1 of 3 rows carry no total_tokens)",
+                      attempt_cost_report.render(report))
 
     def test_no_measured_rows_reports_na_not_zero(self):
         self._orch("orch_a", [_row("generate", "gate", "2026-09-01T00:01:00Z")])
