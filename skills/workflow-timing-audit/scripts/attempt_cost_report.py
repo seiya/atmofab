@@ -49,9 +49,12 @@ warm-resumed row whose recorded usage already equals its envelope `usage` is per
 Any other warm-resumed row -- no envelope to read (an HTTP leaf writes none), or neither
 equality holds -- is left as recorded and counted in `uncorrected_warm_resumes`, so a row this
 rule could not decide is visible rather than silently summed.
-Since issue #281 the conductor records a warm-resumed turn as its own turn, and that row carries
-`usage.provider_details.decumulated_against`; such a row is left alone and counted nowhere. This
-correction is for the rows recorded before issue #281.
+Since issue #281 the conductor records a warm-resumed turn as its own turn. A row it recorded as
+the difference from the resumed turn carries `usage.provider_details.decumulated_against`; such a
+row is summed as recorded and counted in neither `decumulated_rows` nor
+`uncorrected_warm_resumes`. A per-turn row it recorded as it stands carries no marker and is
+decided by the rule above, like any other row. This correction is for the rows recorded before
+issue #281.
 
 TOKENS: `output_tokens` is the headline, because it is what bills the time (thinking included).
 `total_tokens` (which also counts input and cache reads/writes) and the provider-reported
