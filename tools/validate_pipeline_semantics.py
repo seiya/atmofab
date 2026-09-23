@@ -1555,12 +1555,14 @@ def _module_level_definition_headers(
     name-keyed lookup again one level down: a prototype inside another definition's body that the
     splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
     splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
-    0 violations). Splitting per definition is what closes that: the decoy's text is another
-    definition's. The further requirement that the stanza start at the definition's own first
-    line is defense in depth and is NOT pinned — the one shape it would catch, a misread
-    prototype of the procedure inside that procedure's own body, is refused by the compiler
-    ("already been host associated"; `gfortran -fsyntax-only -std=f2008` rc=1, measured at
-    PR #279 f5a97f0e), so no row can reach it with legal source.
+    0 violations). Two requirements close it, and each covers what the other does not. The
+    split is per definition, and the stanza taken must start at that definition's own first line.
+    The second is the one that holds when the decoy is inside the definition itself: a BLOCK makes
+    a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
+    -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
+    from legal source, on the strength of one probe without the BLOCK. The fragment also stops
+    at the definition's own `contains`, so a contained procedure's declarations are not the
+    definition's.
 
     None is the answer for a definition whose own header the splitter cannot read, and for an
     abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at

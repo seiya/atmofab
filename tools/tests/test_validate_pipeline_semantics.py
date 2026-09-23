@@ -19159,6 +19159,48 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertIn("100 continue", tree.view, "the fixture must reach the labelled reading")
         self.assertEqual(self._gate(source), [])
 
+    def test_a_misread_prototype_inside_the_definition_itself_does_not_stand_in(self) -> None:
+        # A BLOCK makes a prototype of the procedure legal INSIDE that procedure's own body
+        # (without it gfortran answers "already been host associated"), so a per-definition
+        # split still sees it. What refuses it is that the taken stanza must start at the
+        # definition's own first line. PR #279 round 2 measured this at `-fsyntax-only
+        # -std=f2008` rc=0: 0 violations on origin/main and at af010783, and 0 again with that
+        # requirement removed.
+        drifted = ("  impure elemental subroutine hx__write_metrics_basis(n)\n"
+                   "    integer, intent(in) :: n\n"
+                   "    print *, n\n"
+                   "    block\n"
+                   "      interface write(formatted)\n"
+                   "        subroutine hx__write_metrics_basis(entries, n)\n"
+                   "          import :: hx__h_named\n"
+                   "          type(hx__h_named), intent(in) :: entries(:)\n"
+                   "          integer,           intent(in) :: n\n"
+                   "        end subroutine hx__write_metrics_basis\n"
+                   "      end interface\n"
+                   "    end block\n"
+                   "  end subroutine hx__write_metrics_basis\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' in the pinned form" in v
+                            for v in violations), violations)
+
+    def test_a_contained_procedures_declarations_are_not_the_definitions(self) -> None:
+        # The definition's stanza stops at its own `contains`. The whole-file splitter did not
+        # stop there when the contained header carried a prefix it does not read, so the
+        # contained procedure's `integer, intent(in) :: n` satisfied the pinned declaration
+        # while the published `n` drifted to `real(dp)` — 0 violations on origin/main, rc=0 at
+        # `-fsyntax-only -std=f2008` (PR #279 round 2).
+        drifted = ("  subroutine hx__write_metrics_basis(entries, &\n      n)\n"
+                   "    type(hx__h_named), intent(in) :: entries(:)\n"
+                   "    real(dp),          intent(in) :: n\n"
+                   "  contains\n"
+                   "    impure subroutine hx__inner(n)\n"
+                   "      integer, intent(in) :: n\n"
+                   "    end subroutine hx__inner\n"
+                   "  end subroutine hx__write_metrics_basis\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' drifts from controlled_spec" in v
+                            for v in violations), violations)
+
     def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
         # The comparison reads the definition's header from the structure reader's view, which is
         # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements
