@@ -20665,10 +20665,13 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertEqual(self._row(json.dumps(env), ""), expected)
 
     def test_a_warm_turn_that_reconciles_neither_way_is_unavailable(self) -> None:
-        row = self._row(self._turn2(usage=_u(2, 30666, 72846, 44769)))
+        row = self._row(self._turn2(usage={**_u(2, 30666, 72846, 44769),
+                                           "service_tier": "standard"}))
         self.assertEqual(row["status"], "unavailable")
         for needle in ("t1", "30666", "74526", "43861"):
             self.assertIn(needle, row["reason"])
+        # The reason names the four token classes, not the provider's other `usage` fields.
+        self.assertNotIn("service_tier", row["reason"])
 
     def test_a_warm_turn_whose_resumed_envelope_is_unreadable_is_unavailable(self) -> None:
         row = self._row(self._turn2(), "not json")

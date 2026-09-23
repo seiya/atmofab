@@ -2923,10 +2923,15 @@ def _leaf_usage_row(
         turn = raw.get("usage")
         if resumed is not None and not _envelope_is_per_turn(raw, totals, turn):
             resumed_arid, resumed_envelope = resumed
+
+            def shown(block: Any) -> Any:
+                # The four classes only: a fallback `usage` also carries provider strings.
+                return ({key: block.get(key) for key in _MODEL_USAGE_KEYS.values()}
+                        if isinstance(block, dict) else block)
             if not resumed_envelope.parsed:
                 return leaf_usage_unavailable(
-                    f"warm-resumed turn: envelope totals {totals} differ from its per-turn "
-                    f"usage {turn} and the resumed turn {resumed_arid} has no readable "
+                    f"warm-resumed turn: envelope totals {shown(totals)} differ from its "
+                    f"per-turn usage {shown(turn)} and the resumed turn {resumed_arid} has no readable "
                     f"result envelope ({resumed_envelope.parse_error})")
             prev_raw = resumed_envelope.raw if isinstance(resumed_envelope.raw, dict) else {}
             prev, prev_covers = _envelope_usage_totals(prev_raw)
@@ -2937,9 +2942,9 @@ def _leaf_usage_row(
                     if covers_every_model and prev_covers else None)
             if diff is None or not _usage_totals_equal(diff, turn):
                 return leaf_usage_unavailable(
-                    f"warm-resumed turn: envelope totals {totals} are neither this turn's "
-                    f"usage {turn} nor the resumed turn {resumed_arid}'s totals {prev} "
-                    f"plus it")
+                    f"warm-resumed turn: envelope totals {shown(totals)} are neither this "
+                    f"turn's usage {shown(turn)} nor the resumed turn {resumed_arid}'s totals "
+                    f"{shown(prev)} plus it")
             session_cost = raw.get("total_cost_usd")
             prev_cost = prev_raw.get("total_cost_usd")
             # A negative difference is dropped by `normalize_leaf_usage`, as any negative cost.
