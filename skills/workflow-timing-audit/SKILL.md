@@ -1,6 +1,6 @@
 ---
 name: workflow-timing-audit
-description: Use this when investigating where a workflow orchestration spent wall-clock time and output tokens — breaking a run down per leaf (step.substep), separating LLM leaves from the conductor's in-process deterministic steps, and attributing each LLM leaf's time to model generation vs. tool execution vs. dominant turns. Also flags the waste/failure signals a time-and-token table hides: turns cut off by `max_tokens` (thinking that emitted nothing) and leaves that died of an API/transport error. Handles the transcript multiple-counting traps. The target orchestration_id is auto-detected. Claude Code-only.
+description: Use this when investigating where a workflow orchestration spent wall-clock time and output tokens — breaking a run down per leaf (step.substep), separating LLM leaves from the conductor's in-process deterministic steps, and attributing each LLM leaf's time to model generation vs. tool execution vs. dominant turns. Also flags the waste/failure signals a time-and-token table hides: turns cut off by `max_tokens` (thinking that emitted nothing) and leaves that died of an API/transport error. Handles the transcript multiple-counting traps. Also the rule and the cross-run report for comparing cost between two sets of runs (first launch vs retry, per node and step.substep). The target orchestration_id is auto-detected. Claude Code-only.
 ---
 
 # Workflow Timing & Token Audit
@@ -188,6 +188,57 @@ it reduces **output tokens generated** (the throughput floor is ~85–115 tok/s 
 tooling / sandbox / IO reductions do not move the wall clock here. A truncated turn is the
 exception — it is pure waste and is removed by giving the leaf MORE room, not less
 thinking.
+
+## Comparing cost across runs
+A claim that a change reduced cost is a comparison between two sets of runs, and it is valid
+only at a fixed granularity.
+
+**Rule: compare at (node, step, substep, first launch) granularity, never at node total.** Fix
+the granularity BEFORE reading any figure. A node's total cost is the sum of every substep and
+every retry, so it moves whenever the workload moves — a spec version bump, a new dependency in
+the closure, a larger harness — and a per-leaf reduction landing in the same period nets to
+"no effect". Issue #94 (which calls this granularity "attempt-1") records the case: per-leaf
+token reductions of 43–61% on three substeps plus the removal of two leaves per node, and a node
+median that did not move, because a concurrent scope increase grew two other substeps' tokens by
+21% and 36%.
+
+Retries are a separate figure, not noise to be averaged in. A retry's cost is decided by whether
+the first launch passed, which is a different lever (contract clarity, exemplar reach) from what
+a first launch costs (leaf internals, prompt size). Report the two separately:
+
+```bash
+python3 skills/workflow-timing-audit/scripts/attempt_cost_report.py --since <ISO> --until <ISO> [--node <node_key> ...] [--json]
+```
+
+It reads the in-repo `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` and
+prints, for the rows in the window: the retry share of `output_tokens` / `total_tokens` /
+`cost_usd`, the first-launch median `output_tokens` per `step.substep`, and the retry cost
+attributed to the failure that sent the run back (for example
+`compile.verify fail -> compile.generate`). A launch is one leaf launch of a substep; a retry is
+every launch of that substep after the first within one run segment. The script's docstring
+states what counts and what is excluded. It cuts a run at each operator `--resume`, and it
+corrects a warm-resumed row that the conductor recorded as the session's running total
+(issue #94), printing how many rows it corrected and how many it could not decide.
+
+A usage marker is not a zero: a row without a number is not counted, and a `total_tokens` or
+`cost_usd` share is printed as `n/a`, with the count of rows lacking that figure, whenever a
+counted row lacks it. Most rows recorded before issue #47 are markers; the few with a number
+often lack `total_tokens` and `cost_usd`, and runs older than that need `analyze_timing.py` and
+the transcripts.
+
+Decision criteria when reading a comparison:
+- Both windows are quoted with `--since` and `--until` set to instants already past, so a later
+  run does not change them.
+- Both windows cover the same node set: pass the same `--node` list to each, because a node
+  added to or removed from one window moves every per-`step.substep` median.
+- A change to a leaf (prompt, injected facts, a hoisted deterministic check) is judged by the
+  first-launch median of THAT `step.substep`, in both windows.
+- A change aimed at the first-launch pass rate is judged by the retry share and by the cause
+  rows it targets.
+- The `output_tokens` share is the headline. The `total_tokens` and `cost_usd` shares differ from
+  it on real runs; a quoted figure names which of the three it is.
+- The measured retry share and its decomposition are recorded as comments on issue #94. Take a
+  new figure with the script rather than quoting an old one.
 
 ## Interpretation reference (canonical findings)
 - ~85–100% of node leaf time is the leaf `claude -p` calls. The conductor's deterministic
