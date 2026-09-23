@@ -1,6 +1,6 @@
 ---
 name: workflow-timing-audit
-description: Use this when investigating where a workflow orchestration spent wall-clock time and output tokens — breaking a run down per leaf (step.substep), separating LLM leaves from the conductor's in-process deterministic steps, and attributing each LLM leaf's time to model generation vs. tool execution vs. dominant turns. Also flags the waste/failure signals a time-and-token table hides: turns cut off by `max_tokens` (thinking that emitted nothing) and leaves that died of an API/transport error. Handles the transcript multiple-counting traps. The target orchestration_id is auto-detected. Claude Code-only.
+description: Use this when investigating where a workflow orchestration spent wall-clock time and output tokens — breaking a run down per leaf (step.substep), separating LLM leaves from the conductor's in-process deterministic steps, and attributing each LLM leaf's time to model generation vs. tool execution vs. dominant turns. Also flags the waste/failure signals a time-and-token table hides: turns cut off by `max_tokens` (thinking that emitted nothing) and leaves that died of an API/transport error. Handles the transcript multiple-counting traps. Also the rule and the cross-run report for comparing cost between two sets of runs (attempt-1 vs retry, per step.substep). The target orchestration_id is auto-detected. Claude Code-only.
 ---
 
 # Workflow Timing & Token Audit
@@ -188,6 +188,44 @@ it reduces **output tokens generated** (the throughput floor is ~85–115 tok/s 
 tooling / sandbox / IO reductions do not move the wall clock here. A truncated turn is the
 exception — it is pure waste and is removed by giving the leaf MORE room, not less
 thinking.
+
+## Comparing cost across runs
+A claim that a change reduced cost is a comparison between two sets of runs, and it is valid
+only at a fixed granularity.
+
+**Rule: compare at (node, step, substep, attempt-1) granularity, never at node total.** Fix the
+granularity BEFORE reading any figure. A node's total cost is the sum of every substep and every
+retry, so it moves whenever the workload moves — a spec version bump, a new dependency in the
+closure, a larger harness — and a per-leaf reduction landing in the same period nets to
+"no effect". Issue #94 records the case: four per-leaf reductions of 41–61% each, and a node
+median that did not move, because a concurrent scope increase grew two other substeps by 21% and
+36%.
+
+Retries are a separate figure, not noise to be averaged in. A retry's cost is decided by whether
+the FIRST attempt passed, which is a different lever (contract clarity, exemplar reach) from what
+a first attempt costs (leaf internals, prompt size). Report the two separately:
+
+```bash
+python3 skills/workflow-timing-audit/scripts/attempt_cost_report.py --since YYYY-MM-DD [--until YYYY-MM-DD] [--json]
+```
+
+It reads the in-repo `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` and
+prints, for the window: the retry share of `output_tokens` / `total_tokens` / `cost_usd`, the
+attempt-1 median `output_tokens` per `step.substep`, and the retry cost attributed to the failure
+that sent the run back (for example `compile.verify fail -> compile.generate`). Its docstring
+states what counts as an attempt and what is excluded. A run recorded before issue #47 has no
+usage rows and contributes nothing; its figures come from `analyze_timing.py` and the
+transcripts.
+
+Decision criteria when reading a comparison:
+- A change to a leaf (prompt, injected facts, a hoisted deterministic check) is judged by the
+  attempt-1 median of THAT `step.substep`, in both windows.
+- A change aimed at the first-attempt pass rate is judged by the retry share and by the cause
+  rows it targets.
+- The `output_tokens` share is the headline; `total_tokens` and `cost_usd` weigh a warm-resumed
+  retry less, because it re-reads a cached prompt.
+- The measured retry share and its decomposition are recorded as comments on issue #94. Take a
+  new figure with the script rather than quoting an old one.
 
 ## Interpretation reference (canonical findings)
 - ~85–100% of node leaf time is the leaf `claude -p` calls. The conductor's deterministic
