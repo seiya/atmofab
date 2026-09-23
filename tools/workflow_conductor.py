@@ -2909,10 +2909,12 @@ def _leaf_usage_row(
                     f"result envelope ({resumed_envelope.parse_error})")
             prev_raw = resumed_envelope.raw if isinstance(resumed_envelope.raw, dict) else {}
             prev, prev_covers = _envelope_usage_totals(prev_raw)
-            diff = {key: totals.get(key, 0) - prev.get(key, 0)
-                    for key in _MODEL_USAGE_KEYS.values()}
+            # Coverage first: a partial sum may be the unvalidated `usage` fallback, whose
+            # values need not be numbers, and subtracting one would raise out of the launch.
             # `_usage_totals_equal` takes counts only, so a negative class never matches.
-            if not (covers_every_model and prev_covers) or not _usage_totals_equal(diff, turn):
+            diff = ({key: totals[key] - prev[key] for key in _MODEL_USAGE_KEYS.values()}
+                    if covers_every_model and prev_covers else None)
+            if diff is None or not _usage_totals_equal(diff, turn):
                 return leaf_usage_unavailable(
                     f"warm-resumed turn: envelope totals {totals} are neither this turn's "
                     f"usage {turn} nor the resumed turn {resumed_arid}'s totals {prev} "

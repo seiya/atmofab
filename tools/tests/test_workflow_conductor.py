@@ -20700,6 +20700,20 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertEqual(self._row(self._turn2())["provider_details"]["decumulated_against"],
                          "t1")
 
+    def test_a_turn_with_no_usable_modelusage_is_unavailable_not_a_raise(self) -> None:
+        # No `modelUsage`: the sum falls back to the envelope's own `usage`, which nothing has
+        # validated. A null count there must end as `unavailable`, never as a TypeError out
+        # of the launch (Codex, round 2). Both sides, since either fallback reaches the
+        # subtraction.
+        bad_usage = {**self.TURN2_USAGE, "input_tokens": None}
+        turn2 = json.loads(self._turn2(usage=bad_usage))
+        turn2["modelUsage"] = {}
+        self.assertEqual(self._row(json.dumps(turn2))["status"], "unavailable")
+        turn1 = json.loads(self.TURN1)
+        turn1["modelUsage"] = {}
+        turn1["usage"] = {**turn1["usage"], "output_tokens": "43861"}
+        self.assertEqual(self._row(self._turn2(), json.dumps(turn1))["status"], "unavailable")
+
     def test_a_difference_off_in_any_one_class_is_unavailable(self) -> None:
         for key, value in self.TURN2_USAGE.items():
             with self.subTest(token_class=key):
