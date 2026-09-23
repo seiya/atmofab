@@ -8,6 +8,7 @@ assembled. The decision-table tests pin the deterministic failure routing.
 
 from __future__ import annotations
 
+import atexit
 import copy
 import errno
 import glob
@@ -45,6 +46,14 @@ from tools.tests.private_root_fixture import (
 )
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
+
+# One repo root per test PROCESS, for the conductors below that need a path and build no
+# directory of their own. It was the literal `/tmp/repo`, which concurrent processes shared:
+# parallel `mutation_check.py` jobs, or a reviewer's run beside yours, overwrote each other's
+# launch probes there and turned a pass into a failure that belonged to no change. `mkdtemp`
+# honours `TMPDIR`, so each job's scratch root holds its own.
+_SHARED_REPO_ROOT = Path(tempfile.mkdtemp(prefix="atmofab-conductor-tests-"))
+atexit.register(shutil.rmtree, _SHARED_REPO_ROOT, ignore_errors=True)
 # The same samples with every leaf narrowed to `agentic`. Used by the classes whose
 # SUBJECT is the shared agentic leaf loop: since issue #168 four of the five LLM leaves
 # dispatch to a pure loop on an unrestricted claude/codex entry, so naming `compile.verify`
@@ -501,7 +510,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
     slim repair turn."""
 
     def _conductor(self, env: dict) -> "_FakeConductor":
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = _FakeConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env=env)
         c.calls = []
         c.emit = lambda *a, **k: None  # type: ignore[assignment]
@@ -713,7 +722,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
 
     def test_resolve_reuse_resume_none_for_non_claude_backend(self) -> None:
         # Warm --resume is a claude-only capability.
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = _FakeConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={})
         c.calls = []
         c.emit = lambda *a, **k: None  # type: ignore[assignment]
@@ -1058,8 +1067,8 @@ class _FakeConductor(wc.Conductor):
     def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
         """Keep the evidence payload in memory instead of on disk.
 
-        Most tests here pin `repo_root=Path("/tmp/repo")`, and the fake only overrides
-        `runtime`, so the real writer would litter a shared host path (tmpfs inode
+        Most tests here pin `repo_root=_SHARED_REPO_ROOT`, and the fake only overrides
+        `runtime`, so the real writer would litter that shared root (tmpfs inode
         exhaustion has bitten this repo before). The real write path is covered by
         `LaunchPayloadFileTransportTests` against a real Conductor in a TemporaryDirectory.
         """
@@ -1343,7 +1352,7 @@ class RevokeAndResetTest(unittest.TestCase):
 
     def _conductor(self, revoke_result, cert_after=None) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -1429,7 +1438,7 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
 
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -1500,7 +1509,7 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
 
     def _conductor(self, cert_fn) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -1709,7 +1718,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
 
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         return c
@@ -1827,7 +1836,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
             self.assertEqual(wc.Conductor._phase_derivation(c, refs, "validate"), {"ok": 1})
         from tools.orchestration_runtime import DerivationResolver
         pd.assert_called_once_with(
-            Path("/tmp/repo"), node_key=refs.node_key, step="validate",
+            _SHARED_REPO_ROOT, node_key=refs.node_key, step="validate",
             spec_ref="spec/component/spec_x", ir_ref=refs.ir_ref,
             source_ref=f"{refs.pipeline_ref}/source/src_20260101_001",
             binary_ref=f"{refs.pipeline_ref}/binary/bin_20260101_007",
@@ -1840,7 +1849,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         with mock.patch.object(wc, "phase_derivation", return_value={}) as pd:
             wc.Conductor._phase_derivation(c, bare, "compile")
         pd.assert_called_once_with(
-            Path("/tmp/repo"), node_key=refs.node_key, step="compile",
+            _SHARED_REPO_ROOT, node_key=refs.node_key, step="compile",
             spec_ref="spec/component/spec_x", ir_ref=bare.ir_ref, source_ref=None,
             binary_ref=None, resolver=mock.ANY)
 
@@ -1867,7 +1876,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
 class ConductHappyPathTest(unittest.TestCase):
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"),
+            repo_root=_SHARED_REPO_ROOT,
             orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH",
             llm_config=_cfg("claude"),
@@ -2042,7 +2051,7 @@ class ConductHappyPathTest(unittest.TestCase):
             seen.append(self.rederive)
 
         common = dict(
-            repo_root="/tmp/repo", orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
             spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
             llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
             workflow_mode="dev", env={})
@@ -2095,7 +2104,7 @@ class ConductHappyPathTest(unittest.TestCase):
              patch("tools.orchestration_runtime.resolve_claude_model_alias",
                    return_value=SENTINEL):
             status = wc.run_conductor(
-                repo_root="/tmp/repo", orchestration_id="o",
+                repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",
                 source_dependency_ref="d", until_phase="compile",
                 llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
@@ -2119,7 +2128,7 @@ class ConductHappyPathTest(unittest.TestCase):
             path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "llm_config_codex_cli_requires_model"):
                 wc.run_conductor(
-                    repo_root="/tmp/repo", orchestration_id="o",
+                    repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
                     orchestration_agent_run_id="O", spec_ref="spec/c/x",
                     source_dependency_ref="d", until_phase="compile",
                     llm_config=_lc.load_llm_config(path), workflow_mode="dev", env={})
@@ -2237,7 +2246,7 @@ class ConductRoutingTest(unittest.TestCase):
 
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -2697,7 +2706,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
 
     def _conductor(self, mode: str = "dev") -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
             workflow_mode=mode,
         )
@@ -2830,7 +2839,7 @@ class TransportFailureTest(unittest.TestCase):
             return []  # avoid writing to the (fake) repo_root
 
     def _conductor(self) -> "_FakeConductor":
-        c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = self._C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                     orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         return c
@@ -3570,7 +3579,7 @@ class TransportFailureTest(unittest.TestCase):
         # and route to the escalate diagnostician in prod — NOT crash the runtime
         # write-step-result (orch_20260702T041436Z_a901797b). No tombstone here: the escalate
         # trigger must stay live for a possible upstream reopen.
-        c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = self._C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                     orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
                     workflow_mode="prod")
         c.calls = []
@@ -3644,7 +3653,7 @@ class TransportFailureTest(unittest.TestCase):
         class _C(self._C):  # type: ignore[misc]
             def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
                 return "dependency closure not built+validated ... missing ['component/dep']"
-        c = _C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = _C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         oc = c.run_phase(self._refs(), "validate")
@@ -4640,7 +4649,7 @@ class LeafChildEnvTest(unittest.TestCase):
     truncates a hard leaf mid-think — a fully billed turn that emits nothing at all."""
 
     def _conductor(self, backend: str) -> wc.Conductor:
-        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_child_env_sets_leaf_max_output_tokens_for_claude(self) -> None:
@@ -4710,7 +4719,7 @@ class LeafChildEnvTest(unittest.TestCase):
     }
 
     def _poisoned(self, backend: str) -> wc.Conductor:
-        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend),
                             env=dict(self._POISONED_HOST))
 
@@ -4762,7 +4771,7 @@ class LeafChildEnvTest(unittest.TestCase):
         for backend in ("claude", "codex"):
             with self.subTest(backend=backend):
                 c = wc.Conductor(
-                    repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                    repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                     orchestration_agent_run_id="ORCH", llm_config=_cfg(backend),
                     env={**self._POISONED_HOST, "CLAUDE_CONFIG_DIR": "/host/.claude",
                          "CODEX_HOME": "/host/.codex", "PATH": "/host/bin"})
@@ -4788,7 +4797,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "        base_url: http://localhost:8000/v1\n"
             "        api_key_env: CODEX_HOME\n"
             "        model: local-coder\n", encoding="utf-8")
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH",
                          llm_config=lc.load_llm_config(path),
                          env={"CODEX_HOME": "/host/.codex", "PATH": "/b"})
@@ -4799,7 +4808,7 @@ class LeafChildEnvTest(unittest.TestCase):
         """`ATMOFAB_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"ATMOFAB_HOME": "/host/.codex", "ATMOFAB_KEPT": "yes",
                               "PATH": "/host/bin"})
@@ -4811,7 +4820,7 @@ class LeafChildEnvTest(unittest.TestCase):
         """The conflict check reads two names the filter now drops, so it had to move to
         the HOST environment. If it had been left reading `_child_env`'s own dict it
         would have gone quietly dead — two incompatible operator settings, no complaint."""
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"CODEX_HOME": "/a/one", "ATMOFAB_HOME": "/b/two",
                               "PATH": "/host/bin"})
@@ -4823,7 +4832,7 @@ class LeafChildEnvTest(unittest.TestCase):
         host-side reader consumes that, and the home the leaf actually reads is the one
         `record_launch` prepared and the profile `--setenv`s — so the promotion could
         only ever name a DIFFERENT home than the one whose settings were pinned."""
-        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"ATMOFAB_HOME": "/b/two", "PATH": "/host/bin"})
         self.assertNotIn("CODEX_HOME", c._child_env("child-1"))
@@ -4839,7 +4848,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "        base_url: http://localhost:8000/v1\n"
             "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
             "        model: local-coder\n", encoding="utf-8")
-        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH",
                             llm_config=lc.load_llm_config(path), env=env)
 
@@ -5023,7 +5032,7 @@ class LeafTransientRetryTest(unittest.TestCase):
     _FLAKE = "API Error: Connection closed mid-response. The response above may be incomplete."
 
     def _conductor(self, procs: list, repo: Path | None = None, **kw) -> "_C":
-        c = self._C(repo_root=repo or Path("/tmp/repo"), orchestration_id="orch_x",
+        c = self._C(repo_root=repo or _SHARED_REPO_ROOT, orchestration_id="orch_x",
                     orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={}, **kw)
         c.calls, c.procs, c.slept, c.spawns = [], procs, [], []
         return c
@@ -6369,7 +6378,7 @@ class NodeAllocationTest(unittest.TestCase):
     def test_run_phase_skip_adopts_certified_ids_into_refs(self) -> None:
         """A skipped phase's ids are taken from the certification, so the next phase builds
         against the artifact that stands rather than against a freshly-minted id."""
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        c = _FakeConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         c.check_phase_certified = lambda nk, phase: {  # type: ignore[method-assign]
@@ -6403,7 +6412,7 @@ class NodeAllocationTest(unittest.TestCase):
         takes the pipeline, the source AND the binary, superseding the source Generate's
         adoption took from the pipeline the source was selected in — so `refs` is one chain
         and the lineage this run writes names a source that is under its pipeline."""
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        c = _FakeConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         certs = {
@@ -6602,7 +6611,7 @@ class DiagnosticianTest(unittest.TestCase):
 
         The diagnostician builds a REAL read-only sandbox profile, which since issue
         #63 prepares the claude private home from `leaf_config/claude/settings.json`
-        and fails closed without it. A literal `/tmp/repo` cannot carry that file, and
+        and fails closed without it. The shared `_SHARED_REPO_ROOT` does not carry that file, and
         seeding a hand-written one would stop tracking the committed config.
         """
         tmp = tempfile.TemporaryDirectory()
@@ -7767,7 +7776,7 @@ class ResumeRecoveryTest(unittest.TestCase):
                 c._completed_producer_arid("component/spec_x@0.1.0", "generate", src_meta), "GEN")
 
     def test_run_phase_skip_populates_producer_arid(self) -> None:
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        c = _FakeConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         c.check_phase_certified = lambda nk, phase: (
@@ -8095,7 +8104,7 @@ class LeafSpawnTest(unittest.TestCase):
                 body += f"      {substep}:\n        provider: {provider}\n"
         cfg = lc.apply_defaults_overrides(
             _config_from_text(body), model=model, command=command)
-        base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        base = dict(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                     orchestration_agent_run_id="O", env={}, llm_config=cfg)
         base.update(kw)
         return wc.Conductor(**base)
@@ -14911,7 +14920,7 @@ class DeterministicBuildTest(unittest.TestCase):
             def _persist_leaf_output(self, child_arid, proc, prefix="leaf"):  # type: ignore[override]
                 captured["prefix"] = prefix
 
-        c = C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         oc = c.run_substep(self._refs(), "build", None)
@@ -14940,7 +14949,7 @@ class DeterministicBuildTest(unittest.TestCase):
             def _persist_leaf_output(self, *a, **k):  # type: ignore[override]
                 pass
 
-        c = C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
         oc = c.run_substep(self._refs(), "build", None)
@@ -19157,7 +19166,7 @@ class ExecutePromoterTest(unittest.TestCase):
         self.assertFalse(any("/raw/state_snapshots/" in p for p in basis_outs))
 
     def test_required_evidence_artifacts(self) -> None:
-        c = self._conductor(Path("/tmp/repo"))
+        c = self._conductor(_SHARED_REPO_ROOT)
         ir = {"io_contract": {"raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True},
             {"artifact": "metrics_basis.json", "required": False},
@@ -19516,7 +19525,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def _configured(backend: str, **kw) -> wc.Conductor:
         overrides = {k: kw.pop(k) for k in ("model", "command") if k in kw}
         cfg = lc.apply_defaults_overrides(_sample_config(backend), **overrides)
-        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                             orchestration_agent_run_id="O", env={}, llm_config=cfg, **kw)
 
     def test_a_conductor_without_a_configuration_refuses_to_be_built(self) -> None:
@@ -19524,7 +19533,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         only mean a caller forgot. Inventing a configuration there would launch models nobody
         chose, which is the failure this whole parameterization exists to prevent — and the
         removed `--llm/--agent-model/--llm-command` trio is not a spelling that comes back."""
-        base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        base = dict(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                     orchestration_agent_run_id="O", env={})
         with self.assertRaises(TypeError):
             wc.Conductor(**base)
@@ -19550,7 +19559,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         while launching the CLI's own default is provenance describing a run that did not
         happen."""
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
@@ -19562,7 +19571,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
@@ -19573,7 +19582,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """The three surfaces are genuinely different — a claude flag, a codex config
         override, an OpenAI request field — which is why the level vocabularies differ too."""
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  effort: xhigh\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
@@ -19591,7 +19600,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """Warm resume is how both pure loops run every repair attempt, so an option present
         only on the cold argv would silently change the model's behaviour mid-loop."""
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
@@ -19605,7 +19614,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_an_absent_effort_says_nothing(self) -> None:
         """No level is not a level: the CLI's own default stays in force."""
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
                          ["claude", *_pure_leaf_tail()])
@@ -19617,7 +19626,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         launch resolves to is the CLI's own default rather than the operator's
         `~/.claude/settings.json`, which the leaf no longer reads."""
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(
                 self._config_text("defaults:\n  provider: claude_cli\n"), model="opus"))
         entry = c.entry_for("validate", "judge")
@@ -19636,7 +19645,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         sleep and the event write replaced."""
         for backend in ("claude", "codex", "openai_compatible", "anthropic_api"):
             with self.subTest(backend=backend):
-                c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                                  orchestration_agent_run_id="O", env={},
                                  llm_config=_sample_config(backend), wait_usage_reset=True)
                 entry = c.entry_for("generate", "generate")
@@ -19662,7 +19671,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
 
     def test_pure_session_resumable_is_false_without_the_warm_resume_capability(self) -> None:
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
         self.assertFalse(c._pure_session_resumable("sess-1", c.entry_for("generate", "verify")))
@@ -19670,7 +19679,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_warm_resume_is_refused_and_reported_when_the_capability_is_absent(self) -> None:
         emitted: list[dict] = []
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
         c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore
@@ -19708,7 +19717,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         env = c._child_env("arid", c.entry_for("generate", "generate"))
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], str(wc.LEAF_MAX_OUTPUT_TOKENS))
         c2 = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
@@ -20305,7 +20314,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
             return self.proc
 
     def _conductor(self, proc: wc.ProcResult, backend: str = "claude") -> "_C":
-        c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+        c = self._C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                     orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
         c.calls, c.proc = [], proc
         return c

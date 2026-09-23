@@ -192,6 +192,47 @@ The wrong move is to spend the round diagnosing the script. Report the kill as u
 keep the verdict you reproduced by hand, and do not count it toward "every hunk is pinned" — which
 is the sentence a later reader will quote back.
 
+## Parallel jobs share a literal `/tmp` path: false kills, cause found (PR #282, 2026-09-24)
+
+The third instance of "hand-revert a kill that surprises you", and the first with a cause.
+
+Across one branch, `mutation_check.py` at its default `--jobs` reported three kills that a hand
+revert did not reproduce. Two were prose-only hunks of `1cb594aa..008bf4d6`: a comment in
+`tools/workflow_conductor.py` and the module docstring of `attempt_cost_report.py`. The third, in
+a later range, reverted the removal of an equivalent clause. The `--test-cmd` in every run
+included `tools/tests/test_workflow_conductor.py`.
+
+- **Serial re-run.** The same range (`1cb594aa..008bf4d6`, the same `--paths` and `--test-cmd`)
+  at `--jobs 1` reported both prose hunks SURVIVED, and the five behavioural hunks still
+  killed. The dead-clause range was not re-run serially.
+- **Concurrent copies.** Four detached worktrees at one commit, each with its own `TMPDIR`,
+  ran the three test files at the same time, twice. Five of the eight runs failed the same test:
+  `LeafTransientRetryTest::test_transient_retry_uses_a_fresh_launch_request_and_min_mtime_per_attempt`.
+  The assertion was `1790204120.3331935 != 1790204120.3291936 : child-1`: the launch probe's
+  mtime was one filesystem tick later than the instant the conductor had recorded.
+- **Cause.** That class, like the file's 45 other uses, is built on the literal `/tmp/repo`.
+  The path is literal, so the per-job `TMPDIR` does not move it, and every job writes
+  `workspace/orchestrations/orch_x/agents/child-1/launch_instant.probe.json` at the same place.
+  Whichever job loses the race sees another job's mtime.
+
+What follows for a reader of a sweep:
+
+- A kill of a hunk you cannot name a behaviour for, at `--jobs` > 1, may be this collision. `--jobs 1` is the check. It costs one
+  serial test run per hunk.
+- The same collision reaches a review round. Reviewers running the file in their own worktrees
+  while you run it in the checkout race on `/tmp/repo` as well. That red is not about the diff.
+- The fixture was the defect, and PR #283 closed it for this file. All 46 uses now take
+  `_SHARED_REPO_ROOT`, one `tempfile.mkdtemp` directory per test process, removed at exit. It
+  honours `TMPDIR`, and tests within one process still share it, as they shared `/tmp/repo`.
+  The same four-copy experiment then gave 0 failures in 8 runs. Other fixtures still name
+  literal `/tmp` paths (`/tmp/r`, the `fake-home-probe` paths), so the serial re-run remains
+  the first check for a surprising kill.
+
+One more kill on that branch had a cause and still pinned nothing. Reverting the hunk that added
+a local helper (`shown()`) left the other hunk calling it, and `NameError` scored `killed`. A
+dependency kill is visible from the diff: the reverted hunk defines a name that another hunk of
+the range uses.
+
 ## Handwritten harnesses: three harms in one PR (PR #53)
 
 - `str.replace` rewrites **every occurrence at once**. The same rule lived in three gates, so
