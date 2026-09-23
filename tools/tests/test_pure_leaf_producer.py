@@ -1095,6 +1095,45 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(rows[0]["usage"]["output_tokens"], 100)
         self.assertNotIn("provider_details", rows[0]["usage"])
 
+    def test_a_cold_fallback_repair_turn_is_not_decumulated(self) -> None:
+        """Issue #281's baseline is for a WARM turn only. A repair whose transcript was GC'd
+        runs cold with `resume_session_id` still set; its envelope is its own, and on CLI <=
+        2.1.275 a cold pure turn commonly lists a helper model beside the primary, so
+        `modelUsage` does not equal `usage`. Treated as warm, that turn would be refused as
+        `unavailable`; it must be recorded as the sum of both models, as a cold turn is."""
+        bad = _valid_bundle()
+        del bad["capability_requirements"]  # schema violation -> repair
+        cold = json.dumps({
+            "result": json.dumps(_valid_bundle()), "is_error": False, "session_id": "s",
+            "total_cost_usd": 0.7,
+            "usage": {"input_tokens": 2, "output_tokens": 50, "cache_read_input_tokens": 10,
+                      "cache_creation_input_tokens": 20},
+            "modelUsage": {
+                "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 50,
+                                      "cacheReadInputTokens": 10,
+                                      "cacheCreationInputTokens": 20},
+                "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 400,
+                                              "cacheReadInputTokens": 0,
+                                              "cacheCreationInputTokens": 0}}})
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        c = _conductor(repo)
+        c.envelopes = [_envelope(bad), cold]
+        with mock.patch.object(_PureFakeConductor, "_claude_session_resumable",
+                               return_value=False):
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(oc.attempts, 2)
+        request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
+        self.assertFalse(request.get("warm_resume"))       # the repair did run cold
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"], {
+            "input_tokens": 8, "output_tokens": 450, "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 20, "total_tokens": 488,
+            "usage_source": "cli_result_envelope", "cost_usd": 0.7})
+
     def test_a_pure_envelope_with_a_partial_modelusage_drops_the_cost(self) -> None:
         """The pure twin of the agentic cost-suppression pin: `total_cost_usd` is the sum
         across every model, so a token count that covers only some of them must not be paired
