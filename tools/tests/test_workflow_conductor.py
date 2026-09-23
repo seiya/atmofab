@@ -20696,6 +20696,10 @@ class WarmResumeUsageTest(unittest.TestCase):
                                cost=1.824995)
         row = self._row(self._turn2(usage=_u(2, 30665, 0, 44769)), turn1)
         self.assertEqual(row["status"], "unavailable")
+        # And when `usage` itself carries that negative value, the difference equals it
+        # exactly: only the counts-only rule of `_usage_totals_equal` refuses it.
+        row = self._row(self._turn2(usage=_u(2, 30665, -7154, 44769)), turn1)
+        self.assertEqual(row["status"], "unavailable")
 
     def test_a_partial_total_on_either_side_is_unavailable(self) -> None:
         # A helper-model row that counts only `inputTokens: 0` leaves both sums unchanged, so
