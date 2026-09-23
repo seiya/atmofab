@@ -203,7 +203,20 @@ when a rule does not obviously apply:
   exactly that hunk by hand — restoring the inline block while the extracted function stayed —
   left the file green, as a behaviour-preserving motion must. Cause unidentified both times, so
   do not spend the round on it; **spend the two minutes on the revert, and report the kill as
-  unreproducible rather than counting it toward "every hunk is pinned"**
+  unreproducible rather than counting it toward "every hunk is pinned"**.
+  **PR #282 found one cause, and it is the script's default parallelism.** Two prose-only
+  hunks came back `killed` at the default `--jobs`, and both SURVIVED on a `--jobs 1`
+  re-run of the same range. `tools/tests/test_workflow_conductor.py` builds its conductors on
+  the LITERAL `Path("/tmp/repo")` (44 uses), which the per-job `TMPDIR` does not isolate, so
+  concurrent jobs overwrite each other's files there. Four concurrent copies of the suite
+  failed `LeafTransientRetryTest::test_transient_retry_uses_a_fresh_launch_request_and_min_mtime_per_attempt`
+  in 5 of 8 runs: the probe's mtime was another process's. The same collision happens between
+  your suite and a reviewer's suite running at the same time. **So: when a kill surprises you
+  and the `--test-cmd` includes that file, re-run with `--jobs 1` before anything else.**
+  A kill that has a cause and still pins nothing is a DEPENDENCY kill. Reverting a hunk that
+  defines a name another hunk of the range calls raises `NameError`, and the script scores
+  that `killed`. Neither the #153 kills nor #282's dead-clause kill has been re-run serially,
+  so "cause unidentified" still stands for them
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
   rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives; a hunk
@@ -440,6 +453,10 @@ when a rule does not obviously apply:
      drifts without either looking edited. The cheap form is the stamp — "run at `<sha>`" makes a
      listing historical rather than wrong, which is the same cure this list already prescribes for
      a figure
+   - **A SHA you type into a PR body or a commit message is a measurement too, and check it
+     resolves before you publish.** PR #282's body named a round-3 range starting at a SHA
+     that exists nowhere; nothing had produced it. One loop over the text catches it:
+     `git cat-file -e` on every hex token of commit length
 
    Episodes: `references/measurement-records.md`.
 
@@ -1269,6 +1286,15 @@ that tells you how it closed.
   HEAD green and `origin/main` red, and no round noticed until the disclosure axis read the branch
   as the next maintainer. **Nothing else in this loop looks backwards**: every other instrument
   compares HEAD against itself, so a check the branch deleted is invisible to all of them
+- **Your fix WIDENS what a predicate accepts, to stop a refusal** → every earlier witness whose
+  fixture relied on the old refusal can go vacuous, and it stays green. This is the NARROWS row
+  from the test side: there a check stops catching a defect, here a TEST stops observing its
+  mechanism. PR #282's round 2 made per-turn detection accept "one model row equals `usage`".
+  Round 1's cold-fallback witness used a helper-model envelope, and that envelope now took the
+  new path. The mutant it had been written to kill survived from then on, and its docstring
+  became false; the disclosure round found it. **Criterion: after a widening fix, re-run the
+  witness mutations named in the earlier rounds' commit messages** — they are listed there, and
+  the run takes minutes
 - **Your change REMOVES something from the default run, and you then write a witness for it** →
   the witness is how it comes back. A row that drives the real thing over the real corpus
   re-couples the default run to exactly what the change decoupled, and it reads as extra coverage
