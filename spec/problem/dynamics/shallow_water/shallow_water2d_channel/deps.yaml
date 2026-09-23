@@ -1,14 +1,17 @@
 spec_id: shallow_water2d_channel
 spec_kind: problem
 dependencies:
-  # Empty by rule, not by accident (issue #175): a component has exactly ONE source.
-  # Every component this node builds against is selected by the adopted `profile`
-  # below, and the host expands that selection into this node's direct dependencies
-  # at closure resolution. Declare a component here only if no adopted profile
-  # selects it; declaring one twice is refused (`profile_component_declared_twice`).
-  components: []
+  # A component has exactly ONE source (issue #175). Every component of the
+  # discretization is selected by the adopted `profile` below, and the host expands
+  # that selection into this node's direct dependencies at closure resolution. The
+  # TC4 forcing is not part of the discretization and no adopted profile selects it,
+  # so it is declared here directly; declaring a profile-selected component here
+  # too is refused (`profile_component_declared_twice`).
+  components:
+    - component_id: dynamics_shallow_water_source_2d_tc4_forcing
+      version_constraint: ">=0.1.0 <1.0.0"
   profiles:
-    - profile_id: dynamics_shallow_water_profile_2d_channel_p0_rk4
+    - profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
       version_constraint: ">=0.1.0 <1.0.0"
   # R1/M3c-β → M3d: the (fortran, cpu) runner harness. Promotes this to an M3c node —
   # its runner is host-rendered glue over the certified harness plumbing + the
