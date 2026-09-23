@@ -20587,5 +20587,173 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
                 self.assertIn(expected, result["stderr"])
                 self.assertNotIn("Traceback", result["stderr"])
 
+
+def _warm_envelope(model_usage: dict, usage: dict, cost=None) -> str:
+    """A claude result envelope carrying one primary-model `modelUsage` row."""
+    body = {"result": "{}", "is_error": False, "session_id": "s", "usage": usage,
+            "modelUsage": {"claude-opus-5[1m]": model_usage}}
+    if cost is not None:
+        body["total_cost_usd"] = cost
+    return json.dumps(body)
+
+
+def _mu(i, o, cr, cc) -> dict:
+    return {"inputTokens": i, "outputTokens": o, "cacheReadInputTokens": cr,
+            "cacheCreationInputTokens": cc}
+
+
+def _u(i, o, cr, cc) -> dict:
+    return {"input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr,
+            "cache_creation_input_tokens": cc}
+
+
+class WarmResumeUsageTest(unittest.TestCase):
+    """Issue #281: on claude CLI >= 2.1.278 a warm-resumed turn's `modelUsage` and
+    `total_cost_usd` are the resumed session's RUNNING TOTAL, while its top-level `usage` is
+    this turn's. `_leaf_usage_row` records the turn, not the session.
+
+    The numbers are the measured chain `orch_20260922T150103Z_fbfd2d76` (`1cd0097b` ->
+    `54d3aca1`): turn 1's envelope, then turn 2's, whose totals are turn 1 plus turn 2."""
+
+    ENTRY = mock.Mock(provider="claude_cli")
+    TURN1 = _warm_envelope(_mu(2, 43861, 0, 72846), _u(2, 43861, 0, 72846), cost=1.824995)
+    TURN2_USAGE = _u(2, 30665, 72846, 44769)
+
+    def _row(self, stdout: str, resumed_stdout: "str | None" = TURN1, *, resumed=True):
+        from tools.pure_leaf import parse_result_envelope
+        pair = (("t1", parse_result_envelope(resumed_stdout)) if resumed else None)
+        return wc._leaf_usage_row(wc.ProcResult(0, stdout, ""), self.ENTRY,
+                                  envelope=parse_result_envelope(stdout), resumed=pair)
+
+    def _turn2(self, *, usage=None, cost=3.075743) -> str:
+        return _warm_envelope(_mu(4, 74526, 72846, 117615),
+                              self.TURN2_USAGE if usage is None else usage, cost=cost)
+
+    def test_a_warm_turn_whose_envelope_is_the_sessions_running_total_records_its_own_turn(self) -> None:
+        row = self._row(self._turn2())
+        cost = row.pop("cost_usd")
+        self.assertAlmostEqual(cost, 3.075743 - 1.824995, places=9)
+        self.assertEqual(row, {
+            "input_tokens": 2, "output_tokens": 30665, "cache_read_input_tokens": 72846,
+            "cache_creation_input_tokens": 44769, "total_tokens": 148282,
+            "usage_source": "cli_result_envelope",
+            "provider_details": {
+                "session_running_total": {**_u(4, 74526, 72846, 117615),
+                                          "cost_usd": 3.075743},
+                "decumulated_against": "t1"}})
+
+    def test_a_warm_turn_whose_envelope_is_per_turn_is_recorded_as_it_stands(self) -> None:
+        # The older CLI's shape: `modelUsage` equals `usage`. The resumed envelope is not
+        # consulted, so an unreadable one changes nothing.
+        per_turn = _warm_envelope(_mu(2, 30665, 72846, 44769), self.TURN2_USAGE, cost=1.25)
+        expected = {**self.TURN2_USAGE, "total_tokens": 148282,
+                    "usage_source": "cli_result_envelope", "cost_usd": 1.25}
+        self.assertEqual(self._row(per_turn), expected)
+        self.assertEqual(self._row(per_turn, ""), expected)
+
+    def test_a_per_turn_warm_envelope_with_a_helper_model_is_recorded_whole(self) -> None:
+        # An older CLI's warm turn that also ran a helper model: `usage` is the primary row
+        # alone, so only the primary ROW equals it. Recorded as a cold turn is — every model
+        # summed, with the cost — and the resumed envelope is not consulted (Codex, round 2).
+        env = json.loads(_warm_envelope(_mu(2, 30665, 72846, 44769), self.TURN2_USAGE,
+                                        cost=1.4))
+        env["modelUsage"]["claude-haiku-4-5-20251001"] = _mu(6, 400, 0, 0)
+        expected = {"input_tokens": 8, "output_tokens": 31065, "cache_read_input_tokens": 72846,
+                    "cache_creation_input_tokens": 44769, "total_tokens": 148688,
+                    "usage_source": "cli_result_envelope", "cost_usd": 1.4}
+        self.assertEqual(self._row(json.dumps(env)), expected)
+        self.assertEqual(self._row(json.dumps(env), ""), expected)
+
+    def test_a_warm_turn_that_reconciles_neither_way_is_unavailable(self) -> None:
+        row = self._row(self._turn2(usage={**_u(2, 30666, 72846, 44769),
+                                           "service_tier": "standard"}))
+        self.assertEqual(row["status"], "unavailable")
+        for needle in ("t1", "30666", "74526", "43861"):
+            self.assertIn(needle, row["reason"])
+        # The reason names the four token classes, not the provider's other `usage` fields.
+        self.assertNotIn("service_tier", row["reason"])
+
+    def test_a_warm_turn_whose_resumed_envelope_is_unreadable_is_unavailable(self) -> None:
+        row = self._row(self._turn2(), "not json")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("t1", row["reason"])
+        self.assertIn("not valid JSON", row["reason"])
+
+    def test_a_decumulated_turn_carries_no_cost_when_the_resumed_turn_has_none(self) -> None:
+        turn1 = _warm_envelope(_mu(2, 43861, 0, 72846), _u(2, 43861, 0, 72846))
+        row = self._row(self._turn2(), turn1)
+        self.assertEqual(row["output_tokens"], 30665)
+        self.assertNotIn("cost_usd", row)
+        self.assertEqual(row["provider_details"]["decumulated_against"], "t1")
+
+    def test_a_decumulated_turn_carries_no_negative_cost(self) -> None:
+        row = self._row(self._turn2(cost=1.0))
+        self.assertEqual(row["output_tokens"], 30665)
+        self.assertNotIn("cost_usd", row)
+
+    def test_a_negative_class_in_the_difference_is_unavailable(self) -> None:
+        # Turn 1 read more cache than the whole session did: the difference is -7154 in that
+        # class while this turn's `usage` says 0, and the other three classes match. A
+        # negative difference is no count, so the turn is refused rather than clamped to 0.
+        turn1 = _warm_envelope(_mu(2, 43861, 80000, 72846), _u(2, 43861, 80000, 72846),
+                               cost=1.824995)
+        row = self._row(self._turn2(usage=_u(2, 30665, 0, 44769)), turn1)
+        self.assertEqual(row["status"], "unavailable")
+        # And when `usage` itself carries that negative value, the difference equals it
+        # exactly: only the counts-only rule of `_usage_totals_equal` refuses it.
+        row = self._row(self._turn2(usage=_u(2, 30665, -7154, 44769)), turn1)
+        self.assertEqual(row["status"], "unavailable")
+
+    def test_a_partial_total_on_either_side_is_unavailable(self) -> None:
+        # A helper-model row that counts only `inputTokens: 0` leaves both sums unchanged, so
+        # the difference still equals `usage` in all four classes: the coverage flag is the
+        # ONLY reason to refuse, on each side in turn. A partial sum is not a known total.
+        helper = {"claude-haiku-4-5-20251001": {"inputTokens": 0}}
+        turn2 = json.loads(self._turn2())
+        turn2["modelUsage"].update(helper)
+        row = self._row(json.dumps(turn2))
+        self.assertEqual(row["status"], "unavailable")
+        turn1 = json.loads(self.TURN1)
+        turn1["modelUsage"].update(helper)
+        row = self._row(self._turn2(), json.dumps(turn1))
+        self.assertEqual(row["status"], "unavailable")
+        # The control: without the helper row the same pair is decumulated.
+        self.assertEqual(self._row(self._turn2())["provider_details"]["decumulated_against"],
+                         "t1")
+
+    def test_a_turn_with_no_usable_modelusage_is_unavailable_not_a_raise(self) -> None:
+        # No `modelUsage`: the sum falls back to the envelope's own `usage`, which nothing has
+        # validated. A null count there must end as `unavailable`, never as a TypeError out
+        # of the launch (Codex, round 2). Both sides, since either fallback reaches the
+        # subtraction.
+        bad_usage = {**self.TURN2_USAGE, "input_tokens": None}
+        turn2 = json.loads(self._turn2(usage=bad_usage))
+        turn2["modelUsage"] = {}
+        self.assertEqual(self._row(json.dumps(turn2))["status"], "unavailable")
+        turn1 = json.loads(self.TURN1)
+        turn1["modelUsage"] = {}
+        turn1["usage"] = {**turn1["usage"], "output_tokens": "43861"}
+        self.assertEqual(self._row(self._turn2(), json.dumps(turn1))["status"], "unavailable")
+
+    def test_a_difference_off_in_any_one_class_is_unavailable(self) -> None:
+        for key, value in self.TURN2_USAGE.items():
+            with self.subTest(token_class=key):
+                row = self._row(self._turn2(usage={**self.TURN2_USAGE, key: value + 1}))
+                self.assertEqual(row["status"], "unavailable")
+
+    def test_a_class_missing_from_usage_is_not_equal_to_zero(self) -> None:
+        # A per-turn envelope whose `usage` omits a class `modelUsage` reports as 0. An absent
+        # count is unknown, so the envelope is not certified per-turn, and it is no running
+        # total over turn 1 either.
+        usage = {k: v for k, v in _u(2, 30665, 0, 44769).items()
+                 if k != "cache_read_input_tokens"}
+        per_turn = _warm_envelope(_mu(2, 30665, 0, 44769), usage, cost=1.25)
+        self.assertEqual(self._row(per_turn)["status"], "unavailable")
+
+    def test_a_cold_turn_is_unchanged_by_the_resumed_keyword(self) -> None:
+        row = self._row(self._turn2(), resumed=False)
+        self.assertEqual(row["output_tokens"], 74526)
+        self.assertNotIn("provider_details", row)
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

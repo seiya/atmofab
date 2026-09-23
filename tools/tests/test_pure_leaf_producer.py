@@ -1057,6 +1057,89 @@ class PureProducerSubstepTests(unittest.TestCase):
         meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
         self.assertEqual(meta["per_attempt"][0]["usage"], row["usage"])
 
+    def test_a_warm_repair_turns_usage_is_its_own_turn_not_the_sessions_total(self) -> None:
+        """Issue #281, through the loop: the repair turn warm-resumes `child-1`, and on CLI
+        >= 2.1.278 its envelope's `modelUsage` / `total_cost_usd` are the session's running
+        total. The row and `per_attempt[1].usage` must carry the turn — the difference
+        against `child-1`'s envelope as `_persist_leaf_output` wrote it to disk."""
+        def env(bundle, mu, usage, cost):
+            return json.dumps({
+                "result": json.dumps(bundle), "is_error": False, "session_id": "s",
+                "total_cost_usd": cost, "usage": usage,
+                "modelUsage": {"claude-opus-5[1m]": {
+                    "inputTokens": mu[0], "outputTokens": mu[1],
+                    "cacheReadInputTokens": mu[2], "cacheCreationInputTokens": mu[3]}}})
+
+        def usage(i, o, cr, cc):
+            return {"input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr,
+                    "cache_creation_input_tokens": cc}
+
+        bad = _valid_bundle()
+        del bad["capability_requirements"]  # schema violation -> warm repair
+        a, b = (2, 100, 0, 1000), (3, 50, 1000, 200)
+        total = tuple(x + y for x, y in zip(a, b))
+        c, refs, oc = self._run([env(bad, a, usage(*a), 1.0),
+                                 env(_valid_bundle(), total, usage(*b), 1.5)])
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(oc.attempts, 2)
+        rows = [cap["--agent-run-json"] for sub, cap in c.calls
+                if sub == "finalize-child" and "--agent-run-json" in cap]
+        self.assertEqual(rows[1]["usage"], {
+            **usage(*b), "total_tokens": sum(b), "usage_source": "cli_result_envelope",
+            "cost_usd": 0.5,
+            "provider_details": {"session_running_total": {**usage(*total), "cost_usd": 1.5},
+                                 "decumulated_against": "child-1"}})
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["per_attempt"][1]["usage"], rows[1]["usage"])
+        self.assertEqual(meta["per_attempt"][0]["usage"], rows[0]["usage"])
+        self.assertEqual(rows[0]["usage"]["output_tokens"], 100)
+        self.assertNotIn("provider_details", rows[0]["usage"])
+
+    def test_a_cold_fallback_repair_turn_is_not_decumulated(self) -> None:
+        """Issue #281's baseline is for a WARM turn only. A repair whose transcript was GC'd
+        runs cold with `resume_session_id` still set; its envelope is its own, and on CLI <=
+        2.1.275 every recorded cold pure turn lists a helper model beside the primary. It must
+        be recorded as the sum of both models, as a cold turn is, and the resumed turn's
+        envelope must not be read: the envelope's primary row equals `usage`, so the usage
+        row alone would come out the same even if the turn were treated as warm, and only the
+        read observes the `warm` guard in `_spawn_pure_turn`."""
+        bad = _valid_bundle()
+        del bad["capability_requirements"]  # schema violation -> repair
+        cold = json.dumps({
+            "result": json.dumps(_valid_bundle()), "is_error": False, "session_id": "s",
+            "total_cost_usd": 0.7,
+            "usage": {"input_tokens": 2, "output_tokens": 50, "cache_read_input_tokens": 10,
+                      "cache_creation_input_tokens": 20},
+            "modelUsage": {
+                "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 50,
+                                      "cacheReadInputTokens": 10,
+                                      "cacheCreationInputTokens": 20},
+                "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 400,
+                                              "cacheReadInputTokens": 0,
+                                              "cacheCreationInputTokens": 0}}})
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        c = _conductor(repo)
+        c.envelopes = [_envelope(bad), cold]
+        with mock.patch.object(_PureFakeConductor, "_claude_session_resumable",
+                               return_value=False), \
+                mock.patch.object(_PureFakeConductor, "_persisted_result_envelope",
+                                  autospec=True,
+                                  side_effect=wc.Conductor._persisted_result_envelope) as read:
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        read.assert_not_called()
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(oc.attempts, 2)
+        request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
+        self.assertFalse(request.get("warm_resume"))       # the repair did run cold
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"], {
+            "input_tokens": 8, "output_tokens": 450, "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 20, "total_tokens": 488,
+            "usage_source": "cli_result_envelope", "cost_usd": 0.7})
+
     def test_a_pure_envelope_with_a_partial_modelusage_drops_the_cost(self) -> None:
         """The pure twin of the agentic cost-suppression pin: `total_cost_usd` is the sum
         across every model, so a token count that covers only some of them must not be paired

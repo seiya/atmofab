@@ -218,7 +218,9 @@ attributed to the failure that sent the run back (for example
 every launch of that substep after the first within one run segment. The script's docstring
 states what counts and what is excluded. It cuts a run at each operator `--resume`, and it
 corrects a warm-resumed row that the conductor recorded as the session's running total
-(issue #94), printing how many rows it corrected and how many it could not decide.
+(rows recorded before issue #281; since then the conductor records a warm turn as its own turn,
+and the script leaves a row the conductor marked as a difference alone), printing how many rows
+it corrected and how many it could not decide.
 
 A usage marker is not a zero: a row without a number is not counted, and a `total_tokens` or
 `cost_usd` share is printed as `n/a`, with the count of rows lacking that figure, whenever a
