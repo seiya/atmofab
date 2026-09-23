@@ -16,7 +16,9 @@ turn, a transport re-launch, a phase re-run after a later verdict or gate refuse
 is a later row for the same (orchestration, node, step, substep). The earliest such row is the
 first attempt; every later one is a retry. A node re-run in a NEW orchestration is a first
 attempt there: this counts what one run spent redoing its own work, not what the operator
-spent re-running.
+spent re-running. For the same reason a phase whose output the run REUSED and which first
+runs only when a later phase routes back to it counts as a first attempt, though it is
+rework: the retry figure is a lower bound on the rework inside a run.
 
 CAUSE: a retry is attributed to the most recent non-`pass` substep row of the same node in the
 same run that precedes it -- the verdict, gate or leaf failure that sent the run back. The
