@@ -19142,6 +19142,23 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                         and "abbreviated `module procedure`" in v for v in violations),
                     violations)
 
+    def test_a_labelled_do_takes_the_label_preserving_reading_and_still_compares_clean(
+            self) -> None:
+        # The label-stripped view leaves `do 100` with nothing closing it, so the structure
+        # reader falls back to the label-preserving twin, whose offsets are translated back into
+        # the stripped view before the definition's header is sliced out. The label sits in a
+        # procedure BEFORE the published one, so every offset after it is shifted; without the
+        # translation this correct source drew violations (PR #279 round 1, mutant M7).
+        helper = ("  subroutine hx__loop_helper()\n"
+                  "    integer :: k\n"
+                  "    do 100 k = 1, 2\n"
+                  "100 continue\n"
+                  "  end subroutine hx__loop_helper\n")
+        source = self._C._GOOD_SOURCE.replace(self._DEF, helper + self._DEF)
+        _view, tree, _to_view = vps._structure_reading(source.lower())
+        self.assertIn("100 continue", tree.view, "the fixture must reach the labelled reading")
+        self.assertEqual(self._gate(source), [])
+
     def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
         # The comparison reads the definition's header from the structure reader's view, which is
         # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements
