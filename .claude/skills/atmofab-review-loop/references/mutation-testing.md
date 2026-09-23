@@ -210,21 +210,23 @@ included `tools/tests/test_workflow_conductor.py`.
   `LeafTransientRetryTest::test_transient_retry_uses_a_fresh_launch_request_and_min_mtime_per_attempt`.
   The assertion was `1790204120.3331935 != 1790204120.3291936 : child-1`: the launch probe's
   mtime was one filesystem tick later than the instant the conductor had recorded.
-- **Cause.** That class, like 44 conductors in the file, is built on `repo_root=Path("/tmp/repo")`.
+- **Cause.** That class, like the file's 45 other uses, is built on the literal `/tmp/repo`.
   The path is literal, so the per-job `TMPDIR` does not move it, and every job writes
   `workspace/orchestrations/orch_x/agents/child-1/launch_instant.probe.json` at the same place.
   Whichever job loses the race sees another job's mtime.
 
 What follows for a reader of a sweep:
 
-- A kill of a hunk you cannot name a behaviour for, from a `--test-cmd` that includes this file
-  at `--jobs` > 1, is expected to be this collision. `--jobs 1` is the check. It costs one
+- A kill of a hunk you cannot name a behaviour for, at `--jobs` > 1, may be this collision. `--jobs 1` is the check. It costs one
   serial test run per hunk.
 - The same collision reaches a review round. Reviewers running the file in their own worktrees
   while you run it in the checkout race on `/tmp/repo` as well. That red is not about the diff.
-- The fixture is the defect, and moving those conductors to a per-test directory would close
-  it (see the skill's "a fixture that writes OUTSIDE its own `TemporaryDirectory`" rule). Until
-  then the serial re-run is the workaround.
+- The fixture was the defect, and PR #283 closed it for this file. All 46 uses now take
+  `_SHARED_REPO_ROOT`, one `tempfile.mkdtemp` directory per test process, removed at exit. It
+  honours `TMPDIR`, and tests within one process still share it, as they shared `/tmp/repo`.
+  The same four-copy experiment then gave 0 failures in 8 runs. Other fixtures still name
+  literal `/tmp` paths (`/tmp/r`, the `fake-home-probe` paths), so the serial re-run remains
+  the first check for a surprising kill.
 
 One more kill on that branch had a cause and still pinned nothing. Reverting the hunk that added
 a local helper (`shown()`) left the other hunk calling it, and `NameError` scored `killed`. A

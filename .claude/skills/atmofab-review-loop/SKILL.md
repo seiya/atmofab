@@ -207,12 +207,14 @@ when a rule does not obviously apply:
   **PR #282 found one cause, and it is the script's default parallelism.** Two prose-only
   hunks came back `killed` at the default `--jobs`, and both SURVIVED on a `--jobs 1`
   re-run of the same range. `tools/tests/test_workflow_conductor.py` builds its conductors on
-  the LITERAL `Path("/tmp/repo")` (44 uses), which the per-job `TMPDIR` does not isolate, so
+  the LITERAL `/tmp/repo` (46 uses in code), which the per-job `TMPDIR` does not isolate, so
   concurrent jobs overwrite each other's files there. Four concurrent copies of the suite
   failed `LeafTransientRetryTest::test_transient_retry_uses_a_fresh_launch_request_and_min_mtime_per_attempt`
   in 5 of 8 runs: the probe's mtime was another process's. The same collision happens between
-  your suite and a reviewer's suite running at the same time. **So: when a kill surprises you
-  and the `--test-cmd` includes that file, re-run with `--jobs 1` before anything else.**
+  your suite and a reviewer's suite running at the same time. PR #283 moved that file to a
+  per-process root (four concurrent copies: 0 failures in 8 runs), and the CLASS stays, because
+  other fixtures still name literal `/tmp` paths. **So: when a kill surprises you, re-run with
+  `--jobs 1` before anything else.**
   A kill that has a cause and still pins nothing is a DEPENDENCY kill. Reverting a hunk that
   defines a name another hunk of the range calls raises `NameError`, and the script scores
   that `killed`. Neither the #153 kills nor #282's dead-clause kill has been re-run serially,
