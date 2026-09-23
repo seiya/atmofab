@@ -20689,11 +20689,12 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertNotIn("cost_usd", row)
 
     def test_a_negative_class_in_the_difference_is_unavailable(self) -> None:
-        # Turn 1 read more cache than the whole session did: the difference is negative, so
-        # the envelope is not a running total over it, whatever the other classes say.
+        # Turn 1 read more cache than the whole session did: the difference is -7154 in that
+        # class while this turn's `usage` says 0, and the other three classes match. A
+        # negative difference is no count, so the turn is refused rather than clamped to 0.
         turn1 = _warm_envelope(_mu(2, 43861, 80000, 72846), _u(2, 43861, 80000, 72846),
                                cost=1.824995)
-        row = self._row(self._turn2(usage=_u(2, 30665, -7154, 44769)), turn1)
+        row = self._row(self._turn2(usage=_u(2, 30665, 0, 44769)), turn1)
         self.assertEqual(row["status"], "unavailable")
 
     def test_a_partial_total_on_either_side_is_unavailable(self) -> None:

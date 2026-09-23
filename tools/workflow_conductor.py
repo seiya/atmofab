@@ -2942,9 +2942,9 @@ def _leaf_usage_row(
                     f"plus it")
             session_cost = raw.get("total_cost_usd")
             prev_cost = prev_raw.get("total_cost_usd")
+            # A negative difference is dropped by `normalize_leaf_usage`, as any negative cost.
             cost = (session_cost - prev_cost
-                    if _is_money(session_cost) and _is_money(prev_cost)
-                    and session_cost >= prev_cost else None)
+                    if _is_money(session_cost) and _is_money(prev_cost) else None)
             details = {"session_running_total": {
                            **totals,
                            "cost_usd": session_cost if _is_money(session_cost) else None},
