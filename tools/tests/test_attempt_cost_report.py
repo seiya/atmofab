@@ -2,7 +2,7 @@
 
 The script is the instrument the timing-audit SKILL's §"Comparing cost across runs" names for
 the retry share issue #94 records, so every decision a published figure depends on is pinned
-here: which row is a first attempt and which a retry (including the cut at an operator
+here: which row is a first launch and which a retry (including the cut at an operator
 `--resume`), that a usage marker is not counted as a zero, which failure a retry is attributed
 to, the correction of a warm-resumed row recorded as a session running total, and every column
 of the rendered table, since that table is quoted verbatim into the record.
@@ -69,11 +69,11 @@ class AttemptCostReportTests(unittest.TestCase):
             encoding="utf-8")
 
     def _report(self, **kw):
-        return attempt_cost_report.analyze(
-            attempt_cost_report.load_rows(str(self.root), kw.get("since"), kw.get("until")))
+        return attempt_cost_report.analyze(attempt_cost_report.load_rows(
+            str(self.root), kw.get("since"), kw.get("until"), kw.get("nodes")))
 
     def test_later_row_for_same_substep_is_a_retry_attributed_to_the_failure_before_it(self):
-        # Written out of order: attempts are ranked by started_at, not by file position.
+        # Written out of order: launches are ranked by started_at, not by file position.
         self._orch("orch_a", [
             _row("compile", "generate", "2026-09-01T00:04:00Z", out=300),
             _row("compile", "verify", "2026-09-01T00:05:00Z", out=70),
@@ -90,7 +90,7 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(report["causes"]["compile.verify fail -> compile.generate"]
                          ["output_tokens"], 300)
         self.assertEqual(report["per_substep"]["compile.generate"]
-                         ["attempt1_median_output_tokens"], 100)
+                         ["first_launch_median_output_tokens"], 100)
         self.assertEqual(report["orchestrations"], 1)
 
     def test_a_deterministic_substep_failure_is_a_cause_though_it_has_no_usage(self):
@@ -103,9 +103,9 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(list(causes), ["generate.gate fail -> generate.generate"])
         self.assertNotIn("generate.gate", self._report()["per_substep"])
 
-    def test_a_marker_is_not_a_zero_and_still_ranks_the_attempt(self):
+    def test_a_marker_is_not_a_zero_and_still_ranks_the_launch(self):
         # The first launch died with no usage frame: it is not counted, but the one after it is
-        # still the second attempt, not a first attempt with a small cost.
+        # still a retry, not a first launch with a small cost.
         self._orch("orch_a", [
             _row("generate", "generate", "2026-09-01T00:01:00Z", status="fail",
                  usage={"status": "unavailable", "reason": "no usage frame"}),
@@ -115,7 +115,7 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(totals["first"]["n"], 0)
         self.assertEqual((totals["retry"]["n"], totals["retry"]["output_tokens"]), (1, 80))
 
-    def test_a_rerun_in_a_new_orchestration_is_a_first_attempt(self):
+    def test_a_rerun_in_a_new_orchestration_is_a_first_launch(self):
         self._orch("orch_a", [_row("compile", "generate", "2026-09-01T00:01:00Z", out=100)])
         self._orch("orch_b", [_row("compile", "generate", "2026-09-02T00:01:00Z", out=100)],
                    workspace="workspace_20260902")
@@ -124,7 +124,7 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(report["totals"]["first"]["n"], 2)
         self.assertEqual(report["orchestrations"], 2)
 
-    def test_two_nodes_in_one_run_rank_their_attempts_separately(self):
+    def test_two_nodes_in_one_run_rank_their_launches_separately(self):
         self._orch("orch_a", [
             _row("compile", "generate", "2026-09-01T00:01:00Z", out=100, node="a@1"),
             _row("compile", "generate", "2026-09-01T00:02:00Z", out=100, node="b@1"),
@@ -181,19 +181,19 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(list(self._report()["causes"]),
                          ["no preceding failure -> compile.generate"])
 
-    def test_attempt1_figure_is_the_median_not_the_mean(self):
+    def test_first_launch_figure_is_the_median_not_the_mean(self):
         for i, out in enumerate((10, 20, 90)):
             self._orch(f"orch_{i}", [_row("compile", "generate", f"2026-09-0{i + 1}T00:00:00Z",
                                           out=out)])
         self.assertEqual(self._report()["per_substep"]["compile.generate"]
-                         ["attempt1_median_output_tokens"], 20)
+                         ["first_launch_median_output_tokens"], 20)
 
     def test_an_operator_resume_starts_a_new_segment(self):
         self._orch("orch_a", [
             _row("compile", "generate", "2026-09-01T00:00:10Z", out=100),
             _row("compile", "verify", "2026-09-01T00:00:20Z", status="fail", out=5),
             _row("compile", "generate", "2026-09-01T00:00:40Z", out=60),
-            # The operator resumed at 00:01:00: the next compile.generate is a first attempt.
+            # The operator resumed at 00:01:00: the next compile.generate is a first launch.
             _row("compile", "generate", "2026-09-01T00:02:00Z", out=70),
             _row("compile", "verify", "2026-09-01T00:03:00Z", status="fail", out=5),
             _row("compile", "generate", "2026-09-01T00:04:00Z", out=80),
@@ -270,13 +270,13 @@ class AttemptCostReportTests(unittest.TestCase):
         text = attempt_cost_report.render(self._report())
         self.assertIn("3 orchestrations with a measured row, 5 measured leaf launches (1 retries)",
                       text)
-        self.assertIn(f"{'compile.generate':<22} {3:>5} {1:>5} {'45.5%':>9} {'20':>21}", text)
-        self.assertIn(f"{'compile.verify':<22} {1:>5} {0:>5} {'0.0%':>9} {'1':>21}", text)
+        self.assertIn(f"{'compile.generate':<22} {3:>5} {1:>5} {'45.5%':>9} {'20':>24}", text)
+        self.assertIn(f"{'compile.verify':<22} {1:>5} {0:>5} {'0.0%':>9} {'1':>24}", text)
         self.assertIn(f"{100:>12,} {1:>4}  compile.verify fail -> compile.generate", text)
 
     def test_only_substep_rows_are_counted(self):
         # A non-substep row carrying a usage number (no such row exists today) is not a leaf
-        # attempt and must not rank or count as one.
+        # launch and must not rank or count as one.
         step_row = _row("compile", "generate", "2026-09-01T00:00:30Z", out=999)
         step_row["agent_role"] = "step"
         self._orch("orch_a", [step_row, _row("compile", "generate", "2026-09-01T00:01:00Z",
@@ -327,10 +327,10 @@ class AttemptCostReportTests(unittest.TestCase):
                                           out=out)])
         report = self._report()
         self.assertEqual(report["per_substep"]["compile.generate"]
-                         ["attempt1_median_output_tokens"], 25.5)
-        self.assertIn(f"{'25.5':>21}", attempt_cost_report.render(report))
+                         ["first_launch_median_output_tokens"], 25.5)
+        self.assertIn(f"{'25.5':>24}", attempt_cost_report.render(report))
 
-    def test_a_window_edge_does_not_turn_a_retry_into_a_first_attempt(self):
+    def test_a_window_edge_does_not_turn_a_retry_into_a_first_launch(self):
         self._orch("orch_a", [
             _row("compile", "generate", "2026-08-31T23:50:00Z", out=100),
             _row("compile", "verify", "2026-08-31T23:55:00Z", status="fail", out=5),
@@ -355,8 +355,9 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 1))
 
     def test_a_non_output_class_mismatch_is_not_decided_on_output_alone(self):
-        # Output agrees with the envelope turn, cache reads do not: neither "already per
-        # turn" nor a decidable difference.
+        # First case: output agrees with the envelope turn, cache reads do not, so the row is
+        # not "already per turn". Second case: the difference agrees on output but not on
+        # cache creation. Neither is decidable.
         off = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 49,
                "cache_creation_input_tokens": 80}
         report = self._cumulative_session(turn2_usage=off)
@@ -409,6 +410,70 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertIsNone(attempt_cost_report.share(first, retry, "cost_usd"))
         self.assertIn("total_tokens n/a (1 of 3 rows carry no total_tokens)",
                       attempt_cost_report.render(report))
+
+    def test_a_reuse_reopen_without_the_warm_flag_is_still_corrected(self):
+        # A reuse reopen carrying no findings resumes the session but does not set
+        # `warm_resume`; its request still names the reuse target.
+        t1 = {"input_tokens": 2, "output_tokens": 100, "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 50, "total_tokens": 152, "cost_usd": 1.0}
+        t2 = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 50,
+              "cache_creation_input_tokens": 80, "total_tokens": 264, "cost_usd": 1.5}
+        r1 = _row("compile", "generate", "2026-09-01T00:01:00Z", usage=t1)
+        r1["agent_run_id"] = "t1"
+        r2 = _row("compile", "generate", "2026-09-01T00:03:00Z", usage=t2)
+        r2["agent_run_id"] = "t2"
+        d = self._orch("orch_a", [r1, r2])
+        self._warm(d, "t2", "t1", {"input_tokens": 2, "output_tokens": 30,
+                                   "cache_read_input_tokens": 50,
+                                   "cache_creation_input_tokens": 30}, warm=False)
+        request = d / "launches" / "t2.request.json"
+        doc = json.loads(request.read_text(encoding="utf-8"))
+        doc["repair_strategy"] = "reuse"
+        request.write_text(json.dumps(doc), encoding="utf-8")
+        report = self._report()
+        self.assertEqual(report["decumulated_rows"], 1)
+        self.assertEqual(report["per_substep"]["compile.generate"]["retry"]["output_tokens"], 30)
+
+    def test_rows_outside_the_window_do_not_enter_the_header_counts(self):
+        # An out-of-window orchestration, and an out-of-window corrected row and undecided row
+        # inside a counted one: none of them is counted in the header.
+        self._orch("orch_old", [_row("compile", "generate", "2026-08-01T00:00:00Z", out=5)])
+        t1 = {"input_tokens": 2, "output_tokens": 100, "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 50, "total_tokens": 152, "cost_usd": 1.0}
+        t2 = {"input_tokens": 4, "output_tokens": 130, "cache_read_input_tokens": 50,
+              "cache_creation_input_tokens": 80, "total_tokens": 264, "cost_usd": 1.5}
+        rows = []
+        for arid, ts, usage in (("t1", "2026-08-31T23:50:00Z", t1),
+                                ("t2", "2026-08-31T23:55:00Z", t2),
+                                ("t3", "2026-08-31T23:56:00Z", dict(t2, output_tokens=131)),
+                                ("g1", "2026-09-01T00:05:00Z", None)):
+            row = (_row("compile", "generate", ts, usage=usage) if usage
+                   else _row("generate", "generate", ts, out=7))
+            row["agent_run_id"] = arid
+            rows.append(row)
+        d = self._orch("orch_new", rows)
+        self._warm(d, "t2", "t1", {"input_tokens": 2, "output_tokens": 30,
+                                   "cache_read_input_tokens": 50,
+                                   "cache_creation_input_tokens": 30})
+        (d / "launches" / "t3.request.json").write_text(json.dumps(
+            {"warm_resume": True, "repair_target_agent_run_id": "t2"}), encoding="utf-8")
+        whole = self._report()
+        self.assertEqual((whole["decumulated_rows"], whole["uncorrected_warm_resumes"]), (1, 1))
+        report = self._report(since="2026-09-01")
+        self.assertEqual(report["orchestrations"], 1)
+        self.assertEqual((report["decumulated_rows"], report["uncorrected_warm_resumes"]), (0, 0))
+
+    def test_node_filter_counts_only_the_named_nodes(self):
+        self._orch("orch_a", [
+            _row("compile", "generate", "2026-09-01T00:01:00Z", out=10, node="a@1"),
+            _row("compile", "generate", "2026-09-01T00:02:00Z", out=20, node="b@1"),
+            _row("compile", "verify", "2026-09-01T00:03:00Z", status="fail", out=1, node="a@1"),
+            _row("compile", "generate", "2026-09-01T00:04:00Z", out=30, node="a@1"),
+        ])
+        report = self._report(nodes={"a@1"})
+        entry = report["per_substep"]["compile.generate"]
+        self.assertEqual((entry["first"]["output_tokens"], entry["retry"]["output_tokens"]),
+                         (10, 30))
 
     def test_no_measured_rows_reports_na_not_zero(self):
         self._orch("orch_a", [_row("generate", "gate", "2026-09-01T00:01:00Z")])

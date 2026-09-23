@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Split leaf cost ACROSS runs into first attempts and retries, at (step, substep) granularity.
+"""Split leaf cost ACROSS runs into first launches and retries, per node set and step.substep.
 
 This is the instrument for the comparison rule in the SKILL's §"Comparing cost across runs":
 a node's total cost cannot say whether an optimization worked while the workload is moving,
-so the comparison is fixed at (node, step, substep, attempt-1) before anything is compared.
+so the comparison is fixed at (node, step, substep, first launch) before anything is
+compared: `--node` fixes the node set, and the table is per `step.substep`.
 The rule and the measurement that motivated it are issue #94.
 
 SOURCE: the `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` (issue #47).
@@ -15,18 +16,18 @@ some counted row lacks prints `n/a` with the count of such rows rather than summ
 
 SEGMENT: an orchestration is cut at each `resume_status_reset` event of its
 `phase_state_log.jsonl`, i.e. at each operator `--resume`. Attempts are ranked inside one
-segment, so the first post-resume run of a substep is a first attempt: this counts what a run
+segment, so the first post-resume run of a substep is a first launch: this counts what a run
 spent redoing its own work, not what the operator spent re-running. A node re-run in a NEW
-orchestration is a first attempt for the same reason.
+orchestration is a first launch for the same reason.
 
-ATTEMPT: here, one leaf LAUNCH of a substep -- not the `docs/GLOSSARY.md` `attempt`, which is one
-execution of a whole phase. Every launch is its own `substep` row, so a retry of any kind -- an
+LAUNCH: one leaf launch of a substep (the `docs/GLOSSARY.md` `attempt` is a different thing: one
+execution of a whole phase). Every launch is its own `substep` row, so a retry of any kind -- an
 in-leaf repair turn, a transport re-launch, a phase re-run after a later verdict or gate refused
 the result -- is a later row for the same (segment, node, step, substep), ranked by `started_at`
-(stamped when the launch finalized). The earliest such row is the first attempt whatever caused
+(stamped when the launch finalized). The earliest such row is the first launch whatever caused
 that phase to run; every later one is a retry. The retry figure is therefore a lower bound on
 the rework inside a run. `--since` / `--until` choose which rows are COUNTED; ranking and causes
-use every row of the segment, so a window edge does not turn a retry into a first attempt.
+use every row of the segment, so a window edge does not turn a retry into a first launch.
 
 CAUSE: a retry is attributed to the most recent non-`pass` substep row of the same node in the
 same segment that precedes it -- the proximate failure that sent the run back, not necessarily
@@ -38,8 +39,9 @@ and `total_cost_usd`. On a warm-resumed turn some CLI versions report those as t
 total of the whole resumed session, while the envelope's top-level `usage` stays per turn
 (measured on issue #94: three turns of one session recorded 43,861 / 74,526 / 105,418 output
 tokens against a per-turn 43,861 / 30,665 / 30,892). A warm-resumed turn names the turn it
-resumed in its launch request (`launches/<agent_run_id>.request.json`: `warm_resume` and
-`repair_target_agent_run_id`). Its row is replaced by its difference from that turn's RECORDED
+resumed in its launch request (`launches/<agent_run_id>.request.json`:
+`repair_target_agent_run_id`, with `warm_resume` or `repair_strategy: reuse`; a reuse reopen that
+carries no findings resumes the session without setting `warm_resume`). Its row is replaced by its difference from that turn's RECORDED
 row when, and only when, the difference equals the turn's own envelope top-level `usage`
 (`agents/<agent_run_id>/dialogs/leaf.stdout.log`) in all four token classes; the corrected
 `cost_usd` is the difference of the two recorded costs, and absent when either lacks one. A
@@ -53,7 +55,7 @@ TOKENS: `output_tokens` is the headline, because it is what bills the time (thin
 `cost_usd` are printed beside it; the three shares differ on real runs, so a figure quoted from
 this report names which of the three it is.
 
-Usage:  python3 attempt_cost_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+Usage:  python3 attempt_cost_report.py [--since ISO] [--until ISO] [--node NODE_KEY ...] [--json]
 """
 import argparse
 import bisect
@@ -143,7 +145,8 @@ def decumulate(rows, orch_dir):
     for row in rows:
         cur = recorded.get(row.get("agent_run_id"))
         request = _request(orch_dir, row.get("agent_run_id")) if cur else None
-        if not request or request.get("warm_resume") is not True:
+        if not request or not (request.get("warm_resume") is True
+                               or request.get("repair_strategy") == "reuse"):
             continue
         env = envelope(orch_dir, row.get("agent_run_id"))
         turn = env.get("usage") if env and isinstance(env.get("usage"), dict) else None
@@ -166,12 +169,12 @@ def decumulate(rows, orch_dir):
         row["usage"] = fixed
 
 
-def load_rows(root, since=None, until=None):
+def load_rows(root, since=None, until=None, nodes=None):
     """Every `substep` row, keyed by (orchestration_id, segment, node_key).
 
-    Rows outside the window are kept, marked `_outside`: they still rank the attempts and
-    name the causes of the rows inside it, so a window edge cannot turn a retry into a first
-    attempt; `analyze` counts only the rows inside.
+    Rows outside the window or the `nodes` set are kept, marked `_outside`: they still rank
+    the launches and name the causes of the rows inside, so a window edge cannot turn a retry
+    into a first launch; `analyze` counts only the rows inside.
     """
     by_node = collections.defaultdict(list)
     for path in sorted(glob.glob(os.path.join(root, ORCH_GLOB))):
@@ -183,7 +186,8 @@ def load_rows(root, since=None, until=None):
         decumulate(rows, orch_dir)
         for row in rows:
             started = row["started_at"]
-            row["_outside"] = bool((since and started < since) or (until and started >= until))
+            row["_outside"] = bool((since and started < since) or (until and started >= until)
+                                   or (nodes and row.get("node_key") not in nodes))
             segment = bisect.bisect_right(resumes, started)
             by_node[(orch, segment, row.get("node_key"))].append(row)
     return by_node
@@ -242,7 +246,8 @@ def analyze(by_node):
     substeps = {}
     for label, entry in sorted(per_substep.items()):
         firsts = entry.pop("first_outputs")
-        entry["attempt1_median_output_tokens"] = statistics.median(firsts) if firsts else None
+        entry["first_launch_median_output_tokens"] = (statistics.median(firsts) if firsts
+                                                      else None)
         substeps[label] = entry
     return {"orchestrations": len(orchestrations), "totals": totals,
             "per_substep": substeps, "causes": dict(causes),
@@ -287,12 +292,12 @@ def render(report):
            f"warm-resume rows left as recorded: {report['uncorrected_warm_resumes']}",
            "",
            f"{'step.substep':<22} {'first':>5} {'retry':>5} {'retry%out':>9} "
-           f"{'attempt-1 median out':>21}"]
+           f"{'first-launch median out':>24}"]
     for label, entry in report["per_substep"].items():
-        median = entry["attempt1_median_output_tokens"]
+        median = entry["first_launch_median_output_tokens"]
         out.append(f"{label:<22} {entry['first']['n']:>5} {entry['retry']['n']:>5} "
                    f"{_pct(share(entry['first'], entry['retry'], 'output_tokens')):>9} "
-                   f"{_median(median):>21}")
+                   f"{_median(median):>24}")
     out += ["", "retry output_tokens by cause (the failure that sent the run back -> the rerun):"]
     for cause, bucket in sorted(report["causes"].items(),
                                 key=lambda kv: -kv[1]["output_tokens"]):
@@ -305,10 +310,14 @@ def main(argv=None):
     parser.add_argument("--since", help="count rows whose started_at (stamped when the launch "
                         "finalized) is at or after this ISO date")
     parser.add_argument("--until", help="count rows whose started_at is before this ISO date")
+    parser.add_argument("--node", action="append", metavar="NODE_KEY",
+                        help="count only this node_key (repeatable); compare two windows over "
+                        "the same node set")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--root", help="checkout root (default: found from the cwd)")
     args = parser.parse_args(argv)
-    report = analyze(load_rows(args.root or repo_root(), args.since, args.until))
+    report = analyze(load_rows(args.root or repo_root(), args.since, args.until,
+                               set(args.node) if args.node else None))
     print(json.dumps(report, indent=2) if args.json else render(report))
     return 0
 
