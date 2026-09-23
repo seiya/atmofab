@@ -1098,9 +1098,11 @@ class PureProducerSubstepTests(unittest.TestCase):
     def test_a_cold_fallback_repair_turn_is_not_decumulated(self) -> None:
         """Issue #281's baseline is for a WARM turn only. A repair whose transcript was GC'd
         runs cold with `resume_session_id` still set; its envelope is its own, and on CLI <=
-        2.1.275 a cold pure turn commonly lists a helper model beside the primary, so
-        `modelUsage` does not equal `usage`. Treated as warm, that turn would be refused as
-        `unavailable`; it must be recorded as the sum of both models, as a cold turn is."""
+        2.1.275 every recorded cold pure turn lists a helper model beside the primary. It must
+        be recorded as the sum of both models, as a cold turn is, and the resumed turn's
+        envelope must not be read: the envelope's primary row equals `usage`, so the usage
+        row alone would come out the same even if the turn were treated as warm, and only the
+        read observes the `warm` guard in `_spawn_pure_turn`."""
         bad = _valid_bundle()
         del bad["capability_requirements"]  # schema violation -> repair
         cold = json.dumps({
@@ -1121,8 +1123,12 @@ class PureProducerSubstepTests(unittest.TestCase):
         c = _conductor(repo)
         c.envelopes = [_envelope(bad), cold]
         with mock.patch.object(_PureFakeConductor, "_claude_session_resumable",
-                               return_value=False):
+                               return_value=False), \
+                mock.patch.object(_PureFakeConductor, "_persisted_result_envelope",
+                                  autospec=True,
+                                  side_effect=wc.Conductor._persisted_result_envelope) as read:
             oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        read.assert_not_called()
         self.assertEqual(oc.status, "pass")
         self.assertEqual(oc.attempts, 2)
         request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
