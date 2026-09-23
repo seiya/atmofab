@@ -11,19 +11,35 @@ A row whose usage is a marker (`not_measured`, `unavailable`) or absent carries 
 is not counted as a zero; a run recorded before issue #47 therefore contributes nothing here,
 and its figures need `analyze_timing.py` and the transcripts instead.
 
+SEGMENT: an orchestration is cut at each `resume_status_reset` event of its
+`phase_state_log.jsonl`, i.e. at each operator `--resume`. Attempts are ranked inside one
+segment, so the first post-resume run of a substep is a first attempt: this counts what a run
+spent redoing its own work, not what the operator spent re-running. A node re-run in a NEW
+orchestration is a first attempt for the same reason.
+
 ATTEMPT: every leaf launch is its own `substep` row, so a retry of any kind -- an in-leaf repair
 turn, a transport re-launch, a phase re-run after a later verdict or gate refused the result --
-is a later row for the same (orchestration, node, step, substep). The earliest such row is the
-first attempt; every later one is a retry. A node re-run in a NEW orchestration is a first
-attempt there: this counts what one run spent redoing its own work, not what the operator
-spent re-running. For the same reason a phase whose output the run REUSED and which first
-runs only when a later phase routes back to it counts as a first attempt, though it is
-rework: the retry figure is a lower bound on the rework inside a run.
+is a later row for the same (segment, node, step, substep), ranked by `started_at`. The earliest
+such row is the first attempt whatever caused that phase to run; every later one is a retry.
+The retry figure is therefore a lower bound on the rework inside a run.
 
 CAUSE: a retry is attributed to the most recent non-`pass` substep row of the same node in the
-same run that precedes it -- the verdict, gate or leaf failure that sent the run back. The
-deterministic substeps (`compile.static`, `generate.gate`, ...) are counted here as causes even
-though they carry no usage of their own.
+same segment that precedes it -- the proximate failure that sent the run back, not necessarily
+the root. The deterministic substeps (`compile.static`, `generate.gate`, ...) are counted here
+as causes even though they carry no usage of their own.
+
+CUMULATIVE ROWS: a claude leaf's recorded usage comes from the result envelope's `modelUsage`
+and `total_cost_usd`. On a warm-resumed turn some CLI versions report those as the running
+total of the whole resumed session, while the envelope's top-level `usage` stays per turn
+(measured on issue #94: three turns of one session recorded 43,861 / 74,526 / 105,418 output
+tokens against a per-turn 43,861 / 30,665 / 30,892). A warm-resumed turn names the turn it
+resumed in its launch request (`launches/<agent_run_id>.request.json`: `warm_resume` and
+`repair_target_agent_run_id`). Its row is replaced by its difference from that turn's recorded
+row when, and only when, the difference equals the turn's own envelope top-level `usage`
+(`agents/<agent_run_id>/dialogs/leaf.stdout.log`) in all four token classes. A warm-resumed
+row whose recorded usage differs from its envelope `usage` and for which the equality does not
+hold is left as recorded and counted in `uncorrected_warm_resumes`, so a row this rule could
+not decide is visible rather than silently summed.
 
 TOKENS: `output_tokens` is the headline, because it is what bills the time (thinking included).
 `total_tokens` (which also counts input and cache reads/writes) and the provider-reported
@@ -33,6 +49,7 @@ this report names which of the three it is.
 Usage:  python3 attempt_cost_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
 """
 import argparse
+import bisect
 import collections
 import glob
 import json
@@ -41,6 +58,8 @@ import statistics
 import sys
 
 ORCH_GLOB = "workspace*/orchestrations/*/agent_runs.jsonl"
+TOKEN_CLASSES = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                 "cache_creation_input_tokens")
 
 
 def repo_root(start=None):
@@ -63,23 +82,93 @@ def measured(row):
     return None
 
 
+def _jsonl(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def resume_points(orch_dir):
+    """Sorted timestamps of the operator `--resume`s recorded for one orchestration."""
+    return sorted(e["ts"] for e in _jsonl(os.path.join(orch_dir, "phase_state_log.jsonl"))
+                  if e.get("event") == "resume_status_reset" and isinstance(e.get("ts"), str))
+
+
+def envelope(orch_dir, agent_run_id):
+    """The leaf's CLI result envelope, or None when there is none to read."""
+    path = os.path.join(orch_dir, "agents", str(agent_run_id), "dialogs", "leaf.stdout.log")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        doc = json.loads(text[text.index("{"):])
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _request(orch_dir, agent_run_id):
+    try:
+        with open(os.path.join(orch_dir, "launches", f"{agent_run_id}.request.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def decumulate(rows, orch_dir):
+    """Replace each cumulative warm-resumed row's usage by its per-turn difference.
+
+    A warm-resumed row the equality cannot decide keeps its usage and is marked `_uncorrected`.
+    """
+    # The RECORDED usage of every row, taken before any correction: a cumulative total minus
+    # the resumed turn's cumulative total is this turn, whether or not that one was corrected.
+    recorded = {r.get("agent_run_id"): dict(r["usage"]) for r in rows if measured(r)}
+    for row in rows:
+        cur = recorded.get(row.get("agent_run_id"))
+        request = _request(orch_dir, row.get("agent_run_id")) if cur else None
+        if not request or request.get("warm_resume") is not True:
+            continue
+        env = envelope(orch_dir, row.get("agent_run_id"))
+        turn = env.get("usage") if env and isinstance(env.get("usage"), dict) else None
+        if turn is None or all((cur.get(c) or 0) == (turn.get(c) or 0) for c in TOKEN_CLASSES):
+            continue
+        prev = recorded.get(request.get("repair_target_agent_run_id"))
+        diff = {c: (cur.get(c) or 0) - (prev.get(c) or 0) for c in TOKEN_CLASSES} if prev else None
+        if diff is None or any(diff[c] != (turn.get(c) or 0) for c in TOKEN_CLASSES):
+            row["_uncorrected"] = True
+            continue
+        fixed = dict(cur, **diff, total_tokens=sum(diff.values()), decumulated=True)
+        if isinstance(cur.get("cost_usd"), (int, float)):
+            fixed["cost_usd"] = cur["cost_usd"] - (prev.get("cost_usd") or 0.0)
+        row["usage"] = fixed
+
+
 def load_rows(root, since=None, until=None):
-    """Every `substep` row in the window, keyed by (orchestration_id, node_key)."""
+    """Every `substep` row in the window, keyed by (orchestration_id, segment, node_key)."""
     by_node = collections.defaultdict(list)
     for path in sorted(glob.glob(os.path.join(root, ORCH_GLOB))):
-        orch = os.path.basename(os.path.dirname(path))
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                started = row.get("started_at") or ""
-                if row.get("agent_role") != "substep" or not started:
-                    continue
-                if (since and started < since) or (until and started >= until):
-                    continue
-                by_node[(orch, row.get("node_key"))].append(row)
+        orch_dir = os.path.dirname(path)
+        orch = os.path.basename(orch_dir)
+        resumes = resume_points(orch_dir)
+        rows = [r for r in _jsonl(path)
+                if r.get("agent_role") == "substep" and r.get("started_at")]
+        decumulate(rows, orch_dir)
+        for row in rows:
+            started = row["started_at"]
+            if (since and started < since) or (until and started >= until):
+                continue
+            segment = bisect.bisect_right(resumes, started)
+            by_node[(orch, segment, row.get("node_key"))].append(row)
     return by_node
 
 
@@ -100,7 +189,8 @@ def analyze(by_node):
                                                    "first_outputs": []})
     causes = collections.defaultdict(_bucket)
     orchestrations = set()
-    for (orch, _node), rows in by_node.items():
+    decumulated = uncorrected = 0
+    for (orch, _segment, _node), rows in by_node.items():
         rows.sort(key=lambda r: r["started_at"])
         seen = set()
         for i, row in enumerate(rows):
@@ -111,6 +201,8 @@ def analyze(by_node):
             if usage is None:
                 continue
             orchestrations.add(orch)
+            decumulated += bool(usage.get("decumulated"))
+            uncorrected += bool(row.get("_uncorrected"))
             kind = "retry" if is_retry else "first"
             _add(totals[kind], usage)
             _add(per_substep[label][kind], usage)
@@ -127,7 +219,8 @@ def analyze(by_node):
         entry["attempt1_median_output_tokens"] = statistics.median(firsts) if firsts else None
         substeps[label] = entry
     return {"orchestrations": len(orchestrations), "totals": totals,
-            "per_substep": substeps, "causes": dict(causes)}
+            "per_substep": substeps, "causes": dict(causes),
+            "decumulated_rows": decumulated, "uncorrected_warm_resumes": uncorrected}
 
 
 def share(first, retry, key):
@@ -146,6 +239,8 @@ def render(report):
            f"retry share: output_tokens {_pct(share(first, retry, 'output_tokens'))}, "
            f"total_tokens {_pct(share(first, retry, 'total_tokens'))}, "
            f"cost_usd {_pct(share(first, retry, 'cost_usd'))}",
+           f"cumulative warm-resume rows corrected: {report['decumulated_rows']}; "
+           f"warm-resume rows left as recorded: {report['uncorrected_warm_resumes']}",
            "",
            f"{'step.substep':<22} {'first':>5} {'retry':>5} {'retry%out':>9} "
            f"{'attempt-1 median out':>21}"]
