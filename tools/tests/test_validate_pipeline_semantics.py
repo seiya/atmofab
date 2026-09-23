@@ -19108,6 +19108,40 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             self._DEF, self._DRIFTED_DEF + decoy))
         self.assertTrue(any("in the pinned form" in v for v in violations), violations)
 
+    def test_an_abbreviated_module_procedure_is_not_compared_through_a_decoy(self) -> None:
+        # A submodule's `module procedure <name>` repeats no header, and the splitter does not
+        # read the parent's `module subroutine` prototype either, so the correct form is refused
+        # on origin/main and here alike. What must not happen is a decoy supplying the header:
+        # with the parent's prototype drifted and the pinned header contained in another
+        # procedure, origin/main and PR #279's first commit both answered 0 violations
+        # (`gfortran -fsyntax-only -std=f2008` rc=0).
+        body = self._C._GOOD_SOURCE.replace(self._DEF, "").replace(
+            "contains\n",
+            "  interface\n"
+            "    module subroutine hx__write_metrics_basis(n)\n"
+            "      integer, intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end interface\ncontains\n", 1)
+        submodule = ("submodule (hx_model) hx_impl\ncontains\n"
+                     "  module procedure hx__write_metrics_basis\n"
+                     "  end procedure hx__write_metrics_basis\nend submodule hx_impl\n")
+        decoy = ("  subroutine hx__other()\n  contains\n"
+                 "    subroutine hx__write_metrics_basis(entries, n)\n"
+                 "      type(hx__h_named), intent(in) :: entries(:)\n"
+                 "      integer,           intent(in) :: n\n"
+                 "    end subroutine hx__write_metrics_basis\n"
+                 "  end subroutine hx__other\n")
+        for label, extra in (("alone", ""), ("with decoy", decoy)):
+            with self.subTest(label):
+                source = body.replace(
+                    "end module hx_model\n", extra + "end module hx_model\n" + submodule)
+                self.assertIn("module procedure hx__write_metrics_basis", source)
+                violations = self._gate(source)
+                self.assertTrue(
+                    any("'hx__write_metrics_basis' in the pinned form" in v
+                        and "abbreviated `module procedure`" in v for v in violations),
+                    violations)
+
     def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
         # The comparison reads the definition's header from the structure reader's view, which is
         # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements

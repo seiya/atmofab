@@ -1558,14 +1558,20 @@ def _module_level_definition_headers(
     0 violations). Requiring the stanza to start at the definition's first line needs no
     enumeration of openers the splitter does not model.
 
-    None is the answer for a definition whose own header the splitter cannot read. Returns the
-    stanzas keyed by lowercased name. Raises the same two errors as `_structure_reading`."""
+    None is the answer for a definition whose own header the splitter cannot read, and for an
+    abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
+    all. An earlier version left that form out of the answer so the caller kept the name-keyed
+    lookup for it, which turned out to mean "the correct form is refused (the splitter does not
+    read the `module subroutine` prototype either) and a decoy is accepted" (PR #279 round 1).
+    Returns the stanzas keyed by lowercased name. Raises the same two errors as
+    `_structure_reading`."""
     view, tree, to_view = _structure_reading(lowered)
     stanzas: dict[str, list[str] | None] = {}
     for procedure in fortran_structure.module_level_procedures(tree, unit_name):
-        if procedure.kind not in ("subroutine", "function"):
-            continue
         name = procedure.name.strip().lower()
+        if procedure.kind not in ("subroutine", "function"):
+            stanzas[name] = None
+            continue
         stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
         text = (view[to_view(procedure.header_start):to_view(stop)].rstrip("\n")
                 + f"\nend {procedure.kind} {procedure.name}")
@@ -13819,8 +13825,9 @@ def _validate_generated_signatures(
                 f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
                 f"'{name}' in the pinned form — the module defines '{name}', but its header is not "
                 "one the §5.1 comparison reads (a prefix other than `pure` / `elemental` / "
-                "`recursive`, or a type before `function`); write the header exactly as §5.1 pins "
-                "it, with the result declared in the body")
+                "`recursive`, a type before `function`, or an abbreviated `module procedure`, "
+                "which repeats no header); write the header exactly as §5.1 pins it, in the "
+                "module's own `contains`, with the result declared in the body")
             continue
         if have is None:
             violations.append(
