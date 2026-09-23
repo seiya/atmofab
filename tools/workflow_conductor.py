@@ -2880,9 +2880,9 @@ def _leaf_usage_row(
       running total; the difference is recorded, `cost_usd` is the difference of the two
       `total_cost_usd` (omitted when either is missing or it would be negative), and
       `provider_details` names the running total and the turn it was taken against;
-    - neither holds, the resumed envelope is unreadable, either total is partial, or a class
-      of the difference is negative — `unavailable`, with both sets of numbers in the
-      reason. A guessed number is not written.
+    - neither holds (a negative class of the difference never equals a count), the resumed
+      envelope is unreadable, or either total is partial — `unavailable`, with both sets of
+      numbers in the reason. A guessed number is not written.
     """
     if deterministic:
         return leaf_usage_not_measured(
@@ -2911,8 +2911,8 @@ def _leaf_usage_row(
             prev, prev_covers = _envelope_usage_totals(prev_raw)
             diff = {key: totals.get(key, 0) - prev.get(key, 0)
                     for key in _MODEL_USAGE_KEYS.values()}
-            if (not (covers_every_model and prev_covers)
-                    or min(diff.values()) < 0 or not _usage_totals_equal(diff, turn)):
+            # `_usage_totals_equal` takes counts only, so a negative class never matches.
+            if not (covers_every_model and prev_covers) or not _usage_totals_equal(diff, turn):
                 return leaf_usage_unavailable(
                     f"warm-resumed turn: envelope totals {totals} are neither this turn's "
                     f"usage {turn} nor the resumed turn {resumed_arid}'s totals {prev} "
