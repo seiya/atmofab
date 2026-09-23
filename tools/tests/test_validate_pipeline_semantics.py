@@ -19091,6 +19091,23 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             "      end subroutine hx__write_metrics_basis\n"
             "    end interface\n  end subroutine hx__other\n")
 
+    def test_a_prototype_the_splitter_misreads_does_not_stand_in_either(self) -> None:
+        # `interface write(formatted)` is a generic interface opener the stanza splitter does not
+        # recognise, so the prototype inside it reads as a procedure stanza. Splitting every
+        # definition's text together took it as the published procedure's (PR #279 round 1:
+        # 0 violations, `gfortran -fsyntax-only -std=f2008` and `-c -Wall` rc=0), in either order.
+        decoy = ("  subroutine hx__other()\n    interface write(formatted)\n"
+                 "      subroutine hx__write_metrics_basis(entries, n)\n"
+                 "        import :: hx__h_named\n"
+                 "        type(hx__h_named), intent(in) :: entries(:)\n"
+                 "        integer,           intent(in) :: n\n"
+                 "      end subroutine hx__write_metrics_basis\n"
+                 "    end interface\n  end subroutine hx__other\n")
+        self._assert_drift_not_hidden_by(decoy)
+        violations = self._gate(self._C._GOOD_SOURCE.replace(
+            self._DEF, self._DRIFTED_DEF + decoy))
+        self.assertTrue(any("in the pinned form" in v for v in violations), violations)
+
     def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
         # The comparison reads the definition's header from the structure reader's view, which is
         # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements

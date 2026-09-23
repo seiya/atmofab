@@ -1537,38 +1537,43 @@ def _module_level_procedure_names(
 
 def _module_level_definition_headers(
     lowered: str, unit_name: str
-) -> tuple[dict[str, list[str] | None], list[str]]:
+) -> dict[str, list[str] | None]:
     """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name`` — its
     header and specification part, read from the definition the structure reader found.
 
     This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
     The splitter reads a header wherever it stands and keys it by NAME, while the definedness
     answer is about ONE procedure; a source can satisfy each with a different one. Measured
-    (TODO.md, found by issue #266 PR-1's review): the pinned header written as a procedure
-    CONTAINED in another, or as a prototype in an `interface` block in another procedure's body,
-    beside a module-level definition whose prefix (`impure elemental`) the splitter does not model
-    and whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer
-    failing at its own compile. Reading the header from the definition makes the two answers be
-    about the same procedure.
+    (found by issue #266 PR-1's review): the pinned header written as a procedure CONTAINED in
+    another, or as a prototype in an `interface` block in another procedure's body, beside a
+    module-level definition whose prefix (`impure elemental`) the splitter does not model and
+    whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer failing
+    at its own compile.
 
-    An abbreviated separate module subprogram (`module procedure <name>`) repeats no header, so
-    it has no key here and the caller keeps the name-keyed lookup for it. Returns the stanzas keyed
-    by lowercased name — None for a definition whose header the splitter cannot read — and the
-    splitter's errors. Raises the same two errors as `_structure_reading`."""
+    EACH DEFINITION IS SPLIT ON ITS OWN, and only the stanza its OWN HEADER opens is taken. A
+    first version split every definition's text together and looked the name up, which is the
+    name-keyed lookup again one level down: a prototype inside another definition's body that the
+    splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
+    splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
+    0 violations). Requiring the stanza to start at the definition's first line needs no
+    enumeration of openers the splitter does not model.
+
+    None is the answer for a definition whose own header the splitter cannot read. Returns the
+    stanzas keyed by lowercased name. Raises the same two errors as `_structure_reading`."""
     view, tree, to_view = _structure_reading(lowered)
-    texts = []
-    names = set()
+    stanzas: dict[str, list[str] | None] = {}
     for procedure in fortran_structure.module_level_procedures(tree, unit_name):
         if procedure.kind not in ("subroutine", "function"):
             continue
-        names.add(procedure.name.strip().lower())
+        name = procedure.name.strip().lower()
         stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
-        texts.append(
-            view[to_view(procedure.header_start):to_view(stop)].rstrip("\n")
-            + f"\nend {procedure.kind} {procedure.name}")
-    ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas("\n".join(texts))
-    read = {name.lower(): lines for name, lines in ops.items()}
-    return {name: read.get(name) for name in names}, errors
+        text = (view[to_view(procedure.header_start):to_view(stop)].rstrip("\n")
+                + f"\nend {procedure.kind} {procedure.name}")
+        ops, _types, _ifaces, _errors = fortran_signatures.parse_interface_stanzas(text)
+        stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
+        first = text.split("\n", 1)[0].strip()
+        stanzas[name] = stanza if stanza and stanza[0] == first else None
+    return stanzas
 
 
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
@@ -13755,16 +13760,10 @@ def _validate_generated_signatures(
                     _structure_reading(source_text)[1], model_file.stem):
                 unit_absent = model_file.stem
             defined_names = _module_level_procedure_names(source_text, model_file.stem)
-            definition_stanzas, definition_errors = _module_level_definition_headers(
-                source_text, model_file.stem)
-            for err in definition_errors:
-                violations.append(
-                    f"{target}: the published module's procedure definitions cannot be compared "
-                    f"with controlled_spec §5.1 ({err}) — define each published procedure exactly "
-                    "once, at the top level of the module")
             definition_lists = {
                 name: None if lines is None else fortran_signatures.stanza_line_list(lines)
-                for name, lines in definition_stanzas.items()}
+                for name, lines in _module_level_definition_headers(
+                    source_text, model_file.stem).items()}
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
