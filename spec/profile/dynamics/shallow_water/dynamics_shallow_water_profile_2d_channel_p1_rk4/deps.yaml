@@ -1,0 +1,19 @@
+spec_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
+spec_kind: profile
+dependencies:
+  components:
+    - component_id: dynamics_shallow_water_reconstruction_2d_muscl_mc
+      version_constraint: ">=0.1.0 <1.0.0"
+    - component_id: dynamics_shallow_water_flux_2d_rusanov
+      version_constraint: ">=0.1.0 <1.0.0"
+    - component_id: dynamics_shallow_water_boundary_2d_channel_mirror
+      version_constraint: ">=0.1.0 <1.0.0"
+    - component_id: dynamics_shallow_water_source_2d_coriolis
+      version_constraint: ">=0.1.0 <1.0.0"
+    - component_id: dynamics_shallow_water_time_update_2d_rk4
+      version_constraint: ">=0.1.0 <1.0.0"
+  profiles: []
+  # No `infrastructure` entry, and none is allowed (issue #175): a profile is a
+  # compile-time component-selection policy the host resolves at Compile, not a
+  # certified code node. It builds nothing, so it has no runner harness to build
+  # against — the node that ADOPTS this profile declares the harness.
