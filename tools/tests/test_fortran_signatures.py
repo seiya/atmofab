@@ -1159,6 +1159,116 @@ class ProcedureTypedArgumentTest(unittest.TestCase):
         self.assertIn("module_parameters / types / interfaces / procedures", err or "")
 
 
+class NameCollisionTest(unittest.TestCase):
+    """A §5.1 struct that reuses a name inside one Fortran scope fails closed at render.
+
+    Issue #278.
+
+    Fortran identifiers are case-insensitive, so ``f`` and ``F`` are one name. Issue #265 PR-5
+    drafted a TC4 forcing component publishing a Coriolis ``f`` (in) beside a forcing ``F`` (out);
+    ``_validate_struct`` accepted it, and the first thing that would have refused it is the
+    compiler, after a billed Compile and Generate. Each row below is one ``claim`` site, and each
+    shape was confirmed refused by ``gfortran -fsyntax-only -std=f2008`` (11.4.0) before the rule
+    was written, beside a control with distinct names that it accepts."""
+
+    def _real(self) -> dict:
+        return {"type": "real", "kind": "dp"}
+
+    def _arg(self, name: str, intent: str = "in") -> dict:
+        return {"name": name, "spec": self._real(), "intent": intent}
+
+    def _sub(self, name: str, *args: str) -> dict:
+        return {"kind": "subroutine", "name": name, "args": [self._arg(a) for a in args]}
+
+    def _fn(self, name: str, result: str, *args: str) -> dict:
+        return {"kind": "function", "name": name, "args": [self._arg(a) for a in args],
+                "result": {"name": result, "spec": self._real()}}
+
+    def _refused(self, struct: dict, pattern: str) -> None:
+        with self.assertRaisesRegex(SignatureParseError, pattern):
+            render_signatures_to_fortran(struct)
+
+    def test_two_dummies_differing_only_in_case_fail_closed(self) -> None:
+        for second in ("F", "f"):
+            with self.subTest(second=second):
+                self._refused({"procedures": [self._sub("hx__p", "f", second)]},
+                              rf"args\[1\]\.name '{second}' collides with .*args\[0\]\.name 'f'")
+
+    def test_a_dummy_named_after_its_procedure_fails_closed(self) -> None:
+        self._refused({"procedures": [self._sub("hx__p", "HX__P")]},
+                      r"args\[0\]\.name 'HX__P' collides with .*procedures\[0\]\.name")
+
+    def test_a_result_named_after_a_dummy_fails_closed(self) -> None:
+        self._refused({"procedures": [self._fn("hx__g", "R", "r")]},
+                      r"result\.name 'R' collides with .*args\[0\]\.name 'r'")
+
+    def test_a_result_differing_from_its_function_only_in_case_fails_closed(self) -> None:
+        # The EXACT spelling is the implicit result and renders without a `result(...)` clause;
+        # another case renders `result(G)`, which gfortran refuses ("RESULT variable at (1) must
+        # be different than function name").
+        self._refused({"procedures": [self._fn("hx__g", "HX__G", "x")]},
+                      r"result\.name 'HX__G' collides with .*procedures\[0\]\.name")
+        rendered = render_signatures_to_fortran({"procedures": [self._fn("hx__g", "hx__g", "x")]})
+        self.assertIn("function hx__g(x)\n", rendered)
+
+    def test_two_components_differing_only_in_case_fail_closed(self) -> None:
+        struct = {"types": [{"name": "hx__t", "components": [
+            {"name": "a", "spec": self._real()}, {"name": "A", "spec": self._real()}]}]}
+        self._refused(struct, r"components\[1\]\.name 'A' collides with .*components\[0\]")
+
+    def test_two_published_names_of_any_kind_collide_case_insensitively(self) -> None:
+        rows = {
+            "procedure/procedure": {"procedures": [self._sub("hx__p"), self._sub("HX__P")]},
+            "type/procedure": {"types": [{"name": "hx__t", "components": []}],
+                               "procedures": [self._sub("HX__T")]},
+            "parameter/procedure": {"module_parameters": [{"name": "dp", "value": "float64"}],
+                                    "procedures": [self._sub("DP")]},
+            "parameter/type": {"module_parameters": [{"name": "dp", "value": "float64"}],
+                               "types": [{"name": "Dp", "components": []}]},
+        }
+        for label, struct in rows.items():
+            with self.subTest(label):
+                self._refused(struct, r"collides with another published name, .* in the module")
+
+    def test_an_interface_prototype_is_its_own_scope_too(self) -> None:
+        proto = self._sub("hx__rhs", "q", "Q")
+        caller = {"kind": "subroutine", "name": "hx__step", "args": [
+            {"name": "rhs", "spec": {"type": "procedure", "interface": "hx__rhs"}}]}
+        self._refused({"interfaces": [proto], "procedures": [caller]},
+                      r"interfaces\[0\]\.args\[1\]\.name 'Q' collides")
+
+    def test_distinct_names_render(self) -> None:
+        struct = {"module_parameters": [{"name": "dp", "value": "float64"}],
+                  "types": [{"name": "hx__t", "components": [{"name": "a", "spec": self._real()}]}],
+                  "procedures": [self._sub("hx__p", "f", "g"), self._fn("hx__g", "r", "x")]}
+        self.assertIn("subroutine hx__p(f, g)", render_signatures_to_fortran(struct))
+
+    def test_every_in_tree_section51_renders(self) -> None:
+        # The collision rule reaches a spec at Compile.static, after a billed Compile leaf. This
+        # row reaches it in the suite, before any run: every §5.1 in the tree must still parse.
+        # A `component` / `infrastructure` spec MUST carry one (its published surface is pinned
+        # from it), so a missing or broken fence there is a failure rather than a skip; the other
+        # kinds carry none.
+        from tools.validate_pipeline_semantics import (
+            _parse_canonical_interface_from_controlled_spec,
+            _section51_fence_body,
+        )
+
+        publishing = ("component", "infrastructure")
+        seen = []
+        for cs in sorted((REPO_ROOT / "spec").rglob("controlled_spec.md")):
+            rel = cs.relative_to(REPO_ROOT)
+            body, err = _section51_fence_body(cs)
+            if rel.parts[1] not in publishing:
+                continue
+            self.assertIsNone(err, f"{rel}: {err}")
+            self.assertIsNotNone(body, str(rel))
+            seen.append(cs)
+            *_stanzas, parse_err = _parse_canonical_interface_from_controlled_spec(cs)
+            self.assertIsNone(parse_err, f"{rel}: {parse_err}")
+        self.assertIn(HARNESS_SPEC, seen, "the sweep found no §5.1 — its reader has drifted")
+
+
 class NeutralVocabularyTest(unittest.TestCase):
     """C2: the §5.1 / IR leaf vocabulary is language-neutral — string lengths are
     `deferred`/`assumed` (not the Fortran `:`/`*`) and kind values are `float64`/`float32`

@@ -17811,7 +17811,10 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": api})
             violations: list[str] = []
             _validate_published_surface(Path(tmp), _ir, violations)
-            self.assertTrue(any("§5.1 declares module parameter 'dp' more than once" in v
+            # Refused by the render check (`_validate_struct`'s one name space), which runs before
+            # the module-parameter pin's own duplicate check and returns; that check is kept as
+            # defense in depth and is not what this row reaches.
+            self.assertTrue(any("module_parameters[1].name 'dp' collides with" in v
                                 for v in violations), violations)
 
     def test_section51_case_only_duplicate_module_parameter_name_flagged(self) -> None:
@@ -17836,8 +17839,8 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": api})
             violations: list[str] = []
             _validate_published_surface(Path(tmp), _ir, violations)
-            self.assertTrue(any("more than once (case-insensitively)" in v for v in violations),
-                            violations)
+            self.assertTrue(any("module_parameters[1].name 'DP' collides with" in v
+                                for v in violations), violations)
 
     def test_module_parameters_case_only_name_variant_passes(self) -> None:
         # §5.1 declares `dp`, the IR transcribes it as `DP` (same Fortran symbol, same value) — a
@@ -18039,9 +18042,10 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertIn("could not render", err)
 
     def test_duplicate_symbol_errors(self) -> None:
-        # Two procedures sharing a name render to two same-named stanzas; the render -> stanza
-        # duplicate detection (still live on the rendered Fortran) must fail closed rather than
-        # silently keep one — a structured-form duplicate is as unsafe as a Fortran-form one.
+        # Two procedures sharing a name must fail closed rather than silently keep one — a
+        # structured-form duplicate is as unsafe as a Fortran-form one. The struct validator's
+        # name space refuses it before render, so the rendered block's stanza-level duplicate
+        # detection is not what this row reaches.
         dup = (
             "```yaml\nprocedures:\n"
             "- kind: function\n  name: hx__dup\n  args: []\n"
@@ -18050,7 +18054,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n```\n")
         _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(dup))
         self.assertIsNotNone(err)
-        self.assertIn("duplicate", err.lower())
+        self.assertIn("procedures[1].name 'hx__dup' collides with", err)
 
     def test_malformed_signature_fails_closed_not_crash(self) -> None:
         # A leaf-fabricated malformed struct (function with a null result) must surface as a clean
@@ -19046,6 +19050,245 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(
             any("hx__write_metrics_basis" in v and "never DEFINES it" in v for v in violations),
             violations)
+
+    # A module-level definition the stanza splitter cannot read (its prefix is not modelled) and
+    # whose argument list drifts from §5.1. Paired with a decoy carrying the pinned header, the
+    # header comparison used to take the decoy's stanza while the definedness arm credited this
+    # definition — two answers about two procedures, 0 violations, `-fsyntax-only` rc=0.
+    _DRIFTED_DEF = ("  impure elemental subroutine hx__write_metrics_basis(n)\n"
+                    "    integer, intent(in) :: n\n"
+                    "  end subroutine hx__write_metrics_basis\n")
+
+    def _assert_drift_not_hidden_by(self, decoy: str) -> None:
+        # Two things: the drifted definition alone is refused (the control), and the decoy does
+        # not change that.
+        for label, replacement in (("alone", self._DRIFTED_DEF),
+                                   ("with decoy", decoy + self._DRIFTED_DEF)):
+            with self.subTest(label):
+                violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, replacement))
+                self.assertTrue(
+                    any("does not publish controlled_spec §5.1 procedure "
+                        "'hx__write_metrics_basis' in the pinned form" in v for v in violations),
+                    violations)
+
+    def test_a_contained_decoy_does_not_stand_in_for_the_module_level_definition(self) -> None:
+        self._assert_drift_not_hidden_by(
+            "  subroutine hx__other()\n  contains\n"
+            "    subroutine hx__write_metrics_basis(entries, n)\n"
+            "      type(hx__h_named), intent(in) :: entries(:)\n"
+            "      integer,           intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end subroutine hx__other\n")
+
+    def test_a_body_local_prototype_does_not_stand_in_for_the_module_level_definition(
+            self) -> None:
+        self._assert_drift_not_hidden_by(
+            "  subroutine hx__other()\n    interface\n"
+            "      subroutine hx__write_metrics_basis(entries, n)\n"
+            "        import :: hx__h_named\n"
+            "        type(hx__h_named), intent(in) :: entries(:)\n"
+            "        integer,           intent(in) :: n\n"
+            "      end subroutine hx__write_metrics_basis\n"
+            "    end interface\n  end subroutine hx__other\n")
+
+    def test_a_prototype_the_splitter_misreads_does_not_stand_in_either(self) -> None:
+        # `interface write(formatted)` is a generic interface opener the stanza splitter does not
+        # recognise, so the prototype inside it reads as a procedure stanza. Splitting every
+        # definition's text together took it as the published procedure's (PR #279 round 1:
+        # 0 violations, `gfortran -fsyntax-only -std=f2008` and `-c -Wall` rc=0), in either order.
+        decoy = ("  subroutine hx__other()\n    interface write(formatted)\n"
+                 "      subroutine hx__write_metrics_basis(entries, n)\n"
+                 "        import :: hx__h_named\n"
+                 "        type(hx__h_named), intent(in) :: entries(:)\n"
+                 "        integer,           intent(in) :: n\n"
+                 "      end subroutine hx__write_metrics_basis\n"
+                 "    end interface\n  end subroutine hx__other\n")
+        self._assert_drift_not_hidden_by(decoy)
+        violations = self._gate(self._C._GOOD_SOURCE.replace(
+            self._DEF, self._DRIFTED_DEF + decoy))
+        self.assertTrue(any("in the pinned form" in v for v in violations), violations)
+
+    def test_an_abbreviated_module_procedure_is_not_compared_through_a_decoy(self) -> None:
+        # A submodule's `module procedure <name>` repeats no header, and the splitter does not
+        # read the parent's `module subroutine` prototype either, so the correct form is refused
+        # on origin/main and here alike. What must not happen is a decoy supplying the header:
+        # with the parent's prototype drifted and the pinned header contained in another
+        # procedure, origin/main and PR #279's first commit both answered 0 violations
+        # (`gfortran -fsyntax-only -std=f2008` rc=0).
+        body = self._C._GOOD_SOURCE.replace(self._DEF, "").replace(
+            "contains\n",
+            "  interface\n"
+            "    module subroutine hx__write_metrics_basis(n)\n"
+            "      integer, intent(in) :: n\n"
+            "    end subroutine hx__write_metrics_basis\n"
+            "  end interface\ncontains\n", 1)
+        submodule = ("submodule (hx_model) hx_impl\ncontains\n"
+                     "  module procedure hx__write_metrics_basis\n"
+                     "  end procedure hx__write_metrics_basis\nend submodule hx_impl\n")
+        decoy = ("  subroutine hx__other()\n  contains\n"
+                 "    subroutine hx__write_metrics_basis(entries, n)\n"
+                 "      type(hx__h_named), intent(in) :: entries(:)\n"
+                 "      integer,           intent(in) :: n\n"
+                 "    end subroutine hx__write_metrics_basis\n"
+                 "  end subroutine hx__other\n")
+        for label, extra in (("alone", ""), ("with decoy", decoy)):
+            with self.subTest(label):
+                source = body.replace(
+                    "end module hx_model\n", extra + "end module hx_model\n" + submodule)
+                self.assertIn("module procedure hx__write_metrics_basis", source)
+                violations = self._gate(source)
+                self.assertTrue(
+                    any("'hx__write_metrics_basis' in the pinned form" in v
+                        and "abbreviated `module procedure`" in v for v in violations),
+                    violations)
+
+    def test_a_labelled_do_takes_the_label_preserving_reading_and_still_compares_clean(
+            self) -> None:
+        # The label-stripped view leaves `do 100` with nothing closing it, so the structure
+        # reader falls back to the label-preserving twin, whose offsets are translated back into
+        # the stripped view before the definition's header is sliced out. The label sits in a
+        # procedure BEFORE the published one, so every offset after it is shifted; without the
+        # translation this correct source drew violations (PR #279 round 1, mutant M7).
+        helper = ("  subroutine hx__loop_helper()\n"
+                  "    integer :: k\n"
+                  "    do 100 k = 1, 2\n"
+                  "100 continue\n"
+                  "  end subroutine hx__loop_helper\n")
+        source = self._C._GOOD_SOURCE.replace(self._DEF, helper + self._DEF)
+        _view, tree, _to_view = vps._structure_reading(source.lower())
+        self.assertIn("100 continue", tree.view, "the fixture must reach the labelled reading")
+        self.assertEqual(self._gate(source), [])
+
+    def test_a_misread_prototype_inside_the_definition_itself_does_not_stand_in(self) -> None:
+        # A BLOCK makes a prototype of the procedure legal INSIDE that procedure's own body
+        # (without it gfortran answers "already been host associated"), so a per-definition
+        # split still sees it. What refuses it is that the taken stanza must start at the
+        # definition's own first line. PR #279 round 2 measured this at `-fsyntax-only
+        # -std=f2008` rc=0: 0 violations on origin/main and at af010783, and 0 again with that
+        # requirement removed.
+        drifted = ("  impure elemental subroutine hx__write_metrics_basis(n)\n"
+                   "    integer, intent(in) :: n\n"
+                   "    print *, n\n"
+                   "    block\n"
+                   "      interface write(formatted)\n"
+                   "        subroutine hx__write_metrics_basis(entries, n)\n"
+                   "          import :: hx__h_named\n"
+                   "          type(hx__h_named), intent(in) :: entries(:)\n"
+                   "          integer,           intent(in) :: n\n"
+                   "        end subroutine hx__write_metrics_basis\n"
+                   "      end interface\n"
+                   "    end block\n"
+                   "  end subroutine hx__write_metrics_basis\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' in the pinned form" in v
+                            for v in violations), violations)
+
+    _BLOCK_DECOY = ("    block\n"
+                    "      interface write(formatted)\n"
+                    "        subroutine hx__write_metrics_basis(entries, n)\n"
+                    "          import :: hx__h_named\n"
+                    "          type(hx__h_named), intent(in) :: entries(:)\n"
+                    "          integer,           intent(in) :: n\n"
+                    "        end subroutine hx__write_metrics_basis\n"
+                    "      end interface\n"
+                    "    end block\n")
+
+    def test_a_decoy_whose_header_reads_as_the_definitions_does_not_win(self) -> None:
+        # A READABLE definition header in another case, or behind a label, reads in the
+        # lowercased, label-stripped view exactly as the decoy's. That satisfied the first-line
+        # requirement, and the splitter kept the LAST stanza of the name, while its duplicate
+        # report was discarded (PR #279 round 3: 0 violations on origin/main and at 8a609220,
+        # `gfortran -fsyntax-only -std=f2008` rc=0). The published `n` drifts to `real(dp)`.
+        for label, header in (
+                ("upper case", "  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"),
+                ("labelled", "10 subroutine hx__write_metrics_basis(entries, n)\n")):
+            with self.subTest(label):
+                drifted = (header
+                           + "    type(hx__h_named), intent(in) :: entries(:)\n"
+                           "    real(dp),          intent(in) :: n\n"
+                           "    print *, n, size(entries)\n"
+                           + self._BLOCK_DECOY
+                           + "  end subroutine hx__write_metrics_basis\n")
+                violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+                named = [v for v in violations if "'hx__write_metrics_basis'" in v]
+                # ONE message for the name: a second, "no procedure of that name/header found",
+                # would contradict the first (round 3 mutant v3).
+                self.assertEqual(len(named), 1, violations)
+                self.assertIn("in the pinned form", named[0])
+                self.assertIn("a second header of the same name", named[0])
+
+    def test_each_definition_is_split_alone(self) -> None:
+        # The witness for the per-definition split, which no other row observes alone: with a
+        # readable upper-case definition that drifts and a lower-case DTIO decoy in ANOTHER
+        # procedure, a split over every definition's text together reports the source as an
+        # unread header rather than as the drift it is (PR #279 rounds 3-4; origin/main answered
+        # 0 violations). The split keeps the answer right; the refusal itself does not rest on it.
+        # The decoy comes AFTER the definition: the splitter keeps the last stanza of a name.
+        drifted = ("  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"
+                   "    type(hx__h_named), intent(in) :: entries(:)\n"
+                   "    real(dp),          intent(in) :: n\n"
+                   "  end subroutine hx__write_metrics_basis\n"
+                   "  subroutine hx__other()\n"
+                   "    interface write(formatted)\n"
+                   "      subroutine hx__write_metrics_basis(entries, n)\n"
+                   "        import :: hx__h_named\n"
+                   "        type(hx__h_named), intent(in) :: entries(:)\n"
+                   "        integer,           intent(in) :: n\n"
+                   "      end subroutine hx__write_metrics_basis\n"
+                   "    end interface\n"
+                   "  end subroutine hx__other\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' drifts from controlled_spec" in v
+                            for v in violations), violations)
+
+    def test_a_splitter_error_about_another_name_does_not_unread_the_definition(self) -> None:
+        # Two BLOCK-local interfaces of one external procedure, spelled `Ext_a` and `ext_a`: legal,
+        # and the definition's own stanza is correct. The lowercased view makes the splitter report
+        # a duplicate of `ext_a`; refusing on it turned this correct source away (PR #279 round 4:
+        # origin/main 0 violations, a2130c44 refused it).
+        iface = ("    block\n"
+                 "      interface\n"
+                 "        subroutine {n}(k)\n"
+                 "          integer, intent(in) :: k\n"
+                 "        end subroutine {n}\n"
+                 "      end interface\n"
+                 "    end block\n")
+        correct = self._DEF.replace(
+            "  end subroutine hx__write_metrics_basis\n",
+            iface.format(n="Ext_a") + iface.format(n="ext_a")
+            + "  end subroutine hx__write_metrics_basis\n")
+        self.assertNotEqual(correct, self._DEF)
+        self.assertEqual(self._gate(self._C._GOOD_SOURCE.replace(self._DEF, correct)), [])
+
+    def test_a_contained_procedures_declarations_are_not_the_definitions(self) -> None:
+        # The definition's stanza stops at its own `contains`. The whole-file splitter did not
+        # stop there when the contained header carried a prefix it does not read, so the
+        # contained procedure's `integer, intent(in) :: n` satisfied the pinned declaration
+        # while the published `n` drifted to `real(dp)` — 0 violations on origin/main, rc=0 at
+        # `-fsyntax-only -std=f2008` (PR #279 round 2).
+        drifted = ("  subroutine hx__write_metrics_basis(entries, &\n      n)\n"
+                   "    type(hx__h_named), intent(in) :: entries(:)\n"
+                   "    real(dp),          intent(in) :: n\n"
+                   "  contains\n"
+                   "    impure subroutine hx__inner(n)\n"
+                   "      integer, intent(in) :: n\n"
+                   "    end subroutine hx__inner\n"
+                   "  end subroutine hx__write_metrics_basis\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' drifts from controlled_spec" in v
+                            for v in violations), violations)
+
+    def test_a_defined_procedure_is_compared_by_its_own_header(self) -> None:
+        # The comparison reads the definition's header from the structure reader's view, which is
+        # a DIFFERENT text from the whole-file splitter's (lowercased, labels stripped, statements
+        # split); a faithful definition must still compare clean through it. The upper-case
+        # spelling is a correction as well as a control: the name-keyed lookup this replaced
+        # missed `HX__WRITE_METRICS_BASIS` and refused the legal source as publishing nothing
+        # (measured on origin/main 1671710a).
+        self.assertEqual(self._gate(self._C._GOOD_SOURCE), [])
+        spaced = self._C._GOOD_SOURCE.replace(self._DEF, self._DEF.upper().replace(
+            "HX__H_NAMED", "hx__h_named"))
+        self.assertEqual(self._gate(spaced), [], spaced)
 
     def test_unresolvable_structure_is_a_content_violation_not_a_silent_pass(self) -> None:
         # The check must not be behind a switch the LEAF holds. A source the front end cannot

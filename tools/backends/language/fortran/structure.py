@@ -57,7 +57,10 @@ proves it parses it RIGHT.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from tools.backends.language.fortran import signatures as fortran_signatures
 
 #: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
 #: backend that depends on them, because the value is a property of THIS code: the module drives a
@@ -129,9 +132,9 @@ class StructureError:
 class Procedure:
     """One procedure DEFINITION, with its body located as offsets into the view.
 
-    ``body_start`` is the start of the line after the header statement and ``body_end`` the start
-    of the line holding the END statement, which is what makes ``view[body_start:body_end]`` the
-    body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
+    ``header_start`` is the start of the line holding the header statement, ``body_start`` the
+    start of the line after it, and ``body_end`` the start of the line holding the END statement,
+    which is what makes ``view[body_start:body_end]`` the body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
     (None when it has none): declarations before it are this procedure's, procedures after it are
     its own contained ones whose dummies are NOT its.
     """
@@ -140,6 +143,7 @@ class Procedure:
     name: str
     dummy_args_text: str
     result_name: str | None
+    header_start: int
     body_start: int
     body_end: int
     contains_at: int | None
@@ -410,6 +414,7 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
         name=name,
         dummy_args_text=dummy_args_text,
         result_name=result_name,
+        header_start=_line_start(view, to_char(header.start_byte)),
         body_start=body_start,
         body_end=body_end,
         contains_at=contains_at,
@@ -476,6 +481,18 @@ UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
     "the prototype"
 )
 
+#: What a leaf is told when the publishing module DEFINES a §5.1 operation but the definition's
+#: header is not one the §5.1 comparison reads. Here for the same reason as the constant above:
+#: every form it names is this language's.
+UNREAD_DEFINITION_HEADER_REMEDY = (
+    "its header is not one the §5.1 comparison reads: a prefix other than `pure` / `elemental` / "
+    "`recursive`, a type before `function`, an abbreviated `module procedure` (which repeats no "
+    "header), or a second header of the same name inside the definition's own body (a prototype "
+    "in a nested block). Write the header exactly as §5.1 pins it, in the module's own "
+    "`contains`, with the result declared in the body, and give no other header that name "
+    "inside it"
+)
+
 #: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
 #: the shapes it names are spellings of THIS language. The class is not closed — see the module
 #: docstring, which is canonical for why an enumeration is the wrong instrument.
@@ -505,10 +522,94 @@ def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
     )
 
 
+def module_level_definition_stanzas(
+    tree: StructureTree,
+    unit_name: str,
+    text_between: Callable[[int, int], str],
+) -> dict[str, tuple[str, ...] | None]:
+    """The stanza of each procedure ``tree`` DEFINES at the top level of ``unit_name`` — its
+    header and specification part, read from the definition itself. ``text_between(start,
+    stop)`` returns the caller's view text between two of ``tree``'s offsets (the caller owns
+    the translation when it parsed a label-preserving twin).
+
+    This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
+    The splitter reads a header wherever it stands and keys it by NAME, while the definedness
+    answer is about ONE procedure; a source can satisfy each with a different one. Measured
+    (found by issue #266 PR-1's review): the pinned header written as a procedure CONTAINED in
+    another, or as a prototype in an `interface` block in another procedure's body, beside a
+    module-level definition whose prefix (`impure elemental`) the splitter does not model and
+    whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer failing
+    at its own compile.
+
+    EACH DEFINITION IS SPLIT ON ITS OWN, and only the stanza its OWN HEADER opens is taken. A
+    first version split every definition's text together and looked the name up, which is the
+    name-keyed lookup again one level down: a prototype inside another definition's body that the
+    splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
+    splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
+    0 violations). What refuses a decoy is that the stanza taken must start at the definition's
+    own first line and carry no splitter error for its name. The per-definition split is what
+    keeps the ANSWER right rather than what refuses: split together, every decoy shape measured
+    in PR #279's round 4 was still refused, but as an unread header instead of the drift it is,
+    and a correct source with a same-named stanza elsewhere was refused too. The first-line
+    requirement is the one that holds when the decoy is inside the definition itself: a BLOCK makes
+    a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
+    -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
+    from legal source, on the strength of one probe without the BLOCK. The fragment also stops
+    at the definition's own `contains`, so a contained procedure's declarations are not the
+    definition's.
+
+    A fragment the splitter reports an error on FOR THIS NAME answers None, and that is the third
+    requirement, not a tidy-up. The splitter keeps the LAST stanza of a name, and its duplicate
+    report was being discarded. So a readable definition header spelled in another case, or
+    carrying a label, followed by a decoy with the pinned header inside a BLOCK in the same body,
+    made the decoy's stanza win. The view is lowercased and label-stripped, so the decoy's first
+    line equals the definition's, and the first-line requirement passed (PR #279 round 3,
+    0 violations, rc=0). The whole-file splitter did not report the duplicate either, because it
+    reads the raw text, where `HX__…` and `hx__…` are different keys and `10 subroutine` is not
+    a header. The error must name the procedure: an error about ANOTHER name says nothing about
+    this definition's stanza, and refusing on it turned away a correct source whose body holds two
+    BLOCK-local interfaces of one external procedure spelled `Ext_a` / `ext_a` — accepted on
+    origin/main, refused with a remedy naming none of its causes at PR #279's a2130c44
+    (round 4).
+
+    None is the answer for a definition whose own header the splitter cannot read, and for an
+    abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
+    all. An earlier version left that form out of the answer so the caller kept the name-keyed
+    lookup for it, which turned out to mean "the correct form is refused (the splitter does not
+    read the `module subroutine` prototype either) and a decoy is accepted" (PR #279 round 1).
+    Returns each stanza as `signatures.stanza_line_list` gives it — the currency the §5.1
+    comparison reads — keyed by lowercased name."""
+    stanzas: dict[str, tuple[str, ...] | None] = {}
+    for procedure in module_level_procedures(tree, unit_name):
+        name = procedure.name.strip().lower()
+        if procedure.kind not in ("subroutine", "function"):
+            stanzas[name] = None
+            continue
+        stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
+        text = (text_between(procedure.header_start, stop).rstrip("\n")
+                + f"\nend {procedure.kind} {procedure.name}")
+        ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas(text)
+        stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
+        first = text.split("\n", 1)[0].strip()
+        own_error = any(f"'{name}'" in error for error in errors)
+        stanzas[name] = (fortran_signatures.stanza_line_list(stanza)
+                         if stanza and stanza[0] == first and not own_error else None)
+    return stanzas
+
+
 def module_level_procedure_names(
     tree: StructureTree, unit_name: str | None = None
 ) -> frozenset[str]:
-    """The names ``tree`` DEFINES at module level, lowercased.
+    """The names of `module_level_procedures`, lowercased."""
+    return frozenset(
+        procedure.name.strip().lower()
+        for procedure in module_level_procedures(tree, unit_name))
+
+
+def module_level_procedures(
+    tree: StructureTree, unit_name: str | None = None
+) -> tuple[Procedure, ...]:
+    """The procedures ``tree`` DEFINES at module level.
 
     THREE exclusions, and they answer one question from three sides: does this name have an
     implementation that the module publishing it actually carries?
@@ -548,7 +649,7 @@ def module_level_procedure_names(
     reach the descendant, which it does not: scoping to `mid` returns the empty set.
 
     ``unit_name`` matching is by the unit's own declared name, lowercased. A source declaring no
-    unit of that name yields the empty set, which fails every published procedure — fail-closed,
+    unit of that name yields none, which fails every published procedure — fail-closed,
     and the right answer: the module the node is contracted to publish is not there.
 
     An abbreviated separate module subprogram (`module procedure solve`, in a submodule) IS an
@@ -564,9 +665,9 @@ def module_level_procedure_names(
             if unit.name == wanted or (unit.parent is not None and unit.parent == wanted)
         ]
         if not scope:
-            return frozenset()
+            return ()
     bodies = [(p.body_start, p.body_end) for p in tree.procedures]
-    names: set[str] = set()
+    found: list[Procedure] = []
     for index, procedure in enumerate(tree.procedures):
         if scope and not any(
             start <= procedure.body_start < end for start, end in scope
@@ -578,5 +679,5 @@ def module_level_procedure_names(
             if other != index
         )
         if not nested:
-            names.add(procedure.name.strip().lower())
-    return frozenset(names)
+            found.append(procedure)
+    return tuple(found)

@@ -822,6 +822,26 @@ def _validate_spec(spec: Any, ctx: str) -> None:
             "allocatable)")
 
 
+class _NameScope:
+    """One Fortran scoping unit's name space. Identifiers are case-insensitive, so ``f`` and ``F``
+    are one name: a §5.1 that publishes both can never compile, and nothing but this refusal
+    reports it before a billed run does (issue #278; issue #265 PR-5 drafted exactly that pair)."""
+
+    def __init__(self, owner: str) -> None:
+        self._owner = owner
+        self._seen: dict[str, str] = {}
+
+    def claim(self, name: str, ctx: str) -> None:
+        low = name.lower()
+        if low in self._seen:
+            raise SignatureParseError(
+                f"{ctx} '{name}' collides with another published name, {self._seen[low]}, in "
+                f"{self._owner} (Fortran "
+                "identifiers are case-insensitive, so two names differing only in case are one "
+                "name) — rename one of them")
+        self._seen[low] = f"{ctx} '{name}'"
+
+
 def _validate_entity(
     ent: Any, ctx: str, *, allow_intent: bool, allow_procedure: bool = False
 ) -> None:
@@ -902,6 +922,16 @@ def _validate_procedure(proc: Any, ctx: str, *, allow_procedure_args: bool = Tru
         _validate_entity(result, f"{ctx}.result", allow_intent=False)
     elif result is not None:
         raise SignatureParseError(f"{ctx} (subroutine {name}) must not carry a 'result'")
+    # One scope, one name space, compared case-insensitively. A dummy may not repeat another dummy
+    # or the procedure's own name, and a `result` may not repeat a dummy. The one legal equality is
+    # a result spelled EXACTLY as the function, which `_render_procedure` emits as the implicit
+    # result; the same name in another case renders `result(<name>)`, which the compiler refuses.
+    scope = _NameScope(f"{kind} '{name}'")
+    scope.claim(name, f"{ctx}.name")
+    for i, arg in enumerate(args):
+        scope.claim(arg["name"], f"{ctx}.args[{i}].name")
+    if kind == "function" and result["name"] != name:
+        scope.claim(result["name"], f"{ctx}.result.name")
 
 
 def _validate_type(tdef: Any, ctx: str) -> None:
@@ -915,8 +945,10 @@ def _validate_type(tdef: Any, ctx: str) -> None:
     # validate symmetric and matches the pre-B Fortran-fence gate (which accepted empty types too).
     if not isinstance(comps, list):
         raise SignatureParseError(f"{ctx}.components must be a list (got {type(comps).__name__})")
+    scope = _NameScope(f"derived type '{tdef['name']}'")
     for i, comp in enumerate(comps):
         _validate_entity(comp, f"{ctx}.components[{i}]", allow_intent=False)
+        scope.claim(comp["name"], f"{ctx}.components[{i}].name")
 
 
 def _validate_module_parameter(mp: Any, ctx: str) -> None:
@@ -954,11 +986,12 @@ def _validate_symbol(sig: Any, ctx: str = "signature") -> None:
 def _validate_struct(struct: dict[str, Any]) -> None:
     """Validate a whole ``{module_parameters, types, interfaces, procedures}`` struct, fail-closed.
 
-    Beyond each entry's own shape, the struct-level rules for ``interfaces[]``: every
-    ``spec.interface`` reference resolves to an entry; every entry is referenced by at least one
-    argument; and no entry's name collides (case-insensitively — Fortran identifiers are) with a
-    procedure, a type, or a module parameter. A single-symbol render (``render_symbol_to_fortran``)
-    cannot see the interface list, so these rules live here and nowhere else."""
+    Beyond each entry's own shape: no two published names collide (case-insensitively — Fortran
+    identifiers are), across module parameters, types, prototypes and procedures alike; and the
+    struct-level rules for ``interfaces[]``: every ``spec.interface`` reference resolves to an
+    entry, and every entry is referenced by at least one argument. A single-symbol render
+    (``render_symbol_to_fortran``) cannot see the other entries, so these rules live here and
+    nowhere else. The collisions INSIDE one procedure or type are its own validator's."""
     for i, mp in enumerate(struct.get("module_parameters") or []):
         _validate_module_parameter(mp, f"module_parameters[{i}]")
     for i, tdef in enumerate(struct.get("types") or []):
@@ -967,20 +1000,15 @@ def _validate_struct(struct: dict[str, Any]) -> None:
         _validate_procedure(iface, f"interfaces[{i}]", allow_procedure_args=False)
     for i, proc in enumerate(struct.get("procedures") or []):
         _validate_procedure(proc, f"procedures[{i}]")
-    # Reference integrity (every entry is shape-valid at this point, so the reads are safe).
-    other_names = {
-        str(e["name"]).lower()
-        for key in ("module_parameters", "types", "procedures")
-        for e in (struct.get(key) or [])
-    }
-    iface_names: dict[str, str] = {}
-    for i, iface in enumerate(struct.get("interfaces") or []):
-        low = iface["name"].lower()
-        if low in other_names or low in iface_names:
-            raise SignatureParseError(
-                f"interfaces[{i}].name '{iface['name']}' collides with another published name "
-                "(a prototype must not share a procedure / type / module-parameter / interface name)")
-        iface_names[low] = iface["name"]
+    # Every published name shares the module's one name space (every entry is shape-valid at this
+    # point, so the reads are safe).
+    module_scope = _NameScope("the module")
+    for key in _STRUCT_TOP_KEYS:
+        for i, entry in enumerate(struct.get(key) or []):
+            module_scope.claim(entry["name"], f"{key}[{i}].name")
+    # Reference integrity.
+    iface_names = {
+        iface["name"].lower(): iface["name"] for iface in struct.get("interfaces") or []}
     referenced: set[str] = set()
     for i, proc in enumerate(struct.get("procedures") or []):
         for j, arg in enumerate(proc.get("args") or []):
