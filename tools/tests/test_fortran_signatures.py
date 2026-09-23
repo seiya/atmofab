@@ -1246,19 +1246,26 @@ class NameCollisionTest(unittest.TestCase):
     def test_every_in_tree_section51_renders(self) -> None:
         # The collision rule reaches a spec at Compile.static, after a billed Compile leaf. This
         # row reaches it in the suite, before any run: every §5.1 in the tree must still parse.
+        # A `component` / `infrastructure` spec MUST carry one (its published surface is pinned
+        # from it), so a missing or broken fence there is a failure rather than a skip; the other
+        # kinds carry none.
         from tools.validate_pipeline_semantics import (
             _parse_canonical_interface_from_controlled_spec,
             _section51_fence_body,
         )
 
+        publishing = ("component", "infrastructure")
         seen = []
         for cs in sorted((REPO_ROOT / "spec").rglob("controlled_spec.md")):
+            rel = cs.relative_to(REPO_ROOT)
             body, err = _section51_fence_body(cs)
-            if err or body is None:
+            if rel.parts[1] not in publishing:
                 continue
+            self.assertIsNone(err, f"{rel}: {err}")
+            self.assertIsNotNone(body, str(rel))
             seen.append(cs)
             *_stanzas, parse_err = _parse_canonical_interface_from_controlled_spec(cs)
-            self.assertIsNone(parse_err, f"{cs.relative_to(REPO_ROOT)}: {parse_err}")
+            self.assertIsNone(parse_err, f"{rel}: {parse_err}")
         self.assertIn(HARNESS_SPEC, seen, "the sweep found no §5.1 — its reader has drifted")
 
 
