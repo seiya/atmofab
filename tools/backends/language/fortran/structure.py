@@ -485,10 +485,12 @@ UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
 #: header is not one the §5.1 comparison reads. Here for the same reason as the constant above:
 #: every form it names is this language's.
 UNREAD_DEFINITION_HEADER_REMEDY = (
-    "its header is not one the §5.1 comparison reads (a prefix other than `pure` / `elemental` / "
-    "`recursive`, a type before `function`, or an abbreviated `module procedure`, which repeats "
-    "no header); write the header exactly as §5.1 pins it, in the module's own `contains`, with "
-    "the result declared in the body"
+    "its header is not one the §5.1 comparison reads: a prefix other than `pure` / `elemental` / "
+    "`recursive`, a type before `function`, an abbreviated `module procedure` (which repeats no "
+    "header), or a second header of the same name inside the definition's own body (a prototype "
+    "in a nested block). Write the header exactly as §5.1 pins it, in the module's own "
+    "`contains`, with the result declared in the body, and give no other header that name "
+    "inside it"
 )
 
 #: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
@@ -553,6 +555,16 @@ def module_level_definition_stanzas(
     at the definition's own `contains`, so a contained procedure's declarations are not the
     definition's.
 
+    A fragment the splitter reports ANY error on answers None, and that is the third
+    requirement, not a tidy-up. The splitter keeps the LAST stanza of a name, and its duplicate
+    report was being discarded. So a readable definition header spelled in another case, or
+    carrying a label, followed by a decoy with the pinned header inside a BLOCK in the same body,
+    made the decoy's stanza win. The view is lowercased and label-stripped, so the decoy's first
+    line equals the definition's, and the first-line requirement passed (PR #279 round 3,
+    0 violations, rc=0). The whole-file splitter did not report the duplicate either, because it
+    reads the raw text, where `HX__…` and `hx__…` are different keys and `10 subroutine` is not
+    a header.
+
     None is the answer for a definition whose own header the splitter cannot read, and for an
     abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
     all. An earlier version left that form out of the answer so the caller kept the name-keyed
@@ -569,11 +581,11 @@ def module_level_definition_stanzas(
         stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
         text = (text_between(procedure.header_start, stop).rstrip("\n")
                 + f"\nend {procedure.kind} {procedure.name}")
-        ops, _types, _ifaces, _errors = fortran_signatures.parse_interface_stanzas(text)
+        ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas(text)
         stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
         first = text.split("\n", 1)[0].strip()
         stanzas[name] = (fortran_signatures.stanza_line_list(stanza)
-                         if stanza and stanza[0] == first else None)
+                         if stanza and stanza[0] == first and not errors else None)
     return stanzas
 
 

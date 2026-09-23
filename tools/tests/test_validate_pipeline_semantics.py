@@ -19183,6 +19183,63 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(any("'hx__write_metrics_basis' in the pinned form" in v
                             for v in violations), violations)
 
+    _BLOCK_DECOY = ("    block\n"
+                    "      interface write(formatted)\n"
+                    "        subroutine hx__write_metrics_basis(entries, n)\n"
+                    "          import :: hx__h_named\n"
+                    "          type(hx__h_named), intent(in) :: entries(:)\n"
+                    "          integer,           intent(in) :: n\n"
+                    "        end subroutine hx__write_metrics_basis\n"
+                    "      end interface\n"
+                    "    end block\n")
+
+    def test_a_decoy_whose_header_reads_as_the_definitions_does_not_win(self) -> None:
+        # A READABLE definition header in another case, or behind a label, reads in the
+        # lowercased, label-stripped view exactly as the decoy's. That satisfied the first-line
+        # requirement, and the splitter kept the LAST stanza of the name, while its duplicate
+        # report was discarded (PR #279 round 3: 0 violations on origin/main and at 8a609220,
+        # `gfortran -fsyntax-only -std=f2008` rc=0). The published `n` drifts to `real(dp)`.
+        for label, header in (
+                ("upper case", "  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"),
+                ("labelled", "10 subroutine hx__write_metrics_basis(entries, n)\n")):
+            with self.subTest(label):
+                drifted = (header
+                           + "    type(hx__h_named), intent(in) :: entries(:)\n"
+                           "    real(dp),          intent(in) :: n\n"
+                           "    print *, n, size(entries)\n"
+                           + self._BLOCK_DECOY
+                           + "  end subroutine hx__write_metrics_basis\n")
+                violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+                named = [v for v in violations if "'hx__write_metrics_basis'" in v]
+                # ONE message for the name: a second, "no procedure of that name/header found",
+                # would contradict the first (round 3 mutant v3).
+                self.assertEqual(len(named), 1, violations)
+                self.assertIn("in the pinned form", named[0])
+                self.assertIn("a second header of the same name", named[0])
+
+    def test_each_definition_is_split_alone(self) -> None:
+        # The witness for the per-definition split, which no other row observes alone: with a
+        # readable upper-case definition that drifts and a lower-case DTIO decoy in ANOTHER
+        # procedure, a split over every definition's text together keeps the decoy (last wins)
+        # and passes the first-line requirement (PR #279 round 3: origin/main 0 violations).
+        # The decoy comes AFTER the definition: the splitter keeps the last stanza of a name.
+        drifted = ("  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"
+                   "    type(hx__h_named), intent(in) :: entries(:)\n"
+                   "    real(dp),          intent(in) :: n\n"
+                   "  end subroutine hx__write_metrics_basis\n"
+                   "  subroutine hx__other()\n"
+                   "    interface write(formatted)\n"
+                   "      subroutine hx__write_metrics_basis(entries, n)\n"
+                   "        import :: hx__h_named\n"
+                   "        type(hx__h_named), intent(in) :: entries(:)\n"
+                   "        integer,           intent(in) :: n\n"
+                   "      end subroutine hx__write_metrics_basis\n"
+                   "    end interface\n"
+                   "  end subroutine hx__other\n")
+        violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
+        self.assertTrue(any("'hx__write_metrics_basis' drifts from controlled_spec" in v
+                            for v in violations), violations)
+
     def test_a_contained_procedures_declarations_are_not_the_definitions(self) -> None:
         # The definition's stanza stops at its own `contains`. The whole-file splitter did not
         # stop there when the contained header carried a prefix it does not read, so the
