@@ -3582,6 +3582,43 @@ end program shallow_water2d_runner
             self.assertFalse(any("dependency DAG incomplete" in v for v in violations), violations)
             self.assertFalse(any("not issued for validation scope" in v for v in violations), violations)
 
+    def test_cross_pipeline_dependency_counts_only_for_the_dependents_target(self) -> None:
+        """Issue #284: a closure member completes the DAG of a pipeline built for the SAME
+        target only. The dependent is moved to a second target (the fixture tree re-targeted:
+        its target directory renamed and every path reference rewritten), so the target the
+        check asks about cannot coincide with the default one by accident."""
+        from tools.tests.target_fixtures import SECOND_TARGET, install_target_profile
+        second = SECOND_TARGET.target_id
+        for dep_target, want_flagged in ((second, False), (_TARGET_ID, True)):
+            with self.subTest(dep_target=dep_target), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text=self._XP_MODEL, runner_text=self._XP_RUNNER,
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                    dependency_resolved=dict(self._XP_DEP_RESOLVED),
+                )
+                install_target_profile(repo_root, SECOND_TARGET)
+                node_dir = repo_root / "workspace/pipelines/problem__shallow_water2d__0.3.0"
+                (node_dir / _TARGET_ID).rename(node_dir / second)
+                for path in (node_dir / second).rglob("*"):
+                    if path.is_file():
+                        text = path.read_text(encoding="utf-8", errors="strict")
+                        if f"/{_TARGET_ID}/" in text:
+                            path.write_text(text.replace(f"/{_TARGET_ID}/", f"/{second}/"),
+                                            encoding="utf-8")
+                self._seed_built_dep_pipeline(repo_root)
+                if dep_target != _TARGET_ID:
+                    dep_node = repo_root / "workspace/pipelines" / self._XP_DEP_SAFE
+                    (dep_node / _TARGET_ID).rename(dep_node / dep_target)
+                pipeline_root = node_dir / second / "shallow-water2d_20260415_001"
+                violations = validate(repo_root=repo_root, workspace_root="workspace",
+                                      pipeline_roots=[pipeline_root])
+                flagged = any("dependency DAG incomplete" in v for v in violations)
+                self.assertEqual(flagged, want_flagged, violations)
+
     def test_cross_pipeline_unbuilt_dependency_still_flagged(self) -> None:
         # Same token-less setup but the dependency has NO built pipeline anywhere -> the DAG
         # relaxation must NOT excuse it (a genuinely-missing dependency still fails).
