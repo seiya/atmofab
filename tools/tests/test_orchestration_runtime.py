@@ -3342,6 +3342,18 @@ shell_tool                       stable             true
         canonical = set(_canonical_mcp_audit_log_paths_for_request(req, out))
         self.assertIn(in_phase_log, canonical)
         self.assertIn(cross_log, canonical)
+        # Without the record-launch stamp, the build system is the TARGET's, read off the
+        # request's pipeline_ref (issue #284): the make-only cross-phase placement holds when
+        # the profile resolves and is dropped when it does not.
+        from tools.tests.target_fixtures import install_target_profile
+        bare = {k: v for k, v in req.items() if k != "_resolved_build_system"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.assertNotIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+                bare, out, repo_root=repo)))
+            install_target_profile(repo)
+            self.assertIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+                bare, out, repo_root=repo)))
 
     def test_build_launch_skips_cross_phase_log_for_non_make_toolchain(self) -> None:
         """Cross-phase canonical placement is Make-only.
@@ -6201,6 +6213,23 @@ shell_tool                       stable             true
                     "allowed_output_paths": ["workspace/random.json"],
                 },
             )
+
+    def test_allowed_output_paths_for_launch_promote_release_is_per_target(self) -> None:
+        """Issue #284: a release lives at `releases/<spec>/<target_id>/<release_id>/…`. The
+        target-level path is accepted, and a first segment that is not a target id (a store
+        id, which `is_target_id` refuses) is outside the contract."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        def _promote(path: str) -> list[str]:
+            return _allowed_output_paths_for_launch(request_payload={
+                "agent_model": "claude-opus-4-8", "agent_role": "step", "step": "promote",
+                "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF,
+                "node_key": "problem/dom.fam.spec_x@1.0", "allowed_output_paths": [path]})
+
+        good = f"releases/problem/dom/fam/spec_x/{_TP.target_id}/r_001/artifact.tar.gz"
+        self.assertEqual(_promote(good), [good])
+        with self.assertRaisesRegex(ValueError, "outside phase contract"):
+            _promote("releases/problem/dom/fam/spec_x/spec-x_20260101_001/r_001/a.tar.gz")
 
     def test_allowed_output_paths_for_launch_promote_rejects_cross_spec_release(self) -> None:
         """Regression: a promote agent for spec_x must NOT be allowed to write
@@ -21646,6 +21675,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
             self.assertEqual({s["filename"] for s in ex["sources"]},
                              {"adv_bndry_model.f90", "adv_bndry_runner.f90"})
+            # A sibling is certified per target (issue #284): no target, no exemplar.
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             # WHICH source directory the exemplar was read from (issue #250): the attempt
             # record names it, so an advisory input is traceable without being keyed.
             self.assertEqual(ex["source_ref"],

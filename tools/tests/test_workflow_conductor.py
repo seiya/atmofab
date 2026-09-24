@@ -1139,7 +1139,8 @@ class _FakeConductor(wc.Conductor):
                 captured[flag] = json.loads(args[args.index(flag) + 1])
         for flag in ("--node-key", "--step", "--agent-run-id", "--status",
                      "--from-phase", "--reason", "--trigger-agent-run-id",
-                     "--reserved-id", "--reason-code", "--reason-detail", "--severity"):
+                     "--reserved-id", "--reason-code", "--reason-detail", "--severity",
+                     "--target"):
             if flag in args:
                 captured[flag] = args[args.index(flag) + 1]
         if "--run-ids" in args:  # nargs="+": collect until the next --flag or end
@@ -6251,6 +6252,21 @@ class NodeAllocationTest(unittest.TestCase):
         self.assertEqual(refs.spec_path, "spec/component/spec_x")
         reserves = [cap for s, cap in c.calls if s == "reserve-phase-root"]
         self.assertEqual({cap["--step"] for cap in reserves}, {"compile", "generate"})
+        # A pipeline reservation names the conductor's target; the IR's does not (issue #284).
+        self.assertEqual({cap["--step"]: cap.get("--target") for cap in reserves},
+                         {"compile": None, "generate": _TARGET_ID})
+
+    def test_check_phase_certified_asks_for_the_conductors_target(self) -> None:
+        """Issue #284: the certification question names the target this conductor holds,
+        rather than leaving it to the orchestration's record (which may name another)."""
+        c = _FakeConductor(
+            repo_root=Path("/tmp/_conductor_nonexistent_repo"), orchestration_id="o",
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+        )
+        c.calls = []
+        c.check_phase_certified("component/spec_x@0.1.0", "generate")
+        (cap,) = [cap for s, cap in c.calls if s == "check-phase-certified"]
+        self.assertEqual(cap["--target"], _TARGET_ID)
 
 
     def test_prepare_node_adopts_the_latest_certified_ir_and_its_pipeline(self) -> None:

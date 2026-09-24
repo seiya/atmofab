@@ -8530,6 +8530,18 @@ end program shallow_water2d_runner
             self.assertTrue(
                 any("must use make_test/make_check for toolchain.language=fortran and toolchain.build_system=make" in v for v in violations)
             )
+            # The toolchain is the pipeline's TARGET's (issue #284): an IR declaring another one
+            # moves nothing (the fixture's IR agrees with the profile, so the row above alone
+            # cannot tell which of the two was read).
+            ir_path = (repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            ir_doc["impl_defaults"]["toolchain"] = {"language": "python", "build_system": "none"}
+            _write_json(ir_path, ir_doc)
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(
+                any("must use make_test/make_check for toolchain.language=fortran and toolchain.build_system=make" in v for v in violations)
+            )
 
     def test_rejects_make_quality_check_without_declared_test_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -22368,6 +22380,20 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._model(
             "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
             "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_the_fixed_layer_is_the_targets_not_the_irs(self) -> None:
+        """Issue #284: the class / backend / language the floor keys on are the pipeline's
+        TARGET's. An IR whose fixed layer contradicts the profile moves nothing, in both
+        directions (the default fixture writes the two in agreement, so it cannot tell them
+        apart)."""
+        claim = {"abstract": {"parallelization": "openmp"}}
+        ir_says_serial_gpu_c = {**claim, "target": {"class": "gpu", "backend": "serial"},
+                                "toolchain": {"language": "c"}}
+        self.assertEqual(len(self._run(self._COUNTED, impl=ir_says_serial_gpu_c)), 1)
+        ir_says_openmp_cpu = {**claim, "target": {"class": "cpu", "backend": "openmp"},
+                              "toolchain": {"language": "fortran"}}
+        self.assertEqual(self._run(self._COUNTED, backend="serial", impl=ir_says_openmp_cpu), [])
+        self.assertEqual(self._run(self._COUNTED, hw_class="gpu", impl=ir_says_openmp_cpu), [])
 
     def test_floor_needs_an_openmp_claim_specifically(self) -> None:
         """The claim must name OPENMP, not merely some parallelism.

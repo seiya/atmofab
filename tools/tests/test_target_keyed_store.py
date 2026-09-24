@@ -15,8 +15,23 @@ What each class pins:
   `pipeline_ref` carries it.
 - `ClaimKeyTests` — the start claim is per spec AND target.
 - `ConductorReadsTheTargetTests` / `ValidatorReadsTheTargetTests` / `RunnerRenderTargetTests` —
-  the host reads the toolchain, the fixed layer a generate producer is shown, the pipeline a
-  validator stage accepts and the runner's perf record off the target, never off the IR.
+  the host reads the toolchain, the fixed layer a generate producer is shown, the exemplar, the
+  pipeline a validator stage accepts and the runner's perf record off the target, never off
+  the IR.
+- `EveryStageRefusesAnUnresolvableTargetTests` — the resolve check is wired into post_generate,
+  post_build and the execution stages.
+- `LoaderRefusesAStoreIdTests` — the loader and the shape check refuse a store-id-shaped id.
+- `ValidatorToolchainReadsTests` — the m3c language and the tamper gate's build-graph
+  toolchain are the target's, driven with an IR that contradicts it.
+- `WorkspaceLayoutTargetLayerTests` — `validate_workspace_root` accepts the target layer and
+  checks the pipeline ids beneath it.
+
+Round 0's mutation sweep over this branch found these rows missing; the rows elsewhere it
+added are in `test_run_workflow` (claim keys at the closure driver's two sites, the host
+probes), `test_workflow_conductor` (`--target` on the reservation and the certification
+question), `test_orchestration_runtime` (the per-target release path, the audit-log build
+system, no exemplar without a target) and `test_validate_pipeline_semantics` (the OpenMP
+floor's and the quality-check commands' toolchain).
 """
 
 from __future__ import annotations
@@ -287,6 +302,33 @@ class ReservationAndLaunchRefTests(unittest.TestCase):
                 ort._reserved_pipeline_dir(repo, res_dir),
                 repo / pipe_ref(_SAFE, "spec-x_20260101_001"))
 
+    def test_the_cli_carries_the_target(self) -> None:
+        """The conductor reaches both functions through `orchestration_runtime.main`; the
+        rows above call them directly, so the flag's wiring is pinned here."""
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _preflight(repo)
+            base = ["--repo-root", str(repo), "--orchestration-id", "o1", "--node-key", _NK]
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = ort.main(["reserve-phase-root", *base, "--step", "generate",
+                               "--reserved-id", "spec-x_20260101_001",
+                               "--reserved-by-agent-run-id", "arid",
+                               "--target", FORTRAN_CPU.target_id])
+            self.assertEqual(rc, 0)
+            res = json.loads((repo / "workspace/orchestrations/o1/reservations" / _SAFE
+                              / "generate.json").read_text(encoding="utf-8"))
+            self.assertEqual(res["target_id"], FORTRAN_CPU.target_id)
+            # An undeclared --target on check-phase-certified is refused with exit 1 (the
+            # profile is loaded whenever the flag is given, Compile included).
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = ort.main(["check-phase-certified", *base, "--step", "compile",
+                               "--no-record", "--target", "no_such_target"])
+            self.assertEqual(rc, 1)
+            self.assertIn("no_such_target", err.getvalue())
+
     def test_a_reservation_without_a_target_names_no_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -368,6 +410,17 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
                 "backend": FORTRAN_CPU.parallel_backend})
             self.assertEqual(refs.pipeline_ref, pipe_ref(_SAFE, "spec-x_20260101_001"))
 
+    def test_the_exemplar_is_selected_for_the_conductors_target(self) -> None:
+        """Without the target the selector offers nothing (a sibling is certified per
+        target), so a conductor that stopped passing it would silently lose every exemplar."""
+        from unittest import mock
+        with mock.patch("tools.orchestration_runtime._resolve_exemplar_source",
+                        autospec=True, return_value={"node_key": "x"}) as select:
+            c = self._conductor(Path("/nonexistent"))
+            self.assertEqual(c._resolve_exemplar(self._refs()), {"node_key": "x"})
+        select.assert_called_once_with(Path("/nonexistent"), self._refs().ir_ref,
+                                       target=FORTRAN_CPU)
+
     def test_the_generate_producer_is_shown_the_profiles_fixed_layer(self) -> None:
         c = self._conductor(Path("/nonexistent"))
         ir = {"impl_defaults": {
@@ -418,6 +471,151 @@ class ValidatorReadsTheTargetTests(unittest.TestCase):
             vps._validate_pipeline_targets_resolve(repo, [known, unknown], violations)
             self.assertEqual(len(violations), 1)
             self.assertIn("not_declared", violations[0])
+
+
+class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
+    """`_validate_pipeline_targets_resolve` is WIRED into each stage that reads the target —
+    the function's own row above does not see a stage that stops calling it. Each stage is
+    driven on a pipeline whose store coordinate names a target no profile declares."""
+
+    _REFUSAL = "the target this pipeline was built for does not resolve"
+
+    def _undeclared_pipeline(self, repo: Path) -> str:
+        ref = pipe_ref(_SAFE, "spec-x_20260101_001", "not_declared")
+        (repo / ref).mkdir(parents=True)
+        return ref
+
+    def test_post_generate(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            ref = self._undeclared_pipeline(repo)
+            violations = vps._validate_post_generate_stage_impl(repo, "workspace", ref, None)
+            self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
+
+    def test_post_build(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            ref = self._undeclared_pipeline(repo)
+            violations = vps._validate_post_build_stage_impl(repo, "workspace", ref, None)
+            self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
+
+    def test_the_execution_stages(self) -> None:
+        """`_validate_impl` (post_execute / pre_judge / the full run): a real execution tree
+        whose target profile is then removed from the repository."""
+        import tools.validate_pipeline_semantics as vps
+        from tools.tests.test_validate_pipeline_semantics import (
+            _create_minimal_execution_tree,
+            _seed_shape_expr_schema_into,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _seed_shape_expr_schema_into(repo)
+            _create_minimal_execution_tree(
+                repo, dep_spec_id="dep_a",
+                model_text="module shallow_water2d_model\nend module shallow_water2d_model\n",
+                runner_text="program r\nend program r\n",
+                run_command=["./simulate"])
+            profile = repo / tp.TARGETS_DIR / f"{FORTRAN_CPU.target_id}{tp.TARGET_PROFILE_SUFFIX}"
+            self.assertTrue(profile.is_file())  # the fixture declared it; the row removes it
+            self.assertFalse(any(self._REFUSAL in v for v in vps.validate(
+                repo_root=repo, workspace_root="workspace")))
+            profile.unlink()
+            violations = vps.validate(repo_root=repo, workspace_root="workspace")
+            self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
+
+
+class LoaderRefusesAStoreIdTests(unittest.TestCase):
+    """A target id can never be spelled as a store id, or `<safe>/<target_id>/` and a
+    pre-target `<safe>/<pipeline_id>/` could not be told apart. `list_target_ids` refuses it;
+    so do the loader and the shape check, which a caller naming the id reaches directly."""
+
+    _STORE_SHAPED = "specx_20260101_001"
+
+    def test_the_probe_is_target_shaped_and_store_shaped(self) -> None:
+        # FULL matches: the probe must sit in the overlap, or the rows below observe nothing.
+        self.assertIsNotNone(tp.TARGET_ID_PATTERN.fullmatch(self._STORE_SHAPED))
+        self.assertIsNotNone(tp.STORE_ID_PATTERN.fullmatch(self._STORE_SHAPED))
+
+    def test_load_refuses_it(self) -> None:
+        import yaml
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            doc = {**FORTRAN_CPU.doc, "target_id": self._STORE_SHAPED}
+            path = repo / tp.TARGETS_DIR / f"{self._STORE_SHAPED}{tp.TARGET_PROFILE_SUFFIX}"
+            path.parent.mkdir(parents=True)
+            path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            with self.assertRaisesRegex(tp.TargetProfileError, "store id"):
+                tp.load_target_profile(repo, self._STORE_SHAPED)
+
+    def test_the_shape_check_refuses_it(self) -> None:
+        doc = {**FORTRAN_CPU.doc, "target_id": self._STORE_SHAPED}
+        self.assertTrue(any("store id" in v for v in tp._shape_violations(doc)),
+                        tp._shape_violations(doc))
+        self.assertFalse(any("target_id" in v for v in tp._shape_violations(FORTRAN_CPU.doc)))
+
+
+class ValidatorToolchainReadsTests(unittest.TestCase):
+    """Validator reads whose inputs agree in every other fixture (the IR's toolchain equals
+    the profile's there), driven with an IR that CONTRADICTS the target."""
+
+    def _pipeline_with_ir(self, repo: Path, ir: dict) -> Path:
+        import yaml
+        install_target_profile(repo)
+        ir_ref = f"workspace/ir/{_SAFE}/spec-x_20260101_001"
+        (repo / ir_ref).mkdir(parents=True)
+        (repo / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        pipe = repo / pipe_ref(_SAFE, "spec-x_20260101_001")
+        pipe.mkdir(parents=True)
+        (pipe / "lineage.json").write_text(json.dumps({"node_key": _NK, "ir_ref": ir_ref}),
+                                           encoding="utf-8")
+        return pipe
+
+    def test_the_m3c_language_is_the_targets(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        ir = {"meta": {"spec_kind": "component", "spec_id": "spec_x"},
+              "impl_defaults": {"toolchain": {"language": "c", "build_system": "cmake"}},
+              "dependency": {"direct_deps": [
+                  {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            pipe = self._pipeline_with_ir(repo, ir)
+            execution = vps._stub_execution(pipe, _NK)
+            self.assertEqual(vps._execution_m3c_language(repo, execution),
+                             FORTRAN_CPU.toolchain["language"])
+
+    def test_the_gate_build_graph_toolchain_is_the_targets(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        from tools.tests.target_fixtures import profile_with
+        target = profile_with(toolchain={"standard": "f2018", "compiler": "xfc"},
+                              parallel={"backend": "serial"})
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._pipeline_with_ir(repo, {"impl_defaults": {
+                "toolchain": {"language": "c", "standard": "c99", "build_system": "cmake"},
+                "target": {"backend": "openmp"}}})
+            toolchain, _closure, _edges = vps._pure_gate_build_graph_inputs(
+                repo, f"workspace/ir/{_SAFE}/spec-x_20260101_001", _NK, target)
+            self.assertEqual(toolchain, {
+                "language": target.toolchain["language"], "standard": "f2018",
+                "build_system": target.toolchain["build_system"], "backend": "serial",
+                "compiler": "xfc"})
+
+
+class WorkspaceLayoutTargetLayerTests(unittest.TestCase):
+    def test_the_target_layer_is_accepted_and_its_pipeline_ids_are_checked(self) -> None:
+        from tools.validate_workspace_root import _scan_workspace_layout
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            (ws / pipe_ref(_SAFE, "spec-x_20260101_001").split("workspace/", 1)[1]).mkdir(
+                parents=True)
+            self.assertEqual(_scan_workspace_layout(ws), [])
+            bad = ws / "pipelines" / _SAFE / FORTRAN_CPU.target_id / "Not_A_Store_Id"
+            bad.mkdir()
+            violations = _scan_workspace_layout(ws)
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("Not_A_Store_Id", violations[0])
 
 
 class RunnerRenderTargetTests(unittest.TestCase):

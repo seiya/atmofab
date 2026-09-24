@@ -4117,6 +4117,48 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn(target, payload.get("detail", ""))
         self.assertEqual(payload.get("docs_ref"), "docs/RUNBOOK.md#0-1")
 
+    def test_the_host_probes_are_asked_about_the_invocations_target(self) -> None:
+        """Issue #284: the launch's host probes answer for `--target`'s profile. The presence
+        probe, the `required` list of its refusal and the version probe each take it."""
+        from unittest import mock
+
+        from tools.host_prerequisites import resolve_launch_axis_selection
+        seen: list[object] = []
+        with mock.patch.object(run_workflow, "_check_required_host_tools",
+                               side_effect=lambda requested=None: seen.append(requested) or ["x"]), \
+                mock.patch.object(run_workflow, "_host_probe_selection",
+                                  wraps=run_workflow._host_probe_selection) as selection, \
+                mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
+                redirect_stdout(io.StringIO()):
+            code = run_workflow.main([
+                "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                "--target", _TP_RW.target_id])
+        self.assertEqual(code, 2)
+        self.assertEqual(seen, [_TP_RW.target_id])
+        selection.assert_called_with(_TP_RW.target_id)
+
+        class _Stop(Exception):
+            pass
+
+        asked: list[object] = []
+
+        def versions_probe(requested=None):
+            asked.append(requested)
+            raise _Stop
+        with mock.patch.object(run_workflow, "_check_required_host_tools", return_value=[]), \
+                mock.patch.object(run_workflow, "_check_host_tool_versions",
+                                  side_effect=versions_probe), \
+                mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
+                redirect_stdout(io.StringIO()), self.assertRaises(_Stop):
+            run_workflow.main(["spec/problem/dummy.md", "Compile", "--stdout-format",
+                               "jsonl", "--target", _TP_RW.target_id])
+        self.assertEqual(asked, [_TP_RW.target_id])
+        # The version probe, driven directly: it asks the registry about that selection.
+        with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
+                        autospec=True, return_value=[]) as versions:
+            self.assertEqual(run_workflow._check_host_tool_versions(_TP_RW.target_id), [])
+        versions.assert_called_once_with(resolve_launch_axis_selection(_TP_RW))
+
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
         separator change cannot drift away from what an operator is told to install."""
@@ -5510,6 +5552,61 @@ class DependencyClosureTests(unittest.TestCase):
             rerun = [e for e in fail["dependency_runs"] if not e["skipped"]][0]
             self.assertEqual(rerun["rerun_reason"],
                              {"failed_stage": "pipeline_ref", "detail": "fake: stale binding"})
+
+    def test_every_cold_spec_claim_of_a_closure_is_per_target(self) -> None:
+        """Issue #284: the start claim is `(spec_ref, target_id)` — at the dependency-node
+        claim AND the target-node claim of the closure driver, each a site of its own. Nothing
+        is certified, so every node is run cold (through a fake `_run_node`) and claims."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+            keys: list[str] = []
+            real_claim = run_workflow._exclusive_claim
+
+            def recording_claim(root, kind, key, **kw):
+                if kind == "spec":
+                    keys.append(key)
+                return real_claim(root, kind, key, **kw)
+
+            orig_claim, orig_run = run_workflow._exclusive_claim, run_workflow._run_node
+            orig_ready = run_workflow._dependency_node_readiness
+            run_workflow._exclusive_claim = recording_claim  # type: ignore[assignment]
+            # Ready only AFTER the fake run, so the driver neither skips a node nor refuses
+            # one it has just run.
+            ran: set[str] = set()
+            def ready(root, node, stages, target_profile=None):
+                ok = node["spec_ref"] in ran
+                return {"ready": ok, "version": node["spec_versions"][0],
+                        "failed_stage": None if ok else "ir_ref",
+                        "detail": None if ok else "fake: not run yet"}
+            run_workflow._dependency_node_readiness = ready  # type: ignore[assignment]
+            try:
+                def run_node(**kw):
+                    ran.add(kw.get("spec_ref"))
+                    return 0
+                run_workflow._run_node = run_node  # type: ignore[assignment]
+                with redirect_stdout(io.StringIO()):
+                    run_workflow._run_with_dependency_closure(
+                        repo_root=repo_root,
+                        base_env={"PATH": os.environ.get("PATH", "")},
+                        target_orchestration_id="orch_target",
+                        target_spec_ref="spec/problem/a",
+                        target_source_dependency_ref="spec/problem/a/deps.yaml",
+                        until_phase="Validate", llm="claude", llm_command="claude",
+                        llm_config=_sample_config("claude"), workflow_mode="dev",
+                        agent_model=None, status="running", run_conductor=False,
+                        stdout_format="jsonl", target_profile=_TP_RW)
+            finally:
+                run_workflow._exclusive_claim = orig_claim  # type: ignore[assignment]
+                run_workflow._run_node = orig_run  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready  # type: ignore[assignment]
+            self.assertIn(run_workflow._spec_claim_key("spec/problem/a", _TP_RW), keys)
+            dep_keys = [k for k in keys if not k.startswith("spec/problem/a")]
+            self.assertTrue(dep_keys, keys)  # the dependency-node site was reached
+            self.assertEqual(keys, [k.split("#", 1)[0] + f"#{_TP_RW.target_id}" for k in keys])
 
     def _seed_certified_node(self, repo_root: Path, kind: str, sid: str, version: str, *,
                              dep_body: str | None = None) -> dict[str, str]:
