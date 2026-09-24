@@ -18874,6 +18874,33 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertIsNone(vmeta["last_fail_reason"])
             self.assertTrue(vmeta["judge_command_ref"].endswith("/semantic_review.json"))
 
+    def test_author_derived_dependency_set_records_the_targets_harness(self) -> None:
+        """`aggregate_verdict.json#dependency_set` is the pipeline closure (issue #284): the
+        sidecar lists no harness since R4-a PR-3, so the record carries it only through
+        `_pipeline_dependency_block` — the verdict-5 reason. Round 1 measured that dropping that
+        call survived every file that exercises the author; a record missing the harness is a
+        false record of what the pipeline was built against."""
+        import tempfile
+        from unittest import mock
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo, target=FORTRAN_CPU)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            ir_dir = repo / refs.ir_ref
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "dependency_graph.json").write_text(json.dumps({
+                "node_key": refs.node_key,
+                "all_nodes": [{"node_key": refs.node_key, "topo_level": 0}],
+                "generated_by": "conductor"}), encoding="utf-8")
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[]):
+                c._author_derived_validate_artifacts(refs)
+            agg = json.loads((repo / refs.run_node_dir() / "aggregate_verdict.json").read_text())
+            self.assertEqual(
+                agg["dependency_set"],
+                [f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}"])
+
     def test_author_derived_all_xfail_self_verdict(self) -> None:
         import tempfile
         from unittest import mock
