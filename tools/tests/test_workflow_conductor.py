@@ -49,6 +49,7 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
+from tools.tests.target_fixtures import SECOND_TARGET
 
 # One repo root per test PROCESS, for the conductors below that need a path and build no
 # directory of their own. It was the literal `/tmp/repo`, which concurrent processes shared:
@@ -18698,10 +18699,10 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     of its own — issue #176 deleted the warm-resume mini-loop that consumed `warm_resume`, so
     both graded classes write `fail_closed` on either path."""
 
-    def _conductor(self, repo: Path) -> "wc.Conductor":
+    def _conductor(self, repo: Path, target: object = None) -> "wc.Conductor":
         return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
-                            llm_config=_cfg("claude"), env={})
+                            llm_config=_cfg("claude"), env={}, target_profile=target)
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
@@ -18804,7 +18805,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         from unittest import mock
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
-            c = self._conductor(repo)
+            # The SECOND target (issue #284), so a constant default id cannot stand in for
+            # the conductor's own.
+            c = self._conductor(repo, SECOND_TARGET)
             self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
             self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
             # display verdict comes from the resolved fact; blocking uses the readiness predicate.
@@ -18830,7 +18833,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertTrue(agg["dependency_nodes"][0]["ready"])
             # Readiness is asked for the RUN's target (issue #284): a dependency validated for
             # another target does not make this one's closure ready.
-            ready.assert_called_once_with(repo, "component/dep", _TARGET_ID)
+            ready.assert_called_once_with(repo, "component/dep", SECOND_TARGET.target_id)
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["total"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
@@ -19169,8 +19172,8 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             self._seed_ir_closure(repo, refs, ["component/base@0.1.0", "component/mid@0.2.0"])
-            c = self._conductor(repo)
-            with self._patch_closure_validated(lambda repo_root, tok, target_id: target_id == _TARGET_ID):
+            c = self._conductor(repo, SECOND_TARGET)
+            with self._patch_closure_validated(lambda repo_root, tok, target_id: target_id == SECOND_TARGET.target_id):
                 self.assertIsNone(c._judge_pre_spawn_dag_block(refs))
 
     def test_pre_spawn_multi_node_incomplete_blocks(self) -> None:
@@ -19178,11 +19181,11 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             self._seed_ir_closure(repo, refs, ["component/base@0.1.0", "component/mid@0.2.0"])
-            c = self._conductor(repo)
+            c = self._conductor(repo, SECOND_TARGET)
             # base ready, mid not -> block, and the excerpt names the missing normalized token.
             with self._patch_closure_validated(
                     lambda repo_root, tok, target_id: (tok == "component/base"
-                                                         and target_id == _TARGET_ID)):
+                                                         and target_id == SECOND_TARGET.target_id)):
                 block = c._judge_pre_spawn_dag_block(refs)
             self.assertIsInstance(block, str)
             self.assertIn("component/mid", block)
