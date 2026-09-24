@@ -214,8 +214,10 @@ PINNED_RENDER: dict[str, str] = {
     # file's `-fopenmp` follows the profile's `parallel.backend` for every node — the
     # `infrastructure` harness included, whose IRs said `serial` — and the runner's perf record
     # takes the profile's hardware class and threads per rank instead of the IR's `target.class`
-    # and `backend_overrides.openmp.num_threads`.
-    "render-4": "b8073e1d05f0e6eb0ec0cecc53532f097665839cc2c38d85004a019110edad04",
+    # and `backend_overrides.openmp.num_threads`. Re-pinned within PR-2's review (round 1),
+    # behaviour-preserving: the Makefile writer's docstring now states the measured IR counts
+    # its rationale rests on; no emitted byte changed.
+    "render-4": "f62c13ef61df64e16eccf09f0ec8e4f36b57631e26510ef2369731a25216cee6",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

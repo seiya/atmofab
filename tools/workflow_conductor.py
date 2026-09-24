@@ -5754,12 +5754,15 @@ class Conductor:
         Imposes `BIN ?= <spec_id>_runner` (overridable so Build/Validate.execute can pin the
         canonical binary name) and FFLAGS derived from the profile's toolchain.standard +
         parallel.backend. The backend is the TARGET's for every node, the `infrastructure`
-        harness included: until R4-a PR-2 it was each IR's `target.backend`, which four harness
-        IRs declared `serial` while every physics node declared `openmp`, so one executable
-        linked objects compiled under two flag sets. The harness IRs all say
-        `parallelization: none`, so the flag adds no directive; two harness pipelines already
-        built and passed Validate with it (`harness-fortran-cpu_20260917_001`,
-        `harness-fortran-cpu_20260919_001`; measured 2026-09-24 in `workspace/pipelines/`).
+        harness included: until R4-a PR-2 it was each IR's `target.backend`, so a harness IR
+        declaring `serial` compiled its objects without the flag its consumers' objects, linked
+        into the same executable, were compiled with. Measured 2026-09-24 over the 124
+        `workspace/ir/**/spec.ir.yaml`: 4 declare `serial`, all of them harness IRs of
+        2026-09-17/18, and 120 declare `openmp`. The flag enables the directives a source
+        carries and adds none; the harness IRs of 2026-09-17..19 claim
+        `abstract.parallelization: none`, and two harness pipelines built with the flag
+        passed Validate (`harness-fortran-cpu_20260917_001`,
+        `harness-fortran-cpu_20260919_001`, both under `workspace/pipelines/`).
 
         A non-empty dependency closure (Model B, docs/design) emits per-dep object rules +
         a `DEP_OBJS` link list; the conductor stages each `<dep>_model.f90` into `$(OBJDIR)`
