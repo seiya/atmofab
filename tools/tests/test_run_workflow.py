@@ -4159,6 +4159,17 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(run_workflow._check_host_tool_versions(_TP_RW.target_id), [])
         versions.assert_called_once_with(resolve_launch_axis_selection(_TP_RW))
 
+    def test_the_probe_resolves_the_requested_target(self) -> None:
+        """`_host_probe_selection(requested)` asks `select_target_id` for THAT target. With one
+        declared profile the default resolves to the same id, so the row observes the
+        argument rather than the answer."""
+        from unittest import mock
+        root = Path(run_workflow.__file__).resolve().parent.parent
+        with mock.patch.object(run_workflow, "select_target_id", autospec=True,
+                               return_value=_TP_RW.target_id) as select:
+            self.assertIsNotNone(run_workflow._host_probe_selection("some_target"))
+        select.assert_called_once_with(root, "some_target")
+
     def test_a_profile_the_launch_gate_refuses_is_not_probed(self) -> None:
         """A `--target` whose language the registry does not implement is the launch gate's
         structured refusal (`target_profile_violations`), a few steps on. Probing it first
