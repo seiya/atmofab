@@ -488,6 +488,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             # Target-free since R4-a PR-3 (issue #284): the IR and its sidecar carry no harness;
             # the pipeline closure adds the target's, which the catalog resolves.
             (ir_dir / "spec.ir.yaml").write_text(
+                "meta:\n  spec_kind: problem\n"
                 "dependency:\n"
                 f'  node_key: "{ADV}"\n'
                 "  direct_deps:\n"
