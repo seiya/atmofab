@@ -16,12 +16,12 @@
       "std": {
         "type": "string",
         "default": "f2008",
-        "description": "Language standard from impl_defaults.toolchain.standard."
+        "description": "Language standard from the target profile's toolchain.standard."
       },
       "openmp": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the adapter's OpenMP flag (target.backend=openmp)."
+        "description": "Enable the adapter's OpenMP flag (the target profile's parallel.backend=openmp)."
       },
       "sources": {
         "type": "array",

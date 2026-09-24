@@ -17,6 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.target_profile import is_target_id
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from tools.target_profile import is_target_id
+
 
 # Adv-17: TTL beyond which a "running" orchestration is considered stale
 # (presumed crashed / abandoned without writing a terminal status). After
@@ -968,6 +976,20 @@ def _scan_workspace_layout(workspace_root: Path) -> list[str]:
 
             for id_dir in sorted(node_safe_dir.iterdir()):
                 if not id_dir.is_dir():
+                    continue
+                # A pipeline lives one level deeper, under the target it is built for:
+                # `pipelines/<node_key_safe>/<target_id>/<pipeline_id>` (issue #284). A store id
+                # directly under `<node_key_safe>/` is a pre-R4-a pipeline, which no run
+                # selects any more (only the audit tool still reports an old orchestration's
+                # own pipelines, docs/RUNBOOK.md); it is tolerated here so a workspace that
+                # still holds one keeps validating.
+                if stage_root_name == "pipelines" and is_target_id(id_dir.name):
+                    for pipe_dir in sorted(id_dir.iterdir()):
+                        if pipe_dir.is_dir() and not SLUG_DATE_SEQ3_PATTERN.match(pipe_dir.name):
+                            violations.append(
+                                f"{pipe_dir}: invalid pipelines id directory name; expected "
+                                "<slug>_<YYYYMMDD>_<seq3>"
+                            )
                     continue
                 if not SLUG_DATE_SEQ3_PATTERN.match(id_dir.name):
                     violations.append(

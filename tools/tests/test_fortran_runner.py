@@ -37,6 +37,7 @@ from tools.backends.language.fortran.runner import (
 )
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
+from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -587,7 +588,7 @@ _CHECKS_STUB = textwrap.dedent("""\
 
 class RenderShapeTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        self.txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_program_and_uses(self) -> None:
         self.assertIn(f"program {BOUNDARY_SID}_runner", self.txt)
@@ -641,7 +642,7 @@ class RenderShapeTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("    sb_orphan_r1 => orphan_r1", txt)
         self.assertIn("    harness_fortran_cpu__emit_array_r1, &", txt)
         self.assertIn("    allocate(out(5))", txt)
@@ -751,7 +752,7 @@ class MultiTargetMetricsBasisTest(unittest.TestCase):
         return ir
 
     def setUp(self) -> None:
-        self.txt = render_runner(self._multi_target_ir(), BOUNDARY_SID, HARNESS)
+        self.txt = render_runner(self._multi_target_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_entry_count_is_the_product(self) -> None:
         # 2 (multi-target test) + 1 + 1 = 4 rows, NOT 3 (one per test).
@@ -784,7 +785,7 @@ class MultiTargetMetricsBasisTest(unittest.TestCase):
 
     def test_single_target_rows_still_carry_case_id(self) -> None:
         # No special case: a 1:1 test is just a 1-row slice of the same product.
-        txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("allocate(mb_entries(3))", txt)
         self.assertEqual(txt.count("%case_id = &"), 3)
 
@@ -795,20 +796,26 @@ class MultiTargetMetricsBasisTest(unittest.TestCase):
 
 class DeterminismTest(unittest.TestCase):
     def test_byte_identical(self) -> None:
-        a = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
-        b = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        a = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        b = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertEqual(a, b)
 
 
 class MetricsRenderTest(unittest.TestCase):
     def test_metric_compute_rendered(self) -> None:
-        txt = render_runner(_metrics_ir(), "prob_x", HARNESS)
+        txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("call metric_compute(trim(case_ids(ci)), 'error.l2',", txt)
         self.assertIn("call metric_compute(trim(case_ids(ci)), 'error.linf',", txt)
         self.assertIn("allocate(case_metrics(2))", txt)
         self.assertIn("results(ci)%metrics = case_metrics(1:mcount)", txt)
-        # threads flow through to perf (num_threads=4)
-        self.assertIn("walltime, 1, 4, 0)", txt)
+        # The TARGET's threads per rank flow through to perf (issue #284) — not the IR's
+        # `backend_overrides.openmp.num_threads` (4 here), which nothing runs with.
+        self.assertIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", txt)
+        other = {**_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7},
+                 "hardware": {"class": "gpu", "architecture": "a"}}
+        other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other)
+        self.assertIn("walltime, 1, 7, 0)", other_txt)
+        self.assertIn("'gpu', &", other_txt)
         # rank-1 snapshot var -> bound `sb_u` + emit_array_r1
         self.assertIn("    sb_u => u", txt)
         self.assertIn("harness_fortran_cpu__emit_array_r1(sb_u))", txt)
@@ -820,7 +827,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         mutate(ir)
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_rank_over_4(self) -> None:
         self._expect(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
@@ -844,7 +851,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
 
     def test_over_long_spec_id(self) -> None:
         with self.assertRaises(RenderError):
-            render_runner(_boundary_ir(), "z" * 56, HARNESS)
+            render_runner(_boundary_ir(), "z" * 56, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_required_raw_not_in_schema(self) -> None:
         self._expect(lambda ir: ir["io_contract"]["test_evidence_requirements"][0]
@@ -874,12 +881,12 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 61)
         with self.assertRaises(RenderError) as cm:
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("exceeds the 63-char identifier limit", str(cm.exception))
         # A long name that fits every rendered line takes the wrapped rename form.
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 50)
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("    sb_" + "f" * 50 + " => &\n      " + "f" * 50 + ", &", txt)
 
     def test_snapshot_variables_that_fold_to_one_identifier_are_refused(self) -> None:
@@ -911,7 +918,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         self.assertEqual(len(exact), CASE_ID_LEN)
         ir["case"]["test_case_set"][0]["case_id"] = exact
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [exact]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         # the id reaches the metrics-basis lookup literal (no per-case `select case` exists
         # since every case captures the full state)
         self.assertIn(f"    '{exact}')", txt)
@@ -966,7 +973,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [ok]
-        self.assertIn(f"    '{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))
+        self.assertIn(f"    '{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc))
 
     def test_non_ascii_in_name_fails_closed(self) -> None:
         # Fortran's default character kind counts BYTES; `CASE_ID_LEN` and the 100-column
@@ -985,7 +992,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_metrics_ir())
         ir["io_contract"]["diagnostics_contract"]["metrics"] = ["error.ℓ2"]
         with self.assertRaisesRegex(RenderError, "outside printable ASCII"):
-            render_runner(ir, "prob_x", HARNESS)
+            render_runner(ir, "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_extreme_name_length_fails_closed(self) -> None:
         # A pathologically long name pushes a rendered line past the 100-col lint limit; since
@@ -995,7 +1002,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         with self.assertRaisesRegex(RenderError, "reaches the 100-column lint limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
 
 def _over_long_case_id_mut(ir: dict) -> None:
@@ -1080,7 +1087,7 @@ class IrContentViolationsTest(unittest.TestCase):
                     mutate(ir)
                 # Sanity: every table row is a genuine render fail-close.
                 with self.assertRaises(RenderError):
-                    render_runner(ir, spec_id, HARNESS)
+                    render_runner(ir, spec_id, HARNESS, target=_TARGET_PROFILE.doc)
                 v = ir_content_violations(ir, spec_id, HARNESS)
                 if is_identity:
                     self.assertEqual(v, [], f"{label}: identity defect must be excluded")
@@ -1208,7 +1215,7 @@ class DerivedNameLengthTest(unittest.TestCase):
         ir = _boundary_ir()
         long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_metrics_basis") + 1)
         with self.assertRaises(RenderError) as ctx:
-            render_runner(ir, BOUNDARY_SID, long_harness)
+            render_runner(ir, BOUNDARY_SID, long_harness, target=_TARGET_PROFILE.doc)
         # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
         # it rather than routing it to a re-author that cannot change it.
         self.assertTrue(ctx.exception.identity)
@@ -1225,7 +1232,7 @@ class LineWidthTest(unittest.TestCase):
     def test_long_metric_address_wraps(self) -> None:
         ir = _metrics_ir()
         ir["io_contract"]["diagnostics_contract"]["metrics"] = ["convergence.observed_order.l2"]
-        txt = render_runner(ir, "prob_x", HARNESS)
+        txt = render_runner(ir, "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 100)
         # the metric_compute call is wrapped (address on the header, out-args on the next line)
         self.assertIn("'convergence.observed_order.l2', &", txt)
@@ -1236,7 +1243,7 @@ class LineWidthTest(unittest.TestCase):
         # valid two-guard-case node into an unrepairable fail_closed.
         ir = _boundary_ir()
         ir["io_contract"]["test_predicates"][1]["expected_outcome"] = "xfail"
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 100)
         self.assertIn(".or. &", txt)  # the two-term expression rendered as a continuation
         self.assertIn("== 'l0_periodic_y_wrap_pass'", txt)
@@ -1248,7 +1255,7 @@ class LineWidthTest(unittest.TestCase):
         ir["io_contract"]["test_evidence_requirements"][0]["test_id"] = long_id
         ir["io_contract"]["test_predicates"][0]["test_id"] = long_id
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [long_id]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 100)
 
     def test_max_length_check_id_wraps_within_limit(self) -> None:
@@ -1257,7 +1264,7 @@ class LineWidthTest(unittest.TestCase):
         ir = _boundary_ir()
         long_check = "c" * CASE_ID_LEN  # 64
         ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": long_check}]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 100)
         self.assertIn(f"      '{long_check}', cstatus)", txt)
 
@@ -1267,7 +1274,7 @@ class LineWidthTest(unittest.TestCase):
         ir = _boundary_ir()
         ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "c" * (CASE_ID_LEN + 1)}]
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_apostrophe_check_id_escaping_to_the_lint_bound_is_render_error(self) -> None:
         # A raw-<=64 id whose Fortran apostrophe-doubling expands the `case_checks(k)%id = '<lit>'`
@@ -1278,10 +1285,10 @@ class LineWidthTest(unittest.TestCase):
         ir = _boundary_ir()
         ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "a" * 54 + "'" * 10}]
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         # One fewer apostrophe (98 cols) renders cleanly and stays within the limit.
         ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "a" * 54 + "'" * 9}]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 99)
 
     def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
@@ -1299,7 +1306,7 @@ class LineWidthTest(unittest.TestCase):
             r["required_raw_variables"] = [
                 name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
         with self.assertRaises(RenderError) as cm:
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("reaches the 100-column lint limit (100 columns", str(cm.exception))
         # one char shorter renders, and every line is at most 99 wide
         ir2 = copy.deepcopy(ir)
@@ -1309,7 +1316,7 @@ class LineWidthTest(unittest.TestCase):
         for r in ir2["io_contract"]["test_evidence_requirements"]:
             r["required_raw_variables"] = [
                 name[:-1] if x == name else x for x in r["required_raw_variables"]]
-        self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS)), 99)
+        self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)), 99)
 
 
 class FortranLiteralEscapingTest(unittest.TestCase):
@@ -1323,7 +1330,7 @@ class FortranLiteralEscapingTest(unittest.TestCase):
         ir = _boundary_ir()
         ir["io_contract"]["test_evidence_requirements"][0]["test_id"] = "l0_x'wrap"
         ir["io_contract"]["test_predicates"][0]["test_id"] = "l0_x'wrap"
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("%test_id = 'l0_x''wrap'", txt)
         self.assertNotIn("'l0_x'wrap'", txt)  # no broken (unescaped) literal
 
@@ -1337,7 +1344,7 @@ class FortranLiteralEscapingTest(unittest.TestCase):
             r["test_id"] = r["test_id"].replace("l0_", "l0'")
         for p in ir["io_contract"]["test_predicates"]:
             p["test_id"] = p["test_id"].replace("l0_", "l0'")
-        runner = render_runner(ir, BOUNDARY_SID, HARNESS)
+        runner = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("''", runner)  # the apostrophe was doubled
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -1455,7 +1462,7 @@ class HarnessPinTest(unittest.TestCase):
         # width: the `_case_ids` bound, the width the rendered runner declares for its own
         # `case_ids(:)` buffer, and the parameter value pinned against the certified harness.
         # All three are `CASE_ID_LEN`; this test is the invariant, stated once.
-        txt = render_runner(self.ir, BOUNDARY_SID, HARNESS)
+        txt = render_runner(self.ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
         self.assertIn(f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
                       _HARNESS_V3_PARAMETERS)
@@ -1464,7 +1471,7 @@ class HarnessPinTest(unittest.TestCase):
         ir["case"]["test_case_set"][0]["case_id"] = over
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [over]
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
     def test_source_signature_drift(self) -> None:
         bad_src = self.src.replace(
@@ -1574,7 +1581,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         from tools.backends.linter.fortitude import lint as _lint
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS))
+            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc))
             r = subprocess.run(list(_lint.check_argv(".")), cwd=d,
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1591,7 +1598,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
 @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
 class GfortranSmokeTest(unittest.TestCase):
     def test_rendered_runner_compiles_and_runs(self) -> None:
-        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
@@ -1660,7 +1667,7 @@ class GfortranSmokeTest(unittest.TestCase):
         # A checks module whose `case_setup` never allocates a bound array is a binding that
         # was never established: the runner must `error stop` with the variable named, not
         # hand an unallocated actual to the emitter.
-        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS)
+        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         broken = _CHECKS_STUB
         for line in ("    if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))\n",
                      "    field_ghost = 0.0_dp\n",
@@ -1701,7 +1708,7 @@ class GfortranSmokeTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [
             "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]
-        runner = render_runner(ir, BOUNDARY_SID, HARNESS)
+        runner = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
@@ -1753,7 +1760,7 @@ class GfortranSmokeTest(unittest.TestCase):
         # The boundary smoke only covers the no-metrics, scalar+rank-2 family. This one
         # compiles+links+runs the metrics path AND the rank-3/rank-4 emitter/getter path,
         # so a future edit that makes either produce invalid Fortran cannot ship green.
-        runner = render_runner(_rank34_metrics_ir(), RANK_SID, HARNESS)
+        runner = render_runner(_rank34_metrics_ir(), RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
@@ -1797,7 +1804,7 @@ class GfortranSmokeTest(unittest.TestCase):
         warning is unfixable by the leaf and would spin a futile warm-repair loop — the
         rendered artifact must be clean under all three. The stubs are compiled WITHOUT the
         flags: only the runner, the artifact the renderer owns, is held to them."""
-        runner = render_runner(ir, sid, HARNESS)
+        runner = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             mods = d / "mods"
@@ -1862,7 +1869,7 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
 
     def test_the_position_is_the_one_the_rendered_runner_passes_its_unallocated_actual_at(
             self) -> None:
-        runner = render_runner(_metrics_ir(), "prob_x", HARNESS)
+        runner = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
         stmts = [s.strip().lower() for ln in fortran_lines.fortran_logical_line_texts(runner)
                  for s in fortran_lines.split_fortran_statements(ln)]
         calls = [s for s in stmts if s.startswith("call metric_compute(")]
@@ -2080,7 +2087,7 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
         only deterministic reader — update `METRIC_COMPUTE_DUMMIES`' comment, not the gate."""
         v = checks_abi_dummy_violation
         ir = _rank34_metrics_ir()
-        runner = render_runner(ir, RANK_SID, HARNESS)
+        runner = render_runner(ir, RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
         pinned = "character(len=:), allocatable, intent(out) :: reason_na"
         bad = "character(len=64), intent(out) :: reason_na"
         self.assertIn(pinned, _RANK_CHECKS_STUB)

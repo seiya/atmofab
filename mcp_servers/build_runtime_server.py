@@ -1325,8 +1325,8 @@ _SYNTAX_COMPILER_ADAPTERS: dict[str, dict[str, Any]] = {
 
 #: The syntax-only stage `Generate.gate` runs whatever `ATMOFAB_SYNTAX_COMPILERS` lists, and the
 #: compiler `run_syntax_check` assumes when a caller names none. The conductor's build
-#: control-file writer takes the SAME value for `FC` when the IR pins no
-#: `impl_defaults.toolchain.compiler`, so the mandatory syntax stage and the default build
+#: control-file writer takes the SAME value for `FC` when the target profile pins no
+#: `toolchain.compiler`, so the mandatory syntax stage and the default build
 #: compiler are one value rather than several independent spellings. That equality is what lets
 #: the launch-time host probe (`tools/host_prerequisites.py`) cover the Build compiler by probing
 #: the mandatory stage; `tools/tests/test_host_prerequisites.py` pins it against the conductor's
@@ -1349,7 +1349,7 @@ def syntax_compiler_executable(compiler: str) -> str:
 
 
 # A source valid under every Fortran standard the adapters accept. `std` reaches the gate
-# from the LLM-authored IR (`impl_defaults.toolchain.standard`) and goes straight into
+# from the target profile (`toolchain.standard`) and goes straight into
 # `-std=<value>`: a value the driver does not know (`-std=2008` — the elided-`f` form)
 # makes it reject the COMMAND LINE, so no source is ever parsed and every file in the
 # invocation "fails" at once. Compiling this canary with the same argv separates a broken
@@ -1729,12 +1729,12 @@ TOOLS: dict[str, Tool] = {
                 "std": {
                     "type": "string",
                     "default": "f2008",
-                    "description": "Language standard from impl_defaults.toolchain.standard.",
+                    "description": "Language standard from the target profile's toolchain.standard.",
                 },
                 "openmp": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Enable the adapter's OpenMP flag (target.backend=openmp).",
+                    "description": "Enable the adapter's OpenMP flag (the target profile's parallel.backend=openmp).",
                 },
                 "sources": {
                     "type": "array",

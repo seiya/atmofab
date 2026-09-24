@@ -317,8 +317,10 @@ class FrontEndUnavailableTests(unittest.TestCase):
             (stub_dir / "tree_sitter.py").write_text(self.STUB)
             (stub_dir / "tree_sitter_fortran.py").write_text(self.STUB)
             repo = root / "repo"
+            from tools.tests.target_fixtures import TARGET_ID, install_target_profile
+            install_target_profile(repo)
             pipeline_dir = (repo / "workspace" / "pipelines" / "problem__probe2d__0.1.0"
-                            / "probe2d_20260415_001")
+                            / TARGET_ID / "probe2d_20260415_001")
             src = pipeline_dir / "source" / "src_20260415_001" / "src"
             src.mkdir(parents=True)
             (src / "probe2d_model.f90").write_text(

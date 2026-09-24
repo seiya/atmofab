@@ -33,6 +33,7 @@ from typing import ClassVar
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_build_runtime_server import _load_server_module
 from tools.tests.test_orchestration_runtime import (
     _launch_request_body,
@@ -346,7 +347,7 @@ class HostDefectRefusalsTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 env={"ATMOFAB_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -712,7 +713,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 env={"ATMOFAB_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -734,7 +735,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 env={"ATMOFAB_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")

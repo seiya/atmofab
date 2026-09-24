@@ -36,6 +36,7 @@ from tools.orchestration_runtime import (
     write_preflight,
 )
 from tools.llm_config import LLM_LEAF_SUBSTEPS
+from tools.tests.target_fixtures import TARGET_ID
 from tools.pure_leaf import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
@@ -48,7 +49,7 @@ from tools.pure_leaf import (
 _NODE = "problem/shallow_water2d@0.3.0"
 _NODE_SAFE = "problem__shallow_water2d__0.3.0"
 _IR_REF = f"workspace/ir/{_NODE_SAFE}/shallow-water2d_20260415_001"
-_PIPE_REF = f"workspace/pipelines/{_NODE_SAFE}/shallow-water2d_20260415_001"
+_PIPE_REF = f"workspace/pipelines/{_NODE_SAFE}/{TARGET_ID}/shallow-water2d_20260415_001"
 _DEP_REF = f"{_IR_REF}/spec.ir.yaml"
 
 
@@ -201,6 +202,12 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
 
 
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
+    # What a real launch also has (issue #284): the target profile its pipeline names, in the
+    # repository `record_launch` loads it from, and the target recorded on the orchestration.
+    from tools.tests.orchestration_fixtures import record_orchestration_target
+    from tools.tests.target_fixtures import install_target_profile
+    install_target_profile(repo_root)
+    record_orchestration_target(repo_root, orchestration_id)
     meta_path = (
         repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
     )
@@ -1683,7 +1690,7 @@ class PureRenderTests(unittest.TestCase):
     _RENDER_REFS: ClassVar[dict[str, str]] = {
         "node_key": "component/demo_dep_top@0.1.0",
         "spec_path": "spec/component/demo/demo_dep_top",
-        "ir_id": "d_002", "pipeline_id": "d_002",
+        "ir_id": "d_002", "pipeline_id": "d_002", "target_id": TARGET_ID,
         "source_id": "src_20260626_001", "binary_id": "bin_20260626_001",
         "run_id": "run_20260626_001", "source_binary_id": "bin_20260626_001",
     }

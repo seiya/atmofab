@@ -108,36 +108,37 @@ workspace/
 │
 └── pipelines/
     └── <node_key_safe>/
-        └── <pipeline_id>/
-            ├── source/
-            │   └── <source_id>/
-            │       ├── src/                       (generated source code, including `command_log.jsonl`)
-            │       ├── source_meta.json
-            │       ├── gate_meta.json             (single conductor-authored Generate.gate deliverable; lint/syntax/static checkers)
-            │       ├── bundle_meta.json           (the pure Generate.generate producer's per-attempt record)
-            │       └── verdict_meta.json          (the pure Generate.verify reviewer's per-attempt record)
-            ├── binary/
-            │   └── <binary_id>/
-            │       ├── bin/
-            │       ├── binary_meta.json           (pins source_source_id)
-            │       └── command_log.jsonl      (the MCP audit of compile_project)
-            ├── runs/
-            │   └── <run_id>/                      (Validate phase output: execute + judge)
-            │       └── <node_key_safe>/
-            │           ├── diagnostics.json
-            │           ├── perf.json
-            │           ├── quality_check.json
-            │           ├── raw/
-            │           ├── stdout.log
-            │           ├── stderr.log
-            │           ├── semantic_review.json          (host-written from the judge's judgement)
-            │           ├── judge_meta.json                (the pure judge's per-attempt record)
-            │           ├── verdict.json
-            │           ├── aggregate_verdict.json
-            │           ├── summary.json
-            │           ├── trial_meta.json
-            │           └── validate_meta.json
-            └── lineage.json                       (the id lineage between phases)
+        └── <target_id>/                       (the target the pipeline is built for: spec/targets/<target_id>.yaml)
+            └── <pipeline_id>/
+                ├── source/
+                │   └── <source_id>/
+                │       ├── src/                       (generated source code, including `command_log.jsonl`)
+                │       ├── source_meta.json
+                │       ├── gate_meta.json             (single conductor-authored Generate.gate deliverable; lint/syntax/static checkers)
+                │       ├── bundle_meta.json           (the pure Generate.generate producer's per-attempt record)
+                │       └── verdict_meta.json          (the pure Generate.verify reviewer's per-attempt record)
+                ├── binary/
+                │   └── <binary_id>/
+                │       ├── bin/
+                │       ├── binary_meta.json           (pins source_source_id)
+                │       └── command_log.jsonl      (the MCP audit of compile_project)
+                ├── runs/
+                │   └── <run_id>/                      (Validate phase output: execute + judge)
+                │       └── <node_key_safe>/
+                │           ├── diagnostics.json
+                │           ├── perf.json
+                │           ├── quality_check.json
+                │           ├── raw/
+                │           ├── stdout.log
+                │           ├── stderr.log
+                │           ├── semantic_review.json          (host-written from the judge's judgement)
+                │           ├── judge_meta.json                (the pure judge's per-attempt record)
+                │           ├── verdict.json
+                │           ├── aggregate_verdict.json
+                │           ├── summary.json
+                │           ├── trial_meta.json
+                │           └── validate_meta.json
+                └── lineage.json                       (the id lineage between phases)
 ```
 
 ## Generation timing and read/write rules of the main paths
@@ -202,9 +203,9 @@ The conductor writes this from the leaf's own output (`workflow_conductor._leaf_
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/gate_meta.json` | Generate (`Generate.gate`) | conductor (deterministic in-process; `_gate_inproc` composing `_gate_lint_check` / `_gate_syntax_check` / `_gate_static_check`) | validator (`post_generate`) / conductor routing | single union verdict of the lint / syntax / static checks (`checkers`, `failure_categories`, composed `failure_excerpt`); the leaf cannot write it |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/bundle_meta.json` | Generate/generate (`pure` only) | conductor (`_write_bundle_meta`) | `orchestration_diagnostics.summarize_pure_leaf_metas` / conductor routing (`_read_repair_findings`, `classify_failure`) | the pure producer's per-attempt record; the `compile` twin of it is `compile_generate_meta.json`. `per_attempt[].exemplar_ref` names the certified `source/<source_id>` directory the attempt's exemplar was read from, or `null` (issue #250: an advisory input, recorded per attempt and never keyed) |
 | `workspace/pipelines/.../<pipeline_id>/source/<source_id>/verdict_meta.json` | Generate/verify (`pure` only) | conductor (`_write_verdict_meta`) | `orchestration_diagnostics.summarize_pure_leaf_metas` / conductor routing (`classify_failure`) | the pure reviewer's per-attempt record; the verdict itself is projected onto `source_meta.json` |
-| `workspace/pipelines/.../<pipeline_id>/binary/<binary_id>/binary_meta.json` | Build | conductor (deterministic in-process; `_build_inproc`) | Validate / validator | records `source_source_id` and `source_ir_id` and, in `dependency_check.closure_bindings[]`, which certified dependency source each closure node contributed (records since issue #250 PR-2: the build derivation key's `closure[].source` is what certifies); `artifact_hashes` (stamped by `write-step-result`) pins the built binary; `compiler` / `compiler_version` record the toolchain identity the build `derivation key` hashes (issue #250); the derivation stamp sits beside `artifact_hashes`; the leaf cannot write it |
+| `workspace/pipelines/.../<pipeline_id>/binary/<binary_id>/binary_meta.json` | Build | conductor (deterministic in-process; `_build_inproc`) | Validate / validator | records `source_source_id` and `source_ir_id` and, in `dependency_check.closure_bindings[]`, which certified dependency source each closure node contributed (records since issue #250 PR-2: the build derivation key's `closure[].source` is what certifies); `artifact_hashes` (stamped by `write-step-result`) pins the built binary; the derivation stamp's `derivation_inputs.toolchain` is the toolchain identity the build `derivation key` hashes (issue #250) — the target profile's `target_id`, language, standard, build system, parallel backend and compiler, with the compiler's `--version` line (issue #284) — and `target_id`, `build_system`, `compiler` and `compiler_version` are also recorded at the top level; the derivation stamp sits beside `artifact_hashes`; the leaf cannot write it |
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/validate_meta.json` | Validate/**post_judge** | conductor (`_author_derived_validate_artifacts`); `artifact_hashes` + the derivation stamp by `write-step-result` | runtime / validator | Validate's CERTIFYING meta since issue #250 PR-1 (`CERTIFYING_META_FILENAME_BY_STEP`): `artifact_hashes` pins the run node's other declared deliverables, `revoke-artifact --step validate` rewrites it. `check-phase-certified` reads Validate through this stamp since PR-2 (status, `artifact_hashes`, key), like every other phase |
-| `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/trial_meta.json` | Validate/**execute** | conductor (`_execute_inproc`) | Validate.judge / validator | the run's provenance (`source_binary_id` is a record since issue #250 PR-2; the validate key binds the binary by its output hash); `environment.platform` (`machine`, `node`, `cpu_model`) records the host the evidence was produced on (issue #250 — a record, not a key input) |
+| `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/trial_meta.json` | Validate/**execute** | conductor (`_execute_inproc`) | Validate.judge / validator | the run's provenance (`source_binary_id` is a record since issue #250 PR-2; the validate key binds the binary by its output hash); `environment.platform` (`machine`, `node`, `cpu_model`) records the host the evidence was produced on (issue #250 — a record, not a key input); `environment.target_id` / `target_class` / `backend` / `threads_per_rank` are the target profile's (issue #284) |
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/verdict.json` | Validate/**execute** | conductor (`_author_execute_verdict`, from `io_contract.test_predicates` + the runner's `diagnostics.json` via `tools/verdict_evaluator.evaluate_verdict`, conjoined with `io_contract.primary_predicates` valued from `raw/state_snapshots/` via `tools/primary_evidence.evaluate_primary_predicates`) | runtime / validator / upper node | |
 | `workspace/pipelines/.../<pipeline_id>/runs/<run_id>/<node_key_safe>/judge_meta.json` | Validate/judge (`pure` only) | conductor (`_write_pure_attempt_meta`) | `orchestration_diagnostics.summarize_pure_leaf_metas` / conductor pass evaluation (a pure judge passes only when `result == "pass"` and a fresh `semantic_review.json` decides `pass`) | the pure judge's per-attempt record. `validate` has ONE pure leaf, so it has one such file rather than a producer / reviewer pair |
 | `workspace/pipelines/.../<pipeline_id>/lineage.json` | each pipeline phase, at its START | conductor (`_write_lineage`, host-side — the pipeline root is in no leaf write_root) | runtime / validator / `resume_node_refs` / `prepare_node` | the phase id lineage. Written AFTER the producer id is rotated, so it names the ids this orchestration is working on; a resume seeds its stage ids from it, and a cold run uses its `ir_ref` to find the pipeline bound to an adopted IR |

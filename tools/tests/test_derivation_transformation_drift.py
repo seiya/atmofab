@@ -210,15 +210,36 @@ PINNED_RENDER: dict[str, str] = {
     # splitter's new 4-tuple in `assert_harness_pin` and refuses a prototype in the embedded
     # harness surface; nothing the renderer emits changed.
     "render-3": "20c14201fa66ab4a77528d1df6179211bfbac5de5e43d6c43dffc285d9c9d052",
+    # render-4 (issue #284, R4-a PR-2): both host renders read the TARGET PROFILE. The control
+    # file's `-fopenmp` follows the profile's `parallel.backend` for every node — the
+    # `infrastructure` harness included, whose IRs said `serial` — and the runner's perf record
+    # takes the profile's hardware class and threads per rank instead of the IR's `target.class`
+    # and `backend_overrides.openmp.num_threads`. Re-pinned within PR-2's review (round 1),
+    # behaviour-preserving: the Makefile writer's docstring now states the measured IR counts
+    # its rationale rests on; no emitted byte changed.
+    "render-4": "f62c13ef61df64e16eccf09f0ec8e4f36b57631e26510ef2369731a25216cee6",
 }
 PINNED_BUILD: dict[str, str] = {
-    "build-1": "a4881aad1ed3437091d33f844e7e747f586e4c9b9775026f616618eb500b0343",
+    # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
+    # `_build_inproc` reads the language / build system off the target profile (the same
+    # values the bridge gate holds the IR to) and records the target's toolchain identity with
+    # its `target_id` on `binary_meta.json`, a record the certification does not hash; the
+    # compile invocation and the binary it produces are unchanged. The build KEY moves anyway —
+    # its `toolchain` input gained `target_id`.
+    "build-1": "e1d4583e3a2a63ad496139e495373842fab5161f85547e527043751ba469433a",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
     # Z6 PR-1 (issue #255): execute promotes and requires the `initial/<case_id>.json` captures
     # of a host-rendered runner — a new deliverable of the phase.
     "execute-2": "28a3364616ba866133a0e34933a67c0154f0de61409d4cf5ffb95103933eb182",
+    # execute-3 (issue #284, R4-a PR-2): the execute body runs with the TARGET's hardware class
+    # and threads per rank (the thread count was a literal 1), and `trial_meta.json#environment`
+    # records the target id and the target's parallel backend (it read a key the IR never had).
+    # Re-pinned within PR-2's review (round 1): quality_check.json's note names the thread
+    # count run instead of a literal 1 — byte-identical for every run at threads_per_rank 1,
+    # which is every run stamped execute-3 so far.
+    "execute-3": "c58d0d4b1df5250180634dca834c0d6d64c2000bac0f8793ae0e450c64c71aab",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -268,6 +289,12 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in round 3: `verdict.failed_checks eq <list of declared ids>` admitted again
     # (origin/main admitted it; round 2 over-refused); comment wording. Evaluator unchanged.
     "verdict-3": "04832862db97fa774546f4689271e6d0e42b09e6f764e95d5adf6c236bcd7897",
+    # verdict-4 (issue #284, R4-a PR-2): the derived-artifact author decides a direct
+    # dependency's readiness — whether the aggregate is `blocked` — from that dependency's
+    # pipelines FOR THE RUN'S TARGET only, and reads its display facts for that target; a
+    # dependency validated for another target (or in a pre-target pipeline) no longer counts.
+    # The evaluator is unchanged.
+    "verdict-4": "6ca012df4f7cee86fc413f1c08d5cae7aa1a2576ece17d86fa0cd6bd11a12dde",
 }
 
 

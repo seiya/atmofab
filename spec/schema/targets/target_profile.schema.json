@@ -49,7 +49,7 @@
       "additionalProperties": false,
       "required": ["threads_per_rank"],
       "properties": {
-        "threads_per_rank": {"type": "integer", "minimum": 1}
+        "threads_per_rank": {"type": "integer", "minimum": 1, "maximum": 1}
       }
     },
     "harness": {
@@ -71,7 +71,8 @@
   "x-forbidden-examples": [
     {"target_id": "Fortran-CPU", "why": "not a lowercase identifier"},
     {"toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make", "flags": "-O2"}, "why": "unknown key: the toolchain is closed"},
-    {"execution": {"threads_per_rank": 0}, "why": "at least one thread"}
+    {"execution": {"threads_per_rank": 0}, "why": "at least one thread"},
+    {"execution": {"threads_per_rank": 4}, "why": "Validate.execute's run is the single-thread reference of the quality check (phase_04_validate.md 4-2) until a separate serial reference run exists"}
   ],
-  "x-forbidden-examples-note": "The schema rejects all three on its own. The loader additionally rejects a `target_id` that is not the file stem; the launch gate (`target_profile_violations`) rejects a harness the catalog does not resolve."
+  "x-forbidden-examples-note": "The schema rejects all four on its own. The loader additionally rejects a `target_id` that is not the file stem; the launch gate (`target_profile_violations`) rejects a harness the catalog does not resolve."
 }

@@ -81,6 +81,14 @@ try:
         missing_required_meta_keys,
         stage_meta_type_violations,
     )
+    from tools.target_profile import (
+        TargetProfile,
+        TargetProfileError,
+        is_target_id,
+        load_pipeline_target,
+        load_target_profile,
+        pipelines_dir,
+    )
     from tools.pure_leaf import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
@@ -114,6 +122,14 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         STAGE_META_FILENAME_BY_STEP,
         missing_required_meta_keys,
         stage_meta_type_violations,
+    )
+    from tools.target_profile import (
+        TargetProfile,
+        TargetProfileError,
+        is_target_id,
+        load_pipeline_target,
+        load_target_profile,
+        pipelines_dir,
     )
     from tools.pure_leaf import (
         PURE_DOC_FENCE_BEGIN,
@@ -1157,14 +1173,21 @@ class DerivationSelection:
 
 
 def _stage_meta_candidates(
-    repo_root: Path, node_key: str, step: str
+    repo_root: Path, node_key: str, step: str, target_id: str | None = None,
 ) -> list[tuple[tuple[Any, ...], Path]]:
     """Every certifying stage meta of `(node_key, step)` in the workspace, each with the
     ordering token the selection policy ranks by: the canonical `(date, seq)` of the stage
     id, preceded by the pipeline's for a pipeline stage — so outputs are ordered across
     pipelines too, and a `src_<date>_<seq>` that repeats in two pipelines of one node is
     not a tie. A directory whose name is not a canonical runtime id is not a candidate
-    (the same rule `_select_max_by_id_extracted` applied)."""
+    (the same rule `_select_max_by_id_extracted` applied).
+
+    Compile output is target-free (`workspace/ir/<safe>/<ir_id>/`); every later phase's is
+    read from ONE target's tree, `workspace/pipelines/<safe>/<target_id>/<pipeline_id>/`
+    (issue #284). A pipeline directory directly under `<safe>/` — the pre-R4-a layout — is
+    never a candidate: nothing here lists `<safe>/` itself, and a target id cannot be spelled
+    as a store id (`target_profile.is_target_id`). `target_id` None answers no candidate for
+    a pipeline phase; the resolver refuses that case by name before asking."""
     safe = _node_key_to_safe(node_key)
     meta_name = CERTIFYING_META_FILENAME_BY_STEP[step]
     out: list[tuple[tuple[Any, ...], Path]] = []
@@ -1176,7 +1199,9 @@ def _stage_meta_candidates(
                 if key is not None and (d / meta_name).is_file():
                     out.append(((key,), d / meta_name))
         return out
-    pipes = repo_root / "workspace" / "pipelines" / safe
+    if not is_target_id(target_id):
+        return out
+    pipes = repo_root / pipelines_dir(safe, str(target_id))
     if not pipes.is_dir():
         return out
     for pipe in pipes.iterdir():
@@ -1245,7 +1270,7 @@ def _twin_in_pipeline(repo_root: Path, pipe_dir: Path, stage: str, output_hash: 
 
 
 class DerivationResolver:
-    """ONE evaluation's memo of certified selections over the workspace.
+    """ONE evaluation's memo of certified selections over the workspace, for ONE target.
 
     `select(node_key, step)` answers `DerivationSelection` for the node's chain up to
     `step`, recursing through the node's own upstream phases and — inside
@@ -1254,10 +1279,19 @@ class DerivationResolver:
     it, so a later write to the workspace is seen by the next evaluation. `spec_refs` pins
     the spec directory of a node the caller already resolved (the subject of a run, whose
     `spec_ref` the conductor holds); every other node's is read from the catalog, which
-    must resolve it to exactly one directory."""
+    must resolve it to exactly one directory.
 
-    def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None) -> None:
+    `target` is the target profile every pipeline phase is selected FOR (issue #284): a
+    Generate / Build / Validate output is a `node_key × target` fact, read from that target's
+    tree and keyed with its profile, and a closure member is selected for the same target as
+    its consumer (one run is one target). Compile is target-free and answers without one. A
+    resolver with no target refuses every pipeline phase by name (`target_unresolved`) rather
+    than guessing which target the caller meant."""
+
+    def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None,
+                 target: TargetProfile | None = None) -> None:
         self.repo_root = Path(repo_root)
+        self.target = target
         self._memo: dict[tuple[str, str], DerivationSelection] = {}
         self._in_progress: set[tuple[str, str]] = set()
         self._spec_refs: dict[str, str] = {
@@ -1312,6 +1346,9 @@ class DerivationResolver:
             sel.reason = "node_key_invalid"
             return
         upstream_step = _UPSTREAM_STEP[step_token]
+        if upstream_step is not None and self.target is None:
+            sel.reason = "target_unresolved"
+            return
         if upstream_step is not None:
             upstream = self.select(node_key, upstream_step)
             sel.inherit(upstream)
@@ -1322,7 +1359,9 @@ class DerivationResolver:
                 sel.revocation_severity = upstream.revocation_severity
                 sel.revocation_repair_strategy = upstream.revocation_repair_strategy
                 return
-        candidates = _stage_meta_candidates(self.repo_root, node_key, step_token)
+        candidates = _stage_meta_candidates(
+            self.repo_root, node_key, step_token,
+            self.target.target_id if self.target is not None else None)
         # A pipeline is ONE chain. The build key binds the source's OUTPUT hash, not its
         # pipeline, so a byte-identical source in another pipeline carries the same build
         # key — and the same holds for a verdict over a byte-identical binary. Such an
@@ -1498,12 +1537,14 @@ def _certified_ir_dir(
 
 
 def _verify_dep_stage(
-    repo_root: Path, kind: str, spec_id: str, version: str, stage: str
+    repo_root: Path, kind: str, spec_id: str, version: str, stage: str,
+    *, target: TargetProfile | None = None,
 ) -> bool:
     """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion. The boolean face of `_verify_dep_stage_detail`, which is the primitive — see
-    there for what each stage requires and why."""
-    return _verify_dep_stage_detail(repo_root, kind, spec_id, version, stage)[0]
+    completion for `target`. The boolean face of `_verify_dep_stage_detail`, which is the
+    primitive — see there for what each stage requires and why."""
+    return _verify_dep_stage_detail(
+        repo_root, kind, spec_id, version, stage, target=target)[0]
 
 
 #: The certifying phase each dependency-readiness stage asks of a dependency.
@@ -1513,7 +1554,7 @@ _READINESS_STAGE_STEP: dict[str, str] = {
 
 def _verify_dep_stage_detail(
     repo_root: Path, kind: str, spec_id: str, version: str, stage: str,
-    *, resolver: DerivationResolver | None = None,
+    *, resolver: DerivationResolver | None = None, target: TargetProfile | None = None,
 ) -> tuple[bool, str | None]:
     """Whether a dependency `(kind, id, version)` evidences `stage` completion, WITH the
     reason when it does not.
@@ -1537,6 +1578,10 @@ def _verify_dep_stage_detail(
     `detail` is `None` when ready and the selection's reason otherwise, prefixed with the
     node_key so `_stale_dependency_details`'s reader — the launch gate's reject message and
     the closure driver's `dependency_node_begin.detail` — names the node.
+
+    `pipeline_ref` and `aggregate_verdict` are questions about ONE target (issue #284): the
+    resolver's, or `target` when no resolver is passed. With neither, they answer
+    `target_unresolved` — never ready — and `ir_ref`, which is target-free, still answers.
     """
     if not (
         _is_safe_path_token(kind)
@@ -1548,7 +1593,7 @@ def _verify_dep_stage_detail(
     if step is None:
         raise ValueError(f"unknown readiness stage: {stage!r}")
     node_key = f"{kind}/{spec_id}@{version}"
-    resolver = resolver or DerivationResolver(repo_root)
+    resolver = resolver or DerivationResolver(repo_root, target=target)
     sel = resolver.select(node_key, step)
     if sel.ok:
         return (True, None)
@@ -1557,6 +1602,7 @@ def _verify_dep_stage_detail(
 
 def _stale_dependency_details(
     repo_root: Path, spec_ref: Any, *, resolver: DerivationResolver | None = None,
+    target: TargetProfile | None = None,
 ) -> list[str]:
     """Actionable readiness reports for the direct dependencies of `spec_ref`: for each one
     the FIRST readiness stage that refuses it and why (a key that moved names the input that
@@ -1582,7 +1628,7 @@ def _stale_dependency_details(
     )
     if expand_error is not None:
         return [f"{spec_ref}: {expand_error['reason']}: {expand_error['detail']}"]
-    resolver = resolver or DerivationResolver(repo_root)
+    resolver = resolver or DerivationResolver(repo_root, target=target)
     details: list[str] = []
     for kind, spec_id, constraint in entries:
         for version in _matching_dep_versions(catalog, kind, spec_id, constraint):
@@ -1742,6 +1788,30 @@ def _ir_certification(
     return (True, detail)
 
 
+def _target_of_orchestration_meta(repo_root: Path, meta: Any) -> TargetProfile | None:
+    """The target profile an orchestration was launched for — `invocation.target.target_id`
+    (recorded by `run_workflow.py` since issue #284), loaded — or None when the record names
+    none or its profile no longer loads. None is never a default: every pipeline-phase reader
+    it reaches refuses it (`target_unresolved`), so an orchestration whose target cannot be
+    told is not certified for anything past Compile."""
+    invocation = meta.get("invocation") if isinstance(meta, dict) else None
+    record = invocation.get("target") if isinstance(invocation, dict) else None
+    target_id = record.get("target_id") if isinstance(record, dict) else None
+    if not is_target_id(target_id):
+        return None
+    try:
+        return load_target_profile(repo_root, str(target_id))
+    except TargetProfileError:
+        return None
+
+
+def _orchestration_target(repo_root: Path, orchestration_id: str) -> TargetProfile | None:
+    """`_target_of_orchestration_meta` over the orchestration's own `orchestration_meta.json`."""
+    meta = _read_json_or_none(
+        _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json")
+    return _target_of_orchestration_meta(repo_root, meta)
+
+
 def _phase_certified(
     repo_root: Path,
     orchestration_id: str,
@@ -1749,6 +1819,7 @@ def _phase_certified(
     step: str,
     *,
     spec_ref: str | None = None,
+    target: TargetProfile | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Is `(node_key, step)` certified? Returns `(certified, detail)`.
 
@@ -1774,12 +1845,19 @@ def _phase_certified(
     `--stage compile` validator (`_ir_certification`, issue #238). `spec_ref` pins the
     subject's spec directory when the caller holds it (the conductor does; `--with-deps`'s
     readiness reads the catalog).
+
+    Every phase past Compile is certified for ONE target (issue #284): `target`, else the
+    target the orchestration was launched for (`_orchestration_target`). With neither, those
+    phases answer `target_unresolved`.
     """
     step_token = step.strip().lower()
     if step_token not in STEP_KEYS_FOR_NODE_STATE:
         raise ValueError(f"unsupported step for certification: {step!r}")
+    if target is None and step_token != "compile":
+        target = _orchestration_target(repo_root, orchestration_id)
     resolver = DerivationResolver(
-        repo_root, spec_refs={node_key.strip(): spec_ref} if spec_ref else None)
+        repo_root, spec_refs={node_key.strip(): spec_ref} if spec_ref else None,
+        target=target)
     ok, detail = _ir_certification(repo_root, node_key.strip(), resolver=resolver)
     if not ok:
         return (False, detail)
@@ -1959,6 +2037,21 @@ def _stamp_certification(
     return doc
 
 
+def _reserved_pipeline_dir(repo_root: Path, res_dir: Path) -> Path | None:
+    """The pipeline directory this orchestration reserved for the node whose reservations
+    live in `res_dir`: `workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, composed from
+    `generate.json`'s `reserved_ir_id` and `target_id`. None when either is absent — a
+    reservation written before issue #284 names no target, so it names no directory."""
+    pipeline_id = _reserved_id(res_dir, "generate")
+    if pipeline_id is None:
+        return None
+    doc = _read_json_or_none(res_dir / "generate.json")
+    target_id = doc.get("target_id") if isinstance(doc, dict) else None
+    if not is_target_id(target_id):
+        return None
+    return repo_root / pipelines_dir(res_dir.name, str(target_id)) / pipeline_id
+
+
 def _reserved_id(res_dir: Path, step: str) -> str | None:
     """The id this orchestration reserved for `step` (`compile.json` names the ir_id,
     `generate.json` the pipeline_id), or `None` when no reservation was made.
@@ -2072,9 +2165,11 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               read off a dependency's certified SOURCE when its IR has no `public_api`);
 #             toolchain_document — the admissible-toolchain document the producer is shown.
 #   generate  ir — this node's certified compile output hash (`spec.ir.yaml`; carries the
-#               target profile, the case set and every `impl_defaults` knob);
+#               case set and every `impl_defaults` knob);
 #             spec.{controlled_spec,tests} — the reviewer reads the spec, the producer the
 #               tests;
+#             target — `{target_id, profile}`: the target the source is generated for and the
+#               hash of its profile, whose fixed layer the producer is shown (issue #284);
 #             harness — the ONE harness the producer negotiates against and the manifest
 #               document it is shown (`harness_capability_manifest_document_for`);
 #             closure[] — every closure node's certified compile AND generate output hashes:
@@ -2083,18 +2178,26 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               source and IR.
 #             NOT hashed, because they are functions of the members above and of the
 #             transformation version: the host-rendered runner and control file
-#             (`RENDER_VERSION`), and the bundle shape (the node kind and the IR's toolchain).
+#             (`RENDER_VERSION`), and the bundle shape (the node kind and the target's
+#             toolchain).
 #   build     source — this node's certified generate output hash (model, checks or runner,
 #               the control file, all host- or leaf-authored deliverables of Generate);
 #             closure[] — the certified generate output hash of every closure node Build
 #               stages (`_stage_dependency_sources` copies exactly these sources);
-#             toolchain — `{language, standard, build_system, backend, compiler,
-#               compiler_version}` read off the IR, with the compiler the control-file
-#               writer would pin and the first line of its `--version`.
+#             toolchain — `{target_id, language, standard, build_system, backend, compiler,
+#               compiler_version}` read off the target profile, with the compiler the
+#               control-file writer would pin and the first line of its `--version`.
 #   validate  binary — this node's certified build output hash;
 #             ir — the compile output hash (the case set and the predicates);
 #             spec.tests — the judge reads `tests.md`;
-#             run_policy — the execution policy `_execute_inproc` imposes.
+#             run_policy — the execution policy `_execute_inproc` imposes: `{target_id,
+#               profile, threads_per_rank, preset}`.
+#
+# Generate, Build and Validate are `node_key × target` facts (issue #284): their outputs live
+# under `workspace/pipelines/<safe>/<target_id>/`, every closure member is selected for the
+# same target (`DerivationResolver.target`), and the target's id is in each of the three
+# keys. Compile is target-free in its STORE; its key still carries the admissible-toolchain
+# document and the harness closure member until R4-a PR-3.
 #
 # An UPSTREAM output hash is always the `output_hash` of the SELECTED certified output —
 # never a derivation key — so that when the selection among several certified outputs of one
@@ -2174,41 +2277,27 @@ def admissible_toolchains_document(node_key: str) -> str:
     return json.dumps({"admissible_toolchains": pairs}, indent=2, ensure_ascii=False)
 
 
-def _ir_toolchain_identity(ir: Any) -> dict[str, Any]:
-    """The build toolchain identity read off an IR's `impl_defaults`, for the build key and for
-    `binary_meta.json`: `language` / `standard` / `build_system` / `backend` AS THE IR DECLARES
-    THEM — `None` where it declares nothing — plus the compiler and its `--version` line.
+def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
+    """The build toolchain identity of a target, for the build key and for `binary_meta.json`:
+    the target id, the profile's `language` / `standard` / `build_system` / parallel `backend`,
+    and the compiler with the first line of its `--version` (issue #284; before R4-a PR-2 the
+    same fields were read off the IR's `impl_defaults`).
 
-    No default is filled in here for the four declared fields. The defaults the host applies
-    to an IR that pins nothing (`Conductor._read_toolchain`, the control-file writer) are the
-    host's TRANSFORMATION, which `RENDER_VERSION`'s drift pin watches; spelling them again in
-    this module would be a second statement of a backend fact in the `neutral core`, which the
-    boundary check refuses (a round-2 review measured the growth). "Declares nothing" is the
-    honest identity of such an IR, and it changes exactly when the IR does.
-
-    The compiler is the one exception, because its VERSION must be probed from an executable:
-    the IR's pin, else the build-runtime server's `MANDATORY_SYNTAX_COMPILER` — asked of the
-    server, which owns the compiler adapters and whose value the conductor's `DEFAULT_COMPILER`
-    is pinned equal to (`tools/tests/test_host_prerequisites.py`). `compiler_version` is the
-    first line of `<compiler> --version`, `None` when it cannot be probed (recorded, not
-    refused)."""
-    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-    tc = tc if isinstance(tc, dict) else {}
-    target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
-    target = target if isinstance(target, dict) else {}
+    The compiler is the profile's pin, else the build-runtime server's
+    `MANDATORY_SYNTAX_COMPILER` — asked of the server, which owns the compiler adapters and
+    whose value the conductor's `DEFAULT_COMPILER` is pinned equal to
+    (`tools/tests/test_host_prerequisites.py`). The VERSION is probed from the executable,
+    because a profile names a compiler and not the build of it on this machine;
+    `compiler_version` is `None` when it cannot be probed (recorded, not refused)."""
+    tc = target.toolchain
     server = _build_runtime_server_module()
-    compiler = str(tc.get("compiler") or "").strip() or str(server.MANDATORY_SYNTAX_COMPILER)
-
-    def declared(mapping: dict[str, Any], key: str) -> str | None:
-        value = mapping.get(key)
-        return str(value).strip().lower() if isinstance(value, str) and value.strip() else None
-
+    compiler = str(tc.get("compiler") or "") or str(server.MANDATORY_SYNTAX_COMPILER)
     return {
-        "language": declared(tc, "language"),
-        "standard": declared(tc, "standard"),
-        "build_system": declared(tc, "build_system"),
-        "backend": declared(target, "backend"),
+        "target_id": target.target_id,
+        "language": tc["language"],
+        "standard": tc["standard"],
+        "build_system": tc["build_system"],
+        "backend": target.parallel_backend,
         "compiler": compiler,
         "compiler_version": server._syntax_compiler_version((compiler, "--version")),
     }
@@ -2329,6 +2418,7 @@ def phase_derivation_inputs(
     source_ref: str | None = None,
     binary_ref: str | None = None,
     resolver: DerivationResolver | None = None,
+    target: TargetProfile | None = None,
 ) -> dict[str, Any]:
     """The contract inputs of `(node_key, step)` as they are NOW — the mapping
     `tools.derivation.derivation_key` hashes and `_stamp_certification` records as
@@ -2340,13 +2430,14 @@ def phase_derivation_inputs(
     toolchain) and the source, `validate` the IR and the binary. A missing required ref, an
     upstream that is not certified, a dependency with no certified output and an unreadable
     spec file all raise `DerivationInputsUnresolvable`. `resolver` is the evaluation's
-    memo of dependency selections (`DerivationResolver`); one is created when none is
-    passed."""
+    memo of dependency selections (`DerivationResolver`); one is created for `target` when
+    none is passed. A pipeline phase's inputs are the resolver's target's (issue #284), and a
+    resolver without one raises `DerivationInputsUnresolvable` for them."""
     step_token = step.strip().lower()
     if step_token not in DERIVATION_STEPS:
         raise ValueError(f"unsupported step for a derivation: {step!r}")
     node_key = node_key.strip()
-    resolver = resolver or DerivationResolver(repo_root)
+    resolver = resolver or DerivationResolver(repo_root, target=target)
 
     def need(name: str, value: str | None) -> str:
         if not isinstance(value, str) or not value.strip():
@@ -2408,6 +2499,11 @@ def phase_derivation_inputs(
         }
 
     ir = need("ir_ref", ir_ref)
+    target = resolver.target
+    if target is None:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {step_token} derivation of {node_key} needs a "
+            "target profile (the resolver was built without one)")
     ir_hash = _certified_output_hash(
         repo_root, repo_root / ir / "ir_meta.json", what=f"{node_key} compile")
     if step_token == "generate":
@@ -2422,6 +2518,11 @@ def phase_derivation_inputs(
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
             },
+            # The target the source is generated FOR: the producer is shown the profile's
+            # fixed layer (`Conductor._pure_target_profile_document`), so the profile's
+            # content is an input. The harness is still the IR's (above) until R4-a PR-3
+            # moves it onto the profile.
+            "target": {"target_id": target.target_id, "profile": target.sha256},
             "harness": {
                 "node_key": harness_nk,
                 "manifest": _sha256_hex(_canonical_json_bytes(manifest)),
@@ -2435,7 +2536,6 @@ def phase_derivation_inputs(
 
     if step_token == "build":
         source = need("source_ref", source_ref)
-        ir_doc = _read_ir_document(repo_root, ir)
         return {
             "source": _certified_output_hash(
                 repo_root, repo_root / source / "source_meta.json",
@@ -2443,24 +2543,23 @@ def phase_derivation_inputs(
             "closure": [
                 {"node_key": nk, "source": _dependency_output_hash(resolver, nk, "generate")}
                 for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
-            "toolchain": _ir_toolchain_identity(ir_doc),
+            "toolchain": _target_toolchain_identity(target),
         }
 
     spec = need("spec_ref", spec_ref)
     binary = need("binary_ref", binary_ref)
-    ir_doc = _read_ir_document(repo_root, ir)
-    impl = (ir_doc.get("impl_defaults") or {}) if isinstance(ir_doc, dict) else {}
-    target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
     return {
         "binary": _certified_output_hash(
             repo_root, repo_root / binary / "binary_meta.json", what=f"{node_key} build"),
         "ir": ir_hash,
         "spec": {"tests": _spec_file_hash(repo_root, spec, "tests.md")},
-        # The execution policy `_execute_inproc` imposes: the target class off the IR, one
-        # thread per rank, and the `make_test` quality-check preset.
+        # The execution policy `_execute_inproc` imposes: the target it runs for (the
+        # profile's hardware class and threads per rank are what it passes `run_program`,
+        # and the profile hash binds them), and the `make_test` quality-check preset.
         "run_policy": {
-            "target_class": str((target if isinstance(target, dict) else {}).get("class") or "cpu"),
-            "threads_per_rank": 1,
+            "target_id": target.target_id,
+            "profile": target.sha256,
+            "threads_per_rank": target.threads_per_rank,
             "preset": "make_test",
         },
     }
@@ -2508,10 +2607,9 @@ def _revocable_stage_meta_path(
         if ir_id is None:
             return None
         return repo_root / "workspace" / "ir" / node_safe / ir_id / meta_filename
-    pipeline_id = _reserved_id(res_dir, "generate")
-    if pipeline_id is None:
+    pipe_dir = _reserved_pipeline_dir(repo_root, res_dir)
+    if pipe_dir is None:
         return None
-    pipe_dir = repo_root / "workspace" / "pipelines" / node_safe / pipeline_id
     # `_read_json` RAISES, and this function's contract — stated in its own docstring and in
     # `docs/CLI_REFERENCE_RARE.md` — is `None`, which the caller reports as a `noop`. The
     # documented RUNBOOK recipe (`revoke-artifact --step <phase>` against a node whose pipeline
@@ -2618,9 +2716,15 @@ def check_phase_certified(
     step: str,
     agent_run_id: str | None = None,
     record: bool = True,
+    target_id: str | None = None,
 ) -> dict[str, Any]:
     """`_phase_certified` plus its DURABLE record: a certified phase is transitioned to
     `skipped_certified` in `phase_state.json` (event `skip_certified`).
+
+    `target_id` (`--target`) names the target a pipeline phase is asked for; without it the
+    orchestration's recorded target is used (`_orchestration_target`). It is loaded whenever
+    it is given — an undeclared id raises `TargetProfileError` even for `compile`, whose
+    answer does not read it — so a misspelled target is refused rather than silently unused.
 
     `record=False` (`--no-record`) answers WITHOUT the transition: the conductor asks that way
     for a phase named in `--rederive`, which runs although certified — recording it skipped
@@ -2639,7 +2743,10 @@ def check_phase_certified(
     `skipped_certified`. A caller that only wants the answer asks `_phase_certified`.
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
-    certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step)
+    target = (load_target_profile(repo_root, target_id.strip())
+              if isinstance(target_id, str) and target_id.strip() else None)
+    certified, detail = _phase_certified(
+        repo_root, orchestration_id, node_key, step, target=target)
     step_token = step.strip().lower()
     if certified and record:
         _transition_node_step_phase_state(
@@ -2685,6 +2792,7 @@ def check_phase_certified(
 
 def _certified_model_source(
     repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
+    target: TargetProfile | None = None,
 ) -> Path | None:
     """Resolve the certified Fortran model source of a dependency — the EXACT
     `<spec_id>_model.f90` Build stages/links — or ``None`` if it cannot be resolved.
@@ -2701,11 +2809,12 @@ def _certified_model_source(
 
     Pure and NEVER raises: any unresolvable selection or missing source file yields
     ``None``. Callers decide the policy — the orientation hint skips the dep; Build re-raises
-    its fail-closed precondition.
+    its fail-closed precondition. The source is the one certified for the resolver's target
+    (else ``target``); with neither there is none (issue #284).
     """
     try:
         spec_id = _parse_node_key_strict(node_key)[1]
-        resolver = resolver or DerivationResolver(repo_root)
+        resolver = resolver or DerivationResolver(repo_root, target=target)
         sel = resolver.select(node_key, "generate")
         stage_dir = sel.stage_dir()
         if not sel.ok or stage_dir is None:
@@ -2761,6 +2870,7 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
 
 def _resolve_certified_closure_binding(
     repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
+    target: TargetProfile | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """The binding of ONE closure node: which certified artifact of `node_key` a build of a
     consumer stages and links right now, identified and hashed.
@@ -2782,7 +2892,7 @@ def _resolve_certified_closure_binding(
         _parse_node_key_strict(node_key)
     except Exception:
         return (None, f"unparseable dependency node_key {node_key!r}")
-    resolver = resolver or DerivationResolver(repo_root)
+    resolver = resolver or DerivationResolver(repo_root, target=target)
     sel = resolver.select(node_key, "generate")
     stage_dir = sel.stage_dir()
     if not sel.ok or stage_dir is None:
@@ -3399,6 +3509,7 @@ def _parse_fortran_dummy_declarations(
 
 def _resolve_dependency_facts(
     repo_root: Path, ir_ref: Any, *, resolver: DerivationResolver | None = None,
+    target: TargetProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve, host-side, the on-disk pipeline / run / aggregate_verdict each direct
     dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
@@ -3456,6 +3567,10 @@ def _resolve_dependency_facts(
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
     IR, a missing PyYAML, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
+
+    The facts are for ONE target (issue #284) — the resolver's, else ``target``: a dependency's
+    verdict and source are per-target artifacts, and the consumer's language is the target's.
+    With no target every dependency is skipped (``target_unresolved``).
     """
     facts: list[dict[str, Any]] = []
     try:
@@ -3477,14 +3592,10 @@ def _resolve_dependency_facts(
             return []
         # Surface dependency call-site interfaces only when the CONSUMER is Fortran: a
         # c/cpp/mixed consumer calls via its own ABI, not the Fortran subroutine signature.
-        impl = ir_doc.get("impl_defaults")
-        toolchain = impl.get("toolchain") if isinstance(impl, dict) else None
-        consumer_language = (
-            str(toolchain.get("language") or "fortran").strip().lower()
-            if isinstance(toolchain, dict) else "fortran"
-        )
+        resolver = resolver or DerivationResolver(repo_root, target=target)
+        consumer_language = (resolver.target.toolchain["language"]
+                             if resolver.target is not None else None)
         consumer_is_fortran = consumer_language == "fortran"
-        resolver = resolver or DerivationResolver(repo_root)
         for entry in direct_deps:
             node_key = entry.get("node_key") if isinstance(entry, dict) else entry
             if not isinstance(node_key, str) or not node_key.strip():
@@ -3637,10 +3748,10 @@ def _resolve_component_dep_surface(
     published_operations: [op_name, ...], source}`` where ``source`` is:
       - ``ir_public_api``   — names read from the dep's CERTIFIED IR
         ``public_api.published_operations[].operation_id`` (the L1 name pin);
-      - ``certified_source`` — fallback for a legacy dep IR with no ``public_api``: the
-        ``<dep_spec_id>__`` public subroutines in the certified ``<spec_id>_model.f90`` Build
-        links (via the shared ``_certified_model_source``);
-      - ``unresolved``      — neither resolvable (``published_operations == []``).
+      - ``unresolved``      — no certified IR, or one with no ``public_api``
+        (``published_operations == []``). The ``certified_source`` fallback that read a
+        dependency's model source went with issue #284: a source is a per-target artifact,
+        and this surface is a target-free compile-key input.
 
     NAMES ONLY here, and since issue #153 PR-2 that is a statement about THIS sidecar rather than
     about the design. The clause this docstring used to carry — "the ABI stays derived from the
@@ -3689,27 +3800,19 @@ def _resolve_component_dep_surface(
             except Exception:
                 out.append(entry)
                 continue
-            # Primary: the dep's certified IR public_api (the L1 name pin). A public_api that
-            # is PRESENT (even with an empty operation list) is authoritative — a legacy dep IR
-            # with NO public_api falls through to the certified source.
+            # The dep's certified IR public_api (the L1 name pin). A public_api that is PRESENT
+            # (even with an empty operation list) is authoritative. A dep IR with NO
+            # public_api is `unresolved`: the certified-SOURCE fallback that used to stand here
+            # read a Generate output, which is a per-target artifact (issue #284), and this
+            # surface is a compile-key input, which must answer the same for every target.
+            # Measured when it went (R4-a PR-2): every keyed certified component IR under
+            # `workspace/ir/` carries `public_api.published_operations`, and the compile gate
+            # refuses a component IR without `public_api`, so no key it fed changes.
             names = _ir_published_operation_ids(
                 repo_root, kind, spec_id, version, resolver=resolver)
             if names is not None:
                 entry["published_operations"] = names
                 entry["source"] = "ir_public_api"
-                out.append(entry)
-                continue
-            # Fallback: the `<dep_spec_id>__` public subroutines in the certified model source.
-            model_src = _certified_model_source(repo_root, nk, resolver=resolver)
-            if model_src is not None:
-                try:
-                    text = model_src.read_text(encoding="utf-8")
-                except Exception:
-                    text = None
-                if text is not None:
-                    entry["published_operations"] = _list_prefixed_subroutines(
-                        text, f"{spec_id}__")
-                    entry["source"] = "certified_source"
             out.append(entry)
         return out
     except Exception:
@@ -3722,7 +3825,7 @@ def _ir_published_operation_ids(
 ) -> list[str] | None:
     """The ``public_api.published_operations[].operation_id`` names of the CURRENT certified
     IR for ``(kind, spec_id, version)``, or ``None`` when the IR has NO ``public_api`` block
-    (a legacy IR — the caller then falls back to the certified source). A PRESENT
+    (a legacy IR — the caller reports the dependency `unresolved`). A PRESENT
     ``public_api`` with an empty/malformed ``published_operations`` yields ``[]`` (authoritative
     empty), NOT ``None``. NEVER raises."""
     try:
@@ -3891,10 +3994,15 @@ def _exemplar_contract_version_matches(model_src: Path) -> bool:
             and str(doc.get("prompt_contract_version", "")).strip() == PURE_PROMPT_CONTRACT_VERSION)
 
 
-def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | None:
+def _resolve_exemplar_source(
+    repo_root: Path, ir_ref: Any, *, target: TargetProfile | None = None,
+) -> dict[str, Any] | None:
     """R5: resolve a previously-certified SIBLING node's source as a ``generate.generate``
-    exemplar — a cacheable, known-good implementation from the SAME ``(family, spec_kind,
-    language)`` as the target, EXCLUDING the target node itself.
+    exemplar — a cacheable, known-good implementation from the SAME ``(family, spec_kind)``
+    as the subject and built for the SAME ``target`` (issue #284), EXCLUDING the subject
+    node itself. The target is what closes the language: a sibling is read from the target's
+    own pipeline tree (``DerivationResolver(target=…)``), so a sibling certified for another
+    target — another language included — is never offered. No target, no exemplar.
 
     The exemplar trades cheap input tokens for the expensive per-node re-derivation of
     cross-node-identical plumbing, raising first-attempt pass rate; the corpus is
@@ -3916,7 +4024,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
     ``None``. Best-effort: NEVER raises (a missing catalog / IR / source yields ``None``)."""
     try:
         ir_ref_token = str(ir_ref or "").strip().rstrip("/")
-        if not ir_ref_token:
+        if not ir_ref_token or target is None:
             return None
         ir_path = repo_root / ir_ref_token / "spec.ir.yaml"
         if not ir_path.is_file():
@@ -3932,37 +4040,28 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
         self_id = str(meta.get("spec_id") or "").strip()
         if not self_kind or not self_id:
             return None
-        impl = ir_doc.get("impl_defaults")
-        toolchain = impl.get("toolchain") if isinstance(impl, dict) else None
-        language = (str(toolchain.get("language") or "fortran").strip().lower()
-                    if isinstance(toolchain, dict) else "fortran")
-        # Pre-R1 only a Fortran node has the model+runner source shape to exemplify; a
-        # c/cpp/mixed target would need a same-language exemplar (extend when those land).
-        if language != "fortran":
-            return None
         # R1/M3c-β: an M3c target (a physics node with exactly one infrastructure/harness
         # dependency) authors model + checks (its runner is host-rendered), so its exemplar
         # is a sibling's model + checks — NOT the pre-M3c model + runner (injecting a
         # 600-line self-authored runner would be misleading prior art). Both files must be
         # present (a pre-M3c sibling without a checks.f90 is skipped, not partially injected).
-        # Mirror the conductor's `_conductor_authors_runner` predicate (make ∧ fortran ∧
-        # non-infra ∧ one infra dep) so the exemplar shape matches what the leaf actually
-        # authors. The `fortran` half is carried by the early return above (a non-fortran
-        # target has no exemplar at all), so it is not repeated here — writing it out again
-        # would look load-bearing while being unreachable-true and unpinnable by any test.
-        # Not byte-identical either: this site normalizes with `.strip().lower()` where the
-        # conductor uses `.lower()` alone, so an untrimmed value would read as M3c here and
-        # not there. Unreachable in a live run — `_validate_toolchain_backend_supported`
-        # rejects an untrimmed toolchain value at compile — and the difference only picks a
-        # different exemplar, never a different authored artifact.
-        build_system = (str(toolchain.get("build_system") or "make").strip().lower()
-                        if isinstance(toolchain, dict) else "make")
+        # Mirror the conductor's `_conductor_authors_runner` predicate (a control file and a
+        # runner the host authors ∧ non-infra ∧ one infra dep) so the exemplar shape matches
+        # what the leaf actually authors. Both halves are the TARGET's, the question the
+        # conductor asks of the same profile (`_core_authors_control_file` + `runner_render`).
+        tc = target.toolchain
+        host_renders = all(
+            backend_registry.provides(axis, value, capability)
+            for axis, value, capability in (
+                ("build_system", tc["build_system"], "control_file"),
+                ("language", tc["language"], "control_file"),
+                ("language", tc["language"], "runner_render")))
         dep = ir_doc.get("dependency") if isinstance(ir_doc.get("dependency"), dict) else {}
         infra_deps = [d for d in (dep.get("direct_deps") or [])
                       if (isinstance(d, dict) and isinstance(d.get("node_key"), str)
                           and d["node_key"].split("/", 1)[0].strip() == "infrastructure")
                       or (isinstance(d, str) and d.split("/", 1)[0].strip() == "infrastructure")]
-        target_is_m3c = (self_kind != "infrastructure" and build_system == "make"
+        target_is_m3c = (self_kind != "infrastructure" and host_renders
                          and len(infra_deps) == 1)
 
         catalog = _catalog_family_index(repo_root)
@@ -3983,7 +4082,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
                     siblings.append(key)
 
         best: tuple[tuple[str, int], dict[str, Any]] | None = None
-        resolver = DerivationResolver(repo_root)
+        resolver = DerivationResolver(repo_root, target=target)
         for cand_id, cand_version in siblings:
             if not (_is_safe_path_token(self_kind) and _is_safe_path_token(cand_id)
                     and (not cand_version or _is_safe_path_token(cand_version))):
@@ -4049,7 +4148,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
 
 
 def _certify_and_collect_dep_artifacts(
-    repo_root: Path, spec_ref: Any
+    repo_root: Path, spec_ref: Any, *, target: TargetProfile | None = None,
 ) -> dict[str, Any]:
     """Single-pass: judge every candidate dep version through `_verify_dep_stage_detail`
     and select the certified version per dep (one primitive since issue #178; one
@@ -4101,7 +4200,9 @@ def _certify_and_collect_dep_artifacts(
     if expand_error is not None:
         snap["entries_well_formed"] = False
         return snap
-    resolver = DerivationResolver(repo_root)
+    # The `pipeline_ref` / `aggregate_verdict` levels are asked for `target` — the
+    # orchestration's (issue #284); without one they read `target_unresolved`, level 1 at most.
+    resolver = DerivationResolver(repo_root, target=target)
     for kind, spec_id, constraint in entries:
         matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
         if not matched:
@@ -4134,7 +4235,7 @@ def _certify_and_collect_dep_artifacts(
 
 
 def _compute_dep_readiness(
-    repo_root: Path, spec_ref: Any
+    repo_root: Path, spec_ref: Any, *, target: TargetProfile | None = None,
 ) -> tuple[dict[str, bool] | None, list[dict[str, str]], str | None]:
     """Single-pass: derive the readiness booleans, the certified
     `(spec_kind, spec_id, spec_version)` per dep, and any verification-error reason from
@@ -4163,7 +4264,7 @@ def _compute_dep_readiness(
     # exception into a specific fail_reason so observability tooling, the
     # CLI exit, and persisted state all record WHICH defect occurred.
     try:
-        snap = _certify_and_collect_dep_artifacts(repo_root, spec_ref)
+        snap = _certify_and_collect_dep_artifacts(repo_root, spec_ref, target=target)
     except SpecCatalogCorruption:
         return (None, [], "spec_catalog_corrupt")
     if not snap["deps_doc_valid"]:
@@ -6388,8 +6489,10 @@ def _dependency_ready(
         # == []` bound to a byte fingerprint of deps.yaml) went with the fingerprint; no
         # production launch reaches this branch without PyYAML, because `run_workflow.py`
         # reads the catalog through it before any orchestration exists (`resolve_node`).
+        target = _target_of_orchestration_meta(repo_root, meta)
         try:
-            recomputed, _certified, fail_reason = _compute_dep_readiness(repo_root, spec_ref)
+            recomputed, _certified, fail_reason = _compute_dep_readiness(
+                repo_root, spec_ref, target=target)
         except RuntimeError as exc:
             if "PyYAML" in str(exc):
                 return False, "pyyaml_unavailable"
@@ -6420,7 +6523,7 @@ def _dependency_ready(
         # instead of leaving the operator with an opaque `..._readiness_not_pass`. Computed
         # only on the reject path, so the happy path pays nothing.
         def _reject(reason: str) -> tuple[bool, str]:
-            details = _stale_dependency_details(repo_root, spec_ref)
+            details = _stale_dependency_details(repo_root, spec_ref, target=target)
             if not details:
                 return False, reason
             return False, (
@@ -6843,52 +6946,18 @@ def control_file_host_authored(build_system: str | None, language: str | None) -
                             ("language", (language or "fortran"))))
 
 
-def _impl_resolved_build_system(repo_root: Path, ir_ref: str) -> str | None:
-    """`impl_defaults.toolchain.build_system` from the IR, read structurally.
+def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, Any]:
+    """The toolchain of the target a launch's pipeline is built for, read off the store
+    coordinate of its `pipeline_ref` (`target_profile.load_pipeline_target`, issue #284).
 
-    Read as YAML rather than scanned line by line. The scanner took the first line whose
-    key merely CONTAINED `build_system` and ignored nesting, so one line of prose
-    anywhere above `impl_defaults` — `algorithm.invariants` is a free-text array the
-    same LLM substep authors — decided the answer. A non-`make` answer exempts the
-    make-only contract in the MCP phase gate and suppresses the mandatory Makefile pin
-    in `record_launch`, so a decoy line bought both.
-
-    `None` when the file is missing, unreadable, or declares no value; every caller
-    reads `None` as `make`, which is the fail-closed direction."""
-    path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
-    return _impl_defaults_toolchain_value(path, "build_system")
-
-
-def _impl_defaults_toolchain_value(path: Path, field: str) -> str | None:
-    """One `impl_defaults.toolchain.<field>` string from a spec.ir.yaml, or None."""
-    if not path.is_file():
-        return None
-    try:
-        doc = _require_yaml().safe_load(path.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return None
-    if not isinstance(doc, dict):
-        return None
-    impl = doc.get("impl_defaults")
-    toolchain = impl.get("toolchain") if isinstance(impl, dict) else None
-    value = toolchain.get(field) if isinstance(toolchain, dict) else None
-    if not isinstance(value, str):
-        return None
-    return value.strip().lower() or None
-
-
-def _impl_resolved_language(repo_root: Path, ir_ref: str) -> str | None:
-    """spec.ir.yaml's `impl_defaults.toolchain.language`, read structurally.
-
-    The twin of `_impl_resolved_build_system`, and it was line-scanned for the same
-    reason and with the same consequence: unscoped to nesting, so a `language:` line in
-    any free-text field above `impl_defaults` answered for the toolchain. This one
-    decides `_resolved_makefile_host_authored`, so a decoy flipped who owns
-    `src/Makefile` — the conductor authors it and omits it from the leaf's write set,
-    while record_launch concluded it was not host-authored and pinned it back as a
-    writable path. `None` when absent or unreadable; callers default to fortran."""
-    path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
-    return _impl_defaults_toolchain_value(path, "language")
+    Before R4-a PR-2 this pair of readers (`_impl_resolved_build_system` /
+    `_impl_resolved_language`) read `impl_defaults.toolchain` out of the IR, with a `make` /
+    language default for an absent value. The profile carries every field (its loader refuses
+    one missing), so there is nothing to default; a `pipeline_ref` that carries no target, or
+    whose profile no longer loads, RAISES `TargetProfileError` (a `ValueError`), which
+    `record_launch` reports as a refused launch — the conductor mints every `pipeline_ref`
+    under a target, so the only way to reach it is a request the conductor did not build."""
+    return load_pipeline_target(repo_root, pipeline_ref).toolchain
 
 
 def _impl_is_leaf_node(repo_root: Path, ir_ref: str) -> bool | None:
@@ -7348,12 +7417,16 @@ def _allowed_output_paths_for_launch(
         if step_token == "promote":
             # Promote contract per docs/workflow/phases/phase_07_promote.md:
             #   releases/<spec_kind>/<domain>/<family>/<spec_id>/
-            #     <target_architecture>/<toolchain_language>/<release_id>/<artifact_path...>
+            #     <target_id>/<release_id>/<artifact_path...>
             #   spec/registry/spec_catalog.yaml (exact file)
             #
+            # A release is of one node built for one target (issue #284): the target id
+            # replaced the `<target_architecture>/<toolchain_language>` pair, which named two
+            # of a target's axes and not the target.
+            #
             # The release tree is constrained to THIS node's spec to prevent
-            # cross-spec writes, AND requires the full architecture/language/
-            # release_id structure under the spec prefix. A bare prefix-match
+            # cross-spec writes, AND requires the full target/release_id structure under
+            # the spec prefix. A bare prefix-match
             # would let a promote launch declare ad-hoc files like
             # `releases/.../spec_x/README.md` which fall outside the canonical
             # release artifact layout.
@@ -7371,13 +7444,13 @@ def _allowed_output_paths_for_launch(
                 return False
             tail = path[len(required_prefix):]
             tail_segments = [seg for seg in tail.split("/") if seg]
-            # Tail must be <arch>/<lang>/<release_id>/<artifact_path...>
-            # — at least 4 non-empty segments, with the first three being
-            # well-formed single-segment identifiers (no path-traversal or
-            # control characters).
-            if len(tail_segments) < 4:
+            # Tail must be <target_id>/<release_id>/<artifact_path...>
+            # — at least 3 non-empty segments: a well-formed target id, then a
+            # well-formed single-segment identifier (no path-traversal or control
+            # characters).
+            if len(tail_segments) < 3 or not is_target_id(tail_segments[0]):
                 return False
-            for ident in tail_segments[:3]:
+            for ident in tail_segments[1:2]:
                 # Identifier rule: alphanumeric, underscore, hyphen, dot. No
                 # leading/trailing dot or slash. Empty already rejected above.
                 if ident.startswith(".") or ident.endswith("."):
@@ -7459,8 +7532,8 @@ def _allowed_output_paths_for_launch(
     # Inject only the canonical placements derived from listed paths — see
     # `_canonical_mcp_audit_log_paths` for the strict per-phase shapes.
     # `_resolved_build_system` is an internal request_payload field
-    # populated by record_launch (resolved from spec.ir.yaml.impl_defaults) so the
-    # helper can gate cross-phase canonical placement on `build_system=make`.
+    # populated by record_launch (resolved from the target profile of the request's
+    # pipeline) so the helper can gate cross-phase canonical placement on `build_system=make`.
     # Tests calling this helper directly may set the field explicitly when
     # cross-phase semantics are exercised; absence simply disables
     # cross-phase auto-inject (in-phase canonical still applies).
@@ -7649,20 +7722,19 @@ def _canonical_mcp_audit_log_paths_for_request(
     node_safe = _node_key_to_safe(node_key) if node_key else ""
     source_id = str(request_payload.get("source_id") or "").strip()
     # Resolve toolchain.build_system, preferring (1) explicit
-    # `_resolved_build_system` in request_payload (set by record_launch from
-    # spec.ir.yaml.impl_defaults), then (2) reading spec.ir.yaml.impl_defaults directly
-    # when repo_root is provided. Without either, build_system="" which
-    # disables cross-phase canonical placement (Make-only exception).
+    # `_resolved_build_system` in request_payload (set by record_launch from the target
+    # profile of the request's pipeline), then (2) reading that profile directly when
+    # repo_root is provided. Without either, build_system="" which disables cross-phase
+    # canonical placement (Make-only exception).
     build_system = ""
     bs_pre = request_payload.get("_resolved_build_system")
     if isinstance(bs_pre, str) and bs_pre.strip():
         build_system = bs_pre.strip().lower()
-    elif repo_root is not None:
-        ir_ref = str(request_payload.get("ir_ref") or "").strip()
-        if ir_ref:
-            bs = _impl_resolved_build_system(repo_root, ir_ref)
-            if isinstance(bs, str) and bs.strip():
-                build_system = bs.strip().lower()
+    elif repo_root is not None and pipeline_ref:
+        try:
+            build_system = str(_pipeline_target_toolchain(repo_root, pipeline_ref)["build_system"])
+        except TargetProfileError:
+            build_system = ""
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     return _canonical_mcp_audit_log_paths(
         step_token=step_token,
@@ -11380,18 +11452,25 @@ def _validate_canonical_workspace_root_ref(
     kind: str,
     label: str,
 ) -> None:
-    """Require ref == workspace/{kind}/{node_safe}/{root_id} with no extra path segments."""
+    """Require ref == workspace/{kind}/{node_safe}/{root_id} — for `kind="pipelines"`,
+    workspace/pipelines/{node_safe}/{target_id}/{root_id} (issue #284) — with no extra path
+    segments."""
     token = ref.strip().strip("/")
     parts = token.split("/")
-    if len(parts) != 4:
+    shape = ("workspace/pipelines/<node_key_safe>/<target_id>/<id>" if kind == "pipelines"
+             else f"workspace/{kind}/<node_key_safe>/<id>")
+    if len(parts) != (5 if kind == "pipelines" else 4):
         raise ValueError(
-            f"launch request {label} must be exactly workspace/{kind}/<node_key_safe>/<id> "
-            f"(directory root only); got {ref!r}"
+            f"launch request {label} must be exactly {shape} (directory root only); "
+            f"got {ref!r}"
         )
     if parts[0] != "workspace" or parts[1] != kind:
         raise ValueError(f"launch request {label} must be under workspace/{kind}/; got {ref!r}")
+    if kind == "pipelines" and not is_target_id(parts[3]):
+        raise ValueError(
+            f"launch request {label} has invalid target_id segment {parts[3]!r}; got {ref!r}")
     seg_node = parts[2]
-    root_id = parts[3]
+    root_id = parts[-1]
     if seg_node != node_safe:
         raise ValueError(
             f"launch request {label} node directory must be {node_safe!r}; got {ref!r}"
@@ -15122,42 +15201,24 @@ def record_launch(
         # `allowed_output_paths` is what `_validate_pass_output_refs_against_launch` and
         # `determine_substep_status` read for a deterministic substep.
         is_pure = _is_pure_launch_request(request_payload)
-        # Resolve toolchain.build_system from spec.ir.yaml.impl_defaults so the
-        # canonical-placement helper can gate cross-phase auto-inject on
-        # `build_system=make` (the documented Make-only exception).
-        _ir_ref_for_bs = str(request_payload.get("ir_ref") or "").strip()
-        if _ir_ref_for_bs:
-            _bs_resolved = _impl_resolved_build_system(repo_root, _ir_ref_for_bs)
+        # The toolchain of the target the request's pipeline is built for (issue #284; read
+        # off the IR's `impl_defaults` until R4-a PR-2), so the canonical-placement helper can
+        # gate cross-phase auto-inject on the build system (the documented Make-only
+        # exception), and so the control-file authorship flag is the conductor's answer: both
+        # sides ask the same profile. A request whose `pipeline_ref` carries no target is
+        # refused here (`TargetProfileError`).
+        _pipe_ref_for_tc = str(request_payload.get("pipeline_ref") or "").strip()
+        if _pipe_ref_for_tc:
+            _tc_resolved = _pipeline_target_toolchain(repo_root, _pipe_ref_for_tc)
             request_payload = dict(request_payload)
-            # Default an ABSENT build_system to "make" to mirror the conductor's
-            # `str(toolchain.build_system or "make")` default. Previously the key was set only
-            # when build_system resolved to a non-empty string, so a missing build_system left
-            # it unset -> the Makefile pin was skipped (by `_mandatory_file_tool_pins_for_launch`,
-            # deleted with the leaf's file-tool grant in issue #171 PR-2; the same default now
-            # feeds `_allowed_output_paths_for_launch`),
-            # while the conductor still listed/required the Makefile for a
-            # non-host-authored generate node -> a launch that proceeds without authorizing the
-            # extensionless Makefile. The project is make-only (Conductor._require_make_build_system
-            # hard-fails non-make) and real compile-produced IR always carries an explicit
-            # build_system; an explicit non-make value (e.g. cmake) is preserved as-is.
-            request_payload["_resolved_build_system"] = (
-                _bs_resolved.strip().lower()
-                if isinstance(_bs_resolved, str) and _bs_resolved.strip() else "make")
-            # The conductor authors src/Makefile host-side iff make AND fortran, for BOTH leaf
-            # and dependency nodes (= Conductor._conductor_authors_makefile; the dependency
-            # Makefile is as IR-determined as the leaf one — Model B). Mirror that exact
-            # condition so the mandatory-Makefile pin is suppressed only when the conductor
-            # really authored it (and kept otherwise, e.g. c/cpp), matching the leaf's
-            # allowed_output_paths. Computed here rather than as separate flags so conductor
-            # and runtime cannot disagree.
-            _lang_resolved = _impl_resolved_language(repo_root, _ir_ref_for_bs)
-            _bs_for_mk = (_bs_resolved or "").strip().lower() if isinstance(_bs_resolved, str) else ""
-            # Mirror the conductor's defaulting EXACTLY (`str(... or "make")` / `... or
-            # "fortran")`): an absent build_system/language defaults to make/fortran on both
-            # sides, so the two never disagree (an absent build_system must not make the
-            # conductor author while the runtime keeps the pin -> record_launch fail-closed).
+            request_payload["_resolved_build_system"] = str(_tc_resolved["build_system"])
+            # The conductor authors the control file iff the neutral core has a writer for the
+            # target's (build_system, language) — `Conductor._conductor_authors_makefile`, for
+            # leaf and dependency nodes alike (Model B). Mirrored so the leaf's
+            # `allowed_output_paths` keeps the file exactly when the conductor does not author
+            # it; computed here rather than as separate flags so the two cannot disagree.
             request_payload["_resolved_makefile_host_authored"] = control_file_host_authored(
-                _bs_for_mk, _lang_resolved)
+                str(_tc_resolved["build_system"]), str(_tc_resolved["language"]))
         if is_pure:
             # A pure leaf authors nothing in its window, so it declares no output path. The
             # empty list flows through the (inert for generate) lineage / cross-phase blocks
@@ -17323,7 +17384,8 @@ def mark_dependency_readiness(
         # Codex round 17 F1+F2: also persist certified_deps (one canonical
         # version per dep) so downstream consumers see the same version that
         # satisfied readiness.
-        verified, certified_deps, fail_reason = _compute_dep_readiness(repo_root, spec_ref)
+        verified, certified_deps, fail_reason = _compute_dep_readiness(
+            repo_root, spec_ref, target=_target_of_orchestration_meta(repo_root, meta))
         if verified is None:
             # Codex round 8 F2 + round 21 F2: persist fail-closed BEFORE
             # raising and record the SPECIFIC fail_reason so observability
@@ -17425,9 +17487,25 @@ def reserve_phase_root(
     step: str,
     reserved_id: str,
     reserved_by_agent_run_id: str,
+    target_id: str | None = None,
 ) -> dict[str, Any]:
+    """Reserve the ir_id (`step=compile`) or the pipeline_id (`step=generate`) a node's run
+    writes under. A pipeline reservation also records the `target_id` its pipeline is built
+    for (issue #284) — required there, refused on a compile one: a pipeline id names a
+    directory only together with its target (`workspace/pipelines/<safe>/<target_id>/<id>`),
+    and the readers that turn a reservation back into a directory (`resume_node_refs`,
+    `_revocable_stage_meta_path`, `audit_orchestration`) read it from here."""
     step_key = step.strip().lower()
     _required_child_agent_kind(step_key)
+    target_token = target_id.strip() if isinstance(target_id, str) else ""
+    if step_key == "generate" and not is_target_id(target_token):
+        raise ValueError(
+            f"reserve-phase-root: a generate (pipeline) reservation requires --target naming "
+            f"the target its pipeline is built for; got {target_id!r}")
+    if step_key != "generate" and target_token:
+        raise ValueError(
+            f"reserve-phase-root: --target applies to a generate (pipeline) reservation only "
+            f"(the {step_key} output is target-free); got {target_id!r}")
     # Codex round 32 F2: validate `reserved_id` against `_SLUG_DATE_SEQ3_PATTERN`
     # at the canonical reservation entrypoint. Round-31 tightened the
     # freshness reader to this same grammar but left the writer side
@@ -17460,6 +17538,8 @@ def reserve_phase_root(
         "status": "reserved",
         "reserved_at": _utc_now_iso(),
     }
+    if step_key == "generate":
+        payload["target_id"] = target_token
     _write_json(out, payload)
     return payload
 
@@ -17751,7 +17831,7 @@ def main(argv: list[str] | None = None) -> int:
         "step, substep (for substep agents), orchestration_id, agent_run_id, "
         "parent_agent_run_id, workflow_mode ('dev'|'prod'), "
         "ir_ref (workspace/ir/<node_key_safe>/<ir_id>), "
-        "pipeline_ref (workspace/pipelines/<node_key_safe>/<pipeline_id> -- required for ALL "
+        "pipeline_ref (workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id> -- required for ALL "
         "phases including Plan; reserve via reserve-phase-root --step generate if not yet created), "
         "dependency_ref (phase rule: Plan => spec/.../deps.yaml; Generate+ => workspace phase root). "
         "skill_name / skill_ref / skill_must_read_refs are NOT required and must be empty: no leaf "
@@ -17770,7 +17850,7 @@ def main(argv: list[str] | None = None) -> int:
         "record_launch reads <pipeline>/build/<source_build_id>/binary_meta.json and verifies "
         "source_source_id == request.source_id to prevent mixed-build forge). "
         "Cross-phase MCP audit log auto-inject (`<gen>/src/command_log.jsonl`) only fires when "
-        "spec.ir.yaml.impl_defaults records `toolchain.build_system: make` (Fortran/C-family in-source builds). "
+        "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds). "
         "Generate substep extra-required: source_id matches the listed paths' single <gen_id>. "
         "Build step listed paths must use a single <binary_id>; cross-phase Make builds also accept "
         "source_id-derived `<gen>/src/command_log.jsonl` placement."
@@ -18077,6 +18157,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     reserve_root_parser.add_argument("--reserved-by-agent-run-id", required=True,
                                      help="UUID of the agent that will use this reserved ID.")
+    reserve_root_parser.add_argument(
+        "--target", default=None,
+        help=("Target id the reserved pipeline is built for (spec/targets/<id>.yaml). "
+              "Required with --step generate, refused with --step compile: the pipeline "
+              "lives at workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>."))
 
     check_phase_certified_parser = subparsers.add_parser(
         "check-phase-certified",
@@ -18101,6 +18186,14 @@ def main(argv: list[str] | None = None) -> int:
     check_phase_certified_parser.add_argument(
         "--agent-run-id",
         help="Agent run id recorded on the skip_certified phase-state event (the orchestration arid).",
+    )
+    check_phase_certified_parser.add_argument(
+        "--target",
+        default=None,
+        help=("Target id (spec/targets/<id>.yaml) a generate/build/validate phase is asked "
+              "for; default: the orchestration's recorded invocation.target. Loaded whenever "
+              "given (an undeclared id exits 1), and not read for --step compile, whose "
+              "output is target-free."),
     )
 
     revoke_artifact_parser = subparsers.add_parser(
@@ -18447,14 +18540,19 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
     elif args.command == "check-phase-certified":
-        result = check_phase_certified(
-            repo_root=repo_root,
-            orchestration_id=args.orchestration_id,
-            node_key=args.node_key,
-            step=args.step,
-            agent_run_id=args.agent_run_id,
-            record=not args.no_record,
-        )
+        try:
+            result = check_phase_certified(
+                repo_root=repo_root,
+                orchestration_id=args.orchestration_id,
+                node_key=args.node_key,
+                step=args.step,
+                agent_run_id=args.agent_run_id,
+                record=not args.no_record,
+                target_id=args.target,
+            )
+        except TargetProfileError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     elif args.command == "revoke-artifact":
         try:
             last_fail_reason = args.last_fail_reason
@@ -18566,6 +18664,7 @@ def main(argv: list[str] | None = None) -> int:
             step=args.step,
             reserved_id=args.reserved_id,
             reserved_by_agent_run_id=args.reserved_by_agent_run_id,
+            target_id=args.target,
         )
     else:
         raise RuntimeError(f"unhandled command: {args.command}")

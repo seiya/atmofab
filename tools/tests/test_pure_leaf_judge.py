@@ -36,6 +36,7 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config as _cfg
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_pure_leaf_producer import (
     _conductor,
     _envelope,
@@ -99,7 +100,7 @@ def _write_run_node(repo: Path, *, bundle: bool = False) -> wc.NodeRefs:
         "## 1. Tests\n- test_id: t_basic\n  judgment: the metric is under the threshold\n",
         encoding="utf-8")
 
-    refs = wc.NodeRefs(node_key=_NODE, spec_path=_SPEC_PATH, ir_id="ir_20260908_001",
+    refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=_NODE, spec_path=_SPEC_PATH, ir_id="ir_20260908_001",
                        pipeline_id="p_20260908_001", source_id="src_20260908_001",
                        binary_id="bin_20260908_001", run_id="run_20260908_001")
 

@@ -5,7 +5,7 @@ Static lint is the lint checker of the deterministic `generate.gate` substep, ru
 by the conductor (`Conductor._gate_inproc -> _gate_lint_check`), NOT by the leaf. The `post_generate` validator certifies that
 lint actually ran with the correct preset and succeeded. That certificate must NOT be
 forgeable by the leaf, so it lives at the **pipeline root**
-(`workspace/pipelines/<safe>/<pipeline_id>/lint_evidence/<source_id>.json`) — the same
+(`workspace/pipelines/<safe>/<target_id>/<pipeline_id>/lint_evidence/<source_id>.json`) — the same
 leaf-non-writable location that already forces host authorship of `lineage.json` — and is
 written ONLY host-side by the conductor. The validator reads it read-only and fail-closes
 when it is missing/invalid.

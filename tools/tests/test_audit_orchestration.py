@@ -16,6 +16,7 @@ from unittest import mock
 
 from tools import audit_orchestration as ao
 from tools import orchestration_diagnostics as diag
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_orchestration_diagnostics import (
     CHILD_ARID,
     _open_dangling_window,
@@ -30,6 +31,9 @@ from tools.audit_orchestration import (
     _render_pure_leaf_row,
     _render_incident_body,
 )
+
+#: A reservation written before issue #284 carries no `target_id` key at all.
+_NO_TARGET = object()
 
 
 def _write_jsonl(path: Path, records: list) -> None:
@@ -718,10 +722,12 @@ class PureLeafABSummaryTest(unittest.TestCase):
     ORCH = "orch_pure_ab"
     SAFE = "comp__demo__0.1.0"
     PIPELINE_ID = "demo_20260716_001"
-    PIPE = f"workspace/pipelines/{SAFE}/{PIPELINE_ID}"
-    SRC = f"workspace/pipelines/{SAFE}/{PIPELINE_ID}/source/src_20260716_001"
+    # Under the fixture target (issue #284); the reservation names it (`_reserve`).
+    PIPE = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}"
+    SRC = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}/source/src_20260716_001"
 
-    def _reserve(self, repo: Path, *, pipeline_id: str | None = None) -> None:
+    def _reserve(self, repo: Path, *, pipeline_id: str | None = None,
+                 target_id: object = _TARGET_ID) -> None:
         """Write the pipeline reservation `prepare_node` writes before Compile runs.
 
         This is what discovery reads. The
@@ -742,6 +748,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
                     "reserved_ir_id": (
                         pipeline_id if pipeline_id is not None else self.PIPELINE_ID
                     ),
+                    **({} if target_id is _NO_TARGET else {"target_id": target_id}),
                 }
             ),
             encoding="utf-8",
@@ -1105,6 +1112,25 @@ class PureLeafABSummaryTest(unittest.TestCase):
         )
         self.assertIsNone(out["generate_executor"])
         self.assertIsNone(out["agent_cli_version"])
+
+    def test_a_pre_target_reservation_is_audited_where_it_put_its_pipeline(self) -> None:
+        """A reservation without `target_id` was written before issue #284; its pipeline is
+        directly under `<node_key_safe>/`, and the audit reads it there. One whose
+        `target_id` is present but not a target id names nothing."""
+        from tools.audit_orchestration import _pure_source_dirs_of
+        legacy_pipe = f"workspace/pipelines/{self.SAFE}/{self.PIPELINE_ID}"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._reserve(repo, target_id=_NO_TARGET)
+            (repo / legacy_pipe / "source" / "src_20260716_001").mkdir(parents=True)
+            dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
+            self.assertEqual(refs, [legacy_pipe])
+            self.assertEqual(dirs, [f"{legacy_pipe}/source/src_20260716_001"])
+        for bad in ("Not_A_Target", "", 3, "x_20260101_001"):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self._reserve(repo, target_id=bad)
+                self.assertEqual(_pure_source_dirs_of(repo, self.ORCH), ([], []), bad)
 
     def test_traversal_reserved_pipeline_id_is_skipped(self) -> None:
         # `reserved_ir_id` is JSON-sourced: a non-segment value would escape the
@@ -1531,7 +1557,7 @@ class PureJudgeAbRollupTests(unittest.TestCase):
     _REQUEST = {
         "step": "validate", "substep": "judge", "leaf_mode": "pure",
         "node_key": "component/spec_x@0.1.0",
-        "pipeline_ref": "workspace/pipelines/component__spec_x__0.1.0/p_1",
+        "pipeline_ref": f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1",
         "run_id": "run_1",
     }
     _META = {"result": "pass", "attempts": 1, "prompt_contract_version": "pure-36",
@@ -1543,8 +1569,8 @@ class PureJudgeAbRollupTests(unittest.TestCase):
         self.assertTrue(summary["available"])
         node = summary["pure_validate_nodes"][0]
         self.assertEqual(node["run_node_dir"],
-                         "workspace/pipelines/component__spec_x__0.1.0/p_1/runs/run_1"
-                         "/component__spec_x__0.1.0")
+                         f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1"
+                         "/runs/run_1/component__spec_x__0.1.0")
         self.assertTrue(node["judge"]["found"])
         self.assertIn("### validate `workspace/pipelines/", rendered)
         self.assertIn("judge", rendered)
@@ -1552,10 +1578,30 @@ class PureJudgeAbRollupTests(unittest.TestCase):
     def test_the_safe_node_key_is_read_out_of_the_pipeline_ref(self) -> None:
         """Not recomputed from `node_key`: the tree already has two spellings of that
         transform, and a third here would be the one nothing checks. A request whose
-        `pipeline_ref` is not the four-segment shape names no directory at all."""
-        request = dict(self._REQUEST, pipeline_ref="workspace/pipelines/component__spec_x__0.1.0")
-        summary, _ = self._rollup(request=request, meta=None)
-        self.assertEqual(summary["pure_validate_nodes"], [])
+        `pipeline_ref` is neither `<safe>/<target_id>/<id>` (issue #284) nor the pre-target
+        `<safe>/<id>` an older run recorded names no directory at all."""
+        # The judge record EXISTS at each bad path (`meta=`), so an empty result is the shape
+        # check refusing the ref, not a missing file; the good ref, same setup, is found.
+        good, _ = self._rollup(request=self._REQUEST, meta=self._META)
+        self.assertEqual(len(good["pure_validate_nodes"]), 1)
+        for bad in ("workspace/pipelines/component__spec_x__0.1.0",
+                    "workspace/pipelines/component__spec_x__0.1.0/Not_A_Target/p_1",
+                    "workspace/pipelines/component__spec_x__0.1.0/a/b/p_1"):
+            request = dict(self._REQUEST, pipeline_ref=bad)
+            summary, _ = self._rollup(request=request, meta=self._META)
+            self.assertEqual(summary["pure_validate_nodes"], [], bad)
+
+    def test_a_pre_target_run_is_audited_where_it_put_its_pipeline(self) -> None:
+        """An orchestration recorded before issue #284 carries the four-segment
+        `pipeline_ref`; its judge record is read there (origin/main did, and 102 of the 105
+        orchestrations on the author's machine are such runs)."""
+        legacy = "workspace/pipelines/component__spec_x__0.1.0/p_1"
+        summary, _ = self._rollup(request=dict(self._REQUEST, pipeline_ref=legacy),
+                                  meta=self._META)
+        node = summary["pure_validate_nodes"][0]
+        self.assertEqual(node["run_node_dir"],
+                         f"{legacy}/runs/run_1/component__spec_x__0.1.0")
+        self.assertTrue(node["judge"]["found"])
 
     def test_an_agentic_judge_leaves_no_row(self) -> None:
         request = dict(self._REQUEST)

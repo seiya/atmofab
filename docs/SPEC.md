@@ -111,9 +111,8 @@ releases/
     <domain>/
       <family>/
         <spec_id>/
-          <target_architecture>/
-            <toolchain_language>/
-              <release_id>/
+          <target_id>/
+            <release_id>/
 ```
 
 3. Make the definitions of `domain` and `family` match the "`spec` classification vocabulary" in `GLOSSARY.md`.
@@ -127,7 +126,7 @@ releases/
 11. Unregistered dependencies, unimplemented dependencies, and compatibility-violating dependencies are not allowed.
 12. `releases/registry/component_catalog.yaml` holds the per-`component` responsibility, the published `operation`, compatibility information, and implementation state.
 13. Each `tests.md` must define at least 1 `L0` test. (A `profile spec` has no `tests.md` — requirement 5.)
-14. Official-version artifacts must not be placed under `spec`. The storage location requires `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_architecture>/<toolchain_language>/<release_id>/`.
+14. Official-version artifacts must not be placed under `spec`. The storage location requires `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`: a release is of one `node` built for one `target profile` (issue #284).
 15. The granularity decision requires the following criteria.
 - Replaceability: make only a boundary where there is a decision to replace it independently into a `component spec`.
 - Contract independence: divide only a unit whose input/output contract, preconditions, and failure conditions can be described standalone.
@@ -149,8 +148,8 @@ releases/
 - When the reuse boundary of a `problem spec` is changed, update `releases/registry/component_catalog.yaml` at the same time.
 - While the implementation state of a `component` is `spec_defined_not_implemented`, set the depending `problem spec` to `status=draft`.
 - `workspace/` is a working area for trial artifacts and must not be used as the canonical source for official-version artifacts.
-- On promotion, add `official_releases` to the target `spec_id` of `spec_catalog.yaml`, recording `release_id`, `target_architecture`, `toolchain_language`, `target_backend`, `source_pipeline_id`, `source_source_id`, `source_binary_id`, `source_run_id`, `artifact_root`, `promoted_at`, and `status`. Promote is an optional flow separated from the core workflow.
-- `official_releases` allows only 1 entry with `status=active` per `target_architecture + toolchain_language` of each `spec_id`.
+- On promotion, add `official_releases` to the target `spec_id` of `spec_catalog.yaml`, recording `release_id`, `target_id`, `source_pipeline_id`, `source_source_id`, `source_binary_id`, `source_run_id`, `artifact_root`, `promoted_at`, and `status`. Promote is an optional flow separated from the core workflow.
+- `official_releases` allows only 1 entry with `status=active` per `target_id` of each `spec_id`.
 - The placement of a `spec` is canonically `spec/<spec_kind>/<domain>/<family>/<spec_id>/...`.
 
 ### Decision Criteria

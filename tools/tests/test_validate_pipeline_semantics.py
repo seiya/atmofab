@@ -33,7 +33,7 @@ from tools.validate_pipeline_semantics import (
     _validate_diagnostics_contract,
     _validate_diagnostics_contract_output,
     _validate_fortran_makefile_src_dir,
-    _impl_toolchain_from_pipeline_dir,
+    _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
     _validate_makefile_test_no_relink,
     _validate_makefile_test_invokes_cases,
@@ -51,6 +51,9 @@ from tools.validate_pipeline_semantics import (
     validate_post_generate_stage,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import install_target_profile
+from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 
 
 # The mock spec the shared fixture's IR points at through `meta.source_refs` (the real IR's only
@@ -248,7 +251,7 @@ orchestration_id: {orchestration_id}
 agent_run_id: {run_id}
 parent_agent_run_id: orch_run_001
 ir_ref: workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001
-pipeline_ref: workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001
+pipeline_ref: workspace/pipelines/problem__shallow_water2d__0.3.0/{_TARGET_ID}/shallow-water2d_20260415_001
 dependency_ref: {_dependency_ref_for_step(step)}
 skill_name: workflow-{step}
 skill_ref: skills/workflow-{step}/SKILL.md
@@ -278,7 +281,7 @@ orchestration_id: {orchestration_id}
 agent_run_id: {run_id}
 parent_agent_run_id: orch_run_001
 ir_ref: workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001
-pipeline_ref: workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001
+pipeline_ref: workspace/pipelines/problem__shallow_water2d__0.3.0/{_TARGET_ID}/shallow-water2d_20260415_001
 dependency_ref: {_dependency_ref_for_step(step)}
 skill_name: workflow-{step}-{substep}
 skill_ref: skills/workflow-{step}-{substep}/SKILL.md
@@ -317,7 +320,9 @@ def _create_minimal_execution_tree(
     pipeline_id = "shallow-water2d_20260415_001"
     run_id = "run_test_001"
 
-    pipeline_dir = workspace / "pipelines" / node_safe / pipeline_id
+    # Under the fixture target (issue #284), whose profile the validator loads from the repo.
+    install_target_profile(repo_root)
+    pipeline_dir = workspace / "pipelines" / node_safe / _TARGET_ID / pipeline_id
     node_dir = pipeline_dir / "runs" / run_id / "problem__shallow_water2d__0.3.0"
     raw_dir = node_dir / "raw"
     snapshots_dir = raw_dir / "state_snapshots"
@@ -337,7 +342,7 @@ def _create_minimal_execution_tree(
     lint_command_id = "lint_cmd_fixture_001"
     syntax_command_id = "syntax_cmd_fixture_001"
     rel_lint_log = (
-        f"workspace/pipelines/{node_safe}/{pipeline_id}/source/src_20260415_001/src/command_log.jsonl"
+        f"workspace/pipelines/{node_safe}/{_TARGET_ID}/{pipeline_id}/source/src_20260415_001/src/command_log.jsonl"
     )
     if dependency_resolved is None:
         # Real shape: `direct_deps` entries are objects (node_key / kind / operations) in every
@@ -1484,7 +1489,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "problem__shallow_water2d__0.3.0_empty_pipeline"
                 / "runs"
                 / "exe_empty_001"
@@ -1504,7 +1509,7 @@ end program shallow_water2d_runner
             workspace = repo_root / "workspace"
             node_safe = "problem__shallow_water2d__0.3.0"
             pipeline_dir = (
-                workspace / "pipelines" / node_safe / "shallow-water2d_20260415_001"
+                workspace / "pipelines" / node_safe / _TARGET_ID / "shallow-water2d_20260415_001"
             )
             for run_id in ("run_test_001", "run_test_002"):
                 node_dir = pipeline_dir / "runs" / run_id / node_safe
@@ -1544,7 +1549,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / node_safe
+                / node_safe / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             ir_dir = repo_root / ir_ref
@@ -1620,7 +1625,7 @@ end program shallow_water2d_runner
                 node_safe = "component__demo_scope__0.1.0"
                 ir_ref = f"workspace/ir/{node_safe}/demo-scope_20260625_001"
                 pipeline_dir = (
-                    repo_root / "workspace" / "pipelines" / node_safe
+                    repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                     / "demo-scope_20260625_001"
                 )
                 ir_dir = repo_root / ir_ref
@@ -1737,7 +1742,7 @@ end program shallow_water2d_runner
             node_safe = "component__demo_tid__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-tid_20260625_001"
             pipeline_dir = (
-                repo_root / "workspace" / "pipelines" / node_safe
+                repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                 / "demo-tid_20260625_001"
             )
             ir_dir = repo_root / ir_ref
@@ -1873,7 +1878,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_tc__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-tc_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-tc_20260709_001")
             schema = {
                 "variables": [
@@ -1933,7 +1938,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_ord__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-ord_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-ord_20260709_001")
             schema = {
                 "variables": [
@@ -1990,7 +1995,7 @@ end program shallow_water2d_runner
         in-file `case_id` is parameterized so the undeclared-token path can be exercised too."""
         node_safe = "component__demo_untargeted__0.1.0"
         ir_ref = f"workspace/ir/{node_safe}/demo-untargeted_20260709_001"
-        pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+        pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                         / "demo-untargeted_20260709_001")
         schema = {
             "variables": [
@@ -2063,7 +2068,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_hybrid__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-hybrid_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-hybrid_20260709_001")
             schema = {
                 "variables": [{"name": "U_L", "shape_expr": "[3]"},
@@ -2110,7 +2115,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_nopred__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-nopred_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-nopred_20260709_001")
             schema = {
                 "variables": [{"name": "U_L", "shape_expr": "[3]"},
@@ -2151,7 +2156,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_mixed__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-mixed_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-mixed_20260709_001")
             schema = {
                 "variables": [{"name": "U_L", "shape_expr": "[3]"},
@@ -2200,7 +2205,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_noevidence__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-noevidence_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-noevidence_20260709_001")
             schema = {
                 "variables": [
@@ -2276,7 +2281,7 @@ end program shallow_water2d_runner
             repo_root = Path(tmp)
             node_safe = "component__demo_tcu__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-tcu_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe
+            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                             / "demo-tcu_20260709_001")
             schema = {
                 "variables": [
@@ -2341,7 +2346,7 @@ end program shallow_water2d_runner
             node_safe = "component__demo_strict__0.1.0"
             ir_ref = f"workspace/ir/{node_safe}/demo-strict_20260625_001"
             pipeline_dir = (
-                repo_root / "workspace" / "pipelines" / node_safe
+                repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
                 / "demo-strict_20260625_001"
             )
             ir_dir = repo_root / ir_ref
@@ -2417,7 +2422,7 @@ end program shallow_water2d_runner
             workspace = repo_root / "workspace"
             node_safe = "problem__shallow_water2d__0.3.0"
             root_with_run = (
-                workspace / "pipelines" / node_safe / "shallow-water2d_20260415_001"
+                workspace / "pipelines" / node_safe / _TARGET_ID / "shallow-water2d_20260415_001"
             )
             node_dir = root_with_run / "runs" / "run_test_001" / node_safe
             node_dir.mkdir(parents=True, exist_ok=True)
@@ -2425,7 +2430,7 @@ end program shallow_water2d_runner
 
             # Second requested root holds only a different (sibling) run id.
             root_without_run = (
-                workspace / "pipelines" / node_safe / "shallow-water2d_20260415_002"
+                workspace / "pipelines" / node_safe / _TARGET_ID / "shallow-water2d_20260415_002"
             )
             other_node_dir = root_without_run / "runs" / "run_test_999" / node_safe
             other_node_dir.mkdir(parents=True, exist_ok=True)
@@ -2462,7 +2467,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -2505,7 +2510,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_002"
@@ -2541,7 +2546,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_003"
@@ -2578,7 +2583,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_004"
@@ -2616,7 +2621,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_005"
@@ -2656,6 +2661,7 @@ end program shallow_water2d_runner
                 / "workspace"
                 / "pipelines"
                 / "bad"
+                / _TARGET_ID
                 / "shallow-water2d_20260415_009"
                 / "runs"
                 / "run_test_001"
@@ -2693,7 +2699,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "lineage.json"
             )
@@ -2820,7 +2826,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             broken_src = pipeline_dir / "source" / "src_20260415_999" / "src"
@@ -2897,7 +2903,7 @@ end program shallow_water2d_runner
                         repo_root
                         / "workspace"
                         / "pipelines"
-                        / "problem__shallow_water2d__0.3.0"
+                        / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                         / "shallow-water2d_20260415_001"
                         / "runs"
                         / "run_test_001"
@@ -2969,7 +2975,7 @@ end program shallow_water2d_runner
             node_safe = "problem__shallow_water2d__0.3.0"
             pipeline_id = "shallow-water2d_20260415_001"
             snapshots_dir = (
-                workspace / "pipelines" / node_safe / pipeline_id
+                workspace / "pipelines" / node_safe / _TARGET_ID / pipeline_id
                 / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
                 / "raw" / "state_snapshots"
             )
@@ -3484,7 +3490,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
 
@@ -3541,7 +3547,8 @@ end program shallow_water2d_runner
         (source_binary_id) to that SAME passing binary. `verdict=None` models a half-built
         (binary only, never validated) leftover; `verdict_binary_id` overrides the binding target
         to model cross-run mixing (verdict bound to a different/absent binary)."""
-        pipe = (repo_root / "workspace" / "pipelines" / cls._XP_DEP_SAFE / "flux_20260415_001")
+        pipe = (repo_root / "workspace" / "pipelines" / cls._XP_DEP_SAFE / _TARGET_ID
+                / "flux_20260415_001")
         shutil.rmtree(pipe, ignore_errors=True)  # reset so each call is a clean, well-defined state
         bm = pipe / "binary" / binary_id / "binary_meta.json"
         bm.parent.mkdir(parents=True, exist_ok=True)
@@ -3569,11 +3576,48 @@ end program shallow_water2d_runner
             )
             self._seed_built_dep_pipeline(repo_root)
             pipeline_root = (repo_root / "workspace" / "pipelines"
-                             / "problem__shallow_water2d__0.3.0" / "shallow-water2d_20260415_001")
+                             / "problem__shallow_water2d__0.3.0" / _TARGET_ID / "shallow-water2d_20260415_001")
             violations = validate(repo_root=repo_root, workspace_root="workspace",
                                   pipeline_roots=[pipeline_root])
             self.assertFalse(any("dependency DAG incomplete" in v for v in violations), violations)
             self.assertFalse(any("not issued for validation scope" in v for v in violations), violations)
+
+    def test_cross_pipeline_dependency_counts_only_for_the_dependents_target(self) -> None:
+        """Issue #284: a closure member completes the DAG of a pipeline built for the SAME
+        target only. The dependent is moved to a second target (the fixture tree re-targeted:
+        its target directory renamed and every path reference rewritten), so the target the
+        check asks about cannot coincide with the default one by accident."""
+        from tools.tests.target_fixtures import SECOND_TARGET, install_target_profile
+        second = SECOND_TARGET.target_id
+        for dep_target, want_flagged in ((second, False), (_TARGET_ID, True)):
+            with self.subTest(dep_target=dep_target), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _seed_shape_expr_schema_into(repo_root)
+                _create_minimal_execution_tree(
+                    repo_root,
+                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                    model_text=self._XP_MODEL, runner_text=self._XP_RUNNER,
+                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                    dependency_resolved=dict(self._XP_DEP_RESOLVED),
+                )
+                install_target_profile(repo_root, SECOND_TARGET)
+                node_dir = repo_root / "workspace/pipelines/problem__shallow_water2d__0.3.0"
+                (node_dir / _TARGET_ID).rename(node_dir / second)
+                for path in (node_dir / second).rglob("*"):
+                    if path.is_file():
+                        text = path.read_text(encoding="utf-8", errors="strict")
+                        if f"/{_TARGET_ID}/" in text:
+                            path.write_text(text.replace(f"/{_TARGET_ID}/", f"/{second}/"),
+                                            encoding="utf-8")
+                self._seed_built_dep_pipeline(repo_root)
+                if dep_target != _TARGET_ID:
+                    dep_node = repo_root / "workspace/pipelines" / self._XP_DEP_SAFE
+                    (dep_node / _TARGET_ID).rename(dep_node / dep_target)
+                pipeline_root = node_dir / second / "shallow-water2d_20260415_001"
+                violations = validate(repo_root=repo_root, workspace_root="workspace",
+                                      pipeline_roots=[pipeline_root])
+                flagged = any("dependency DAG incomplete" in v for v in violations)
+                self.assertEqual(flagged, want_flagged, violations)
 
     def test_cross_pipeline_unbuilt_dependency_still_flagged(self) -> None:
         # Same token-less setup but the dependency has NO built pipeline anywhere -> the DAG
@@ -3590,7 +3634,7 @@ end program shallow_water2d_runner
             )
             # no _seed_built_dep_pipeline
             pipeline_root = (repo_root / "workspace" / "pipelines"
-                             / "problem__shallow_water2d__0.3.0" / "shallow-water2d_20260415_001")
+                             / "problem__shallow_water2d__0.3.0" / _TARGET_ID / "shallow-water2d_20260415_001")
             violations = validate(repo_root=repo_root, workspace_root="workspace",
                                   pipeline_roots=[pipeline_root])
             self.assertTrue(any("dependency DAG incomplete" in v for v in violations), violations)
@@ -3599,7 +3643,12 @@ end program shallow_water2d_runner
         # The helper excuses a node ONLY when its own pipeline is fully built+validated. A
         # non-pass binary, a binary-only (never-validated) pipeline, a non-pass verdict, a
         # missing node, and a traversal token must all be rejected.
-        from tools.validate_pipeline_semantics import _closure_node_validated_in_own_pipeline as ok
+        from tools.tests.target_fixtures import SECOND_TARGET_ID
+        from tools.validate_pipeline_semantics import _closure_node_validated_in_own_pipeline
+
+        def ok(repo: Path, token: str) -> bool:
+            return _closure_node_validated_in_own_pipeline(repo, token, _TARGET_ID)
+
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             tok = "component/dynamics_shallow_water_flux_2d_rusanov_p0"
@@ -3612,6 +3661,11 @@ end program shallow_water2d_runner
             self.assertFalse(ok(repo_root, tok))  # verdict fail -> not validated
             self._seed_built_dep_pipeline(repo_root, binary_status="pass", verdict="pass")
             self.assertTrue(ok(repo_root, tok))  # full built+validated chain (verdict bound to the binary)
+            # ...for ITS target only (issue #284): another target's closure, or none, is not
+            # completed by it.
+            self.assertFalse(_closure_node_validated_in_own_pipeline(
+                repo_root, tok, SECOND_TARGET_ID))
+            self.assertFalse(_closure_node_validated_in_own_pipeline(repo_root, tok, None))
             # cross-run mixing: passing binary present, but the verdict is bound (source_binary_id)
             # to a DIFFERENT binary that is not a passing binary here -> must NOT excuse.
             self._seed_built_dep_pipeline(repo_root, binary_status="pass", verdict="pass",
@@ -3651,7 +3705,7 @@ end program shallow_water2d_runner
             )
             perf_path = (
                 repo_root
-                / "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/runs/run_test_001/problem__shallow_water2d__0.3.0/perf.json"
+                / "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/runs/run_test_001/problem__shallow_water2d__0.3.0/perf.json"
             )
             perf_path.write_text('{"walltime_sec":.000002}\n', encoding="utf-8")
 
@@ -5114,7 +5168,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -5161,7 +5215,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8294,7 +8348,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8387,7 +8441,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8399,7 +8453,7 @@ end program shallow_water2d_runner
             # generate/<gen>/src/command_log.jsonl. Append to the existing
             # canonical log written by the fixture.
             qc_log_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001/source/src_20260415_001/src/"
                 "command_log.jsonl"
             )
@@ -8462,7 +8516,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8472,7 +8526,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "source"
                 / "src_20260415_001"
@@ -8481,7 +8535,7 @@ end program shallow_water2d_runner
             trial_meta_path = node_dir / "trial_meta.json"
             trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
             qc_log_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001/source/src_20260415_001/src/"
                 "command_log.jsonl"
             )
@@ -8509,6 +8563,18 @@ end program shallow_water2d_runner
                     + "\n"
                 )
 
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(
+                any("must use make_test/make_check for toolchain.language=fortran and toolchain.build_system=make" in v for v in violations)
+            )
+            # The toolchain is the pipeline's TARGET's (issue #284): an IR declaring another one
+            # moves nothing (the fixture's IR agrees with the profile, so the row above alone
+            # cannot tell which of the two was read).
+            ir_path = (repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            ir_doc["impl_defaults"]["toolchain"] = {"language": "python", "build_system": "none"}
+            _write_json(ir_path, ir_doc)
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
                 any("must use make_test/make_check for toolchain.language=fortran and toolchain.build_system=make" in v for v in violations)
@@ -8557,7 +8623,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8567,7 +8633,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "source"
                 / "src_20260415_001"
@@ -8576,7 +8642,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             trial_meta_path = node_dir / "trial_meta.json"
             trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
             qc_log_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001/source/src_20260415_001/src/"
                 "command_log.jsonl"
             )
@@ -8640,7 +8706,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8725,7 +8791,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -8835,7 +8901,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -9093,7 +9159,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -9864,7 +9930,7 @@ end program shallow_water2d_runner
                 )
                 _write_json(ir_path, ir_doc)
                 snapshots_dir = (
-                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0"
+                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                     / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
                     / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots"
                 )
@@ -9928,7 +9994,7 @@ end program shallow_water2d_runner
                 entry["min_samples"] = min_samples
                 _write_json(ir_path, ir_doc)
                 snapshots_dir = (
-                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0"
+                    workspace / "pipelines" / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                     / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
                     / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots"
                 )
@@ -10481,7 +10547,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "lineage.json"
             ).unlink()
@@ -11659,7 +11725,7 @@ end program shallow_water2d_runner
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
-                    repo, node_key, resolver=ort.DerivationResolver(repo))
+                    repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertTrue(ok, detail)
             self.assertEqual(detail["ir_ref"], ir_ref)
 
@@ -11670,7 +11736,7 @@ end program shallow_water2d_runner
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
-                    repo, node_key, resolver=ort.DerivationResolver(repo))
+                    repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertFalse(ok, detail)
             reason = detail["reason"]
             self.assertTrue(reason.startswith("ir_rejected_by_current_validator:"), reason)
@@ -11728,7 +11794,7 @@ end program shallow_water2d_runner
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
-                    repo, node_key, resolver=ort.DerivationResolver(repo))
+                    repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertTrue(ok, detail)
 
             doc = json.loads(ir_path.read_text())
@@ -11739,7 +11805,7 @@ end program shallow_water2d_runner
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
-                    repo, node_key, resolver=ort.DerivationResolver(repo))
+                    repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertFalse(ok, detail)
             reason = detail["reason"]
             self.assertTrue(reason.startswith(
@@ -11762,7 +11828,7 @@ end program shallow_water2d_runner
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
-                    repo, node_key, resolver=ort.DerivationResolver(repo))
+                    repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertFalse(ok, detail)
             self.assertIn("verdict.overall.status has the tail", detail["reason"])
 
@@ -12283,7 +12349,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_generate_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -12333,7 +12399,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 makefile_text=makefile_text,
             )
             pipeline_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001"
             )
             # Corrupt the top-level pipeline_id so it no longer matches the directory.
@@ -12417,7 +12483,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_generate_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -12438,7 +12504,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             log_path = pipeline_dir / "source" / "src_20260415_001" / "src" / "command_log.jsonl"
@@ -12458,7 +12524,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_generate_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -12481,7 +12547,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             log_path = pipeline_dir / "source" / "src_20260415_001" / "src" / "command_log.jsonl"
@@ -12507,7 +12573,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_generate_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -12539,7 +12605,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             # Plant a forged log at a NON-canonical placement (under src/notes/).
@@ -12569,7 +12635,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             evidence_path = pipeline_dir / "lint_evidence" / "src_20260415_001.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             forged_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001/source/src_20260415_001/src/"
                 "notes/command_log.jsonl"
             )
@@ -12580,7 +12646,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_generate_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -12616,7 +12682,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -12680,7 +12746,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -12736,7 +12802,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -12773,7 +12839,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -12809,7 +12875,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             node_dir = (
@@ -12858,7 +12924,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -12913,7 +12979,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             node_dir = (
@@ -12936,7 +13002,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             stale_src = stale_dir / "src"
             stale_src.mkdir(parents=True, exist_ok=True)
             stale_log_ref = (
-                f"workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                f"workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 f"shallow-water2d_20260415_001/source/{stale_gen_id}/src/"
                 "command_log.jsonl"
             )
@@ -12995,7 +13061,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             node_dir = (
@@ -13011,7 +13077,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             sibling_src = sibling_dir / "src"
             sibling_src.mkdir(parents=True, exist_ok=True)
             sibling_log_ref = (
-                f"workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                f"workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 f"shallow-water2d_20260415_001/source/{sibling_gen_id}/src/"
                 "command_log.jsonl"
             )
@@ -13073,7 +13139,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -13101,7 +13167,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             trial_meta["source_command_ref"]["run_threads_1"] = {
                 "command_id": "forged_cmd_001",
                 "command_log_ref": (
-                    "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                    "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                     "shallow-water2d_20260415_001/runs/run_test_001/"
                     "problem__shallow_water2d__0.3.0/raw/forged_run.jsonl"
                 ),
@@ -13162,7 +13228,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             repo_root
             / "workspace"
             / "pipelines"
-            / "problem__shallow_water2d__0.3.0"
+            / "problem__shallow_water2d__0.3.0" / _TARGET_ID
             / "shallow-water2d_20260415_001"
         )
 
@@ -13736,7 +13802,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate_post_build_stage(
                 repo_root,
                 "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001",
                 source_id="src_20260415_001",
             )
@@ -13775,7 +13841,7 @@ end program shallow_water2d_runner
                 repo_root
                 / "workspace"
                 / "pipelines"
-                / "problem__shallow_water2d__0.3.0"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
                 / "runs"
                 / "run_test_001"
@@ -15286,7 +15352,7 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         # real skill_ref"); it is now the second half of the same rule.
         import tools.workflow_conductor as wc
         from tools.orchestration_runtime import prepare_launch_request_payload
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                            run_id="run_1", source_binary_id="bin_1")
         for step, substep in [("build", None), ("validate", "execute")]:
@@ -15338,7 +15404,7 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         from tools.validate_pipeline_semantics import (
             _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
             DETERMINISTIC_PROMPT_SENTINEL)
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                            run_id="run_1", source_binary_id="bin_1")
         for step, substep, role in [("build", None, "step"), ("validate", "execute", "substep")]:
@@ -15699,7 +15765,7 @@ class MakefileBinNotPinnedTest(unittest.TestCase):
         import tools.workflow_conductor as wc
         c = wc.Conductor(repo_root=Path("/tmp/r"), orchestration_id="o",
                          orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
-        refs = wc.NodeRefs(node_key="component/foo@0.1.0", spec_path="spec/component/foo",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/foo@0.1.0", spec_path="spec/component/foo",
                            ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
         self.assertEqual(c._resolve_exe_name(refs), "foo_runner")
 
@@ -16612,19 +16678,35 @@ class MakefileTestNoRelinkTest(unittest.TestCase):
             )
             self.assertEqual([], violations)
 
-    def test_malformed_lineage_does_not_crash_toolchain_lookup(self) -> None:
-        # A malformed lineage.json must resolve to (None, None) rather than raise,
-        # so the post_build/post_generate stage reports a violation instead of a
-        # traceback.
+    def test_toolchain_lookup_reads_the_pipeline_target_and_never_raises(self) -> None:
+        # Since issue #284 the toolchain is the TARGET's, read off the pipeline's store
+        # coordinate; the lineage (malformed here) is not consulted. A path with no target
+        # coordinate, or naming a profile the repository does not declare, resolves to
+        # (None, None) rather than raising, so the stage reports a violation
+        # (`_validate_pipeline_targets_resolve`) instead of a traceback.
+        from tools.tests.target_fixtures import (
+            FORTRAN_CPU,
+            install_target_profile,
+            pipe_ref,
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            pipeline_dir = Path(tmp)
+            repo = Path(tmp)
+            install_target_profile(repo)
+            pipeline_dir = repo / pipe_ref("component__x__0.1.0", "x_20260101_001")
+            pipeline_dir.mkdir(parents=True)
             (pipeline_dir / "lineage.json").write_text(
                 "{ not: valid json ", encoding="utf-8"
             )
             self.assertEqual(
-                (None, None),
-                _impl_toolchain_from_pipeline_dir(pipeline_dir, pipeline_dir),
+                (FORTRAN_CPU.toolchain["build_system"], FORTRAN_CPU.toolchain["language"]),
+                _target_toolchain_from_pipeline_dir(repo, pipeline_dir),
             )
+            legacy = repo / "workspace" / "pipelines" / "component__x__0.1.0" / "x_20260101_001"
+            legacy.mkdir(parents=True)
+            self.assertEqual((None, None), _target_toolchain_from_pipeline_dir(repo, legacy))
+            unknown = repo / pipe_ref("component__x__0.1.0", "x_20260101_001", "no_such")
+            unknown.mkdir(parents=True)
+            self.assertEqual((None, None), _target_toolchain_from_pipeline_dir(repo, unknown))
 
 
 class DiagnosticsContractTest(unittest.TestCase):
@@ -18176,10 +18258,17 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     if signatures is None else signatures),
                 "module_parameters": copy.deepcopy(
                     InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}}
-        if language is not None:
-            ir_doc["impl_defaults"] = {"toolchain": {"language": language}}
         _write_json(ir_dir / "spec.ir.yaml", ir_doc)
         pipe = tmp / "pipe"
+        if language is not None:
+            # The gate reads the language of the TARGET the pipeline path names (issue #284).
+            from tools.tests.target_fixtures import (
+                install_target_profile,
+                pipe_ref,
+                profile_with,
+            )
+            install_target_profile(tmp, profile_with(toolchain={"language": language}))
+            pipe = tmp / pipe_ref("hx", "hx_20260101_001")
         src_dir = pipe / "src"
         src_dir.mkdir(parents=True)
         (pipe / "lineage.json").write_text(
@@ -21996,7 +22085,9 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             if public_api is not _OMIT:
                 ir["public_api"] = public_api
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
-            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            install_target_profile(repo_root)
+            pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
+                            / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
             (pipeline_dir / "lineage.json").write_text(
@@ -22231,8 +22322,9 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
     """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
-    node whose impl_defaults resolve to OpenMP-on-CPU Fortran, a model source with counted `do`
-    loops must carry at least one `!$omp` directive. Presence floor only — which loops and which
+    node built for an OpenMP-on-CPU Fortran TARGET (the pipeline's profile, issue #284) whose IR
+    claims OpenMP, a model source with counted `do` loops must carry at least one `!$omp`
+    directive. Presence floor only — which loops and which
     schedule stay a Generate.verify G6 `major`. Fail-open in every ambiguous direction."""
 
     _FIRED = "counted `do` loop(s) and not one"
@@ -22257,7 +22349,15 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             if impl is not _OMIT:
                 ir["impl_defaults"] = impl
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
-            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            # The fixed layer — class, backend, language — is the TARGET's (issue #284): declare
+            # it as the profile the pipeline's store coordinate names. The IR's `target` /
+            # `toolchain` above are not read; its `abstract` claim still is.
+            from tools.tests.target_fixtures import install_target_profile, profile_with
+            install_target_profile(repo_root, profile_with(
+                hardware={"class": hw_class}, parallel={"backend": backend},
+                toolchain={"language": language}))
+            pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
+                            / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
             (pipeline_dir / "lineage.json").write_text(
@@ -22317,6 +22417,20 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._model(
             "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
             "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_the_fixed_layer_is_the_targets_not_the_irs(self) -> None:
+        """Issue #284: the class / backend / language the floor keys on are the pipeline's
+        TARGET's. An IR whose fixed layer contradicts the profile moves nothing, in both
+        directions (the default fixture writes the two in agreement, so it cannot tell them
+        apart)."""
+        claim = {"abstract": {"parallelization": "openmp"}}
+        ir_says_serial_gpu_c = {**claim, "target": {"class": "gpu", "backend": "serial"},
+                                "toolchain": {"language": "c"}}
+        self.assertEqual(len(self._run(self._COUNTED, impl=ir_says_serial_gpu_c)), 1)
+        ir_says_openmp_cpu = {**claim, "target": {"class": "cpu", "backend": "openmp"},
+                              "toolchain": {"language": "fortran"}}
+        self.assertEqual(self._run(self._COUNTED, backend="serial", impl=ir_says_openmp_cpu), [])
+        self.assertEqual(self._run(self._COUNTED, hw_class="gpu", impl=ir_says_openmp_cpu), [])
 
     def test_floor_needs_an_openmp_claim_specifically(self) -> None:
         """The claim must name OPENMP, not merely some parallelism.
@@ -22629,7 +22743,9 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                 "impl_defaults": {"target": {"class": "cpu", "backend": "openmp"},
                                   "toolchain": {"language": "fortran"},
                                   "abstract": {"parallelization": "openmp"}}}), encoding="utf-8")
-            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            install_target_profile(repo_root)
+            pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
+                            / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
             (pipeline_dir / "lineage.json").write_text(
@@ -22780,8 +22896,11 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             self.assertIn(
                 f"impl_defaults.backend_overrides.openmp.{alias} is a non-canonical spelling", v[0])
             self.assertIn("rename it to `num_threads`", v[0])
-            # The remedy must say WHY, since the alias is otherwise harmless-looking.
-            self.assertIn("degrades to one thread", v[0])
+            # The remedy must say WHY, since the alias is otherwise harmless-looking — and since
+            # issue #284 the why is the schema's name, not a thread count the run falls back to
+            # (the run executes with the target profile's threads per rank).
+            self.assertIn("the knob schema names it `num_threads`", v[0])
+            self.assertNotIn("degrades to one thread", v[0])
 
     def test_alias_beside_canonical_says_delete_not_rename(self) -> None:
         # Two live IRs carry `parallelization: openmp` AND `loop_parallelization: "<prose>"`.
@@ -22892,20 +23011,18 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
 
     def test_canonical_keys_must_be_spelled_exactly(self) -> None:
         # Correctly TYPED but inexactly spelled: the type check alone reports nothing, so before
-        # this the gate was silent while the renderer returned 1.
-        import tools.backends.language.fortran.runner as rr
+        # this the gate was silent while the renderer (until issue #284) returned 1.
         for key in ("NUM_THREADS", "Num_Threads", "num_threads ", " num_threads"):
             impl = self._impl(overrides={"openmp": {key: 4}})
             v = self._run(impl)
             self.assertEqual(len(v), 1, f"{key!r}: {v}")
             self.assertIn("spelled inexactly", v[0])
             self.assertIn("`num_threads`", v[0])
-            # The gate's verdict must agree with what the consumer actually reads.
-            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, key)
-        # And the exact spelling stays clean, with the renderer reading it.
+            # The renderer reads no knob since issue #284 (the perf record's thread count is the
+            # target's), so there is no consumer verdict to agree with here any more.
+        # And the exact spelling stays clean.
         impl = self._impl(overrides={"openmp": {"num_threads": 4}})
         self.assertEqual(self._run(impl), [])
-        self.assertEqual(rr._threads({"impl_defaults": impl}), 4)
 
     def test_abstract_canonical_keys_must_be_spelled_exactly(self) -> None:
         for key in ("PARALLELIZATION", "Parallel_Scope", "parallel_granularity "):
@@ -23080,16 +23197,13 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         self.assertNotIn("into `parallel_scope`, not into `parallel_scope`", v[0])
 
     def test_non_mapping_openmp_section_flagged(self) -> None:
-        # The renderer reads `.num_threads` off this section, so a scalar or list loses every
-        # override in it and falls back to one thread. The exact-`openmp` early return meant the
+        # A scalar or list carries no override at all. The exact-`openmp` early return meant the
         # CANONICAL spelling was the one case where that went unreported.
-        import tools.backends.language.fortran.runner as rr
         for value in (4, "static", ["a"], {"num_threads": 4}.items().__class__.__name__):
             impl = self._impl(overrides={"openmp": value})
             v = self._run(impl)
             self.assertEqual(len(v), 1, f"{value!r}: {v}")
             self.assertIn("must be a mapping of override names to values", v[0])
-            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, repr(value))
         # A mis-named section with a non-mapping body reports both its name and its shape.
         v = self._run(self._impl(overrides={"cpu_openmp": 4}))
         self.assertEqual(len(v), 2, v)
@@ -24784,7 +24898,7 @@ class IrFixtureShapeTests(unittest.TestCase):
             self._fixture_ir(repo_root)
             (repo_root / _FIXTURE_IR_REL).write_text("a: [unterminated\n", encoding="utf-8")
             pipeline_dir = (
-                repo_root / "workspace/pipelines/problem__shallow_water2d__0.3.0"
+                repo_root / "workspace/pipelines/problem__shallow_water2d__0.3.0" / _TARGET_ID
                 / "shallow-water2d_20260415_001"
             )
             execution = vps.NodeExecution(
@@ -25404,8 +25518,9 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
                     {"artifact": "metrics_basis.json", "required": True}]},
             },
         })
+        install_target_profile(tmp)
         pipeline_dir = (tmp / "workspace" / "pipelines" / "component__advx__0.1.0"
-                        / "advx_20260415_001")
+                        / _TARGET_ID / "advx_20260415_001")
         src_dir = pipeline_dir / "source" / self._SOURCE_ID / "src"
         src_dir.mkdir(parents=True)
         (src_dir / "advx_model.f90").write_text(
@@ -25692,8 +25807,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                      "source_refs": {"controlled_spec": "cs.md"}},
             "public_api": public_api,
             "io_contract": copy.deepcopy(self._HEALTHY_IO_CONTRACT)})
+        install_target_profile(tmp)
         pipeline_dir = (
-            tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / "hx_20260415_001")
+            tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / _TARGET_ID
+            / "hx_20260415_001")
         src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
         src_dir.mkdir(parents=True)
         (src_dir / "hx_model.f90").write_text(
@@ -26032,7 +26149,7 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
     def _node_dir(self, repo_root: Path) -> Path:
         return (
             repo_root
-            / "workspace/pipelines/problem__shallow_water2d__0.3.0"
+            / "workspace/pipelines/problem__shallow_water2d__0.3.0" / _TARGET_ID
             / "shallow-water2d_20260415_001/runs/run_test_001"
             / "problem__shallow_water2d__0.3.0"
         )

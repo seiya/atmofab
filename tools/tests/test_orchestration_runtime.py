@@ -33,7 +33,8 @@ from mcp_servers.build_runtime_server import tool_compile_project
 from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import (
-    accept_any_certified_ir, certify_node, ensure_spec_entry, spec_ref_of)
+    accept_any_certified_ir, certify_node, ensure_spec_entry, record_orchestration_target,
+    spec_ref_of)
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -126,7 +127,7 @@ def _fixture_derivation(repo_root: Path, step: str) -> dict:
         repo_root, node_key="problem/shallow_water2d@0.3.0", step=step,
         spec_ref="spec/problem/shallow_water2d", ir_ref=_FIX_IR_REF,
         source_ref=f"{_FIX_PIPE_REF}/source/src_20260101_001",
-        binary_ref=f"{_FIX_PIPE_REF}/binary/bin_20260101_001")
+        binary_ref=f"{_FIX_PIPE_REF}/binary/bin_20260101_001", target=_TP)
 
 # The host-inlined context a PURE `generate.generate` launch carries. The key SET is what the
 # launch validator requires for that pair; the bodies are only documents, so they are the
@@ -177,6 +178,9 @@ from tools.tests.private_root_fixture import (
     _private_root_redirects,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.target_fixtures import FORTRAN_CPU as _TP
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+
 # ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
 # `shutil.which` alone says the binary exists, not that unprivileged user namespaces
 # are permitted, and the two would drift into disagreeing about the same host.
@@ -230,7 +234,9 @@ def _discard_isolated_homes(orchestration_id: str) -> None:
 
 
 _FIX_IR_REF = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
-_FIX_PIPE_REF = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
+# Under the fixture target since issue #284 (`workspace/pipelines/<safe>/<target_id>/<id>`).
+_FIX_PIPE_REF = ("workspace/pipelines/problem__shallow_water2d__0.3.0/" + _TARGET_ID
+                 + "/shallow-water2d_20260415_001")
 _FIX_DEP_REF = f"{_FIX_IR_REF}/spec.ir.yaml"
 _FIX_COMPILE_STEP_DEP_REF = "spec/problem/shallow_water2d/deps.yaml"
 
@@ -350,6 +356,12 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
     """Inject `dependency_readiness` so `_dependency_ready` accepts the launch (under the
     suite's `ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
     deps.yaml falls back to these persisted booleans)."""
+    # What a real launch also has (issue #284): the target profile its pipeline names, in the
+    # repository `record_launch` loads it from, and the target recorded on the orchestration.
+    from tools.tests.orchestration_fixtures import record_orchestration_target
+    from tools.tests.target_fixtures import install_target_profile
+    install_target_profile(repo_root)
+    record_orchestration_target(repo_root, orchestration_id)
     meta_path = (
         repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
     )
@@ -1815,7 +1827,7 @@ shell_tool                       stable             true
                 "agent_run_id": "substep_run_plan_verify_001",
                 "parent_agent_run_id": "orch_run_001",
                 "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                 "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                 "leaf_mode": "pure",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
@@ -1837,7 +1849,7 @@ shell_tool                       stable             true
 
     @staticmethod
     def _slim_repair_payload() -> dict[str, Any]:
-        pr = "workspace/pipelines/component__spec_x__0.1.0/x_20260101_001"
+        pr = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/x_20260101_001"
         src = f"{pr}/source/src_20260101_002"
         return {
             "node_key": "component/spec_x@0.1.0",
@@ -1929,7 +1941,7 @@ shell_tool                       stable             true
                     "parent_agent_run_id": "orch_run_001",
                     "derivation_key": "sha256:" + "d" * 64,
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                                                             "skill_must_read_refs": "",
                     "allowed_output_paths": [
@@ -2072,7 +2084,7 @@ shell_tool                       stable             true
         this cannot recur."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/spec-x_20260101_001"
+        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
         node_key = "component/spec_x@0.1.0"
         node_safe = "component__spec_x__0.1.0"
         run_id = "run_20260101_001"
@@ -2097,7 +2109,7 @@ shell_tool                       stable             true
         the execute record-launch crash cannot recur."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/spec-x_20260101_001"
+        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
         node_key = "component/spec_x@0.1.0"
         node_safe = "component__spec_x__0.1.0"
         run_id = "run_20260101_001"
@@ -2232,7 +2244,7 @@ shell_tool                       stable             true
                         "orchestration_id": orch,
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                         "launch_prompt_full": _pure_compile_generate_prompt(arid),
                     },
@@ -2366,7 +2378,7 @@ shell_tool                       stable             true
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                     "launch_prompt_full": _pure_compile_generate_prompt(
                         "substep_run_plan_generate_001"),
@@ -2390,11 +2402,11 @@ shell_tool                       stable             true
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                     "deterministic": True,
                     "allowed_output_paths": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
+                        "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
                     ],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
@@ -2463,7 +2475,7 @@ shell_tool                       stable             true
                     "started_at": "2026-03-11T00:00:20Z",
                     "finished_at": "2026-03-11T00:01:10Z",
                     "output_refs": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
+                        "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
                     ],
                 },
             )
@@ -2922,7 +2934,7 @@ shell_tool                       stable             true
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                             "skill_must_read_refs": "",
                     "launch_prompt": "short summary",
@@ -2976,7 +2988,7 @@ shell_tool                       stable             true
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                             "skill_must_read_refs": "",
                     "launch_prompt": "summary",
@@ -3051,7 +3063,7 @@ shell_tool                       stable             true
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                             "skill_must_read_refs": "",
                     "launch_prompt": "summary only",
@@ -3330,6 +3342,18 @@ shell_tool                       stable             true
         canonical = set(_canonical_mcp_audit_log_paths_for_request(req, out))
         self.assertIn(in_phase_log, canonical)
         self.assertIn(cross_log, canonical)
+        # Without the record-launch stamp, the build system is the TARGET's, read off the
+        # request's pipeline_ref (issue #284): the make-only cross-phase placement holds when
+        # the profile resolves and is dropped when it does not.
+        from tools.tests.target_fixtures import install_target_profile
+        bare = {k: v for k, v in req.items() if k != "_resolved_build_system"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.assertNotIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+                bare, out, repo_root=repo)))
+            install_target_profile(repo)
+            self.assertIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+                bare, out, repo_root=repo)))
 
     def test_build_launch_skips_cross_phase_log_for_non_make_toolchain(self) -> None:
         """Cross-phase canonical placement is Make-only.
@@ -4642,7 +4666,7 @@ shell_tool                       stable             true
                         "agent_run_id": "substep_run_plan_generate_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-plan-id>",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "skill_name": "workflow-compile-generate",
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
@@ -4695,7 +4719,7 @@ shell_tool                       stable             true
                         "agent_run_id": "substep_run_plan_generate_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "skill_name": "workflow-compile-generate",
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                         "skill_must_read_refs": "",
@@ -4747,7 +4771,7 @@ shell_tool                       stable             true
                         "agent_run_id": "substep_run_plan_generate_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-dependency-ref>",
                         "skill_name": "workflow-compile-generate",
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
@@ -4781,7 +4805,7 @@ shell_tool                       stable             true
                 },
             )
             bad_pipeline = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                 "shallow-water2d_20260415_001/source/src_001/source_meta.json"
             )
             with self.assertRaisesRegex(ValueError, "pipeline_ref must be exactly"):
@@ -4844,7 +4868,7 @@ shell_tool                       stable             true
                         "agent_run_id": "substep_gen_verify_no_gid",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "skill_name": "workflow-generate-verify",
                         "skill_ref": "skills/workflow-generate-verify/SKILL.md",
@@ -4898,7 +4922,7 @@ shell_tool                       stable             true
                     "agent_run_id": "substep_run_plan_generate_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                             "skill_must_read_refs": "",
                     "allowed_output_paths": [
@@ -6133,7 +6157,7 @@ shell_tool                       stable             true
                         "agent_run_id": "step_run_build_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "deterministic": True,
                         "launch_prompt_full": _step_launch_prompt(
@@ -6189,6 +6213,23 @@ shell_tool                       stable             true
                     "allowed_output_paths": ["workspace/random.json"],
                 },
             )
+
+    def test_allowed_output_paths_for_launch_promote_release_is_per_target(self) -> None:
+        """Issue #284: a release lives at `releases/<spec>/<target_id>/<release_id>/…`. The
+        target-level path is accepted, and a first segment that is not a target id (a store
+        id, which `is_target_id` refuses) is outside the contract."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        def _promote(path: str) -> list[str]:
+            return _allowed_output_paths_for_launch(request_payload={
+                "agent_model": "claude-opus-4-8", "agent_role": "step", "step": "promote",
+                "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF,
+                "node_key": "problem/dom.fam.spec_x@1.0", "allowed_output_paths": [path]})
+
+        good = f"releases/problem/dom/fam/spec_x/{_TP.target_id}/r_001/artifact.tar.gz"
+        self.assertEqual(_promote(good), [good])
+        with self.assertRaisesRegex(ValueError, "outside phase contract"):
+            _promote("releases/problem/dom/fam/spec_x/spec-x_20260101_001/r_001/a.tar.gz")
 
     def test_allowed_output_paths_for_launch_promote_rejects_cross_spec_release(self) -> None:
         """Regression: a promote agent for spec_x must NOT be allowed to write
@@ -6363,10 +6404,10 @@ shell_tool                       stable             true
                     "agent_run_id": "step_run_build_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                     "deterministic": True,
-                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
+                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "build",
@@ -6391,7 +6432,7 @@ shell_tool                       stable             true
                         "context_id": "ctx_step_build_001",
                         "agent_session_id": "sess_step_build_999",
                         "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
                         ],
                     },
                 )
@@ -6493,7 +6534,7 @@ shell_tool                       stable             true
                         "agent_model": "gpt-5-codex",
                         "context_id": "ctx_step_plan_001",
                         "agent_session_id": "sess_step_plan_001",
-                        "output_refs": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
+                        "output_refs": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     },
                 )
 
@@ -6656,7 +6697,7 @@ shell_tool                       stable             true
                         "agent_run_id": "substep_run_plan_generate_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                                         "skill_must_read_refs": "",
                         "issue_severity": "none",
@@ -6725,11 +6766,11 @@ shell_tool                       stable             true
                         "agent_run_id": "step_run_build_001",
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                         "deterministic": True,
                         "allowed_output_paths": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
                         ],
                         "launch_prompt_full": _step_launch_prompt(
                             "problem/shallow_water2d@0.3.0",
@@ -6753,7 +6794,7 @@ shell_tool                       stable             true
                         "agent_model": "gpt-5-codex",
                         "context_id": "ctx_step_build_001",
                         "agent_session_id": "sess_step_build_001",
-                        "output_refs": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
+                        "output_refs": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     },
                 )
                 write_step_result(
@@ -6823,10 +6864,10 @@ shell_tool                       stable             true
                     "agent_run_id": "step_run_build_001",
                     "parent_agent_run_id": "orch_run_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                     "deterministic": True,
-                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
+                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
                     "launch_prompt_full": _step_launch_prompt(
                         "problem/shallow_water2d@0.3.0",
                         "build",
@@ -6988,7 +7029,7 @@ shell_tool                       stable             true
                         "status": "pass",
                         "derivation": _DERIVATION_RECORD,
                         "required_outputs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
                         ],
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
@@ -7080,7 +7121,7 @@ shell_tool                       stable             true
             },
         )
         binary_ref = (
-            "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
             "shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
         )
         # A pass step run requires non-empty output_refs.
@@ -7133,7 +7174,7 @@ shell_tool                       stable             true
             # generate source on disk); the guard under test runs before this gate.
             source_meta = (
                 repo_root
-                / "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
+                / "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001"
                 / "source/src_20260101_001/source_meta.json"
             )
             source_meta.parent.mkdir(parents=True, exist_ok=True)
@@ -7190,11 +7231,11 @@ shell_tool                       stable             true
             "orchestration_id": "orch_001",
             "parent_agent_run_id": "orch_run_001",
             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
             "deterministic": True,
             "allowed_output_paths": [
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
+                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate",
             ],
             "launch_prompt_full": _step_launch_prompt(
                 "problem/shallow_water2d@0.3.0", "build", agent_run_id
@@ -7217,7 +7258,7 @@ shell_tool                       stable             true
                         "status": "pass",
                         "derivation": _DERIVATION_RECORD,
                         "required_outputs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/runs/run_20260101_001/results.json"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/runs/run_20260101_001/results.json"
                         ],
                         "failed_substeps": [],
                         "substep_agent_run_ids": [],
@@ -7715,7 +7756,7 @@ shell_tool                       stable             true
                 "status": "pass",
                 "agent_backend": "claude",
                 "output_refs": [
-                    "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
+                    "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
                 ],
             }
             with runs_path.open("a", encoding="utf-8") as fh:
@@ -7732,7 +7773,7 @@ shell_tool                       stable             true
                         "derivation": _DERIVATION_RECORD,
                         "validation_stage": "post_generate",
                         "required_outputs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
                         ],
                         "failed_substeps": [],
                         "substep_agent_run_ids": ["substep_run_gen_verify_001"],
@@ -7746,7 +7787,7 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
             # create an incomplete source_meta.json (attempt_count only)
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7786,7 +7827,7 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_payload = self._valid_source_meta()
@@ -7833,7 +7874,7 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_payload = self._valid_source_meta()
@@ -7878,8 +7919,8 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
-            src_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            src_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/src/model.f90"
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(self._valid_source_meta()), encoding="utf-8")
@@ -8057,7 +8098,7 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
             # create a complete source_meta.json
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -8101,8 +8142,8 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
-            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
+            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
             old_meta_path = repo_root / old_meta_ref
             old_meta_path.parent.mkdir(parents=True, exist_ok=True)
             old_meta_path.write_text(json.dumps(self._valid_source_meta()), encoding="utf-8")
@@ -8175,7 +8216,7 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
             meta_path = repo_root / meta_ref
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(self._valid_source_meta()), encoding="utf-8")
@@ -8218,8 +8259,8 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
-            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
+            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
             old_meta_path = repo_root / old_meta_ref
             old_meta_path.parent.mkdir(parents=True, exist_ok=True)
             old_meta_path.write_text(json.dumps(self._valid_source_meta()), encoding="utf-8")
@@ -8292,8 +8333,8 @@ shell_tool                       stable             true
             self._setup_preflight_and_orch_agent(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_001"
             runs_path = orch_root / "agent_runs.jsonl"
-            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
-            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
+            old_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_001/source_meta.json"
+            new_meta_ref = "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/source/src_20260413_002/source_meta.json"
             old_meta_path = repo_root / old_meta_ref
             old_meta_path.parent.mkdir(parents=True, exist_ok=True)
             old_meta_path.write_text(json.dumps(self._valid_source_meta()), encoding="utf-8")
@@ -8580,7 +8621,7 @@ shell_tool                       stable             true
 
 _CERT_NK = "component/spec_x@0.1.0"
 _CERT_SAFE = "component__spec_x__0.1.0"
-_CERT_PIPE_REF = f"workspace/pipelines/{_CERT_SAFE}/spec-x_20260101_001"
+_CERT_PIPE_REF = f"workspace/pipelines/{_CERT_SAFE}/{_TARGET_ID}/spec-x_20260101_001"
 
 
 def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "pass") -> None:
@@ -8687,7 +8728,7 @@ class PhaseCertificationTests(unittest.TestCase):
         return certify_node(repo_root, "o1", self._NK, **kw)
 
     def _reason(self, repo_root: Path, step: str) -> str | None:
-        ok, detail = ort._phase_certified(repo_root, "o1", self._NK, step)
+        ok, detail = ort._phase_certified(repo_root, "o1", self._NK, step, target=_TP)
         self.assertFalse(ok, f"{step} was expected to be refused, detail={detail}")
         return detail.get("reason")
 
@@ -8768,7 +8809,7 @@ class PhaseCertificationTests(unittest.TestCase):
                  refs["binary_id"], refs["run_id"]))
             # ... and the key the selection was made under plus the selected output's hash
             # (issue #250 PR-2): the two values a reader needs to tell WHY this output stands.
-            sel = ort.DerivationResolver(repo).select(self._NK, "validate")
+            sel = ort.DerivationResolver(repo, target=_TP).select(self._NK, "validate")
             self.assertTrue(sel.ok, sel.reason)
             self.assertEqual((out["derivation_key"], out["output_hash"]),
                              (sel.derivation_key, sel.output_hash))
@@ -9136,7 +9177,7 @@ class PhaseCertificationTests(unittest.TestCase):
                 "source_id": "src_20260101_009", "verification_status": "pass",
                 "source_ir_id": "some-other-ir_20250101_001",
                 "artifact_hashes": {"nope": "sha256:" + "0" * 64}}), encoding="utf-8")
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "generate")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "generate", target=_TP)
             self.assertTrue(ok, detail)
             self.assertEqual(detail["source_id"], refs["source_id"])
 
@@ -9156,10 +9197,10 @@ class PhaseCertificationTests(unittest.TestCase):
                 doc[field] = "some-other_20250101_099"
                 path.write_text(json.dumps(doc), encoding="utf-8")
             for step in ("compile", "generate", "build"):
-                self.assertTrue(ort._phase_certified(repo, "o1", self._NK, step)[0], step)
+                self.assertTrue(ort._phase_certified(repo, "o1", self._NK, step, target=_TP)[0], step)
             certify_node(repo, "o1", self._NK, through="compile", ir_id="spec-x_20260101_002",
                          ir_text=f"node_key: {self._NK}\n# re-derived\n", reserve=False)
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)
             self.assertEqual((ok, detail["ir_id"]), (True, "spec-x_20260101_002"))
             self.assertEqual(self._reason(repo, "generate"), "derivation_key_mismatch:ir")
             self.assertEqual(self._reason(repo, "build"), "derivation_key_mismatch:ir")
@@ -9173,7 +9214,7 @@ class PhaseCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             # node_key that is not the canonical form at all
-            ok, detail = ort._phase_certified(repo, "o1", "not-a-node-key", "compile")
+            ok, detail = ort._phase_certified(repo, "o1", "not-a-node-key", "compile", target=_TP)
             self.assertFalse(ok)
             self.assertEqual(detail["reason"], "node_key_invalid")
             # reserved, but nothing under workspace/ir yet
@@ -9232,7 +9273,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(doc["revoked_by_agent_run_id"], "trigger-1")
             self.assertEqual(doc["revocation_reason"], "validate_execute_structural_violation")
             # Compile is untouched: only the phase being re-derived is revoked.
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)[0])
 
     def test_check_phase_certified_refuses_a_tampered_deliverable(self) -> None:
         """The hole the checkpoint ledger could not close: an artifact edited after it was
@@ -9276,7 +9317,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self._certified(repo, through="compile")
             certify_node(repo, "o1", self._NK, through="compile",
                          ir_id="spec-x_20260101_002", reserve=False)
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)
             self.assertTrue(ok)
             self.assertEqual(detail["ir_id"], "spec-x_20260101_002")
         with tempfile.TemporaryDirectory() as tmp:
@@ -9284,7 +9325,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self._certified(repo, through="build")
             certify_node(repo, "o1", self._NK, through="build",
                          pipeline_id="spec-x_20260101_002", reserve=False)
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build", target=_TP)
             self.assertTrue(ok)
             self.assertTrue(detail["pipeline_ref"].endswith("/spec-x_20260101_002"))
 
@@ -9307,7 +9348,7 @@ class PhaseCertificationTests(unittest.TestCase):
             (repo / meta_ref).write_text(json.dumps(doc), encoding="utf-8")
             stamp_derivation(repo, self._NK, "build", meta_ref, ir_ref=refs["ir_ref"],
                              source_ref=f"{refs['pipeline_ref']}/source/{refs['source_id']}")
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "build", target=_TP)
             self.assertTrue(ok)
             self.assertEqual(detail["binary_id"], "bin_20260101_002")
             self.assertEqual(self._reason(repo, "validate"), "derivation_key_mismatch:binary")
@@ -9330,7 +9371,7 @@ class PhaseCertificationTests(unittest.TestCase):
             path.write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(self._reason(repo, "validate"), "derivation_key_missing")
             # Build, which the gate says nothing about, is unaffected.
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "build", target=_TP)[0])
             # A phase that never wrote its meta at all: also refused.
             path.unlink()
             self.assertEqual(self._reason(repo, "validate"), "verdict_not_found")
@@ -9351,13 +9392,13 @@ class PhaseCertificationTests(unittest.TestCase):
             repo = Path(tmp)
             refs = self._certified(repo, through="validate")
             run_dir = repo / refs["run_node_dir"]
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
             for name in ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES:
                 with self.subTest(missing=name):
                     path = run_dir / name
                     body = path.read_text("utf-8")
                     path.unlink()
-                    ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate")
+                    ok, detail = ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)
                     self.assertFalse(ok)
                     # The meta itself missing is "no output"; every other deliverable is
                     # caught by the byte-pin.
@@ -9366,7 +9407,7 @@ class PhaseCertificationTests(unittest.TestCase):
                     self.assertEqual(detail["reason"], expected)
                     path.write_text(body, encoding="utf-8")
             # restored
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
 
     def test_validate_certifying_deliverables_match_the_declared_outputs(self) -> None:
         """Coupled to the conductor, not restated beside it. `phase_required_outputs` is what
@@ -9374,7 +9415,7 @@ class PhaseCertificationTests(unittest.TestCase):
         deliverable is added there and not here, certification silently stops covering it."""
         from tools.workflow_conductor import NodeRefs, phase_required_outputs
 
-        refs = NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                         ir_id="i", pipeline_id="p", source_id="s", binary_id="b",
                         run_id="r", source_binary_id="b")
         declared = {ref.rsplit("/", 1)[-1]
@@ -9384,7 +9425,7 @@ class PhaseCertificationTests(unittest.TestCase):
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
-                ort._phase_certified(Path(tmp), "o1", self._NK, "promote")
+                ort._phase_certified(Path(tmp), "o1", self._NK, "promote", target=_TP)
 
     def test_certified_ir_candidate_adopts_only_a_certified_latest_ir(self) -> None:
         """The cold-run adoption path asks the compile clause WITHOUT a reservation."""
@@ -9431,7 +9472,7 @@ class PhaseCertificationTests(unittest.TestCase):
                 self.assertTrue(self._reason(repo, "generate").startswith(
                     "ir_rejected_by_current_validator:1:"))
             # Same chain, validator satisfied: certified again. The refusal was the verdict's.
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "generate", target=_TP)[0])
 
     def test_the_validator_clause_runs_last(self) -> None:
         """Precedence: every earlier refusal keeps its reason, and the (expensive) validator
@@ -9504,7 +9545,7 @@ class PhaseCertificationTests(unittest.TestCase):
             repo = Path(tmp)
             self._preflight(repo)
             refs = self._certified(repo, through="validate")
-            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile")[0])
+            self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)[0])
             runs = repo / "workspace/orchestrations/o1/agent_runs.jsonl"
             with runs.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({
@@ -9520,7 +9561,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(result["status"], "revoked")
             self.assertEqual(result["meta_ref"], refs["ir_meta"])
             self.assertEqual(result["prior_verification_status"], "pass")
-            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)
             self.assertFalse(ok)
             self.assertEqual(detail["reason"], "revoked")
             self.assertEqual(detail["last_fail_reason"], "predicate p1 failed")
@@ -9760,7 +9801,7 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((repo / refs["ir_meta"]).read_text("utf-8"))["revocation_severity"],
                 "critical")
-            _, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+            _, detail = ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)
             self.assertEqual(detail["revocation_severity"], "critical")
             self.assertEqual(
                 ort.check_phase_certified(repo_root=repo, orchestration_id="o1",
@@ -9780,13 +9821,13 @@ class PhaseCertificationTests(unittest.TestCase):
             ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
                                 reason="r", trigger_agent_run_id="t1")
             self.assertIsNone(ort._phase_certified(repo, "o1", self._NK,
-                                                   "compile")[1]["revocation_severity"])
+                                                   "compile", target=_TP)[1]["revocation_severity"])
             meta = repo / refs["ir_meta"]
             doc = json.loads(meta.read_text("utf-8"))
             doc["revocation_severity"] = "catastrophic"
             meta.write_text(json.dumps(doc), encoding="utf-8")
             self.assertIsNone(ort._phase_certified(repo, "o1", self._NK,
-                                                   "compile")[1]["revocation_severity"])
+                                                   "compile", target=_TP)[1]["revocation_severity"])
 
     def test_reset_phase_reaches_every_phase_downstream_of_the_target(self) -> None:
         """The record half of a re-derivation decision. `revoke-artifact` refuses the phase
@@ -10785,14 +10826,15 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1",
                                invocation={"closure_id": "orch_target"})
-            _mark_dependencies_ready(repo, "o1")
+            _mark_dependencies_ready(repo, "o1")  # also records the run's target (#284)
+            before = self._read_meta(repo, "o1")["invocation"]
             resume_orchestration(repo, "o1", spec_ref="new-spec")
             meta = self._read_meta(repo, "o1")
             self.assertEqual(meta.get("spec_ref"), "new-spec")
             # The block is preserved; the only refresh is wait_usage_reset -> the effective (here
             # default False) value of this resumed invocation.
-            self.assertEqual(meta["invocation"],
-                             {"closure_id": "orch_target", "wait_usage_reset": False})
+            self.assertEqual(before["closure_id"], "orch_target")
+            self.assertEqual(meta["invocation"], {**before, "wait_usage_reset": False})
 
     def test_resume_refreshes_wait_usage_reset_to_effective_value(self) -> None:
         # A run started WITHOUT the flag then resumed WITH it must record wait_usage_reset=True
@@ -11079,11 +11121,11 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
                     "deterministic": True,
                     "context_id": "ctx_step_session_index_001",
                     "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                     "deterministic": True,
                     "allowed_output_paths": [
-                        "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/binary/bin_20260101_001/binary_meta.json"
+                        "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/binary_meta.json"
                     ],
                 },
                 response_payload={
@@ -11709,7 +11751,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "agent_run_id": "substep_run_plan_generate_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                             "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                                                     "skill_must_read_refs": "",
                             "issue_severity": "none",
@@ -11741,7 +11783,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "agent_run_id": "step_run_build_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                             "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
@@ -11802,7 +11844,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "agent_run_id": "substep_run_plan_generate_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                             "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
                                                                                     "skill_must_read_refs": "",
                             "issue_severity": "none",
@@ -11837,7 +11879,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             "agent_run_id": "step_run_build_001",
                             "parent_agent_run_id": "orch_run_001",
                             "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                            "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                             "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json",
                             "deterministic": True,
                             "launch_prompt_full": _step_launch_prompt(
@@ -12261,7 +12303,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         # ir_ref / pipeline_ref derive to _FIX_IR_REF / _FIX_PIPE_REF. `extra` supplies the
         # producer ids a given step needs (binary_id for build, run_id/source_binary_id for
         # validate.execute) so each test builds a real launch request via build_launch_request.
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="problem/shallow_water2d@0.3.0",
             spec_path="spec/problem/shallow_water/shallow_water2d",
             ir_id="shallow-water2d_20260415_001",
@@ -12357,15 +12399,21 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
 
-    def test_ir_build_system_is_read_structurally_not_line_scanned(self) -> None:
-        """A line of prose containing `build_system:` must not answer for the toolchain.
-
-        `algorithm.invariants` is free text authored by the same substep that writes the
-        IR, and it precedes `impl_defaults`. A line scanner returned the decoy, and a
-        non-make answer exempts the make-only contract entirely."""
-        from tools.orchestration_runtime import _impl_resolved_build_system
+    def test_the_launch_toolchain_is_the_pipelines_target_not_the_ir(self) -> None:
+        """Issue #284: `record_launch` reads the build system and language off the target
+        profile the request's `pipeline_ref` names. The IR — including the decoy line of
+        free-text prose that a line scanner of it once returned (`algorithm.invariants`
+        precedes `impl_defaults`, and a non-make answer exempted the make-only contract) — is
+        not read at all, and a `pipeline_ref` that names no target is refused."""
+        from tools.orchestration_runtime import _pipeline_target_toolchain
+        from tools.tests.target_fixtures import (
+            FORTRAN_CPU,
+            install_target_profile,
+            pipe_ref,
+        )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            install_target_profile(repo_root)
             ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
             ir_path.parent.mkdir(parents=True, exist_ok=True)
             ir_path.write_text(
@@ -12374,16 +12422,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "    - \"the build_system: pytest harness is out of scope here\"\n"
                 "impl_defaults:\n"
                 "  toolchain:\n"
-                "    language: fortran\n"
-                "    build_system: make\n",
+                "    language: other\n"
+                "    build_system: cmake\n",
                 encoding="utf-8")
-            self.assertEqual(
-                _impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
-            # A top-level `toolchain:` is a shape the pipeline never produces, and a
-            # structured reader does not find the field there.
-            ir_path.write_text(
-                "toolchain:\n  build_system: cmake\n", encoding="utf-8")
-            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
+            ref = pipe_ref("problem__shallow_water2d__0.3.0", "shallow-water2d_20260415_001")
+            self.assertEqual(_pipeline_target_toolchain(repo_root, ref), FORTRAN_CPU.toolchain)
+            with self.assertRaises(ValueError):
+                _pipeline_target_toolchain(
+                    repo_root,
+                    "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                    "shallow-water2d_20260415_001")
 
     def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
         """The id becomes a directory name and every gate's path base, so both entry
@@ -13022,10 +13070,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         self, repo_root: Path, safe: str, pipe_id: str, binary_id: str, run_id: str,
         *, source_id: str | None = None, spec_id: str | None = None,
         model_text: str | None = None, ir_text: str | None = None,
-        exe_bytes: bytes | None = None,
+        exe_bytes: bytes | None = None, target: Any = None,
     ) -> tuple[str, str]:
         """A dependency certified through Validate (`certify_node`, key-stamped) under the
-        given ids; `model_text` is its certified model source, `ir_text` its IR."""
+        given ids, for `target` (the fixture profile by default); `model_text` is its
+        certified model source, `ir_text` its IR."""
         kind, rest = safe.split("__", 1)
         sid, version = rest.rsplit("__", 1)
         node_key = f"{kind}/{sid}@{version}"
@@ -13033,7 +13082,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             repo_root, "orch_dep", node_key, through="validate",
             ir_id=f"{sid.replace('_', '-')}_20260101_001", pipeline_id=pipe_id,
             source_id=source_id or "src_20260101_001", binary_id=binary_id, run_id=run_id,
-            model_text=model_text, ir_text=ir_text, exe_bytes=exe_bytes)
+            model_text=model_text, ir_text=ir_text, exe_bytes=exe_bytes, target=target)
         return refs["pipeline_ref"], refs["aggregate_verdict"]
 
     def test_resolves_on_disk_selection(self) -> None:
@@ -13052,7 +13101,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
                 [{"node_key": "component/dep_base@0.1.0", "kind": "component"}])
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertEqual(facts[0]["node_key"], "component/dep_base@0.1.0")
             self.assertEqual(facts[0]["pipeline_ref"], pipe_ref)
@@ -13061,7 +13110,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             # Selection coincides with the readiness gate's choice.
             self.assertTrue(
                 _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict"))
+                                  "aggregate_verdict", target=_TP))
 
     @staticmethod
     def _dep_ir_signature(symbol: str, args: list[dict]) -> str:
@@ -13099,7 +13148,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             impl_defaults={"toolchain": {"language": "fortran"}})
         from tools.orchestration_runtime import _resolve_dependency_facts
         facts = _resolve_dependency_facts(
-            repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+            repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
         self.assertEqual(len(facts), 1, facts)
         ops = facts[0].get("published_operations")
         self.assertTrue(ops, facts[0])
@@ -13165,7 +13214,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["harness_fortran_cpu__box"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__bx__0.1.0/bx_001")
+                repo_root, "workspace/ir/component__bx__0.1.0/bx_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertEqual(facts[0]["node_key"], "infrastructure/harness_fortran_cpu@0.2.0")
             self.assertNotIn("published_operations", facts[0])
@@ -13195,11 +13244,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             # The readiness gate rejects this (verdict not bound to newer binary)...
             self.assertFalse(
                 _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict"))
+                                  "aggregate_verdict", target=_TP))
             # ...and the orientation resolver agrees: the dep is skipped.
             self.assertEqual(
                 _resolve_dependency_facts(
-                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001"),
+                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP),
                 [])
 
     def test_leaf_node_returns_empty(self) -> None:
@@ -13210,7 +13259,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 repo_root, "workspace/ir/component__leaf__0.1.0/l_001", [])
             self.assertEqual(
                 _resolve_dependency_facts(
-                    repo_root, "workspace/ir/component__leaf__0.1.0/l_001"),
+                    repo_root, "workspace/ir/component__leaf__0.1.0/l_001", target=_TP),
                 [])
 
     def test_unresolved_dep_is_skipped(self) -> None:
@@ -13223,7 +13272,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/dep_missing@0.1.0"}])
             self.assertEqual(
                 _resolve_dependency_facts(
-                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001"),
+                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP),
                 [])
 
     def test_malformed_node_key_skipped_never_raises(self) -> None:
@@ -13235,7 +13284,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "../etc/passwd@1.0.0"}, {"node_key": ""}])
             self.assertEqual(
                 _resolve_dependency_facts(
-                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001"),
+                    repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP),
                 [])
 
     def test_missing_ir_returns_empty(self) -> None:
@@ -13243,8 +13292,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self.assertEqual(
-                _resolve_dependency_facts(repo_root, "workspace/ir/nope/x"), [])
-            self.assertEqual(_resolve_dependency_facts(repo_root, ""), [])
+                _resolve_dependency_facts(repo_root, "workspace/ir/nope/x", target=_TP), [])
+            self.assertEqual(_resolve_dependency_facts(repo_root, "", target=_TP), [])
 
     _SCALE_MODEL = (
         "module dep_base_model\n"
@@ -13272,7 +13321,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["dep_base__scale"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             pub = facts[0]["published_operations"]
             self.assertEqual(len(pub), 1)
@@ -13317,7 +13366,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["bc__apply"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             u = facts[0]["published_operations"][0]["arguments"][0]
             self.assertEqual(u["name"], "U")
             self.assertEqual(u["rank"], 2)
@@ -13342,7 +13391,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["hx__advance"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001", target=_TP)
             op = facts[0]["published_operations"][0]
             self.assertEqual(op["argument_order"], ["u", "rhs", "dt", "u_next"])
             rhs = op["arguments"][1]
@@ -13376,7 +13425,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["hx__advance"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             op = _resolve_dependency_facts(
-                repo_root, "workspace/ir/problem__chan__0.1.0/top_001")[0]["published_operations"][0]
+                repo_root, "workspace/ir/problem__chan__0.1.0/top_001", target=_TP)[0]["published_operations"][0]
             self.assertEqual(op["procedure_interfaces"]["hx_norm"], [
                 "function hx_norm(u) result(r)", "real(dp), intent(in) :: u(:)", "real(dp) :: r"])
         # Round 2: a statement that merely MENTIONS the name before the real header is not the
@@ -13410,7 +13459,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/hx@0.2.0", "kind": "component",
                   "operations": ["hx__advance"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
-            facts = _resolve_dependency_facts(repo_root, "workspace/ir/problem__chan__0.1.0/top_001")
+            facts = _resolve_dependency_facts(repo_root, "workspace/ir/problem__chan__0.1.0/top_001", target=_TP)
             op = facts[0]["published_operations"][0]
             self.assertNotIn("procedure_interfaces", op)
             rendered = "\n".join(_published_operations_lines(facts))
@@ -13419,20 +13468,25 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
     def test_non_fortran_consumer_gets_no_interfaces_but_keeps_verdict(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts
+        from tools.tests.target_fixtures import profile_with
+
+        # The consumer's language is the TARGET's (issue #284): a target whose language is
+        # not Fortran, with the dependency certified for that same target.
+        c_target = profile_with(toolchain={"language": "c"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             safe = "component__dep_base__0.1.0"
             self._write_dep_pipeline(
                 repo_root, safe, "p_20260601_002", "bin_20260601_002", "run_20260601_002",
                 source_id="src_20260601_001", spec_id="dep_base",
-                model_text=self._SCALE_MODEL)
+                model_text=self._SCALE_MODEL, target=c_target)
             self._write_ir(
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
                 [{"node_key": "component/dep_base@0.1.0", "kind": "component",
                   "operations": ["dep_base__scale"]}],
                 impl_defaults={"toolchain": {"language": "c"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=c_target)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
             self.assertTrue(facts[0]["aggregate_verdict_ref"])
@@ -13450,7 +13504,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/dep_base@0.1.0",
                   "operations": ["dep_base__scale"]}])
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
 
@@ -13474,12 +13528,12 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         "end module dep_base_model\n"
     )
 
-    def _write_multi_op_pipeline(self, repo_root: Path) -> None:
+    def _write_multi_op_pipeline(self, repo_root: Path, target: Any = None) -> None:
         self._write_dep_pipeline(
             repo_root, "component__dep_base__0.1.0",
             "p_20260601_002", "bin_20260601_002", "run_20260601_002",
             source_id="src_20260601_001", spec_id="dep_base",
-            model_text=self._MULTI_OP_MODEL)
+            model_text=self._MULTI_OP_MODEL, target=target)
 
     def test_empty_operations_falls_back_to_prefixed_subroutines(self) -> None:
         # Fix A: `operations: []` (an authoring wobble) → the fallback surfaces EVERY
@@ -13495,7 +13549,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": []}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             pub = facts[0]["published_operations"]
             self.assertEqual([p["operation"] for p in pub],
@@ -13525,7 +13579,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": []}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             pub = facts[0]["published_operations"]
             self.assertEqual([p["operation"] for p in pub], ["dep_base__ping"])
             self.assertEqual(pub[0]["argument_order"], [])
@@ -13541,7 +13595,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/dep_base@0.1.0", "kind": "component"}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(
                 [p["operation"] for p in facts[0]["published_operations"]],
                 ["dep_base__scale", "dep_base__shift"])
@@ -13550,16 +13604,21 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         # A c/cpp/mixed consumer calls via its own ABI, not the Fortran signature: no
         # fallback interfaces (mirrors the enumerated-ops non-Fortran suppression).
         from tools.orchestration_runtime import _resolve_dependency_facts
+        from tools.tests.target_fixtures import profile_with
+
+        # The consumer's language is the TARGET's (issue #284): a target whose language is
+        # not Fortran, with the dependency certified for that same target.
+        c_target = profile_with(toolchain={"language": "c"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._write_multi_op_pipeline(repo_root)
+            self._write_multi_op_pipeline(repo_root, target=c_target)
             self._write_ir(
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
                 [{"node_key": "component/dep_base@0.1.0", "kind": "component",
                   "operations": []}],
                 impl_defaults={"toolchain": {"language": "c"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=c_target)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
 
@@ -13585,7 +13644,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "kind": "infrastructure", "operations": []}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__bx__0.1.0/bx_001")
+                repo_root, "workspace/ir/component__bx__0.1.0/bx_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
 
@@ -13613,7 +13672,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": []}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertEqual(facts[0]["node_key"], "profile/some_profile@0.1.0")
             self.assertNotIn("published_operations", facts[0])
@@ -13631,7 +13690,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["dep_base__shift"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(
                 [p["operation"] for p in facts[0]["published_operations"]],
                 ["dep_base__shift"])
@@ -13651,7 +13710,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": []}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
 
@@ -13671,7 +13730,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["dep_base__apply"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             ops = [p["operation"] for p in facts[0]["published_operations"]]
             self.assertEqual(ops, ["dep_base__scale", "dep_base__shift"])
@@ -13694,7 +13753,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["dep_base__scale", "dep_base__nope"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             ops = [p["operation"] for p in facts[0]["published_operations"]]
             self.assertEqual(ops, ["dep_base__scale", "dep_base__shift"])
             self.assertNotIn("dep_base__nope", ops)
@@ -13714,7 +13773,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                   "operations": ["dep_base__scale"]}],
                 impl_defaults={"toolchain": {"language": "fortran"}})
             facts = _resolve_dependency_facts(
-                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001")
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(
                 [p["operation"] for p in facts[0]["published_operations"]],
                 ["dep_base__scale"])
@@ -13740,7 +13799,8 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
         *, public_api: dict | None = None, model_text: str | None = None,
     ) -> None:
         """A dependency certified (key-stamped) through Compile — or through Generate when
-        `model_text` is given, the certified source the legacy fallback reads."""
+        `model_text` is given, a certified source (which the surface no longer reads — the
+        legacy fallback went with issue #284)."""
         import yaml as _yaml
         doc: dict = {"meta": {"spec_kind": kind}}
         if public_api is not None:
@@ -13777,8 +13837,11 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self.assertEqual(
                 surface[0]["published_operations"], ["dep_base__compute_flux"])
 
-    def test_source_certified_fallback_for_legacy_ir(self) -> None:
-        # A legacy dep IR with NO public_api falls back to the certified `<dep>__` surface.
+    def test_a_legacy_ir_without_public_api_is_unresolved_not_read_off_its_source(self) -> None:
+        # A legacy dep IR with NO public_api is `unresolved`: the certified-SOURCE fallback
+        # went with issue #284 (a source is a per-target artifact, and this surface is a
+        # target-free compile input), even when a certified source carrying `<dep>__`
+        # subroutines is on disk.
         from tools.orchestration_runtime import _resolve_component_dep_surface
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13790,10 +13853,8 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
                 [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
             surface = _resolve_component_dep_surface(
                 repo_root, "problem/top@0.1.0", graph)
-            self.assertEqual(surface[0]["source"], "certified_source")
-            self.assertEqual(
-                surface[0]["published_operations"],
-                ["dep_base__scale", "dep_base__shift"])
+            self.assertEqual(surface[0]["source"], "unresolved")
+            self.assertEqual(surface[0]["published_operations"], [])
 
     def test_public_api_present_but_empty_is_authoritative(self) -> None:
         # A PRESENT public_api with an empty operation list is authoritative-empty (NOT a
@@ -14046,7 +14107,7 @@ class CertifiedModelSourceTests(unittest.TestCase):
                 source_id="src_20260601_001",
                 model_text="subroutine dep_base__scale(x, n, y)\nend subroutine\n")
             self.assertEqual(
-                _certified_model_source(repo_root, "component/dep_base@0.1.0"),
+                _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP),
                 repo_root / refs["model_ref"])
 
     def test_returns_none_on_missing_artifacts(self) -> None:
@@ -14054,14 +14115,14 @@ class CertifiedModelSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             # no catalog / no workspace at all
-            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0"))
-            self.assertIsNone(_certified_model_source(repo_root, "not a node key"))
+            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP))
+            self.assertIsNone(_certified_model_source(repo_root, "not a node key", target=_TP))
             refs = certify_node(
                 repo_root, "orch_dep", "component/dep_base@0.1.0", through="generate",
                 ir_id="dep-base_20260601_001", pipeline_id="p_20260601_002")
             # the certified source file itself absent
             (repo_root / refs["model_ref"]).unlink()
-            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0"))
+            self.assertIsNone(_certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP))
 
 
 class ExtractSubroutineInterfaceTests(unittest.TestCase):
@@ -15740,7 +15801,7 @@ class RecordTimeoutTests(unittest.TestCase):
                         "substep": "generate",
                         "result_summary": "should fail session_id check",
                         "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                             "shallow-water2d_20260415_001/source/src_001/"
                             "source_meta.json"
                         ],
@@ -15798,7 +15859,7 @@ class RecordTimeoutTests(unittest.TestCase):
                         "substep": "generate",
                         "result_summary": "should fail sandbox check",
                         "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/"
+                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                             "shallow-water2d_20260415_001/source/src_001/"
                             "source_meta.json"
                         ],
@@ -16916,7 +16977,7 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
 
     def _certified(self, repo_root: Path, step: str) -> tuple[bool, dict[str, Any]]:
         with accept_any_certified_ir():
-            return ort._phase_certified(repo_root, "o", self.NK, step)
+            return ort._phase_certified(repo_root, "o", self.NK, step, target=_TP)
 
     def test_the_newer_date_wins_over_the_larger_slug(self) -> None:
         """`a_20260601_001` (newer date, smaller slug) beats `z_20260501_001`: two eligible
@@ -16958,7 +17019,8 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
             repo_root = Path(tmp)
             refs = certify_node(repo_root, "o", self.NK, through="generate",
                                 ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
-            root = repo_root / "workspace" / "pipelines" / "component__dep_a__0.1.0"
+            root = (repo_root / "workspace" / "pipelines" / "component__dep_a__0.1.0"
+                    / _TARGET_ID)
             shutil.copytree(root / "dep-a_20260601_001", root / "zzz")
             (repo_root / refs["model_ref"]).write_text("! edited\n", encoding="utf-8")
             ok, detail = self._certified(repo_root, "generate")
@@ -17106,7 +17168,7 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
             time.sleep(0.01)
             os.utime(old / "ir_meta.json")
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref"),
+                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref", target=_TP),
                 "older artifact touched to a newer mtime must NOT override the "
                 "newer-by-runtime-id failing artifact",
             )
@@ -17134,7 +17196,7 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
                 if f.is_file():
                     os.utime(f)
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref"),
+                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref", target=_TP),
                 "touched-newer mtime on old pipeline must not override newer "
                 "(by runtime id) pipeline's failing binary_meta",
             )
@@ -18117,6 +18179,7 @@ class CrossVersionCoherenceTests(unittest.TestCase):
             repo_root=repo_root, orchestration_id=orch,
             spec_ref="spec/component/user",
         )
+        record_orchestration_target(repo_root, orch)
         write_preflight(
             repo_root=repo_root, orchestration_id=orch,
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -18290,6 +18353,7 @@ class NewVersionPublishNoOutageTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="nv",
                 spec_ref="spec/component/user",
             )
+            record_orchestration_target(repo_root, "nv")
             write_preflight(
                 repo_root=repo_root, orchestration_id="nv",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -18334,6 +18398,7 @@ class NewVersionPublishNoOutageTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="nv2",
                 spec_ref="spec/component/user",
             )
+            record_orchestration_target(repo_root, "nv2")
             write_preflight(
                 repo_root=repo_root, orchestration_id="nv2",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -18871,6 +18936,7 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
             repo_root=repo_root, orchestration_id=orch,
             spec_ref="spec/component/src",
         )
+        record_orchestration_target(repo_root, orch)
         write_preflight(
             repo_root=repo_root, orchestration_id=orch,
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -18926,7 +18992,7 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
             meta = json.loads((repo_root / "workspace/orchestrations/fp_gate/orchestration_meta.json")
                               .read_text(encoding="utf-8"))
             self.assertTrue(meta["dependency_readiness"]["direct_dependency_execution_readiness"])
-            bin_meta = (repo_root / "workspace/pipelines/component__dep_a__0.1.0/dep-a_20260511_001"
+            bin_meta = (repo_root / f"workspace/pipelines/component__dep_a__0.1.0/{_TARGET_ID}/dep-a_20260511_001"
                         / "binary/bin_20260101_001/binary_meta.json")
             _revoke_stage_meta(repo_root, bin_meta, reason="validate_structural_violation_ir",
                                trigger_agent_run_id="t1")
@@ -18947,7 +19013,7 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_passing_orch(repo_root)
-            pipe = repo_root / "workspace/pipelines/component__dep_a__0.1.0/dep-a_20260511_001"
+            pipe = repo_root / f"workspace/pipelines/component__dep_a__0.1.0/{_TARGET_ID}/dep-a_20260511_001"
             newer = {
                 "compile": (repo_root / "workspace/ir/component__dep_a__0.1.0/dep-a_20260511_002",
                             "ir_meta.json"),
@@ -18963,7 +19029,7 @@ class LaunchGateLiveRecomputeTests(unittest.TestCase):
             for step in ("compile", "generate", "build", "validate"):
                 self.assertEqual(_dependency_ready(repo_root, "fp_gate", step=step), (True, None),
                                  step)
-            resolver = DerivationResolver(repo_root)
+            resolver = DerivationResolver(repo_root, target=_TP)
             sel = resolver.select("component/dep_a@0.1.0", "validate")
             self.assertEqual((sel.ok, sel.ir_id, sel.binary_id, sel.run_id),
                              (True, "dep-a_20260511_001", "bin_20260101_001", "run_20260101_001"))
@@ -19260,6 +19326,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="rng",
                 spec_ref="spec/component/user",
             )
+            record_orchestration_target(repo_root, "rng")
             write_preflight(
                 repo_root=repo_root, orchestration_id="rng",
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -19338,6 +19405,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="vc_e2e",
                 spec_ref="spec/component/compound",
             )
+            record_orchestration_target(repo_root, "vc_e2e")
             write_preflight(repo_root=repo_root, orchestration_id="vc_e2e",
                             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"))
             _load_spec_catalog.cache_clear()
@@ -19399,6 +19467,7 @@ class MarkDependencyReadinessTests(unittest.TestCase):
             repo_root=repo_root, orchestration_id=orch,
             spec_ref="spec/component/compound",
         )
+        record_orchestration_target(repo_root, orch)
         write_preflight(
             repo_root=repo_root, orchestration_id=orch,
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -19577,6 +19646,7 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
             repo_root = Path(tmp)
             # First preflight: no spec_ref, no deps.yaml → fail-closed.
             init_orchestration(repo_root=repo_root, orchestration_id="leaf_recov")
+            record_orchestration_target(repo_root, "leaf_recov")
             write_preflight(repo_root=repo_root, orchestration_id="leaf_recov",
                             payload=self._PAYLOAD)
             r1 = self._readiness(repo_root, "leaf_recov")
@@ -19622,6 +19692,7 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="fp_invalidate",
                 spec_ref="spec/component/leafA",
             )
+            record_orchestration_target(repo_root, "fp_invalidate")
             write_preflight(repo_root=repo_root, orchestration_id="fp_invalidate",
                             payload=self._PAYLOAD)
             r1 = self._readiness(repo_root, "fp_invalidate")
@@ -19686,6 +19757,7 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="fp_edits",
                 spec_ref="spec/component/edits",
             )
+            record_orchestration_target(repo_root, "fp_edits")
             write_preflight(repo_root=repo_root, orchestration_id="fp_edits",
                             payload=self._PAYLOAD)
             _setup_verified_dep(repo_root, dep_id="dep_a")
@@ -19737,6 +19809,7 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="nonleaf_pres",
                 spec_ref="spec/component/compound2",
             )
+            record_orchestration_target(repo_root, "nonleaf_pres")
             write_preflight(repo_root=repo_root, orchestration_id="nonleaf_pres",
                             payload=self._PAYLOAD)
             _setup_verified_dep(repo_root, dep_id="dep_a")
@@ -19822,7 +19895,7 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
         import tools.orchestration_runtime as _rt
         from tools.orchestration_runtime import _dependency_ready
 
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
+        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
             raise RuntimeError("PyYAML is required for parsing deps.yaml")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -19993,9 +20066,9 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
 
         orig_compute = _rt._compute_dep_readiness
 
-        def _tracking_compute(repo_root: Path, spec_ref: Any):  # type: ignore[no-untyped-def]
+        def _tracking_compute(repo_root: Path, spec_ref: Any, **kw: Any):  # type: ignore[no-untyped-def]
             events.append("compute_called")
-            return orig_compute(repo_root, spec_ref)
+            return orig_compute(repo_root, spec_ref, **kw)
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -20085,7 +20158,7 @@ class LaunchWithoutPyYAMLTests(unittest.TestCase):
         import tools.orchestration_runtime as _rt
         from tools.orchestration_runtime import _dependency_ready
 
-        def _raise(repo_root, spec_ref):  # type: ignore[no-untyped-def]
+        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
             raise RuntimeError("PyYAML is required")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -21564,7 +21637,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         safe = f"{kind}__{sid}__{ver}"
         # the pipeline dir id must match the canonical `<hyphen-slug>_<date>_<seq>` grammar
         slug = sid.replace("_", "-")
-        pipe = repo / "workspace" / "pipelines" / safe / f"{slug}_{date}_001"
+        pipe = repo / "workspace" / "pipelines" / safe / _TARGET_ID / f"{slug}_{date}_001"
         bin_id, src_id, run_id = f"bin_{date}_001", f"src_{date}_001", f"run_{date}_001"
         # A sibling certified (key-stamped) through Validate — or, when not `certified`,
         # through Build only: built, never validated, so no exemplar. The catalog written by
@@ -21597,15 +21670,17 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0")
             self._seed_certified_sibling(repo, "component", "swe_flux", "0.1.0")  # wrong family
-            ex = _resolve_exemplar_source(repo, ir_ref)
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertIsNotNone(ex)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
             self.assertEqual({s["filename"] for s in ex["sources"]},
                              {"adv_bndry_model.f90", "adv_bndry_runner.f90"})
+            # A sibling is certified per target (issue #284): no target, no exemplar.
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             # WHICH source directory the exemplar was read from (issue #250): the attempt
             # record names it, so an advisory input is traceable without being keyed.
             self.assertEqual(ex["source_ref"],
-                             "workspace/pipelines/component__adv_bndry__0.1.0/"
+                             f"workspace/pipelines/component__adv_bndry__0.1.0/{_TARGET_ID}/"
                              "adv-bndry_20260101_001/source/src_20260101_001")
             self.assertTrue((repo / ex["source_ref"] / "src" / "adv_bndry_model.f90").is_file())
 
@@ -21621,7 +21696,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=True)
-            ex = _resolve_exemplar_source(repo, ir_ref)
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertIsNotNone(ex)
             self.assertEqual({s["filename"] for s in ex["sources"]},
                              {"adv_bndry_model.f90", "adv_bndry_checks.f90"})
@@ -21638,7 +21713,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=False)  # pre-M3c: model+runner only
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_m3c_skips_sibling_with_stale_contract_version(self) -> None:
         # ABI-drift guard: an M3c checks exemplar authored under an OLDER contract may carry a
@@ -21654,7 +21729,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=True, contract_version="pure-STALE")
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_m3c_skips_sibling_missing_bundle_meta(self) -> None:
         # Fail-safe polarity: a certified M3c sibling whose contract version cannot be POSITIVELY
@@ -21669,9 +21744,9 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", with_checks=True)
             # Remove the bundle_meta the seed wrote, leaving model+checks but no version record.
             safe = "component__adv_bndry__0.1.0"
-            (repo / "workspace" / "pipelines" / safe / "adv-bndry_20260101_001"
+            (repo / "workspace" / "pipelines" / safe / _TARGET_ID / "adv-bndry_20260101_001"
              / "source" / "src_20260101_001" / "bundle_meta.json").unlink()
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_excludes_self(self) -> None:
         from tools.orchestration_runtime import _resolve_exemplar_source
@@ -21680,7 +21755,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [("component", "adv_flux", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_flux", "0.1.0")  # self only
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_self_never_outranks_a_real_sibling(self) -> None:
         # Even when self is certified AND fresher, it must never be selected over a sibling.
@@ -21693,7 +21768,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_flux", "0.1.0", date="20260303")  # self, fresher
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", date="20260101")  # sibling, older
-            ex = _resolve_exemplar_source(repo, ir_ref)
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
 
     def test_uncertified_sibling_not_used(self) -> None:
@@ -21705,7 +21780,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", certified=False)
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_family_mismatch_and_kind_mismatch(self) -> None:
         from tools.orchestration_runtime import _resolve_exemplar_source
@@ -21718,10 +21793,17 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "swe_flux", "0.1.0")
             self._seed_certified_sibling(repo, "problem", "adv_prob", "0.1.0")
-            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
-    def test_non_fortran_gets_no_exemplar(self) -> None:
+    def test_a_sibling_certified_for_another_target_is_not_offered(self) -> None:
+        """Issue #284: the exemplar is a sibling built for the SAME target — which is what
+        closes the language (the language gate that stood here, `language != "fortran"`,
+        went with it). A sibling certified for the fixture target is not offered to a node
+        built for a second target whose profile differs only in its id, and no target at all
+        offers nothing. The IR's own `language` is not read: a `cpp` IR still gets the
+        same-target sibling."""
         from tools.orchestration_runtime import _resolve_exemplar_source
+        from tools.tests.target_fixtures import SECOND_TARGET
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             self._catalog(repo, [
@@ -21729,7 +21811,11 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", language="cpp")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0")
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=SECOND_TARGET))
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
+            self.assertIsNotNone(ex)
+            self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
 
     def test_picks_most_recent_across_siblings(self) -> None:
         from tools.orchestration_runtime import _resolve_exemplar_source
@@ -21742,7 +21828,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_old", "0.1.0", date="20260101")
             self._seed_certified_sibling(repo, "component", "adv_new", "0.1.0", date="20260202")
-            ex = _resolve_exemplar_source(repo, ir_ref)
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_new@0.1.0")
 
     def test_build_exemplar_renders_only_for_generate_generate(self) -> None:
@@ -21783,7 +21869,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
 
     def test_build_launch_request_attaches_exemplar_only_for_generate_generate(self) -> None:
         import tools.workflow_conductor as wc
-        refs = wc.NodeRefs(node_key="component/x@0.1.0", spec_path="spec/component/x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0", spec_path="spec/component/x",
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
                            source_id="src_1")
         exemplar = {"node_key": "component/y@0.1.0", "spec_id": "y",
@@ -21906,11 +21992,11 @@ class DerivationKeyCertificationTests(unittest.TestCase):
     def _certified(self, repo_root: Path, node_key: str, step: str) -> tuple[bool, dict[str, Any]]:
         from tools.orchestration_runtime import _phase_certified
         with accept_any_certified_ir():
-            return _phase_certified(repo_root, "orch_user", node_key, step)
+            return _phase_certified(repo_root, "orch_user", node_key, step, target=_TP)
 
     def _ready(self, repo_root: Path, stage: str) -> tuple[bool, str | None]:
         from tools.orchestration_runtime import _verify_dep_stage_detail
-        return _verify_dep_stage_detail(repo_root, "component", "user", "0.1.0", stage)
+        return _verify_dep_stage_detail(repo_root, "component", "user", "0.1.0", stage, target=_TP)
 
     # --- the matching case, and the three stages of readiness ---------------------------
 
@@ -21943,7 +22029,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             shutil.rmtree(repo_root / "workspace" / "orchestrations")
             from tools.orchestration_runtime import _phase_certified
             with accept_any_certified_ir():
-                ok, detail = _phase_certified(repo_root, "orch_never_existed", self.USER, "validate")
+                ok, detail = _phase_certified(repo_root, "orch_never_existed", self.USER, "validate", target=_TP)
             self.assertTrue(ok, detail)
             self.assertEqual(detail["run_id"], "run_20260101_001")
 
@@ -22010,9 +22096,11 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         the selection moves to the newer output, so `dep_b`'s generate and build keys
         (`closure[].source`) no longer match and it is not ready for `pipeline_ref`, while
         its Compile — which binds `dep_a`'s IR and published surface, both unchanged — still
-        stands. One level up, `user` is refused at Compile already: its `dependency_surface`
-        is read off `dep_b`'s certified source, which no longer exists. Removing `closure`
-        from the generate / build inputs leaves this row red."""
+        stands. One level up, `user`'s Compile stands too: a dependency's certified SOURCE is
+        a per-target artifact and no longer a compile input (issue #284 removed the
+        `dependency_surface` fallback that read it), so `user` is refused at Generate, by the
+        same `closure[].source` binding. Removing `closure` from the generate / build inputs
+        leaves this row red."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
@@ -22023,14 +22111,19 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             self.assertEqual(detail["reason"], "derivation_key_mismatch:closure[0].source")
             from tools.orchestration_runtime import _verify_dep_stage_detail
             self.assertEqual(
-                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "ir_ref"),
+                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "ir_ref", target=_TP),
                 (True, None))
             self.assertEqual(
-                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "pipeline_ref"),
+                _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "pipeline_ref", target=_TP),
                 (False, f"{self.DEP_B} build: derivation_key_mismatch:closure[0].source"))
-            ok, detail = self._certified(repo_root, self.USER, "compile")
-            self.assertEqual((ok, detail["reason"]),
-                             (False, "derivation_key_mismatch:dependency_surface"))
+            self.assertTrue(self._certified(repo_root, self.USER, "compile")[0])
+            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertFalse(ok)
+            # `dep_b` itself has no certified Generate under its moved key, so `user`'s
+            # generate key cannot be computed and names the deepest node.
+            self.assertTrue(str(detail["reason"]).startswith(
+                f"derivation_inputs_unresolvable: dependency {self.DEP_B} has no certified "
+                "generate output"), detail)
 
     def test_an_identical_source_under_a_new_certification_moves_nothing(self) -> None:
         """The other direction: a re-certification of `dep_a` that reproduces its source byte
@@ -22282,7 +22375,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             ok, detail = self._certified(repo_root, self.USER, "generate")
             self.assertTrue(ok)
             self.assertEqual(detail["pipeline_ref"],
-                             "workspace/pipelines/component__user__0.1.0/user_20260102_001")
+                             "workspace/pipelines/component__user__0.1.0/" + _TARGET_ID + "/user_20260102_001")
             self.assertEqual(detail["source_id"], "src_20260101_001")
 
     def test_a_build_in_another_pipeline_is_selected_with_its_twins_or_not_at_all(self) -> None:
@@ -22298,7 +22391,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             first = self._seed(repo_root)
-            p1 = "workspace/pipelines/component__user__0.1.0/user_20260101_001"
+            p1 = "workspace/pipelines/component__user__0.1.0/" + _TARGET_ID + "/user_20260101_001"
             p2 = p1.replace("0101", "0102")
             for ir_text in (f"node_key: {self.USER}\n# re-derived\n", None):
                 with self.subTest(ir_changed=ir_text is not None):
@@ -22350,7 +22443,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             self.assertTrue(ok, detail)
             self.assertEqual(
                 (detail["pipeline_ref"], detail["source_id"], detail["binary_id"], detail["run_id"]),
-                ("workspace/pipelines/component__user__0.1.0/user_20260102_001",
+                ("workspace/pipelines/component__user__0.1.0/" + _TARGET_ID + "/user_20260102_001",
                  "src_20260102_001", "bin_20260102_001", "run_20260101_001"))
 
     def test_selection_is_memoised_per_evaluation_and_refuses_a_cycle(self) -> None:
@@ -22358,7 +22451,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            resolver = DerivationResolver(repo_root)
+            resolver = DerivationResolver(repo_root, target=_TP)
             first = resolver.select(self.USER, "validate")
             self.assertTrue(first.ok)
             self.assertIs(resolver.select(self.USER, "validate"), first)
@@ -22373,7 +22466,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 "node_key": self.USER,
                 "all_nodes": [{"node_key": self.USER, "topo_level": 0}],
                 "transitive_deps": []}), encoding="utf-8")
-            resolver = DerivationResolver(repo_root)
+            resolver = DerivationResolver(repo_root, target=_TP)
             resolver._in_progress.add((self.USER, "generate"))
             sel = resolver.select(self.USER, "generate")
             self.assertEqual((sel.ok, sel.reason), (False, "dependency_cycle"))
@@ -22392,17 +22485,17 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             refs = self._seed(repo_root)
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user", target=_TP)
             self.assertEqual(snap["certified_entries"],
                              [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 3)])
             self._recertify_dep(repo_root, model_text="module dep_a_model\n! v2\nend module\n")
             # `dep_a` re-certified: level 3 still; `dep_b`, which binds `dep_a`'s source,
             # is demoted to level 1 (its Compile stands, its Build's key moved).
-            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user")
+            snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user", target=_TP)
             self.assertEqual(snap["certified_entries"],
                              [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 1)])
             # A Build of `dep_b` (closure: `dep_a`) stages the SELECTED source of `dep_a`.
-            node_refs = wc.NodeRefs(
+            node_refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key=self.DEP_B, spec_path="spec/component/dep_b",
                 ir_id="dep-b_20260101_001", pipeline_id="dep-b_20260101_001",
                 source_id="src_20260101_001", binary_id="bin_20260101_001")
@@ -22412,12 +22505,13 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 f'  direct_deps:\n    - node_key: "{self.DEP}"\n', encoding="utf-8")
             conductor = wc.Conductor.__new__(wc.Conductor)
             conductor.repo_root = repo_root
+            conductor.target_profile = _TP
             conductor._phase_closure_bindings = {}
             obj_dir = repo_root / "workspace" / "tmp" / "arid_parity" / "build"
             # Since issue #250 PR-3 the binding is taken at phase START through the key's
             # resolver (`_phase_derivation` -> `_bind_closure_sources`) and staging copies
             # from it; bind here as the phase start would, over the selection NOW.
-            resolver = DerivationResolver(repo_root)
+            resolver = DerivationResolver(repo_root, target=_TP)
             conductor._phase_closure_bindings[(self.DEP_B, "build")] = (
                 conductor._bind_closure_sources(
                     node_refs, "build",
@@ -22425,7 +22519,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                       "source": resolver.select(self.DEP, "generate").output_hash}],
                     resolver=resolver))
             staged = conductor._stage_dependency_sources(node_refs, obj_dir, phase="build")
-            resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP)
+            resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP, target=_TP)
             self.assertIsNone(err)
             self.assertEqual(staged, [resolved])
             self.assertEqual(resolved["source_id"], "src_20260101_002")
@@ -22439,13 +22533,13 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root, through="compile")
-            binding, err = _resolve_certified_closure_binding(repo_root, self.DEP)
+            binding, err = _resolve_certified_closure_binding(repo_root, self.DEP, target=_TP)
             self.assertIsNone(binding)
             self.assertIn(f"{self.DEP} has no certified model source to stage "
                           "(source_not_found)", err)
             self.assertIn("--with-deps", err)
             self.assertEqual(
-                _resolve_certified_closure_binding(repo_root, "not a node key"),
+                _resolve_certified_closure_binding(repo_root, "not a node key", target=_TP),
                 (None, "unparseable dependency node_key 'not a node key'"))
 
     def test_stale_details_name_the_node_the_stage_and_the_input(self) -> None:
@@ -22453,13 +22547,13 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self.assertEqual(_stale_dependency_details(repo_root, "spec/component/user"), [])
+            self.assertEqual(_stale_dependency_details(repo_root, "spec/component/user", target=_TP), [])
             spec = repo_root / "spec" / "component" / "dep_a" / "tests.md"
             spec.write_text("changed\n", encoding="utf-8")
             # `dep_a`'s own key moved; `dep_b`'s compile key binds `dep_a`'s IR, which is
             # no longer certified, so it is unresolvable — each named with its cause.
             self.assertEqual(
-                _stale_dependency_details(repo_root, "spec/component/user"),
+                _stale_dependency_details(repo_root, "spec/component/user", target=_TP),
                 [f"{self.DEP} compile: derivation_key_mismatch:spec.tests",
                  f"{self.DEP_B} compile: derivation_inputs_unresolvable: dependency {self.DEP} "
                  "has no certified compile output (derivation_key_mismatch:spec.tests); build "
@@ -22468,10 +22562,10 @@ class DerivationKeyCertificationTests(unittest.TestCase):
     def test_an_unsafe_identifier_token_is_refused_before_any_path(self) -> None:
         from tools.orchestration_runtime import _verify_dep_stage_detail
         with tempfile.TemporaryDirectory() as tmp:
-            ok, why = _verify_dep_stage_detail(Path(tmp), "component", "../x", "0.1.0", "ir_ref")
+            ok, why = _verify_dep_stage_detail(Path(tmp), "component", "../x", "0.1.0", "ir_ref", target=_TP)
             self.assertEqual((ok, why), (False, "component/../x@0.1.0: unsafe identifier token"))
             with self.assertRaises(ValueError):
-                _verify_dep_stage_detail(Path(tmp), "component", "x", "0.1.0", "no_such_stage")
+                _verify_dep_stage_detail(Path(tmp), "component", "x", "0.1.0", "no_such_stage", target=_TP)
 
     # --- `_closure_nodes_from_graph` (kept from the replaced class: its subject survives) ---
 
@@ -23958,14 +24052,19 @@ class DerivationInputsTests(unittest.TestCase):
                 "    - node_key: component/dep_a@0.1.0\n"
                 "    - node_key: infrastructure/harness_h@0.1.0\n")
 
-    def _seed(self, repo: Path, *, through: str = "validate") -> dict[str, Any]:
+    def _seed(self, repo: Path, *, through: str = "validate",
+              also_for: tuple[Any, ...] = ()) -> dict[str, Any]:
         """The registry plus certified chains for the two closure members and for spec_x
         itself (`through`), spec_x's IR carrying the two direct deps and its sidecar written by
-        the real graph builder."""
+        the real graph builder. The members are certified for the fixture target and for every
+        profile in `also_for` — a dependency is certified per target, so a key computed for
+        another target needs the closure certified for it too."""
         from tools.dependency_graph import build_dependency_graph
         self._seed_registry(repo)
         for nk in (self._DEP, self._HARNESS):
             certify_node(repo, "o1", nk, through="validate")
+            for extra in also_for:
+                certify_node(repo, "o1", nk, through="validate", target=extra)
         refs = certify_node(repo, "o1", self._NK, through=through)
         self._reir(repo, refs, self._IR_TEXT)
         graph, err = build_dependency_graph(
@@ -23996,8 +24095,11 @@ class DerivationInputsTests(unittest.TestCase):
         doc = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
         return ort._meta_output_hash(doc, meta_ref)
 
-    def _inputs(self, repo: Path, refs: dict[str, Any], step: str) -> dict[str, Any]:
-        return ort.phase_derivation_inputs(repo, node_key=self._NK, step=step, **self._own(refs))
+    def _inputs(self, repo: Path, refs: dict[str, Any], step: str,
+                target: Any = None) -> dict[str, Any]:
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        return ort.phase_derivation_inputs(repo, node_key=self._NK, step=step,
+                                           target=target or FORTRAN_CPU, **self._own(refs))
 
     # --- the input SET of each phase ---------------------------------------------------
 
@@ -24011,7 +24113,7 @@ class DerivationInputsTests(unittest.TestCase):
             expected = {
                 "compile": {"spec", "profiles", "dependency_graph", "closure", "dependency_surface",
                             "toolchain_document"},
-                "generate": {"ir", "spec", "harness", "closure"},
+                "generate": {"ir", "spec", "target", "harness", "closure"},
                 "build": {"source", "closure", "toolchain"},
                 "validate": {"binary", "ir", "spec", "run_policy"},
             }
@@ -24028,10 +24130,17 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(set(self._inputs(repo, refs, "generate")["spec"]),
                              {"controlled_spec", "tests"})
             self.assertEqual(set(self._inputs(repo, refs, "build")["toolchain"]),
-                             {"language", "standard", "build_system", "backend", "compiler",
-                              "compiler_version"})
+                             {"target_id", "language", "standard", "build_system", "backend",
+                              "compiler", "compiler_version"})
+            from tools.tests.target_fixtures import FORTRAN_CPU
+            self.assertEqual(self._inputs(repo, refs, "generate")["target"],
+                             {"target_id": FORTRAN_CPU.target_id,
+                              "profile": FORTRAN_CPU.sha256})
             self.assertEqual(self._inputs(repo, refs, "validate")["run_policy"],
-                             {"target_class": "cpu", "threads_per_rank": 1, "preset": "make_test"})
+                             {"target_id": FORTRAN_CPU.target_id,
+                              "profile": FORTRAN_CPU.sha256,
+                              "threads_per_rank": FORTRAN_CPU.threads_per_rank,
+                              "preset": "make_test"})
 
     # --- what each entry binds to ------------------------------------------------------
 
@@ -24104,49 +24213,56 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(validate["spec"], {"tests": _compute_sha256(
                 repo / self._spec_dir("problem", "spec_x") / "tests.md")})
 
-    def test_toolchain_and_run_policy_read_the_irs_own_values(self) -> None:
-        """Round-1 census: with every IR in the corpus and this fixture at the defaults
-        (`fortran` / `f2008` / `make` / `openmp` / `cpu`), a resolver that ignored the IR
-        survived. Non-default values in the IR reach the build toolchain and the validate run
-        policy — the four toolchain fields are the only way the IR's toolchain enters the
-        build key (it has no `ir` member)."""
+    def test_toolchain_and_run_policy_read_the_targets_values(self) -> None:
+        """Round-1 census (issue #250): with every IR in the corpus and this fixture at the
+        defaults, a resolver that ignored the IR survived. Since issue #284 the build toolchain
+        and the validate run policy are the TARGET's, and the same shape of witness applies:
+        non-default values in a profile reach them, and the IR's toolchain does not — a
+        rewritten IR moves neither."""
+        from tools.tests.target_fixtures import profile_with, second_target
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._seed(repo)
-            self._reir(repo, refs, self._IR_TEXT
-                       .replace("language: fortran", "language: cpp")
-                       .replace("standard: f2008", "standard: c++17")
-                       .replace("build_system: make", "build_system: cmake")
-                       .replace("backend: openmp", "backend: cuda")
-                       .replace("class: cpu", "class: gpu"))
-            tc = self._inputs(repo, refs, "build")["toolchain"]
+            other = second_target(profile_with(
+                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake"},
+                parallel={"backend": "cuda"}, hardware={"class": "gpu"},
+                execution={"threads_per_rank": 3}))
+            refs = self._seed(repo, also_for=(other,))
+            tc = self._inputs(repo, refs, "build", target=other)["toolchain"]
             self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
                              ("cpp", "c++17", "cmake", "cuda"))
-            self.assertEqual(self._inputs(repo, refs, "validate")["run_policy"]["target_class"],
-                             "gpu")
+            policy = self._inputs(repo, refs, "validate", target=other)["run_policy"]
+            self.assertEqual((policy["profile"], policy["threads_per_rank"]),
+                             (other.sha256, 3))
+            before = (self._inputs(repo, refs, "build")["toolchain"],
+                      self._inputs(repo, refs, "validate")["run_policy"])
+            self._reir(repo, refs, self._IR_TEXT
+                       .replace("language: fortran", "language: cpp")
+                       .replace("class: cpu", "class: gpu"))
+            # The IR moved (the validate key's `ir` member moves with it), but the toolchain
+            # and the policy are the target's.
+            self.assertEqual((self._inputs(repo, refs, "build")["toolchain"],
+                              self._inputs(repo, refs, "validate")["run_policy"]), before)
 
-    def test_build_toolchain_takes_the_ir_pin_else_the_server_default(self) -> None:
+    def test_build_toolchain_takes_the_profile_pin_else_the_server_default(self) -> None:
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with, second_target
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._seed(repo)
+            pinned = second_target(profile_with(toolchain={"compiler": "no_such_fc_x"}))
+            refs = self._seed(repo, also_for=(pinned,))
             server = ort._build_runtime_server_module()
             tc = self._inputs(repo, refs, "build")["toolchain"]
             self.assertEqual(tc["compiler"], server.MANDATORY_SYNTAX_COMPILER)
             self.assertEqual(tc["compiler_version"],
                              server._syntax_compiler_version((tc["compiler"], "--version")))
-            self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
-                             ("fortran", "f2008", "make", "openmp"))
-            # An IR that declares none of the four fields records None for each (no host
-            # default is restated here — the default is the renderer's, under RENDER_VERSION).
-            bare = ort._ir_toolchain_identity({})
-            self.assertEqual((bare["language"], bare["standard"], bare["build_system"],
-                              bare["backend"]), (None, None, None, None))
-            self.assertEqual(bare["compiler"], server.MANDATORY_SYNTAX_COMPILER)
-            # An IR that pins a compiler is read as pinned; an unprobeable one records None
+            self.assertEqual(
+                (tc["target_id"], tc["language"], tc["standard"], tc["build_system"],
+                 tc["backend"]),
+                (FORTRAN_CPU.target_id, FORTRAN_CPU.toolchain["language"],
+                 FORTRAN_CPU.toolchain["standard"], FORTRAN_CPU.toolchain["build_system"],
+                 FORTRAN_CPU.parallel_backend))
+            # A profile that pins a compiler is read as pinned; an unprobeable one records None
             # rather than refusing (the version is a record of the host, not a gate).
-            self._reir(repo, refs, self._IR_TEXT.replace(
-                "    build_system: make\n", "    build_system: make\n    compiler: no_such_fc_x\n"))
-            tc2 = self._inputs(repo, refs, "build")["toolchain"]
+            tc2 = self._inputs(repo, refs, "build", target=pinned)["toolchain"]
             self.assertEqual(tc2["compiler"], "no_such_fc_x")
             self.assertIsNone(tc2["compiler_version"])
 
@@ -24232,11 +24348,14 @@ class DerivationInputsTests(unittest.TestCase):
             # The harness entry did not move: the diff is exactly dep_a's.
             self.assertEqual(before["build"]["closure"][1], after["build"]["closure"][1])
 
-    def test_a_legacy_dependencys_source_surface_moves_the_compile_key(self) -> None:
-        """Codex, round 2: a `component` dependency whose certified IR has no `public_api` has
-        its published operations read off its certified SOURCE, so a re-certified source
-        with different public subroutines changes what the compile producer is shown while
-        the closure's `ir` entry stands. The resolved surface is a key input of its own."""
+    def test_a_dependencys_source_is_not_a_compile_input(self) -> None:
+        """Issue #284: Compile is target-free, and a dependency's certified SOURCE is a
+        per-target artifact. A `component` dependency whose certified IR has no `public_api`
+        used to have its published operations read off that source (Codex, #250 round 2, made
+        the result a key input); the fallback is gone, so such a dependency is `unresolved`
+        and a re-certified source with different public subroutines moves no compile input.
+        What stays a key input is the surface itself (`dependency_surface`), pinned from the
+        IR side by `test_compile_inputs_bind_the_spec_the_profile_and_the_closure_irs`."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -24251,15 +24370,12 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual([e["source"] for e in ort._resolve_component_dep_surface(
                 repo, self._NK, json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
                                            .read_text(encoding="utf-8")))],
-                             ["certified_source"])
+                             ["unresolved"])
             model.write_text(model.read_text(encoding="utf-8").replace("dep_a__op1", "dep_a__op2"),
                              encoding="utf-8")
             doc["artifact_hashes"][dep["model_ref"]] = _compute_sha256(model)
             (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
-            after = self._inputs(repo, refs, "compile")
-            self.assertEqual(before["closure"], after["closure"])
-            self.assertEqual(tools_derivation.first_differing_input(before, after),
-                             "dependency_surface")
+            self.assertEqual(before, self._inputs(repo, refs, "compile"))
 
     def test_build_binds_this_attempts_source_not_the_certified_binarys(self) -> None:
         """Round-2 mutant: with every fixture's build attempt sitting on the source its
@@ -24284,13 +24400,13 @@ class DerivationInputsTests(unittest.TestCase):
                 "artifact_hashes": {model_ref: _compute_sha256(newer / "src" / "spec_x_model.f90")},
             }), encoding="utf-8")
             own = {**self._own(refs), "source_ref": f"{refs['pipeline_ref']}/source/src_20260102_002"}
-            source = ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", **own)["source"]
+            source = ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", target=_TP, **own)["source"]
             self.assertEqual(source, self._meta_output_hash(repo, meta_ref))
             self.assertNotEqual(source, self._meta_output_hash(repo, refs["source_meta"]))
             # A first build: no binary under the pipeline yet, the key still resolves.
             shutil.rmtree(repo / refs["pipeline_ref"] / "binary")
             self.assertEqual(
-                ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", **own)["source"],
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="build", target=_TP, **own)["source"],
                 source)
 
     def test_a_dependency_re_certified_with_identical_bytes_moves_nothing(self) -> None:
@@ -24301,7 +24417,7 @@ class DerivationInputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
-            before = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, **self._own(refs))
+            before = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, target=_TP, **self._own(refs))
                       for s in ("compile", "generate", "build")}
             certify_node(repo, "o2", self._DEP, through="validate",
                          ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260102_001",
@@ -24309,10 +24425,10 @@ class DerivationInputsTests(unittest.TestCase):
                          run_id="run_20260102_001")
             # The selection did move to the new ids ...
             self.assertEqual(
-                ort.DerivationResolver(repo).select(self._DEP, "compile").ir_id,
+                ort.DerivationResolver(repo, target=_TP).select(self._DEP, "compile").ir_id,
                 "dep-a_20260102_001")
             # ... and every key stayed.
-            after = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, **self._own(refs))
+            after = {s: ort.phase_derivation(repo, node_key=self._NK, step=s, target=_TP, **self._own(refs))
                      for s in ("compile", "generate", "build")}
             self.assertEqual(before, after)
 
@@ -24337,7 +24453,7 @@ class DerivationInputsTests(unittest.TestCase):
             model.write_text(model.read_text(encoding="utf-8") + "! edited after the stamp\n",
                              encoding="utf-8")
             self.assertEqual(
-                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref"),
+                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref", target=_TP),
                 (False, f"{self._DEP} compile: artifact_hashes_missing"))
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
                                         r"no certified compile output \(artifact_hashes_missing\)"):
@@ -24346,7 +24462,7 @@ class DerivationInputsTests(unittest.TestCase):
                 repo / dep["ir_ref"] / "spec.ir.yaml")}
             (repo / dep["ir_meta"]).write_text(json.dumps(doc), encoding="utf-8")
             self.assertEqual(
-                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "pipeline_ref"),
+                ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "pipeline_ref", target=_TP),
                 (False, f"{self._DEP} build: artifact_hash_mismatch:{dep['model_ref']}"))
             with self.assertRaisesRegex(
                     ort.DerivationInputsUnresolvable,
@@ -24373,11 +24489,11 @@ class DerivationInputsTests(unittest.TestCase):
                 doc["verification_status"] = status
                 (repo / dep["source_meta"]).write_text(json.dumps(doc), encoding="utf-8")
                 self.assertEqual(
-                    ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref"),
+                    ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0", "ir_ref", target=_TP),
                     (True, None))
                 self.assertEqual(
                     ort._verify_dep_stage_detail(repo, "component", "dep_a", "0.1.0",
-                                                 "pipeline_ref"),
+                                                 "pipeline_ref", target=_TP),
                     (False, f"{self._DEP} build: {reason}"))
                 for step in ("generate", "build"):
                     with self.subTest(status=status, step=step), self.assertRaisesRegex(
@@ -24409,7 +24525,7 @@ class DerivationInputsTests(unittest.TestCase):
                 "artifact_hashes": {model_ref: _compute_sha256(newer / "src" / "dep_a_model.f90")},
             }), encoding="utf-8")
             self.assertEqual(
-                ort.DerivationResolver(repo).select(self._DEP, "generate").source_id,
+                ort.DerivationResolver(repo, target=_TP).select(self._DEP, "generate").source_id,
                 dep["source_id"])
             self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"], before)
             self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"], before)
@@ -24486,7 +24602,7 @@ class DerivationInputsTests(unittest.TestCase):
                                            r"too deep to derive \(RecursionError\)"):
                 self._inputs(repo, refs, "compile")
             with patch("tools.dependency_graph.build_dependency_graph", _too_deep):
-                ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile")
+                ok, detail = ort._phase_certified(repo, "o1", self._NK, "compile", target=_TP)
             self.assertFalse(ok)
             self.assertIn("too deep to derive", detail["reason"])
 
@@ -24496,19 +24612,19 @@ class DerivationInputsTests(unittest.TestCase):
             refs = self._seed(repo)
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs ir_ref"):
                 ort.phase_derivation_inputs(repo, node_key=self._NK, step="generate",
-                                            spec_ref=self._spec_dir("problem", "spec_x"))
+                                            spec_ref=self._spec_dir("problem", "spec_x"), target=_TP)
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs source_ref"):
                 ort.phase_derivation_inputs(repo, node_key=self._NK, step="build",
-                                            ir_ref=refs["ir_ref"])
+                                            ir_ref=refs["ir_ref"], target=_TP)
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "needs binary_ref"):
                 ort.phase_derivation_inputs(repo, node_key=self._NK, step="validate",
                                             ir_ref=refs["ir_ref"],
-                                            spec_ref=self._spec_dir("problem", "spec_x"))
+                                            spec_ref=self._spec_dir("problem", "spec_x"), target=_TP)
             (repo / self._spec_dir("problem", "spec_x") / "tests.md").unlink()
             with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, r"tests.md is missing"):
                 self._inputs(repo, refs, "compile")
             with self.assertRaises(ValueError):
-                ort.phase_derivation_inputs(repo, node_key=self._NK, step="assemble")
+                ort.phase_derivation_inputs(repo, node_key=self._NK, step="assemble", target=_TP)
 
     # --- the record, end to end -------------------------------------------------------
 
@@ -24532,7 +24648,7 @@ class DerivationInputsTests(unittest.TestCase):
             for step in ("generate", "build", "validate"):
                 with self.subTest(step=step):
                     rec = ort.phase_derivation(full_repo, node_key=self._NK, step=step,
-                                               **self._own(full))
+                                               target=_TP, **self._own(full))
                     self.assertEqual(rec["transformation"],
                                      list(tools_derivation.transformation_versions()[step]))
             doc = ort._stamp_certification(
@@ -27328,7 +27444,7 @@ class ProfileExpansionTests(unittest.TestCase):
                 return (False, "spy")
 
             with mock.patch.object(ort, "_verify_dep_stage_detail", _spy):
-                result = _compute_dep_readiness(repo, "spec/problem/a")[0]
+                result = _compute_dep_readiness(repo, "spec/problem/a", target=_TP)[0]
             self.assertEqual(result, {f"{s}_verified": False
                                       for s in ort._DEPENDENCY_READINESS_STAGES})
             self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
@@ -27343,7 +27459,7 @@ class ProfileExpansionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            verified, certified, fail_reason = _compute_dep_readiness(repo, "spec/problem/a")
+            verified, certified, fail_reason = _compute_dep_readiness(repo, "spec/problem/a", target=_TP)
             self.assertIsNone(verified)
             self.assertEqual(certified, [])
             self.assertEqual(fail_reason, "deps_yaml_malformed_schema")
@@ -27353,7 +27469,7 @@ class ProfileExpansionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            snap = _certify_and_collect_dep_artifacts(repo, "spec/problem/a")
+            snap = _certify_and_collect_dep_artifacts(repo, "spec/problem/a", target=_TP)
             self.assertTrue(snap["deps_doc_valid"])
             self.assertFalse(snap["entries_well_formed"])
             self.assertEqual(snap["certified_entries"], [])
@@ -27365,7 +27481,7 @@ class ProfileExpansionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
-            details = _stale_dependency_details(repo, "spec/problem/a")
+            details = _stale_dependency_details(repo, "spec/problem/a", target=_TP)
             self.assertEqual(len(details), 1, details)
             self.assertIn("profile_declares_infrastructure", details[0])
             self.assertIn("profile/pr", details[0])
@@ -27447,7 +27563,7 @@ class ProfileExpansionTests(unittest.TestCase):
                              ir_id=f"{nk.split('/', 1)[1].split('@')[0]}_20260101_001",
                              pipeline_id=f"{nk.split('/', 1)[1].split('@')[0]}_20260101_001")
             _load_spec_catalog.cache_clear()
-            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            sel = DerivationResolver(repo, target=_TP).select("problem/a@0.1.0", "compile")
             self.assertTrue(sel.ok, sel.reason)
             catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
             doc = yaml.safe_load(catalog.read_text(encoding="utf-8"))
@@ -27456,7 +27572,7 @@ class ProfileExpansionTests(unittest.TestCase):
             bumped[0]["spec_version"] = "0.9.0"
             catalog.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
             _load_spec_catalog.cache_clear()
-            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            sel = DerivationResolver(repo, target=_TP).select("problem/a@0.1.0", "compile")
             self.assertFalse(sel.ok)
             self.assertEqual(sel.reason, "derivation_key_mismatch:dependency_graph")
 
@@ -27616,7 +27732,7 @@ class ProfileExpansionTests(unittest.TestCase):
             # (a node with no output at all is answered `ir_not_found` before its inputs).
             certify_node(repo, "o", "problem/a@0.1.0", through="compile", ir_id="a_20260101_001",
                          pipeline_id="a_20260101_001", stamp=False, spec_entry=False)
-            sel = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            sel = DerivationResolver(repo, target=_TP).select("problem/a@0.1.0", "compile")
             self.assertFalse(sel.ok)
             self.assertIn("derivation_inputs_unresolvable: dependency closure of problem/a@0.1.0 "
                           "does not resolve", sel.reason)
@@ -27624,5 +27740,5 @@ class ProfileExpansionTests(unittest.TestCase):
             # ...and with a well-formed profile the same node no longer takes this branch at
             # all (its closure builds; the refusal is then about its members' outputs).
             self._seed(repo, profile_infra=False)
-            sel_ok = DerivationResolver(repo).select("problem/a@0.1.0", "compile")
+            sel_ok = DerivationResolver(repo, target=_TP).select("problem/a@0.1.0", "compile")
             self.assertNotIn("does not resolve", sel_ok.reason or "")

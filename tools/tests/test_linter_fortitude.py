@@ -479,7 +479,8 @@ class HostRenderedRunnerTests(unittest.TestCase):
         from tools.tests import test_fortran_runner as fixtures
 
         return fixtures.render_runner(
-            getattr(fixtures, ir_name)(), fixtures.BOUNDARY_SID, fixtures.HARNESS)
+            getattr(fixtures, ir_name)(), fixtures.BOUNDARY_SID, fixtures.HARNESS,
+            target=fixtures._TARGET_PROFILE.doc)
 
     def test_the_rendered_runner_passes_the_declared_rule_set(self) -> None:
         for ir_name in ("_boundary_ir", "_metrics_ir"):

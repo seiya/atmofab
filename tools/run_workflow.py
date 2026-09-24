@@ -62,8 +62,10 @@ from tools.operator_private_root import operator_secret_root
 from tools.target_profile import (
     TargetProfile,
     TargetProfileError,
+    load_target_profile,
     resolve_run_target,
     select_target_id,
+    target_profile_violations,
 )
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
@@ -155,19 +157,43 @@ def _check_required_cli_tools() -> list[str]:
 # launches. `docs/RUNBOOK.md` §0-1 carries the install lines.
 
 
-def _check_required_host_tools() -> list[str]:
-    """The executables of `tools/host_prerequisites` this host cannot resolve on `PATH`.
+def _host_probe_selection(requested: str | None) -> dict[str, str] | None:
+    """The axis selection the host probes are asked about: the target this invocation names
+    (`--target`), else the default one (issue #284). None when that cannot be told yet — an
+    undeclared `--target`, or several profiles and no `--target` on a resume that will recover
+    its own — or when the launch gate (`target_profile_violations`) will refuse the profile, an
+    axis value this repository does not implement included, which the probe could only answer
+    with a traceback: then the probes do not run here, the launch's target resolution refuses
+    or resolves it with its own structured reason a few steps on, and the mid-run gates stay
+    the backstop.
 
     Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
-    reaches the MCP server's argv tables and the conductor's IR readers, and a startup path that
-    has not yet decided it is going to run should not pay for them.
-    """
+    reaches the MCP server's argv tables, and a startup path that has not yet decided it is
+    going to run should not pay for them."""
+    from tools.host_prerequisites import resolve_launch_axis_selection
+
+    root = Path(__file__).resolve().parent.parent
+    try:
+        profile = load_target_profile(root, select_target_id(root, requested))
+    except TargetProfileError:
+        return None
+    if target_profile_violations(root, profile):
+        return None
+    return resolve_launch_axis_selection(profile)
+
+
+def _check_required_host_tools(requested: str | None = None) -> list[str]:
+    """The executables of `tools/host_prerequisites` this host cannot resolve on `PATH`, for
+    the target `_host_probe_selection` resolves (none when it resolves none)."""
     from tools.host_prerequisites import missing_host_executables
 
-    return [item.executable for item in missing_host_executables()]
+    selection = _host_probe_selection(requested)
+    if selection is None:
+        return []
+    return [item.executable for item in missing_host_executables(selection)]
 
 
-def _check_host_tool_versions() -> list[Any]:
+def _check_host_tool_versions(requested: str | None = None) -> list[Any]:
     """The required host tools whose installed version this repository has not measured.
 
     The second half of the check above, and it is checked SECOND for the same reason it is
@@ -182,7 +208,10 @@ def _check_host_tool_versions() -> list[Any]:
     """
     from tools.host_prerequisites import unsupported_host_tool_versions
 
-    return list(unsupported_host_tool_versions())
+    selection = _host_probe_selection(requested)
+    if selection is None:
+        return []
+    return list(unsupported_host_tool_versions(selection))
 
 
 def _check_required_python_modules() -> list[str]:
@@ -1470,6 +1499,19 @@ def _start_claims_root() -> Path:
     return operator_secret_root() / "start_claims"
 
 
+def _spec_claim_key(spec_ref: str, target_profile: TargetProfile | None) -> str:
+    """The key of a `("spec", …)` claim: the spec AND the target it is run for (issue #284).
+    Two runs of one spec for two targets write two per-target pipeline trees
+    (`workspace/pipelines/<safe>/<target_id>/`), so they are not serialized against each
+    other; their Compile output is target-free, and each mints its IR id with an exclusive
+    `mkdir`, so the two can derive the same IR twice but never write into one directory. A
+    caller with no target claims the bare spec — no production path, which resolves the
+    target before it claims."""
+    if target_profile is None:
+        return spec_ref
+    return f"{spec_ref}#{target_profile.target_id}"
+
+
 def _claim_lock_path(repo_root: Path, kind: str, key: str) -> Path:
     """Where a per-(repo, kind, key) start claim lives.
 
@@ -1497,7 +1539,8 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
     (`start_claim_waiting`, `status: info`) so a member that sits on a claim is not
     mistaken for a hung one. Every degradation arm below is the same in both modes.
 
-    `kind="spec"` serializes cold starts of one spec against each other;
+    `kind="spec"` serializes cold starts of one spec for one target against each other
+    (`_spec_claim_key`, issue #284);
     `kind="orch"` serializes drivers of one orchestration — two `--resume` invocations
     of the same run would otherwise both `init --resume` into the SAME preserved
     `orchestration_agent_run_id`, sharing one `workspace/tmp/<arid>` that either one's
@@ -1626,8 +1669,9 @@ def _concurrent_cold_start_envelope(spec_ref: str) -> dict[str, Any]:
         "reason": "concurrent_orchestration_running",
         "detail": (
             f"another cold run of {spec_ref} is starting or running in this repository "
-            "(its start claim is held). Two concurrent runs of one spec derive their "
-            "pipeline_id from the same workspace/pipelines/<node_key_safe>/ tree and "
+            "(its start claim is held). Two concurrent runs of one spec for one target "
+            "derive their pipeline_id from the same "
+            "workspace/pipelines/<node_key_safe>/<target_id>/ tree and "
             "then write into it. Wait for it to finish, or resume it with "
             "--resume --orchestration-id <its id>."
         ),
@@ -2355,7 +2399,7 @@ def _run_main(
             args.stdout_format,
         )
         return 2
-    missing_host_tools = _check_required_host_tools()
+    missing_host_tools = _check_required_host_tools(getattr(args, "target", None))
     if missing_host_tools:
         from tools.host_prerequisites import required_host_executables
 
@@ -2368,13 +2412,14 @@ def _run_main(
                     f"re-run (see docs/RUNBOOK.md#0-1)"
                 ),
                 "missing": missing_host_tools,
-                "required": [item.executable for item in required_host_executables()],
+                "required": [item.executable for item in required_host_executables(
+                    _host_probe_selection(getattr(args, "target", None)))],
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,
         )
         return 2
-    unsupported_versions = _check_host_tool_versions()
+    unsupported_versions = _check_host_tool_versions(getattr(args, "target", None))
     if unsupported_versions:
         _emit_unlogged_event(
             {
@@ -2966,7 +3011,7 @@ def _run_main(
     with cold_start_claim:
         if not resume_mode:
             if not cold_start_claim.enter_context(
-                _exclusive_claim(repo_root, "spec", spec_ref,
+                _exclusive_claim(repo_root, "spec", _spec_claim_key(spec_ref, target_profile),
                                  stdout_format=args.stdout_format)
             ):
                 _emit_unlogged_event(
@@ -3507,9 +3552,9 @@ def _run_node(
     #   ("orch", orchestration_id) — two drivers of ONE orchestration would share its
     #     preserved `orchestration_agent_run_id` and `workspace/tmp/<arid>`, and
     #     whichever finished first would delete the other's.
-    #   ("spec", spec_ref) — two runs of one spec (in any mix of cold and resumed)
-    #     derive their `pipeline_id` from the same
-    #     `workspace/pipelines/<node_key_safe>/` tree and then write into it.
+    #   ("spec", spec_ref + target) — two runs of one spec for one target (in any mix of
+    #     cold and resumed) derive their `pipeline_id` from the same
+    #     `workspace/pipelines/<node_key_safe>/<target_id>/` tree and then write into it.
     # A caller that already holds one — it had to, to decide anything about
     # this orchestration or this spec without racing — says so, since re-acquiring a
     # claim this process already holds would conflict with itself.
@@ -3532,10 +3577,11 @@ def _run_node(
                 "orchestration_agent_run_id and workspace/tmp/<arid>.",
             ),
             (
-                "spec", spec_ref, spec_claim_held,
-                f"another run of {spec_ref} is in progress in this repository; two "
-                "runs of one spec derive their pipeline_id from the same "
-                "workspace/pipelines/<node_key_safe>/ tree and then write into it.",
+                "spec", _spec_claim_key(spec_ref, target_profile), spec_claim_held,
+                f"another run of {spec_ref} for target {target_profile.target_id} is in "
+                "progress in this repository; two runs of one spec for one target derive "
+                "their pipeline_id from the same "
+                "workspace/pipelines/<node_key_safe>/<target_id>/ tree and then write into it.",
             ),
         ):
             if held:
@@ -4042,7 +4088,8 @@ def _run_node(
 
 
 def _dependency_node_readiness(
-    repo_root: Path, node: dict[str, Any], required_stages: list[str]
+    repo_root: Path, node: dict[str, Any], required_stages: list[str],
+    target_profile: TargetProfile | None
 ) -> dict[str, Any]:
     """Whether a closure node already satisfies `required_stages`, WITH the grounds for the answer.
 
@@ -4082,7 +4129,9 @@ def _dependency_node_readiness(
     which is how issue #153's silent skip of a drifted consumer left no trace in the run log."""
     from tools.orchestration_runtime import DerivationResolver, _verify_dep_stage_detail
 
-    resolver = DerivationResolver(repo_root)
+    # For the run's target (issue #284): a dependency built and validated for another target
+    # is not ready for this one. Without a target only `ir_ref` can answer.
+    resolver = DerivationResolver(repo_root, target=target_profile)
     kind, sid = node["spec_kind"], node["spec_id"]
     first: tuple[str, str | None, str | None] | None = None
     for v in node["spec_versions"]:
@@ -4475,6 +4524,7 @@ def _closure_member_resume_rejection(
 
 def _closure_member_readiness(
     repo_root: Path, spec_ref: str, closure_target_spec_ref: str, until_phase: str,
+    target_profile: TargetProfile | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """A `--closure-member` child's own readiness question, asked AFTER its claim is held:
     the closure is re-derived from the recorded target (the same resolution the driver
@@ -4503,7 +4553,7 @@ def _closure_member_readiness(
             "target_spec_ref": closure_target_spec_ref,
         }
     return _dependency_node_readiness(
-        repo_root, node, _required_dependency_stages(until_phase)), None
+        repo_root, node, _required_dependency_stages(until_phase), target_profile), None
 
 
 def _run_closure_member(
@@ -4559,9 +4609,10 @@ def _run_closure_member(
             # Blocking: the only False this can yield is the degraded-host arms' "proceed"
             # (which yield True), so a refusal is not a case here.
             claim.enter_context(_exclusive_claim(
-                repo_root, "spec", spec_ref, stdout_format=stdout_format, blocking=True))
+                repo_root, "spec", _spec_claim_key(spec_ref, target_profile),
+                stdout_format=stdout_format, blocking=True))
         readiness, error = _closure_member_readiness(
-            repo_root, spec_ref, closure_target_spec_ref, until_phase)
+            repo_root, spec_ref, closure_target_spec_ref, until_phase, target_profile)
         if error is not None:
             _emit_unlogged_event({**error, "orchestration_id": orchestration_id}, stdout_format)
             return 2
@@ -4922,7 +4973,8 @@ def _schedule_closure_members(
                 node = pending[ref]
                 if any(d in pending or d in running for d in node["direct_deps"]):
                     continue
-                readiness = _dependency_node_readiness(repo_root, node, required_stages)
+                readiness = _dependency_node_readiness(
+                    repo_root, node, required_stages, target_profile)
                 if readiness["ready"]:
                     dependency_runs.append(
                         {"node": _label(node), "spec_ref": ref, "skipped": True,
@@ -5024,7 +5076,8 @@ def _schedule_closure_members(
                     first_failure = {"rc": rc, "node": node,
                                      "orchestration_id": mp.orchestration_id}
                 continue
-            after = _dependency_node_readiness(repo_root, node, required_stages)
+            after = _dependency_node_readiness(
+                repo_root, node, required_stages, target_profile)
             if after["ready"] and mp.skipped:
                 # The child found the node ready once it held the claim and the driver's
                 # re-verify agrees: the pre-launch reading was overturned, so the record is
@@ -5204,7 +5257,8 @@ def _run_with_dependency_closure(
     for node in ordered:
         kind, sid, spec_ref = node["spec_kind"], node["spec_id"], node["spec_ref"]
         node_label = f"{kind}/{sid}@{node['spec_versions'][0]}"
-        readiness = _dependency_node_readiness(repo_root, node, required_stages)
+        readiness = _dependency_node_readiness(
+            repo_root, node, required_stages, target_profile)
         if readiness["ready"]:
             dependency_runs.append(
                 {"node": node_label, "spec_ref": spec_ref, "skipped": True, "status": "ready",
@@ -5276,7 +5330,8 @@ def _run_with_dependency_closure(
                                      stdout_format=stdout_format))
             else:
                 node_claim_ok = node_claim.enter_context(
-                    _exclusive_claim(repo_root, "spec", spec_ref,
+                    _exclusive_claim(repo_root, "spec",
+                                     _spec_claim_key(spec_ref, target_profile),
                                      stdout_format=stdout_format))
             if not node_claim_ok:
                 _emit_unlogged_event(
@@ -5417,7 +5472,8 @@ def _run_with_dependency_closure(
         # non-terminal ("running") without producing the ir/pipeline/verdict
         # evidence. Re-verify before launching the dependent/target node;
         # otherwise the next node would just fail-close at workflow-launch-check.
-        after = _dependency_node_readiness(repo_root, node, required_stages)
+        after = _dependency_node_readiness(
+            repo_root, node, required_stages, target_profile)
         if not after["ready"]:
             dependency_runs[-1]["status"] = "not_ready_after_run"
             dependency_runs[-1]["readiness"] = after
@@ -5500,7 +5556,8 @@ def _run_with_dependency_closure(
                                  stdout_format=stdout_format))
         else:
             target_claim_ok = target_claim.enter_context(
-                _exclusive_claim(repo_root, "spec", target_spec_ref,
+                _exclusive_claim(repo_root, "spec",
+                                 _spec_claim_key(target_spec_ref, target_profile),
                                  stdout_format=stdout_format))
         if not target_claim_ok:
             _emit_unlogged_event(

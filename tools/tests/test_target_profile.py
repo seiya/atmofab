@@ -90,7 +90,7 @@ class CheckedInProfileTests(unittest.TestCase):
             first = tp.load_target_profile(repo.root, "t1").sha256
             path.write_text("# a comment\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
             self.assertEqual(tp.load_target_profile(repo.root, "t1").sha256, first)
-            repo.write("t1", execution__threads_per_rank=2)
+            repo.write("t1", hardware__architecture="aarch64")
             self.assertNotEqual(tp.load_target_profile(repo.root, "t1").sha256, first)
 
 
@@ -201,6 +201,16 @@ class LoaderTests(unittest.TestCase):
             with self.subTest(field=dotted):
                 self.assertIn(needle, self._refusal(**{dotted: value}))
 
+    def test_more_than_one_thread_per_rank_is_refused_for_now(self) -> None:
+        """Validate.execute's run is the single-thread reference of the quality check
+        (phase_04_validate.md §4-2): a profile running more threads would leave that
+        comparison two parallel runs, a quality certification that tested nothing."""
+        for threads in (2, 4):
+            with self.subTest(threads=threads):
+                reason = self._refusal(execution__threads_per_rank=threads)
+                self.assertIn("threads_per_rank", reason)
+                self.assertIn("single-thread reference", reason)
+
     def test_a_bool_is_not_an_integer(self) -> None:
         """`True == 1` in Python, so an `isinstance(int)` check alone accepts it."""
         self.assertIn("target_profile_version", self._refusal(target_profile_version=True))
@@ -237,7 +247,7 @@ class SchemaAgreementTests(unittest.TestCase):
                 self.assertEqual(set(node["properties"]), set(required | optional))
         self.assertEqual(
             schema["properties"]["execution"]["properties"]["threads_per_rank"],
-            {"type": "integer", "minimum": 1})
+            {"type": "integer", "minimum": 1, "maximum": 1})
         self.assertEqual(schema["properties"]["target_profile_version"]["enum"],
                          [tp.TARGET_PROFILE_VERSION])
         self.assertEqual(schema["properties"]["hardware"]["properties"]["class"]["enum"],

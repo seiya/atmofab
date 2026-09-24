@@ -107,7 +107,7 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 | `agent_model` | yes | the model that runs the child agent. At launch only the **unpinned alias** is known (e.g. `opus`) — never a pinned version, which would go stale — so the launch request carries the alias and it is required (fail-fasts with `ValueError: launch request must include non-empty agent_model` when missing). The **exact version** that actually ran (e.g. `claude-opus-5[1m]`) is resolved post-run by the conductor from the leaf's own `--output-format json` CLI result envelope — never from the `~/.claude` transcript, which is outside the workflow's access boundary — and recorded onto its `agent_runs.jsonl` row; `record-agent-run` only `setdefault`s the launch-request alias, so the resolved version wins when present (see below). |
 | `workflow_mode` | yes | `dev` / `prod` |
 | `ir_ref` | yes | `workspace/ir/<node_key_safe>/<ir_id>` (required in all phases including the Compile phase) |
-| `pipeline_ref` | yes | `workspace/pipelines/<node_key_safe>/<pipeline_id>` (required even in the Compile phase. If not yet generated, reserve it first with `reserve-phase-root --step generate`) |
+| `pipeline_ref` | yes | `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>` (required even in the Compile phase. If not yet generated, reserve it first with `reserve-phase-root --step generate`) |
 | `dependency_ref` | yes | Compile: `spec/.../deps.yaml`, from Generate onward: the phase root in workspace |
 | `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); a non-empty value is refused on a pure launch. The `skills/workflow-<step>[-<substep>]/` directories a CORE phase would name are gone; what remains under `skills/` is the operator flows — the two audits, the spec input check, the timing audit, and the reserved `promote` / `tune` procedures, which an operator reads and no leaf is handed |
 | `skill_ref` | no — must be EMPTY | same |
@@ -308,6 +308,7 @@ Reserve an `ir_id` or `pipeline_id`. It does not create the actual directory (th
 | `--step` | yes | reserve ir_id with `compile`, reserve pipeline_id with `generate` |
 | `--reserved-id` | yes | `<slug>_<YYYYMMDD>_<seq3>` (an underscore in the slug is invalid; use a hyphen) |
 | `--reserved-by-agent-run-id` | yes | the UUID of the agent that uses the reserved ID |
+| `--target` | with `--step generate` | the `target_id` the pipeline is built for (issue #284): a pipeline id names a directory only under `workspace/pipelines/<node_key_safe>/<target_id>/`. Required with `generate`, refused with `compile` (whose output is target-free), recorded as `generate.json#target_id` |
 
 ---
 
@@ -393,7 +394,7 @@ If no version matches the constraint, it is fail-closed. A range like `>=0.1.0 <
 | stage | condition |
 |---|---|
 | `ir_ref` | the dependency's Compile has an ELIGIBLE output: an `ir_meta.json` under `workspace/ir/<kind>__<id>__<version>/*/` recording `verification_status == "pass"`, not revoked, whose `artifact_hashes` re-compute and whose stamped `derivation_key` equals the compile key recomputed now over the dependency's own inputs (its spec files, its closure, its members' selected IRs, …) |
-| `pipeline_ref` | the dependency's Build has one: a `binary_meta.json` under `workspace/pipelines/<kind>__<id>__<version>/*/binary/*/` eligible under the build key recomputed now — which binds the dependency's SELECTED Generate output (itself eligible under the generate key, which binds the selected Compile output) and the selected sources of its own closure, so a dependency-of-the-dependency re-derived to different source refuses this stage (the closure-binding comparison of the former §13b) |
+| `pipeline_ref` | the dependency's Build has one FOR THE ORCHESTRATION'S TARGET (`invocation.target`, issue #284): a `binary_meta.json` under `workspace/pipelines/<kind>__<id>__<version>/<target_id>/*/binary/*/` eligible under the build key recomputed now — which binds the dependency's SELECTED Generate output (itself eligible under the generate key, which binds the selected Compile output) and the selected sources of its own closure, so a dependency-of-the-dependency re-derived to different source refuses this stage (the closure-binding comparison of the former §13b) |
 | `aggregate_verdict` | the dependency's Validate has one: a `validate_meta.json` under `.../runs/*/<kind>__<id>__<version>/` eligible under the validate key recomputed now, which binds the selected Build output. A verdict written for a binary other than the selected one carries another key and is not it (the former `trial_meta.source_binary_id` binding) |
 
 The three stages are one chain: a selection at each stage binds the selection above it by output hash, so no stage can be satisfied by a different generation than the stage before (the former same-pipeline binding of Codex rounds 11 and 24, now a property of the key rather than of a directory).

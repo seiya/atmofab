@@ -81,8 +81,9 @@ class Axis(NamedTuple):
     name: str
     #: Where the workflow reads this axis' value from, as a dotted path into the artifact that
     #: carries it, or a prose source when no artifact pins it. Kept as text: the readers differ
-    #: (the conductor reads a parsed IR, `record-launch` re-parses it), and naming a single
-    #: accessor here would be a second owner of a fact those readers already share.
+    #: (the conductor holds the loaded target profile, `record-launch` and the validator load it
+    #: from the pipeline path's target segment), and naming a single accessor here would be a
+    #: second owner of a fact those readers already share.
     source: str
     description: str
     #: True when the artifact that carries this axis deliberately does NOT constrain its value,
@@ -99,7 +100,7 @@ class Axis(NamedTuple):
 AXES: dict[str, Axis] = {
     "language": Axis(
         name="language",
-        source="ir.impl_defaults.toolchain.language",
+        source="target profile toolchain.language (spec/targets/<target_id>.yaml)",
         description=(
             "The implementation language of the generated source: its syntax, its file "
             "extensions, its symbol spelling, and how a language-neutral signature renders "
@@ -108,7 +109,7 @@ AXES: dict[str, Axis] = {
     ),
     "build_system": Axis(
         name="build_system",
-        source="ir.impl_defaults.toolchain.build_system",
+        source="target profile toolchain.build_system (spec/targets/<target_id>.yaml)",
         description=(
             "The tool that builds the generated source: who authors its control file, what "
             "that file's grammar is, and which targets the workflow requires of it."
@@ -117,8 +118,8 @@ AXES: dict[str, Axis] = {
     "compiler": Axis(
         name="compiler",
         source=(
-            "ir.impl_defaults.toolchain.compiler (optional; pins the build compiler, "
-            "docs/IMPL_PLAN_SPEC.md) and ATMOFAB_SYNTAX_COMPILERS plus the mandatory "
+            "target profile toolchain.compiler (optional; pins the build compiler, "
+            "spec/targets/<target_id>.yaml) and ATMOFAB_SYNTAX_COMPILERS plus the mandatory "
             "syntax-only stage each language backend names"
         ),
         description=(
@@ -136,7 +137,12 @@ AXES: dict[str, Axis] = {
     ),
     "parallel": Axis(
         name="parallel",
-        source="ir.impl_defaults.abstract.parallelization",
+        source=(
+            "target profile parallel.backend (the model a run is built and run for, "
+            "spec/targets/<target_id>.yaml), and the node's own "
+            "ir.impl_defaults.abstract.parallelization knob until R4-a PR-3 moves it into "
+            "the bundle's target_lowering_plan"
+        ),
         description=(
             "The parallel execution model: its directive or construct spelling in the target "
             "language, and the knobs (thread counts, scopes) the host renders for it."

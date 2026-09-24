@@ -67,6 +67,12 @@ try:
         PURE_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
     )
+    from tools.target_profile import (
+        TargetProfile,
+        TargetProfileError,
+        is_target_id,
+        load_pipeline_target,
+    )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
     _THIS_FILE = Path(__file__).resolve()
     _REPO_ROOT = _THIS_FILE.parent.parent
@@ -104,6 +110,12 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
+    )
+    from tools.target_profile import (
+        TargetProfile,
+        TargetProfileError,
+        is_target_id,
+        load_pipeline_target,
     )
 
 PLACEHOLDER_TEXT_PATTERNS = (
@@ -256,8 +268,8 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     NORMALIZATION: `provides` strips and case-folds the build-system value while the language
     half is compared exactly. Measured, that makes this predicate fire on 16 spellings the old
     condition did not (` make`, `MAKE`, …). No live input reaches the difference — both callers
-    (`_impl_toolchain_from_pipeline_dir` and this gate's own reader) already `.strip().lower()`
-    — and the direction is stricter, not looser.
+    (`_target_toolchain_from_pipeline_dir`, whose profile admits only lowercase tokens, and this
+    gate's own reader) pass normalized values — and the direction is stricter, not looser.
     """
     return (
         backend_registry.provides("build_system", build_system or "", "control_file")
@@ -3749,10 +3761,10 @@ def _node_executions(
         if not pipeline_dir.is_dir():
             continue
         # The canonical run node directory is the pipeline's own node_key_safe
-        # (= pipeline_dir.parent.name). Derive node_key from it so a non-canonical
+        # (`_pipeline_node_safe`). Derive node_key from it so a non-canonical
         # run subdir name (mismatched or unparseable) is never discovered as the
         # execution node; such dirs are reported by _validate_run_node_dir_names.
-        expected_node_safe = pipeline_dir.parent.name
+        expected_node_safe = _pipeline_node_safe(pipeline_dir) or ""
         node_key = _node_safe_to_node_key(expected_node_safe)
         if node_key is None:
             continue
@@ -3789,7 +3801,7 @@ def _validate_run_node_dir_names(
     run_ids: set[str] | None = None,
 ) -> None:
     """Every run-artifact-bearing ``runs/<run_id>/<child>`` directory must be
-    named exactly the pipeline's ``node_key_safe`` (``pipeline_dir.parent.name``),
+    named exactly the pipeline's ``node_key_safe`` (``_pipeline_node_safe``),
     and that parent must itself be a valid ``node_key_safe``.
 
     Reports mismatched-but-parseable names (e.g. a forged ``@version`` segment),
@@ -3805,7 +3817,7 @@ def _validate_run_node_dir_names(
     for pipeline_dir in _pipeline_targets(workspace_root, pipeline_roots):
         if not pipeline_dir.is_dir():
             continue
-        expected_node_safe = pipeline_dir.parent.name
+        expected_node_safe = _pipeline_node_safe(pipeline_dir) or ""
         parent_is_valid = _node_safe_to_node_key(expected_node_safe) is not None
         runs_root = pipeline_dir / "runs"
         if not runs_root.exists():
@@ -3841,6 +3853,31 @@ def _validate_run_node_dir_names(
                     )
 
 
+def _pipeline_node_safe(pipeline_dir: Path) -> str | None:
+    """The node_key_safe directory a pipeline lives under, read off the per-target store
+    layout `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>` (issue #284): the
+    grandparent, when the parent is a target id. None for any other shape — a pre-R4-a
+    pipeline directly under `<node_key_safe>/` included, which is not a store location."""
+    if not is_target_id(pipeline_dir.parent.name):
+        return None
+    return pipeline_dir.parent.parent.name
+
+
+def _pipeline_target(repo_root: Path, pipeline_dir: Path) -> TargetProfile | None:
+    """The target profile the pipeline at `pipeline_dir` was built for, from its store
+    coordinate (`target_profile.load_pipeline_target`); None when the path names no target or
+    the profile does not load. A caller that turns None into "not applicable" fails its check
+    OPEN, so every caller here reports None as a violation of its own or passes it to one."""
+    try:
+        rel = pipeline_dir.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        rel = pipeline_dir.as_posix()
+    try:
+        return load_pipeline_target(repo_root, rel)
+    except TargetProfileError:
+        return None
+
+
 def _pipeline_targets(
     workspace_root: Path, pipeline_roots: list[Path] | None
 ) -> list[Path]:
@@ -3848,13 +3885,19 @@ def _pipeline_targets(
         pipelines_root = workspace_root / "pipelines"
         if not pipelines_root.exists():
             return []
+        # `<node_key_safe>/<target_id>/<pipeline_id>` (issue #284). A child of
+        # `<node_key_safe>/` whose name is not a target id — a pre-R4-a pipeline directory — is
+        # not a store location and is not validated here.
         targets: list[Path] = []
         for node_safe_dir in sorted(pipelines_root.iterdir()):
             if not node_safe_dir.is_dir():
                 continue
-            for pipeline_dir in sorted(node_safe_dir.iterdir()):
-                if pipeline_dir.is_dir():
-                    targets.append(pipeline_dir)
+            for target_dir in sorted(node_safe_dir.iterdir()):
+                if not (target_dir.is_dir() and is_target_id(target_dir.name)):
+                    continue
+                for pipeline_dir in sorted(target_dir.iterdir()):
+                    if pipeline_dir.is_dir():
+                        targets.append(pipeline_dir)
         return targets
     deduped: list[Path] = []
     seen: set[Path] = set()
@@ -3928,7 +3971,7 @@ def _validate_pipeline_lineage_presence(
             # normalizes away @version, so this directory binding is the only place
             # the full versioned identity is enforced.
             expected_safe = _node_key_to_safe(node_key.strip())
-            actual_safe = pipeline_dir.parent.name
+            actual_safe = _pipeline_node_safe(pipeline_dir)
             if expected_safe is None:
                 violations.append(
                     f"{lineage_path}:node_key {node_key.strip()!r} must match "
@@ -3949,10 +3992,16 @@ def _validate_pipeline_lineage_presence(
                 violations.append(
                     f"{lineage_path}:pipeline_id {pid!r} must match directory name {pipeline_dir.name!r}"
                 )
-            node_safe_dir = pipeline_dir.parent.name
-            if not _NODE_KEY_SAFE_PATTERN_LINEAGE.match(node_safe_dir):
+            node_safe_dir = _pipeline_node_safe(pipeline_dir)
+            if node_safe_dir is None:
                 violations.append(
-                    f"{pipeline_dir.parent}: invalid node_key_safe directory name for lineage check"
+                    f"{pipeline_dir.parent}: not a target directory — a pipeline lives at "
+                    "workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>"
+                )
+            elif not _NODE_KEY_SAFE_PATTERN_LINEAGE.match(node_safe_dir):
+                violations.append(
+                    f"{pipeline_dir.parent.parent}: invalid node_key_safe directory name for "
+                    "lineage check"
                 )
             elif _parse_slug_date_seq3_id(pid) is None:
                 violations.append(
@@ -4946,7 +4995,7 @@ def _validate_generate_outputs(
         )
 
     _validate_fortran_makefile_src_dir(src_dir, violations)
-    _build_system, _language = _impl_toolchain_from_pipeline_dir(
+    _build_system, _language = _target_toolchain_from_pipeline_dir(
         repo_root, execution.pipeline_dir
     )
     _validate_makefile_test_no_relink(
@@ -5002,9 +5051,9 @@ def _ir_toolchain_tokens(ir: dict[str, Any]) -> tuple[str, str]:
     ONE place, for two reasons. The readers must not default differently — that is how this
     mirror and the conductor drifted before — and the neutral core must not gain a second
     spelling of either value (``docs/BACKEND_BOUNDARY.md``: the ledger counts occurrences, and a
-    new reader that re-spells the default is growth). Normalization stays the caller's, as it
-    does in ``workflow_conductor._ir_language`` / ``_ir_build_system``, because the readers of
-    these keys deliberately differ on padding.
+    new reader that re-spells the default is growth). Normalization stays the caller's,
+    because the readers of these keys deliberately differ on padding. (The conductor read
+    these keys too until issue #284; it reads the target profile now.)
     """
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
@@ -5013,6 +5062,16 @@ def _ir_toolchain_tokens(ir: dict[str, Any]) -> tuple[str, str]:
 
 
 def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
+    """`_m3c_language` over the toolchain the IR itself declares — the COMPILE-stage reader,
+    where no pipeline (and so no target coordinate) exists yet. Every post-Compile reader asks
+    `_m3c_language` with the pipeline's target instead (`_execution_m3c_language`, issue #284).
+    R4-a PR-3 removes the IR's toolchain and this reader with it."""
+    if not isinstance(ir, dict):
+        return None
+    return _m3c_language(ir, *_ir_toolchain_tokens(ir))
+
+
+def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str | None:
     """The implementation language of an M3c physics node, or ``None`` when the IR is not one.
 
     The predicate and the value it turns on, from ONE read. Every caller that needs the language
@@ -5030,7 +5089,6 @@ def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     if str(meta.get("spec_kind") or "").strip() == "infrastructure":
         return None
-    build_system, language = _ir_toolchain_tokens(ir)
     # The SAME question the conductor asks, asked the same way — see
     # `Conductor._core_authors_control_file` and `_conductor_authors_runner`. This mirror kept
     # comparing against `(make, fortran)` after the conductor moved to the registry, so declaring
@@ -5051,7 +5109,8 @@ def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
     return _ir_m3c_language(ir) is not None
 
 
-def _ir_bundle_shape(ir: dict[str, Any], node_key: str) -> str | None:
+def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
+                     toolchain: tuple[str, str]) -> str | None:
     """The CodegenBundle SHAPE of a node, or ``None`` when it has none.
 
     The deterministic tamper gate's twin of ``workflow_conductor.Conductor._bundle_shape``: the
@@ -5065,15 +5124,19 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str) -> str | None:
     never of the IR's self-declared ``meta.spec_kind``: it decides which admissibility rules the
     bundle is judged against, and a gate that reads that fact off the document under review hands
     the leaf the switch.
+
+    ``toolchain`` is ``(build_system, language)`` of the target the pipeline was built for
+    (issue #284) — the value the conductor's twin reads off its own profile, so the two ask the
+    same question of the same value.
     """
     from tools.codegen_bundle import LANGUAGES as BUNDLE_LANGUAGES
     if not isinstance(ir, dict):
         return None
-    if _ir_m3c_language(ir) is not None:
+    build_system, language = toolchain
+    if _m3c_language(ir, build_system, language) is not None:
         return "m3c"
     if node_key.split("/", 1)[0].strip() != "infrastructure":
         return None
-    build_system, language = _ir_toolchain_tokens(ir)
     # The same two questions the conductor's control-file predicate asks, asked the same way —
     # see `Conductor._core_authors_control_file`, which is what that predicate delegates to.
     for axis, value in (("build_system", build_system), ("language", language)):
@@ -5101,7 +5164,10 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
         ir = _read_yaml(ir_path)
     except (json.JSONDecodeError, yaml.YAMLError):
         return None
-    return _ir_m3c_language(ir) if isinstance(ir, dict) else None
+    toolchain = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)
+    if not isinstance(ir, dict) or toolchain[0] is None or toolchain[1] is None:
+        return None
+    return _m3c_language(ir, toolchain[0], toolchain[1])
 
 
 def _validate_checks_source_files(
@@ -5871,9 +5937,9 @@ def _validate_openmp_presence_floor(
     model_files: list[Path],
     violations: list[str],
 ) -> None:
-    """Issue #22 deterministic floor: on a node whose ``impl_defaults`` resolve to OpenMP-on-CPU
-    Fortran, a generated model source that contains counted ``do`` loops must contain at least one
-    ``!$omp`` directive.
+    """Issue #22 deterministic floor: on a node built for an OpenMP-on-CPU Fortran target (the
+    pipeline's target profile, issue #284), a generated model source that contains counted ``do``
+    loops must contain at least one ``!$omp`` directive.
 
     This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
     schedule matches ``backend_overrides.openmp.schedule``, or whether the parallelization is
@@ -5910,11 +5976,16 @@ def _validate_openmp_presence_floor(
     impl = _impl_contract_for_execution(repo_root, execution)
     if not isinstance(impl, dict):
         return
-    target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    hw_class = str(target.get("class") or "").strip().lower()
-    backend = str(target.get("backend") or "").strip().lower()
-    language = str(tc.get("language") or "").strip().lower()
+    # The FIXED layer is the target's (issue #284): the class, backend and language the node
+    # is built and run for. The knob that claims a parallel model is still the IR's own
+    # (`_impl_claims_openmp`) until R4-a PR-3. A pipeline whose target does not resolve is
+    # refused by `_validate_pipeline_targets_resolve`, so the early return is not a pass.
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    if target is None:
+        return
+    hw_class = target.hardware_class
+    backend = target.parallel_backend
+    language = target.toolchain["language"]
     if hw_class != "cpu" or backend != "openmp" or language != "fortran":
         return
     if not _impl_claims_openmp(impl):
@@ -5932,7 +6003,7 @@ def _validate_openmp_presence_floor(
         if counted < 1:
             continue  # whole-array syntax: nothing to parallelize, verify G6's province
         violations.append(
-            f"{model_file}: impl_defaults resolve to OpenMP on CPU "
+            f"{model_file}: the target profile resolves to OpenMP on CPU "
             "(target.class=cpu, target.backend=openmp, toolchain.language=fortran) but this "
             f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
             "directive — the impl_defaults.abstract / backend_overrides knobs are binding, so add "
@@ -6066,38 +6137,41 @@ def _ir_dir_for_execution(repo_root: Path, execution: NodeExecution) -> Path | N
     return _ir_dir_from_pipeline_dir(repo_root, execution.pipeline_dir)
 
 
-def _impl_toolchain_from_pipeline_dir(
+def _target_toolchain_from_pipeline_dir(
     repo_root: Path, pipeline_dir: Path
 ) -> tuple[str | None, str | None]:
-    """Resolve ``(build_system, language)`` from the pipeline's
-    `spec.ir.yaml#impl_defaults.toolchain`, lowercased; either may be None when
-    unresolvable. Used to gate make-only checks to the documented toolchain
-    scope."""
-    ir_dir = _ir_dir_from_pipeline_dir(repo_root, pipeline_dir)
-    if ir_dir is None:
-        return (None, None)
-    contract_path = ir_dir / "spec.ir.yaml"
-    if not contract_path.exists():
-        return (None, None)
-    try:
-        data = _read_yaml(contract_path)
-    except (json.JSONDecodeError, yaml.YAMLError):
-        return (None, None)
-    if not isinstance(data, dict):
-        return (None, None)
-    impl_defaults = data.get("impl_defaults")
-    toolchain = (
-        impl_defaults.get("toolchain")
-        if isinstance(impl_defaults, dict)
-        else data.get("toolchain")
-    )
-    if not isinstance(toolchain, dict):
-        return (None, None)
+    """``(build_system, language)`` of the target the pipeline was built for, read off its
+    store coordinate (``_pipeline_target``, issue #284); ``(None, None)`` when it names no
+    loadable target. Used to gate make-only checks to the documented toolchain scope.
 
-    def _norm(value: Any) -> str | None:
-        return value.strip().lower() if isinstance(value, str) and value.strip() else None
+    Until R4-a PR-2 this read the IR's ``impl_defaults.toolchain`` (``_impl_toolchain_from_
+    pipeline_dir``). A pipeline with no resolvable target is reported by
+    ``_validate_pipeline_targets_resolve`` in every stage that reaches here, so the
+    ``(None, None)`` that switches the make-only checks off never passes on its own."""
+    target = _pipeline_target(repo_root, pipeline_dir)
+    if target is None:
+        return (None, None)
+    return (target.toolchain["build_system"], target.toolchain["language"])
 
-    return (_norm(toolchain.get("build_system")), _norm(toolchain.get("language")))
+
+def _validate_pipeline_targets_resolve(
+    repo_root: Path, pipeline_dirs: Iterable[Path], violations: list[str]
+) -> None:
+    """Every pipeline a stage validates names a target whose profile loads (issue #284).
+    The target decides which toolchain checks apply, so a pipeline whose target cannot be
+    told is refused here rather than silently exempted from them."""
+    seen: set[Path] = set()
+    for pipeline_dir in pipeline_dirs:
+        if pipeline_dir in seen:
+            continue
+        seen.add(pipeline_dir)
+        if _pipeline_target(repo_root, pipeline_dir) is None:
+            violations.append(
+                f"{pipeline_dir}: the target this pipeline was built for does not resolve — a "
+                "pipeline lives at workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id> "
+                "and <target_id> must name a loadable spec/targets/<target_id>.yaml")
+
+
 def _io_contract_for_execution(
     repo_root: Path, execution: NodeExecution
 ) -> dict[str, Any] | None:
@@ -6942,32 +7016,6 @@ def _metrics_basis_unrecognized_wrapper(
         ):
             best = candidate
     return None if best is None else (best[2], list(best[3]))
-
-
-def _impl_language_from_plan_dir(repo_root: Path, ir_dir: Path) -> str | None:
-    impl_path = ir_dir / "spec.ir.yaml"
-    if not impl_path.exists():
-        return None
-    try:
-        data = _read_yaml(impl_path)
-    except yaml.YAMLError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    # New IR nests toolchain under impl_defaults.  Fall back to a flat
-    # `toolchain:` key when the doc still uses the legacy layout (eg. tests
-    # that hand-construct only the impl section).
-    impl_defaults = data.get("impl_defaults")
-    if isinstance(impl_defaults, dict):
-        toolchain = impl_defaults.get("toolchain")
-    else:
-        toolchain = data.get("toolchain")
-    if not isinstance(toolchain, dict):
-        return None
-    raw = toolchain.get("language")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    return raw.strip().lower()
 
 
 @lru_cache(maxsize=1)
@@ -9109,10 +9157,14 @@ def _dependency_run_token(dep_data: dict[str, Any]) -> str | None:
 _NODE_KEY_TOKEN_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def _closure_node_validated_in_own_pipeline(repo_root: Path, normalized_token: str) -> bool:
+def _closure_node_validated_in_own_pipeline(
+    repo_root: Path, normalized_token: str, target_id: str | None,
+) -> bool:
     """True iff a closure node (a normalized ``<kind>/<spec_id>`` token, version-agnostic to
-    match the DAG check's tokens) has its OWN fully-validated pipeline elsewhere in the
-    workspace — i.e. some ``workspace/pipelines/<kind>__<spec_id>__*/<pipe>`` that carries a
+    match the DAG check's tokens) has its OWN fully-validated pipeline for ``target_id`` — the
+    target of the pipeline being validated (issue #284; a dependency validated for another
+    target does not complete this one's closure) — i.e. some
+    ``workspace/pipelines/<kind>__<spec_id>__*/<target_id>/<pipe>`` that carries a
     ``binary/*/binary_meta.json`` with ``verification_status == pass`` AND a
     ``runs/**/aggregate_verdict.json`` (``pass``/``xfail``) whose sibling ``trial_meta.json`` binds
     it (``source_binary_id``) to that SAME passing binary. The binary↔verdict binding prevents
@@ -9189,10 +9241,13 @@ def _closure_node_validated_in_own_pipeline(repo_root: Path, normalized_token: s
                 return True
         return False
 
+    if not is_target_id(target_id):
+        return False
     for safe_dir in pipelines_root.glob(f"{kind}__{spec_id}__*"):
-        if not safe_dir.is_dir():
+        target_dir = safe_dir / str(target_id)
+        if not target_dir.is_dir():
             continue
-        for pipe in safe_dir.iterdir():
+        for pipe in target_dir.iterdir():
             if not pipe.is_dir():
                 continue
             passing_binary_ids = _passing_binary_ids(pipe)
@@ -9610,17 +9665,9 @@ def _validate_quality_check_commands(
     if source_command_ref is None:
         return
 
-    impl_contract = _impl_contract_for_execution(repo_root, execution)
-    toolchain = impl_contract.get("toolchain") if isinstance(impl_contract, dict) else None
-    language = None
-    build_system = None
-    if isinstance(toolchain, dict):
-        raw_language = toolchain.get("language")
-        raw_build_system = toolchain.get("build_system")
-        if isinstance(raw_language, str) and raw_language.strip():
-            language = raw_language.strip().lower()
-        if isinstance(raw_build_system, str) and raw_build_system.strip():
-            build_system = raw_build_system.strip().lower()
+    # The target's toolchain (issue #284; the IR's `impl_defaults.toolchain` until R4-a PR-2).
+    build_system, language = _target_toolchain_from_pipeline_dir(
+        repo_root, execution.pipeline_dir)
 
     generate_src_dirs = _generate_src_dirs(execution.pipeline_dir)
     # The cross-phase canonical placement is bound strictly to the trial's
@@ -10147,6 +10194,10 @@ def _resolve_pipeline_roots(
             raise ValueError(
                 f"pipeline_root must be under {pipelines_path}: {candidate}"
             ) from None
+        if _pipeline_node_safe(candidate) is None:
+            raise ValueError(
+                f"pipeline_root must be {pipelines_path}/<node_key_safe>/<target_id>/"
+                f"<pipeline_id> (a pipeline is built for one target, issue #284): {candidate}")
         roots.append(candidate)
     return roots
 
@@ -10195,7 +10246,8 @@ def _validate_orchestration_hierarchy(
         )
         return
 
-    node_safes = sorted({execution.pipeline_dir.parent.name for execution in executions})
+    node_safes = sorted({_pipeline_node_safe(execution.pipeline_dir) or ""
+                         for execution in executions})
 
     # Phase-4 D2: scope the cross-orchestration integrity scan to the CURRENT
     # orchestration when its id is supplied (pre_judge passes --orchestration-id).
@@ -11272,6 +11324,10 @@ def _resolve_pipeline_dir_for_stage(
         raise ValueError(
             f"pipeline_root must be under {pipelines_root}: {candidate}"
         ) from exc
+    if _pipeline_node_safe(candidate) is None:
+        raise ValueError(
+            f"pipeline_root must be {pipelines_root}/<node_key_safe>/<target_id>/<pipeline_id> "
+            f"(a pipeline is built for one target, issue #284): {candidate}")
     return candidate
 
 
@@ -11393,11 +11449,15 @@ def _validate_compile_stage_impl(
 # draft-07 has no way to say "this misspelling means that key".
 #
 # Every entry was observed in a real workspace IR. Four recompiles of one harness spec produced four
-# vocabularies for the same knobs, and the language backend's runner reads only `num_threads`, so an aliased
-# thread count degraded a 4-thread request to 1 with nothing reporting it.
+# vocabularies for the same knobs. Until R4-a PR-2 (issue #284) the language backend's runner read
+# only `num_threads`, so an aliased thread count degraded a 4-thread request to 1 with nothing
+# reporting it; since then the thread count a run executes with is the target profile's
+# (`execution.threads_per_rank`) and no machine consumer reads these names — what the gate still
+# keeps is one spelling per knob for the producer and reviewer that are shown the knob layer, until
+# R4-a PR-3 deletes the layer and this gate with it.
 # Keys are matched case-INSENSITIVELY (compared lowercased), because `Threads` and `NUM_THREADS`
-# degrade a run exactly as silently as `threads` does — a one-character change must not buy an
-# exemption from a gate whose whole subject is unreliable spellings.
+# are the same knob misspelled — a one-character change must not buy an exemption from a gate
+# whose whole subject is unreliable spellings.
 _IMPL_ABSTRACT_KNOB_ALIASES = {
     "loop_parallelization": "parallelization",
     "loop_parallelism": "parallelization",
@@ -11408,7 +11468,7 @@ _IMPL_ABSTRACT_KNOB_ALIASES = {
     "parallelization_granularity": "parallel_granularity",
 }
 # `backend_overrides` SECTION names that mean OpenMP. These are `selected.backend_key` spellings
-# taken from live IRs; the renderer looks up the literal `openmp` and reads nothing else.
+# taken from live IRs; the knob schema names the literal `openmp`.
 _IMPL_OPENMP_SECTION_ALIASES = frozenset(
     {"cpu_openmp", "cpu_openmp_x86_64", "openmp_cpu", "omp"}
 )
@@ -11448,9 +11508,11 @@ def _validate_impl_defaults_knobs(
     The knob layer was un-pinned, and an unpinned name is not a contract: the same spec recompiled
     produced ``parallelization`` as a flat string and as a mapping, and spelled the scope knob and
     the thread count five and three ways respectively. Nothing downstream can key off a name that
-    changes every regeneration — and the one consumer that does (the language backend's runner reads exactly
-    ``backend_overrides.openmp.num_threads``) silently ignored every alias, so a node asking for 4
-    threads ran on 1.
+    changes every regeneration — and until R4-a PR-2 the one consumer that did (the language
+    backend's runner read exactly ``backend_overrides.openmp.num_threads``) silently ignored every
+    alias, so a node asking for 4 threads ran on 1. Since that PR the run's thread count is the
+    target profile's and the runner reads no knob, so no machine consumer remains; R4-a PR-3
+    deletes the knob layer from the IR and this gate with it.
 
     Deliberately NARROW, per the deterministic-gate scope doctrine. Flagged: a name in the closed
     alias table (with the rename as the remedy), a pinned key carrying the wrong type, and the
@@ -11535,11 +11597,11 @@ def _validate_impl_defaults_knobs(
     if not isinstance(overrides, dict):
         return
 
-    # The SECTION name is pinned too, not just its members. The runner renderer looks up the literal
+    # The SECTION name is pinned too, not just its members. The knob schema names the literal
     # `openmp` key, so a section keyed by `selected.backend_key` (`cpu_openmp`,
-    # `cpu_openmp_x86_64`) is read by nobody — three live IRs file overrides that way, two of them
-    # asking for 4 threads and running on 1. Pinning only the member names left the exact harm this gate exists to prevent wide open.
-    # `openmp` is the ONLY key the renderer reads, so it must be spelled exactly — no casing
+    # `cpu_openmp_x86_64`) is a second spelling of one section — three live IRs file overrides that
+    # way (until R4-a PR-2 the runner renderer read only `openmp`, and two of them asked for 4
+    # threads and ran on 1). `openmp` must be spelled exactly — no casing
     # variation, and no surrounding whitespace (a quoted `" openmp "` looks canonical to a reader
     # and is invisible to `_dget`). Every section that MEANS OpenMP is collected, so a mis-named one
     # still gets its members checked: reporting only the section name would hide a `threads` alias
@@ -11565,15 +11627,14 @@ def _validate_impl_defaults_knobs(
         if isinstance(overrides[key], dict):
             openmp_sections.append((raw, overrides[key]))
         elif overrides[key] is not None:
-            # A scalar or list where a mapping belongs. The renderer reads `.num_threads` off this
-            # section, so a non-mapping loses every override in it and falls back to one thread —
+            # A scalar or list where a mapping belongs: a non-mapping carries no override at all —
             # and the exact-`openmp` early return below meant the canonical spelling was the ONE
             # case where that went unreported.
             violations.append(
                 f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be a mapping of override "
                 f"names to values, got {type(overrides[key]).__name__} "
-                f"({overrides[key]!r}) — the runner renderer reads `num_threads` off this section, "
-                "so a non-mapping silently loses every override it should carry"
+                f"({overrides[key]!r}) — the knob schema (spec/schema/ir/impl_defaults.schema.json) "
+                "declares it as that mapping, so a non-mapping carries no override at all"
             )
         if raw == "openmp":
             continue
@@ -11585,22 +11646,22 @@ def _validate_impl_defaults_knobs(
                 f"{ir_path}: impl_defaults.backend_overrides.{raw!r} is one of several sections "
                 f"that all mean OpenMP ({others}) — MERGE their entries into a single section "
                 "keyed by the literal `openmp` and delete the rest; renaming each of them "
-                "separately collides into a duplicate key, and the runner renderer reads only "
+                "separately collides into a duplicate key, and the knob schema names only "
                 "`backend_overrides.openmp`"
             )
         elif lowered == "openmp":
             violations.append(
                 f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be spelled as the bare "
-                "literal `openmp` — the runner renderer looks up that exact key, so any casing or "
-                "surrounding whitespace makes its overrides silently unread"
+                "literal `openmp` — the knob schema names that exact key, so any casing or "
+                "surrounding whitespace is a section it does not declare"
             )
         else:
             violations.append(
                 f"{ir_path}: impl_defaults.backend_overrides.{name} is a non-canonical section "
                 "name — key the OpenMP overrides by the literal `openmp`, never by "
-                "`selected.backend_key` (the runner renderer reads only "
-                "`backend_overrides.openmp.num_threads`, so a thread count under any other section "
-                "name is ignored and the run degrades to one thread)"
+                "`selected.backend_key` (the knob schema names the section `openmp`; the thread "
+                "count a run executes with is the target profile's `execution.threads_per_rank`, "
+                "not this knob)"
             )
 
     for raw, section in openmp_sections:
@@ -11610,8 +11671,8 @@ def _validate_impl_defaults_knobs(
             _IMPL_OPENMP_OVERRIDE_ALIASES, _IMPL_OPENMP_OVERRIDE_TYPES, violations,
             destination="the canonical key",
             extra_why=(
-                " (only `num_threads` is read when the runner is rendered, so an aliased thread "
-                "count is silently ignored and the run degrades to one thread)"
+                " (the knob schema names it `num_threads`; the thread count a run executes with "
+                "is the target profile's `execution.threads_per_rank`, not this knob)"
             ),
         )
         _append_impl_knob_type_violations(
@@ -11667,12 +11728,10 @@ def _append_impl_alias_violations(
         if canonical is None:
             # A key that IS a canonical knob but is not spelled exactly. Normalizing for the alias
             # lookup is right — `Threads` must still be caught as an alias — but normalizing the
-            # CANONICAL side let a wrong-cased or space-padded key pass as canonical, which is the
-            # silent degradation this whole table exists to prevent: the runner renderer
-            # (the language backend's `runner`) reads the literal `num_threads` and returns 1 for
-            # `NUM_THREADS` or `"num_threads "`. Only `num_threads` has a machine consumer today;
-            # the rest are pinned so that they can have one, which is exactly the property an
-            # inexact spelling destroys.
+            # CANONICAL side let a wrong-cased or space-padded key pass as canonical — a second
+            # spelling of one knob, which is what this whole table exists to prevent. (Until R4-a
+            # PR-2 the runner renderer read the literal `num_threads` and returned 1 for
+            # `NUM_THREADS` or `"num_threads "`; since then no knob has a machine consumer.)
             if name.lower() in canonical_names and raw != name.lower():
                 canonical_exact = name.lower()
                 group = canonical_variants.get(canonical_exact, [])
@@ -11699,8 +11758,8 @@ def _append_impl_alias_violations(
                     remedy = f"rename it to the bare lowercase `{canonical_exact}`"
                 violations.append(
                     f"{ir_path}: {prefix}.{raw!r} is the canonical knob `{canonical_exact}` spelled "
-                    f"inexactly — {remedy} (a consumer looks up the literal key, so any casing or "
-                    f"surrounding whitespace makes this knob unread){extra_why}"
+                    f"inexactly — {remedy} (the knob schema names the literal key, so any casing "
+                    f"or surrounding whitespace is a knob it does not declare){extra_why}"
                 )
             continue
         # Case-insensitive, like every other comparison here: a `Threads` beside a `NUM_THREADS`
@@ -12428,8 +12487,15 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
+    Since issue #284 neither the conductor nor ``record_launch`` reads these keys — both
+    read the target profile, and the bridge gate (``Conductor._target_ir_mismatch`` over
+    ``target_profile.ir_profile_mismatches``)
+    holds the IR's declared values to it — so the divergences below are the history the
+    checks were written against, kept because the IR's remaining readers still read the
+    declared value.
+
     - a key present with a value that is not a plain non-empty string. ``record_launch``
-      decides Makefile authorship from ``_impl_resolved_build_system`` /
+      decided Makefile authorship from ``_impl_resolved_build_system`` /
       ``_impl_resolved_language``, which read ``impl_defaults.toolchain`` structurally and
       coerce anything that is not a string to ``None``; the conductor takes
       ``str(value or default)``. The two therefore agree on ``language:`` (no value),
@@ -13544,9 +13610,10 @@ def _validate_generated_signatures(
     # unextracted member has no renderer of its own and would silently take Fortran's.
     # (Compile's `_validate_published_surface` already fail-closes it with the same
     # registry clause, so this is a defense-in-depth stop; no non-Fortran infra node exists.)
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    language = str(tc.get("language") or "").strip().lower()
+    # The language of the target the pipeline is built for (issue #284). An unresolvable
+    # target reads as "" — the documented default, as an absent key always did — and is not
+    # passed by it: `_validate_pipeline_targets_resolve` reports it in the same stage.
+    language = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)[1] or ""
     unsupported = _signature_backend_refusal(language)
     if unsupported:
         loc = model_files[0] if model_files else ir_path
@@ -14546,27 +14613,27 @@ def _latest_source_id(pipeline_dir: Path) -> str | None:
 
 
 def _pure_gate_build_graph_inputs(
-    repo_root: Path, ir_ref: str | None, ir: dict[str, Any], node_key: str
+    repo_root: Path, ir_ref: str | None, node_key: str, target: TargetProfile,
 ) -> tuple[dict[str, str], tuple[str, ...], dict[str, list[str]]]:
     """(toolchain, dependency_closure, dependency_edges) for the tamper gate's assembly check.
 
     Mirrors `workflow_conductor._read_toolchain` + `_dependency_closure_nodes` +
     `_build_pure_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
-    the gate assembles is the graph the producer's acceptance built. The L6 spec_id-clash raise
-    of `_dependency_closure_nodes` is not replicated: at gate time the closure is identical to
-    the accepted production closure (same sidecar), so it cannot introduce a new clash — only a
-    tampered bundle's own files can collide, which `derive_build_graph` itself detects."""
-    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-    target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
+    the gate assembles is the graph the producer's acceptance built. The toolchain is the
+    pipeline's target's (issue #284), the profile the conductor read it from. The L6
+    spec_id-clash raise of `_dependency_closure_nodes` is not replicated: at gate time the
+    closure is identical to the accepted production closure (same sidecar), so it cannot
+    introduce a new clash — only a tampered bundle's own files can collide, which
+    `derive_build_graph` itself detects."""
+    tc = target.toolchain
     toolchain = {
-        "language": str(tc.get("language") or "fortran").lower(),
-        "standard": str(tc.get("standard") or "f2008").lower(),
-        "build_system": str(tc.get("build_system") or "make").lower(),
-        "backend": str(target.get("backend") or "").lower(),
+        "language": str(tc["language"]),
+        "standard": str(tc["standard"]),
+        "build_system": str(tc["build_system"]),
+        "backend": target.parallel_backend,
     }
-    if str(tc.get("compiler") or "").strip():
-        toolchain["compiler"] = str(tc.get("compiler")).strip()
+    if tc.get("compiler"):
+        toolchain["compiler"] = str(tc["compiler"])
     sidecar = _read_dependency_graph_sidecar(repo_root, ir_ref) or {}
     all_nodes = sidecar.get("all_nodes") if isinstance(sidecar, dict) else None
     levels: dict[str, int] = {}
@@ -14629,7 +14696,15 @@ def _validate_post_generate_bundle(
     ir = _read_yaml(repo_root / ir_ref / "spec.ir.yaml") if ir_ref else {}
     if not isinstance(ir, dict):
         ir = {}
-    shape = _ir_bundle_shape(ir, node_key)
+    # The target the pipeline was built for (issue #284): `<pipeline>/source/<source_id>`.
+    target = _pipeline_target(repo_root, gen_dir.parent.parent)
+    if target is None:
+        violations.append(
+            f"{bundle_path}: the pipeline's target does not resolve, so the host acceptance "
+            "contract cannot be re-checked against the toolchain it was accepted under")
+        return
+    shape = _ir_bundle_shape(
+        ir, node_key, (target.toolchain["build_system"], target.toolchain["language"]))
     # The harness a bundle negotiates against: on `harness` the node ITSELF (a harness declares
     # the execution model it implements), otherwise its single infrastructure dependency. The
     # conductor's `_pure_harness_node_key` is the twin of these two lines.
@@ -14639,7 +14714,8 @@ def _validate_post_generate_bundle(
         infra = _infra_direct_dep_node_keys(ir)
         harness_nk = infra[0] if len(infra) == 1 else None
     provided = harness_provided_capabilities(harness_nk) if harness_nk else None
-    toolchain, closure, edges = _pure_gate_build_graph_inputs(repo_root, ir_ref, ir, node_key)
+    toolchain, closure, edges = _pure_gate_build_graph_inputs(
+        repo_root, ir_ref, node_key, target)
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
     # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
     host_glue: tuple[str, ...] = (() if shape == "harness"
@@ -14749,6 +14825,7 @@ def _validate_post_generate_stage_impl(
     except ValueError as exc:
         return [str(exc)]
 
+    _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     node_key, ir_ref = _lineage_node_key_and_ir_ref(pipeline_dir)
     if not node_key:
         violations.append(f"{pipeline_dir / 'lineage.json'}: missing node_key")
@@ -14804,11 +14881,8 @@ def _validate_post_generate_stage_impl(
             violations.append(f"{meta_path}: invalid json")
         else:
             if isinstance(meta_data, dict):
-                impl_lang: str | None = None
-                if ir_ref:
-                    impl_lang = _impl_language_from_plan_dir(
-                        repo_root, (repo_root / ir_ref).resolve()
-                    )
+                # The language of the target the pipeline is built for (issue #284).
+                impl_lang = _target_toolchain_from_pipeline_dir(repo_root, pipeline_dir)[1]
                 _validate_generate_lint_command_logs(
                     repo_root, meta_path, meta_data, impl_lang, violations
                 )
@@ -14848,6 +14922,7 @@ def _validate_post_build_stage_impl(
     except ValueError as exc:
         return [str(exc)]
 
+    _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     gen_id = source_id or _latest_source_id(pipeline_dir)
     if not gen_id:
         violations.append(f"{pipeline_dir / 'generate'}: no generation directory found")
@@ -14860,7 +14935,7 @@ def _validate_post_build_stage_impl(
 
     src_dir = pipeline_dir / "source" / gen_id / "src"
     _validate_fortran_makefile_src_dir(src_dir, violations)
-    _build_system, _language = _impl_toolchain_from_pipeline_dir(repo_root, pipeline_dir)
+    _build_system, _language = _target_toolchain_from_pipeline_dir(repo_root, pipeline_dir)
     _validate_makefile_test_no_relink(
         src_dir, violations, build_system=_build_system, language=_language
     )
@@ -14949,6 +15024,8 @@ def _validate_impl(
         executions=executions,
         violations=violations,
     )
+    _validate_pipeline_targets_resolve(
+        repo_root, [execution.pipeline_dir for execution in executions], violations)
 
     # Scope the source_meta sweep to the source dirs the in-scope executions DECLARE, the
     # same lineage scoping the structural source checks already use. With --run-id (the
@@ -15094,12 +15171,17 @@ def _validate_impl(
     # DAG-satisfied when it has its own fully-validated pipeline (the --with-deps model; see
     # _closure_node_validated_in_own_pipeline). Only the token-less "validation scope" branch
     # uses this — the per-token (resolved_at) branch keeps strict single-scope semantics.
-    _xp_cache: dict[str, bool] = {}
+    _xp_cache: dict[tuple[str, str | None], bool] = {}
 
-    def _xp_satisfied(node_token: str) -> bool:
-        if node_token not in _xp_cache:
-            _xp_cache[node_token] = _closure_node_validated_in_own_pipeline(repo_root, node_token)
-        return _xp_cache[node_token]
+    def _xp_satisfied(node_token: str, pipeline_dir: Path) -> bool:
+        # The dependency must be validated for the SAME target as the pipeline whose closure
+        # it completes (issue #284): the target is the pipeline's store coordinate.
+        target_id = pipeline_dir.parent.name if is_target_id(pipeline_dir.parent.name) else None
+        key = (node_token, target_id)
+        if key not in _xp_cache:
+            _xp_cache[key] = _closure_node_validated_in_own_pipeline(
+                repo_root, node_token, target_id)
+        return _xp_cache[key]
 
     seen_dag_violations: set[tuple[Path, str, tuple[str, ...]]] = set()
     for execution, expected_nodes, token in dep_contexts:
@@ -15111,7 +15193,7 @@ def _validate_impl(
             scope_label = f"resolved_at={token}"
         missing = sorted(expected_nodes - available_nodes)
         if token is None and missing:
-            missing = [m for m in missing if not _xp_satisfied(m)]
+            missing = [m for m in missing if not _xp_satisfied(m, execution.pipeline_dir)]
         if missing:
             key = (execution.pipeline_dir, scope_label, tuple(missing))
             if key in seen_dag_violations:
@@ -15153,8 +15235,10 @@ def _validate_impl(
         missing_plan_nodes = sorted(expected_nodes - available_plan_nodes)
         if token is None:
             # A dependency built in its own pipeline (--with-deps) is issued cross-pipeline.
-            missing_pipeline_nodes = [m for m in missing_pipeline_nodes if not _xp_satisfied(m)]
-            missing_plan_nodes = [m for m in missing_plan_nodes if not _xp_satisfied(m)]
+            missing_pipeline_nodes = [m for m in missing_pipeline_nodes
+                                      if not _xp_satisfied(m, lineage.pipeline_dir)]
+            missing_plan_nodes = [m for m in missing_plan_nodes
+                                  if not _xp_satisfied(m, lineage.pipeline_dir)]
         if not missing_pipeline_nodes and not missing_plan_nodes:
             continue
         key = (
