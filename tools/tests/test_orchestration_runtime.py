@@ -389,8 +389,7 @@ _PURE_COMPILE_CONTEXT = {
         "controlled_spec_document", "deps_document", "profile_spec_document",
         "dependency_graph_document", "phase_contract_document",
         "ir_algorithm_example_document", "ir_algorithm_2d_example_document",
-        "impl_defaults_schema_document", "checks_module_contract_document",
-        "toolchain_document", "tests_document",
+        "checks_module_contract_document", "tests_document",
     )
 }
 
