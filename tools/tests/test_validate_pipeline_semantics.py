@@ -1477,6 +1477,44 @@ class MetricsBasisUnrecognizedWrapperUnitTests(unittest.TestCase):
         )
 
 
+class PipelineHarnessDagTests(unittest.TestCase):
+    """The target's harness is a closure node of every physics pipeline (issue #284, R4-a
+    PR-3), so the whole-workspace DAG checks require it: validated in its OWN pipeline for the
+    same target, or the pipeline's closure is incomplete. The rest of this module runs under
+    `_harness_validated_elsewhere()`; this class does not, and is the witness of both DAG paths
+    (the executions' `dependency DAG incomplete` and the lineages' `node plans / pipelines not
+    issued`) — each reads the IR's dependency block plus `_with_pipeline_harness`."""
+
+    _MODEL = ("module shallow_water2d_model\nuse dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+              "implicit none\ncontains\nsubroutine solve(flag)\n  logical, intent(out) :: flag\n"
+              "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+              "end subroutine solve\nend module shallow_water2d_model\n")
+    _RUNNER = ("program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
+               "end program shallow_water2d_runner\n")
+
+    def _violations(self, repo_root: Path) -> list[str]:
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text=self._MODEL, runner_text=self._RUNNER,
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+        return validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_a_harness_not_validated_for_the_target_leaves_the_dag_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            violations = self._violations(Path(tmp))
+        harness = "'infrastructure/harness_fortran_cpu'"
+        for fragment in ("dependency DAG incomplete for validation scope",
+                         "node plans not issued for validation scope",
+                         "node pipelines not issued for validation scope"):
+            self.assertTrue(any(fragment in v and harness in v for v in violations),
+                            (fragment, violations))
+
+    def test_a_harness_validated_in_its_own_pipeline_completes_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _harness_validated_elsewhere():
+            self.assertEqual(self._violations(Path(tmp)), [])
+
+
 class ValidatePipelineSemanticsTests(unittest.TestCase):
 
     def setUp(self) -> None:
