@@ -1,25 +1,25 @@
 {
   "agent_role": "substep",
-  "node_key": "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0",
+  "node_key": "component/dynamics_shallow_water_flux_2d_rusanov@0.1.0",
   "step": "generate",
-  "orchestration_id": "orch_20260924T053820Z_a99c8eb1",
-  "agent_run_id": "15cb3f71-4cf9-4385-90fc-83d864d1aab9",
-  "parent_agent_run_id": "341a38d8-20fd-4749-a926-3415441c782b",
+  "orchestration_id": "orch_20260924T142238Z_f53d847f",
+  "agent_run_id": "9182ddce-8b54-446e-bda7-44c29b2c7f68",
+  "parent_agent_run_id": "9d81178e-3fa7-432e-bcb8-411a21e7a4a1",
   "agent_model": "opus",
   "workflow_mode": "dev",
-  "ir_ref": "workspace/ir/component__dynamics_advdiff_flux_1d_upwind_center2__0.2.0/dynamics-advdiff-flux-1d-upwind-center2_20260924_001",
-  "pipeline_ref": "workspace/pipelines/component__dynamics_advdiff_flux_1d_upwind_center2__0.2.0/fortran_cpu/dynamics-advdiff-flux-1d-upwind-center2_20260924_001",
+  "ir_ref": "workspace/ir/component__dynamics_shallow_water_flux_2d_rusanov__0.1.0/dynamics-shallow-water-flux-2d-rusanov_20260924_001",
+  "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_flux_2d_rusanov__0.1.0/fortran_cpu/dynamics-shallow-water-flux-2d-rusanov_20260924_001",
   "substep": "verify",
   "runner_host_authored": true,
   "source_id": "src_20260924_001",
-  "dependency_ref": "workspace/ir/component__dynamics_advdiff_flux_1d_upwind_center2__0.2.0/dynamics-advdiff-flux-1d-upwind-center2_20260924_001",
+  "dependency_ref": "workspace/ir/component__dynamics_shallow_water_flux_2d_rusanov__0.1.0/dynamics-shallow-water-flux-2d-rusanov_20260924_001",
   "allowed_output_paths": [],
   "resolved_dependencies": [
     {
       "node_key": "infrastructure/harness_fortran_cpu@0.7.0",
-      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/fortran_cpu/harness-fortran-cpu_20260924_001",
+      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/fortran_cpu/harness-fortran-cpu_20260924_002",
       "run_id": "run_20260924_001",
-      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/fortran_cpu/harness-fortran-cpu_20260924_001/runs/run_20260924_001/infrastructure__harness_fortran_cpu__0.7.0/aggregate_verdict.json"
+      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.7.0/fortran_cpu/harness-fortran-cpu_20260924_002/runs/run_20260924_001/infrastructure__harness_fortran_cpu__0.7.0/aggregate_verdict.json"
     }
   ],
   "issue_severity": "none",
@@ -27,29 +27,30 @@
   "repair_target_agent_run_id": "none",
   "repair_reason": "none",
   "leaf_mode": "pure",
-  "prompt_contract_version": "pure-48",
+  "prompt_contract_version": "pure-49",
   "skill_name": "",
   "skill_ref": "",
   "skill_must_read_refs": "",
   "pure_context": {
-    "controlled_spec_document": "<redacted: 7819 bytes sha256:b73b2c65153644516de69c3c4165865957e4ee339ec755d7b36811b1a701ac20>",
-    "tests_document": "<redacted: 2714 bytes sha256:1329ec5c5acd83847916ee93394e94bd8f193434a0bdf3e2bbfd466cdfec0de1>",
-    "ir_document": "<redacted: 14197 bytes sha256:80dd1a99dce3858258d174e2e08eed361447b8fb2b3d00f11bd6b262b6c26aa6>",
+    "controlled_spec_document": "<redacted: 10726 bytes sha256:80922af94b8364ce5e4730fab0b55474516a0ba5082c179df8acd9c26b069af3>",
+    "tests_document": "<redacted: 21285 bytes sha256:b913e003d8a9934b251bbb22ed93d542ea9989483c16af10472e9a438cbf84e9>",
+    "ir_document": "<redacted: 35441 bytes sha256:42445066f058df8ae8b46c1ff6b1c0ce652ef45ba70c49444f0f38ad458af174>",
+    "target_profile": "<redacted: 438 bytes sha256:da362f985aa6f3c3c29135a11edbfdc870a3b7c2e29f5a304a9bc08a2f6316e4>",
     "checks_module_contract_document": "<redacted: 11728 bytes sha256:cad5a52b823e67130c31a3fbb1ef90f5671ad24bc6857832dd0b12b34554232a>",
-    "severity_rubric_document": "<redacted: 2736 bytes sha256:83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc>",
-    "bundle_document": "<redacted: 11287 bytes sha256:502fcb7547594a7bc325b929d17a3e7c578ae6cc3711a213f108df6e88f9efac>"
+    "severity_rubric_document": "<redacted: 2747 bytes sha256:0fec2f0d12ce88b01130bee0b72a8127db85c66f5f37768754fe560ca753a17d>",
+    "bundle_document": "<redacted: 19207 bytes sha256:1d31227d50c9ca1c9a533ab963af1f2537479ab32331bfd17f5215f93db19cfc>"
   },
-  "derivation_key": "sha256:537f9413d41fe0c454501cf6c48f18784cf2505f45008146ce02d88bfa3f31b6",
-  "launch_prompt_full": "<redacted: 61050 bytes sha256:ef36dc4e497134a05b7eeb7e7a52e31b95affc32c14005623291149df3c685ba>",
-  "launch_prompt_ref": "workspace/orchestrations/orch_20260924T053820Z_a99c8eb1/launches/15cb3f71-4cf9-4385-90fc-83d864d1aab9.prompt.txt",
-  "child_launch_request_ref": "workspace/orchestrations/orch_20260924T053820Z_a99c8eb1/agents/15cb3f71-4cf9-4385-90fc-83d864d1aab9/dialogs/child.request.json",
-  "child_launch_prompt_ref": "workspace/orchestrations/orch_20260924T053820Z_a99c8eb1/agents/15cb3f71-4cf9-4385-90fc-83d864d1aab9/dialogs/child.prompt.txt",
+  "derivation_key": "sha256:0a741c770785a802f7e990feae1ab7e9773c665e03e57154a68ec6379b1914b8",
+  "launch_prompt_full": "<redacted: 112688 bytes sha256:67f68c6cc8d1eae29a56a186ed0cf53acf08ff9eed00f034927d0ed5c71ccdbf>",
+  "launch_prompt_ref": "workspace/orchestrations/orch_20260924T142238Z_f53d847f/launches/9182ddce-8b54-446e-bda7-44c29b2c7f68.prompt.txt",
+  "child_launch_request_ref": "workspace/orchestrations/orch_20260924T142238Z_f53d847f/agents/9182ddce-8b54-446e-bda7-44c29b2c7f68/dialogs/child.request.json",
+  "child_launch_prompt_ref": "workspace/orchestrations/orch_20260924T142238Z_f53d847f/agents/9182ddce-8b54-446e-bda7-44c29b2c7f68/dialogs/child.prompt.txt",
   "_resolved_build_system": "make",
   "_resolved_makefile_host_authored": true,
-  "sandbox_profile_ref": "workspace/orchestrations/orch_20260924T053820Z_a99c8eb1/sandbox_profiles/15cb3f71-4cf9-4385-90fc-83d864d1aab9.json",
+  "sandbox_profile_ref": "workspace/orchestrations/orch_20260924T142238Z_f53d847f/sandbox_profiles/9182ddce-8b54-446e-bda7-44c29b2c7f68.json",
   "_capture_source": {
-    "path": "workspace/orchestrations/orch_20260924T053820Z_a99c8eb1/launches/15cb3f71-4cf9-4385-90fc-83d864d1aab9.request.json",
-    "bytes": 117239,
-    "sha256": "e764e4e1df0070a8a27933908b189cc22686b74a5500551a105c4361074424d8"
+    "path": "workspace/orchestrations/orch_20260924T142238Z_f53d847f/launches/9182ddce-8b54-446e-bda7-44c29b2c7f68.request.json",
+    "bytes": 222954,
+    "sha256": "968df4aa9ae9705c2fa443b468d0274e2fa7e55dd214d9d21564ff24333b42d3"
   }
 }

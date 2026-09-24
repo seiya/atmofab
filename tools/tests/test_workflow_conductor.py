@@ -98,20 +98,21 @@ def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep). Committed
 # under test data because workspace/ is gitignored — a clean checkout/CI has no live
-# orchestration. All seven rows were re-captured on 2026-09-24 (issue #284, R4-a PR-2) from ONE
-# run, orch_20260924T053820Z_a99c8eb1 (`dynamics_advdiff_flux_1d_upwind_center2 validate
-# --target fortran_cpu --with-deps`), when the pipeline store gained its `<target_id>`
-# segment and every earlier capture's `pipeline_ref` stopped being a launchable coordinate.
-# Every row — the two DETERMINISTIC ones included, which until then were hand-maintained
-# copies of a June run no longer on disk — is `redact_launch_request.py` output and carries a
-# `_capture_source` naming its arid: `pure_context` keeps its KEY SET with each value replaced
-# by a size + sha256 placeholder, `launch_prompt_full` likewise. The previous corpus
-# (`shallow_water2d --with-deps`, orch_20260916T081200Z_5139f6c9) is in git history.
+# orchestration. All seven rows were re-captured on 2026-09-24 (issue #284, R4-a PR-3) from ONE
+# member of the adoption run's closure, orch_20260924T142238Z_f53d847f
+# (`dynamics_shallow_water_flux_2d_rusanov`, a member of `shallow_water2d_channel validate
+# --target fortran_cpu --with-deps --jobs 2`), when the compile context lost the `impl_defaults`
+# schema and the toolchain document and the verify contexts gained `target_profile`.
+# Every row — the two DETERMINISTIC ones included — is `redact_launch_request.py` output and
+# carries a `_capture_source` naming its arid: `pure_context` keeps its KEY SET with each value
+# replaced by a size + sha256 placeholder, `launch_prompt_full` likewise. The previous corpora
+# (R4-a PR-2's orch_20260924T053820Z_a99c8eb1, `dynamics_advdiff_flux_1d_upwind_center2`; before
+# it `shallow_water2d --with-deps`, orch_20260916T081200Z_5139f6c9) are in git history.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
 # spec dir per captured node (the builder reads it only for compile's `dependency_ref`).
 _SPEC_PATH_BY_NODE_KEY = {
-    "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0":
-        "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2",
+    "component/dynamics_shallow_water_flux_2d_rusanov@0.1.0":
+        "spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov",
 }
 
 # Fields record-launch adds/derives; not produced by build_launch_request.
