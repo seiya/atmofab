@@ -586,7 +586,9 @@ PINNED: dict[str, str] = {
     # Re-pinned in round 1: the OpenMP floor applies unless the plan EXPLICITLY declines
     # OpenMP (an absent model is the target's backend), in rule (7) and in G6's scope sentence;
     # and both producer templates say `fusion` fuses optimization-unit members, never loops.
-    "pure-49": "b967b2d85f8c8c78c80af7bfbea3ad7873d9f541c374d8ece285fb2585cd38f8",}
+    # Re-pinned in round 2: G6's scope sentence no longer lists "no model at all" among the
+    # plans the floor skips, and says a declared `none` is the producer's claim the floor trusts.
+    "pure-49": "00771fda28762e8316cf61d9882e1f1215e34e1880908f9d50bb7fd62b057f0b",}
 
 
 def _contract_tuple() -> dict[str, object]:
