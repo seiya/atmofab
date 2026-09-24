@@ -1,0 +1,19 @@
+# Target profile (issue #284, R4-a). Operator-authored data: one value per target axis, and the
+# harness a node built for this target runs over. Loader and gate: tools/target_profile.py.
+# Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
+target_profile_version: 1
+target_id: fortran_cpu
+hardware:
+  class: cpu
+  architecture: x86_64
+toolchain:
+  language: fortran
+  standard: f2008
+  build_system: make
+parallel:
+  backend: openmp
+execution:
+  threads_per_rank: 1
+harness:
+  infrastructure_id: harness_fortran_cpu
+  version_constraint: ">=0.3.0 <1.0.0"

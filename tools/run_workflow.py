@@ -59,6 +59,12 @@ from tools.llm_config import (
     resolve_default_config_path,
 )
 from tools.operator_private_root import operator_secret_root
+from tools.target_profile import (
+    TargetProfile,
+    TargetProfileError,
+    resolve_run_target,
+    select_target_id,
+)
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
 # unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
@@ -327,6 +333,7 @@ def _build_invocation_record(
     closure_until_phase: str | None = None,
     rederive: Sequence[str] = (),
     jobs: int | None = None,
+    target_profile: TargetProfile | None = None,
 ) -> dict[str, Any]:
     """Assemble the reproduction/provenance record persisted to
     `orchestration_meta.json#invocation`.
@@ -377,6 +384,12 @@ def _build_invocation_record(
         record["llm_leaf_map"] = llm_config.provenance_map()
     if agent_model:
         record["agent_model"] = agent_model
+    if target_profile is not None:
+        # The target the run builds for (issue #284): its id, the hash of the profile's
+        # parsed content, and the harness it resolves to. A resume recovers `target_id` from
+        # here; the hash and the harness are provenance — a profile edited between the launch
+        # and the resume is not refused here.
+        record["target"] = target_profile.record(repo_root)
     if closure_id:
         record["closure_id"] = closure_id
         record["closure_target_spec_ref"] = closure_target_spec_ref or ""
@@ -510,6 +523,66 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
                 f"schedules it. Run the node that ADOPTS it instead."
             )
         return
+
+
+def _infrastructure_node_key_of(repo_root: Path, spec_ref: str) -> str | None:
+    """The node_key of `spec_ref` when the catalog files it as an `infrastructure` spec, else
+    None. Read from `spec_catalog.yaml` — the registry, never the spec's own files — for the
+    reason `_refuse_non_certifiable_target` gives. An unreadable registry answers None, the
+    stricter question for the target gate; the registry's own gates report the outage."""
+    import yaml as _yaml
+
+    from tools.workflow_conductor import _SPEC_REF_FILE_NAMES
+
+    ref = Path(spec_ref.strip().rstrip("/"))
+    spec_id = (ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref).name
+    try:
+        catalog = _yaml.safe_load(
+            (repo_root / "spec" / "registry" / "spec_catalog.yaml").read_text(encoding="utf-8")
+        ) or {}
+    except (OSError, UnicodeError, _yaml.YAMLError):
+        return None
+    for entry in (catalog.get("specs") or []) if isinstance(catalog, dict) else []:
+        if (isinstance(entry, dict) and entry.get("spec_id") == spec_id
+                and str(entry.get("spec_kind") or "").strip() == "infrastructure"):
+            return f"infrastructure/{spec_id}@{entry.get('spec_version')}"
+    return None
+
+
+def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None,
+                           recorded: str | None) -> TargetProfile:
+    """The target of this invocation (issue #284): `--target`, else the one a resumed
+    orchestration recorded, else the default (`select_target_id`). A resume that names a
+    target other than the recorded one is refused — the finished phases were built for the
+    recorded one, and a run is one target. Raises `TargetProfileError`."""
+    if requested is not None and recorded is not None and requested.strip() != recorded:
+        # An undeclared `--target` is refused as such first: the remedy below ("start a fresh
+        # run for it") would otherwise recommend a profile that does not exist (round 3).
+        select_target_id(repo_root, requested)
+        raise TargetProfileError(
+            "target_changed_on_resume",
+            f"the resumed orchestration was launched for target {recorded!r}, not "
+            f"{requested!r}; resume it without --target, or start a fresh run for "
+            f"{requested!r}")
+    if requested is None and recorded is not None:
+        from tools.target_profile import (
+            TARGET_PROFILE_SUFFIX,
+            TARGETS_DIR,
+            list_target_ids,
+        )
+
+        if recorded not in list_target_ids(repo_root):
+            # Said apart from `target_unknown`'s "--target names no profile": the operator
+            # passed no `--target`, and following that message (passing the renamed id) is
+            # refused `target_changed_on_resume` above — a loop with no exit (round 1).
+            raise TargetProfileError(
+                "target_unknown",
+                f"the resumed orchestration was launched for target {recorded!r}, and "
+                f"{TARGETS_DIR}/{recorded}{TARGET_PROFILE_SUFFIX} no longer exists; restore "
+                f"that profile to resume, or start a fresh run for another target")
+    return resolve_run_target(
+        repo_root, requested if requested is not None else recorded,
+        node_key=_infrastructure_node_key_of(repo_root, spec_ref))
 
 
 def _validate_source_dependency_ref(source_dependency_ref: str) -> str:
@@ -1634,6 +1707,12 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
         # predating the field) is rejected — legacy execution was removed, so those runs cannot be
         # resumed and must be re-run cold.
         "generate_executor": _clean(invocation.get("generate_executor")),
+        # The target the orchestration was launched for (issue #284). None on an orchestration
+        # launched before the field existed; the resume then selects the default target. That
+        # is the target such a run was built for only while one profile is declared — with
+        # several, the resume asks for `--target` and nothing checks the choice.
+        "target_id": _clean((invocation.get("target") or {}).get("target_id")
+                            if isinstance(invocation.get("target"), dict) else None),
     }
 
 
@@ -2073,6 +2152,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "Not recovered on --resume: re-pass it."
         ),
     )
+    parser.add_argument(
+        "--target",
+        default=None,
+        metavar="TARGET_ID",
+        help=(
+            "The target profile this run builds for: spec/targets/<TARGET_ID>.yaml (hardware, "
+            "toolchain, parallel model, execution shape, harness). Optional while exactly one "
+            "profile is declared, which is then the target; required once there are several. "
+            "One run is one target: --with-deps members inherit it, and --resume recovers it "
+            "from the resumed orchestration (passing a different one is refused)."
+        ),
+    )
     # The three flags below are how a `--jobs` driver runs ONE closure member in a child
     # process; an operator reproduces a member by re-running the recorded `invocation.command`.
     parser.add_argument(
@@ -2371,6 +2462,9 @@ def _run_main(
     # from an explicit no-op restate.
     resume_recovered_spec_ref: str | None = None
     resume_recovered_dep_ref: str | None = None
+    # The target the resumed orchestration recorded (issue #284); None on a cold run and on an
+    # orchestration that predates the record.
+    resume_recovered_target_id: str | None = None
     # The leaf-LLM configuration pin recorded on the resumed orchestration (empty dict on a
     # fresh run; all-empty fields on a run that predates issue #28).
     resume_recorded_llm_config: dict[str, Any] = {}
@@ -2506,6 +2600,7 @@ def _run_main(
         # reuse the recovered dependency ref.
         resume_recovered_spec_ref = recovered.get("spec_ref")
         resume_recovered_dep_ref = recovered.get("source_dependency_ref")
+        resume_recovered_target_id = recovered.get("target_id")
         resume_recorded_llm_config = _recorded_llm_config(repo_root, orchestration_id)
         # Z2 executor fail-close on resume (M-F). Legacy generate execution was removed: `pure` is
         # the only executor. The recorded executor in the immutable invocation block is now used
@@ -2724,6 +2819,20 @@ def _run_main(
         )
         return 2
 
+    # The target profile this invocation builds for (issue #284), resolved and gated before any
+    # orchestration state is touched: a profile that does not load, names a value the host
+    # cannot serve, or names a harness the catalog does not carry is refused here rather than
+    # phases into a billed run. An `infrastructure` target must be the profile's own harness.
+    try:
+        target_profile = _resolve_launch_target(
+            repo_root, spec_ref, getattr(args, "target", None), resume_recovered_target_id)
+    except TargetProfileError as exc:
+        _emit_unlogged_event(
+            {"status": "fail", "reason": exc.reason, "detail": exc.detail},
+            args.stdout_format,
+        )
+        return 2
+
     # Base env shared by every node. ATMOFAB_ORCHESTRATION_ID / TMPDIR /
     # ORCHESTRATION_AGENT_RUN_ID are per-node and set inside _run_node so a
     # dependency-closure run (one orchestration per node) never leaks the
@@ -2782,6 +2891,7 @@ def _run_main(
             closure_target_spec_ref=closure_member["target_spec_ref"],
             closure_until_phase=closure_member["until_phase"],
             raw_argv=raw_argv,
+            target_profile=target_profile,
         )
 
     # Closure-aware resume: the resumed orchestration is a node of a `--with-deps`
@@ -2815,6 +2925,7 @@ def _run_main(
             prior_orch_by_spec=prior_map,
             raw_argv=raw_argv,
             rederive=rederive,
+            target_profile=target_profile,
         )
 
     # `--with-deps` runs the target's transitive dependency closure bottom-up
@@ -2842,6 +2953,7 @@ def _run_main(
             prior_orch_by_spec=None,
             raw_argv=raw_argv,
             rederive=rederive,
+            target_profile=target_profile,
         )
 
     # Cold-start guard (single node): a fresh run of a spec that still has a
@@ -2889,6 +3001,7 @@ def _run_main(
                 with_deps=False,
                 wait_usage_reset=args.wait_usage_reset,
                 rederive=rederive,
+                target_profile=target_profile,
             )
         )
         return _run_node(
@@ -2915,6 +3028,7 @@ def _run_main(
             spec_claim_held=not resume_mode,
             orch_claim_held=resume_mode,
             rederive=rederive,
+            target_profile=target_profile,
         )
 
 
@@ -3334,6 +3448,7 @@ def _run_node(
     spec_claim_held: bool = False,
     orch_claim_held: bool = False,
     rederive: frozenset[str] = frozenset(),
+    target_profile: TargetProfile | None = None,
 ) -> int:
     """Run a single node's orchestration (init → preflight → prompt → launch →
     terminalize) and print its JSON result. Returns the process exit code
@@ -3344,7 +3459,13 @@ def _run_node(
     target node's result). `invocation`, when given, is persisted immutably to
     `orchestration_meta.json#invocation` on the COLD init path only (the resume
     path preserves the existing block); it carries the reproduction record and the
-    closure back-link that drives closure-aware resume."""
+    closure back-link that drives closure-aware resume.
+
+    `target_profile` is the target the run builds for (issue #284), resolved by the caller at
+    launch. None — a caller that did not resolve one — resolves the default here, which is the
+    only profile when one is declared and a `target_required` refusal when several are."""
+    if target_profile is None:
+        target_profile = resolve_run_target(repo_root, None)
     env = dict(base_env)
     env["ATMOFAB_ORCHESTRATION_ID"] = orchestration_id
 
@@ -3445,6 +3566,7 @@ def _run_node(
                     "until_phase": until_phase,
                     "orchestration_id": orchestration_id,
                     "resume": resume_mode,
+                    "target_id": target_profile.target_id,
                 },
                 ensure_ascii=False,
             ),
@@ -3715,6 +3837,7 @@ def _run_node(
                     resume=resume_mode,
                     wait_usage_reset=wait_usage_reset,
                     rederive=rederive,
+                    target_profile=target_profile,
                 )
             except Exception as exc:  # noqa: BLE001 - terminalize on conductor error
                 # If the conductor/runtime already terminalized with a specific terminal
@@ -3835,6 +3958,7 @@ def _run_node(
             "llm": llm,
             "llm_command": llm_command,
             "target_spec_ref": spec_ref,
+            "target_id": target_profile.target_id,
             "until_phase": until_phase,
             "workflow_mode": workflow_mode,
             "atmofab_workflow_mode": env["ATMOFAB_WORKFLOW_MODE"],
@@ -4300,15 +4424,40 @@ def _required_dependency_stages(dep_until_phase: str) -> list[str]:
     return ["ir_ref"] if dep_until_phase == "Compile" else ["ir_ref", "pipeline_ref", "aggregate_verdict"]
 
 
+def _target_resume_rejection(
+    repo_root: Path, orchestration_id: str, target_profile: TargetProfile | None,
+) -> dict[str, Any] | None:
+    """A warm resume of a closure orchestration recorded for a DIFFERENT target than the
+    closure runs for (issue #284). The entry orchestration is gated by `_resolve_launch_target`
+    in `_run_main`; the others a closure resumes are gated here, in-process or before a
+    `--jobs` child is launched. An orchestration that recorded no target predates the record
+    and is not refused: nothing says which target it was built for (while one profile is
+    declared, the only one)."""
+    if target_profile is None:
+        return None
+    recorded = _load_resume_params(repo_root, orchestration_id).get("target_id")
+    if recorded is None or recorded == target_profile.target_id:
+        return None
+    return {
+        "status": "fail",
+        "reason": "target_changed_on_resume",
+        "detail": (
+            f"orchestration {orchestration_id} was launched for target {recorded!r}, and this "
+            f"closure runs for {target_profile.target_id!r}; a run is one target"),
+        "orchestration_id": orchestration_id,
+    }
+
+
 def _closure_member_resume_rejection(
     repo_root: Path, dep_orch_id: str, llm_config: LlmConfig,
+    target_profile: TargetProfile | None = None,
 ) -> dict[str, Any] | None:
-    """The two twin gates a warm-resumed closure member must pass, asked by the DRIVER
-    before the member is resumed (in-process or as a `--jobs` child): its recorded
-    generate executor is the only one left (`pure`), and the leaf-LLM configuration it
-    launched with is still the closure's effective one — a member's remaining phases must
-    not run on different models than its finished ones did. Returns the first rejection
-    envelope, or None."""
+    """The gates a warm-resumed closure member must pass, asked by the DRIVER before the
+    member is resumed (in-process or as a `--jobs` child): its recorded generate executor is
+    the only one left (`pure`), the leaf-LLM configuration it launched with is still the
+    closure's effective one — a member's remaining phases must not run on different models
+    than its finished ones did — and it was launched for the closure's target
+    (`_target_resume_rejection`). Returns the first rejection envelope, or None."""
     for rejection in (
         _generate_executor_resume_rejection(
             dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)),
@@ -4317,6 +4466,7 @@ def _closure_member_resume_rejection(
             repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
             effective_sha256=llm_config.sha256,
             effective_overrides={}),
+        _target_resume_rejection(repo_root, dep_orch_id, target_profile),
     ):
         if rejection is not None:
             return rejection
@@ -4378,6 +4528,7 @@ def _run_closure_member(
     closure_target_spec_ref: str,
     closure_until_phase: str,
     raw_argv: list[str] | None,
+    target_profile: TargetProfile | None = None,
 ) -> int:
     """Run ONE member of a `--jobs` closure in this (child) process (issue #250 PR-3).
 
@@ -4447,6 +4598,7 @@ def _run_closure_member(
             closure_id=closure_id,
             closure_target_spec_ref=closure_target_spec_ref,
             closure_until_phase=closure_until_phase,
+            target_profile=target_profile,
         )
         return _run_node(
             repo_root=repo_root,
@@ -4469,6 +4621,7 @@ def _run_closure_member(
             stdout_format=stdout_format,
             spec_claim_held=not resume_mode,
             orch_claim_held=resume_mode,
+            target_profile=target_profile,
         )
 
 
@@ -4542,6 +4695,7 @@ def _closure_member_argv(
     status: str,
     run_conductor: bool,
     wait_usage_reset: bool,
+    target_profile: TargetProfile | None = None,
 ) -> list[str]:
     """The command line of one `--jobs` child. A resumed member is named by its prior
     orchestration alone (its spec, phase, mode and leaf-LLM configuration are recovered
@@ -4566,6 +4720,12 @@ def _closure_member_argv(
         argv.append("--no-run-conductor")
     if wait_usage_reset:
         argv.append("--wait-usage-reset")
+    if target_profile is not None:
+        # Passed on a resumed member too: the member's own record names the target it was
+        # launched for, and `_resolve_launch_target` refuses a resume that names another —
+        # so a member of this closure cannot be continued for a different target than the
+        # closure's.
+        argv += ["--target", target_profile.target_id]
     return argv
 
 
@@ -4664,6 +4824,7 @@ def _run_closure_members_parallel(
     preclaimed_orchestration_id: str | None,
     release_preclaim: Any,
     dependency_runs: list[dict[str, Any]],
+    target_profile: TargetProfile | None = None,
 ) -> int:
     """The `--jobs N` ready-set scheduler over the closure members (issue #250 PR-3):
     every member whose direct dependencies have all finished (skipped ready, or run and
@@ -4708,7 +4869,8 @@ def _run_closure_members_parallel(
             prior_orch_by_spec=prior_orch_by_spec,
             preclaimed_orchestration_id=preclaimed_orchestration_id,
             release_preclaim=release_preclaim, dependency_runs=dependency_runs,
-            child_env=child_env, emit=_emit, label=_label, relay_lock=relay_lock)
+            child_env=child_env, emit=_emit, label=_label, relay_lock=relay_lock,
+            target_profile=target_profile)
     except (KeyboardInterrupt, SystemExit):
         # The driver was interrupted (Ctrl-C, or SIGTERM through `_sigterm_to_exit`): stop
         # the members it started, record them, and let the interrupt propagate.
@@ -4744,6 +4906,7 @@ def _schedule_closure_members(
     emit: Any,
     label: Any,
     relay_lock: threading.Lock,
+    target_profile: TargetProfile | None = None,
 ) -> int:
     """The loop of `_run_closure_members_parallel`; `running` is shared with the caller so
     an interrupt can stop what is in flight."""
@@ -4771,7 +4934,8 @@ def _schedule_closure_members(
                 dep_orch_id = prior or _new_orchestration_id()
                 dep_resume = prior is not None
                 if dep_resume:
-                    rejection = _closure_member_resume_rejection(repo_root, dep_orch_id, llm_config)
+                    rejection = _closure_member_resume_rejection(
+                        repo_root, dep_orch_id, llm_config, target_profile)
                     if rejection is not None:
                         # The refusal is the closure's terminal envelope, emitted once the
                         # running members are drained (below) so it carries every record.
@@ -4804,7 +4968,8 @@ def _schedule_closure_members(
                     target_orchestration_id=target_orchestration_id,
                     target_spec_ref=target_spec_ref, until_phase=until_phase,
                     llm_config=llm_config, workflow_mode=workflow_mode, status=status,
-                    run_conductor=run_conductor, wait_usage_reset=wait_usage_reset)
+                    run_conductor=run_conductor, wait_usage_reset=wait_usage_reset,
+                    target_profile=target_profile)
                 proc = _launch_closure_member(argv, repo_root=repo_root, env=child_env)
                 running[ref] = _ClosureMemberProcess(
                     node, dep_orch_id, dep_resume, readiness, proc, stdout_format, relay_lock)
@@ -4962,6 +5127,7 @@ def _run_with_dependency_closure(
     rederive: frozenset[str] = frozenset(),
     jobs: int = 1,
     release_preclaim: Any = None,
+    target_profile: TargetProfile | None = None,
 ) -> int:
     """Run the target's dependency closure bottom-up, then the target.
 
@@ -5029,7 +5195,8 @@ def _run_with_dependency_closure(
             wait_usage_reset=wait_usage_reset, stdout_format=stdout_format, resume=resume,
             prior_orch_by_spec=prior_orch_by_spec,
             preclaimed_orchestration_id=preclaimed_orchestration_id,
-            release_preclaim=release_preclaim, dependency_runs=dependency_runs)
+            release_preclaim=release_preclaim, dependency_runs=dependency_runs,
+            target_profile=target_profile)
         if rc != 0:
             return rc
         # An emptied schedule: the sequential loop below has nothing left to do.
@@ -5059,11 +5226,33 @@ def _run_with_dependency_closure(
             # Twin gate, same reasoning one level down: the leaf-LLM configuration a member
             # launched with must still be the one on disk, or its remaining phases would run on
             # different models than its finished ones did.
-            rejection = _closure_member_resume_rejection(repo_root, dep_orch_id, llm_config)
+            rejection = _closure_member_resume_rejection(
+                repo_root, dep_orch_id, llm_config, target_profile)
             if rejection is not None:
                 _emit_unlogged_event(
                     {
                         **rejection,
+                        "failed_dependency_node": node_label,
+                        "spec_ref": spec_ref,
+                        "dependency_runs": dependency_runs,
+                        "target_spec_ref": target_spec_ref,
+                    },
+                    stdout_format,
+                )
+                return 2
+        # The member's own target gate, the one a `--jobs` child meets in its `_run_main`
+        # (`_resolve_launch_target` for the MEMBER's spec_ref): an `infrastructure` member must
+        # be the target's harness. Without it the same closure was refused under `--jobs 2`
+        # and run under `--jobs 1` (the round-2 Codex pass).
+        if target_profile is not None:
+            try:
+                _resolve_launch_target(repo_root, spec_ref, target_profile.target_id, None)
+            except TargetProfileError as exc:
+                _emit_unlogged_event(
+                    {
+                        "status": "fail",
+                        "reason": exc.reason,
+                        "detail": exc.detail,
                         "failed_dependency_node": node_label,
                         "spec_ref": spec_ref,
                         "dependency_runs": dependency_runs,
@@ -5164,6 +5353,7 @@ def _run_with_dependency_closure(
                 closure_id=target_orchestration_id,
                 closure_target_spec_ref=target_spec_ref,
                 closure_until_phase=until_phase,
+                target_profile=target_profile,
             )
             rc = _run_node(
                 repo_root=repo_root,
@@ -5189,6 +5379,7 @@ def _run_with_dependency_closure(
                 stdout_format=stdout_format,
                 spec_claim_held=not dep_resume,
                 orch_claim_held=dep_resume,
+                target_profile=target_profile,
             )
         dependency_runs.append(
             {
@@ -5291,6 +5482,7 @@ def _run_with_dependency_closure(
                 repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
                 effective_sha256=llm_config.sha256,
                 effective_overrides={}),
+            _target_resume_rejection(repo_root, target_orchestration_id, target_profile),
         ):
             if rejection is None:
                 continue
@@ -5341,6 +5533,7 @@ def _run_with_dependency_closure(
             closure_until_phase=until_phase,
             rederive=rederive,
             jobs=jobs,
+            target_profile=target_profile,
         )
         return _run_node(
             repo_root=repo_root,
@@ -5365,6 +5558,7 @@ def _run_with_dependency_closure(
             spec_claim_held=not target_resume,
             orch_claim_held=target_resume,
             rederive=rederive,
+            target_profile=target_profile,
         )
 
 

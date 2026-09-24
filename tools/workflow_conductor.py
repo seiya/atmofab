@@ -47,6 +47,7 @@ from typing import Any, ClassVar, NamedTuple
 import yaml
 
 from tools.backends import registry as backend_registry
+from tools.target_profile import TargetProfile, ir_profile_mismatches, resolve_run_target
 from tools.llm_config import (
     CAP_WARM_RESUME,
     LlmConfig,
@@ -3522,6 +3523,12 @@ class Conductor:
     #: binds its output hash — so a later phase re-derives exactly when the output CHANGED,
     #: and skips when the forced phase reproduced it byte for byte.
     rederive: frozenset[str] = frozenset()
+    #: The target profile the run builds for (issue #284), resolved by the driver at launch.
+    #: R4-a PR-1 reads it for ONE thing, the bridge gate in `conduct` (`_target_ir_mismatch`);
+    #: every other target read still goes to the IR's `impl_defaults` until PR-2. None — a
+    #: conductor built without a driver, as the unit tests build it — skips the bridge;
+    #: `run_conductor`, the only production constructor, never passes None.
+    target_profile: TargetProfile | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
     #: attempt is stamped with.
@@ -13018,6 +13025,32 @@ clean:
             return "fail_closed"
         return None
 
+    def _target_ir_mismatch(self, refs: NodeRefs, phase: str) -> str | None:
+        """The R4-a PR-1 bridge gate (issue #284; PR-3 deletes it with `impl_defaults`): before
+        any phase after Compile, the IR the node's later phases read must declare the target the
+        run was launched for. Until PR-2 the host still reads the target from the IR, so a
+        disagreement would build for one target while recording another.
+
+        A transport `fail_closed`, not a leaf repair: the compile producer is not shown the
+        profile in PR-1, so it cannot have satisfied it — the fix is a `--rederive compile` or a
+        run for the target the IR was built for. Returns the reason detail, or None."""
+        if phase == "compile" or self.target_profile is None:
+            return None
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml")
+        if not isinstance(ir, dict):
+            # Named apart from a disagreement: an IR that cannot be read declares nothing, and
+            # reporting its four absent fields as a target mismatch would send the operator to
+            # re-run for another target.
+            return f"target_profile_ir_unreadable: {refs.ir_ref}/spec.ir.yaml"
+        mismatches = ir_profile_mismatches(ir, self.target_profile)
+        if not mismatches:
+            return None
+        # The fields FIRST: the detail is capped at `_PHASE_REASON_DETAIL_MAX_CHARS`, and with
+        # the IR ref leading, a round-1 review found the field names cut off on 104 of the 130
+        # IR refs then under `workspace/ir/`.
+        return (f"target_profile_ir_mismatch: impl_defaults {'; '.join(mismatches)} "
+                f"[target {self.target_profile.target_id}; {refs.ir_ref}]")
+
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
         reopen an upstream (already-passed) phase, fail_closed, or escalate. The
@@ -13032,6 +13065,11 @@ clean:
         idx = 0
         while idx < len(phases):
             phase = phases[idx]
+            mismatch = self._target_ir_mismatch(refs, phase)
+            if mismatch:
+                self.set_status("fail_closed", reason_code="conductor_phase_fail_closed",
+                                reason_detail=mismatch[:_PHASE_REASON_DETAIL_MAX_CHARS])
+                return "fail_closed"
             self.emit("phase_start", node_key=refs.node_key, phase=phase,
                       attempt=attempts[phase] + 1)
             phase_started = time.monotonic()
@@ -13667,7 +13705,8 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   llm_config: LlmConfig, workflow_mode: str = "dev",
                   env: dict[str, str] | None = None, resume: bool = False,
                   wait_usage_reset: bool = False,
-                  rederive: frozenset[str] | set[str] | None = None) -> str:
+                  rederive: frozenset[str] | set[str] | None = None,
+                  target_profile: TargetProfile | None = None) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
     pipeline bound to it on a cold run; on resume, seeding the stage ids from
@@ -13676,18 +13715,22 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
 
     `llm_config` is the leaf-model authority, and is required: the caller has already loaded
     and pinned the operator's configuration, so there is nothing here to reconstruct one
-    from."""
+    from. `target_profile` is the target the driver resolved at launch; None resolves the
+    default target (`select_target_id`), which refuses when several profiles are declared."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
     # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
     llm_config.validate_runnable()
     node_key, spec_path = resolve_node(root, spec_ref)
+    if target_profile is None:
+        target_profile = resolve_run_target(root, None)
     conductor = Conductor(
         repo_root=root, orchestration_id=orchestration_id,
         orchestration_agent_run_id=orchestration_agent_run_id,
         env=env if env is not None else {}, workflow_mode=workflow_mode,
         wait_usage_reset=wait_usage_reset, llm_config=llm_config,
         rederive=frozenset(rederive or ()),
+        target_profile=target_profile,
     )
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))

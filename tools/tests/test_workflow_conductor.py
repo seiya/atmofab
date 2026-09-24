@@ -2060,7 +2060,8 @@ class ConductHappyPathTest(unittest.TestCase):
                           return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
                                                    ir_id="x_1", pipeline_id="x_1")), \
              patch.object(wc.Conductor, "__init__", _capture_init), \
-             patch.object(wc.Conductor, "conduct", return_value="pass"):
+             patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch.object(wc, "resolve_run_target", return_value=None):
             wc.run_conductor(**common, rederive=["build", "compile"])
             wc.run_conductor(**common)
         self.assertEqual(seen, [frozenset({"build", "compile"}), frozenset()])
@@ -2101,6 +2102,7 @@ class ConductHappyPathTest(unittest.TestCase):
                                                    ir_id="x_1", pipeline_id="x_1")), \
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch.object(wc, "resolve_run_target", return_value=None), \
              patch("tools.orchestration_runtime.resolve_claude_model_alias",
                    return_value=SENTINEL):
             status = wc.run_conductor(
@@ -20763,6 +20765,127 @@ class WarmResumeUsageTest(unittest.TestCase):
         row = self._row(self._turn2(), resumed=False)
         self.assertEqual(row["output_tokens"], 74526)
         self.assertNotIn("provider_details", row)
+
+#: An `impl_defaults` the checked-in `fortran_cpu` profile accepts (a serial backend included,
+#: as the certified harness IR declares).
+_BRIDGE_MATCHING_IMPL = {"target": {"class": "cpu", "backend": "serial"},
+                          "toolchain": {"language": "fortran", "standard": "f2008",
+                                        "build_system": "make"}}
+
+
+class TargetProfileBridgeTests(unittest.TestCase):
+    """The R4-a PR-1 bridge in `conduct` (issue #284; PR-3 deletes it with `impl_defaults`):
+    before any phase after Compile, the node's IR must declare the run's target. Driven through
+    `conduct` with `run_phase` replaced, so the observation is which phases RAN."""
+
+    def _run(self, impl_defaults: object, *, target: bool = True,
+             ir_text: str | None = None) -> tuple[str, list, list]:
+        from tools import target_profile as tp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+                               spec_path="spec/component/spec_x",
+                               ir_id="x_1_001", pipeline_id="x_1_001")
+            ir_dir = repo / refs.ir_ref
+            ir_dir.mkdir(parents=True)
+            import yaml
+
+            (ir_dir / "spec.ir.yaml").write_text(
+                ir_text if ir_text is not None
+                else yaml.safe_dump({"impl_defaults": impl_defaults}), encoding="utf-8")
+            ran: list[str] = []
+            statuses: list[tuple] = []
+
+            class _C(wc.Conductor):
+                def run_phase(self, refs, phase, repair=None):  # type: ignore[override]
+                    ran.append(phase)
+                    return wc.PhaseOutcome(phase=phase, status="pass")
+
+                def set_status(self, status, reason_code=None, reason_detail=None):  # type: ignore[override]
+                    statuses.append((status, reason_code, reason_detail))
+                    return {}
+
+                def emit(self, event, **fields):  # type: ignore[override]
+                    pass
+
+            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+                   llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"), env={},
+                   target_profile=(tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+                                   if target else None))
+            c._seed_repairs_from_revocations = lambda refs, phases: {}  # type: ignore[assignment]
+            return c.conduct(refs, "validate"), ran, statuses
+
+    def test_a_matching_ir_runs_every_phase(self) -> None:
+        status, ran, statuses = self._run(_BRIDGE_MATCHING_IMPL)
+        self.assertEqual(ran, ["compile", "generate", "build", "validate"])
+        self.assertEqual((status, [st[0] for st in statuses]), ("pass", ["pass"]))
+
+    def test_a_mismatching_ir_stops_before_generate_and_names_the_field(self) -> None:
+        ir = copy.deepcopy(_BRIDGE_MATCHING_IMPL)
+        ir["toolchain"]["standard"] = "f2018"
+        status, ran, statuses = self._run(ir)
+        self.assertEqual(status, "fail_closed")
+        self.assertEqual(ran, ["compile"])
+        self.assertEqual(len(statuses), 1)
+        state, code, detail = statuses[0]
+        self.assertEqual((state, code), ("fail_closed", "conductor_phase_fail_closed"))
+        self.assertTrue(
+            detail.startswith("target_profile_ir_mismatch: impl_defaults "
+                              "toolchain.standard='f2018' expected 'f2008'"), detail)
+
+    def test_every_mismatching_field_survives_the_detail_cap(self) -> None:
+        """All four fields wrong: the capped detail still names each of them."""
+        status, ran, statuses = self._run({
+            "target": {"class": "gpu"},
+            "toolchain": {"language": "c", "standard": "c11", "build_system": "cmake"}})
+        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
+        detail = statuses[0][2]
+        self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        for field in ("target.class", "toolchain.language", "toolchain.standard",
+                      "toolchain.build_system"):
+            self.assertIn(f"{field}=", detail)
+
+    def test_an_unreadable_ir_is_named_as_unreadable_not_as_another_target(self) -> None:
+        status, ran, statuses = self._run(None, ir_text="key: [unclosed\n")
+        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
+        self.assertTrue(statuses[0][2].startswith("target_profile_ir_unreadable:"), statuses)
+
+    def test_no_target_profile_is_no_bridge(self) -> None:
+        """The unit-test constructor; `run_conductor` never passes None."""
+        status, ran, _statuses = self._run({}, target=False)
+        self.assertEqual((status, ran), ("pass", ["compile", "generate", "build", "validate"]))
+
+    def test_run_conductor_hands_the_driver_target_to_the_conductor(self) -> None:
+        from tools import target_profile as tp
+
+        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        seen: list = []
+
+        def _conduct(self, refs, until_phase):
+            seen.append(self.target_profile)
+            return "pass"
+
+        with mock.patch.object(wc, "resolve_node", return_value=("component/x@0.1.0", "spec/x")), \
+                mock.patch.object(wc, "prepare_node", return_value=None), \
+                mock.patch.object(wc.Conductor, "conduct", _conduct), \
+                mock.patch.object(wc.Conductor, "__post_init__", lambda self: None):
+            wc.run_conductor(repo_root=REPO_ROOT, orchestration_id="o",
+                             orchestration_agent_run_id="A", spec_ref="spec/x",
+                             source_dependency_ref="spec/x/deps.yaml", until_phase="compile",
+                             llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+                             target_profile=profile)
+            self.assertIs(seen[-1], profile)
+            # None resolves the default target rather than running without one.
+            with mock.patch.object(wc, "resolve_run_target", return_value=profile) as resolve:
+                wc.run_conductor(repo_root=REPO_ROOT, orchestration_id="o",
+                                 orchestration_agent_run_id="A", spec_ref="spec/x",
+                                 source_dependency_ref="spec/x/deps.yaml",
+                                 until_phase="compile",
+                                 llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"))
+            resolve.assert_called_once_with(REPO_ROOT, None)
+            self.assertIs(seen[-1], profile)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
