@@ -9147,6 +9147,47 @@ class LlmConfigStartupTests(unittest.TestCase):
                 "spec/problem/a": ("t_b", "t_b"),
             })
 
+    def test_a_sequential_closure_gates_each_member_like_a_jobs_child(self) -> None:
+        """`--with-deps` at `--jobs 1` with a target whose harness is NOT the closure's
+        infrastructure member: refused at that member (`target_harness_mismatch`) before it
+        runs — the refusal a `--jobs 2` child meets in its own `_run_main` (round-2 Codex)."""
+        import yaml
+
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            catalog_path = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+            catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+            catalog["specs"].append({
+                "spec_kind": "infrastructure", "spec_id": "h2", "spec_version": "0.1.0",
+                "status": "controlled_draft", "deps_path": "spec/infrastructure/h2/deps.yaml"})
+            catalog_path.write_text(yaml.safe_dump(catalog), encoding="utf-8")
+            _seed_target_profile_into(repo_root, target_id="t_h2", harness_id="h2",
+                                      constraint=">=0.1.0 <1.0.0")
+            _load_spec_catalog.cache_clear()
+            self._runtime_calls = []
+            ran: list[str] = []
+            buf = io.StringIO()
+            with mock.patch.object(run_workflow, "_runtime_command", self._fake_runtime), \
+                    mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                      lambda root, node, stages: {
+                                          "ready": False, "version": node["spec_versions"][0],
+                                          "failed_stage": "ir_ref", "detail": "fake"}), \
+                    mock.patch.object(run_workflow, "_run_node",
+                                      lambda **kw: ran.append(kw["spec_ref"]) or 0), \
+                    redirect_stdout(buf), _real_target_resolution():
+                rc = run_workflow.main([
+                    "spec/problem/a", "compile", "--with-deps", "--target", "t_h2",
+                    "--repo-root", str(repo_root), "--orchestration-id", "orch_seq_gate",
+                    "--no-run-conductor", "--stdout-format", "jsonl"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(ran, [], "the harness member must not run for another target")
+            last = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(last["reason"], "target_harness_mismatch")
+            self.assertEqual(last["failed_dependency_node"], "infrastructure/c@0.1.0")
+
     def test_every_internal_launch_call_passes_the_target(self) -> None:
         """The wiring, read off the source: every call inside `tools/run_workflow.py` to a
         function that takes `target_profile` passes the caller's own `target_profile` — by

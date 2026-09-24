@@ -5232,6 +5232,27 @@ def _run_with_dependency_closure(
                     stdout_format,
                 )
                 return 2
+        # The member's own target gate, the one a `--jobs` child meets in its `_run_main`
+        # (`_resolve_launch_target` for the MEMBER's spec_ref): an `infrastructure` member must
+        # be the target's harness. Without it the same closure was refused under `--jobs 2`
+        # and run under `--jobs 1` (the round-2 Codex pass).
+        if target_profile is not None:
+            try:
+                _resolve_launch_target(repo_root, spec_ref, target_profile.target_id, None)
+            except TargetProfileError as exc:
+                _emit_unlogged_event(
+                    {
+                        "status": "fail",
+                        "reason": exc.reason,
+                        "detail": exc.detail,
+                        "failed_dependency_node": node_label,
+                        "spec_ref": spec_ref,
+                        "dependency_runs": dependency_runs,
+                        "target_spec_ref": target_spec_ref,
+                    },
+                    stdout_format,
+                )
+                return 2
         # Claims are held across this node's guard AND its run. A cold node needs the
         # SPEC claim (the orchestration its guard looks for is not written until `init`
         # inside `_run_node`, so a competing run started in that window would scan
