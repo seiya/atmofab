@@ -19,7 +19,9 @@ What each class pins:
 - `ClosureScheduleTests` — `--with-deps`' closure schedules the target's harness and makes
   every non-`infrastructure` member wait on it.
 - `InitialReadinessTests` — the persisted initial readiness does not record a node with a
-  harness as a trivial leaf.
+  harness as a trivial leaf, and `write_preflight` computes it for the orchestration's target.
+- `DependencyFactsTests` — `_resolve_dependency_facts` (the producer's dependency facts) carries
+  the target's harness beside the IR's direct dependencies.
 """
 
 from __future__ import annotations
@@ -326,6 +328,54 @@ class InitialReadinessTests(unittest.TestCase):
             harness_ref = ort.resolve_spec_ref_for(repo, "infrastructure", _HARNESS_ID)
             self.assertTrue(ort._compute_initial_dependency_readiness(
                 repo, harness_ref, target=FORTRAN_CPU)["direct_dependency_compile_readiness"])
+
+    def test_write_preflight_computes_it_for_the_orchestrations_target(self) -> None:
+        """The persisted record `write_preflight` writes asks the question for the target the
+        orchestration was launched for (`invocation.target`). Without the target a node whose
+        only dependency is the uncertified harness reads as a trivial leaf, ready."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _harness_nk = _repo_with_harness(tmp)
+            ensure_spec_entry(repo, _NK)
+            ort.init_orchestration(
+                repo_root=repo, orchestration_id="o1", spec_ref="spec/component/spec_x",
+                invocation={"until_phase": "validate",
+                            "target": {"target_id": FORTRAN_CPU.target_id}})
+            ort.write_preflight(
+                repo_root=repo, orchestration_id="o1",
+                payload={"status": "pass", "sandbox_runtime": "bwrap",
+                         "sandbox_enforced": True, "can_launch_step_agents": True,
+                         "can_launch_substep_agents": True,
+                         "feature_states": {"multi_agent": True, "hooks": True},
+                         "checks": [{"name": "multi_agent_enabled", "pass": True},
+                                    {"name": "hooks_enabled", "pass": True},
+                                    {"name": "codex_home_writable", "pass": True},
+                                    {"name": "sandbox_bwrap_available", "pass": True},
+                                    {"name": "sandbox_bwrap_userns", "pass": True}]})
+            meta = json.loads((repo / "workspace" / "orchestrations" / "o1"
+                               / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.assertFalse(
+                meta["dependency_readiness"]["direct_dependency_compile_readiness"], meta)
+
+
+class DependencyFactsTests(unittest.TestCase):
+    def _facts(self, repo: Path, dependency: dict) -> list[str]:
+        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
+        (repo / ir_ref).mkdir(parents=True, exist_ok=True)
+        (repo / ir_ref / "spec.ir.yaml").write_text(
+            json.dumps({"dependency": dependency}), encoding="utf-8")
+        return [f["node_key"] for f in ort._resolve_dependency_facts(
+            repo, ir_ref, target=FORTRAN_CPU)]
+
+    def test_the_targets_harness_is_a_fact_of_the_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = _repo_with_harness(tmp)
+            harness_nk = ensure_target_harness_certified(repo, "orch_dep", FORTRAN_CPU)
+            self.assertEqual(
+                self._facts(repo, {"node_key": _NK, "direct_deps": []}), [harness_nk])
+            # An infrastructure node's facts carry no harness of its own kind.
+            self.assertEqual(self._facts(
+                repo, {"node_key": f"infrastructure/other@0.1.0", "direct_deps": []}), [])
+
 
 
 if __name__ == "__main__":
