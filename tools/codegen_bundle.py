@@ -225,8 +225,9 @@ LOWERING_PLAN_OPTIONAL_KEYS: tuple[str, ...] = (
 # backfill: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §State bindings).
 STATE_CAPTURES: tuple[str, ...] = ("harness_registration",)
 
-# The declarative `impl_defaults.toolchain` fields the derived build graph may echo
-# (docs/IMPL_PLAN_SPEC.md). The IR's toolchain object is not closed, so the graph projects
+# The declarative toolchain fields the derived build graph may echo (docs/IMPL_PLAN_SPEC.md) —
+# the host's `_read_toolchain`, read off the target profile since issue #284. The projection
+# predates the profile's closed shape (the IR's toolchain object was not closed), so the graph projects
 # it onto this allowlist rather than echoing it verbatim: the graph's contract is that it
 # carries no command and no flag string, and only a fixed declarative key set keeps that
 # structural. A new declarative field is added here alongside its build-graph consumer.

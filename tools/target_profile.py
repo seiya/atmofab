@@ -37,8 +37,20 @@ TARGETS_DIR = "spec/targets"
 TARGET_PROFILE_SUFFIX = ".yaml"
 
 #: `target_id` grammar; also the file stem. A plain identifier, so a target id can be a path
-#: segment of the store (R4-a PR-2) without escaping it.
+#: segment of the store without escaping it.
 TARGET_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+#: The store-id grammar (`<slug>_<YYYYMMDD>_<seq3>`) every ir / pipeline / stage directory
+#: takes — `orchestration_runtime._SLUG_DATE_SEQ3_PATTERN`, restated because this module must
+#: not import the runtime at load time. A target id matching it is REFUSED: the level under
+#: `workspace/pipelines/<safe>/` holds target ids, and until R4-a PR-2 the same level held
+#: pipeline ids, so the two namespaces are kept disjoint by construction rather than by
+#: whichever reader happens to look first.
+STORE_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}")
+
+#: Where the per-target pipeline trees live: `workspace/pipelines/<node_key_safe>/<target_id>/
+#: <pipeline_id>/`. Compile output (`workspace/ir/<node_key_safe>/<ir_id>/`) is target-free.
+PIPELINES_ROOT = "workspace/pipelines"
+
 #: An axis value: an opaque token, lowercase so no reader has to normalize case.
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*")
 
@@ -110,6 +122,58 @@ class TargetProfile:
         }
 
 
+def is_target_id(token: Any) -> bool:
+    """Whether `token` is a well-formed target id: the id grammar, and not a store id."""
+    return (isinstance(token, str) and bool(TARGET_ID_PATTERN.fullmatch(token))
+            and not STORE_ID_PATTERN.fullmatch(token))
+
+
+def pipelines_dir(node_key_safe: str, target_id: str) -> str:
+    """`workspace/pipelines/<node_key_safe>/<target_id>` — the directory every pipeline of one
+    node built for one target lives in. The ONE spelling of the store coordinate."""
+    return f"{PIPELINES_ROOT}/{node_key_safe}/{target_id}"
+
+
+def pipeline_ref_for(node_key_safe: str, target_id: str, pipeline_id: str) -> str:
+    """The repo-relative ref of one pipeline: `<pipelines_dir>/<pipeline_id>`."""
+    return f"{pipelines_dir(node_key_safe, target_id)}/{pipeline_id}"
+
+
+def pipeline_target_id(ref: Any) -> str | None:
+    """The target id a pipeline path (or any path beneath one) was built for, read off the
+    store coordinate `workspace/pipelines/<safe>/<target_id>/<pipeline_id>/…`; None when `ref`
+    is not under a per-target pipeline tree — a pre-R4-a pipeline directory
+    (`workspace/pipelines/<safe>/<pipeline_id>/`) included, because its third segment is a
+    store id and never a target id.
+
+    This is how a reader that holds only a path learns the target: the host minted the path, so
+    the coordinate is the host's own statement of what the artifacts under it were built for,
+    never a field a leaf authored."""
+    if not isinstance(ref, str) or not ref.strip():
+        return None
+    parts = [p for p in ref.strip().replace("\\", "/").split("/") if p not in ("", ".")]
+    head = PIPELINES_ROOT.split("/")
+    for i in range(len(parts) - len(head) - 2):
+        if parts[i:i + len(head)] == head:
+            token = parts[i + len(head) + 1]
+            return token if is_target_id(token) else None
+    return None
+
+
+def load_pipeline_target(repo_root: Path, ref: Any) -> TargetProfile:
+    """The target profile a pipeline path was built for (`pipeline_target_id`), loaded.
+    Refuses (`target_unresolved`) a path that carries no target coordinate, and
+    (`target_profile_invalid`) a coordinate whose profile is gone or malformed — a reader that
+    cannot tell what an artifact was built for must not guess."""
+    target_id = pipeline_target_id(ref)
+    if target_id is None:
+        raise TargetProfileError(
+            "target_unresolved",
+            f"{ref!r} is not under a per-target pipeline tree "
+            f"({PIPELINES_ROOT}/<node_key_safe>/<target_id>/<pipeline_id>)")
+    return load_target_profile(repo_root, target_id)
+
+
 def _targets_dir(repo_root: Path) -> Path:
     return Path(repo_root) / TARGETS_DIR
 
@@ -132,11 +196,12 @@ def list_target_ids(repo_root: Path) -> list[str]:
         if not path.name.endswith(TARGET_PROFILE_SUFFIX):
             continue
         stem = path.name[: -len(TARGET_PROFILE_SUFFIX)]
-        if not TARGET_ID_PATTERN.fullmatch(stem):
+        if not is_target_id(stem):
             raise TargetProfileError(
                 "target_profile_invalid",
                 f"{TARGETS_DIR}/{path.name}: the file stem {stem!r} is not a target id "
-                f"(pattern {TARGET_ID_PATTERN.pattern})")
+                f"(pattern {TARGET_ID_PATTERN.pattern}, and not a store id "
+                f"{STORE_ID_PATTERN.pattern})")
         ids.append(stem)
     return ids
 
@@ -192,9 +257,9 @@ def _shape_violations(doc: Any) -> list[str]:
             isinstance(version, bool) or version != TARGET_PROFILE_VERSION):
         out.append(f"target_profile_version: must be {TARGET_PROFILE_VERSION}, got {version!r}")
     target_id = doc.get("target_id")
-    if "target_id" in doc and not (
-            isinstance(target_id, str) and TARGET_ID_PATTERN.fullmatch(target_id)):
-        out.append(f"target_id: {target_id!r} does not match {TARGET_ID_PATTERN.pattern}")
+    if "target_id" in doc and not is_target_id(target_id):
+        out.append(f"target_id: {target_id!r} does not match {TARGET_ID_PATTERN.pattern} "
+                   f"(or is a store id)")
 
     def token(obj_key: str, key: str) -> None:
         obj = doc.get(obj_key)
@@ -235,10 +300,11 @@ def load_target_profile(repo_root: Path, target_id: str) -> TargetProfile:
     a missing or unparseable file, any shape violation, and a `target_id` that is not the stem."""
     import yaml
 
-    if not TARGET_ID_PATTERN.fullmatch(target_id or ""):
+    if not is_target_id(target_id):
         raise TargetProfileError(
             "target_profile_invalid",
-            f"{target_id!r} is not a target id (pattern {TARGET_ID_PATTERN.pattern})")
+            f"{target_id!r} is not a target id (pattern {TARGET_ID_PATTERN.pattern}, and "
+            f"not a store id {STORE_ID_PATTERN.pattern})")
     rel = f"{TARGETS_DIR}/{target_id}{TARGET_PROFILE_SUFFIX}"
     try:
         text = (Path(repo_root) / rel).read_text(encoding="utf-8")

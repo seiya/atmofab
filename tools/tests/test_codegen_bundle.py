@@ -23,6 +23,7 @@ from unittest import mock
 from tools import codegen_bundle as cb
 from tools import workflow_conductor as wc
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
@@ -480,7 +481,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         which is what this test pins. Canonical: `CODEGEN_BUNDLE_CONTRACT.md` §Parity."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="problem/adv1d@0.1.0", spec_path="spec/problem/adv1d",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="problem/adv1d@0.1.0", spec_path="spec/problem/adv1d",
                                ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -504,9 +505,11 @@ class DeterministicBuildGraphTest(unittest.TestCase):
                 "generated_by": "conductor",
             }), encoding="utf-8")
 
+            from tools.tests.target_fixtures import FORTRAN_CPU
             conductor = wc.Conductor(repo_root=repo, orchestration_id="o",
                                      orchestration_agent_run_id="ORCH",
-                                     llm_config=_cfg("claude"), env={})
+                                     llm_config=_cfg("claude"), env={},
+                                     target_profile=FORTRAN_CPU)
             self.assertTrue(conductor._conductor_authors_runner(refs))  # the M3c shape
             # derive_build_graph takes node_keys (deepest-first); the conductor maps the same
             # ordered node list to the spec_id object basenames the Makefile uses.

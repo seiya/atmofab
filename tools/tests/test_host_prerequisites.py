@@ -27,14 +27,20 @@ from tools.backends import registry as backend_registry  # noqa: E402
 
 
 class LaunchSelectionTests(unittest.TestCase):
-    def test_the_selection_is_what_the_conductors_own_readers_answer(self) -> None:
-        """Not a constant restated here. `resolve_launch_axis_selection` asks the readers the
-        conductor uses on a real node, with an IR that pins nothing — which is the state a cold
-        start is actually in, since `Compile` is the phase that authors that file."""
+    def test_the_selection_is_the_default_target_profiles(self) -> None:
+        """Not a constant restated here. `resolve_launch_axis_selection` reads the target
+        profile a run started now builds for (issue #284) — the default one when none is
+        named — which is what the conductor reads the same axes from."""
+        from tools.tests.target_fixtures import FORTRAN_CPU, second_target
+
         selection = hp.resolve_launch_axis_selection()
-        self.assertEqual(selection["language"], conductor._ir_language({}))
-        self.assertEqual(selection["build_system"], conductor._ir_build_system({}))
+        self.assertEqual(selection["language"], FORTRAN_CPU.toolchain["language"])
+        self.assertEqual(selection["build_system"], FORTRAN_CPU.toolchain["build_system"])
         self.assertEqual(selection["compiler"], conductor.DEFAULT_COMPILER)
+        # And an explicit target is read, not the default: its own values come back.
+        other = second_target()
+        other.doc["toolchain"] = {**other.doc["toolchain"], "build_system": "no_such_bs"}
+        self.assertEqual(hp.resolve_launch_axis_selection(other)["build_system"], "no_such_bs")
 
     def test_the_linter_comes_from_the_language_to_preset_mapping_the_gate_uses(self) -> None:
         """The same private name `_gate_lint_check` reads. A second copy would send the probe

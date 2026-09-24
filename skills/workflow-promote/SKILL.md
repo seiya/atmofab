@@ -16,12 +16,12 @@ Fix the promotion responsibility of the Promote stage, and register the official
 - Require `verdict.json`'s `overall=pass` as an input condition.
 - Require `aggregate_verdict.json`'s `overall=pass` as an input condition.
 - Require that the adopted `source_id`, `binary_id`, and `run_id` are traceable in `lineage.json` and `trial_meta.json`.
-- At registration, record `release_id`, `target_architecture`, `toolchain_language`, `target_backend`, `source_pipeline_id`, `source_source_id`, `source_binary_id`, `source_run_id`, `artifact_root`, `promoted_at`, and `status` as required.
+- At registration, record `release_id`, `target_id`, `source_pipeline_id`, `source_source_id`, `source_binary_id`, `source_run_id`, `artifact_root`, `promoted_at`, and `status` as required.
 - Forbid overwriting an existing `release_id`.
 
 ## Operations Rules
-1. Fix the promotion destination to `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_architecture>/<toolchain_language>/<release_id>/`.
-2. Update the old `release` of the same `target_architecture + toolchain_language` to `deprecated`.
+1. Fix the promotion destination to `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/` (one `node` built for one `target profile`, issue #284).
+2. Update the old `release` of the same `target_id` to `deprecated`.
 3. On a `problem` promotion, confirm that the aggregated state of the transitive dependency `node` consists only of `pass` or `xfail`.
 4. After promotion, sync-update `spec_catalog.yaml`, leaving no discrepancy between the search canonical source and the registration canonical source.
 

@@ -92,15 +92,15 @@ The conductor passes `orchestration_id` and `agent_run_id` so a line of `command
 Trial artifacts are confined to `workspace/`, and a write outside it fails the phase. `docs/GLOSSARY.md` defines the identifiers below (`node_key_safe`, `ir_id`, `pipeline_id`, `source_id`, `binary_id`, `run_id`).
 
 ```text
-workspace/ir/<node_key_safe>/<ir_id>/                   spec.ir.yaml, ir_meta.json, dependency_graph.json
-workspace/pipelines/<node_key_safe>/<pipeline_id>/      lineage.json
-  source/<source_id>/                                   Generate output
-  binary/<binary_id>/                                   Build output
-  runs/<run_id>/<node_key_safe>/                        Validate output and raw evidence
-workspace/orchestrations/<orchestration_id>/            orchestration_meta.json, agent_graph.json, agent_runs.jsonl
+workspace/ir/<node_key_safe>/<ir_id>/                        spec.ir.yaml, ir_meta.json, dependency_graph.json
+workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/ lineage.json
+  source/<source_id>/                                        Generate output
+  binary/<binary_id>/                                        Build output
+  runs/<run_id>/<node_key_safe>/                             Validate output and raw evidence
+workspace/orchestrations/<orchestration_id>/                 orchestration_meta.json, agent_graph.json, agent_runs.jsonl
 ```
 
-`Validate` emits `diagnostics.json`, `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_architecture>/<toolchain_language>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
+`Validate` emits `diagnostics.json`, `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
 
 The driver prints the run's event stream on stdout (`--stdout-format human`, or `jsonl` for a caller that parses it) and mirrors it to `workspace/orchestrations/<orchestration_id>/run_logs/`. A run's terminal state is `orchestration_meta.json#status`; the node's physics judgment, including its dependencies, is `aggregate_verdict.json`.
 

@@ -46,6 +46,9 @@ from tools.tests.private_root_fixture import (
 )
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 
 # One repo root per test PROCESS, for the conductors below that need a path and build no
 # directory of their own. It was the literal `/tmp/repo`, which concurrent processes shared:
@@ -80,24 +83,20 @@ def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep). Committed
 # under test data because workspace/ is gitignored — a clean checkout/CI has no live
-# orchestration. Two provenances. The two DETERMINISTIC rows were captured from
-# orch_20260619T113225Z_f48fe14b (an advdiff component node), a run no longer on disk, and
-# have been maintained BY HAND since (`git log -- <file>`: four and five edits after capture,
-# the last on 2026-09-12 removing the `skill_must_read_refs` line); they carry no
-# `_capture_source`.
-# The five PURE rows are REDACTED captures from orch_20260916T081200Z_5139f6c9
-# (`shallow_water2d --with-deps`, the Z1/Z3 adoption run, repo `1b3d1edd`), one cold launch per
-# pair — for `compile.verify` and `generate.generate` the run has two cold launches and the
-# later one (the certified lineage) is the capture; `_capture_source.path` names the arid —
-# produced by `data/conductor_launch_requests/redact_launch_request.py`: `pure_context` keeps
-# its KEY SET with each value replaced by a size + sha256 placeholder, `launch_prompt_full`
-# likewise.
+# orchestration. All seven rows were re-captured on 2026-09-24 (issue #284, R4-a PR-2) from ONE
+# run, orch_20260924T053820Z_a99c8eb1 (`dynamics_advdiff_flux_1d_upwind_center2 validate
+# --target fortran_cpu --with-deps`), when the pipeline store gained its `<target_id>`
+# segment and every earlier capture's `pipeline_ref` stopped being a launchable coordinate.
+# Every row — the two DETERMINISTIC ones included, which until then were hand-maintained
+# copies of a June run no longer on disk — is `redact_launch_request.py` output and carries a
+# `_capture_source` naming its arid: `pure_context` keeps its KEY SET with each value replaced
+# by a size + sha256 placeholder, `launch_prompt_full` likewise. The previous corpus
+# (`shallow_water2d --with-deps`, orch_20260916T081200Z_5139f6c9) is in git history.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
 # spec dir per captured node (the builder reads it only for compile's `dependency_ref`).
 _SPEC_PATH_BY_NODE_KEY = {
-    "component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0":
+    "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0":
         "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2",
-    "problem/shallow_water2d@0.4.1": "spec/problem/dynamics/shallow_water/shallow_water2d",
 }
 
 # Fields record-launch adds/derives; not produced by build_launch_request.
@@ -204,7 +203,7 @@ def _refs_from_request(req: dict) -> wc.NodeRefs:
     must_read = req.get("skill_must_read_refs", "")
     if req["node_key"] not in _SPEC_PATH_BY_NODE_KEY:
         raise KeyError(f"{req['node_key']}: add its spec dir to _SPEC_PATH_BY_NODE_KEY")
-    return wc.NodeRefs(
+    return wc.NodeRefs(target_id=_TARGET_ID,
         node_key=req["node_key"],
         spec_path=_SPEC_PATH_BY_NODE_KEY[req["node_key"]],
         ir_id=ir_id,
@@ -298,18 +297,17 @@ class BuildLaunchRequestTest(unittest.TestCase):
     `prompt_contract_version` is the run's own and is compared by form (`_HISTORICAL_KEYS`).
     The `pure_context` key set is pinned by the shape test against the contract table; its
     content is rendered by the runtime from the documents the run names, and is that run's,
-    not this row's, evidence. **A pure row is never edited by hand**: each carries `_capture_source` (path, byte
-    count, sha256 of the recorded request) so anyone holding the workspace can re-run the script
-    and `cmp`, and the shape test holds every pure row to that stamp. The two deterministic rows
-    are the exception, by history rather than by rule: their run is not on disk, they predate
-    the script, and they have been hand-maintained through five builder changes (the
-    `_FIXTURE_DIR` comment). A builder change that reddens one of them is repaired by hand as
-    before; one that reddens a pure row is repaired by a re-capture.
+    not this row's, evidence. **A row is never edited by hand**: each carries `_capture_source`
+    (path, byte count, sha256 of the recorded request) so anyone holding the workspace can re-run
+    the script and `cmp`, and the shape test holds every pure row to that stamp. Since the
+    2026-09-24 re-capture (issue #284, the `_FIXTURE_DIR` comment) that includes the two
+    deterministic rows, which until then were hand-maintained copies of a run no longer on
+    disk. A builder change that reddens a row is repaired by a re-capture.
 
-    What the corpus does NOT hold: a repair-turn capture (the run's `reuse` turns carry
+    What the corpus does NOT hold: a repair-turn capture (a `reuse` turn carries
     `repair_findings` and `warm_resume` and no `pure_context`), an HTTP-provider or codex
     capture, a row with an `exemplar`, a `pure_shape` other than the default (this node has
-    none), and a `component` / `infrastructure` node's pure pair. The COMPARISON accepts each of
+    none), and a `problem` / `infrastructure` node's pure pair. The COMPARISON accepts each of
     those shapes (`_assert_builder_reproduces` was driven on recorded requests of every one at
     this branch's review; the pull request records the probe). The CORPUS is one row per
     (step, substep) — `_load_real_requests` refuses a second file for a pair, `expected_keys`
@@ -439,7 +437,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
 
     def test_omits_launch_prompt_full(self) -> None:
         # record-launch must render the prompt; the builder must not supply it.
-        refs = wc.NodeRefs(node_key="component/x@0.1.0", spec_path="spec/component/x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0", spec_path="spec/component/x",
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001")
         req = wc.build_launch_request(
             refs, step="compile", substep="generate", orchestration_id="orch_x",
@@ -449,7 +447,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertNotIn("launch_prompt_full", req)
 
     def _generate_refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(node_key="component/x@0.1.0", spec_path="spec/component/x",
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0", spec_path="spec/component/x",
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
                            source_id="src_20260101_002")
 
@@ -745,7 +743,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
     def test_read_repair_findings_reads_gate_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             meta_dir = repo / refs.source_dir()
@@ -779,7 +777,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 c._read_repair_findings(refs, "verify_minor", "compile"),
                 "io_contract recompute-insufficient")
             # Missing meta file -> None (falls back to full prompt).
-            refs2 = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs2 = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                 spec_path="spec/component/spec_x",
                                 ir_id="x_1", pipeline_id="x_1", source_id="src_missing")
             self.assertIsNone(c._read_repair_findings(refs2, "gate_post_generate_violation"))
@@ -791,7 +789,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
         # pick it up, since their repairs are cold / not a Generate repair at all.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1", pipeline_id="x_1", source_id="src_1",
                                run_id="run_1", binary_id="bin_1", source_binary_id="bin_1")
@@ -823,7 +821,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
 
 class NodeRefsTest(unittest.TestCase):
     def test_safe_and_spec_id(self) -> None:
-        refs = wc.NodeRefs(node_key="component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",
                            spec_path="spec/...", ir_id="a_1_1", pipeline_id="a_1_1")
         self.assertEqual(refs.safe, "component__dynamics_advdiff_flux_1d_upwind_center2__0.1.0")
         self.assertEqual(refs.spec_id, "dynamics_advdiff_flux_1d_upwind_center2")
@@ -1051,7 +1049,7 @@ def _bind_phase_closure(c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "bu
     phase-start wiring itself (one resolver for the key and the bindings) is pinned in
     `PhaseDerivationWiringTest`; rows that use this drive the staging half directly."""
     from tools.orchestration_runtime import DerivationResolver
-    resolver = resolver or DerivationResolver(c.repo_root)
+    resolver = resolver or DerivationResolver(c.repo_root, target=_TP)
     closure = [
         {"node_key": nk, "source": resolver.select(nk, "generate").output_hash}
         for nk in c._dependency_closure_nodes(refs)]
@@ -1060,9 +1058,30 @@ def _bind_phase_closure(c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "bu
     return c
 
 
+class _TargetedConductor(wc.Conductor):
+    """A real Conductor whose target reads answer the fixture repository's own profile, else
+    the checked-in one, when the test passes none (issue #284, `target_fixtures.fixture_target`).
+    `target_profile` stays as the test set it, so the R4-a bridge gate's `None` arm is kept."""
+
+    @property
+    def target(self):  # type: ignore[override]
+        from tools.tests.target_fixtures import fixture_target
+        return fixture_target(self.repo_root, self.target_profile)
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
-    so the happy-path control flow + bookkeeping wiring can be asserted offline."""
+    so the happy-path control flow + bookkeeping wiring can be asserted offline.
+
+    Its target reads answer the fixture repository's own profile — else the checked-in one —
+    when the test passes none (issue #284, `target_fixtures.fixture_target`), WITHOUT setting
+    `target_profile`, so a fake built bare still skips the R4-a bridge gate, which
+    `TargetProfileBridgeTests` drives with an explicit profile."""
+
+    @property
+    def target(self):  # type: ignore[override]
+        from tools.tests.target_fixtures import fixture_target
+        return fixture_target(self.repo_root, self.target_profile)
 
     def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
         """Keep the evidence payload in memory instead of on disk.
@@ -1454,7 +1473,7 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="s_1", binary_id="b_1",
             run_id="r_1", source_binary_id="b_1")
@@ -1521,7 +1540,7 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         return [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -1724,7 +1743,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -1844,7 +1863,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         # One resolver per phase derivation (issue #250 PR-3): the closure bindings staging
         # reads are resolved through the memo that computed the key.
         self.assertIsInstance(pd.call_args.kwargs["resolver"], DerivationResolver)
-        bare = wc.NodeRefs(node_key=refs.node_key, spec_path=refs.spec_path,
+        bare = wc.NodeRefs(target_id=_TARGET_ID, node_key=refs.node_key, spec_path=refs.spec_path,
                            ir_id=refs.ir_id, pipeline_id=refs.pipeline_id)
         with mock.patch.object(wc, "phase_derivation", return_value={}) as pd:
             wc.Conductor._phase_derivation(c, bare, "compile")
@@ -1886,7 +1905,7 @@ class ConductHappyPathTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -2057,7 +2076,7 @@ class ConductHappyPathTest(unittest.TestCase):
             workflow_mode="dev", env={})
         with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
              patch.object(wc, "prepare_node",
-                          return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
+                          return_value=wc.NodeRefs(target_id=_TARGET_ID, node_key="c/x@0.1.0", spec_path="spec/c/x",
                                                    ir_id="x_1", pipeline_id="x_1")), \
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
@@ -2098,7 +2117,7 @@ class ConductHappyPathTest(unittest.TestCase):
 
         with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
              patch.object(wc, "prepare_node",
-                          return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
+                          return_value=wc.NodeRefs(target_id=_TARGET_ID, node_key="c/x@0.1.0", spec_path="spec/c/x",
                                                    ir_id="x_1", pipeline_id="x_1")), \
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
@@ -2255,7 +2274,7 @@ class ConductRoutingTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001",
@@ -2716,7 +2735,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -2847,7 +2866,7 @@ class TransportFailureTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -3906,7 +3925,7 @@ class TransportFailureTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             rn = repo / refs.run_node_dir()
             rn.mkdir(parents=True, exist_ok=True)
@@ -3929,7 +3948,7 @@ class TransportFailureTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -4035,7 +4054,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             return None  # keep run_id stable so the seeded run-node dir is read back
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -4395,7 +4414,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             for payload in ("[\"not\", \"an\", \"object\"]", '"oops"', "7", "not json at all"):
                 with tempfile.TemporaryDirectory() as td:
                     repo, refs = Path(td), self._refs()
-                    c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                    c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                                      orchestration_agent_run_id="ORCH",
                                      llm_config=_cfg("claude"), env={})
                     node_dir = repo / refs.run_node_dir()
@@ -4408,7 +4427,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # "pass", or the assertions above are green because the method fails on everything.
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH",
                              llm_config=_cfg("claude"), env={})
             node_dir = repo / refs.run_node_dir()
@@ -4447,7 +4466,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                                ("post_judge", "post_judge_meta.json")):
             with tempfile.TemporaryDirectory() as td:
                 repo, refs = Path(td), self._refs()
-                c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                                  orchestration_agent_run_id="ORCH",
                                  llm_config=_cfg("claude"), env={})
                 node_dir = repo / refs.run_node_dir()
@@ -4504,7 +4523,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                                ("post_judge", "post_judge_meta.json")):
             with tempfile.TemporaryDirectory() as td:
                 repo, refs = Path(td), self._refs()
-                c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                                  orchestration_agent_run_id="ORCH",
                                  llm_config=_cfg("claude"), env={})
                 node_dir = repo / refs.run_node_dir()
@@ -4550,7 +4569,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH",
                              llm_config=_cfg("claude"), env={})
             instant = c._launch_instant("arid-1")
@@ -4599,7 +4618,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH",
                              llm_config=_cfg("claude"), env={})
             events: list[dict] = []
@@ -4618,7 +4637,7 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
         # the deadline and not about a method that always reports a timeout.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                              orchestration_agent_run_id="ORCH",
                              llm_config=_cfg("claude"), env={})
             events = []
@@ -4651,7 +4670,7 @@ class LeafChildEnvTest(unittest.TestCase):
     truncates a hard leaf mid-think — a fully billed turn that emits nothing at all."""
 
     def _conductor(self, backend: str) -> wc.Conductor:
-        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_child_env_sets_leaf_max_output_tokens_for_claude(self) -> None:
@@ -4721,7 +4740,7 @@ class LeafChildEnvTest(unittest.TestCase):
     }
 
     def _poisoned(self, backend: str) -> wc.Conductor:
-        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend),
                             env=dict(self._POISONED_HOST))
 
@@ -4799,7 +4818,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "        base_url: http://localhost:8000/v1\n"
             "        api_key_env: CODEX_HOME\n"
             "        model: local-coder\n", encoding="utf-8")
-        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH",
                          llm_config=lc.load_llm_config(path),
                          env={"CODEX_HOME": "/host/.codex", "PATH": "/b"})
@@ -4810,7 +4829,7 @@ class LeafChildEnvTest(unittest.TestCase):
         """`ATMOFAB_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
-        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"ATMOFAB_HOME": "/host/.codex", "ATMOFAB_KEPT": "yes",
                               "PATH": "/host/bin"})
@@ -4822,7 +4841,7 @@ class LeafChildEnvTest(unittest.TestCase):
         """The conflict check reads two names the filter now drops, so it had to move to
         the HOST environment. If it had been left reading `_child_env`'s own dict it
         would have gone quietly dead — two incompatible operator settings, no complaint."""
-        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"CODEX_HOME": "/a/one", "ATMOFAB_HOME": "/b/two",
                               "PATH": "/host/bin"})
@@ -4834,7 +4853,7 @@ class LeafChildEnvTest(unittest.TestCase):
         host-side reader consumes that, and the home the leaf actually reads is the one
         `record_launch` prepared and the profile `--setenv`s — so the promotion could
         only ever name a DIFFERENT home than the one whose settings were pinned."""
-        c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
                          env={"ATMOFAB_HOME": "/b/two", "PATH": "/host/bin"})
         self.assertNotIn("CODEX_HOME", c._child_env("child-1"))
@@ -4850,7 +4869,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "        base_url: http://localhost:8000/v1\n"
             "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
             "        model: local-coder\n", encoding="utf-8")
-        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+        return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH",
                             llm_config=lc.load_llm_config(path), env=env)
 
@@ -4919,7 +4938,7 @@ class LeafEnvThreadingSiteTest(unittest.TestCase):
              "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"}
 
     def _conductor(self, repo: Path) -> wc.Conductor:
-        return wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+        return _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                             env=dict(self._HOST))
 
@@ -5040,7 +5059,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -6333,7 +6352,7 @@ class NodeAllocationTest(unittest.TestCase):
         """The ref is matched against a step_result's `required_outputs`, so it has to be the
         SAME path `phase_required_outputs` declares — the validate one was wrong (it omitted
         the `<node_key_safe>/` segment) and matched nothing (correctness round 2, F1)."""
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="p_1_001", source_id="src_1",
                            binary_id="bin_1", run_id="run_1", source_binary_id="bin_1")
         cert = {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
@@ -6362,7 +6381,7 @@ class NodeAllocationTest(unittest.TestCase):
             root = Path(d)
             on_disk = certify_node(root, "o", "component/spec_x@0.1.0",
                                    through="generate", reserve=False)
-            newer = (root / "workspace" / "pipelines" / on_disk["safe"]
+            newer = (root / "workspace" / "pipelines" / on_disk["safe"] / _TARGET_ID
                      / "spec-x_20260101_002")
             newer.mkdir(parents=True)
             (newer / "lineage.json").write_text(json.dumps({
@@ -6387,7 +6406,7 @@ class NodeAllocationTest(unittest.TestCase):
             "certified": True, "ir_ref": "workspace/ir/s/ir_9",
             "pipeline_ref": "workspace/pipelines/s/p_9",
             "source_id": "src_cert", "binary_id": "bin_cert", "run_id": "run_cert"}
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_fresh",
                            binary_id="bin_fresh", run_id="run_fresh",
                            source_binary_id="bin_fresh")
@@ -6426,7 +6445,7 @@ class NodeAllocationTest(unittest.TestCase):
         }
         c.check_phase_certified = lambda nk, phase: certs.get(  # type: ignore[method-assign]
             phase, {"certified": False})
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="ir_9", pipeline_id="p_2", source_id="src_fresh",
                            binary_id="bin_fresh", run_id="run_fresh",
                            source_binary_id="bin_fresh")
@@ -6464,14 +6483,14 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
     NODE_KEY = "component/spec_x@0.1.0"
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key=self.NODE_KEY, spec_path="spec/component/spec_x",
             ir_id="spec-x_20260101_001", pipeline_id="spec-x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
             run_id="run_20260101_001", source_binary_id="bin_20260101_001")
 
     def _conductor(self, root: Path) -> wc.Conductor:
-        return wc.Conductor(repo_root=root, orchestration_id="o1",
+        return _TargetedConductor(repo_root=root, orchestration_id="o1",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                             env={}, workflow_mode="dev")
 
@@ -6505,7 +6524,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 root, "o1", node_key=self.NODE_KEY, step="compile",
                 required_outputs=wc.phase_required_outputs(refs, "compile"),
                 derivation=c._phase_derivation(refs, "compile"))
-            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile")
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile", target=_TP)
             self.assertTrue(ok, detail)
 
             # --- generate: the host's verify projection + the leaf's sources
@@ -6520,7 +6539,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 root, "o1", node_key=self.NODE_KEY, step="generate",
                 required_outputs=wc.phase_required_outputs(refs, "generate"),
                 derivation=c._phase_derivation(refs, "generate"))
-            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate")
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate", target=_TP)
             self.assertTrue(ok, detail)
 
             # --- build: the binary_meta shape `_build_inproc` authors
@@ -6548,13 +6567,13 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 root, "o1", node_key=self.NODE_KEY, step="build",
                 required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
                 derivation=c._phase_derivation(refs, "build"))
-            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build")
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build", target=_TP)
             self.assertTrue(ok, detail)
             # Validate.execute APPENDS to Build's command log; Build must stay certified.
             with (root / refs.source_dir() / "src" / "command_log.jsonl").open(
                     "a", encoding="utf-8") as fh:
                 fh.write('{"cmd": "make test"}\n')
-            self.assertTrue(ort._phase_certified(root, "o1", self.NODE_KEY, "build")[0])
+            self.assertTrue(ort._phase_certified(root, "o1", self.NODE_KEY, "build", target=_TP)[0])
 
             # --- validate: the run-node artifacts the deterministic substeps author
             run_node = root / refs.run_node_dir()
@@ -6591,7 +6610,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 root, "o1", node_key=self.NODE_KEY, step="validate",
                 required_outputs=wc.phase_required_outputs(refs, "validate"),
                 derivation=c._phase_derivation(refs, "validate"))
-            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
+            ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate", target=_TP)
             self.assertTrue(ok, detail)
             self.assertEqual(
                 (detail["source_id"], detail["binary_id"], detail["run_id"]),
@@ -6600,7 +6619,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             # ... and the predicate refuses the half-written run directory the conductor would
             # leave if an attempt died after the gate record and before the rest.
             (root / refs.run_node_dir() / "validate_meta.json").unlink()
-            ok2, detail2 = ort._phase_certified(root, "o1", self.NODE_KEY, "validate")
+            ok2, detail2 = ort._phase_certified(root, "o1", self.NODE_KEY, "validate", target=_TP)
             self.assertFalse(ok2)
             self.assertEqual(detail2["reason"], "verdict_not_found")
 
@@ -6650,7 +6669,7 @@ class DiagnosticianTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001",
@@ -6662,7 +6681,7 @@ class DiagnosticianTest(unittest.TestCase):
         The class's own ids are shorthand the stubbed runtime never inspects; the REAL launch
         validator does, so a row that pushes a payload through it needs ids a production
         reservation would mint."""
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="specx_20260907_001", pipeline_id="specx_20260907_001",
             source_id="src_20260907_001", binary_id="bin_20260907_001",
@@ -7546,11 +7565,11 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
     reuses existing ids instead of allocating fresh ones."""
 
     def _real_conductor(self, root: Path) -> wc.Conductor:
-        return wc.Conductor(repo_root=root, orchestration_id="o",
+        return _TargetedConductor(repo_root=root, orchestration_id="o",
                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
                            binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
 
@@ -7614,7 +7633,7 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             c = self._real_conductor(root)
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="ir1", pipeline_id="p1", source_id="s1", binary_id="b1",
                 run_id="run_20260101_001", source_binary_id="b1")
@@ -7635,7 +7654,7 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
             self.assertTrue((runs / refs.run_id).is_dir())
             # a directory ANOTHER process created (exists, empty, not minted here) is not
             # this attempt's: it rotates past it rather than writing into it
-            other = wc.NodeRefs(
+            other = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="ir1", pipeline_id="p1", source_id="s1", binary_id="b1",
                 run_id="run_20260101_007", source_binary_id="b1")
@@ -7678,10 +7697,11 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
             (res / "compile.json").write_text(
                 json.dumps({"reserved_ir_id": "slug_20260101_007"}), encoding="utf-8")
             (res / "generate.json").write_text(
-                json.dumps({"reserved_ir_id": "slug_20260101_009"}), encoding="utf-8")
+                json.dumps({"reserved_ir_id": "slug_20260101_009", "target_id": _TARGET_ID}),
+                encoding="utf-8")
             # The host-authored lineage of the reserved pipeline is what names the stage ids
             # this orchestration last worked on (the checkpoint ledger used to).
-            pipe = root / "workspace" / "pipelines" / safe / "slug_20260101_009"
+            pipe = root / "workspace" / "pipelines" / safe / _TARGET_ID / "slug_20260101_009"
             pipe.mkdir(parents=True)
             (pipe / "lineage.json").write_text(json.dumps({
                 "node_key": "component/spec_x@0.1.0",
@@ -7691,7 +7711,7 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
                 "binary_id": "bin_20260101_004",
                 "run_id": None,
             }), encoding="utf-8")
-            c = wc.Conductor(repo_root=root, orchestration_id=oid,
+            c = _TargetedConductor(repo_root=root, orchestration_id=oid,
                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = wc.resume_node_refs(c, "component/spec_x@0.1.0", "spec/component/spec_x")
             # ir/pipeline from THIS orchestration's reservations (not global-latest)
@@ -7703,11 +7723,19 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
             self.assertEqual(refs.source_binary_id, "bin_20260101_004")
             # run not yet produced -> freshly allocated
             self.assertTrue(refs.run_id.startswith("run_"))
+            self.assertEqual(refs.target_id, _TARGET_ID)
+            # A pipeline reservation for another target (or, from before issue #284, for
+            # none) names no directory this run can resume into.
+            for recorded in ({"reserved_ir_id": "slug_20260101_009", "target_id": "other"},
+                             {"reserved_ir_id": "slug_20260101_009"}):
+                (res / "generate.json").write_text(json.dumps(recorded), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "start a new run"):
+                    wc.resume_node_refs(c, "component/spec_x@0.1.0", "spec/component/spec_x")
 
     def test_resume_node_refs_raises_without_reservation(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            c = wc.Conductor(repo_root=Path(d), orchestration_id="orch_x",
+            c = _TargetedConductor(repo_root=Path(d), orchestration_id="orch_x",
                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             with self.assertRaises(ValueError):
                 wc.resume_node_refs(c, "component/spec_x@0.1.0", "spec/component/spec_x")
@@ -7744,7 +7772,7 @@ class ResumeRecoveryTest(unittest.TestCase):
                 json.dumps({"status": "pass", "required_outputs": [src_meta],
                             "substep_agent_run_ids": ["GEN", "VER"],
                             "executor_agent_run_id": "EXEC"}), encoding="utf-8")
-            c = wc.Conductor(repo_root=root, orchestration_id=oid,
+            c = _TargetedConductor(repo_root=root, orchestration_id=oid,
                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertEqual(
                 c._completed_producer_arid("component/spec_x@0.1.0", "generate", src_meta), "GEN")
@@ -7785,7 +7813,7 @@ class ResumeRecoveryTest(unittest.TestCase):
             {"certified": True, "pipeline_ref": "P", "source_id": "SRC"}
             if phase == "generate" else {"certified": False})
         c._completed_producer_arid = lambda nk, phase, ref: "GEN" if phase == "generate" else None
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001")
         po = c.run_phase(refs, "generate")
         self.assertEqual(po.status, "pass")  # skipped (certified)
@@ -8936,7 +8964,7 @@ class LeafSpawnTest(unittest.TestCase):
             c.status_fn = lambda phase, substep, n: "pass"  # artifacts claim pass
             # leaf crashed (e.g. token limit), emitting a diagnostic to stderr
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "context limit exceeded")
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
             status = c.conduct(refs, "compile")
@@ -8965,7 +8993,7 @@ class LeafSpawnTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "boom")
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
             c.conduct(refs, "compile")
@@ -8980,7 +9008,7 @@ class LeafSpawnTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "all good", "")
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
             c.conduct(refs, "compile")
@@ -8993,7 +9021,7 @@ class LeafSpawnTest(unittest.TestCase):
             self.assertNotIn("result_summary", runs[0])
 
     def test_run_substep_reuse_resume_always_resumes_producer(self) -> None:
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1")
         reuse = {"repair_strategy": "reuse", "repair_target_agent_run_id": "producer-arid"}
 
@@ -9029,7 +9057,7 @@ class LeafSpawnTest(unittest.TestCase):
     def test_run_substep_reuse_resume_cold_fallback_when_session_missing(self) -> None:
         """reuse but the producer session transcript is gone → cold launch
         (drop resume_session_id) instead of failing the leaf with `--resume <missing>`."""
-        refs = wc.NodeRefs(node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1")
         reuse = {"repair_strategy": "reuse", "repair_target_agent_run_id": "producer-arid"}
         cap: dict = {}
@@ -12599,7 +12627,7 @@ class FailSummaryContractTest(unittest.TestCase):
             c.calls = []
             c.status_fn = status_fn
             c.spawn_leaf = lambda prompt, env, entry=None, **kw: proc
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
             oc = c.run_substep(refs, phase, substep)
@@ -12676,7 +12704,7 @@ class WriteDependencyGraphTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             c = self._conductor(repo)
             # Call the REAL method (the fake no-ops it for the run_phase happy path).
@@ -12694,7 +12722,7 @@ class WriteDependencyGraphTest(unittest.TestCase):
     def test_fail_closed_on_missing_deps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)  # no deps.yaml anywhere
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             c = self._conductor(repo)
             err = wc.Conductor._write_dependency_graph(c, refs)
@@ -12744,7 +12772,7 @@ class WriteDependencySurfaceTest(unittest.TestCase):
                      ir_text=json.dumps(doc))
 
     def _refs(self) -> "wc.NodeRefs":
-        return wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                            ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
 
     def test_authors_surface_from_ir_public_api(self) -> None:
@@ -12804,7 +12832,7 @@ class WriteLineageTest(unittest.TestCase):
     def test_authors_pipeline_lineage_for_leaf_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",
                 spec_path="spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2",
                 ir_id="advdiff_20260622_001",
@@ -12837,7 +12865,7 @@ class WriteLineageTest(unittest.TestCase):
     def test_accumulates_stage_ids_and_marks_direct_deps_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
                 ir_id="x_20260622_001", pipeline_id="x_20260622_002",
                 source_id="src_001", binary_id="bin_001", run_id="run_001")
@@ -12860,7 +12888,7 @@ class WriteLineageTest(unittest.TestCase):
     def test_records_resolved_dependencies_when_dep_pipeline_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/top@0.1.0", spec_path="spec/component/top",
                 ir_id="top_20260622_001", pipeline_id="top_20260622_002",
                 source_id="src_001", binary_id="bin_001", run_id="run_001")
@@ -12886,7 +12914,8 @@ class WriteLineageTest(unittest.TestCase):
             self.assertEqual(lin["resolved_dependencies"], facts)
             self.assertEqual(
                 facts[0]["aggregate_verdict_ref"],
-                f"workspace/pipelines/{safe}/base_20260622_003/runs/run_20260622_001/{safe}/"
+                f"workspace/pipelines/{safe}/{_TARGET_ID}/base_20260622_003/runs/"
+                f"run_20260622_001/{safe}/"
                 "aggregate_verdict.json")
 
     def test_persists_published_operations_for_fortran_consumer(self) -> None:
@@ -12895,7 +12924,7 @@ class WriteLineageTest(unittest.TestCase):
         # need not guess it.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/top@0.1.0", spec_path="spec/component/top",
                 ir_id="top_20260622_001", pipeline_id="top_20260622_002",
                 source_id="src_001", binary_id="bin_001", run_id="run_001")
@@ -12953,7 +12982,7 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
     }
 
     def _refs(self) -> "wc.NodeRefs":
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/top@0.1.0", spec_path="spec/component/top",
             ir_id="top_001", pipeline_id="top_002",
             source_id="src_001", binary_id="bin_001",
@@ -13119,12 +13148,18 @@ class WriteMakefileTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/foo_bar@0.1.0", spec_path="spec/component/foo_bar",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
     def _write_ir(self, repo: Path, refs: wc.NodeRefs, *, language="fortran",
                   build_system="make", backend="openmp", direct_deps="[]") -> None:
+        # The toolchain the host reads is the TARGET's (issue #284): declare the matching
+        # profile in the fixture repository, which the fake's `target` answers with.
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        install_target_profile(repo, profile_with(
+            toolchain={"language": language, "build_system": build_system},
+            parallel={"backend": backend}))
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
@@ -13322,19 +13357,19 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
-    def test_the_toolchain_field_shapes_the_two_mirrors_must_read_alike(self) -> None:
+    def test_the_ir_toolchain_shape_moves_neither_mirror(self) -> None:
         """The IR SHAPES, not the registry — the other half of the mirror property.
 
-        The registry-moving test below writes a well-formed toolchain every time, so two things
-        it cannot see were unobserved. First, the `"fortran"` DEFAULT: a mutation spelled so the
-        sampled ratchet cannot fire (`str(value or "fortran"[:0])`) left the whole suite green,
-        while `_ir_language`'s own docstring says the defaulting is the part that must not vary —
-        and varying it is exactly a predicate approving authorship that the render then refuses.
-        Second, a NON-DICT `impl_defaults.toolchain`: the language read guarded it while the
-        build-system read beside it dereferenced the same object, so the conductor raised
-        `AttributeError` where the validator's mirror answers `False`.
+        Until issue #284 both mirrors read the IR's `impl_defaults.toolchain`, and two things
+        were pinned here: a `"fortran"` DEFAULT for an absent language, and a NON-DICT
+        toolchain the language read guarded while the build-system read beside it raised.
+        Since R4-a PR-2 neither reader reads that field: the conductor reads its target, and
+        the validator's post-Compile mirror is `_m3c_language` fed the pipeline's target. So
+        the property is now that NO IR toolchain shape — absent, malformed, or naming another
+        value — changes either answer, raises, or makes them disagree.
         """
         import tools.validate_pipeline_semantics as vps
+        from tools.tests.target_fixtures import FORTRAN_CPU
 
         shapes = {
             "language absent": "impl_defaults:\n  toolchain:\n    build_system: make\n",
@@ -13343,7 +13378,9 @@ class WriteMakefileTest(unittest.TestCase):
             "toolchain is a list": "impl_defaults:\n  toolchain: [make, fortran]\n",
             "toolchain is a string": "impl_defaults:\n  toolchain: make\n",
             "impl_defaults is a string": "impl_defaults: nonsense\n",
+            "another language": "impl_defaults:\n  toolchain:\n    language: zz_other\n",
         }
+        tc = FORTRAN_CPU.toolchain
         for name, block in shapes.items():
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
@@ -13357,36 +13394,19 @@ class WriteMakefileTest(unittest.TestCase):
                     encoding="utf-8")
                 c = self._conductor(repo)
                 ir = wc._read_yaml(ir_dir / "spec.ir.yaml")
-                # Neither reader may raise on a shape the other one survives, and they must
-                # agree on the verdict.
+                self.assertTrue(c._conductor_authors_runner(refs), name)
+                self.assertTrue(c._conductor_authors_makefile(refs), name)
                 self.assertEqual(
-                    c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir), name)
-                # ...and the THIRD conductor-side reader, which is the one the writers use.
-                # It kept the unguarded dereference the other two were given guards for, so
-                # `_conductor_authors_makefile` said yes and `_write_makefile` raised.
-                self.assertTrue(c._conductor_authors_makefile(refs) in (True, False), name)
+                    vps._m3c_language(ir, tc["build_system"], tc["language"]),
+                    tc["language"], name)
                 toolchain = c._read_toolchain(refs)
-                self.assertEqual(
-                    (toolchain["language"], toolchain["build_system"]),
-                    (wc._ir_language(ir), wc._ir_build_system(ir)), name)
-        # The default itself: with the language field absent the node is STILL host-rendered,
-        # which is what makes the default load bearing rather than cosmetic.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            ir_dir = repo / refs.ir_ref
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "spec.ir.yaml").write_text(
-                "meta:\n  spec_kind: component\n"
-                "impl_defaults:\n  toolchain:\n    build_system: make\n"
-                "dependency:\n  direct_deps: [infrastructure/harness_fortran_cpu@0.7.0]\n",
-                encoding="utf-8")
-            c = self._conductor(repo)
-            self.assertTrue(c._conductor_authors_runner(refs))
-            self.assertTrue(c._conductor_authors_makefile(refs))
+                self.assertEqual((toolchain["language"], toolchain["build_system"]),
+                                 (tc["language"], tc["build_system"]), name)
 
     def test_the_two_runner_authorship_mirrors_answer_alike_when_the_registry_moves(self) -> None:
-        """`_conductor_authors_runner` and `_ir_is_m3c_physics` are two readers of one question.
+        """`_conductor_authors_runner` and the validator's `_m3c_language` are two readers of
+        one question (since issue #284 both over the target's toolchain; `_write_ir` declares
+        the profile the fake reads, and the validator is handed the same values).
 
         They have diverged before — the mirror kept comparing against the literal `(make,
         fortran)` pair after the conductor moved to the registry — and a divergence is a wrong
@@ -13425,8 +13445,11 @@ class WriteMakefileTest(unittest.TestCase):
                     patch = {} if record is None else {
                         (record.axis, record.backend_id): record}
                     with mock.patch.dict(backend_registry._BACKENDS, patch):
+                        tc = c._read_toolchain(refs)
+                        self.assertEqual(tc["language"], language)
                         self.assertEqual(
-                            c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir),
+                            c._conductor_authors_runner(refs),
+                            vps._m3c_language(ir, tc["build_system"], tc["language"]) is not None,
                             (record, language))
 
     def test_the_runtime_predicate_refuses_padding_like_the_conductor_does(self) -> None:
@@ -13465,29 +13488,33 @@ class WriteMakefileTest(unittest.TestCase):
              {("build_system", "zz_bs"): backend_registry.Backend(
                  "build_system", "zz_bs", None,
                  core_provides=frozenset({"control_file", "build_execute"}))},
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bs\n"),
+             {"build_system": "zz_bs"}),
             ("second language declared",
              {("language", "zz_lang"): backend_registry.Backend(
                  "language", "zz_lang", None,
                  core_provides=frozenset({"control_file", "runner_render"}))},
-             "impl_defaults:\n  toolchain:\n    language: zz_lang\n    build_system: make\n"),
+             {"language": "zz_lang"}),
             ("registered with no capability",
              {("build_system", "zz_bare"): backend_registry.Backend(
                  "build_system", "zz_bare", None)},
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bare\n"),
+             {"build_system": "zz_bare"}),
         ]
-        for label, records, ir_text in cases:
+        # The toolchain is the TARGET's (issue #284): each case declares its profile in the
+        # fixture repository, where the conductor's fake and `record_launch`'s reader both find it.
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        for label, records, toolchain in cases:
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._refs()
+                install_target_profile(repo, profile_with(toolchain=toolchain))
                 ir_path = repo / refs.ir_ref / "spec.ir.yaml"
                 ir_path.parent.mkdir(parents=True, exist_ok=True)
-                ir_path.write_text(ir_text + "dependency:\n  direct_deps: []\n", encoding="utf-8")
+                ir_path.write_text("dependency:\n  direct_deps: []\n", encoding="utf-8")
                 c = self._conductor(repo)
                 with mock.patch.dict(backend_registry._BACKENDS, records):
                     self.assertEqual(
                         c._conductor_authors_makefile(refs),
-                        _runtime_makefile_host_authored(repo, refs.ir_ref),
+                        _runtime_makefile_host_authored(repo, refs.pipeline_ref),
                         f"conductor/runtime disagree for {label!r}")
 
     def test_the_runner_render_capability_is_required_beyond_control_file(self) -> None:
@@ -13539,22 +13566,22 @@ class WriteMakefileTest(unittest.TestCase):
                 self.assertFalse(c._conductor_authors_runner(refs))
 
     def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
-        # The conductor compares `.lower()` WITHOUT stripping, while the registry normalizes
-        # with `.strip().lower()`. Handing a padded value straight to the registry would newly
-        # answer True here while `record_launch`'s reader — which strips — already reports the
-        # host as the author, which is the src/Makefile-authored-by-nobody class. The whitespace
-        # -only spelling has a pin below (via the runtime-agreement test); this is the padded
-        # TOKEN, which that one cannot reach.
-        for toolchain in ({"language": " fortran"}, {"build_system": "make "}):
+        # The conductor's predicate refuses a padded value, while the registry normalizes with
+        # `.strip().lower()` — handing a padded value straight to the registry would newly answer
+        # True. Since issue #284 the values are the target profile's, whose LOADER refuses a
+        # padded token; this drives a profile built past the loader, so what is pinned is the
+        # predicate's own guard, which `record_launch`'s counterpart shares.
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+        for toolchain in ({"language": " " + FORTRAN_CPU.toolchain["language"]},
+                          {"build_system": FORTRAN_CPU.toolchain["build_system"] + " "}):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._refs()
                 ir_path = repo / refs.ir_ref / "spec.ir.yaml"
                 ir_path.parent.mkdir(parents=True, exist_ok=True)
-                body = "".join(f'    {k}: "{v}"\n' for k, v in toolchain.items())
-                ir_path.write_text(
-                    f"impl_defaults:\n  toolchain:\n{body}", encoding="utf-8")
+                ir_path.write_text("dependency:\n  direct_deps: []\n", encoding="utf-8")
                 c = self._conductor(repo)
+                c.target_profile = profile_with(toolchain=toolchain)
                 self.assertFalse(c._conductor_authors_makefile(refs), toolchain)
                 self.assertFalse(c._conductor_authors_runner(refs), toolchain)
 
@@ -13562,71 +13589,38 @@ class WriteMakefileTest(unittest.TestCase):
         # The conductor (_conductor_authors_makefile) and the runtime
         # (_resolved_makefile_host_authored, computed in record_launch) must agree on whether
         # the Makefile is host-authored, else a launch is double-owned (pinned + dropped) or
-        # orphaned (neither authors). Authorship keys off make+fortran for BOTH leaf and
-        # dependency nodes (Model B); covers absent keys (build_system/language), where the
-        # two sides must apply the SAME defaults. The reconstruction below mirrors the runtime
-        # computation in orchestration_runtime.record_launch verbatim.
+        # orphaned (neither authors). Authorship keys off the TARGET's toolchain (issue #284)
+        # for BOTH leaf and dependency nodes (Model B): both sides read the same profile — the
+        # conductor its own, the runtime the one the request's `pipeline_ref` names — so the
+        # cases vary the profile, and the IR's dependency shape rides along to show it does
+        # not enter the answer.
         cases = [
-            # (label, spec.ir.yaml text)
-            ("leaf+make+fortran",
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+            # (label, toolchain overrides, spec.ir.yaml dependency text)
+            ("leaf+make+fortran", {"language": "fortran", "build_system": "make"},
              "dependency:\n  direct_deps: []\n"),
-            ("leaf+c",
-             "impl_defaults:\n  toolchain:\n    language: c\n    build_system: make\n"
+            ("leaf+c", {"language": "c", "build_system": "make"},
              "dependency:\n  direct_deps: []\n"),
-            ("leaf+cmake",
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: cmake\n"
+            ("leaf+cmake", {"language": "fortran", "build_system": "cmake"},
              "dependency:\n  direct_deps: []\n"),
-            ("dependency",
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+            ("dependency", {"language": "fortran", "build_system": "make"},
              "dependency:\n  direct_deps:\n    - node_key: component/dep@0.1.0\n"),
-            ("leaf+build_system absent",
-             "impl_defaults:\n  toolchain:\n    language: fortran\n"
-             "dependency:\n  direct_deps: []\n"),
-            ("leaf+language absent",
-             "impl_defaults:\n  toolchain:\n    build_system: make\n"
-             "dependency:\n  direct_deps: []\n"),
-            ("direct_deps absent",
-             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+            ("direct_deps absent", {"language": "fortran", "build_system": "make"},
              "dependency:\n  node_key: component/x@0.1.0\n"),
         ]
+        from tools.tests.target_fixtures import install_target_profile, profile_with
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             ir_path = repo / refs.ir_ref / "spec.ir.yaml"
             ir_path.parent.mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
-            for label, ir_text in cases:
+            for label, toolchain, ir_text in cases:
+                install_target_profile(repo, profile_with(toolchain=toolchain))
                 ir_path.write_text(ir_text, encoding="utf-8")
                 conductor_authors = c._conductor_authors_makefile(refs)
-                runtime_host_authored = _runtime_makefile_host_authored(repo, refs.ir_ref)
+                runtime_host_authored = _runtime_makefile_host_authored(repo, refs.pipeline_ref)
                 self.assertEqual(conductor_authors, runtime_host_authored,
                                  f"conductor/runtime disagree for {label!r}")
-
-        # The reconstruction above is only load-bearing if it can actually SEE a divergence.
-        # None of the cases carries whitespace, and one cannot simply be added: for
-        # `build_system: "   "` the live pair genuinely disagrees (the conductor compares
-        # unstripped and declines; record_launch strips, concludes the host authored it, and
-        # suppresses the leaf's pin — so src/Makefile is authored by nobody). That shape is
-        # kept out of production by `_validate_toolchain_backend_supported`, not by this
-        # agreement. Pin the divergence itself, so a reconstruction that quietly stops
-        # mirroring record_launch — as it once did, omitting `.strip().lower()` — fails here.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            ir_path = repo / refs.ir_ref / "spec.ir.yaml"
-            ir_path.parent.mkdir(parents=True, exist_ok=True)
-            ir_path.write_text(
-                'impl_defaults:\n  toolchain:\n    language: fortran\n'
-                '    build_system: "   "\n', encoding="utf-8")
-            c = self._conductor(repo)
-            self.assertFalse(c._conductor_authors_makefile(refs))
-            self.assertTrue(_runtime_makefile_host_authored(repo, refs.ir_ref))
-
-    # --- Part 2 (Model B): dependency Makefile rendering. The non-leaf branch DOES run live —
-    # run_phase authors for every make+fortran node (leaf OR dependency; _conductor_authors_
-    # makefile has no leaf gate). E2E-UNVERIFIED only in that no real dependency spec has run
-    # the full compile->validate path yet; these synthetic-IR tests pin the generated structure. ---
 
     def _write_dep_graph_sidecar(self, repo: Path, refs: wc.NodeRefs, *,
                                  all_nodes: list, transitive_deps: list) -> None:
@@ -13667,7 +13661,7 @@ class WriteMakefileTest(unittest.TestCase):
     def test_dependency_closure_is_deepest_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self.assertEqual(self._conductor(repo)._dependency_closure(refs), ["base", "mid"])
@@ -13679,7 +13673,7 @@ class WriteMakefileTest(unittest.TestCase):
         # would fail-close the whole dependency build for the common single-edge case).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -13706,7 +13700,7 @@ class WriteMakefileTest(unittest.TestCase):
         # and _stage_dependency_sources inherit it.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -13735,7 +13729,7 @@ class WriteMakefileTest(unittest.TestCase):
     def test_dependency_makefile_emits_closure_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._conductor(repo)._write_makefile(refs)
@@ -13763,7 +13757,7 @@ class WriteMakefileTest(unittest.TestCase):
         sid = wc.spec_id_of(node_key)
         binary_source_id = binary_source_id or source_id
         lineage_source_id = lineage_source_id or source_id
-        pipe = repo / "workspace" / "pipelines" / safe / pipeline_id
+        pipe = repo / "workspace" / "pipelines" / safe / _TARGET_ID / pipeline_id
         # Since issue #250 PR-2 staging reads the dependency's SELECTED certified Generate
         # output under its derivation key, so the certified source is a key-stamped chain
         # (`certify_node`) rather than a `binary_meta.source_source_id` pointer.
@@ -13781,7 +13775,7 @@ class WriteMakefileTest(unittest.TestCase):
     def test_stage_dependency_sources_copies_closure_into_objdir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
@@ -13810,7 +13804,7 @@ class WriteMakefileTest(unittest.TestCase):
         # dependency's key), not the latest lineage source (which is unverified).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -13829,7 +13823,7 @@ class WriteMakefileTest(unittest.TestCase):
                 "module base_model ! CERTIFIED\nend module base_model\n",
                 lineage_source_id="src_20260101_002")
             # the newer, unverified source the lineage points at — must NOT be staged.
-            new_src = (repo / "workspace" / "pipelines" / "component__base__0.1.0"
+            new_src = (repo / "workspace" / "pipelines" / "component__base__0.1.0" / _TARGET_ID
                        / "base_20260101_001" / "source" / "src_20260101_002" / "src")
             new_src.mkdir(parents=True, exist_ok=True)
             (new_src / "base_model.f90").write_text(
@@ -13852,7 +13846,7 @@ class WriteMakefileTest(unittest.TestCase):
         from tools.orchestration_runtime import _closure_nodes_from_graph
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._write_dep_graph_sidecar(repo, refs, all_nodes=[
@@ -13876,7 +13870,7 @@ class WriteMakefileTest(unittest.TestCase):
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
@@ -13893,7 +13887,7 @@ class WriteMakefileTest(unittest.TestCase):
                     binding["model_source_sha256"],
                     hashlib.sha256((obj_dir / f"{sid}_model.f90").read_bytes()).hexdigest())
                 self.assertEqual(binding["pipeline_ref"],
-                                 f"workspace/pipelines/component__{sid}__0.1.0/"
+                                 f"workspace/pipelines/component__{sid}__0.1.0/{_TARGET_ID}/"
                                  f"{sid}_20260101_001")
                 self.assertEqual(binding["source_id"], "src_20260101_001")
                 self.assertTrue(binding["output_hash"].startswith("sha256:"))
@@ -13915,7 +13909,7 @@ class WriteMakefileTest(unittest.TestCase):
         from tools.orchestration_runtime import DerivationResolver
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
@@ -13928,7 +13922,7 @@ class WriteMakefileTest(unittest.TestCase):
                          ir_id="base_20260101_001", pipeline_id="base_20260101_001",
                          source_id="src_20260101_002",
                          model_text="module base_model ! NEW\nend module\n")
-            fresh = DerivationResolver(repo).select("component/base@0.1.0", "generate")
+            fresh = DerivationResolver(repo, target=_TP).select("component/base@0.1.0", "generate")
             self.assertEqual(fresh.source_id, "src_20260101_002")  # the selection moved
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = c._stage_dependency_sources(refs, obj_dir, phase="build")
@@ -13943,7 +13937,7 @@ class WriteMakefileTest(unittest.TestCase):
         it; the check is what makes 'staged == bound' a measurement, not a premise)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             base = self._seed_dep_pipeline(
@@ -13964,7 +13958,7 @@ class WriteMakefileTest(unittest.TestCase):
         selection."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._seed_dep_pipeline(repo, "component/base@0.1.0", "base_20260101_001",
@@ -13992,7 +13986,7 @@ class WriteMakefileTest(unittest.TestCase):
                 self._seed_dep_pipeline(repo, dep, f"{wc.spec_id_of(dep)}_20260101_001",
                                         "src_20260101_001",
                                         f"module {wc.spec_id_of(dep)}_model\nend module\n")
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="top_20260101_001", pipeline_id="top_20260101_001",
                                source_id="src_20260101_001", binary_id="b")
             # A certified make+fortran consumer whose sidecar closure is base + mid.
@@ -14001,7 +13995,7 @@ class WriteMakefileTest(unittest.TestCase):
                          ir_id="top_20260101_001", pipeline_id="top_20260101_001",
                          ir_text=(repo / refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
             self._write_dep_ir(repo, refs)  # certify_node rewrote the sidecar leaf-shaped
-            c = wc.Conductor(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
                              llm_config=_cfg("claude"), env={})  # the REAL resolvers
             self.assertTrue(c._conductor_authors_makefile(refs))
             derivation = c._phase_derivation(refs, "build")
@@ -14024,7 +14018,7 @@ class WriteMakefileTest(unittest.TestCase):
     def test_stage_dependency_sources_raises_when_dep_unbuilt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             # only base is built; mid is missing -> fail-closed (build precondition)
@@ -14059,7 +14053,7 @@ class WriteMakefileTest(unittest.TestCase):
         # code) — the L6-deferred multi-version case. (Unreachable for single-version specs.)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/top@0.1.0", spec_path="spec/component/top",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
@@ -14092,8 +14086,9 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir, phase="build"), [])
 
 
-def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
-    """`record_launch`'s `_resolved_makefile_host_authored`, via the REAL predicate.
+def _runtime_makefile_host_authored(repo: Path, pipeline_ref: str) -> bool:
+    """`record_launch`'s `_resolved_makefile_host_authored`, via the REAL predicate and the
+    REAL reader.
 
     This used to reconstruct the inline expression verbatim, and a reconstruction is only as
     good as its last update: it was wrong once (it omitted the build_system normalization, so
@@ -14101,14 +14096,13 @@ def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
     moved to the registry it went on comparing against `(make, fortran)` — so a registry
     declaration that made the live pair disagree could not be seen by the test whose whole
     purpose is to see it. `control_file_host_authored` is now named in `orchestration_runtime` and
-    called by `record_launch`, so what is compared here is the shipped predicate. Only the two
-    READERS (which resolve the values, and normalize the way record_launch does) are mirrored."""
+    called by `record_launch`, so what is compared here is the shipped predicate; since issue
+    #284 its values come from the target profile the request's `pipeline_ref` names
+    (`_pipeline_target_toolchain`), which is called here as record_launch calls it."""
     from tools.orchestration_runtime import (
-        _impl_resolved_build_system, _impl_resolved_language, control_file_host_authored)
-    bs_resolved = _impl_resolved_build_system(repo, ir_ref)
-    lang = _impl_resolved_language(repo, ir_ref)
-    bs = (bs_resolved or "").strip().lower() if isinstance(bs_resolved, str) else ""
-    return control_file_host_authored(bs, lang)
+        _pipeline_target_toolchain, control_file_host_authored)
+    tc = _pipeline_target_toolchain(repo, pipeline_ref)
+    return control_file_host_authored(str(tc["build_system"]), str(tc["language"]))
 
 
 class WriteRunnerTest(unittest.TestCase):
@@ -14125,7 +14119,7 @@ class WriteRunnerTest(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key=f"component/{self.SID}@0.1.0", spec_path=f"spec/component/{self.SID}",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
@@ -14139,6 +14133,9 @@ class WriteRunnerTest(unittest.TestCase):
             ir.setdefault("meta", {})["spec_kind"] = spec_kind
         if language is not None:
             ir.setdefault("impl_defaults", {}).setdefault("toolchain", {})["language"] = language
+            # The language the host reads is the TARGET's (issue #284).
+            from tools.tests.target_fixtures import install_target_profile, profile_with
+            install_target_profile(repo, profile_with(toolchain={"language": language}))
         ids = ["harness_fortran_cpu"] * infra
         if infra == 2:
             ids = ["harness_fortran_cpu", "harness_other_cpu"]
@@ -14256,7 +14253,7 @@ class WriteRunnerTest(unittest.TestCase):
         other = types.ModuleType("zz_write_runner_lang")
         runner = types.ModuleType("zz_write_runner_lang.runner")
         runner.CHECKS_PUBLIC_NAMES = ("zz_abi",)
-        runner.render_runner = lambda ir, spec_id, harness: f"! rendered by zz for {spec_id}\n"
+        runner.render_runner = lambda ir, spec_id, harness, target: f"! rendered by zz for {spec_id}\n"
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
         other.runner = runner
@@ -14341,7 +14338,7 @@ class WriteRunnerTest(unittest.TestCase):
             ir = _boundary_ir()
             ir["dependency"]["direct_deps"] = [
                 {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
-            expected = render_runner(ir, self.SID, "harness_fortran_cpu")
+            expected = render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc)
             self.assertEqual(runner.read_text(encoding="utf-8"), expected)
 
     def test_write_runner_fail_closed_on_missing_harness(self) -> None:
@@ -14379,7 +14376,7 @@ class WriteRunnerTest(unittest.TestCase):
             ir["dependency"]["direct_deps"] = [
                 {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
             self.assertEqual(runner.read_text(encoding="utf-8"),
-                             render_runner(ir, self.SID, "harness_fortran_cpu"))
+                             render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc))
 
     def test_write_runner_ignores_source_meta_ir_ref(self) -> None:
         # Even a present-but-bogus `ir_ref` must be entirely disregarded: the field is no
@@ -14556,7 +14553,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
     SID = "boundary_x"
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key=f"component/{self.SID}@0.1.0", spec_path=f"spec/component/{self.SID}",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
@@ -14564,7 +14561,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         """A REAL conductor: `_bundle_shape` is this class's subject, and `_FakeConductor`
         stubs it (its `repo_root` is usually synthetic). The IR is on disk here, so the real
         reader has something to read."""
-        return wc.Conductor(repo_root=repo, orchestration_id="o",
+        return _TargetedConductor(repo_root=repo, orchestration_id="o",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_claude_m3c_generate_substeps_are_pure(self) -> None:
@@ -14606,7 +14603,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
             wide = self._conductor(repo, "claude")
-            narrow = wc.Conductor(
+            narrow = _TargetedConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
                 env={}, llm_config=lc.load_llm_config(self._write_config(
                     repo, "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n")))
@@ -14648,7 +14645,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
 
     def _infra_refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="infrastructure/harness_x@0.1.0",
             spec_path="spec/infrastructure/infra/harness/harness_x",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
@@ -14700,11 +14697,11 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         # The dimensions are varied INDEPENDENTLY, because each one is read by its own line in
         # each twin. A round-2 sweep measured what a narrower family missed: with `build_system`
         # fixed, deleting `_ir_bundle_shape`'s build-system capability check made the two readers
-        # DIVERGE with the suite green, and with `language` fixed in case, dropping the `.lower()`
-        # in `_ir_toolchain_tokens` did the same — the validator compares the value against
-        # `BUNDLE_LANGUAGES` case-sensitively while the conductor lowercases in `_ir_language`.
-        # `Fortran` is not hypothetical: `_validate_toolchain_backend_supported` checks the plain
-        # token and padding, never the case.
+        # DIVERGE with the suite green. Since issue #284 both twins read the TARGET's toolchain
+        # (the conductor its profile, the validator the one the pipeline names), so the family
+        # varies the profile and hands both the same value; the case and padding variants are
+        # values a profile loader refuses, kept because the two readers must still agree on
+        # them for any caller.
         kinds = [(self._refs(), "component"), (self._refs(), "infrastructure"),
                  (self._infra_refs(), "infrastructure"), (self._infra_refs(), "component")]
         languages = [None, "fortran", "Fortran", "FORTRAN", " fortran", "zz_lang", ""]
@@ -14716,26 +14713,31 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                     cases.append((refs, spec_kind, infra, language, None))
                 for build_system in build_systems[1:]:
                     cases.append((refs, spec_kind, infra, None, build_system))
+        from tools.tests.target_fixtures import profile_with
         for refs, spec_kind, infra, language, build_system in cases:
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 ir = _boundary_ir()
                 ir["meta"]["spec_kind"] = spec_kind
-                if language is not None:
-                    ir["impl_defaults"]["toolchain"]["language"] = language
-                if build_system is not None:
-                    ir["impl_defaults"]["toolchain"]["build_system"] = build_system
                 ir["dependency"]["direct_deps"] = [
                     {"node_key": f"infrastructure/h{i}@0.2.0"} for i in range(infra)]
                 (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
                 (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
+                overrides = {k: v for k, v in (("language", language),
+                                               ("build_system", build_system)) if v is not None}
+                target = profile_with(toolchain=overrides)
                 c = self._conductor(repo, "claude")
+                c.target_profile = target
+                tc = target.toolchain
                 self.assertEqual(
-                    c._bundle_shape(refs), vps._ir_bundle_shape(ir, refs.node_key),
+                    c._bundle_shape(refs),
+                    vps._ir_bundle_shape(ir, refs.node_key, (tc["build_system"], tc["language"])),
                     (refs.node_key, spec_kind, infra, language, build_system))
         # The family is only evidence if it could have come out otherwise: it must straddle
         # every answer, or a reader collapsed to one constant would agree with itself.
-        answers = {vps._ir_bundle_shape(ir, nk) for ir, nk in [
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        fixture_tc = (FORTRAN_CPU.toolchain["build_system"], FORTRAN_CPU.toolchain["language"])
+        answers = {vps._ir_bundle_shape(ir, nk, fixture_tc) for ir, nk in [
             ({"meta": {"spec_kind": "component"},
               "dependency": {"direct_deps": [{"node_key": "infrastructure/h@0.1.0"}]}},
              "component/x@0.1.0"),
@@ -14757,11 +14759,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         catalog node whose IR happened to be absent, so the criterion could rot to "one node
         was checked" while staying green. Both were round-1 findings.
 
-        The IR is SYNTHESIZED with no `impl_defaults`, so both readers apply their own
-        toolchain defaults — which is the toolchain, and the only one, that
-        `_validate_toolchain_backend_supported` lets a node reach Generate with. Asserting the
-        shape under any other toolchain would be asserting about a node the workflow refuses
-        earlier.
+        The IR is SYNTHESIZED with no `impl_defaults`, and the toolchain is the checked-in
+        target profile's (issue #284) — the only target this tree declares, so the only one a
+        node reaches Generate with.
 
         Exercised through the VALIDATOR twin, which takes an IR dict directly; the conductor
         twin needs a workspace IR file, and `test_the_two_bundle_shape_readers_agree` pins the
@@ -14776,6 +14776,8 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         import yaml as _yaml
         import tools.validate_pipeline_semantics as vps
         from tools.codegen_bundle import BUNDLE_SHAPES
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        fixture_tc = (FORTRAN_CPU.toolchain["build_system"], FORTRAN_CPU.toolchain["language"])
         catalog = _yaml.safe_load(
             (REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
         entries = [e for e in (catalog.get("specs") or []) if isinstance(e, dict)]
@@ -14794,7 +14796,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                     {"node_key": f"infrastructure/{d.get('infrastructure_id')}@0.0.0"}
                     for d in infra if isinstance(d, dict)]},
             }
-            shape = vps._ir_bundle_shape(ir, node_key)
+            shape = vps._ir_bundle_shape(ir, node_key, fixture_tc)
             if entry.get("spec_kind") == "profile":
                 self.assertIsNone(shape, node_key)
                 continue
@@ -14810,7 +14812,7 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
     generate allowed_output_paths and required_outputs (it must not author it)."""
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/foo_bar@0.1.0", spec_path="spec/component/foo_bar",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
@@ -14857,7 +14859,7 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
     def test_bundle_source_names_read_the_accepted_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self.assertEqual(c._bundle_source_names(refs), [])
@@ -14886,7 +14888,7 @@ class DeterministicBuildTest(unittest.TestCase):
     """WS-A/C: build runs in-process (no leaf) yet reuses the same bookkeeping."""
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -14971,9 +14973,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15007,9 +15009,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15040,9 +15042,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15063,10 +15065,11 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn("BIN=spec_x_runner", captured["extra_args"])
 
     def test_build_inproc_records_the_compiler_identity_the_key_hashes(self) -> None:
-        """`binary_meta.json#compiler` / `#compiler_version` (issue #250): the compiler the
-        control file pins (here the host default — the IR pins none) and its `--version`
-        line, resolved by the runtime's one reader so the record and the build derivation
-        key's `toolchain` member are the same value. Until #250 `compiler` was `""`."""
+        """`binary_meta.json#target_id` / `#compiler` / `#compiler_version` (issues #250,
+        #284): the target, the compiler the control file pins (here the host default — the
+        profile pins none) and its `--version` line, resolved by the runtime's one reader so
+        the record and the build derivation key's `toolchain` member are the same value.
+        Until #250 `compiler` was `""`."""
         import sys
         import tempfile
         from unittest import mock
@@ -15075,9 +15078,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15095,7 +15098,11 @@ class DeterministicBuildTest(unittest.TestCase):
                                       return_value=subprocess.CompletedProcess([], 0, "", "")):
                 c._build_inproc(refs, "child-1")
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
-            expected = ort._ir_toolchain_identity({})
+            from tools.tests.target_fixtures import FORTRAN_CPU
+            with mock.patch.object(build_runtime_server, "_syntax_compiler_version",
+                                   lambda argv: f"probed {argv[0]}"):
+                expected = ort._target_toolchain_identity(FORTRAN_CPU)
+            self.assertEqual(meta["target_id"], FORTRAN_CPU.target_id)
             self.assertEqual(meta["compiler"], build_runtime_server.MANDATORY_SYNTAX_COMPILER)
             self.assertEqual(meta["compiler"], wc.DEFAULT_COMPILER)
             self.assertEqual((meta["compiler"], meta["compiler_version"]),
@@ -15125,9 +15132,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15179,9 +15186,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15210,9 +15217,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="ir_20260707_007", pipeline_id="x_1",
                 source_id="src_20260707_003", binary_id="bin_1")
@@ -15244,9 +15251,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -15295,9 +15302,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15340,9 +15347,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -15378,9 +15385,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -15430,9 +15437,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -15467,8 +15474,15 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(out["returncode"], 0)
             trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
             env = trial["environment"]
-            self.assertEqual(set(env), {"target_class", "backend", "threads_per_rank",
-                                        "openmp_env", "platform"})
+            self.assertEqual(set(env), {"target_id", "target_class", "backend",
+                                        "threads_per_rank", "openmp_env", "platform"})
+            # The target's, not the IR's (issue #284) — `backend` read a key the IR never had
+            # until then, so every record said the fallback.
+            from tools.tests.target_fixtures import FORTRAN_CPU
+            self.assertEqual(
+                (env["target_id"], env["target_class"], env["backend"], env["threads_per_rank"]),
+                (FORTRAN_CPU.target_id, FORTRAN_CPU.hardware_class,
+                 FORTRAN_CPU.parallel_backend, FORTRAN_CPU.threads_per_rank))
             self.assertEqual(env["platform"], wc._host_platform_record())
             self.assertEqual(env["platform"]["machine"], _platform.machine())
             self.assertEqual(env["platform"]["node"], _platform.node())
@@ -15493,9 +15507,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -15554,7 +15568,7 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertNotIn("transport", (outcome.decision.reason or ""))
 
     def test_require_make_build_system_rejects_non_make(self) -> None:
-        c = wc.Conductor(repo_root=Path("/tmp/r"), orchestration_id="o",
+        c = _TargetedConductor(repo_root=Path("/tmp/r"), orchestration_id="o",
                          orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
         c._require_make_build_system("make", "build")  # no raise
         for bs in ("cmake", "meson", "ninja"):
@@ -15567,7 +15581,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             # execute is the failed substep (index 1): outcomes == [pre_judge(pass), execute(fail)].
@@ -15588,7 +15602,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             node_dir = repo / refs.run_node_dir()
@@ -15639,7 +15653,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             ir = self._predicate_ir()
@@ -15667,7 +15681,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             ir = self._predicate_ir()
@@ -15731,7 +15745,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             doc = c._author_execute_verdict(refs, {"io_contract": {}}, {"verdict": {"overall": "pass"}})
@@ -15759,13 +15773,13 @@ class DeterministicBuildTest(unittest.TestCase):
                     encoding="utf-8")
                 ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                            wc.SubstepOutcome("ex", "fail", [], 0)]
-                prod = wc.Conductor(repo_root=repo, orchestration_id="o",
+                prod = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                     orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                     env={}, workflow_mode="prod")
                 d_prod = prod.classify_failure(refs, "validate", ex_fail)
                 self.assertEqual(d_prod.action, "escalate", fclass)
                 self.assertEqual(d_prod.reason, f"validate_execute_{fclass}")
-                dev = wc.Conductor(repo_root=repo, orchestration_id="o",
+                dev = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                    env={}, workflow_mode="dev")
                 d_dev = dev.classify_failure(refs, "validate", ex_fail)
@@ -15795,7 +15809,7 @@ class DeterministicBuildTest(unittest.TestCase):
             ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                        wc.SubstepOutcome("ex", "fail", [], 0)]
             for mode, action in (("prod", "escalate"), ("dev", "fail_closed")):
-                c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                  orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                  env={}, workflow_mode=mode)
                 d = c.classify_failure(refs, "validate", ex_fail)
@@ -15806,7 +15820,7 @@ class DeterministicBuildTest(unittest.TestCase):
             (rn / "verdict.json").write_text(json.dumps(
                 {"self_verdict": "fail", "failure_class": "physics_fail", "per_test": [],
                  "predicate_error": "ignored on a physics verdict"}), encoding="utf-8")
-            dev = wc.Conductor(repo_root=repo, orchestration_id="o",
+            dev = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                env={}, workflow_mode="dev")
             self.assertEqual(dev.classify_failure(refs, "validate", ex_fail).reason,
@@ -15820,7 +15834,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             rn = repo / refs.run_node_dir()
@@ -15853,7 +15867,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             # execute is the failed substep (index 1): [pre_judge(pass), execute(fail)].
@@ -15887,7 +15901,7 @@ class DeterministicBuildTest(unittest.TestCase):
         for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_ROUTING):
             with tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
-                c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                  orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
                 refs = self._refs()
                 self._seed_trial_meta(repo, refs, status="fail", failure_category=category,
@@ -15910,7 +15924,7 @@ class DeterministicBuildTest(unittest.TestCase):
         for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL):
             with tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
-                c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                  orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
                 refs = self._refs()
                 self._seed_trial_meta(repo, refs, status="fail", failure_category=category,
@@ -15970,7 +15984,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self._seed_trial_meta(repo, refs, status="fail",
@@ -16092,7 +16106,7 @@ class DeterministicBuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             # bare Conductor: no IR on disk -> _conductor_authors_runner is False
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self._seed_trial_meta(repo, refs, status="fail",
@@ -16117,7 +16131,7 @@ class DeterministicBuildTest(unittest.TestCase):
         for fields in cases:
             with tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
-                c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                  orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
                 refs = self._refs()
                 self._seed_trial_meta(repo, refs, **fields)
@@ -16132,7 +16146,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self._seed_trial_meta(repo, refs, status="fail",
@@ -16180,7 +16194,7 @@ class DeterministicBuildTest(unittest.TestCase):
                              "            value: 1.0e-12\n            per_case: true\n")
 
     def _b1_refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
             run_id="run_1", source_binary_id="bin_1")
@@ -16200,7 +16214,7 @@ class DeterministicBuildTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
 
-        c = wc.Conductor(repo_root=repo, orchestration_id="t",
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                          orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
         refs = self._b1_refs()
         (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -16519,7 +16533,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
             refs = self._b1_refs()
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
@@ -16548,9 +16562,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
-            refs = wc.NodeRefs(
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
@@ -16631,11 +16645,11 @@ class DeterministicLintTest(unittest.TestCase):
     unioned gate_meta.json + routing is exercised by DeterministicGateTest."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
 
@@ -16646,6 +16660,9 @@ class DeterministicLintTest(unittest.TestCase):
         if language is not None:
             (ir_dir / "spec.ir.yaml").write_text(
                 f"impl_defaults:\n  toolchain:\n    language: {language}\n", encoding="utf-8")
+            # The language the host reads is the TARGET's (issue #284).
+            from tools.tests.target_fixtures import install_target_profile, profile_with
+            install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patch_linter(self, fn):
         import sys
@@ -16657,7 +16674,7 @@ class DeterministicLintTest(unittest.TestCase):
     _M3C_NODE_KEY = "problem/adv1d@0.1.0"
 
     def _m3c_refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key=self._M3C_NODE_KEY, spec_path="spec/problem/adv1d",
             ir_id="i1", pipeline_id="p1", source_id="src_1", binary_id="bin_1")
 
@@ -17196,12 +17213,12 @@ class DeterministicSyntaxTest(unittest.TestCase):
     fail_closed); the unioned gate_meta.json is exercised by DeterministicGateTest."""
 
     def _conductor(self, repo: Path, env: dict[str, str] | None = None) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"),
                             env=env or {})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
 
@@ -17218,6 +17235,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
         (ir_dir / "spec.ir.yaml").write_text(
             f"impl_defaults:\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
+        # The language the host reads is the TARGET's (issue #284).
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patch_syntax(self, fn):
         import sys
@@ -17313,7 +17333,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
     _M3C_NODE_KEY = "problem/adv1d@0.1.0"
 
     def _m3c_refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key=self._M3C_NODE_KEY, spec_path="spec/problem/adv1d",
             ir_id="i1", pipeline_id="p1", source_id="src_1", binary_id="bin_1")
 
@@ -17931,11 +17951,11 @@ class DeterministicStaticTest(unittest.TestCase):
     exercised by DeterministicGateTest."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
 
@@ -18220,12 +18240,12 @@ class DeterministicGateTest(unittest.TestCase):
     then run it through determine_substep_status -> classify_failure -> _read_repair_findings."""
 
     def _conductor(self, repo: Path, env: dict[str, str] | None = None) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
                             llm_config=_cfg("claude"), env=env or {})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
 
@@ -18239,6 +18259,9 @@ class DeterministicGateTest(unittest.TestCase):
         (ir_dir / "spec.ir.yaml").write_text(
             f"impl_defaults:\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
+        # The language the host reads is the TARGET's (issue #284).
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patches(self, linter, syntax, run=None):
         import sys
@@ -18437,11 +18460,11 @@ class DeterministicCompileStaticTest(unittest.TestCase):
     call to one of the two."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
 
@@ -18645,12 +18668,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     both graded classes write `fail_closed` on either path."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
                             llm_config=_cfg("claude"), env={})
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
             run_id="run_1")
@@ -18760,8 +18783,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
                             return_value=[fact]), \
-                 mock.patch("tools.validate_pipeline_semantics._closure_node_validated_in_own_pipeline",
-                            return_value=True):
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True) as ready:
                 c._author_derived_validate_artifacts(refs)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
@@ -18770,6 +18794,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["dependency_nodes"][0]["node_key"], "component/dep@0.1.0")
             self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "pass")
             self.assertTrue(agg["dependency_nodes"][0]["ready"])
+            # Readiness is asked for the RUN's target (issue #284): a dependency validated for
+            # another target does not make this one's closure ready.
+            ready.assert_called_once_with(repo, "component/dep", _TARGET_ID)
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["total"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
@@ -18788,8 +18815,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             # -> node blocked, regardless of any latest-verdict display value.
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
                             return_value=[fact]), \
-                 mock.patch("tools.validate_pipeline_semantics._closure_node_validated_in_own_pipeline",
-                            return_value=False):
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=False):
                 c._author_derived_validate_artifacts(refs)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
@@ -18818,8 +18846,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
                             return_value=[fact]), \
-                 mock.patch("tools.validate_pipeline_semantics._closure_node_validated_in_own_pipeline",
-                            return_value=True):
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True):
                 c._author_derived_validate_artifacts(refs)
             agg = json.loads((repo / refs.run_node_dir() / "aggregate_verdict.json").read_text())
             self.assertFalse(agg["blocked"])
@@ -19096,7 +19125,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                     "direct_deps": [{"node_key": "component/base@0.1.0"}]}}),
                 encoding="utf-8")  # NOTE: no dependency_graph.json authored
             c = self._conductor(repo)
-            with self._patch_closure_validated(lambda repo_root, tok: False):
+            with self._patch_closure_validated(lambda repo_root, tok, target_id: False):
                 block = c._judge_pre_spawn_dag_block(refs)
             self.assertIsInstance(block, str)
             self.assertIn("component/base", block)
@@ -19107,7 +19136,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             repo, refs = Path(td), self._refs()
             self._seed_ir_closure(repo, refs, ["component/base@0.1.0", "component/mid@0.2.0"])
             c = self._conductor(repo)
-            with self._patch_closure_validated(lambda repo_root, tok: True):
+            with self._patch_closure_validated(lambda repo_root, tok, target_id: target_id == _TARGET_ID):
                 self.assertIsNone(c._judge_pre_spawn_dag_block(refs))
 
     def test_pre_spawn_multi_node_incomplete_blocks(self) -> None:
@@ -19118,7 +19147,8 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             c = self._conductor(repo)
             # base ready, mid not -> block, and the excerpt names the missing normalized token.
             with self._patch_closure_validated(
-                    lambda repo_root, tok: tok == "component/base"):
+                    lambda repo_root, tok, target_id: (tok == "component/base"
+                                                         and target_id == _TARGET_ID)):
                 block = c._judge_pre_spawn_dag_block(refs)
             self.assertIsInstance(block, str)
             self.assertIn("component/mid", block)
@@ -19129,7 +19159,7 @@ class ExecutePromoterTest(unittest.TestCase):
     """WS-B: artifact-type-driven evidence promotion + metadata authoring."""
 
     def _conductor(self, repo: Path) -> wc.Conductor:
-        return wc.Conductor(repo_root=repo, orchestration_id="t",
+        return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
 
     def _write(self, p: Path, obj) -> None:
@@ -19137,7 +19167,7 @@ class ExecutePromoterTest(unittest.TestCase):
         p.write_text(json.dumps(obj), encoding="utf-8")
 
     def test_execute_allowed_paths_are_evidence_artifact_driven(self) -> None:
-        refs = wc.NodeRefs(
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -19299,7 +19329,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
     catches a host defect that does happen."""
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_20260101_001", pipeline_id="x_20260101_001",
             source_id="src_20260101_001", binary_id="bin_20260101_001",
@@ -19388,7 +19418,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
         # class — the meta-schema escalation must not claim it.
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertEqual(c._stage_meta_contract_findings(refs, "generate"), [])
             self.assertEqual(c._stage_meta_contract_findings(refs, "build"), [])
@@ -19457,7 +19487,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
             repo, refs = Path(td), self._refs()
             self._write_meta(repo, refs, "generate", _conformant_stage_meta(
                 "fail", last_fail_reason=_INCIDENT_DICT_REASON, last_fail_severity="minor"))
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             # SUBSTEPS["generate"] == ("generate","gate","verify"); verify is index 2.
             outcomes = [wc.SubstepOutcome("g", "pass", [], 0),
@@ -19474,7 +19504,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
             repo, refs = Path(td), self._refs()
             self._write_meta(repo, refs, "generate", _conformant_stage_meta(
                 "fail", last_fail_reason=_INCIDENT_DICT_REASON))
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
 
@@ -19527,7 +19557,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def _configured(backend: str, **kw) -> wc.Conductor:
         overrides = {k: kw.pop(k) for k in ("model", "command") if k in kw}
         cfg = lc.apply_defaults_overrides(_sample_config(backend), **overrides)
-        return wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
+        return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                             orchestration_agent_run_id="O", env={}, llm_config=cfg, **kw)
 
     def test_a_conductor_without_a_configuration_refuses_to_be_built(self) -> None:
@@ -19647,7 +19677,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         sleep and the event write replaced."""
         for backend in ("claude", "codex", "openai_compatible", "anthropic_api"):
             with self.subTest(backend=backend):
-                c = wc.Conductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
+                c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                                  orchestration_agent_run_id="O", env={},
                                  llm_config=_sample_config(backend), wait_usage_reset=True)
                 entry = c.entry_for("generate", "generate")
@@ -19656,7 +19686,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 events: list = []
                 c._sleep_backoff = slept.append                        # type: ignore[assignment]
                 c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-                refs = wc.NodeRefs(
+                refs = wc.NodeRefs(target_id=_TARGET_ID,
                     node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                     ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
                     binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -19977,11 +20007,11 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 {"agent_run_id": "child-1", "agent_session_id": "thread-abc",
                  "context_id": "ctx-abc"},
             ]}), encoding="utf-8")
-            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", env={},
                              llm_config=_sample_config("codex"))
             row = c._agent_run_json(
-                wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x", ir_id="i",
+                wc.NodeRefs(target_id=_TARGET_ID, node_key="c/x@0.1.0", spec_path="spec/c/x", ir_id="i",
                             pipeline_id="p"),
                 "generate", "generate", "child-1", "pass", [], "ok",
                 entry=c.entry_for("generate", "generate"))
@@ -20157,7 +20187,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
     BIG = "x" * 200_000
 
     def _conductor(self, repo_root: Path) -> wc.Conductor:
-        c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_payload_file",
+        c = _TargetedConductor(repo_root=repo_root, orchestration_id="orch_payload_file",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.seen: list[tuple[list[str], str | None]] = []                # type: ignore[attr-defined]
 
@@ -20250,7 +20280,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             # repo_root is the real checkout (runtime() runs `python3
             # tools/orchestration_runtime.py` relative to it); --repo-root points at the
             # throwaway dir so the call touches nothing in the checkout.
-            c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_execve",
+            c = _TargetedConductor(repo_root=repo_root, orchestration_id="orch_execve",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                              env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
             common = [
@@ -20276,7 +20306,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
         """Forgetting `input=` is a HANG, not an error — the subprocess blocks on the
         conductor's own stdin. The guard turns it into the runtime's dispatch error."""
         with tempfile.TemporaryDirectory() as tmp:
-            c = wc.Conductor(repo_root=Path(tmp), orchestration_id="orch_payload_file",
+            c = _TargetedConductor(repo_root=Path(tmp), orchestration_id="orch_payload_file",
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             seen: dict = {}
 
@@ -20322,7 +20352,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         return c
 
     def _refs(self) -> wc.NodeRefs:
-        return wc.NodeRefs(
+        return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
@@ -20483,7 +20513,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
             _seed_shape_expr_schema_into,
         )
 
-        refs = wc.NodeRefs(
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="problem/shallow_water2d@0.3.0",
             spec_path="spec/problem/mock_domain/mock_family/mock_spec",
             ir_id="shallow-water2d_20260415_001",
@@ -20509,7 +20539,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
             (repo / _FIXTURE_IR_REL).write_text("- a\n- b\n", encoding="utf-8")
             (repo / refs.ir_ref / "ir_meta.json").write_text("[]", encoding="utf-8")
 
-            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
             with mock.patch.object(wc.subprocess, "run", self._shim(repo)):
                 out = c._compile_static_inproc(refs, "child-1")
@@ -20540,11 +20570,11 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
 
-        refs = wc.NodeRefs(
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
             ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
             run_id="run_1", source_binary_id="bin_1")
-        c = wc.Conductor(repo_root=repo, orchestration_id="t", orchestration_agent_run_id="x",
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t", orchestration_agent_run_id="x",
                          llm_config=_cfg("claude"), env={})
         (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
         (repo / refs.ir_ref / "spec.ir.yaml").write_text(
@@ -20784,7 +20814,7 @@ class TargetProfileBridgeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
             ir_dir = repo / refs.ir_ref

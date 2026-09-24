@@ -16,6 +16,7 @@ from unittest import mock
 
 from tools import audit_orchestration as ao
 from tools import orchestration_diagnostics as diag
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_orchestration_diagnostics import (
     CHILD_ARID,
     _open_dangling_window,
@@ -718,8 +719,9 @@ class PureLeafABSummaryTest(unittest.TestCase):
     ORCH = "orch_pure_ab"
     SAFE = "comp__demo__0.1.0"
     PIPELINE_ID = "demo_20260716_001"
-    PIPE = f"workspace/pipelines/{SAFE}/{PIPELINE_ID}"
-    SRC = f"workspace/pipelines/{SAFE}/{PIPELINE_ID}/source/src_20260716_001"
+    # Under the fixture target (issue #284); the reservation names it (`_reserve`).
+    PIPE = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}"
+    SRC = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}/source/src_20260716_001"
 
     def _reserve(self, repo: Path, *, pipeline_id: str | None = None) -> None:
         """Write the pipeline reservation `prepare_node` writes before Compile runs.
@@ -742,6 +744,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
                     "reserved_ir_id": (
                         pipeline_id if pipeline_id is not None else self.PIPELINE_ID
                     ),
+                    "target_id": _TARGET_ID,
                 }
             ),
             encoding="utf-8",
@@ -1531,7 +1534,7 @@ class PureJudgeAbRollupTests(unittest.TestCase):
     _REQUEST = {
         "step": "validate", "substep": "judge", "leaf_mode": "pure",
         "node_key": "component/spec_x@0.1.0",
-        "pipeline_ref": "workspace/pipelines/component__spec_x__0.1.0/p_1",
+        "pipeline_ref": f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1",
         "run_id": "run_1",
     }
     _META = {"result": "pass", "attempts": 1, "prompt_contract_version": "pure-36",
@@ -1543,8 +1546,8 @@ class PureJudgeAbRollupTests(unittest.TestCase):
         self.assertTrue(summary["available"])
         node = summary["pure_validate_nodes"][0]
         self.assertEqual(node["run_node_dir"],
-                         "workspace/pipelines/component__spec_x__0.1.0/p_1/runs/run_1"
-                         "/component__spec_x__0.1.0")
+                         f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1"
+                         "/runs/run_1/component__spec_x__0.1.0")
         self.assertTrue(node["judge"]["found"])
         self.assertIn("### validate `workspace/pipelines/", rendered)
         self.assertIn("judge", rendered)
@@ -1552,10 +1555,13 @@ class PureJudgeAbRollupTests(unittest.TestCase):
     def test_the_safe_node_key_is_read_out_of_the_pipeline_ref(self) -> None:
         """Not recomputed from `node_key`: the tree already has two spellings of that
         transform, and a third here would be the one nothing checks. A request whose
-        `pipeline_ref` is not the four-segment shape names no directory at all."""
-        request = dict(self._REQUEST, pipeline_ref="workspace/pipelines/component__spec_x__0.1.0")
-        summary, _ = self._rollup(request=request, meta=None)
-        self.assertEqual(summary["pure_validate_nodes"], [])
+        `pipeline_ref` is not the five-segment shape (`<safe>/<target_id>/<id>`, issue #284)
+        names no directory at all — the pre-target four-segment shape included."""
+        for bad in ("workspace/pipelines/component__spec_x__0.1.0",
+                    "workspace/pipelines/component__spec_x__0.1.0/p_1"):
+            request = dict(self._REQUEST, pipeline_ref=bad)
+            summary, _ = self._rollup(request=request, meta=None)
+            self.assertEqual(summary["pure_validate_nodes"], [], bad)
 
     def test_an_agentic_judge_leaves_no_row(self) -> None:
         request = dict(self._REQUEST)

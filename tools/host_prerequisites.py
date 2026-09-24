@@ -23,20 +23,16 @@ Two properties are the point:
   not a host one, and is refused with the registry's own clause rather than probed — the
   `unimplemented_reason` question, because this code is about to decide what a run will execute.
 
-LIMIT, stated rather than implied. This resolves the selection a run gets when no IR pins
-otherwise. It does NOT read a node's `spec.ir.yaml`: at a cold start the first phase is
-`Compile`, which is the phase that AUTHORS that file, so at launch there is nothing to read.
-That is not a guess — `_validate_toolchain_backend_supported`
-(`tools/validate_pipeline_semantics.py`) fails any other `(build_system, language)` pair at
-`Compile.static`, so the default selection is the only one a run can reach. Two consequences to
-keep in view:
+The selection is the run's TARGET PROFILE (`spec/targets/<target_id>.yaml`, issue #284): the
+operator-authored document that names the language and build system every node of the run is
+built with, so at launch there is something to read even though no IR exists yet. One run is one
+target, and a `--with-deps` closure inherits it, so the target's selection stands for every
+member. One LIMIT, stated rather than implied:
 
-- An IR that pins `impl_defaults.toolchain.compiler` has its BUILD compiler unprobed. Its
-  mandatory syntax stage is still covered, since that stage is the conductor's `DEFAULT_COMPILER`
-  whatever the IR says, and a skipped mandatory stage is a `Generate.gate` fail_closed rather than
-  a silent pass.
-- A `--with-deps` closure is not walked; the target node's selection stands for the closure,
-  which holds only while the toolchain gate above pins every node to the same pair.
+- A profile that pins `toolchain.compiler` has its BUILD compiler unprobed. Its mandatory syntax
+  stage is still covered, since that stage is the conductor's `DEFAULT_COMPILER` whatever the
+  profile says, and a skipped mandatory stage is a `Generate.gate` fail_closed rather than a
+  silent pass.
 
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
@@ -103,21 +99,23 @@ def _require_implemented(axis: str, backend_id: str) -> None:
         )
 
 
-def resolve_launch_axis_selection() -> dict[str, str]:
-    """The axis values a run started now will select, per the LIMIT in the module docstring."""
+def resolve_launch_axis_selection(target=None) -> dict[str, str]:
+    """The axis values a run for `target` (a `TargetProfile`) will select. `None` resolves the
+    DEFAULT target (`select_target_id`: the only declared profile), and raises
+    `TargetProfileError` when that is ambiguous — the caller decides whether to refuse or to
+    leave the question to the launch's own target resolution."""
     # The language -> linter mapping, from the module that owns it. The conductor's
     # `_gate_lint_check` reaches the same private name for the same reason: a second copy is a
     # drift pair, and this one would send the probe after a linter the gate never runs.
     from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
-    from tools.workflow_conductor import DEFAULT_COMPILER, _ir_build_system, _ir_language
+    from tools.workflow_conductor import DEFAULT_COMPILER
 
-    # The `language` and `build_system` defaults are not written here: they are what the
-    # conductor's OWN readers answer for an IR that pins nothing, obtained by ASKING them with an
-    # empty document. A constant restated here would be a second spelling of the same default —
-    # the drift `_validate_toolchain_backend_supported` already carries three SHAPE checks
-    # against — and it would put two technology tokens into this file for nothing.
-    language = _ir_language({})
-    build_system = _ir_build_system({})
+    if target is None:
+        from tools.target_profile import load_target_profile, select_target_id
+        target = load_target_profile(_REPO_ROOT, select_target_id(_REPO_ROOT, None))
+    # The values are the profile's; nothing is defaulted, so this file spells no technology.
+    language = target.toolchain["language"]
+    build_system = target.toolchain["build_system"]
 
     preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
     if preset is None:

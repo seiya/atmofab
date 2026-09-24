@@ -42,6 +42,7 @@ try:
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
+    from tools.target_profile import is_target_id, pipeline_ref_for
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
     _REPO_ROOT = Path(__file__).resolve().parent.parent
     if str(_REPO_ROOT) not in sys.path:
@@ -53,6 +54,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
+    from tools.target_profile import is_target_id, pipeline_ref_for
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -520,9 +522,11 @@ def _pure_source_dirs_of(
     pipeline(s), in sorted order.
 
     Discovery reads this orchestration's OWN pipeline reservations
-    (`reservations/<node_key_safe>/generate.json#reserved_ir_id`), which
-    `prepare_node` writes before Compile runs and which `resume_node_refs` already
-    treats as the authority for the pipeline id.
+    (`reservations/<node_key_safe>/generate.json#reserved_ir_id` and `#target_id`, the
+    target the pipeline is built for — issue #284), which `prepare_node` writes before
+    Compile runs and which `resume_node_refs` already treats as the authority for the
+    pipeline id. A reservation that names no target (written before R4-a PR-2) names no
+    directory, and is skipped like any other unusable reservation.
 
     Globbing `<pipeline_ref>/source/*` (rather than reading a pass-only ledger) is what
     keeps a terminally-failed generate and
@@ -551,14 +555,16 @@ def _pure_source_dirs_of(
     for node_dir in sorted(res_root.iterdir()):
         if not node_dir.is_dir():
             continue
-        reserved = (_load_json_if_dict(node_dir / "generate.json") or {}).get("reserved_ir_id")
-        if not (isinstance(reserved, str) and reserved):
+        reservation = _load_json_if_dict(node_dir / "generate.json") or {}
+        reserved = reservation.get("reserved_ir_id")
+        target_id = reservation.get("target_id")
+        if not (isinstance(reserved, str) and reserved) or not is_target_id(target_id):
             continue
         # The reserved id is JSON-sourced: require a single clean segment so it can
-        # never traverse out of `workspace/pipelines/<node_key_safe>/`.
+        # never traverse out of `workspace/pipelines/<node_key_safe>/<target_id>/`.
         if reserved in {".", ".."} or PurePosixPath(reserved).parts != (reserved,):
             continue
-        pref = f"workspace/pipelines/{node_dir.name}/{reserved}"
+        pref = pipeline_ref_for(node_dir.name, str(target_id), reserved)
         if pref not in pipeline_refs:
             pipeline_refs.append(pref)
     for pref in pipeline_refs:
@@ -622,9 +628,10 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
     one row per attempt, never rewritten. A `validate` request carries `pipeline_ref` and
     `run_id` rather than the run-node path, so the directory is composed the way `NodeRefs`
     composes it: `<pipeline_ref>/runs/<run_id>/<node_key_safe>`. The safe node key is READ OUT
-    of `pipeline_ref` (`workspace/pipelines/<safe>/<pipeline_id>`, the same `NodeRefs`
-    property) rather than recomputed from `node_key` — this tree already carries two spellings
-    of that transform, and a third living in an audit tool would be the one nothing checks.
+    of `pipeline_ref` (`workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, the same
+    `NodeRefs` property) rather than recomputed from `node_key` — this tree already carries two
+    spellings of that transform, and a third living in an audit tool would be the one nothing
+    checks.
     """
     dirs: list[str] = []
     launches = _orch_root(repo_root, orchestration_id) / "launches"
@@ -641,7 +648,8 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
         if not (pipeline_ref and run_id):
             continue
         parts = PurePosixPath(pipeline_ref).parts
-        if len(parts) != 4 or parts[:2] != ("workspace", "pipelines"):
+        if (len(parts) != 5 or parts[:2] != ("workspace", "pipelines")
+                or not is_target_id(parts[3])):
             continue
         if any(p in {".", ".."} for p in parts):
             continue

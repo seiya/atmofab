@@ -47,7 +47,13 @@ from typing import Any, ClassVar, NamedTuple
 import yaml
 
 from tools.backends import registry as backend_registry
-from tools.target_profile import TargetProfile, ir_profile_mismatches, resolve_run_target
+from tools.target_profile import (
+    TargetProfile,
+    ir_profile_mismatches,
+    pipeline_ref_for,
+    pipelines_dir,
+    resolve_run_target,
+)
 from tools.llm_config import (
     CAP_WARM_RESUME,
     LlmConfig,
@@ -1437,6 +1443,9 @@ class NodeRefs:
     spec_path: str  # spec/<kind>/<domain>/<family>/<spec_id>
     ir_id: str
     pipeline_id: str
+    #: The target the node's pipeline is built for (issue #284): the store coordinate between
+    #: the node and its pipeline ids. Compile output (`ir_ref`) does not carry it.
+    target_id: str
     source_id: str | None = None
     binary_id: str | None = None
     run_id: str | None = None
@@ -1456,7 +1465,7 @@ class NodeRefs:
 
     @property
     def pipeline_ref(self) -> str:
-        return f"workspace/pipelines/{self.safe}/{self.pipeline_id}"
+        return pipeline_ref_for(self.safe, self.target_id, self.pipeline_id)
 
     def source_dir(self, source_id: str | None = None) -> str:
         return f"{self.pipeline_ref}/source/{source_id or self.source_id}"
@@ -3416,19 +3425,7 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
-def _ir_build_system(ir: Any) -> str:
-    """The node's build system, read the same way and with the same guards as `_ir_language`.
-
-    Split out for symmetry, not for reuse: the language read was made robust against a non-dict
-    `impl_defaults.toolchain` while the build-system read beside it kept dereferencing the same
-    object, so one shape (`toolchain:` holding a list or a string) raised `AttributeError` in the
-    conductor where the validator's mirror answers `False`. Two mirrors of one question must not
-    differ on which inputs they can read at all.
-    """
-    return str(_toolchain(ir).get("build_system") or "make").lower()
-
-
-#: The compiler the host uses when the IR pins no `impl_defaults.toolchain.compiler`. It is BOTH
+#: The compiler the host uses when the target profile pins no `toolchain.compiler`. It is BOTH
 #: the `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage,
 #: and it has to
 #: be one value for the two: the syntax gate certifies that stage and the build then runs this
@@ -3442,31 +3439,6 @@ def _ir_build_system(ir: Any) -> str:
 #: by `tools/tests/test_host_prerequisites.py` -- and it is what lets the launch-time host probe
 #: cover the BUILD compiler by probing the mandatory SYNTAX stage.
 DEFAULT_COMPILER = "gfortran"
-
-
-def _toolchain(ir: Any) -> dict[str, Any]:
-    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-    return tc if isinstance(tc, dict) else {}
-
-
-def _ir_language(ir: Any) -> str:
-    """The node's implementation language, read from the IR the one way every reader must.
-
-    Three places need it — the control-file authorship predicate, the runner authorship
-    predicate, and the runner render that follows the second — and the defaulting is the part
-    that must not vary: a reader that refused an absent `toolchain.language` where another
-    defaulted would fail-close a render its own predicate had just approved. `.lower()` without
-    `.strip()` is the conductor's deliberate normalization (see `_core_authors_control_file`).
-    """
-    value = _toolchain(ir).get("language")
-    # `.lower()` is an INTENT MARKER, not a live guard, and saying so beats leaving a reader to
-    # assume it is load bearing: measured, deleting it leaves the whole suite green because every
-    # consumer re-normalizes. `registry.provides` / `capability_module` apply `.strip().lower()`
-    # internally, and `_core_authors_control_file`'s own guard is about PADDING, not case. It
-    # stays because this function's value is the one both authorship predicates read, and a
-    # future consumer that compares it literally should get the normalized token.
-    return str(value or "fortran").lower()
 
 
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
@@ -3524,10 +3496,12 @@ class Conductor:
     #: and skips when the forced phase reproduced it byte for byte.
     rederive: frozenset[str] = frozenset()
     #: The target profile the run builds for (issue #284), resolved by the driver at launch.
-    #: R4-a PR-1 reads it for ONE thing, the bridge gate in `conduct` (`_target_ir_mismatch`);
-    #: every other target read still goes to the IR's `impl_defaults` until PR-2. None — a
-    #: conductor built without a driver, as the unit tests build it — skips the bridge;
-    #: `run_conductor`, the only production constructor, never passes None.
+    #: Every host read of the target goes through `target` (the toolchain, the parallel
+    #: backend, the hardware class and threads per rank, the store coordinate of the pipeline,
+    #: the resolver every certified selection is made with). None — a conductor built without
+    #: a driver, as many unit tests build it — skips the R4-a PR-1 bridge gate
+    #: (`_target_ir_mismatch`) and makes every one of those reads RAISE (`target`), never
+    #: default; `run_conductor`, the only production constructor, never passes None.
     target_profile: TargetProfile | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
@@ -3564,6 +3538,23 @@ class Conductor:
             _recover_json_transactions(
                 self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
             )
+
+    @property
+    def target(self) -> TargetProfile:
+        """The target profile every host read of the target goes through (issue #284).
+        RAISES when the conductor was built without one: a read that defaulted here would be
+        exactly the unrecorded target choice the profile exists to remove."""
+        if self.target_profile is None:
+            raise RuntimeError(
+                "conductor_target_unresolved: this Conductor was built without a target "
+                "profile, so it cannot read the target (run_conductor always passes one)")
+        return self.target_profile
+
+    def _resolver(self, **kwargs: Any) -> Any:
+        """A `DerivationResolver` for this run's target — the ONE way the conductor builds
+        one, so no selection it makes can be for another target (or for none)."""
+        from tools.orchestration_runtime import DerivationResolver
+        return DerivationResolver(self.repo_root, target=self.target, **kwargs)
 
     def _all_entries(self) -> list[ResolvedLeafEntry]:
         cfg = self.llm_config
@@ -5222,7 +5213,7 @@ class Conductor:
         # was certified to). Best-effort, never raises; persisted additively so a later
         # read (and the launch-prompt injection) need not re-derive them.
         from tools.orchestration_runtime import _resolve_dependency_facts
-        facts = _resolve_dependency_facts(self.repo_root, refs.ir_ref)
+        facts = _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target)
         lineage = {
             "node_key": refs.node_key,
             "spec_ref": refs.spec_path,
@@ -5324,30 +5315,25 @@ class Conductor:
         return not dep.get("direct_deps")
 
     def _read_toolchain(self, refs: NodeRefs) -> dict[str, str]:
-        """The structured `impl_defaults.toolchain`/`target` fields the host-side authors
-        share. Single read so the Makefile FC/FFLAGS derivation, the lint preset pick, and
-        the syntax gate's std/openmp flags cannot diverge from each other. `compiler` is
-        the OPTIONAL `toolchain.compiler` (docs/IMPL_PLAN_SPEC.md) — empty string when the
-        spec does not pin one (the environment default, gfortran, is then used)."""
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        # Through the SAME readers the authorship predicates use. This function is the third
-        # conductor-side reader of `impl_defaults.toolchain`, and it kept the unguarded
-        # dereference the other two were given guards for — so a `toolchain:` holding a list or a
-        # string made `_conductor_authors_makefile` answer True and then `_write_makefile`, its
-        # only consumer, raise `AttributeError`. That is the predicate-approves / writer-refuses
-        # split this file names elsewhere, on the control-file side. A commit message claimed
-        # "both now go through `_toolchain`"; there were three.
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = _toolchain(ir)
-        target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
-        if not isinstance(target, dict):
-            target = {}
+        """The target's toolchain fields every host-side author shares: `language`,
+        `standard`, `build_system`, `compiler` (the profile's OPTIONAL pin, `""` when it pins
+        none — the environment default, `DEFAULT_COMPILER`, is then used) and `backend` (the
+        parallel backend). ONE read, so the control-file FC/FFLAGS derivation, the lint preset
+        pick and the syntax gate's std/openmp flags cannot diverge from each other.
+
+        Read off the target profile (issue #284), not the IR: until R4-a PR-2 this was the
+        IR's `impl_defaults.toolchain` / `target.backend`, with a default filled in for every
+        absent field. The profile's loader refuses a missing field and every value is a
+        lowercase token, so nothing is defaulted or normalized here. `refs` is kept for the
+        callers' shape: one run is one target, so every node of it answers the same."""
+        target = self.target
+        tc = target.toolchain
         return {
-            "language": _ir_language(ir),
-            "standard": str(tc.get("standard") or "f2008").lower(),
-            "build_system": _ir_build_system(ir),
-            "compiler": str(tc.get("compiler") or "").strip(),
-            "backend": str(target.get("backend") or "").lower(),
+            "language": str(tc["language"]),
+            "standard": str(tc["standard"]),
+            "build_system": str(tc["build_system"]),
+            "compiler": str(tc.get("compiler") or ""),
+            "backend": target.parallel_backend,
         }
 
     @staticmethod
@@ -5362,14 +5348,13 @@ class Conductor:
         its nodes into the make writer. A value that does not declare `control_file` gets False,
         which is the documented leaf-authored path.
 
-        NORMALIZATION IS THE CALLER'S, and deliberately not the registry's: this repository's
-        two readers of `impl_defaults.toolchain` disagree on purpose. The conductor compares
-        `.lower()` without stripping, so a padded `" fortran"` is NOT the token it looks like and
-        host authorship flips off; `record_launch`'s reader strips and would report the host as
-        the author. `_validate_toolchain_backend_supported` rejects every untrimmed value for
-        exactly that reason. The registry normalizes with `.strip().lower()`, so handing it a
-        padded value would newly answer True here and silently reopen the orphaned-control-file
-        class — hence the equality test below rather than a bare lookup.
+        The values come from the target profile (issue #284), whose loader admits only
+        lowercase unpadded tokens. The padding refusal below predates that — it was written
+        when two readers of the IR's `impl_defaults.toolchain` normalized differently — and it
+        stays because `record_launch`'s counterpart (`control_file_host_authored`) refuses the
+        same way and the two must answer alike for any caller. The registry normalizes with
+        `.strip().lower()`, so handing it a padded value would answer True where this
+        predicate means False — hence the equality test below rather than a bare lookup.
         """
         for axis, value in (("build_system", build_system), ("language", language)):
             if value != value.strip():
@@ -5390,9 +5375,10 @@ class Conductor:
         author call AND the write-authorization removal, so they cannot disagree (which would
         orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
         authoring — which since the toolchain gate landed means only an `infrastructure` node
-        on a future non-fortran language, every physics node being rejected at compile."""
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        return self._core_authors_control_file(_ir_build_system(ir), _ir_language(ir))
+        on a future non-fortran language, every physics node being rejected at compile. The
+        toolchain is the run's target's (`_read_toolchain`, issue #284)."""
+        tc = self._read_toolchain(refs)
+        return self._core_authors_control_file(tc["build_system"], tc["language"])
 
     @staticmethod
     def _runner_basename(refs: NodeRefs) -> str:
@@ -5423,20 +5409,20 @@ class Conductor:
         construction the set the conductor actually writes, and the write-authorization swap that
         removes them from the leaf's `allowed_output_paths` reads the same two answers.
 
-        HOW MANY READERS THIS FACT ALREADY HAS. Counted as SITES THAT RE-DERIVE IT FROM THE IR,
-        which is the number that matters for drift, there are FOUR: the two predicates
-        immediately below this helper, the validator's mirror
-        `validate_pipeline_semantics._ir_m3c_language`, and
+        HOW MANY READERS THIS FACT ALREADY HAS. Counted as SITES THAT RE-DERIVE IT, which is
+        the number that matters for drift, there are FOUR: the two predicates immediately below
+        this helper, the validator's mirror (`validate_pipeline_semantics._m3c_language`, fed
+        the pipeline's target by `_execution_m3c_language`), and
         `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
-        control-file authorship flag onto the launch request. A FIFTH reader,
-        `orchestration_runtime`'s contract-doc deriver, TRUSTED that stamp instead of re-deriving it,
-        so it cannot drift on its own but inherits whatever the fourth decided.
+        control-file authorship flag onto the launch request. Since issue #284 all four read the
+        toolchain off the same target profile (the conductor's, or the one the pipeline path
+        names), so what can still drift is the QUESTION each asks of it, not the value.
 
         Two earlier versions of this count were wrong in opposite ways — "the conductor /
         validator pair" undercounted, and its replacement said "THREE" and then listed four
-        items — so the unit is written out: a re-derivation is a site that reads
-        `impl_defaults.toolchain` and answers for itself. This helper adds none; a change to the
-        ANSWER has to visit all four.
+        items — so the unit is written out: a re-derivation is a site that reads the toolchain
+        and answers for itself. This helper adds none; a change to the ANSWER has to visit all
+        four.
 
         Why a set of BASENAMES: everything the gate scans lives directly under `src/`, and the
         probe directories the lint attribution builds are flat copies. A caller that needs paths
@@ -5471,11 +5457,12 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         if not isinstance(ir, dict):
             return False
-        language = _ir_language(ir)
+        tc = self._read_toolchain(refs)
+        language = tc["language"]
         # The runner is BUILT by the host-authored control file and RENDERED by the host's
         # language-specific renderer, so both capabilities are required — the second is what
         # keeps a language the neutral core can compile but not render out of this path.
-        if not self._core_authors_control_file(_ir_build_system(ir), language):
+        if not self._core_authors_control_file(tc["build_system"], language):
             return False
         if not backend_registry.provides("language", language, "runner_render"):
             return False
@@ -5524,8 +5511,7 @@ class Conductor:
             return "m3c"
         if refs.node_key.split("/", 1)[0].strip() != "infrastructure":
             return None
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        language = _ir_language(ir) if isinstance(ir, dict) else ""
+        language = self._read_toolchain(refs)["language"]
         return "harness" if language in BUNDLE_LANGUAGES else None
 
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
@@ -5607,10 +5593,9 @@ class Conductor:
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
         from tools.host_render import (
             render_runner, assert_harness_pin, RunnerRenderUnavailable)
-        from tools.orchestration_runtime import (
-            DerivationResolver, _certified_ir_dir, _certified_model_source)
+        from tools.orchestration_runtime import _certified_ir_dir, _certified_model_source
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        # The node's language decides WHICH backend renders the glue. Read through the SAME
+        # The target's language decides WHICH backend renders the glue. Read through the SAME
         # helper `_conductor_authors_runner` uses, so the predicate that decided to author and
         # the seam that authors cannot disagree about the value — a mismatch would fail-close a
         # render the predicate had just approved. That predicate has already required this value
@@ -5621,7 +5606,7 @@ class Conductor:
         # discovered when something loads it. This is handled below rather than declared
         # impossible; two earlier versions of this comment declared it impossible and were
         # wrong.
-        language = _ir_language(ir)
+        language = self._read_toolchain(refs)["language"]
         infra = self._infra_direct_deps(ir)
         if len(infra) != 1:
             raise RuntimeError(
@@ -5630,13 +5615,15 @@ class Conductor:
         harness_nk = infra[0]
         harness_sid = spec_id_of(harness_nk)
         safe = node_key_safe(harness_nk)
-        # ONE resolver for both selections, so the source and the IR come from one evaluation.
-        resolver = DerivationResolver(self.repo_root)
+        # ONE resolver for both selections, so the source and the IR come from one evaluation
+        # — for this run's target: the harness source linked is the one built for it.
+        resolver = self._resolver()
         model_src = _certified_model_source(self.repo_root, harness_nk, resolver=resolver)
         if model_src is None:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: cannot resolve certified "
-                f"{harness_sid}_model.f90 under workspace/pipelines/{safe} "
+                f"{harness_sid}_model.f90 under "
+                f"{pipelines_dir(safe, self.target.target_id)} "
                 f"({resolver.select(harness_nk, 'generate').reason}; harness not built ready — "
                 f"run_workflow.py --with-deps first)")
         source_text = model_src.read_text(encoding="utf-8")
@@ -5692,7 +5679,8 @@ class Conductor:
         # dispatched to has already raised. A second clause was written here and measured
         # unreachable — deleting it left the suite green — and an unreachable duplicate of an
         # error path is worse than none: it reads as a second live guard.
-        runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
+        runner_text = render_runner(language, ir, refs.spec_id, harness_sid,
+                                    target=self.target.doc)
         path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
@@ -5753,9 +5741,10 @@ class Conductor:
     def _write_makefile(self, refs: NodeRefs) -> None:
         """Author the `src/Makefile` host-side (runtime-owned), deterministically.
 
-        For a leaf node (no dependencies) the Makefile is a pure function of the IR: the
-        pinned `<spec_id>_model/runner.f90` names, the fixed runner->model `use`-graph, and
-        the structured `impl_defaults.toolchain`/`target` flags. Authoring it here removes a
+        For a leaf node (no dependencies) the Makefile is a pure function of the IR and the
+        target: the pinned `<spec_id>_model/runner.f90` names, the fixed runner->model
+        `use`-graph, and the target profile's toolchain / parallel-backend flags
+        (`_read_toolchain`, issue #284). Authoring it here removes a
         class of generate regenerate-loops (Makefile-shape failures) and the long Makefile
         contract the generate leaf would otherwise internalize, and makes the build
         reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to
@@ -5763,7 +5752,14 @@ class Conductor:
         post_generate validators still run against this file as a safety net.
 
         Imposes `BIN ?= <spec_id>_runner` (overridable so Build/Validate.execute can pin the
-        canonical binary name) and FFLAGS derived from toolchain.standard + target.backend.
+        canonical binary name) and FFLAGS derived from the profile's toolchain.standard +
+        parallel.backend. The backend is the TARGET's for every node, the `infrastructure`
+        harness included: until R4-a PR-2 it was each IR's `target.backend`, which four harness
+        IRs declared `serial` while every physics node declared `openmp`, so one executable
+        linked objects compiled under two flag sets. The harness IRs all say
+        `parallelization: none`, so the flag adds no directive; two harness pipelines already
+        built and passed Validate with it (`harness-fortran-cpu_20260917_001`,
+        `harness-fortran-cpu_20260919_001`; measured 2026-09-24 in `workspace/pipelines/`).
 
         A non-empty dependency closure (Model B, docs/design) emits per-dep object rules +
         a `DEP_OBJS` link list; the conductor stages each `<dep>_model.f90` into `$(OBJDIR)`
@@ -5848,7 +5844,7 @@ class Conductor:
 
 # FC is pinned with := (not ?=): make ships a built-in FC=f77 (origin default), and ?= does
 # NOT override a default-origin variable, so `FC ?= gfortran` would silently leave FC=f77.
-# The pinned value is impl_defaults.toolchain.compiler when the spec sets it, else gfortran.
+# The pinned value is the target profile's toolchain.compiler when it sets one, else gfortran.
 # The dirs/BIN stay ?= because Build/Validate.execute inject them via command line / env.
 # SPEC/CASES stay ?= because Validate.execute injects them via the make-test env so the
 # `make test` re-run invokes the runner identically to run_program (`--cases <spec> <ids>`);
@@ -5938,8 +5934,9 @@ clean:
     def _build_pure_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
         string the renderer data-fences. All data is host-resolved from disk here (the leaf has
-        no filesystem): the harness capability manifest (A6), the node's toolchain/target
-        defaults, the lowered IR, the tests, and the host-rendered runner. Mirrors the must-read
+        no filesystem): the harness capability manifest (A6), the target profile
+        (`_pure_target_profile_document`), the lowered IR, the tests, and the host-rendered
+        runner. Mirrors the must-read
         set the agentic `generate.generate` leaf reads.
 
         Per phase_02 §2-1 the producer does NOT read controlled_spec.md — `spec.ir.yaml` is the
@@ -5973,7 +5970,6 @@ clean:
         except OSError:
             tests_text = ""
         ir = _read_yaml(ir_path) or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         # A missing runner RAISES rather than degrading to "" the way ir/tests do above.
         # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
         # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
@@ -5995,11 +5991,36 @@ clean:
                 harness_capability_manifest_document_for(
                     self._pure_harness_node_key(ir, refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": json.dumps(impl, indent=2, ensure_ascii=False),
+            "target_profile": self._pure_target_profile_document(ir),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_document": runner_text,
         }
+
+    def _pure_target_profile_document(self, ir: Any) -> str:
+        """The `<target_profile>` a pure `generate.generate` producer is shown, on both bundle
+        shapes: the host-resolved `impl_defaults` its template's rule calls OBLIGATIONS.
+
+        Since issue #284 the FIXED layer is the run's target profile, not the IR — `target_id`,
+        `target` (`class` / `backend` / `architecture`), `toolchain`, `execution` — because the
+        host builds, renders and runs for the profile, and a producer told the IR's values could
+        be held to a target nothing builds. The KNOB layer (`abstract`, `backend_overrides`) is
+        still the IR's until R4-a PR-3 moves it into the bundle's `target_lowering_plan`; the
+        IR's `selected` label is not shown (the profile does not carry one). The profile's hash
+        is in the generate key (`phase_derivation_inputs`), so a profile edit re-derives."""
+        target = self.target
+        impl = ir.get("impl_defaults") if isinstance(ir, dict) else None
+        doc: dict[str, Any] = {
+            "target_id": target.target_id,
+            "target": {"class": target.hardware_class, "backend": target.parallel_backend,
+                       "architecture": target.doc["hardware"]["architecture"]},
+            "toolchain": target.toolchain,
+            "execution": dict(target.doc["execution"]),
+        }
+        for knob in ("abstract", "backend_overrides"):
+            if isinstance(impl, dict) and knob in impl:
+                doc[knob] = impl[knob]
+        return json.dumps(doc, indent=2, ensure_ascii=False)
 
     def _build_pure_harness_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees on the HARNESS shape.
@@ -6033,8 +6054,8 @@ clean:
         not a substitute. See the slicer's docstring for the full history.
 
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
-        (its OWN, see `_pure_harness_node_key`), the toolchain/target defaults, the lowered IR
-        and the tests. Both repository documents RAISE on an unreadable or unsliceable file the
+        (its OWN, see `_pure_harness_node_key`), the target profile
+        (`_pure_target_profile_document`), the lowered IR and the tests. Both repository documents RAISE on an unreadable or unsliceable file the
         way the m3c producer's runner does — the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
@@ -6050,7 +6071,6 @@ clean:
         except OSError:
             tests_text = ""
         ir = _read_yaml(ir_path) or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -6074,7 +6094,7 @@ clean:
                 harness_capability_manifest_document_for(
                     self._pure_harness_node_key(ir, refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": json.dumps(impl, indent=2, ensure_ascii=False),
+            "target_profile": self._pure_target_profile_document(ir),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_output_contract_document": contract_text,
@@ -8535,6 +8555,9 @@ clean:
             "check-phase-certified", *self._oid_args(),
             "--node-key", node_key, "--step", phase,
             "--agent-run-id", self.orchestration_agent_run_id,
+            # The target the phase is certified FOR (issue #284), stated rather than left to
+            # the orchestration's record, so the answer is for the profile this conductor holds.
+            "--target", self.target.target_id,
             *(["--no-record"] if phase in self.rederive else []),
         ])
         return out if isinstance(out, dict) else {"certified": False}
@@ -8553,11 +8576,15 @@ clean:
         return out
 
     def reserve_root(self, node_key: str, step: str, reserved_id: str, by_arid: str) -> dict[str, Any]:
+        # A pipeline reservation names its target (issue #284): the id is a directory only
+        # under `workspace/pipelines/<safe>/<target_id>/`.
+        target_args = ["--target", self.target.target_id] if step == "generate" else []
         return self.runtime([
             "reserve-phase-root", *self._oid_args(),
             "--node-key", node_key, "--step", step,
             "--reserved-id", reserved_id,
             "--reserved-by-agent-run-id", by_arid,
+            *target_args,
         ])
 
     def set_status(self, status: str, reason_code: str | None = None,
@@ -8813,7 +8840,7 @@ clean:
         failure simply omits the exemplar (Generate proceeds without it)."""
         from tools.orchestration_runtime import _resolve_exemplar_source
         try:
-            return _resolve_exemplar_source(self.repo_root, refs.ir_ref)
+            return _resolve_exemplar_source(self.repo_root, refs.ir_ref, target=self.target)
         except Exception:
             return None
 
@@ -9370,11 +9397,9 @@ clean:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import tool_compile_project
 
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        toolchain = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        language = str(toolchain.get("language") or "fortran")
-        build_system = str(toolchain.get("build_system") or "make")
+        tc = self._read_toolchain(refs)
+        language = tc["language"]
+        build_system = tc["build_system"]
         self._require_make_build_system(build_system, "build")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
@@ -9396,8 +9421,8 @@ clean:
         # the copy is re-hashed against them; a failing build records them too: the binding
         # describes what was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
-        from tools.orchestration_runtime import _ir_toolchain_identity
-        toolchain_identity = _ir_toolchain_identity(ir)
+        from tools.orchestration_runtime import _target_toolchain_identity
+        toolchain_identity = _target_toolchain_identity(self.target)
 
         result = tool_compile_project({
             "project_dir": str(src_dir),
@@ -9443,6 +9468,7 @@ clean:
         (bdir / "compile.stdout.log").write_text(stdout, encoding="utf-8")
         (bdir / "compile.stderr.log").write_text(stderr, encoding="utf-8")
 
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
         direct_deps = dep.get("direct_deps") or []
         dep_keys = [d.get("node_key") if isinstance(d, dict) else d for d in direct_deps]
@@ -9466,11 +9492,13 @@ clean:
             # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
-            # The compiler the control file pins (the IR's, else the host default) and the
-            # first line of its `--version`: the toolchain identity the build derivation key
-            # hashes (issue #250), recorded on the binary it built. `compile_project` itself
-            # answers neither — make picks the compiler — so this is resolved the way the key
-            # resolves it, from the IR through the runtime's one reader.
+            # The target the binary was built for, and the compiler the control file pins (the
+            # target profile's, else the host default) with the first line of its `--version`:
+            # the toolchain identity the build derivation key hashes (issues #250, #284),
+            # recorded on the binary it built. `compile_project` itself answers neither — make
+            # picks the compiler — so this is resolved the way the key resolves it, from the
+            # profile through the runtime's one reader.
+            "target_id": toolchain_identity["target_id"],
             "compiler": toolchain_identity["compiler"],
             "compiler_version": toolchain_identity["compiler_version"],
             "binary_artifact_ref": f"binary/{refs.binary_id}/bin/{exe}",
@@ -10178,14 +10206,15 @@ clean:
                         })
 
                     # Attribution step 1 — is the INVOCATION itself viable? `std` comes from
-                    # the LLM-authored IR (impl_defaults.toolchain.standard) and goes straight
+                    # the target profile (`toolchain.standard`, operator-authored since issue
+                    # #284) and goes straight
                     # into `-std=<value>`: an unknown value (`-std=2008`, the elided-`f` form)
                     # makes the driver reject the command line, so no source is ever parsed and
                     # every file "fails" at once. Compiling a canary valid under every standard
                     # tells the two apart by the compiler's own verdict — no enumeration of the
                     # stds a given compiler VERSION accepts (`f2023` exists on GCC>=13 only, so
                     # any hard-coded set is wrong on some machine). The leaf cannot rewrite the
-                    # IR, so a broken invocation is a transport fail_closed, never a retry; and
+                    # profile, so a broken invocation is a transport fail_closed, never a retry; and
                     # attributing it to the dependency closure (which fails the same broken argv
                     # for the same reason) would send the operator to re-certify healthy nodes.
                     canary_dir = (self.repo_root / "workspace" / "tmp" / child_arid
@@ -10200,11 +10229,12 @@ clean:
                         raise RuntimeError(
                             f"generate.gate syntax check: the {compiler} invocation is not viable — it "
                             f"rejects even a canary source valid under every standard, so the "
-                            f"failure is the invocation, not the sources. Check "
-                            f"impl_defaults.toolchain.standard={tc['standard']!r} (it is passed "
+                            f"failure is the invocation, not the sources. Check the target "
+                            f"profile's toolchain.standard={tc['standard']!r} (spec/targets/"
+                            f"{self.target.target_id}.yaml; it is passed "
                             f"verbatim as -std=<value>; spell it the way the compiler names it, "
                             f"e.g. `f2008`, not `2008`) and the compiler installation. The leaf "
-                            f"does not author the IR, so no retry of this node can clear it.\n"
+                            f"does not author the profile, so no retry of this node can clear it.\n"
                             + "\n".join(canary_excerpt.splitlines()[-20:]))
 
                     # Attribution step 2 —
@@ -10265,14 +10295,15 @@ clean:
                             # standard to accommodate nonconforming code.
                             raise RuntimeError(
                                 f"generate.gate syntax check: the certified dependency closure does not "
-                                f"pass the {compiler} gate under this node's "
-                                f"impl_defaults.toolchain.standard={tc['standard']!r}, and this "
+                                f"pass the {compiler} gate under the target profile's "
+                                f"toolchain.standard={tc['standard']!r}, and this "
                                 f"node's leaf can fix neither the closure (it lies outside "
-                                f"source/<source_id>/src/) nor the IR. Either the dependency's "
+                                f"source/<source_id>/src/) nor the profile. Either the dependency's "
                                 f"certified source is defective — regenerate and re-certify it, "
-                                f"its own Generate.gate syntax check enforces the same rules — or this "
-                                f"node's declared standard rejects a sound closure, in which "
-                                f"case fix toolchain.standard (Build would compile the same "
+                                f"its own Generate.gate syntax check enforces the same rules — or the "
+                                f"target's declared standard rejects a sound closure, in which "
+                                f"case fix toolchain.standard in spec/targets/"
+                                f"{self.target.target_id}.yaml (Build would compile the same "
                                 f"closure under the same -std). The diagnostics below say which. "
                                 f"Staged: {', '.join(staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
@@ -10710,14 +10741,17 @@ clean:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import tool_run_program, tool_run_quality_checks
 
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        toolchain = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
-        target_class = str(target.get("class") or "cpu")
-        threads = 1
+        # The execution shape is the TARGET's (issue #284): its hardware class and threads per
+        # rank are what `run_program` is told, and the validate key binds them through the
+        # profile hash (`run_policy`). Until R4-a PR-2 the class came off the IR and the
+        # thread count was a literal 1 here, while the runner's perf record reported the IR's
+        # `backend_overrides.openmp.num_threads` — a count nothing ran with.
+        target = self.target
+        target_class = target.hardware_class
+        threads = target.threads_per_rank
         self._require_make_build_system(
-            str(toolchain.get("build_system") or "make"), "validate.execute")
+            self._read_toolchain(refs)["build_system"], "validate.execute")
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
 
         node_dir = self.repo_root / refs.run_node_dir()
         src_dir = self.repo_root / refs.source_dir() / "src"
@@ -10856,8 +10890,12 @@ clean:
             },
             "raw_artifact_refs": raw_refs,
             "environment": {
+                "target_id": target.target_id,
                 "target_class": target_class,
-                "backend": str(toolchain.get("backend") or "openmp"),
+                # The target's parallel backend. It read `toolchain.backend` until R4-a PR-2,
+                # a key the IR never had (`backend` sits under `target`), so every record said
+                # the fallback whatever the node declared.
+                "backend": target.parallel_backend,
                 "threads_per_rank": threads,
                 "openmp_env": {"OMP_NUM_THREADS": str(threads), "OMP_THREAD_LIMIT": str(threads)},
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
@@ -11347,9 +11385,9 @@ clean:
         (`phase_derivation_inputs` raises for that first; this raise is the guard behind it),
         and a binding whose output hash is not the one the key bound is refused outright —
         it cannot happen with one memoised resolver, and if it did, staging would compile
-        bytes the key never saw."""
-        from tools.orchestration_runtime import DerivationResolver
-        resolver = DerivationResolver(self.repo_root)
+        bytes the key never saw. The resolver is this run's target's (`_resolver`); a compile
+        key reads no pipeline artifact, so it answers the same for every target."""
+        resolver = self._resolver()
         derivation = phase_derivation(
             self.repo_root, node_key=refs.node_key, step=phase,
             spec_ref=refs.spec_path,
@@ -11358,9 +11396,9 @@ clean:
             binary_ref=(refs.binary_dir(refs.source_binary_id or refs.binary_id)
                         if (refs.source_binary_id or refs.binary_id) else None),
             resolver=resolver)
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        tc = self._read_toolchain(refs)
         if phase in ("generate", "build") and self._core_authors_control_file(
-                _ir_build_system(ir), _ir_language(ir)):
+                tc["build_system"], tc["language"]):
             # Bound only where they are staged: `_stage_dependency_sources` is a no-op for a
             # node whose control file the conductor does not author, and a member of such a
             # node's closure need not carry a source under the staged name.
@@ -11379,11 +11417,8 @@ clean:
         `_phase_derivation`. Each binding is `_resolve_certified_closure_binding`'s record;
         its `output_hash` must be the `source` the key bound, or the binding is refused.
         Raises `DerivationInputsUnresolvable`, phrased as the build precondition it is."""
-        from tools.orchestration_runtime import (
-            DerivationResolver,
-            _resolve_certified_closure_binding,
-        )
-        resolver = resolver or DerivationResolver(self.repo_root)
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
+        resolver = resolver or self._resolver()
         bindings: list[dict[str, Any]] = []
         for entry in closure:
             nk = str(entry.get("node_key") or "")
@@ -11705,8 +11740,10 @@ clean:
         closure = {t for t in _dependency_expected_node_keys(graph) if t != self_token}
         if not closure:
             return None
+        target_id = self.target.target_id
         missing = sorted(t for t in closure
-                         if not _closure_node_validated_in_own_pipeline(self.repo_root, t))
+                         if not _closure_node_validated_in_own_pipeline(
+                             self.repo_root, t, target_id))
         if not missing:
             return None
         return ("dependency closure not built+validated in its own pipeline; missing node "
@@ -11812,7 +11849,7 @@ clean:
         if not isinstance(dep, dict):
             dep = {}
         facts_by_token: dict[str, dict[str, Any]] = {}
-        for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref):
+        for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target):
             try:
                 facts_by_token[_normalize_node_key_token(str(fact.get("node_key")))] = fact
             except Exception:
@@ -11831,7 +11868,8 @@ clean:
             node_key = node_key.strip()
             try:
                 token = _normalize_node_key_token(node_key)
-                ready = _closure_node_validated_in_own_pipeline(self.repo_root, token)
+                ready = _closure_node_validated_in_own_pipeline(
+                    self.repo_root, token, self.target.target_id)
             except Exception:
                 ready = False
                 token = None
@@ -13028,8 +13066,11 @@ clean:
     def _target_ir_mismatch(self, refs: NodeRefs, phase: str) -> str | None:
         """The R4-a PR-1 bridge gate (issue #284; PR-3 deletes it with `impl_defaults`): before
         any phase after Compile, the IR the node's later phases read must declare the target the
-        run was launched for. Until PR-2 the host still reads the target from the IR, so a
-        disagreement would build for one target while recording another.
+        run was launched for. Since PR-2 the HOST reads every target field off the profile, so
+        what the bridge still protects is the IR's other readers: the `generate.verify`
+        reviewer judges the source against the IR's `impl_defaults` (G6), the compile-stage
+        validator's gates read them, and an IR written for another target would be reviewed
+        against a toolchain nothing builds.
 
         A transport `fail_closed`, not a leaf repair: the compile producer is not shown the
         profile in PR-1, so it cannot have satisfied it — the fix is a `--rederive compile` or a
@@ -13605,8 +13646,18 @@ def resume_node_refs(conductor: "Conductor", node_key: str, spec_path: str) -> N
             f"conductor resume: missing ir/pipeline reservation for {node_key} in "
             f"{conductor.orchestration_id}{hint}")
 
+    # The pipeline is the one this run's target reserved: a reservation recorded for another
+    # target (or, from before issue #284, for none) is not a directory this run can resume
+    # into, and the driver refuses a resume across targets before this is reached.
+    reserved_target = (_read_json(res_dir / "generate.json") or {}).get("target_id")
+    if reserved_target != conductor.target.target_id:
+        raise ValueError(
+            f"conductor resume: the pipeline reservation of {node_key} in "
+            f"{conductor.orchestration_id} is for target {reserved_target!r}, not "
+            f"{conductor.target.target_id!r}; start a new run")
     lineage = _read_json(
-        conductor.repo_root / "workspace" / "pipelines" / safe / str(pipeline_id)
+        conductor.repo_root
+        / pipeline_ref_for(safe, conductor.target.target_id, str(pipeline_id))
         / "lineage.json") or {}
 
     def _seed(key: str) -> str | None:
@@ -13620,7 +13671,7 @@ def resume_node_refs(conductor: "Conductor", node_key: str, spec_path: str) -> N
     run_id = run_id or f"run_{date}_001"
     return NodeRefs(
         node_key=node_key, spec_path=spec_path,
-        ir_id=ir_id, pipeline_id=pipeline_id,
+        ir_id=ir_id, pipeline_id=pipeline_id, target_id=conductor.target.target_id,
         source_id=source_id, binary_id=binary_id, run_id=run_id,
         source_binary_id=binary_id,
     )
@@ -13647,6 +13698,10 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
     safe = node_key_safe(node_key)
     slug = _slug_of(spec_id_of(node_key))
     date = _today()
+    target_id = conductor.target.target_id
+    # The pipelines of THIS target (issue #284): the IR is target-free and adopted as before,
+    # while a pipeline built from it for another target is not this run's to adopt.
+    pipe_root = conductor.repo_root / pipelines_dir(safe, target_id)
     ir_id = (None if "compile" in conductor.rederive
              else _certified_ir_candidate(conductor.repo_root, node_key, spec_ref=spec_path))
     pipeline_id = None
@@ -13654,7 +13709,6 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
         # The pipeline that was built FROM the adopted IR — identified by `lineage.json`,
         # the host-authored record of which IR a pipeline belongs to. Adopting the latest
         # pipeline unconditionally would bind the run to a pipeline of a different IR.
-        pipe_root = conductor.repo_root / "workspace" / "pipelines" / safe
         ir_ref = f"workspace/ir/{safe}/{ir_id}"
         for candidate in sorted((p for p in pipe_root.glob("*") if p.is_dir()),
                                 key=lambda p: p.name, reverse=True):
@@ -13673,13 +13727,8 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
         # Either the IR was minted, or it is certified but no pipeline was ever built from it
         # (a run stopped at `--until-phase compile`). Keep the adopted IR and mint the
         # pipeline: Compile stays skippable and Generate runs, which is exactly the state.
-        pipeline_id = (
-            f"{slug}_{date}_"
-            f"{conductor._mint_dir(conductor.repo_root / 'workspace' / 'pipelines' / safe, f'{slug}_{date}')}"
-        )
-    lineage = _read_json(
-        conductor.repo_root / "workspace" / "pipelines" / safe / str(pipeline_id)
-        / "lineage.json") or {}
+        pipeline_id = f"{slug}_{date}_{conductor._mint_dir(pipe_root, f'{slug}_{date}')}"
+    lineage = _read_json(pipe_root / str(pipeline_id) / "lineage.json") or {}
 
     def _adopted(key: str, fallback: str) -> str:
         value = lineage.get(key)
@@ -13687,7 +13736,7 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
 
     refs = NodeRefs(
         node_key=node_key, spec_path=spec_path,
-        ir_id=ir_id, pipeline_id=str(pipeline_id),
+        ir_id=ir_id, pipeline_id=str(pipeline_id), target_id=target_id,
         source_id=_adopted("source_id", f"src_{date}_001"),
         binary_id=_adopted("binary_id", f"bin_{date}_001"),
         run_id=_adopted("run_id", f"run_{date}_001"),

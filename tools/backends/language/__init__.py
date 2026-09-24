@@ -1,2 +1,2 @@
 #!/usr/bin/env python3
-"""`language` axis backends (IR key `impl_defaults.toolchain.language`)."""
+"""`language` axis backends (target profile key `toolchain.language`)."""

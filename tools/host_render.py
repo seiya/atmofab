@@ -7,7 +7,8 @@ backend (`tools/backends/<axis>/<backend_id>/`, `docs/BACKEND_BOUNDARY.md`); the
 author it, and the routing to the value that can, are neutral and live here.
 
 Every function takes the node's `language` (the `runner_render` capability's axis, read from
-`ir.impl_defaults.toolchain.language`) and dispatches through `registry.capability_module`. A
+the run's target profile, `toolchain.language`) and dispatches through
+`registry.capability_module`. A
 value that does not declare `runner_render` is REFUSED with the registry's own
 `missing_capability_reason` wording, verbatim — the alternative, falling through to whichever
 backend happens to be extracted, is the authorship flip the capability question exists to
@@ -125,13 +126,17 @@ def runner_render_refusal(language: Any) -> str | None:
     return None
 
 
-def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str:
-    """The complete text of the node's runner source, rendered from the IR alone.
+def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str,
+                  *, target: dict[str, Any]) -> str:
+    """The complete text of the node's runner source, rendered from the IR and the target.
 
-    Deterministic and pure. Raises `RenderError` for an IR the backend cannot faithfully render,
-    and `RunnerRenderUnavailable` when `language` declares no renderer.
+    `target` is the run's target profile document (`TargetProfile.doc`, issue #284): the
+    runner's performance record names the hardware class and threads per rank the run is
+    executed with, which are the target's and not the IR's. Deterministic and pure. Raises
+    `RenderError` for an IR the backend cannot faithfully render, and `RunnerRenderUnavailable`
+    when `language` declares no renderer.
     """
-    return _module(language).render_runner(ir, spec_id, harness_spec_id)
+    return _module(language).render_runner(ir, spec_id, harness_spec_id, target=target)
 
 
 def assert_harness_pin(

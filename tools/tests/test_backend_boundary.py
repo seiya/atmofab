@@ -93,6 +93,7 @@ if str(REPO_ROOT) not in sys.path:
 import tools.validate_pipeline_semantics as vps  # noqa: E402
 from tools import host_render  # noqa: E402
 from tools.backends import registry  # noqa: E402
+from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 
 #: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and `--check-baseline`'s growth
 #: finding tells the maintainer to do exactly that when a token appears in a neutral role.
@@ -2668,7 +2669,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         with self._patched(record):
             self.assertIsNotNone(host_render.runner_render_refusal("zz_liar"))
             for call in (lambda: host_render.checks_public_names("zz_liar"),
-                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx")):
+                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx", target=_TARGET_PROFILE.doc)):
                 with self.assertRaises(host_render.RunnerRenderUnavailable):
                     call()
 
@@ -2704,7 +2705,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         other = types.ModuleType("zz_other_lang_backend")
         other_runner = types.ModuleType("zz_other_lang_backend.runner")
         other_runner.CHECKS_PUBLIC_NAMES = ("zz_only_name",)
-        other_runner.render_runner = lambda ir, spec_id, harness: "! rendered by zz_other\n"
+        other_runner.render_runner = lambda ir, spec_id, harness, target: "! rendered by zz_other\n"
         other.runner = other_runner
         record = registry.Backend(
             "language", "zz_other", "zz_other_lang_backend",
@@ -2712,7 +2713,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"zz_other_lang_backend": other}), \
                 self._patched(record):
             self.assertEqual(("zz_only_name",), host_render.checks_public_names("zz_other"))
-            self.assertIn("zz_other", host_render.render_runner("zz_other", {}, "bx", "hx"))
+            self.assertIn("zz_other", host_render.render_runner("zz_other", {}, "bx", "hx", target=_TARGET_PROFILE.doc))
             # ...and the incumbent still answers for itself, so the assertion above cannot pass
             # by the seam having been broken for everyone.
             self.assertIn("case_setup", host_render.checks_public_names("fortran"))
@@ -2738,7 +2739,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         other = types.ModuleType("zz_second_lang")
         runner = types.ModuleType("zz_second_lang.runner")
         runner.CHECKS_PUBLIC_NAMES = ("zz_only_abi_name",)
-        runner.render_runner = lambda ir, spec_id, harness: "! zz_second\n"
+        runner.render_runner = lambda ir, spec_id, harness, target: "! zz_second\n"
         runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
@@ -3091,7 +3092,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             self.assertIsNotNone(expected)
             self.assertEqual(expected, host_render.runner_render_refusal("zz_no_renderer"))
             for call in (
-                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx"),
+                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx", target=_TARGET_PROFILE.doc),
                     lambda: host_render.checks_public_names("zz_no_renderer"),
                     lambda: host_render.ir_content_violations(
                         "zz_no_renderer", {}, "bx", "hx"),

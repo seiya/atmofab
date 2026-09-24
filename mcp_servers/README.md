@@ -141,7 +141,7 @@ An example of `Generate`'s `static lint` (assuming `fortran`):
 {
   "name": "run_linter",
   "arguments": {
-    "project_dir": "/path/to/workspace/pipelines/<node_key_safe>/<pipeline_id>/generate/<generation_id>/src",
+    "project_dir": "/path/to/workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/generate/<generation_id>/src",
     "command_log_path": "command_log.jsonl",
     "preset": "fortitude",
     "timeout_sec": 1800

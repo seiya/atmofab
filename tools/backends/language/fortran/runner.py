@@ -444,22 +444,23 @@ def _test_evidence(ir: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return out
 
 
-def _target_class(ir: dict[str, Any]) -> str:
-    impl = _dget(ir, "impl_defaults", {})
-    target = _dget(impl, "target", {})
-    cls = target.get("class") if isinstance(target, dict) else None
-    return cls.strip() if isinstance(cls, str) and cls.strip() else "cpu"
+def _target_class(target: dict[str, Any]) -> str:
+    """The hardware class the run executes on, off the target profile document (issue #284)."""
+    return str(target["hardware"]["class"])
 
 
-def _threads(ir: dict[str, Any]) -> int:
-    impl = _dget(ir, "impl_defaults", {})
-    ov = _dget(impl, "backend_overrides", {})
-    omp = _dget(ov, "openmp", {})
-    n = omp.get("num_threads") if isinstance(omp, dict) else None
-    try:
-        return max(1, int(n))
-    except (TypeError, ValueError):
-        return 1
+def _threads(target: dict[str, Any]) -> int:
+    """The threads per rank the run executes with — the target profile's `execution`, which
+    is what `run_program` is told. Until R4-a PR-2 this read the IR's
+    `backend_overrides.openmp.num_threads`, a count the run never used."""
+    return int(target["execution"]["threads_per_rank"])
+
+
+#: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
+#: IR renders, and discards the text. Both values reach nothing but the perf-record line, which
+#: raises for no value, so they decide no violation.
+_DRY_RUN_TARGET: dict[str, Any] = {"hardware": {"class": "cpu"},
+                                   "execution": {"threads_per_rank": 1}}
 
 
 def _infra_dep_count(ir: dict[str, Any]) -> int:
@@ -573,7 +574,7 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     construction). Those belong to spec-input validation, NOT a compile.generate retry; they
     remain ``render_runner`` fail-closes as a backstop (see the module docstring)."""
     try:
-        render_runner(ir, spec_id, harness_spec_id)
+        render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET)
     except RenderError as exc:
         return [] if exc.identity else [str(exc)]
     except Exception as exc:  # noqa: BLE001
@@ -588,12 +589,15 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     return []
 
 
-def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str:
-    """Render ``<spec_id>_runner.f90`` from the IR alone. Deterministic and pure.
+def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
+                  *, target: dict[str, Any]) -> str:
+    """Render ``<spec_id>_runner.f90`` from the IR and the target. Deterministic and pure.
 
     ``harness_spec_id`` is the certified plumbing module's spec_id
-    (``harness_fortran_cpu``). See module docstring for the render-error matrix.
-    The returned text is the complete Fortran source (trailing newline included).
+    (``harness_fortran_cpu``). ``target`` is the run's target profile document, read for the
+    perf record's hardware class and thread count only. See module docstring for the
+    render-error matrix. The returned text is the complete Fortran source (trailing newline
+    included).
     """
     # `spec_id`/`harness_spec_id` empty and IR-not-a-mapping are node-identity/caller defects,
     # not authored content — flag identity so the compile.static mirror excludes them.
@@ -636,8 +640,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str
     checks = _checks(ir)
     metrics = _metrics(ir)
     evidence = _test_evidence(ir)
-    target_class = _target_class(ir)
-    threads = _threads(ir)
+    target_class = _target_class(target)
+    threads = _threads(target)
 
     # ranks the schema declares, so we import only the emitters we call (an unused `use only`
     # name would trip lint). Every snapshot variable is captured for EVERY case (Z6): the

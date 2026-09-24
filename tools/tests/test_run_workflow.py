@@ -23,6 +23,8 @@ from tools import llm_config as lc
 from tools import run_workflow
 from tools import target_profile as tp
 from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import FORTRAN_CPU as _TP_RW
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
@@ -1683,7 +1685,11 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
-            with run_workflow._exclusive_claim(repo_root, "spec", "spec/problem/test.md") as held:
+            # The claim is per spec AND target (issue #284): the run's target is the fixture's.
+            from tools.tests.target_fixtures import FORTRAN_CPU
+            with run_workflow._exclusive_claim(
+                    repo_root, "spec",
+                    run_workflow._spec_claim_key("spec/problem/test.md", FORTRAN_CPU)) as held:
                 self.assertTrue(held)
                 code, out, calls = self._run_main_with_fake_runtime(
                     ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
@@ -1978,8 +1984,10 @@ class RunWorkflowTests(unittest.TestCase):
                 spec_ref="spec/problem/test.md", until_phase="Build",
                 mode="dev", backend="claude",
             )
+            from tools.tests.target_fixtures import FORTRAN_CPU
             with run_workflow._exclusive_claim(
-                repo_root, "spec", "spec/problem/test.md"
+                repo_root, "spec",
+                run_workflow._spec_claim_key("spec/problem/test.md", FORTRAN_CPU)
             ) as held:
                 self.assertTrue(held)
                 code, out, calls = self._run_main_with_fake_runtime(
@@ -5075,7 +5083,7 @@ class DependencyClosureTests(unittest.TestCase):
             # A node becomes ready once it has run (simulates artifact production
             # without a real workflow). Exercises both the pre-run skip check and
             # the post-run readiness verification.
-            def fake_ready(repo_root, node, required_stages):
+            def fake_ready(repo_root, node, required_stages, target_profile=None):
                 # The driver reads the DICT form; a bool fake here would be bypassed.
                 ready = node["spec_ref"] in ran
                 return {"ready": ready, "version": node["spec_versions"][0],
@@ -5129,7 +5137,7 @@ class DependencyClosureTests(unittest.TestCase):
             ran.add(kw["spec_ref"])
             return 0
 
-        def fake_ready(repo_root, node, required_stages):
+        def fake_ready(repo_root, node, required_stages, target_profile=None):
             # The driver reads the DICT form; a bool fake here would be bypassed.
             ready = node["spec_ref"] in ran
             return {"ready": ready, "version": node["spec_versions"][0],
@@ -5462,7 +5470,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
-            def fake_readiness(repo_root_, node, required_stages):
+            def fake_readiness(repo_root_, node, required_stages, target_profile=None):
                 ready = node["spec_id"] == "c"
                 return {"ready": ready, "version": node["spec_versions"][0],
                         "failed_stage": None if ready else "pipeline_ref",
@@ -5566,7 +5574,7 @@ class DependencyClosureTests(unittest.TestCase):
                             until_phase="Validate", llm="claude", llm_command="claude",
                             llm_config=_sample_config("claude"), workflow_mode="dev",
                             agent_model=None, status="running", run_conductor=False,
-                            stdout_format="jsonl")
+                            stdout_format="jsonl", target_profile=_TP_RW)
                 finally:
                     run_workflow._run_node = orig  # type: ignore[assignment]
                 events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
@@ -5647,7 +5655,7 @@ class DependencyClosureTests(unittest.TestCase):
                             until_phase="Validate", llm="claude", llm_command="claude",
                             llm_config=_sample_config("claude"), workflow_mode="dev",
                             agent_model=None, status="running", run_conductor=False,
-                            stdout_format="jsonl")
+                            stdout_format="jsonl", target_profile=_TP_RW)
                 finally:
                     run_workflow._run_node = orig  # type: ignore[assignment]
                 events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
@@ -6008,14 +6016,16 @@ class ParallelClosureTests(unittest.TestCase):
             captured.append(kw)
             return 0
 
-        def fake_ready(root, node, required_stages):
+        def fake_ready(root, node, required_stages, target_profile=None):
             return {"ready": state["ready"], "version": node["spec_versions"][0],
                     "failed_stage": None if state["ready"] else "ir_ref",
                     "detail": None if state["ready"] else "fake: not derived"}
 
         def hold() -> None:
-            with run_workflow._exclusive_claim(repo_root, "spec", "spec/component/c",
-                                               stdout_format="jsonl"):
+            from tools.tests.target_fixtures import FORTRAN_CPU
+            with run_workflow._exclusive_claim(
+                    repo_root, "spec", run_workflow._spec_claim_key("spec/component/c", FORTRAN_CPU),
+                    stdout_format="jsonl"):
                 holder_started.set()
                 time.sleep(hold_spec_claim_for)
                 state["ready"] = ready
@@ -6121,7 +6131,7 @@ class ParallelClosureTests(unittest.TestCase):
                     time.sleep(0.6)
                     state["ready"] = True
 
-            def fake_ready(root, node, required_stages):
+            def fake_ready(root, node, required_stages, target_profile=None):
                 return {"ready": state["ready"], "version": node["spec_versions"][0],
                         "failed_stage": None if state["ready"] else "ir_ref",
                         "detail": None if state["ready"] else "fake"}
@@ -6170,7 +6180,7 @@ class ParallelClosureTests(unittest.TestCase):
                                    lambda **kw: captured.append(kw) or 0), \
                     mock.patch.object(run_workflow, "_run_with_dependency_closure") as closure, \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                      lambda r, n, s, *_target: {"ready": False, "version": "0.1.0",
                                                        "failed_stage": "ir_ref", "detail": "x"}), \
                     redirect_stdout(io.StringIO()):
                 code = run_workflow.main(
@@ -6209,7 +6219,7 @@ class ParallelClosureTests(unittest.TestCase):
                             "closure_until_phase": "Compile"})
             asked: list[list[str]] = []
 
-            def fake_ready(root, node, required_stages):
+            def fake_ready(root, node, required_stages, target_profile=None):
                 asked.append(list(required_stages))
                 # Compile stands; the execution stages do not — ready under `[ir_ref]` only.
                 ready = required_stages == ["ir_ref"]
@@ -6363,7 +6373,7 @@ class ParallelClosureTests(unittest.TestCase):
                  str(rc_by_spec.get(spec, 0)), "skip" if spec in skip else "run", oid],
                 stdout=subprocess.PIPE, text=True, bufsize=1)
 
-        def fake_ready(root, node, required_stages):
+        def fake_ready(root, node, required_stages, target_profile=None):
             ready = (not always_unready
                      and (marks / (node["spec_ref"].replace("/", "_") + ".ready")).exists())
             return {"ready": ready, "version": node["spec_versions"][0],
@@ -6606,7 +6616,7 @@ class ParallelClosureTests(unittest.TestCase):
                     stdout=subprocess.PIPE, text=True, bufsize=1)
             with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                      lambda r, n, s, *_target: {"ready": False, "version": "0.1.0",
                                                        "failed_stage": "ir_ref", "detail": "x"}):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -6666,7 +6676,7 @@ class ParallelClosureTests(unittest.TestCase):
             released: list[str] = []
             with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                      lambda r, n, s, *_target: {"ready": False, "version": "0.1.0",
                                                        "failed_stage": "ir_ref", "detail": "x"}), \
                     mock.patch.object(run_workflow, "_closure_member_resume_rejection",
                                       lambda *a, **k: None):
@@ -6715,7 +6725,7 @@ class ParallelClosureTests(unittest.TestCase):
                             encoding="utf-8")
             with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                      lambda r, n, s, *_target: {"ready": False, "version": "0.1.0",
                                                        "failed_stage": "ir_ref", "detail": "x"}):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -6776,7 +6786,7 @@ class ParallelClosureTests(unittest.TestCase):
                     [sys.executable, "-c", self._INTERRUPTIBLE_CHILD, str(marks),
                      spec.replace("/", "_")], repo_root=repo_root, env=env)
 
-            def fake_ready(root, node, required_stages):
+            def fake_ready(root, node, required_stages, target_profile=None):
                 ready = (marks / (node["spec_ref"].replace("/", "_") + ".ready")).exists()
                 return {"ready": ready, "version": node["spec_versions"][0],
                         "failed_stage": None if ready else "ir_ref",
@@ -6878,7 +6888,7 @@ class ParallelClosureTests(unittest.TestCase):
             started = time.monotonic()
             with mock.patch.object(run_workflow, "_launch_closure_member", fake_launch), \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda r, n, s: {"ready": False, "version": "0.1.0",
+                                      lambda r, n, s, *_target: {"ready": False, "version": "0.1.0",
                                                        "failed_stage": "ir_ref", "detail": "x"}), \
                     mock.patch.object(run_workflow, "_CLOSURE_MEMBER_INTERRUPT_GRACE_SECONDS", 1.0), \
                     mock.patch.object(run_workflow.time, "sleep", interrupting_sleep), \
@@ -6939,7 +6949,7 @@ class ParallelClosureTests(unittest.TestCase):
                 "real_launch = rw._launch_closure_member\n"
                 "def fake_launch(argv, *, repo_root, env):\n"
                 "    return real_launch([sys.executable, '-c', child, str(marks), argv[2].replace('/', '_')], repo_root=repo_root, env=env)\n"
-                "def fake_ready(root, node, required_stages):\n"
+                "def fake_ready(root, node, required_stages, target_profile=None):\n"
                 "    ready = (marks / (node['spec_ref'].replace('/', '_') + '.ready')).exists()\n"
                 "    return {'ready': ready, 'version': node['spec_versions'][0], 'failed_stage': None if ready else 'ir_ref', 'detail': None if ready else 'x'}\n"
                 "runs = []\n"
@@ -6998,7 +7008,7 @@ class ParallelClosureTests(unittest.TestCase):
                 ran.append(kw["spec_ref"])
                 return 0
 
-            def fake_ready(root, node, required_stages):
+            def fake_ready(root, node, required_stages, target_profile=None):
                 ready = node["spec_ref"] in ran
                 return {"ready": ready, "version": node["spec_versions"][0],
                         "failed_stage": None if ready else "ir_ref",
@@ -7965,7 +7975,7 @@ class SubstepEventTests(unittest.TestCase):
 
         stub = _Stub()
         # Validate uses four substeps (pre_judge, execute, judge, post_judge).
-        refs = wc.NodeRefs(
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/x@0.1.0", spec_path="spec/x",
             ir_id="ir1", pipeline_id="pl1",
             source_id="src", binary_id="bin", run_id="r1", source_binary_id="bin",
@@ -8046,7 +8056,7 @@ class SubstepEventTests(unittest.TestCase):
                 return None
 
         stub = _Stub()
-        refs = wc.NodeRefs(
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/x@0.1.0", spec_path="spec/x",
             ir_id="ir1", pipeline_id="pl1",
             source_id="src", binary_id="bin", run_id="r1", source_binary_id="bin",
@@ -9011,7 +9021,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             try:
                 run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
                 run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
-                    lambda root, node, stages: {
+                    lambda root, node, stages, *_target: {
                         "ready": node["spec_ref"] in ran,
                         "version": node["spec_versions"][0],
                         "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
@@ -9069,7 +9079,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             try:
                 run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
                 run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
-                    lambda root, node, stages: {
+                    lambda root, node, stages, *_target: {
                         "ready": node["spec_ref"] in ran,
                         "version": node["spec_versions"][0],
                         "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
@@ -9124,7 +9134,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             try:
                 run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
                 run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
-                    lambda root, node, stages: {
+                    lambda root, node, stages, *_target: {
                         "ready": node["spec_ref"] in ran,
                         "version": node["spec_versions"][0],
                         "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
@@ -9172,7 +9182,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             buf = io.StringIO()
             with mock.patch.object(run_workflow, "_runtime_command", self._fake_runtime), \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
-                                      lambda root, node, stages: {
+                                      lambda root, node, stages, *_target: {
                                           "ready": False, "version": node["spec_versions"][0],
                                           "failed_stage": "ir_ref", "detail": "fake"}), \
                     mock.patch.object(run_workflow, "_run_node",

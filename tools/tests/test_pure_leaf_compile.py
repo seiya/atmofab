@@ -32,6 +32,7 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as backend_registry
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_pure_leaf_producer import (
     _conductor,
     _envelope,
@@ -128,7 +129,7 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
     catalog.write_text(yaml.safe_dump({"catalog_version": "0.2.0", "specs": specs},
                                       sort_keys=False), encoding="utf-8")
 
-    refs = wc.NodeRefs(node_key=node, spec_path=spec_path, ir_id=_IR_ID,
+    refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=node, spec_path=spec_path, ir_id=_IR_ID,
                        pipeline_id="p_20260907_001")
     ir_dir = repo / refs.ir_ref
     ir_dir.mkdir(parents=True, exist_ok=True)

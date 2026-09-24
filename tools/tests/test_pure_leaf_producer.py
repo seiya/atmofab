@@ -28,6 +28,8 @@ import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 
 _NODE = "problem/shallow_water2d@0.3.0"
 _SAFE = wc.node_key_safe(_NODE)
@@ -38,7 +40,7 @@ _SPEC_PATH = "spec/problem/ocean/shallow_water2d"
 
 def _runner_text() -> str:
     from tools.backends.language.fortran.runner import render_runner
-    return render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID)
+    return render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc)
 
 
 def cb_runner_imports(runner_text: str, spec_id: str) -> tuple[str, ...]:
@@ -192,6 +194,9 @@ def _write_node(repo: Path, *, ir_id="sw_20260715_001", source_id="src_20260715_
                 state_vars=("h", "u", "v"), stage_runner=True) -> wc.NodeRefs:
     """Write a minimal M3c IR + dependency-graph sidecar + tests.md for the node, and stage the
     host-rendered runner the way `run_phase` does before any generate substep runs."""
+    # The target the pipeline is built for (issue #284): a reader holding only a path loads it.
+    from tools.tests.target_fixtures import install_target_profile
+    install_target_profile(repo)
     ir_dir = repo / "workspace" / "ir" / _SAFE / ir_id
     ir_dir.mkdir(parents=True, exist_ok=True)
     ir = _node_ir(state_vars)
@@ -210,7 +215,7 @@ def _write_node(repo: Path, *, ir_id="sw_20260715_001", source_id="src_20260715_
     (spec_dir / "controlled_spec.md").write_text(
         "## 5 Algorithm\nhydrostatic reconstruction: h_star = max(0, eta - z_b)\n",
         encoding="utf-8")
-    refs = wc.NodeRefs(node_key=_NODE, spec_path=_SPEC_PATH, ir_id=ir_id,
+    refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=_NODE, spec_path=_SPEC_PATH, ir_id=ir_id,
                        pipeline_id="sw_20260715_001", source_id=source_id)
     if stage_runner:
         src_dir = repo / refs.source_dir() / "src"
@@ -221,9 +226,17 @@ def _write_node(repo: Path, *, ir_id="sw_20260715_001", source_id="src_20260715_
 
 class _PureFakeConductor(wc.Conductor):
     """Conductor with the runtime CLI and leaf spawn stubbed, but the pure host-side logic
-    (context assembly, bundle validation, graph derivation, artifact writes) real."""
+    (context assembly, bundle validation, graph derivation, artifact writes) real. Its target
+    reads answer the fixture repository's own profile, else the checked-in one, when none is
+    passed (issue #284, `target_fixtures.fixture_target`), without setting `target_profile`,
+    so the R4-a bridge gate stays off for a fake built bare."""
 
     envelopes: list[str] = []
+
+    @property
+    def target(self):  # type: ignore[override]
+        from tools.tests.target_fixtures import fixture_target
+        return fixture_target(self.repo_root, self.target_profile)
 
     def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
         # In-memory: this fixture's repo_root is a shared throwaway path, and the real
@@ -480,7 +493,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         )
         ir = _node_ir()
         ir["io_contract"]["diagnostics_contract"]["metrics"] = []
-        imported = cb_runner_imports(render_runner(ir, _SPEC_ID, _HARNESS_SPEC_ID), _SPEC_ID)
+        imported = cb_runner_imports(render_runner(ir, _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc), _SPEC_ID)
         self.assertTrue(set(imported) < set(CHECKS_PUBLIC_NAMES), imported)
         bad = _valid_bundle()
         syms = list(imported)
@@ -2563,7 +2576,9 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         # The tamper gate now re-runs the FULL acceptance contract, so it reads the IR + sidecar
         # for capability negotiation / state vars / assembly graph — write them (returns ir_ref).
         refs = _write_node(repo)
-        gen = repo / "src" / _SPEC_ID
+        # A source directory of the node's pipeline, under its target (issue #284): the gate
+        # reads the toolchain it re-checks against off that store coordinate.
+        gen = repo / refs.source_dir()
         (gen / "src").mkdir(parents=True, exist_ok=True)
         bundle = _valid_bundle()
         (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
@@ -2826,6 +2841,9 @@ def _write_harness_node(repo: Path, *, ir_id="h_20260908_001",
     """The harness node's IR + sidecar + spec documents. NO runner is staged: on this shape the
     host renders none — that is what makes it the second shape rather than an M3c node."""
     import yaml
+
+    from tools.tests.target_fixtures import install_target_profile
+    install_target_profile(repo)
     ir_dir = repo / "workspace" / "ir" / _HARNESS_SAFE / ir_id
     ir_dir.mkdir(parents=True, exist_ok=True)
     (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_harness_ir()), encoding="utf-8")
@@ -2836,7 +2854,7 @@ def _write_harness_node(repo: Path, *, ir_id="h_20260908_001",
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "tests.md").write_text("- test: the plumbing round-trips\n", encoding="utf-8")
     (spec_dir / "controlled_spec.md").write_text("## 5 Algorithm\nplumbing\n", encoding="utf-8")
-    return wc.NodeRefs(node_key=_HARNESS, spec_path=_HARNESS_SPEC_PATH, ir_id=ir_id,
+    return wc.NodeRefs(target_id=_TARGET_ID, node_key=_HARNESS, spec_path=_HARNESS_SPEC_PATH, ir_id=ir_id,
                        pipeline_id="h_20260908_001", source_id=source_id)
 
 
@@ -3043,11 +3061,10 @@ class PureHarnessShapeTests(unittest.TestCase):
         be checked against — rests on the language being READ, and a round-5 sweep found
         hardcoding it to `"fortran"` survived every test file. The preset table is keyed by
         language, so the witness varies the language and requires the resolution to follow."""
-        import yaml
-        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
-        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
-        ir["impl_defaults"]["toolchain"]["language"] = "python"
-        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        # The language is the TARGET's (issue #284): declare a profile variant in the fixture
+        # repository, which the fake's `target` reads.
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        install_target_profile(self.repo, profile_with(toolchain={"language": "python"}))
         # `python` resolves to a linter that declares no `lint_rules`, so a resolution that
         # followed the node would refuse — and one that ignored it would answer fortitude's set.
         with self.assertRaises(RuntimeError) as caught:
@@ -3239,11 +3256,16 @@ class PureHarnessShapeTests(unittest.TestCase):
         import yaml
         ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
         ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
-        # A toolchain the neutral core writes no control file for: both readers answer None.
-        ir["impl_defaults"]["toolchain"]["language"] = "zz_lang"
-        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        # A toolchain the neutral core writes no control file for — the TARGET's (issue #284),
+        # declared in the fixture repository, which both the fake and the gate read: both
+        # readers answer None.
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        other = profile_with(toolchain={"language": "zz_lang"})
+        install_target_profile(self.repo, other)
         self.assertIsNone(self.c._bundle_shape(self.refs))
-        self.assertIsNone(vps._ir_bundle_shape(ir, self.refs.node_key))
+        self.assertIsNone(vps._ir_bundle_shape(
+            ir, self.refs.node_key,
+            (other.toolchain["build_system"], other.toolchain["language"])))
 
         doc = _harness_bundle()
         gen = self.repo / self.refs.source_dir()
@@ -3261,8 +3283,10 @@ class PureHarnessShapeTests(unittest.TestCase):
         import yaml
         ir = yaml.safe_load(
             (self.repo / self.refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
+        tc = self.c._read_toolchain(self.refs)
         self.assertEqual(self.c._bundle_shape(self.refs),
-                         vps._ir_bundle_shape(ir, self.refs.node_key))
+                         vps._ir_bundle_shape(ir, self.refs.node_key,
+                                              (tc["build_system"], tc["language"])))
 
 
 if __name__ == "__main__":

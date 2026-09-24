@@ -20,6 +20,14 @@ upstream outputs) — the fixture cannot invent it, and does not try: it asks th
 the predicate asks, so a test that then edits one input observes exactly the mismatch a real
 edit produces. `ensure_spec_entry` writes the minimal spec directory + catalog entry the key
 needs; `certify_node` calls it unless told the caller owns the registry.
+
+Since issue #284 (R4-a PR-2) every Generate / Build / Validate output is a `node_key × target`
+fact: `certify_node` writes the pipeline under `workspace/pipelines/<safe>/<target_id>/`, keys
+it for `target` (the checked-in profile by default, `target_fixtures.FORTRAN_CPU`), records the
+target on the pipeline reservation, installs the profile file into the fixture repository (the
+readers that learn the target from a path load it from there) and, when the orchestration
+exists, records it as `orchestration_meta.json#invocation.target` — the target the
+orchestration-scoped predicates ask for.
 """
 
 from __future__ import annotations
@@ -110,6 +118,23 @@ def ensure_spec_entry(
     return spec_ref
 
 
+def record_orchestration_target(repo_root: Path, orchestration_id: str,
+                                target: Any = None) -> None:
+    """Record `target` as the orchestration's `invocation.target` (what `run_workflow.py`
+    writes at launch), when the orchestration's meta exists; a no-op otherwise."""
+    from tools.tests.target_fixtures import fixture_target
+    target = fixture_target(repo_root, target)
+    meta_path = (repo_root / "workspace" / "orchestrations" / orchestration_id
+                 / "orchestration_meta.json")
+    if not meta_path.is_file():
+        return
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    invocation = meta.get("invocation") if isinstance(meta.get("invocation"), dict) else {}
+    invocation["target"] = {"target_id": target.target_id, "sha256": target.sha256}
+    meta["invocation"] = invocation
+    _write_json(meta_path, meta)
+
+
 def write_dependency_graph_sidecar(repo_root: Path, node_key: str, ir_ref: str,
                                    *, spec_ref: str | None = None) -> dict[str, Any]:
     """Author `<ir_ref>/dependency_graph.json` the way the conductor does at Compile start
@@ -134,20 +159,23 @@ def stamp_derivation(
     repo_root: Path, node_key: str, step: str, meta_ref: str, *,
     spec_ref: str | None = None, ir_ref: str | None = None,
     source_ref: str | None = None, binary_ref: str | None = None,
+    target: Any = None,
 ) -> dict[str, Any]:
     """Stamp the derivation record and `output_hash` of ONE phase into its certifying meta at
     `meta_ref` (repo-relative), computed the way the stamp computes them: the key over
-    `phase_derivation`'s inputs NOW, the output hash over the meta's own `artifact_hashes`.
-    Returns the stamped document."""
+    `phase_derivation`'s inputs NOW (for `target`, the checked-in profile by default), the
+    output hash over the meta's own `artifact_hashes`. Returns the stamped document."""
     from tools.derivation import output_hash
     from tools.orchestration_runtime import DerivationResolver, phase_derivation
+    from tools.tests.target_fixtures import fixture_target
 
     if spec_ref is None:
         spec_ref = DerivationResolver(repo_root).spec_ref(node_key) or spec_ref_of(node_key)
     record = phase_derivation(
         repo_root, node_key=node_key, step=step,
         spec_ref=spec_ref, ir_ref=ir_ref,
-        source_ref=source_ref, binary_ref=binary_ref)
+        source_ref=source_ref, binary_ref=binary_ref,
+        target=fixture_target(repo_root, target))
     path = repo_root / meta_ref
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["derivation_key"] = record["derivation_key"]
@@ -208,6 +236,7 @@ def certify_node(
     model_text: str | None = None,
     ir_text: str | None = None,
     exe_bytes: bytes | None = None,
+    target: Any = None,
 ) -> dict[str, str]:
     """Write the certified artifact chain for `node_key` up to and including `through`.
 
@@ -219,26 +248,34 @@ def certify_node(
     and catalog entry the key resolves (`ensure_spec_entry`); pass `False` when the test
     owns the registry and has already written an entry for this node.
     """
+    from tools.tests.target_fixtures import fixture_target, install_target_profile
+    from tools.tests.target_fixtures import pipe_ref as _pr
+    # The repository's own declared profile when it has one (a test that declared a variant
+    # certifies FOR it), else the checked-in one — the rule the conductor fakes read by.
+    target = fixture_target(repo_root, target)
     safe = node_safe(node_key)
     spec_id = spec_id_of(node_key)
     idx = _PHASE_ORDER.index(through)
     if spec_entry:
         ensure_spec_entry(repo_root, node_key)
+    install_target_profile(repo_root, target)
+    record_orchestration_target(repo_root, orchestration_id, target)
 
     def _stamp(step: str, meta_ref: str, **refs: str | None) -> None:
         if stamp:
-            stamp_derivation(repo_root, node_key, step, meta_ref, **refs)
+            stamp_derivation(repo_root, node_key, step, meta_ref, target=target, **refs)
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     ir_dir = repo_root / "workspace" / "ir" / safe / ir_id
-    pipe_dir = repo_root / "workspace" / "pipelines" / safe / pipeline_id
+    pipe_ref = _pr(safe, pipeline_id, target.target_id)
+    pipe_dir = repo_root / pipe_ref
     ir_ref = f"workspace/ir/{safe}/{ir_id}"
-    pipe_ref = f"workspace/pipelines/{safe}/{pipeline_id}"
 
     if reserve:
         for step, reserved in (("compile", ir_id), ("generate", pipeline_id)):
             _write_json(orch_root / "reservations" / safe / f"{step}.json", {
                 "node_key": node_key, "step": step, "reserved_ir_id": reserved,
                 "reserved_by_agent_run_id": "orch_run_001", "status": "reserved",
+                **({"target_id": target.target_id} if step == "generate" else {}),
             })
 
     ir_dir.mkdir(parents=True, exist_ok=True)
