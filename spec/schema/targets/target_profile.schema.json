@@ -58,7 +58,7 @@
       "required": ["infrastructure_id", "version_constraint"],
       "properties": {
         "infrastructure_id": {"$ref": "#/definitions/token"},
-        "version_constraint": {"type": "string", "minLength": 1}
+        "version_constraint": {"type": "string", "pattern": "\\S"}
       }
     }
   },

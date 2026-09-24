@@ -239,6 +239,9 @@ class SchemaAgreementTests(unittest.TestCase):
                          list(tp.HARDWARE_CLASSES))
         self.assertEqual(schema["properties"]["target_id"]["pattern"],
                          f"^{tp.TARGET_ID_PATTERN.pattern}(?![\\s\\S])")
+        # A blank constraint is refused by both copies (the loader strips).
+        self.assertEqual(
+            schema["properties"]["harness"]["properties"]["version_constraint"]["pattern"], r"\S")
         self.assertEqual(schema["definitions"]["token"]["pattern"],
                          f"^{tp.TOKEN_PATTERN.pattern}(?![\\s\\S])")
 
@@ -277,22 +280,29 @@ class LaunchGateTests(unittest.TestCase):
 
         real = registry.provides
 
-        def without_runner(axis: str, backend_id: str, capability: str) -> bool:
-            return capability != "runner_render" and real(axis, backend_id, capability)
+        def without(withdrawn_axis: str, withdrawn: str):
+            def provides(axis: str, backend_id: str, capability: str) -> bool:
+                return (not (axis == withdrawn_axis and capability == withdrawn)
+                        and real(axis, backend_id, capability))
+            return provides
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             profile = self._profile(repo)
-            with mock.patch.object(registry, "provides", without_runner):
-                self.assertTrue(tp.target_profile_violations(repo.root, profile))
-                self.assertEqual(tp.target_profile_violations(
-                    repo.root, profile, node_key="infrastructure/harness_x@0.7.0"), [])
-
-            def without_build(axis: str, backend_id: str, capability: str) -> bool:
-                return capability != "build_execute" and real(axis, backend_id, capability)
+            # One row per (axis, capability) a non-infrastructure node needs: the registry
+            # today gives its one language and one build system every capability, so only a
+            # withdrawal can tell the four requirements apart (round 1: dropping the
+            # language's `control_file` survived).
+            for axis, capability in (("language", "runner_render"), ("language", "control_file"),
+                                     ("build_system", "control_file")):
+                with self.subTest(axis=axis, capability=capability), \
+                        mock.patch.object(registry, "provides", without(axis, capability)):
+                    self.assertTrue(tp.target_profile_violations(repo.root, profile))
+                    self.assertEqual(tp.target_profile_violations(
+                        repo.root, profile, node_key="infrastructure/harness_x@0.7.0"), [])
 
             # The build is asked of EVERY kind, the harness included.
-            with mock.patch.object(registry, "provides", without_build):
+            with mock.patch.object(registry, "provides", without("build_system", "build_execute")):
                 self.assertTrue(tp.target_profile_violations(
                     repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
 
