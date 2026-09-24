@@ -9092,6 +9092,101 @@ class LlmConfigStartupTests(unittest.TestCase):
                 "spec/problem/a": (frozenset({"build"}), ["build"]),
             })
 
+    def test_the_target_reaches_every_node_of_a_closure(self) -> None:
+        """`--with-deps --target t_b` with TWO profiles declared: every node's `_run_node` is
+        handed t_b and records it. A launch that dropped the target would fall back to the
+        default, which with two profiles is a `target_required` refusal, not t_b — so this
+        observes the threading rather than the default."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            for tid in ("t_a", "t_b"):
+                _seed_target_profile_into(repo_root, target_id=tid, harness_id="c",
+                                          constraint=">=0.1.0 <1.0.0")
+            _load_spec_catalog.cache_clear()
+            self._runtime_calls = []
+            orig_ready = run_workflow._dependency_node_readiness
+            orig_rt = run_workflow._runtime_command
+            real_run_node = run_workflow._run_node
+            ran: set[str] = set()
+            handed: dict[str, tuple[object, object]] = {}
+
+            def _spy_run_node(**kw):
+                ran.add(kw["spec_ref"])
+                inv = kw.get("invocation") or {}
+                profile = kw.get("target_profile")
+                handed[kw["spec_ref"]] = (getattr(profile, "target_id", None),
+                                          (inv.get("target") or {}).get("target_id"))
+                return real_run_node(**kw)
+
+            try:
+                run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = (        # type: ignore[assignment]
+                    lambda root, node, stages: {
+                        "ready": node["spec_ref"] in ran,
+                        "version": node["spec_versions"][0],
+                        "failed_stage": None if node["spec_ref"] in ran else "ir_ref",
+                        "detail": None if node["spec_ref"] in ran else "fake: not run yet"})
+                run_workflow._run_node = _spy_run_node             # type: ignore[assignment]
+                with redirect_stdout(io.StringIO()), _real_target_resolution():
+                    rc = run_workflow.main([
+                        "spec/problem/a", "compile", "--with-deps", "--target", "t_b",
+                        "--repo-root", str(repo_root),
+                        "--orchestration-id", "orch_target_tgt",
+                        "--no-run-conductor", "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._run_node = real_run_node             # type: ignore[assignment]
+                run_workflow._dependency_node_readiness = orig_ready   # type: ignore[assignment]
+                run_workflow._runtime_command = orig_rt            # type: ignore[assignment]
+            self.assertEqual(rc, 0)
+            self.assertEqual(handed, {
+                "spec/component/c": ("t_b", "t_b"),
+                "spec/component/b": ("t_b", "t_b"),
+                "spec/problem/a": ("t_b", "t_b"),
+            })
+
+    def test_every_internal_launch_call_passes_the_target(self) -> None:
+        """The wiring, read off the source: every call inside `tools/run_workflow.py` to a
+        function that takes `target_profile` passes it by keyword. Each of these defaults to
+        None — the default target — so a dropped keyword runs silently on the wrong target once
+        two profiles exist; the closure row above observes the sequential path, this one the
+        rest (the `--jobs` scheduler, the member argv, the resume gates)."""
+        import ast
+        import inspect
+
+        takes = {
+            name for name, fn in vars(run_workflow).items()
+            if inspect.isfunction(fn) and fn.__module__ == run_workflow.__name__
+            and "target_profile" in inspect.signature(fn).parameters
+        } | {"run_conductor"}
+        self.assertTrue({"_run_node", "_build_invocation_record", "_closure_member_argv",
+                         "_run_with_dependency_closure", "_run_closure_member",
+                         "_run_closure_members_parallel", "_schedule_closure_members",
+                         "_closure_member_resume_rejection", "_target_resume_rejection"} <= takes,
+                        takes)
+        tree = ast.parse(Path(run_workflow.__file__).read_text(encoding="utf-8"))
+        missing: list[str] = []
+        seen: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else None)
+            if name not in takes:
+                continue
+            seen.add(name)
+            fn = getattr(run_workflow, name, None)
+            index = (list(inspect.signature(fn).parameters).index("target_profile")
+                     if inspect.isfunction(fn) else None)
+            positional = index is not None and len(node.args) > index
+            if not positional and "target_profile" not in {k.arg for k in node.keywords}:
+                missing.append(f"{name} at line {node.lineno}")
+        self.assertEqual(missing, [])
+        self.assertTrue({"_run_node", "_build_invocation_record", "_closure_member_argv",
+                         "run_conductor"} <= seen, seen)
+
     def test_the_refusal_names_the_snapshot_only_when_there_is_one(self) -> None:
         """Pre-snapshot records have none, and naming a file the operator will not find is
         worse than naming nothing."""
