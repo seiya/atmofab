@@ -14535,6 +14535,9 @@ end program shallow_water2d_runner
             # ... and the floor's SCOPE. Stating the punishment unconditionally is issue #22's
             # own failure mode, on the side that gets punished.
             "It does NOT run on an `infrastructure` node",
+            # ... and silence is not a declaration (R4-a PR-3 round 1): the plan is the
+            # producer's own, so an omitted model must not read as an exemption.
+            "a plan that names no model gets the target's backend, OpenMP",
             # The honest move where a loop genuinely cannot be parallelized. Without it the
             # scope sentence reads as an invitation to emit a directive to clear the floor.
             "declare `\"model\": \"none\"` and say why in the plan for the reviewer",
@@ -21967,14 +21970,15 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertIn(self._FIRED, v[0])
         self.assertIn("1 counted `do` loop(s)", v[0])
         # Self-contained line: the rule it broke AND the remedy, on the same line (issue #12).
-        self.assertIn("target_lowering_plan.parallelization names OpenMP as its model", v[0])
+        self.assertIn("target_lowering_plan.parallelization does not decline OpenMP", v[0])
         self.assertIn("!$omp parallel do", v[0])
         self.assertIn("dep_base_model.f90", v[0])
         # The line must also name its own ESCAPE HATCH: a node whose loops genuinely cannot be
         # parallelized is told where the exemption lives — its own plan (issue #284) — or the
         # only readings of this line are "emit a directive you believe is wrong" and "fail
-        # forever".
+        # forever". It names who judges it too, so the hatch is not read as a free pass.
         self.assertIn('`"model": "none"`', v[0])
+        self.assertIn("the independent reviewer holds that declaration to the loops", v[0])
 
     def test_directive_present_passes(self) -> None:
         self.assertEqual(self._run(self._model(
@@ -22011,12 +22015,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
         self.assertEqual(self._run(self._COUNTED, hw_class="gpu"), [])
 
-    def test_floor_needs_an_openmp_claim_specifically(self) -> None:
-        """The claim must name OPENMP, not merely some parallelism: a plan naming `cuda_streams`
-        or `mpi` on an openmp-backed target would otherwise be told to add `!$omp` — a demand
-        that contradicts its own plan."""
+    def test_a_plan_naming_another_model_declines_openmp(self) -> None:
+        """A plan naming `cuda_streams` or `mpi` on an openmp-backed target declines OpenMP
+        rather than being told to add `!$omp` — a demand that would contradict its own plan. An
+        OpenMP-named model, or an EMPTY one, declines nothing (the target's backend stands)."""
         for token, want in (("openmp", 1), ("OpenMP", 1), ("openmp+simd", 1), ("openmp_tasks", 1),
-                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 0)):
+                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 1)):
             v = self._run(self._COUNTED, plan=self._par({"model": token}))
             self.assertEqual(len(v), want, f"model={token!r}: {v}")
         # Same rule through the other model-member spellings.
@@ -22024,38 +22028,42 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                          [])
         self.assertEqual(len(self._run(self._COUNTED, plan=self._par({"method": "openmp"}))), 1)
 
-    def test_floor_needs_an_affirmative_plan_claim(self) -> None:
-        """The floor may only demand what the plan itself states: a plan saying nothing about
-        parallelization, or naming no model, yields no obligation (the soft "a cpu+openmp target
-        parallelizes" rule is G6's), and a `parallelization` that is not an object (the bundle's
-        envelope requires one) fails open."""
+    def test_only_an_explicit_declaration_exempts(self) -> None:
+        """Round 1 of R4-a PR-3 (issue #284): the plan is the producer's OWN declaration, so a
+        floor that read "no claim" as an exemption let the producer switch its own floor off by
+        omission. On an OpenMP target the target's backend is the default: a plan with no
+        `parallelization`, an empty one, a model member under another key, a non-object, or no
+        plan at all applies the floor; only a model member that names no parallelism (or
+        another model) exempts. The mapping-form rows below pin which member is the model."""
         for plan, label, want in (
-            ({"precision": {}, "state_residency": "host"}, "no parallelization key", 0),
-            (self._par({}), "an empty parallelization object", 0),
-            ({"precision": {}, "state_residency": "host", "tiling": {"model": "openmp"}},
-             "a model member under another key", 0),
-            (self._par("openmp"), "a bare string where an object belongs", 0),
+            ({"precision": {}, "state_residency": "host"}, "no parallelization key", 1),
+            (self._par({}), "an empty parallelization object", 1),
+            ({"precision": {}, "state_residency": "host", "tiling": {"model": "none"}},
+             "a none model member under another key", 1),
+            (self._par("none"), "a bare string where an object belongs", 1),
+            (self._par({"model": 0}), "a model value that is not a string", 1),
             (self._par({"model": "openmp"}), "a claim", 1),
             (self._par({"model": "openmp", "apply_to": "loops"}), "a claim with its scope", 1),
             (self._par({"model": "openmp+simd"}), "a claim naming a novel model", 1),
-            ("openmp", "a plan that is not an object", 0),
+            ("none", "a plan that is not an object", 1),
+            (self._par({"model": "none"}), "an explicit declaration", 0),
         ):
             v = self._run(self._COUNTED, plan=plan)
             self.assertEqual(len(v), want, f"{label}: {v}")
 
     def test_mapping_form_claim_reads_only_the_model_member(self) -> None:
-        """A claim lives in the parallelization object's MODEL member (`model`, and the
-        `method`/`scheme`/`kind` spellings the knob layer used), not in any of its prose: reading
-        every value made `{model: none, apply_to: parallelizable_loops}` license the floor to
-        reject its own source."""
+        """A declaration lives in the parallelization object's MODEL member (`model`, and the
+        `method`/`scheme`/`kind` spellings the knob layer used), not in any of its prose: a
+        serial-sounding sibling (`reduction_policy: serial_deterministic_acc`) declines nothing,
+        and a model member naming OpenMP wins over one that names none."""
         for par, label, want in (
             ({"model": "none", "apply_to": "parallelizable_loops"},
              "model says none, sibling is prose", 0),
             ({"scheme": "none", "default_schedule": "static"},
              "model says none, sibling is a schedule", 0),
-            ({"apply_to": "parallelizable_loops"}, "no model member at all", 0),
+            ({"apply_to": "parallelizable_loops"}, "no model member at all", 1),
             ({"reduction_policy": "serial_deterministic_acc"},
-             "an unrelated member whose value merely reads serial-ish", 0),
+             "an unrelated member whose value merely reads serial-ish", 1),
             ({"model": "openmp", "apply_to": "loops"}, "model", 1),
             ({"method": "openmp", "apply_to": "loops"}, "method", 1),
             ({"scheme": "openmp", "apply_to": "loops"}, "scheme", 1),
@@ -22063,6 +22071,8 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             ({"Model": "OpenMP"}, "model key and value wrong-cased", 1),
             ({"model": "openmp", "reduction_policy": "serial_deterministic_acc"},
              "a claim is unaffected by a serial-ish sibling", 1),
+            ({"model": "none", "method": "openmp"}, "a claim beside a none", 1),
+            ({"Model": "None"}, "a wrong-cased declaration still declines", 0),
         ):
             v = self._run(self._COUNTED, plan=self._par(par))
             self.assertEqual(len(v), want, f"{label}: {v}")

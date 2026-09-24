@@ -5865,38 +5865,42 @@ _LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
-def _lowering_plan_claims_openmp(plan: Any) -> bool:
-    """True when a bundle's ``target_lowering_plan`` AFFIRMATIVELY names OPENMP as the model of
-    its ``parallelization``.
+def _lowering_plan_declines_openmp(plan: Any) -> bool:
+    """True when a bundle's ``target_lowering_plan`` EXPLICITLY declines OpenMP: a model-bearing
+    member of its ``parallelization`` object names no parallelism (``none`` / ``serial`` / …) or
+    a model other than OpenMP, and no model-bearing member names OpenMP.
 
-    This is the floor's licence to fail a source. Until R4-a PR-3 (issue #284) the licence was
-    the IR's Compile-authored knob layer, which the Generate leaf could not edit — which is why
-    it had to be an affirmative claim: a floor keyed on the target alone rejected every correct
-    source of a node whose only loops are inherently serial, with the escape on the far side of
-    a boundary the leaf could not cross. The plan is now the SAME leaf's declaration, so the
-    violation (a source that does not do what its own plan says) is always one the reopened
-    producer can repair, and the plan's appropriateness — declaring ``none`` over loops that are
-    plainly parallelizable — is ``Generate.verify`` G6's judgment.
+    This is the floor's one exemption, and it has to be a DECLARATION. On an OpenMP target the
+    target's backend is the default model: a plan with no ``parallelization`` object, with no
+    model member, or with a value that is not a string declines nothing, so the floor applies.
+    Until R4-a PR-3 (issue #284) the exemption was the IR's Compile-authored knob layer, which
+    the Generate leaf could not edit; the knob layer is now the SAME leaf's plan, so the floor
+    reading "no claim" as an exemption let the producer switch its own floor off by omission —
+    the round-1 finding this shape closes. What stays is the explicit ``"model": "none"`` a node
+    whose loops are inherently serial needs (three certified July sources are such nodes, their
+    IRs saying ``none``); whether that declaration is honest is ``Generate.verify`` G6's
+    judgment, told in its template that a ``none`` over plainly parallelizable loops is itself
+    the finding.
 
-    OPENMP specifically, not merely "some parallelism": a plan naming ``mpi`` or
-    ``cuda_streams`` on an openmp-backed target would otherwise be told to add ``!$omp`` — a
-    demand that contradicts its own plan. Substring, so ``openmp+simd`` / ``openmp_tasks`` count.
-    Only the model-bearing members of the object are read; a plan with no ``parallelization``
-    object, or one naming its model under some other key, yields no claim, which fails the
-    floor OPEN."""
+    OpenMP specifically: a plan naming ``mpi`` or ``cuda_streams`` declines OpenMP rather than
+    being told to add ``!$omp`` — a demand that would contradict its own plan. Substring, so
+    ``openmp+simd`` / ``openmp_tasks`` name OpenMP."""
     if not isinstance(plan, dict):
         return False
     par = plan.get("parallelization")
     if not isinstance(par, dict):
         return False
+    declined = False
     for key, value in par.items():
         if str(key).strip().lower() not in _LOWERING_PARALLELIZATION_MODEL_KEYS:
             continue
-        if isinstance(value, str):
-            token = value.strip().lower()
-            if "openmp" in token and token not in _NO_PARALLELISM_VALUES:
-                return True
-    return False
+        if not isinstance(value, str) or not value.strip():
+            continue
+        token = value.strip().lower()
+        if "openmp" in token and token not in _NO_PARALLELISM_VALUES:
+            return False
+        declined = True
+    return declined
 
 
 def _validate_openmp_presence_floor(
@@ -5907,27 +5911,28 @@ def _validate_openmp_presence_floor(
     violations: list[str],
 ) -> None:
     """Issue #22 deterministic floor: on a node built for an OpenMP-on-CPU Fortran target (the
-    pipeline's target profile, issue #284) whose bundle's ``target_lowering_plan`` names OpenMP
-    (``_lowering_plan_claims_openmp``), a generated model source that contains counted ``do``
-    loops must contain at least one ``!$omp`` directive.
+    pipeline's target profile, issue #284) whose bundle's ``target_lowering_plan`` does not
+    explicitly decline OpenMP (``_lowering_plan_declines_openmp``), a generated model source that
+    contains counted ``do`` loops must contain at least one ``!$omp`` directive.
 
     This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
     schedule matches the plan, or whether the parallelization is correct. A present-but-wrong or
-    present-but-partial reflection of the plan stays the province of ``Generate.verify`` G6. Only
-    the unambiguous case — the target is OpenMP, the plan says OpenMP, the source has loops to
-    parallelize, and there is not one directive anywhere — is decided here, where it costs no
-    judgment and no tokens.
+    present-but-partial reflection of the plan stays the province of ``Generate.verify`` G6, and
+    so does the honesty of a plan that declines. Only the unambiguous case — the target is
+    OpenMP, the plan does not say otherwise, the source has loops to parallelize, and there is
+    not one directive anywhere — is decided here, where it costs no judgment and no tokens.
 
-    Fail-open by design in every ambiguous direction: whole-array sources (zero counted loops)
-    pass, non-OpenMP / non-CPU / non-Fortran targets pass, a source tree with no readable
-    ``codegen_bundle.json`` passes, a file containing a ``do concurrent`` passes, a file whose
-    ``do`` header wraps before it can be classified passes, a loop reached only through a ``;``
-    or a joined continuation is not counted, and only `component/` / `problem/` nodes are in
-    scope at all.
+    Fail-open in the ambiguous source shapes: whole-array sources (zero counted loops) pass,
+    non-OpenMP / non-CPU / non-Fortran targets pass, a source tree with no readable
+    ``codegen_bundle.json`` passes (the bundle tamper gate reports that), a file containing a
+    ``do concurrent`` passes, a file whose ``do`` header wraps before it can be classified
+    passes, a loop reached only through a ``;`` or a joined continuation is not counted, and
+    only `component/` / `problem/` nodes are in scope at all. The plan is NOT one of those
+    directions: an absent or model-less plan applies the floor.
 
-    The residual case is a plan that claims OpenMP over loops that cannot be parallelized (a
-    strict recurrence). The fix is the producer's own: ``"model": "none"`` in the plan, which
-    takes the node out of scope."""
+    The residual case is loops that cannot be parallelized (a strict recurrence). The fix is the
+    producer's declaration, ``"model": "none"`` with the reason stated, which the reviewer
+    holds to the loops."""
     if not execution.node_key.startswith(_OPENMP_FLOOR_NODE_KINDS):
         return
     if not model_files:
@@ -5947,9 +5952,10 @@ def _validate_openmp_presence_floor(
         bundle = _read_json(src_dir.parent / "codegen_bundle.json")
     except (OSError, json.JSONDecodeError):
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
-    if not isinstance(bundle, dict) or not _lowering_plan_claims_openmp(
-            bundle.get("target_lowering_plan")):
-        return  # the plan claims no OpenMP model here, so there is no stated obligation
+    if not isinstance(bundle, dict):
+        return
+    if _lowering_plan_declines_openmp(bundle.get("target_lowering_plan")):
+        return  # an explicit declaration G6 judges; the target's backend is the default
 
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
@@ -5965,12 +5971,14 @@ def _validate_openmp_presence_floor(
         violations.append(
             f"{model_file}: the target profile resolves to OpenMP on CPU "
             "(hardware.class=cpu, parallel.backend=openmp, toolchain.language=fortran) and the "
-            "bundle's target_lowering_plan.parallelization names OpenMP as its model, but this "
+            "bundle's target_lowering_plan.parallelization does not decline OpenMP, but this "
             f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
-            "directive — add `!$omp parallel do` to the parallelizable loops the plan names (a "
-            "`do concurrent` loop already counts as parallel; when NO loop here is "
-            "parallelizable, say so in the plan with `\"model\": \"none\"`, which exempts the "
-            "node — so never force a directive you believe is wrong)"
+            "directive — add `!$omp parallel do` to the parallelizable loops (a `do concurrent` "
+            "loop already counts as parallel). Only when a loop genuinely cannot be "
+            "parallelized (a carried dependence) is `\"model\": \"none\"` in the plan the "
+            "answer, with the reason stated; the independent reviewer holds that declaration to "
+            "the loops, so never force a directive you believe is wrong and never decline one "
+            "a loop can take"
         )
 
 

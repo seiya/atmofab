@@ -3852,8 +3852,10 @@ spec`), and `docs/ORCHESTRATION.md` §13d.
   exactly one `infrastructure` dependency, `infra_dep_count_invalid` — no longer exists.
 - **The lowering knob layer moved to the bundle.** Parallel model and scope, schedule, layout,
   fusion, tiling and vectorization are the `Generate` producer's `target_lowering_plan`. The
-  parallel-directive floor fires when the plan names OpenMP as its `parallelization` model
-  (`_lowering_plan_claims_openmp`); `Generate.verify` G6 (harness H9) judges the plan and the source
+  parallel-directive floor fires on an OpenMP target unless the plan explicitly declines OpenMP
+  (`_lowering_plan_declines_openmp`; an absent model declines nothing, so the producer cannot
+  switch its own floor off by omission — R4-a PR-3 round 1); `Generate.verify` G6 (harness H9)
+  judges a declared `none`, the plan and the source
   against the whole target profile.
 - **Deleted gates and their successors.** `_validate_impl_defaults_knobs` (no subject);
   `_validate_harness_dependency_consistency` (launch gate `target_harness_mismatch` and the profile's

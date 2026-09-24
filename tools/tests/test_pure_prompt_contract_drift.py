@@ -583,7 +583,9 @@ PINNED: dict[str, str] = {
     # Re-pinned before merge (pure-49 was never released): both producer templates name the
     # plan's closed optional keys; "the plan's other keys" cost the first adoption run a
     # harness Generate attempt to `unknown key 'layout'` / `'tiling'`.
-    "pure-49": "e6d9062fdd061d9358d01d42f78cf7fcabfaf887f61ef74844f70ded77ef8de6",}
+    # Re-pinned in round 1: the OpenMP floor applies unless the plan EXPLICITLY declines
+    # OpenMP (an absent model is the target's backend), in rule (7) and in G6's scope sentence.
+    "pure-49": "4b0b0ae042cee6c46bf51d693d71c6fb1e52cf13617bce9f7cd8bf9d05cc8f12",}
 
 
 def _contract_tuple() -> dict[str, object]:
