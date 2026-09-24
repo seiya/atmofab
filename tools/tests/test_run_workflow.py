@@ -9149,7 +9149,8 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     def test_every_internal_launch_call_passes_the_target(self) -> None:
         """The wiring, read off the source: every call inside `tools/run_workflow.py` to a
-        function that takes `target_profile` passes it by keyword. Each of these defaults to
+        function that takes `target_profile` passes the caller's own `target_profile` — by
+        keyword or position, and as that NAME, so a literal `None` is refused. Each of these defaults to
         None — the default target — so a dropped keyword runs silently on the wrong target once
         two profiles exist; the closure row above observes the sequential path, this one the
         rest (the `--jobs` scheduler, the member argv, the resume gates)."""
@@ -9180,8 +9181,14 @@ class LlmConfigStartupTests(unittest.TestCase):
             fn = getattr(run_workflow, name, None)
             index = (list(inspect.signature(fn).parameters).index("target_profile")
                      if inspect.isfunction(fn) else None)
-            positional = index is not None and len(node.args) > index
-            if not positional and "target_profile" not in {k.arg for k in node.keywords}:
+            if index is not None and len(node.args) > index:
+                passed = node.args[index]
+            else:
+                passed = next((k.value for k in node.keywords if k.arg == "target_profile"),
+                              None)
+            # The VALUE, not only the keyword: `target_profile=None` is the default spelled
+            # out, and it passed a keyword-only check (round 1).
+            if not (isinstance(passed, ast.Name) and passed.id == "target_profile"):
                 missing.append(f"{name} at line {node.lineno}")
         self.assertEqual(missing, [])
         self.assertTrue({"_run_node", "_build_invocation_record", "_closure_member_argv",
