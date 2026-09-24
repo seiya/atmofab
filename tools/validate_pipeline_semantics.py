@@ -5040,7 +5040,11 @@ def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
     render, and a repository defect must not be routed to ``compile.generate`` as an IR defect.
     Sorted by target id, so a node's violations are deterministic."""
     from tools.target_profile import (
-        TargetProfileError, harness_node_key_for_target, list_target_ids, load_target_profile)
+        TargetProfileError,
+        harness_node_key_for_target,
+        list_target_ids,
+        load_target_profile,
+    )
     out: list[tuple[str, str, str]] = []
     try:
         ids = list_target_ids(repo_root)

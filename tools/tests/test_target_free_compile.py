@@ -374,7 +374,7 @@ class DependencyFactsTests(unittest.TestCase):
                 self._facts(repo, {"node_key": _NK, "direct_deps": []}), [harness_nk])
             # An infrastructure node's facts carry no harness of its own kind.
             self.assertEqual(self._facts(
-                repo, {"node_key": f"infrastructure/other@0.1.0", "direct_deps": []}), [])
+                repo, {"node_key": "infrastructure/other@0.1.0", "direct_deps": []}), [])
 
 
 

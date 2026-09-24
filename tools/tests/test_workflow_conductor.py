@@ -1096,7 +1096,7 @@ class _TargetedConductor(wc.Conductor):
         from tools.tests.target_fixtures import fixture_target
         return fixture_target(self.repo_root, self.target_profile)
 
-    def _bind_a_harness_only_closure(self, refs: "wc.NodeRefs", phase: str) -> None:
+    def _bind_a_harness_only_closure(self, refs: wc.NodeRefs, phase: str) -> None:
         from tools.tests.orchestration_fixtures import ensure_target_harness_certified
         if (refs.node_key, phase) in self._phase_closure_bindings:
             return
@@ -6571,7 +6571,9 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             # The spec directory + catalog entry the derivation keys resolve (issue #250 PR-2),
             # and the target's harness certified: the generate / build keys bind it (#284).
             from tools.tests.orchestration_fixtures import (
-                ensure_spec_entry, ensure_target_harness_certified)
+                ensure_spec_entry,
+                ensure_target_harness_certified,
+            )
             ensure_spec_entry(root, self.NODE_KEY)
             ensure_target_harness_certified(root, "o1")
 
@@ -14222,9 +14224,10 @@ class WriteRunnerTest(unittest.TestCase):
         """The consumer's IR — target-free (issue #284): its direct deps carry no harness,
         and `infra` writes that many STALE `infrastructure` entries to show the host reads
         none of them. The catalog carries the target's harness (`_HARNESS_NK`)."""
+        import yaml as _yaml
+
         from tools.tests.orchestration_fixtures import ensure_spec_entry
         from tools.tests.test_fortran_runner import _boundary_ir
-        import yaml as _yaml
         ensure_spec_entry(repo, _HARNESS_NK)
         ir = _boundary_ir()
         ir.pop("impl_defaults", None)
@@ -17829,8 +17832,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
     #: What a dependency attribution probe compiles: the staged closure alone. A row that
     #: patches in `dep_model.f90` (`_with_dep`) stages that; any other row's node stages its
     #: target's harness (issue #284: every physics node's closure holds it).
-    _probe_sources: frozenset[str] = frozenset({f"{_HARNESS_NK.split('/')[1].split('@')[0]}"
-                                                 "_model.f90"})
+    _probe_sources: frozenset[str] = frozenset(
+        {f"{_HARNESS_NK.split('/')[1].split('@')[0]}_model.f90"})
 
     def _with_dep(self, c: "wc.Conductor"):
         """Patch the conductor so one dependency-closure `dep_model.f90` is staged."""
@@ -18882,6 +18885,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         false record of what the pipeline was built against."""
         import tempfile
         from unittest import mock
+
         from tools.tests.target_fixtures import FORTRAN_CPU
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()

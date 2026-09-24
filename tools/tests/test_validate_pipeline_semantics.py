@@ -21907,8 +21907,9 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
 
     _FIRED = "counted `do` loop(s) and not one"
 
-    #: The plan the default fixture writes: it CLAIMS OpenMP, because that claim is the floor's
-    #: licence to fail a source.
+    #: The plan the default fixture writes: it names OpenMP, the target's default. (Since R4-a
+    #: PR-3 round 1 the floor applies unless a plan DECLINES OpenMP, so a claim is no longer its
+    #: licence; the fixture still states one so a row about another input keeps a plan.)
     _CLAIM = {"precision": {}, "state_residency": "host",
               "parallelization": {"model": "openmp"}}
 
@@ -23494,6 +23495,7 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         # finding both report is stated once, unscoped; the gate reports a per-target one
         # with the target named. Driven with a render seam that answers per harness.
         from unittest import mock
+
         from tools.tests.target_fixtures import FORTRAN_CPU, second_target
         other = second_target(FORTRAN_CPU, "fortran_cpu_other")
 
