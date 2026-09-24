@@ -20766,6 +20766,13 @@ class WarmResumeUsageTest(unittest.TestCase):
         self.assertEqual(row["output_tokens"], 74526)
         self.assertNotIn("provider_details", row)
 
+#: An `impl_defaults` the checked-in `fortran_cpu` profile accepts (a serial backend included,
+#: as the certified harness IR declares).
+_BRIDGE_MATCHING_IMPL = {"target": {"class": "cpu", "backend": "serial"},
+                          "toolchain": {"language": "fortran", "standard": "f2008",
+                                        "build_system": "make"}}
+
+
 class TargetProfileBridgeTests(unittest.TestCase):
     """The R4-a PR-1 bridge in `conduct` (issue #284; PR-3 deletes it with `impl_defaults`):
     before any phase after Compile, the node's IR must declare the run's target. Driven through
@@ -20809,17 +20816,13 @@ class TargetProfileBridgeTests(unittest.TestCase):
             c._seed_repairs_from_revocations = lambda refs, phases: {}  # type: ignore[assignment]
             return c.conduct(refs, "validate"), ran, statuses
 
-    _MATCHING = {"target": {"class": "cpu", "backend": "serial"},
-                 "toolchain": {"language": "fortran", "standard": "f2008",
-                               "build_system": "make"}}
-
     def test_a_matching_ir_runs_every_phase(self) -> None:
-        status, ran, statuses = self._run(self._MATCHING)
+        status, ran, statuses = self._run(_BRIDGE_MATCHING_IMPL)
         self.assertEqual(ran, ["compile", "generate", "build", "validate"])
         self.assertEqual((status, [st[0] for st in statuses]), ("pass", ["pass"]))
 
     def test_a_mismatching_ir_stops_before_generate_and_names_the_field(self) -> None:
-        ir = copy.deepcopy(self._MATCHING)
+        ir = copy.deepcopy(_BRIDGE_MATCHING_IMPL)
         ir["toolchain"]["standard"] = "f2018"
         status, ran, statuses = self._run(ir)
         self.assertEqual(status, "fail_closed")
@@ -20836,7 +20839,7 @@ class TargetProfileBridgeTests(unittest.TestCase):
         status, ran, statuses = self._run({
             "target": {"class": "gpu"},
             "toolchain": {"language": "c", "standard": "c11", "build_system": "cmake"}})
-        self.assertEqual(ran, ["compile"])
+        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
         detail = statuses[0][2]
         self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
         for field in ("target.class", "toolchain.language", "toolchain.standard",
@@ -20851,7 +20854,7 @@ class TargetProfileBridgeTests(unittest.TestCase):
     def test_no_target_profile_is_no_bridge(self) -> None:
         """The unit-test constructor; `run_conductor` never passes None."""
         status, ran, _statuses = self._run({}, target=False)
-        self.assertEqual(ran, ["compile", "generate", "build", "validate"])
+        self.assertEqual((status, ran), ("pass", ["compile", "generate", "build", "validate"]))
 
     def test_run_conductor_hands_the_driver_target_to_the_conductor(self) -> None:
         from tools import target_profile as tp

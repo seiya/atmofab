@@ -4444,12 +4444,12 @@ def _closure_member_resume_rejection(
     repo_root: Path, dep_orch_id: str, llm_config: LlmConfig,
     target_profile: TargetProfile | None = None,
 ) -> dict[str, Any] | None:
-    """The two twin gates a warm-resumed closure member must pass, asked by the DRIVER
-    before the member is resumed (in-process or as a `--jobs` child): its recorded
-    generate executor is the only one left (`pure`), and the leaf-LLM configuration it
-    launched with is still the closure's effective one — a member's remaining phases must
-    not run on different models than its finished ones did. Returns the first rejection
-    envelope, or None."""
+    """The gates a warm-resumed closure member must pass, asked by the DRIVER before the
+    member is resumed (in-process or as a `--jobs` child): its recorded generate executor is
+    the only one left (`pure`), the leaf-LLM configuration it launched with is still the
+    closure's effective one — a member's remaining phases must not run on different models
+    than its finished ones did — and it was launched for the closure's target
+    (`_target_resume_rejection`). Returns the first rejection envelope, or None."""
     for rejection in (
         _generate_executor_resume_rejection(
             dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)),

@@ -205,6 +205,8 @@ class LoaderTests(unittest.TestCase):
         """`True == 1` in Python, so an `isinstance(int)` check alone accepts it."""
         self.assertIn("target_profile_version", self._refusal(target_profile_version=True))
         self.assertIn("threads_per_rank", self._refusal(execution__threads_per_rank=True))
+        # draft-07's `integer` admits 2.0; the loader does not (the schema's description says so).
+        self.assertIn("threads_per_rank", self._refusal(execution__threads_per_rank=2.0))
 
     def test_an_unreadable_or_non_mapping_document_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,6 +337,10 @@ class LaunchGateTests(unittest.TestCase):
                 "", encoding="utf-8")
             with self.assertRaises(tp.TargetProfileError):
                 tp.harness_node_key_for_target(repo.root, self._profile(repo))
+            # The corruption branch names the target once too (round 2).
+            with self.assertRaises(tp.TargetProfileError) as cm:
+                tp.resolve_run_target(repo.root, "t1")
+            self.assertEqual(cm.exception.detail.count("target t1"), 1, cm.exception.detail)
 
     def test_an_infrastructure_node_must_be_its_targets_harness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

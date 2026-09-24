@@ -13045,9 +13045,9 @@ clean:
         mismatches = ir_profile_mismatches(ir, self.target_profile)
         if not mismatches:
             return None
-        # The fields FIRST: the detail is capped at `_PHASE_REASON_DETAIL_MAX_CHARS`, and an
-        # IR ref alone is 60-90 characters (round 1 measured the field names cut off on 104 of
-        # 130 IR refs when the ref led).
+        # The fields FIRST: the detail is capped at `_PHASE_REASON_DETAIL_MAX_CHARS`, and with
+        # the IR ref leading, a round-1 review found the field names cut off on 104 of the 130
+        # IR refs then under `workspace/ir/`.
         return (f"target_profile_ir_mismatch: impl_defaults {'; '.join(mismatches)} "
                 f"[target {self.target_profile.target_id}; {refs.ir_ref}]")
 
