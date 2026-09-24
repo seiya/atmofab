@@ -21,6 +21,7 @@ from unittest import mock
 
 from tools import llm_config as lc
 from tools import run_workflow
+from tools import target_profile as tp
 from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,32 @@ def _seed_shape_expr_schema_into(repo_root: Path) -> None:
 
 _CLAIM_ROOT_TMPDIR: tempfile.TemporaryDirectory | None = None
 _SAVED_CLAIM_ROOT: str | None = None
+_TARGET_REDIRECT: ExitStack | None = None
+_REAL_HARNESS_NODE_KEY_FOR_TARGET = tp.harness_node_key_for_target
+_REAL_RESOLVE_RUN_TARGET = tp.resolve_run_target
+
+
+def _checkout_harness_node_key_for_target(repo_root: Path, profile: tp.TargetProfile) -> str:
+    return _REAL_HARNESS_NODE_KEY_FOR_TARGET(REPO_ROOT, profile)
+
+
+def _checkout_resolve_run_target(repo_root: Path, requested: str | None, *,
+                                 node_key: str | None = None) -> tp.TargetProfile:
+    # `node_key` is dropped: the scratch closures here stand on a scratch harness, which is not
+    # this checkout's profile's harness, so the `infrastructure`-target gate would refuse every
+    # scratch harness member. That gate is exercised under `_real_target_resolution`.
+    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested)
+
+
+@contextmanager
+def _real_target_resolution():
+    """Undo the module's target redirect for one test: target selection, loading and the harness
+    lookup then read the test's OWN `repo_root`. Every test about the target path runs inside
+    this, so none of them is satisfied by the redirect."""
+    with mock.patch.object(run_workflow, "resolve_run_target", _REAL_RESOLVE_RUN_TARGET), \
+            mock.patch.object(tp, "harness_node_key_for_target",
+                              _REAL_HARNESS_NODE_KEY_FOR_TARGET):
+        yield
 
 
 def setUpModule() -> None:
@@ -79,13 +106,25 @@ def setUpModule() -> None:
     under `~/.atmofab/start_claims/` on every run — thousands of dentries that nothing
     ever reaps. Production leaves the variable unset.
     """
-    global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT
+    global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT, _TARGET_REDIRECT
     _SAVED_CLAIM_ROOT = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
     _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="atmofab_claims_")
     os.environ["ATMOFAB_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
+    # Target resolution (issue #284) reads THIS checkout's `spec/targets/` and catalog, not the
+    # scratch `repo_root` each test builds: those trees carry neither a target profile nor the
+    # harness the profile names, and nearly every test here is about something else. The
+    # redirect changes WHERE the profile is read, not what the driver does with it — a test
+    # about the target path undoes it (`_real_target_resolution`).
+    _TARGET_REDIRECT = ExitStack()
+    _TARGET_REDIRECT.enter_context(mock.patch.object(
+        run_workflow, "resolve_run_target", _checkout_resolve_run_target))
+    _TARGET_REDIRECT.enter_context(mock.patch.object(
+        tp, "harness_node_key_for_target", _checkout_harness_node_key_for_target))
 
 
 def tearDownModule() -> None:
+    if _TARGET_REDIRECT is not None:
+        _TARGET_REDIRECT.close()
     if _SAVED_CLAIM_ROOT is None:
         os.environ.pop("ATMOFAB_START_CLAIM_ROOT", None)
     else:
@@ -4286,6 +4325,25 @@ _HARNESS_ID = "harness_fortran_cpu"
 _HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
 
 
+def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu",
+                              harness_id: str = _HARNESS_ID,
+                              constraint: str = ">=0.3.0 <1.0.0") -> Path:
+    """Give a scratch tree its OWN target profile (issue #284): the checkout's `fortran_cpu`
+    profile with its id and harness replaced. For the tests that run the real script in a
+    subprocess, where the module's target redirect does not reach, and for the tests of the
+    target path itself. The harness must be in the scratch catalog for the profile to load."""
+    import yaml
+
+    doc = yaml.safe_load((REPO_ROOT / "spec" / "targets" / "fortran_cpu.yaml").read_text(
+        encoding="utf-8"))
+    doc["target_id"] = target_id
+    doc["harness"] = {"infrastructure_id": harness_id, "version_constraint": constraint}
+    path = repo_root / "spec" / "targets" / f"{target_id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def _write_catalog(repo_root: Path, entries: list[dict]) -> None:
     """Write a minimal spec_catalog.yaml from a list of {spec_kind, spec_id,
     spec_version, deps_path} dicts.
@@ -6447,12 +6505,24 @@ class ParallelClosureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
+            # The scratch closure's harness is `c`, so the scratch profile names it: the child
+            # resolves its target in the SCRATCH tree, and `c` is an infrastructure member that
+            # must be its target's harness. Two profiles, so the child's `--target` is what
+            # chooses — without it the child would refuse `target_required`.
+            _seed_target_profile_into(repo_root, target_id="t_c", harness_id="c",
+                                      constraint=">=0.1.0 <1.0.0")
+            _seed_target_profile_into(repo_root, target_id="t_other", harness_id="c",
+                                      constraint=">=0.1.0 <1.0.0")
+            with _real_target_resolution():
+                profile = run_workflow.resolve_run_target(repo_root, "t_c")
             argv = run_workflow._closure_member_argv(
                 repo_root=repo_root, spec_ref="spec/component/c", dep_until_phase="Validate",
                 orchestration_id="orch_c", resume=False, target_orchestration_id="ORCHT",
                 target_spec_ref="spec/problem/a", until_phase="Validate",
                 llm_config=lc.load_llm_config(repo_root / "llm.yaml"), workflow_mode="dev",
-                status="running", run_conductor=False, wait_usage_reset=False)
+                status="running", run_conductor=False, wait_usage_reset=False,
+                target_profile=profile)
+            self.assertEqual(argv[-2:], ["--target", "t_c"])
             # the script path is the checkout's, not the scratch root's
             argv[1] = str(REPO_ROOT / "tools" / "run_workflow.py")
             env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -6464,6 +6534,7 @@ class ParallelClosureTests(unittest.TestCase):
             start = next(e for e in events if e.get("event") == "node_start")
             self.assertEqual(start["orchestration_id"], "orch_c")
             self.assertEqual(start["spec_ref"], "spec/component/c")
+            self.assertEqual(start["target_id"], "t_c")
             self.assertNotIn("invalid_startup_input", kinds)
             self.assertNotIn("concurrent_orchestration_running", kinds)
 
@@ -7737,7 +7808,10 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # refusal, `resume_liveness_indeterminate`, and the cold-guard conflict. The exclusive
         # claim refuses in ONE place instead, and `concurrent_orchestration_running` was already
         # among the counted sites.
-        self.assertEqual(len(helper_calls), 15)
+        # 15 -> 16: issue #284's target-profile refusal (`no_target_profile`, `target_required`,
+        # `target_unknown`, `target_profile_invalid`, `target_harness_mismatch`,
+        # `target_changed_on_resume` — one site, the reason carried by the exception).
+        self.assertEqual(len(helper_calls), 16)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -8056,6 +8130,9 @@ class DriverLifecycleContractTests(unittest.TestCase):
                 "nodes: []\n", encoding="utf-8")
             (scratch / "workspace").mkdir(exist_ok=True)
             _seed_default_llm_config_into(scratch)
+            # The real script resolves the target in the scratch tree (issue #284).
+            _write_catalog(scratch, [])
+            _seed_target_profile_into(scratch)
             # A runtime stub that parks: the driver then sits in `subprocess.run`
             # inside `_run_node`, i.e. inside the try the interrupt clause guards.
             (scratch / "tools").mkdir(exist_ok=True)
@@ -9110,6 +9187,143 @@ class LlmConfigStartupTests(unittest.TestCase):
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "_llm_config_resume_rejection"]
         self.assertGreaterEqual(len(calls), 3)   # entry + dependency member + target
+
+
+class TargetProfileLaunchTests(unittest.TestCase):
+    """`--target` (issue #284, R4-a PR-1): resolved and gated at launch, recorded on the
+    orchestration, recovered on resume, and handed to every closure member. Every row runs under
+    `_real_target_resolution`, so the scratch tree's OWN profiles are what is read."""
+
+    def _seed(self, repo_root: Path) -> None:
+        RunWorkflowTests._seed_spec_tree(self, repo_root)  # type: ignore[arg-type]
+        _write_catalog(repo_root, [
+            {"spec_kind": "infrastructure", "spec_id": "harness_a", "spec_version": "0.7.0",
+             "deps_path": "spec/infrastructure/harness_a/deps.yaml"},
+            {"spec_kind": "infrastructure", "spec_id": "harness_b", "spec_version": "0.2.0",
+             "deps_path": "spec/infrastructure/harness_b/deps.yaml"},
+        ])
+        _seed_target_profile_into(repo_root, target_id="t_a", harness_id="harness_a")
+        _seed_target_profile_into(repo_root, target_id="t_b", harness_id="harness_b",
+                                  constraint=">=0.1.0 <1.0.0")
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+
+    def _main(self, repo_root: Path, *extra: str) -> tuple[int, list[dict], list[list[str]]]:
+        with _real_target_resolution():
+            code, _out, calls = RunWorkflowTests._run_main_with_fake_runtime(  # type: ignore[arg-type]
+                self, ["spec/problem/test.md", "validate", "--repo-root", str(repo_root),
+                       "--no-run-conductor", *extra])
+        return code, self._last_events, calls  # type: ignore[attr-defined]
+
+    def test_the_chosen_target_is_recorded_and_announced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, events, calls = self._main(repo_root, "--target", "t_b")
+            self.assertEqual(code, 0, events)
+            inv = RunWorkflowTests._find_init_invocation(self, calls)  # type: ignore[arg-type]
+            with _real_target_resolution():
+                profile = run_workflow.resolve_run_target(repo_root, "t_b")
+            self.assertEqual(inv["target"], {"target_id": "t_b", "sha256": profile.sha256,
+                                             "harness_node_key": "infrastructure/harness_b@0.2.0"})
+            self.assertIn("--target", inv["argv"])
+            start = next(e for e in events if e.get("event") == "node_start")
+            self.assertEqual(start["target_id"], "t_b")
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertEqual(events[-1]["target_id"], "t_b")
+
+    def test_several_profiles_and_no_choice_refuse_before_init(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, events, calls = self._main(repo_root)
+            self.assertEqual(code, 2)
+            self.assertEqual(events[-1]["reason"], "target_required")
+            self.assertIn("t_a, t_b", events[-1]["detail"])
+            self.assertEqual(calls, [], "refused before any orchestration state is touched")
+
+    def test_an_invalid_profile_refuses_with_its_own_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _seed_target_profile_into(repo_root, target_id="t_c", harness_id="absent")
+            code, events, calls = self._main(repo_root, "--target", "t_c")
+            self.assertEqual(code, 2)
+            self.assertEqual(events[-1]["reason"], "target_profile_invalid")
+            self.assertEqual(calls, [])
+            code, events, _calls = self._main(repo_root, "--target", "nope")
+            self.assertEqual(events[-1]["reason"], "target_unknown")
+
+    def test_a_harness_is_run_only_for_its_own_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            with _real_target_resolution():
+                self.assertEqual(run_workflow._resolve_launch_target(
+                    repo_root, "spec/infrastructure/harness_b", "t_b", None).target_id, "t_b")
+                with self.assertRaises(run_workflow.TargetProfileError) as cm:
+                    run_workflow._resolve_launch_target(
+                        repo_root, "spec/infrastructure/harness_b/deps.yaml", "t_a", None)
+            self.assertEqual(cm.exception.reason, "target_harness_mismatch")
+
+    def test_a_resume_recovers_the_recorded_target_and_refuses_another(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            orch = repo_root / "workspace" / "orchestrations" / "orch_t"
+            orch.mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(json.dumps(
+                {"spec_ref": "spec/problem/test.md",
+                 "invocation": {"target": {"target_id": "t_b"}}}), encoding="utf-8")
+            recorded = run_workflow._load_resume_params(repo_root, "orch_t")["target_id"]
+            self.assertEqual(recorded, "t_b")
+            with _real_target_resolution():
+                # Recovered with two profiles declared: no `target_required`.
+                self.assertEqual(run_workflow._resolve_launch_target(
+                    repo_root, "spec/problem/test.md", None, recorded).target_id, "t_b")
+                self.assertEqual(run_workflow._resolve_launch_target(
+                    repo_root, "spec/problem/test.md", "t_b", recorded).target_id, "t_b")
+                with self.assertRaises(run_workflow.TargetProfileError) as cm:
+                    run_workflow._resolve_launch_target(
+                        repo_root, "spec/problem/test.md", "t_a", recorded)
+                self.assertEqual(cm.exception.reason, "target_changed_on_resume")
+                profile_a = run_workflow.resolve_run_target(repo_root, "t_a")
+                profile_b = run_workflow.resolve_run_target(repo_root, "t_b")
+            # The closure's gate for the orchestrations it resumes other than its entry.
+            self.assertIsNone(run_workflow._target_resume_rejection(repo_root, "orch_t", profile_b))
+            rejection = run_workflow._target_resume_rejection(repo_root, "orch_t", profile_a)
+            self.assertEqual(rejection["reason"], "target_changed_on_resume")
+            with mock.patch.object(run_workflow, "_generate_executor_resume_rejection",
+                                   return_value=None), \
+                    mock.patch.object(run_workflow, "_llm_config_resume_rejection",
+                                      return_value=None):
+                self.assertEqual(
+                    run_workflow._closure_member_resume_rejection(
+                        repo_root, "orch_t", lc.load_llm_config(repo_root / "llm.yaml"),
+                        profile_a)["reason"],
+                    "target_changed_on_resume")
+            # An orchestration from before the record is not refused.
+            (orch / "orchestration_meta.json").write_text(json.dumps(
+                {"spec_ref": "spec/problem/test.md", "invocation": {}}), encoding="utf-8")
+            self.assertIsNone(run_workflow._target_resume_rejection(repo_root, "orch_t", profile_a))
+
+    def test_every_closure_member_is_told_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            with _real_target_resolution():
+                profile = run_workflow.resolve_run_target(repo_root, "t_a")
+            for resume in (False, True):
+                with self.subTest(resume=resume):
+                    argv = run_workflow._closure_member_argv(
+                        repo_root=repo_root, spec_ref="spec/component/c",
+                        dep_until_phase="Validate", orchestration_id="orch_c", resume=resume,
+                        target_orchestration_id="ORCHT", target_spec_ref="spec/problem/a",
+                        until_phase="Validate",
+                        llm_config=lc.load_llm_config(repo_root / "llm.yaml"),
+                        workflow_mode="dev", status="running", run_conductor=True,
+                        wait_usage_reset=False, target_profile=profile)
+                    self.assertEqual(argv[argv.index("--target") + 1], "t_a")
 
 
 if __name__ == "__main__":

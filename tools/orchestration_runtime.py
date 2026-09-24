@@ -2155,21 +2155,18 @@ def admissible_toolchains_document(node_key: str) -> str:
     executable; every other kind additionally needs the host to author the control file and
     render the runner. An empty result RAISES — a prompt whose admissible set is `[]` would
     ask the producer to invent a value."""
+    from tools.target_profile import toolchain_servable_reasons
+
     kind = node_key.partition("@")[0].partition("/")[0].strip()
     is_infrastructure = kind == "infrastructure"
-    build_systems = [
-        b for b in backend_registry.implemented_backend_ids("build_system")
-        if backend_registry.provides("build_system", b, "build_execute")
-        and (is_infrastructure
-             or backend_registry.provides("build_system", b, "control_file"))
+    # The capability question itself lives in `toolchain_servable_reasons`, which a target
+    # profile is asked at launch too (issue #284), so the two cannot answer differently.
+    pairs = [
+        {"language": lang, "build_system": b}
+        for lang in backend_registry.implemented_backend_ids("language")
+        for b in backend_registry.implemented_backend_ids("build_system")
+        if not toolchain_servable_reasons(lang, b, infrastructure=is_infrastructure)
     ]
-    languages = [
-        lang for lang in backend_registry.implemented_backend_ids("language")
-        if is_infrastructure
-        or (backend_registry.provides("language", lang, "control_file")
-            and backend_registry.provides("language", lang, "runner_render"))
-    ]
-    pairs = [{"language": lang, "build_system": b} for lang in languages for b in build_systems]
     if not pairs:
         raise RuntimeError(
             "pure_toolchain_document_unresolvable: the backend registry declares no "

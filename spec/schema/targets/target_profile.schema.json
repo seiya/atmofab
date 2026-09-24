@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "spec/schema/targets/target_profile.schema.json",
+  "title": "Target profile",
+  "description": "The whole-document shape of a target profile, `spec/targets/<target_id>.yaml`: the operator-authored description of what one run builds for — one value per target axis (hardware class, toolchain, parallel model, execution shape) and the harness a node built for that target runs over. Read by `tools/run_workflow.py --target` at launch, before anything runs; no leaf chooses or edits it. Every axis value is an opaque lowercase token that the host asks the backend registry about and never interprets itself. This schema is a DECLARATIVE COPY: the loader holds the same key sets as constants (`PROFILE_SHAPE`) and enforces them without this file, and `tools/tests/test_target_profile.py` pins the two copies together. The rules draft-07 cannot carry live in the loader: `target_id` must equal the file stem, the harness must resolve to an `infrastructure` spec in `spec/registry/spec_catalog.yaml`, and each axis value must be one this repository implements.",
+  "x-canonical-validator": "tools/target_profile.py:load_target_profile",
+  "x-canonical-doc": "docs/GLOSSARY.md",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target_profile_version", "target_id", "hardware", "toolchain", "parallel", "execution", "harness"],
+  "properties": {
+    "target_profile_version": {"type": "integer", "enum": [1]},
+    "target_id": {
+      "type": "string",
+      "description": "The profile's id; must equal the file stem.",
+      "pattern": "^[a-z][a-z0-9_]*(?![\\s\\S])"
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "architecture"],
+      "properties": {
+        "class": {"type": "string", "enum": ["cpu", "gpu"]},
+        "architecture": {"$ref": "#/definitions/token"}
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "standard", "build_system"],
+      "properties": {
+        "language": {"$ref": "#/definitions/token", "description": "The `language` axis value."},
+        "standard": {"$ref": "#/definitions/token"},
+        "build_system": {"$ref": "#/definitions/token", "description": "The `build_system` axis value."},
+        "compiler": {"$ref": "#/definitions/token", "description": "Optional pin of the build compiler (the `compiler` axis)."},
+        "linker": {"$ref": "#/definitions/token", "description": "Optional pin of the linker."}
+      }
+    },
+    "parallel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend"],
+      "properties": {
+        "backend": {"$ref": "#/definitions/token", "description": "The `parallel` axis value."}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threads_per_rank"],
+      "properties": {
+        "threads_per_rank": {"type": "integer", "minimum": 1}
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infrastructure_id", "version_constraint"],
+      "properties": {
+        "infrastructure_id": {"$ref": "#/definitions/token"},
+        "version_constraint": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "definitions": {
+    "token": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.+-]*(?![\\s\\S])"
+    }
+  },
+  "x-forbidden-examples": [
+    {"target_id": "Fortran-CPU", "why": "not a lowercase identifier"},
+    {"toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make", "flags": "-O2"}, "why": "unknown key: the toolchain is closed"},
+    {"execution": {"threads_per_rank": 0}, "why": "at least one thread"}
+  ],
+  "x-forbidden-examples-note": "The schema rejects all three on its own. The loader additionally rejects a `target_id` that is not the file stem and a harness the catalog does not resolve."
+}
