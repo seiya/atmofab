@@ -40,6 +40,8 @@ import json
 import os
 import tempfile
 import unittest
+
+from tools.tests.orchestration_fixtures import ensure_spec_entry
 from pathlib import Path
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
@@ -421,30 +423,17 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
         select.assert_called_once_with(Path("/nonexistent"), self._refs().ir_ref,
                                        target=FORTRAN_CPU)
 
-    def test_the_generate_producer_is_shown_the_profiles_fixed_layer(self) -> None:
+    def test_the_generate_producer_is_shown_the_whole_profile(self) -> None:
         from tools.tests.target_fixtures import profile_with
-        # A profile whose class / backend / architecture differ from the checked-in one AND
-        # from the IR below, so neither a literal nor the IR's value can stand in for it.
+        # A profile whose class / backend / architecture differ from the checked-in one, so no
+        # literal can stand in for it. Since R4-a PR-3 (issue #284) the producer is shown the
+        # profile document itself — there is no IR knob layer to merge it with, and nothing of
+        # the IR enters (the method takes no IR).
         target = profile_with(hardware={"class": "fpga", "architecture": "arch_t"},
                               parallel={"backend": "vendor_x"},
                               execution={"threads_per_rank": 5})
         c = self._conductor(Path("/nonexistent"), target=target)
-        ir = {"impl_defaults": {
-            "target": {"class": "gpu", "backend": "serial", "architecture": "a"},
-            "toolchain": {"language": "other"}, "selected": {"backend_key": "k"},
-            "abstract": {"parallelization": "none"},
-            "backend_overrides": {"openmp": {"num_threads": 4}}}}
-        doc = json.loads(c._pure_target_profile_document(ir))
-        self.assertEqual(doc["target_id"], target.target_id)
-        self.assertEqual(doc["target"], {
-            "class": "fpga", "backend": "vendor_x", "architecture": "arch_t"})
-        self.assertEqual(doc["toolchain"], target.toolchain)
-        self.assertEqual(doc["execution"], {**FORTRAN_CPU.doc["execution"],
-                                            "threads_per_rank": 5})
-        # The knob layer is still the IR's until R4-a PR-3; the IR's `selected` is not shown.
-        self.assertEqual(doc["abstract"], {"parallelization": "none"})
-        self.assertEqual(doc["backend_overrides"], {"openmp": {"num_threads": 4}})
-        self.assertNotIn("selected", doc)
+        self.assertEqual(json.loads(c._pure_target_profile_document()), target.doc)
 
 
 class ValidatorReadsTheTargetTests(unittest.TestCase):
@@ -598,11 +587,19 @@ class ValidatorToolchainReadsTests(unittest.TestCase):
                               parallel={"backend": "serial"})
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
+            # The pipeline closure starts with the target's harness (issue #284), resolved in
+            # the catalog; a stale IR toolchain section moves nothing.
+            ensure_spec_entry(repo, f"infrastructure/{target.harness['infrastructure_id']}@0.7.0")
             self._pipeline_with_ir(repo, {"impl_defaults": {
                 "toolchain": {"language": "c", "standard": "c99", "build_system": "cmake"},
                 "target": {"backend": "openmp"}}})
-            toolchain, _closure, _edges = vps._pure_gate_build_graph_inputs(
+            toolchain, closure, _edges = vps._pure_gate_build_graph_inputs(
                 repo, f"workspace/ir/{_SAFE}/spec-x_20260101_001", _NK, target)
+            # The gate's closure is the PIPELINE closure (issue #284): the target's harness,
+            # which the IR's sidecar no longer lists, is its first member — the same list the
+            # conductor stages and the generate key hashes (`pipeline_closure_nodes`).
+            self.assertEqual(
+                closure[:1], (f"infrastructure/{target.harness['infrastructure_id']}@0.7.0",))
             self.assertEqual(toolchain, {
                 "language": target.toolchain["language"], "standard": "f2018",
                 "build_system": target.toolchain["build_system"], "backend": "serial",

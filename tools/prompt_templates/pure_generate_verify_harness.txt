@@ -14,7 +14,7 @@ H5 — published surface, used and not reimplemented: the model publishes exactl
 H6 — what the entry writes: the diagnostics document, the performance document, and the primary evidence under the raw-evidence directory, and nothing else. It must not write the run's judgment artifacts, and their file names must not appear anywhere in the source, comments and string literals included. The diagnostics document satisfies `io_contract.diagnostics_contract` — an entry per declared check id, an honest per-case status for each (a failing check reported as failing even in a case the tests expect to fail; the fold that excludes it belongs to the judgment, not to the source), and the top-level verdict object where `verdict.required` is true.
 H7 — the evidence index and the performance document: the index is a per-test list with one entry per (`test_id`, target case) pair — every `test_id` of `io_contract.test_evidence_requirements`, once per case its `io_contract.test_predicates[].target_cases` names — each carrying that test's `required_raw_variables` for THAT case; a missing or extra pair is a fail, and a copy of the diagnostics document in it is a fail. The performance document carries every field the inlined runner-output contract fixes, per case.
 H8 — serialization: the documents the entry writes are UTF-8 JSON an ordinary parser restores, formatted by the rules §4 of the inlined runner-output contract gives for the declared language. Judge the formatting the source actually emits, not the intent stated in a comment.
-H9 — impl_defaults reflection: `target.*`, `toolchain.*`, `selected.*` and the `abstract` / `backend_overrides` knobs are reflected as far as the target language allows; ignoring a knob, or applying an optimization the target forbids, is a fail. Read the knobs by MEANING rather than by key name, and do not demand a parallel construct on work that carries a dependence.
+H9 — target lowering: the source honours the Target profile below (`hardware`, `toolchain`, `parallel`, `execution`), and the bundle's `target_lowering_plan` states how it is lowered onto that target and the source does what the plan states, as far as the target language allows; a plan the source does not follow, or an optimization the target forbids, is a fail. Do not demand a parallel construct on work that carries a dependence.
 H10 — dependency consistency: no reference to a node or operation outside `dependency.direct_deps`, and every call into one passes its arguments in the published interface's order and rank.
 
 **Controlled spec (the human-authored behavioral contract you verify the generated source against):**
@@ -25,6 +25,9 @@ H10 — dependency consistency: no reference to a node or operation outside `dep
 
 **IR (authoritative for the published surface and its signatures, the case set, and the contracts):**
 <ir_document>
+
+**Target profile (the implementation target the source was generated for — the same document the producer was shown; H9 judges against it):**
+<target_profile>
 
 **Runner-output contract (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, inlined whole — the same document the producer authored against, and the canonical source for H6, H7 and H8. Where a checklist item above and this document differ IN WHAT THE OUTPUT MUST BE, this document governs. Its precedence stops there, and its SILENCE overrules nothing: it was written for a leaf that reads it as a file and for the run's judge, so where it describes what some OTHER phase checks, or what a `Generate` leaf may read, it does not narrow a checklist item above — every H item above stays fully in scope, and a laxer description of a downstream gate is not a licence to pass a bundle this checklist fails.):**
 <runner_output_contract_document>

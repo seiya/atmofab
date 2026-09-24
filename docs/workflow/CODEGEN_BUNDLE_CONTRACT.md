@@ -8,7 +8,7 @@
 >
 > | shape | node | the leaf authors | the host renders |
 > |---|---|---|---|
-> | `m3c` | a make+fortran physics node with exactly one `infrastructure` dependency | `model` + `checks` | the runner glue and the build control file |
+> | `m3c` | a non-`infrastructure` node whose target toolchain the host writes the build control file for and renders the runner for (the `control_file` and `runner_render` capabilities); no dependency count enters it (until R4-a PR-3, issue #284, it also required exactly one `infrastructure` dependency) | `model` + `checks` | the runner glue over the target's harness, and the build control file |
 > | `harness` | an `infrastructure` self-test (bundle 1.1.0's `runner` role) | `model` + `runner` | the build control file only |
 >
 > WHICH shape a node has is not a property of this document — `validate_bundle` sees a
@@ -323,6 +323,18 @@ fixed by this contract, and what a key's object contains is not constrained in v
   `accelerator_mapping` (each an object), and `fusion` (an array; each element's
   `members` must be a subset of the unit's members).
 - An unknown top-level key is rejected.
+
+**Authorship and review.** The `Generate` producer authors the plan together with the
+source, and it holds the lowering choices of the node (parallel model and scope, schedule,
+chunk size, collapse, layout, fusion, tiling, vectorization); the IR carries none of them
+(until R4-a PR-3, issue #284, they were the IR's `impl_defaults` knob layer).
+`parallelization`, when present, is an object whose `model` member names the parallel model,
+`"none"` when nothing is parallelized. Two readers act on the plan: the `Generate.gate`
+parallel-directive floor (`_validate_openmp_presence_floor`) runs on a `cpu` + `openmp` target
+unless the plan's `parallelization` explicitly declines OpenMP (`_lowering_plan_declines_openmp`
+reads the members `model` / `method` / `scheme` / `kind`; an absent model declines nothing), and
+`Generate.verify` G6 judges the plan and the source against the whole target profile
+(`docs/workflow/phases/phase_02_generate.md`).
 
 **Coupling invariant.** `state_residency` other than `host` requires the corresponding
 **residency capability** in `capability_requirements`: `device` requires an

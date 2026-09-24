@@ -360,12 +360,39 @@ def harness_node_key_for_target(repo_root: Path, profile: TargetProfile) -> str:
     return f"infrastructure/{infra_id}@{matched[0]}"
 
 
+def target_harness_entries(target: TargetProfile | None,
+                           node_kind: Any) -> list[tuple[str, str, str]]:
+    """The dependency entry a node gains from the target it is built for: the target's harness,
+    as the `(spec_kind, spec_id, version_constraint)` triple `orchestration_runtime
+    ._parse_dep_entries` yields for a `deps.yaml` entry — for every node whose kind is not
+    `infrastructure`; none without a target (issue #284, R4-a PR-3).
+
+    This is where the harness enters every closure and readiness question that has a target:
+    `--with-deps`' closure (`run_workflow._resolve_dependency_closure`), the launch gate's direct
+    set (`orchestration_runtime._certify_and_collect_dep_artifacts`) and its stale-dependency
+    report. `deps.yaml` declared it until PR-3 (the spec-input gate now refuses a declaration),
+    so a node's readiness asks for the harness at the same stages it asked before. What does NOT
+    see it is the target-free Compile: the dependency graph and its sidecar, and the compile key,
+    are `deps.yaml`'s alone; the pipeline closure adds it back
+    (`orchestration_runtime.pipeline_closure_nodes`).
+
+    `node_kind` is compared with `.strip()` and nothing else, the spelling rule every reader of
+    `spec_kind` uses."""
+    if target is None:
+        return []
+    if isinstance(node_kind, str) and node_kind.strip() == "infrastructure":
+        return []
+    harness = target.harness
+    return [("infrastructure", harness["infrastructure_id"], harness["version_constraint"])]
+
+
 def toolchain_servable_reasons(language: str, build_system: str, *,
                                infrastructure: bool) -> list[str]:
     """Why the host cannot build and render a node of this kind in (`language`, `build_system`);
     empty when it can. ONE statement of the capability question, asked of a target profile at
-    launch (`target_profile_violations`) and of the admissible set a compile producer is shown
-    (`orchestration_runtime.admissible_toolchains_document`).
+    launch (`target_profile_violations`). Until R4-a PR-3 it was also asked of the admissible
+    set a compile producer was shown, and of the IR's `impl_defaults.toolchain` at Compile;
+    the target is the profile's alone now, so the launch gate is where it is asked.
 
     An `infrastructure` node needs only its build system to be executable; every other kind also
     needs the host to author the control file (both axes) and render the runner (language)."""
@@ -435,48 +462,3 @@ def resolve_run_target(repo_root: Path, requested: str | None, *,
                   else "target_profile_invalid")
         raise TargetProfileError(reason, f"target {target_id}: {violations[0]}")
     return profile
-
-
-#: The `impl_defaults` fields the bridge gate compares against the profile, as
-#: `(dotted IR path under impl_defaults, profile accessor)`. R4-a PR-1 only: PR-3 deletes
-#: `impl_defaults` and this with it.
-#:
-#: `target.backend` is deliberately NOT compared. Measured at d2f8e9b5: the certified harness IR
-#: `infrastructure__harness_fortran_cpu__0.7.0/harness-fortran-cpu_20260918_001` declares a
-#: parallel backend other than the profile's (4 of the 123 IRs in `workspace/ir/` do), so a
-#: comparison would refuse the harness every closure stands on. Whether a node USES the
-#: target's parallel model is a lowering decision (the bundle's `target_lowering_plan`), not a
-#: target attribute — which is the end state R4-a lands.
-BRIDGE_FIELDS: tuple[tuple[str, str], ...] = (
-    ("target.class", "hardware.class"),
-    ("toolchain.language", "toolchain.language"),
-    ("toolchain.standard", "toolchain.standard"),
-    ("toolchain.build_system", "toolchain.build_system"),
-)
-
-
-def _dotted(obj: Any, path: str) -> Any:
-    for part in path.split("."):
-        if not isinstance(obj, dict):
-            return None
-        obj = obj.get(part)
-    return obj
-
-
-def ir_profile_mismatches(ir: Any, profile: TargetProfile) -> list[str]:
-    """The bridge gate (R4-a PR-1, deleted by PR-3): the `impl_defaults` fields in
-    `BRIDGE_FIELDS` that an IR declares differently from `profile`, each as
-    `<ir field>=<declared> expected <profile value>` — short, because the conductor's reason
-    detail is capped and the field names must survive the cap. An ABSENT field is a mismatch
-    too — until issue #284 the host filled a default for it, and the IR's remaining readers
-    (Generate.verify's G6, the compile-stage gates) still read the declared value, so an absent
-    one is exactly the unrecorded target choice this bridge exists to rule out."""
-    impl = ir.get("impl_defaults") if isinstance(ir, dict) else None
-    out: list[str] = []
-    for ir_path, profile_path in BRIDGE_FIELDS:
-        declared = _dotted(impl, ir_path)
-        expected = _dotted(profile.doc, profile_path)
-        normalized = declared.strip().lower() if isinstance(declared, str) else declared
-        if normalized != expected:
-            out.append(f"{ir_path}={declared!r} expected {expected!r}")
-    return out

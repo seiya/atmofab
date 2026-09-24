@@ -85,9 +85,14 @@ class PureVerifyContextTests(unittest.TestCase):
             ctx = _conductor(repo)._build_pure_verify_context(refs)
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
-                              "ir_document", "checks_module_contract_document",
+                              "ir_document", "target_profile",
+                              "checks_module_contract_document",
                               "severity_rubric_document", "bundle_document"})
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
+            # The reviewer judges G6 against the run's target (issue #284): the whole profile,
+            # the same document the producer is shown.
+            conductor = _conductor(repo)
+            self.assertEqual(json.loads(ctx["target_profile"]), conductor.target.doc)
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
 
     def test_checks_contract_document_is_sections_1_to_4_of_the_real_doc(self) -> None:
@@ -1434,7 +1439,10 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         degrading = {"controlled_spec_document", "tests_document", "ir_document",
                      "bundle_document"}
         raising = {"runner_output_contract_document", "severity_rubric_document"}
-        self.assertEqual(set(ctx), degrading | raising)
+        # Host data, read off the run's own loaded profile (issue #284): nothing to be missing.
+        host = {"target_profile"}
+        self.assertEqual(set(ctx), degrading | raising | host)
+        self.assertEqual(json.loads(ctx["target_profile"]), self.c.target.doc)
         self.assertEqual(len(cases), len(raising))
 
     def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:

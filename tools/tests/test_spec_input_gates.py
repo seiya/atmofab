@@ -13,7 +13,7 @@ import unittest
 from tools.spec_input_gates import (
     CASE_ID_TOKEN_RE,
     MAX_SPEC_ID_LEN,
-    infra_dep_count_violation,
+    infra_dep_declared_violation,
     spec_id_length_violation,
 )
 
@@ -55,94 +55,31 @@ class SpecIdLengthGateTest(unittest.TestCase):
         self.assertIsNotNone(spec_id_length_violation("  " + "z" * (MAX_SPEC_ID_LEN + 1) + "  "))
 
 
-class InfraDepCountGateTest(unittest.TestCase):
-    """Spec-input gate: `infra_dep_count_violation` requires EXACTLY ONE `infrastructure`
-    direct dependency on every spec that builds — every kind but `infrastructure` (exempt at
-    any count: the harness authors its own self-test runner) and `profile` (bounded to ZERO:
-    a profile is a compile-time selection policy that builds nothing, issue #175). Sibling of
-    the spec_id bound: both are node-IDENTITY preconditions a Compile re-author cannot repair,
-    so both are captured at spec-input. Zero and >1 used to degrade silently to the removed
-    leaf-authored-runner path; they are hard rejections now."""
+class InfraDepDeclaredGateTest(unittest.TestCase):
+    """Spec-input gate: `infra_dep_declared_violation` refuses ANY `infrastructure` entry in a
+    `deps.yaml`, whatever the spec's kind (issue #284, R4-a PR-3): the runner harness is the
+    target profile's attribute, never a spec dependency. Until PR-3 this was the opposite rule
+    (`infra_dep_count_violation`: exactly one on every spec that builds)."""
 
-    # The kinds that build code and therefore need exactly one runner harness. `profile` is
-    # deliberately absent — its own rows are below.
-    BUILDING_KINDS = ("component", "problem")
+    def test_zero_passes(self) -> None:
+        self.assertIsNone(infra_dep_declared_violation(0))
 
-    def test_exactly_one_passes(self) -> None:
-        for kind in self.BUILDING_KINDS:
-            self.assertIsNone(infra_dep_count_violation(kind, 1), kind)
-
-    def test_zero_and_more_than_one_violate(self) -> None:
-        for kind in self.BUILDING_KINDS:
-            for count in (0, 2, 3):
-                self.assertIsNotNone(infra_dep_count_violation(kind, count), (kind, count))
-
-    def test_profile_must_declare_zero(self) -> None:
-        # Issue #175: a `profile` is resolved by the host at Compile and generates no code, so
-        # it has no runner to build. Unlike the `infrastructure` exemption this is a BOUND —
-        # a harness declared here would enter the closure of every ADOPTING node through an
-        # edge that node never wrote.
-        self.assertIsNone(infra_dep_count_violation("profile", 0))
+    def test_any_declaration_is_refused(self) -> None:
         for count in (1, 2, 5):
-            msg = infra_dep_count_violation("profile", count)
+            msg = infra_dep_declared_violation(count)
             self.assertIsNotNone(msg, count)
-            self.assertIn(f"found {count}", msg)
-            self.assertIn("must declare no `infrastructure`", msg)
-            # The remedy for a building kind's over-count ("keep the one harness this node
-            # builds against") would be actively wrong here: a profile keeps none.
-            self.assertNotIn("keeping the one harness", msg)
-            self.assertIn("Remove the `infrastructure` entry", msg)
+            assert msg is not None
+            self.assertTrue(msg.startswith("infrastructure_dependency_declared_in_deps: "), msg)
+            self.assertIn(f"declares {count} `infrastructure`", msg)
 
-    def test_the_profile_bound_is_case_sensitive_like_the_infrastructure_exemption(self) -> None:
-        # Same reason as the `infrastructure` row below: every downstream reader compares the
-        # stripped value with no case folding, so a `Profile` lower-cased into the zero-bound
-        # here would be judged a building kind everywhere else. Fail closed instead — under the
-        # building-kind rule `Profile` with 0 entries is a violation and with 1 is not.
-        self.assertIsNone(infra_dep_count_violation("  profile  ", 0))
-        for spelling in ("Profile", "PROFILE", "proFile"):
-            self.assertIsNotNone(infra_dep_count_violation(spelling, 0), spelling)
-            self.assertIsNone(infra_dep_count_violation(spelling, 1), spelling)
+    def test_message_names_the_target_profile_as_the_harness_owner_and_the_remedy(self) -> None:
+        msg = infra_dep_declared_violation(1)
+        assert msg is not None
+        self.assertIn("spec/targets/<target_id>.yaml `harness`", msg)
+        self.assertIn("Remove the `infrastructure:` section", msg)
+        self.assertIn("dependency;", msg)
+        self.assertIn("dependencies;", infra_dep_declared_violation(2) or "")
 
-    def test_infrastructure_kind_is_exempt_at_every_count(self) -> None:
-        # The harness authors its own self-test runner, so it declares no harness of its own.
-        for count in (0, 1, 5):
-            self.assertIsNone(infra_dep_count_violation("infrastructure", count), count)
-        self.assertIsNone(infra_dep_count_violation("  infrastructure  ", 0))
-
-    def test_the_exemption_is_case_sensitive_like_every_downstream_reader(self) -> None:
-        # `_conductor_authors_runner` / `_pure_leaf_substep` /
-        # `_validate_toolchain_backend_supported` all compare the stripped value with no case
-        # folding. Lower-casing HERE would exempt `Infrastructure` at spec-input and then let
-        # all three treat it as a physics node — the removed leaf-authored-runner path, with
-        # no gate firing anywhere. It must fail closed instead.
-        for spelling in ("Infrastructure", "INFRASTRUCTURE", "infraStructure"):
-            self.assertIsNotNone(infra_dep_count_violation(spelling, 0), spelling)
-            self.assertIsNone(infra_dep_count_violation(spelling, 1), spelling)
-
-    def test_message_names_the_rule_the_count_and_the_canonical_doc(self) -> None:
-        msg = infra_dep_count_violation("component", 2)
-        self.assertIsNotNone(msg)
-        self.assertIn("exactly one", msg)
-        self.assertIn("infrastructure", msg)
-        self.assertIn("found 2", msg)
-        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
-        # A remedy the author can act on, pointing the way the error actually goes: too
-        # many entries must be REMOVED, and telling the author to add one more would be
-        # actively wrong.
-        self.assertIn("Remove 1 of them", msg)
-        self.assertNotIn("Add the single", msg)
-        self.assertIn("advdiff1d_linear/deps.yaml", msg)
-        zero = infra_dep_count_violation("problem", 0)
-        self.assertIn("found 0", zero)
-        self.assertIn("Add the single `infrastructure_id` entry", zero)
-        self.assertIn("Remove 2 of them", infra_dep_count_violation("component", 3))
-
-    def test_unknown_or_non_string_kind_is_not_exempt(self) -> None:
-        # Only the literal `infrastructure` kind is exempt; anything else must declare one.
-        self.assertIsNotNone(infra_dep_count_violation(None, 0))
-        self.assertIsNotNone(infra_dep_count_violation("", 0))
-        self.assertIsNotNone(infra_dep_count_violation(123, 0))
-        self.assertIsNone(infra_dep_count_violation(None, 1))
 
 class CaseIdTokenGrammarTest(unittest.TestCase):
     """The one owner of the case_id safe-token grammar.

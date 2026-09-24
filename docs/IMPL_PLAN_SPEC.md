@@ -1,55 +1,56 @@
-# Implementation Plan (the `spec.ir.yaml.impl_defaults` section)
+# Target Profile and Lowering Plan
 
 ## Position
-The `impl_defaults` section of `spec.ir.yaml` holds the default values for implementation discretion (B). In the core workflow, the stages from `Generate` onward use this value as a **fixed value**. Variant exploration of implementation discretion is the responsibility of the optional flow `Tune`, and `Tune` separately generates variant candidates with `spec.ir.yaml` as an invariant premise.
+Implementation discretion (B) is held in two places, and neither is `spec.ir.yaml`.
+
+- The **target profile** (`spec/targets/<target_id>.yaml`, `docs/GLOSSARY.md` §1 `target profile`) fixes what one run builds for: the hardware, the toolchain, the parallel backend, the execution shape, and the harness. The operator authors it; no leaf chooses or edits it. The run selects it with `tools/run_workflow.py --target <target_id>`, and the launch gate (`tools/target_profile.py:target_profile_violations`) refuses it before anything runs when an axis value is not one this repository implements or when its harness does not resolve.
+- The **lowering plan** (the CodegenBundle's `target_lowering_plan`, `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`) states how the computation of one node is lowered onto that target: the parallelization model and the loops it covers, the schedule, the data layout, fusion, tiling, and vectorization. The `Generate` producer authors it together with the source.
+
+`spec.ir.yaml` is target-free: its sections are `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node), and a Compile reply that carries an `impl_defaults` section is refused by the host. Until R4-a PR-3 (issue #284) the IR carried an `impl_defaults` section holding the toolchain and a knob layer; the toolchain moved to the target profile and the knob layer moved to the lowering plan.
+
+In the core workflow the target profile is a fixed input of every stage from `Generate` onward, and the lowering plan is fixed once `Generate` certifies the bundle. Variant exploration of implementation discretion is the responsibility of the optional flow `Tune` (`docs/TUNING_WORKFLOW.md`), whose variants are over the lowering plan.
 
 ## Design Policy
-Implementation discretion is expressed in a **2-layer structure (Abstract Knobs + Backend Overrides)**.
-
-- **abstract**: the expression of "intent" that is less hardware/language dependent (easy to auto-explore)
-- **backend**: backend-specific parameters such as OpenACC / CUDA Fortran / CUDA C++ (to land in an implementation)
-
-This structure satisfies the following.
-- Even if the optional flow `Tune` expands the exploration space, the expression is less likely to break down
-- The concrete parameters needed for the implementation can be made explicit
-- Even when a backend is added, the existing tuning history is less likely to be wasted
+- The target profile names each axis value as an opaque token. The host asks the backend registry (`tools/backends/registry.py`) about the token and does not interpret it (`docs/BACKEND_BOUNDARY.md`).
+- The lowering plan expresses the intent of a lowering choice — which loops are parallel, which layout, which fusion — rather than compiler flags or the concrete spelling of a directive. The concrete spelling is the source's.
+- The plan is the `Generate` producer's own declaration, and `Generate.verify` G6 holds the source to it (`docs/workflow/phases/phase_02_generate.md`).
 
 ## 1. The boundary of generalization
-- Generalize: the "intent" of loop transformation (tiling, fusion, parallel granularity, vectorization, the memory-layout policy, the async/overlap policy)
-- Do not generalize: compiler-specific flags, GPU-architecture-specific details, the concrete way of writing a pragma/attribute
-- Isolate these in `backend_overrides`
+- Generalize (lowering plan): the intent of a loop transformation — parallel model and scope, schedule, chunk size, collapse, tiling, fusion, vectorization, the memory-layout policy, the async/overlap policy.
+- Do not generalize: compiler-specific flags, GPU-architecture-specific details, the concrete way of writing a pragma or attribute. These are not recorded in the target profile or in the plan; the source and the host-authored build control file carry them.
 
-## 2. Required items
-`spec.ir.yaml.impl_defaults` requires the following.
+## 2. Required items (target profile)
+A target profile requires the following fields. `spec/schema/targets/target_profile.schema.json` is a declarative copy of the shape; the canonical validator is `tools/target_profile.py:load_target_profile`.
 
-- `target.class` (cpu/gpu etc.)
-- `target.backend` — the parallel-backend token, e.g. `openmp`, `cuda`, `mpi` (canonical field definition: `docs/workflow/phases/phase_01_compile.md`). The composite identifier such as `cpu_openmp_x86_64` belongs in `selected.backend_key`, NOT here: the `Generate.gate` `!$omp` floor keys off `target.backend == "openmp"`, so a composite value here silently disables it (the knob-name gate is backend-agnostic by design)
-- `target.architecture` (e.g. `x86_64`, `aarch64`, `nvidia_sm80`)
-- `toolchain.language` (`fortran` — the only implemented value; see the rules below)
-- `toolchain.standard` (the language standard spelled the way the compiler names it — e.g. `f2008`, `c++17`; it is passed verbatim as `-std=<value>`, so `2008` is rejected by the compiler driver)
-- `toolchain.build_system` (`make` — the only implemented value; see the rules below)
-- `abstract` (language-independent knobs; the parallelization family has canonical key names — `parallelization` / `parallel_scope` / `parallel_granularity`, per `spec/schema/ir/impl_defaults.schema.json`)
-- `backend_overrides` (language/backend-dependent knobs; under `openmp`: `num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`, same canonical source)
-- `selected.backend_key`
+- `hardware.class` (`cpu` / `gpu`).
+- `hardware.architecture` (e.g. `x86_64`).
+- `toolchain.language` (the `language` axis value).
+- `toolchain.standard` (the language standard spelled the way the compiler names it; it is passed verbatim to the compiler driver, so an elided spelling is rejected by the driver).
+- `toolchain.build_system` (the `build_system` axis value).
+- `parallel.backend` (the `parallel` axis value).
+- `execution.threads_per_rank` (the loader accepts only `1`; `docs/GLOSSARY.md` §1 `target profile`).
+- `harness` (`infrastructure_id`, `version_constraint`): the `infrastructure` node every non-infrastructure node built for this target runs over. The host resolves it to the highest catalog version that satisfies the constraint (`tools/target_profile.py:harness_node_key_for_target`).
 
 Rules:
-- **The programming language must be fixed in `Compile`.**
-- **The target architecture must be fixed in `Compile`.**
-- **`toolchain.build_system` is `make` on every `spec_kind`, and `toolchain.language` is `fortran` on every `spec_kind` other than `infrastructure`.** That pair is the only implemented physical backend: the `runner` and `src/Makefile` are host-authored for `make` + `fortran` alone, and the deterministic `Compile.static` gate `_validate_toolchain_backend_supported` (`docs/workflow/phases/phase_01_compile.md`) fails any other pair, routing back to `Compile.generate` for a re-author. This holds regardless of `target.class` and regardless of any language the user names — a `controlled_spec` is language-neutral by construction, so it never pins a toolchain. Adding another backend is a repository-level change (a host-side `runner` renderer and `Makefile` writer for it), not a per-spec decision.
-- `toolchain.language` is fixed at `Compile` time.
-- When the user does not explicitly specify the loop parallelization method for `target.class=cpu`, the generator applies `OpenMP` to parallelizable loops.
-- When the user explicitly specifies the loop parallelization method, that specification takes precedence. Forcing `OpenMP` onto a non-parallelizable loop is forbidden.
-- `target.class` other than `cpu` / `gpu` does not change the `toolchain` rule above; it affects only the `target` / `abstract` completion.
-- When `toolchain.language` / `toolchain.standard` / `toolchain.build_system` are undefined in `impl_defaults`, it is a `fail` in `Compile.verify`.
-- When `target.architecture` is undefined, it is a `fail` in `Compile.verify`.
-- `toolchain.build_system` is `make`. It is also the value an absent key defaults to, in both the conductor and the `Compile.static` gate — but the key is still **stated explicitly**, per the `Compile.verify` `fail` rule above and V6 (`docs/workflow/phases/phase_01_compile.md`); the shared default exists so that the gate and the conductor read the same IR the same way, not so the key may be omitted. The same holds for `toolchain.language` (`fortran`), which the `post_generate` lint and syntax-evidence gates also read.
+- The toolchain is fixed by the target profile, not by `Compile`. `Compile` reads no toolchain and produces the same IR for every target.
+- The launch gate requires every axis value to be implemented, and requires the toolchain to be servable for the node's kind: an `infrastructure` node needs an executable build system; every other kind also needs the host to author the build control file and to render the runner (`tools/target_profile.py:toolchain_servable_reasons`). A profile that fails is refused at launch as `target_profile_invalid`.
+- An `infrastructure` node run for a target must be that target's harness; any other `infrastructure` node is refused at launch as `target_harness_mismatch`.
+- Adding another toolchain is a repository-level change (a `backend` package that implements the missing capabilities, `docs/BACKEND_BOUNDARY.md`), not a per-spec decision.
 
-## 3. Optional items (environment-dependent)
-- `toolchain.compiler` / `toolchain.linker` are **optional**.
-- State them only when you want to fix the compiler type/version (emphasizing CI reproducibility).
-- When not fixed, use the execution environment's default compiler.
-- With `build_system=make` ∧ `language=fortran`, the conductor-authored `src/Makefile` pins `FC` to `toolchain.compiler` when it is set (else `gfortran`), so a future non-gfortran build (e.g. Fujitsu `frt`) only needs this field plus a `run_syntax_check` compiler adapter (`mcp_servers/README.md`). The deterministic `Generate.gate` syntax check always runs its mandatory `gfortran -fsyntax-only` stage against `toolchain.standard` regardless of the build compiler (standard conformance is the contract; the build compiler is an implementation detail).
-- The operation of directly calling `gcc` / `clang` / `gfortran` for a one-off build is forbidden; always build via `toolchain.build_system`.
+## 3. Optional items
+### Target profile
+- `toolchain.compiler` / `toolchain.linker` are optional pins.
+- State them only to fix the compiler or linker (for reproducibility). When absent, the execution environment's default is used.
+- When `toolchain.compiler` is set, the launch gate requires it to be an implemented `compiler` axis value, and the host-authored build control file uses it as the build compiler. The deterministic `Generate.gate` syntax check always runs against `toolchain.standard` regardless of the build compiler.
+- Calling a compiler directly for a one-off build is forbidden; every build runs through `toolchain.build_system` (`AGENTS.md` §MCP execution rules).
+
+### Lowering plan
+The remaining implementation choices are the bundle's `target_lowering_plan`, authored by the `Generate` producer. `precision` and `state_residency` are required members; `data_layout`, `parallelization`, `decomposition`, `communication`, `accelerator_mapping`, and `fusion` (whose groups' `members` are node_keys of the optimization unit — member fusion, not loop fusion, which is a member inside one of the objects) are optional (`tools/codegen_bundle.py:LOWERING_PLAN_REQUIRED_KEYS` / `LOWERING_PLAN_OPTIONAL_KEYS`).
+
+- `parallelization` is an object whose `model` member names the parallel model, and `"none"` when nothing is parallelized. Its other members state which loops the model covers and with what schedule, chunk size, and collapse.
+- When the target's `hardware.class` is `cpu` and the user does not specify the loop parallelization method, the producer parallelizes the parallelizable loops with the target's `parallel.backend`.
+- A user-specified parallelization method takes precedence. Forcing parallelization onto a loop that is not parallelizable is forbidden.
+- On a `component` or `problem` node whose target has `hardware.class` `cpu`, `parallel.backend` `openmp`, and the language the floor is implemented for, and whose plan does not explicitly decline OpenMP (a `model` naming `none` or another model declines; an absent model does not), the `Generate.gate` static check fails a model source that contains counted loops and no parallel directive (`tools/validate_pipeline_semantics.py:_validate_openmp_presence_floor`). A plan that declares `none` over loops that are plainly parallelizable is a `Generate.verify` G6 finding.
 
 ## 4. Composition rules of the output (common across languages)
 - Regardless of language, the generated code separates `model` (physics computation) and `runner` (input/output / judgment coordination).

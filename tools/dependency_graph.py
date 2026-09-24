@@ -72,9 +72,10 @@ def build_dependency_graph(
         ``dependency_identity_conflict`` / ``dependency_deps_unreadable`` /
         ``dependency_deps_malformed`` / ``dependency_spec_ref_unresolved`` /
         ``spec_catalog_corrupt``), plus the ``profile_*`` reasons
-        ``expand_profile_dependencies`` returns. That closure additionally applies the spec-input
-        identity gates (``spec_id_too_long`` / ``infra_dep_count_invalid``), which this
-        builder deliberately does not: it derives a graph, it does not gate a run.
+        ``expand_profile_dependencies`` returns, plus ``infrastructure_dependency_declared_in_deps``
+        (issue #284: a harness is the target's, never an edge of this target-free graph). That
+        closure additionally applies the spec-input ``spec_id_too_long`` gate, which this builder
+        deliberately does not: it derives a graph, it does not gate a run.
 
     Edges come from the canonical runtime helpers (``_read_deps_yaml`` /
     ``_parse_dep_entries`` / ``_matching_dep_versions`` / ``resolve_spec_ref_for``
@@ -92,6 +93,7 @@ def build_dependency_graph(
         expand_profile_dependencies,
         resolve_spec_ref_for,
     )
+    from tools.spec_input_gates import infra_dep_declared_violation
 
     # Lazily loaded once a dependency edge is actually encountered — a leaf
     # target (empty deps.yaml) needs no catalog, so a missing/corrupt registry
@@ -143,6 +145,17 @@ def build_dependency_graph(
                 "reason": "dependency_deps_malformed",
                 "detail": f"{spec_ref}/deps.yaml has a malformed dependency schema",
             }
+            return
+        # Issue #284 (R4-a PR-3): the harness is the TARGET's, and this graph is the target-free
+        # Compile's, so an `infrastructure` entry is never an edge. The spec-input gate refuses
+        # the declaration before any phase runs (`spec_input_gates.infra_dep_declared_violation`);
+        # this refuses it again rather than letting a graph built past that gate carry one
+        # target's harness into a target-free key.
+        infra_violation = infra_dep_declared_violation(
+            sum(1 for kind, _sid, _c in entries if kind == "infrastructure"))
+        if infra_violation:
+            error = {"reason": "infrastructure_dependency_declared_in_deps",
+                     "detail": f"{spec_ref}: {infra_violation}"}
             return
         # Issue #175: a `profile` entry names a compile-time component-selection policy, not a
         # closure node. Expand it into the components it selects HERE, so every layer below —

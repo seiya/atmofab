@@ -8,8 +8,8 @@
 # named two `SKILL`s until Z4 (issue #171) deleted them, and no leaf reads a `SKILL`.
 #
 # This file is written as an excerpt of only the algorithm section; in an actual spec.ir.yaml, place
-# this block as the value of the `algorithm:` key, alongside the `case` / `impl_defaults` /
-# `io_contract` / `dependency` sections.
+# this block as the value of the `algorithm:` key, alongside the `case` / `io_contract` /
+# `dependency` sections.
 #
 # `docs/examples/spec_ir_algorithm_section.example.yaml` is the companion sample for a component
 # node. It is the canonical reference for the rules common to every node kind (the string-list form

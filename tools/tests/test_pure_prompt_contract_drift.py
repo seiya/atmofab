@@ -35,7 +35,8 @@ and that the leaf's decision depends on it — not this precedent alone.
 
 DELIBERATELY NOT PINNED, and this is a REFUSAL rather than an omission: the documents the Z1
 compile pair inlines IN FULL (`docs/workflow/phases/phase_01_compile.md`, the two
-`docs/examples/spec_ir_algorithm*` files, `spec/schema/ir/impl_defaults.schema.json`). They meet
+`docs/examples/spec_ir_algorithm*` files; `spec/schema/ir/impl_defaults.schema.json` was the fourth
+until R4-a PR-3, issue #284, deleted it with the IR section). They meet
 the "host pastes it into the leaf's prompt" half of the bar above and fail the "stable" half:
 `phase_01_compile.md` has taken 61 commits over 30 distinct days all-time, 43 of them over 16
 days in the seven weeks to 2026-09-07 — measured at `04a7b75` with
@@ -567,7 +568,31 @@ PINNED: dict[str, str] = {
     # pinned. Every other pinned surface is unchanged.
     # Re-pinned in round 1: the harness rule (1) states the ORDER of the two scope statements
     # (the compiler refuses the implicit-typing statement before the host-association one).
-    "pure-48": "0f9715ba7082b9f4f58407c80595138c0d8e6e0e07e45598512c3d526c230ba0",}
+    "pure-48": "0f9715ba7082b9f4f58407c80595138c0d8e6e0e07e45598512c3d526c230ba0",
+    # pure-49 (issue #284, R4-a PR-3): the IR is target-free. `compile.generate` authors no
+    # `impl_defaults` (output contract, rule (3) — the graph and `direct_deps` hold no harness —
+    # and the knob / toolchain rules deleted, the rest renumbered) and is shown neither the
+    # `impl_defaults` schema nor the admissible-toolchain document; `compile.verify` loses the
+    # toolchain-admissibility check. The `generate.generate` rule (7) and the `harness`
+    # producer's rule (10) become TARGET LOWERING: the profile binds, and the producer declares
+    # its parallelization in `target_lowering_plan.parallelization.model` (the OpenMP floor reads
+    # that claim). G6 / H9 hold the source to the profile and that plan, and both verify
+    # templates gain a `<target_profile>` block. `RUNNER_OUTPUT_CONTRACT.md` and the
+    # checks-module contract's audience line drop the deps.yaml-harness wording (both trimmed
+    # under their ceilings); phase_02's rubric example follows G6.
+    # Re-pinned before merge (pure-49 was never released): both producer templates name the
+    # plan's closed optional keys; "the plan's other keys" cost the first adoption run a
+    # harness Generate attempt to `unknown key 'layout'` / `'tiling'`.
+    # Re-pinned in round 1: the OpenMP floor applies unless the plan EXPLICITLY declines
+    # OpenMP (an absent model is the target's backend), in rule (7) and in G6's scope sentence;
+    # and both producer templates say `fusion` fuses optimization-unit members, never loops.
+    # Re-pinned in round 2: G6's scope sentence no longer lists "no model at all" among the
+    # plans the floor skips, and says a declared `none` is the producer's claim the floor trusts.
+    # Re-pinned in round 3: G6 also fails a stated reason the loops contradict, and H9 drops the
+    # knob layer's "read the plan by MEANING rather than by key name". (Unmerged, not unused:
+    # the adoption run's Generate outputs were certified under an earlier pure-49 digest; a
+    # re-pin moves no derivation key, and none of them fails the floor at HEAD.)
+    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",}
 
 
 def _contract_tuple() -> dict[str, object]:

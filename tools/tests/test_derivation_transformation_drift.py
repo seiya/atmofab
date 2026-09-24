@@ -5,8 +5,9 @@ version of the transformation that turns them into an output. The LLM half of th
 `PURE_PROMPT_CONTRACT_VERSION`, whose coupled surface `test_pure_prompt_contract_drift.py` pins.
 This module pins the REST:
 
-* `COMPILE_INLINED_DOCUMENTS_VERSION` — the four documents the compile pair inlines IN FULL
-  (`phase_01_compile.md`, the two IR examples, the `impl_defaults` schema). The prompt drift
+* `COMPILE_INLINED_DOCUMENTS_VERSION` — the three documents the compile pair inlines IN FULL
+  (`phase_01_compile.md`, the two IR examples; the `impl_defaults` schema was the fourth until
+  R4-a PR-3, issue #284, which deleted it with the IR section). The prompt drift
   test refuses to pin them under `PURE_PROMPT_CONTRACT_VERSION` because a bump of THAT version
   has two side effects (it stops `_resolve_exemplar_source` offering earlier-version exemplars
   and refuses `--resume` across it); a bump of this one has exactly one effect — every node's
@@ -66,7 +67,6 @@ COMPILE_INLINED_DOCUMENTS: dict[str, str] = {
     "ir_algorithm_example_document": "docs/examples/spec_ir_algorithm_section.example.yaml",
     "ir_algorithm_2d_example_document":
         "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-    "impl_defaults_schema_document": "spec/schema/ir/impl_defaults.schema.json",
 }
 
 
@@ -195,6 +195,13 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # check with `case:` at the case computing it (17 certified predicates do exactly that)
     # instead of "do not target that case", which contradicted the `case:` scope rule.
     "compile-docs-4": "55a12fc15fa5c311c213a4ff6d2f14f47dc45fed931328580c750de4554a28ac",
+    # compile-docs-5 (issue #284, R4-a PR-3): the IR is target-free. `phase_01_compile.md` loses
+    # the `impl_defaults` section contract, the fixed/knob split, V5-V7 and the harness-in-graph
+    # statements; the two IR examples' header comments stop naming an `impl_defaults` section
+    # (neither ever carried one); the `impl_defaults` schema leaves the set (deleted with the
+    # section). Every node's Compile re-derives — it does
+    # anyway, `DERIVATION_KEY_VERSION = 2`.
+    "compile-docs-5": "65569909a396b72ecfbdd2b3ec0a6a9256069c51cdb6aadc02c1ecc61f890d79",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -217,7 +224,14 @@ PINNED_RENDER: dict[str, str] = {
     # and `backend_overrides.openmp.num_threads`. Re-pinned within PR-2's review (round 1),
     # behaviour-preserving: the Makefile writer's docstring now states the measured IR counts
     # its rationale rests on; no emitted byte changed.
-    "render-4": "f62c13ef61df64e16eccf09f0ec8e4f36b57631e26510ef2369731a25216cee6",
+    # Re-pinned (issue #284, R4-a PR-3), behaviour-preserving for this transformation:
+    # `_write_runner` takes the harness node_key from the TARGET PROFILE instead of the IR's one
+    # `infrastructure` direct dependency. For a given generate key the harness is the same node
+    # — the key's `harness.node_key` input moved to the target in the same change — so the
+    # runner text rendered for it is unchanged.
+    # Re-pinned again in PR-3's round 3, behaviour-preserving: a `runner.py` docstring no longer
+    # says an M3c node has exactly one infra dep.
+    "render-4": "194ee0ba4bfd05a93d548f0d010a17f2b19ecf65116351521b06f1fc1b98bd35",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -226,7 +240,12 @@ PINNED_BUILD: dict[str, str] = {
     # its `target_id` on `binary_meta.json`, a record the certification does not hash; the
     # compile invocation and the binary it produces are unchanged. The build KEY moves anyway —
     # its `toolchain` input gained `target_id`.
-    "build-1": "e1d4583e3a2a63ad496139e495373842fab5161f85547e527043751ba469433a",
+    # Re-pinned (issue #284, R4-a PR-3), behaviour-preserving for this transformation:
+    # `_build_inproc`'s `dependency_check` block on `binary_meta.json` lists the target's harness
+    # beside the IR's direct dependencies (the harness left deps.yaml and the IR), a record the
+    # certification does not hash; the staged closure it compiles was already the pipeline
+    # closure, so the compile invocation and the binary are unchanged.
+    "build-1": "fb945cea89482b12f97440a80e09fa892a9e2a7ce45a275f68f9f9bc797d6403",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -295,6 +314,11 @@ PINNED_VERDICT: dict[str, str] = {
     # dependency validated for another target (or in a pre-target pipeline) no longer counts.
     # The evaluator is unchanged.
     "verdict-4": "6ca012df4f7cee86fc413f1c08d5cae7aa1a2576ece17d86fa0cd6bd11a12dde",
+    # verdict-5 (issue #284, R4-a PR-3): the derived-artifact author's direct dependencies and
+    # `dependency_set` carry the target's harness (it left deps.yaml and the IR, so the IR's
+    # block no longer names it), so an aggregate is `blocked` when the harness is not validated
+    # for the run's target. The evaluator is unchanged.
+    "verdict-5": "1a84ff04e23f79b8158c9a2a9a6524185cee4de9e7d6fa898a7c8727160f643b",
 }
 
 
@@ -347,7 +371,7 @@ class TransformationDriftTests(unittest.TestCase):
                                  f"{case.name}: two pinned versions share a digest")
 
     def test_the_compile_documents_are_the_ones_the_builder_inlines(self) -> None:
-        """The census half for the compile pair: the four documents pinned here are exactly
+        """The census half for the compile pair: the three documents pinned here are exactly
         the static keys of the compile producer's context that the prompt drift test does NOT
         pin, and each is read from the path this table names (a renamed file would otherwise
         keep an old pin green over a document nobody inlines any more)."""
@@ -358,8 +382,8 @@ class TransformationDriftTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertTrue((_REPO / rel).is_file(), rel)
                 self.assertIn(f'"{key}"', builder)
-                # The phase document is read through the runtime's table; the other three
-                # by their literal path.
+                # The phase document is read through the runtime's table; the other two by
+                # their literal path.
                 self.assertIn(rel if key != "phase_contract_document"
                               else 'WORKFLOW_PHASE_DOC_BY_STEP["compile"]', builder)
 
@@ -386,9 +410,8 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "ir_document": "input",                    # the compile output hash
     "bundle_document": "same-phase",           # the producer's bundle (the reviewer's subject)
     "harness_capabilities": "input",           # `harness.manifest`
-    "target_profile": "input",                 # inside the IR
+    "target_profile": "input",                 # the target profile's hash (`target.profile`)
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs
-    "toolchain_document": "input",
     "io_contract_document": "input",           # inside the IR
     "diagnostics_document": "same-phase",      # execute output, under the validate stamp
     "verdict_document": "same-phase",
@@ -401,7 +424,6 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "phase_contract_document": "compile-docs",
     "ir_algorithm_example_document": "compile-docs",
     "ir_algorithm_2d_example_document": "compile-docs",
-    "impl_defaults_schema_document": "compile-docs",
     "checks_module_contract_document": "contract",
     "severity_rubric_document": "contract",
     "runner_output_contract_document": "contract",

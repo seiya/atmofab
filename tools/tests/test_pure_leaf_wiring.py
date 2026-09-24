@@ -77,10 +77,8 @@ def _pure_compile_context() -> dict[str, str]:
         "phase_contract_document": "## Compile\nauthor every section.\n",
         "ir_algorithm_example_document": "algorithm:\n  steps: []\n",
         "ir_algorithm_2d_example_document": "algorithm:\n  state_variables: []\n",
-        "impl_defaults_schema_document": '{"title": "impl_defaults knob names"}',
         "checks_module_contract_document": (
             "## 1. The fixed ABI\ncase_setup ok=.false. still proceeds\n"),
-        "toolchain_document": '{"admissible_toolchains": []}',
     }
 
 
@@ -170,6 +168,7 @@ def _pure_verify_context() -> dict[str, str]:
             "`issue_severity` names the repair a finding calls for.\n"
             "- `minor`: the defect lies in the reviewed sources.\n"),
         "bundle_document": '{"files": []}',
+        "target_profile": '{"target_id": "fortran_cpu"}',
     }
 
 
@@ -727,6 +726,25 @@ class PureRenderTests(unittest.TestCase):
             ort._validate_launch_prompt_text(prepared, forged)
         ort._validate_launch_prompt_text(prepared, good)  # canonical still passes
 
+    def test_both_producer_templates_name_every_closed_lowering_plan_key(self) -> None:
+        """The plan envelope is CLOSED (`codegen_bundle.LOWERING_PLAN_OPTIONAL_KEYS`). R4-a PR-3's
+        first adoption run (orch_20260924T133218Z_79824f73) lost a harness Generate attempt to
+        `target_lowering_plan.unknown key 'layout'` / `'tiling'`: the templates said a layout /
+        tiling choice goes "under the plan's other keys" without naming them. Each producer
+        template must name every optional key, and the set comes from the schema, so a key
+        added there is red here until the prompt says it."""
+        from tools.codegen_bundle import LOWERING_PLAN_OPTIONAL_KEYS
+        root = Path(ort.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+        for name in ("pure_generate_generate.txt", "pure_generate_generate_harness.txt"):
+            text = (root / name).read_text(encoding="utf-8")
+            with self.subTest(template=name):
+                self.assertIn("the plan is a CLOSED object", text)
+                # `fusion` members are node_keys of the unit (`codegen_bundle` refuses anything
+                # else, round 1 of R4-a PR-3): the prompt must not read as loop fusion.
+                self.assertIn("it fuses unit MEMBERS, never loops", text)
+                for key in LOWERING_PLAN_OPTIONAL_KEYS:
+                    self.assertIn(f"`{key}`", text, f"{name} does not name `{key}`")
+
     def test_pure_launch_prompt_carries_authoring_rules_tokens(self) -> None:
         # Defect C (billed E2E, 2026-07-16): the pure template stated NO authoring rules, so the
         # producer met the deterministic gates blind and oscillated between the two wrong
@@ -756,15 +774,16 @@ class PureRenderTests(unittest.TestCase):
             "associate (unused_<name> => <name>)",  # the unused-dummy bind form
             "intent(out)",            # Generate.static dataflow
             "INERT",                  # the inert dependency-call rule
-            # Rule (7), the impl_defaults reflection obligation (issue #22). These three are
-            # PROSE literals on purpose: the rendered prompt also inlines the IR and the target
-            # profile, so `impl_defaults` / `backend_overrides` / `openmp` all appear here even
-            # with rule (7) deleted and pin nothing. Each of these appears ONLY in rule (7) or
-            # in the Target-profile header it binds (mutation-checked: reverting either text
-            # fails this test).
-            "Read the knobs by MEANING, not by key name",
+            # Rule (7), the target-lowering obligation (issue #22; R4-a PR-3, issue #284, moved
+            # it off the IR's `impl_defaults` knobs onto the profile and the producer's own
+            # `target_lowering_plan`). These are PROSE literals on purpose: the rendered prompt
+            # also inlines the target profile, so `openmp` / `parallel` appear here even with
+            # rule (7) deleted and pin nothing. Each of these appears ONLY in rule (7) or in the
+            # Target-profile header it binds.
+            "it is an OBLIGATION on the source you emit, not background description",
+            "whose `model` member names the parallel model",
             "not one `!$omp` directive at the start of a line",
-            "binding obligations rule (7) holds you to",
+            "rule (7) holds you to it, and your `target_lowering_plan` lowers onto it",
             # The floor's real scope, and the two traps a mandated directive introduces. Stating
             # the punishment without its exemptions asserted a rule that does not exist on the
             # node kinds where complying is itself the defect.
@@ -779,18 +798,19 @@ class PureRenderTests(unittest.TestCase):
 
     def test_render_pure_verify_prompt_full_skeleton(self) -> None:
         # The verify counterpart of the generate skeleton test: sentinel first, no `<...>` slot
-        # left unsubstituted, the identity block last, and exactly SIX data-fenced documents
+        # left unsubstituted, the identity block last, and exactly SEVEN data-fenced documents
         # (issue #142 made the checks-module contract the fifth, issue #143 the severity rubric
-        # the sixth).
+        # the sixth, R4-a PR-3 / issue #284 the target profile G6 holds the source to the
+        # seventh).
         prepared = ort.prepare_launch_request_payload(_pure_request("verify"))
         prompt = prepared["launch_prompt_full"]
         self.assertTrue(prompt.startswith(PURE_PROMPT_SENTINEL))
         for placeholder in ("<controlled_spec_document>", "<tests_document>", "<ir_document>",
                             "<checks_module_contract_document>", "<severity_rubric_document>",
-                            "<bundle_document>"):
+                            "<bundle_document>", "<target_profile>"):
             self.assertNotIn(placeholder, prompt)
-        self.assertEqual(prompt.count(PURE_DOC_FENCE_BEGIN), 6)
-        self.assertEqual(prompt.count(PURE_DOC_FENCE_END), 6)
+        self.assertEqual(prompt.count(PURE_DOC_FENCE_BEGIN), 7)
+        self.assertEqual(prompt.count(PURE_DOC_FENCE_END), 7)
         self.assertGreater(prompt.index("Target node_key:"), prompt.index("under review"))
 
     def test_pure_verify_prompt_carries_the_checks_contract_and_its_scope_rule(self) -> None:
@@ -977,8 +997,16 @@ class PureRenderTests(unittest.TestCase):
         # Checked against all nine properties in the failure message before each re-take: the
         # AXIS sentence, the three bullets, both tie-breaks and the §2-2 pointer are
         # byte-identical across both edits, so 1-9 are answered by the first reading.
-        "compile": "d12e281be8d27251eae742e2a356e7c96c31fbd195bd345b4152991efed05288",
-        "generate": "83bed963f6bf9233e4167ce3c1a1f47953102c147431b7234d67fc560c3a04bc",
+        #   * R4-a PR-3 (issue #284), BOTH steps, and only inside the `minor` bullet's example
+        #     list: the IR is target-free, so phase_01's "V1–V8" becomes "V1–V4 or V8" and its
+        #     `impl_defaults` plug-hole example goes (V5-V7 are deleted), and phase_02's "ignored
+        #     `impl_defaults` knob" becomes "a lowering plan the source does not follow" (G6 now
+        #     holds the source to the producer's own `target_lowering_plan`, still a producer
+        #     repair). The axis, the other two bullets, the tie-breaks and the pointer are
+        #     byte-identical; property 8 holds because the compile verify template's scope is
+        #     V1-V4 and V8 in the same change.
+        "compile": "7d8a8ec178993d542d587ed8fcec8753c3a822795f5b08f60a03c3210f5c892a",
+        "generate": "0fec2f0d12ce88b01130bee0b72a8127db85c66f5f37768754fe560ca753a17d",
     }
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
@@ -2693,7 +2721,7 @@ class PureRenderTests(unittest.TestCase):
         # asymmetry with the roles swapped, which is exactly what happened until this pin existed.
         prompt = ort.prepare_launch_request_payload(_pure_request("verify"))["launch_prompt_full"]
         for token in (
-            "G6 — impl_defaults reflection",
+            "G6 — target lowering",
             # the floor exists ...
             "already settled deterministically by the `Generate.gate` static check",
             # ... and its guarantee is SCOPED, so the reviewer is not told to stop looking where

@@ -37,7 +37,7 @@ Boundary rules:
 - Limit structured blocks (`YAML` / `JSON` / tables) to **places that would be ambiguous with natural language alone**.
 - For the `Markdown` math notation, use `$...$` for inline and `$$...$$` for block, and do not use `\(...\)` or `\[...\]`.
 - Forbid completion of omissions by the `LLM` or a converter. Treat **a shortage as an error**.
-- Fix the physics algorithm (A) in the `Controlled Spec`, and handle the execution algorithm (B) in the `impl_defaults` section of `spec.ir.yaml`.
+- Fix the physics algorithm (A) in the `Controlled Spec`, and handle the execution algorithm (B) outside the `spec`: the target profile and the CodegenBundle's `target_lowering_plan` hold it (`docs/IMPL_PLAN_SPEC.md`).
 
 ## Description format (fixed template)
 Place **0. Meta information** at the top. The subsequent sections are fixed per `spec_kind`.

@@ -163,14 +163,11 @@ def _node_ir(state_vars=("h", "u", "v")) -> dict:
     layer pass against a shape the renderer never emits)."""
     return {
         "meta": {"spec_id": _SPEC_ID, "spec_kind": "problem"},
-        "impl_defaults": {
-            "toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make"},
-            "target": {"backend": "cpu"},
-        },
         # Canonical shape: state_variables is a list of OBJECTS ({name, shape_expr}), NOT bare
         # strings — the shape real specs emit (a string-list masks the name-extraction path).
         "algorithm": {"state_variables": [{"name": v, "shape_expr": "[nx]"} for v in state_vars]},
-        "dependency": {"direct_deps": [{"node_key": _HARNESS}]},
+        # Target-free (issue #284): the harness is the target's, never an IR direct dependency.
+        "dependency": {"node_key": _NODE, "direct_deps": []},
         "case": {"test_case_set": [{"case_id": "c1"}]},
         "io_contract": {
             "raw_requirements": {"required_evidence": [
@@ -195,17 +192,20 @@ def _write_node(repo: Path, *, ir_id="sw_20260715_001", source_id="src_20260715_
     """Write a minimal M3c IR + dependency-graph sidecar + tests.md for the node, and stage the
     host-rendered runner the way `run_phase` does before any generate substep runs."""
     # The target the pipeline is built for (issue #284): a reader holding only a path loads it.
+    from tools.tests.orchestration_fixtures import ensure_spec_entry
     from tools.tests.target_fixtures import install_target_profile
     install_target_profile(repo)
+    # The catalog resolves the target's harness (issue #284: the harness is the target's).
+    ensure_spec_entry(repo, _HARNESS)
     ir_dir = repo / "workspace" / "ir" / _SAFE / ir_id
     ir_dir.mkdir(parents=True, exist_ok=True)
     ir = _node_ir(state_vars)
     import yaml
     (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+    # The target-free Compile's sidecar: no harness (the pipeline closure adds the target's).
     sidecar = {
         "all_nodes": [
-            {"node_key": _NODE, "topo_level": 1, "direct_deps": [{"node_key": _HARNESS}]},
-            {"node_key": _HARNESS, "topo_level": 0, "direct_deps": []},
+            {"node_key": _NODE, "topo_level": 0, "direct_deps": []},
         ],
     }
     (ir_dir / "dependency_graph.json").write_text(json.dumps(sidecar), encoding="utf-8")
@@ -449,7 +449,7 @@ class PureBundleViolationsTests(unittest.TestCase):
     def test_a_bundle_language_with_no_runner_render_capability_is_refused(self) -> None:
         """The refusal branch of the ABI gate, driven — it is corpus-dependent, not unreachable.
 
-        The two vps call sites of this seam take their language from `_ir_m3c_language`, which
+        The two vps call sites of this seam take their language from `_m3c_language`, which
         has already required the value to provide `runner_render`, so their refusal really is
         dead code. THIS one does not: the language is read off the bundle FILE entry, which the
         bundle validator constrains only to `LANGUAGES` — the languages whose backend carries a
@@ -851,15 +851,12 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         self.assertEqual(provided, {"sync_single_case@1", "state_registration@1"})
 
     def test_context_and_gate_resolve_the_same_harness(self) -> None:
-        # The invariant the fix rests on: one resolution, so the two cannot drift.
-        ir = {"dependency": {"direct_deps": [{"node_key": _HARNESS}]}}
-        self.assertEqual(
-            self.c._pure_harness_node_key(ir, self.refs.node_key), _HARNESS)
+        # The invariant the fix rests on: one resolution, so the two cannot drift. Since
+        # issue #284 that resolution is the TARGET's harness, not an IR direct dependency.
+        self.assertEqual(self.c._pure_harness_node_key(self.refs.node_key), _HARNESS)
         shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
-        from_ir = self.c._pure_harness_node_key(
-            wc._read_yaml(self.repo / self.refs.ir_ref / "spec.ir.yaml") or {},
-            self.refs.node_key)
-        self.assertEqual([m["node_key"] for m in shown["manifests"]], [from_ir])
+        self.assertEqual([m["node_key"] for m in shown["manifests"]],
+                         [self.c._pure_harness_node_key(self.refs.node_key)])
 
     def test_narrowing_is_fail_closed_for_an_unresolvable_harness(self) -> None:
         # None / unregistered => EMPTY manifests, mirroring `harness_provided_capabilities`'s
@@ -869,25 +866,26 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
                 cb.harness_capability_manifest_document_for(key)["manifests"], [],
                 f"narrowing must be empty for {key!r}")
 
-    def test_zero_or_multiple_infra_deps_resolve_to_none(self) -> None:
+    def test_the_harness_is_the_targets_whatever_the_ir_lists(self) -> None:
+        """Issue #284: the harness a non-infrastructure node negotiates against is the one its
+        run's target names — an IR is not read at all, so a stale IR listing another harness
+        cannot move it — and a harness the catalog cannot resolve is a RuntimeError (a build
+        precondition), not a None that would narrow to an empty manifest."""
+        from tools.tests.target_fixtures import profile_with
         nk = self.refs.node_key
-        self.assertIsNone(
-            self.c._pure_harness_node_key({"dependency": {"direct_deps": []}}, nk))
-        self.assertIsNone(self.c._pure_harness_node_key({"dependency": {"direct_deps": [
-            {"node_key": _HARNESS},
-            {"node_key": "infrastructure/harness_gpu_next@0.1.0"}]}}, nk))
+        self.assertEqual(self.c._pure_harness_node_key(nk), _HARNESS)
+        self.c.target_profile = profile_with(
+            harness={"infrastructure_id": "harness_not_in_catalog"})
+        with self.assertRaises(RuntimeError) as cm:
+            self.c._pure_harness_node_key(nk)
+        self.assertIn("does not resolve", str(cm.exception))
 
     def test_an_infrastructure_node_negotiates_against_its_own_manifest(self) -> None:
         """Issue #169: on the `harness` shape the leaf IS the harness, so the manifest it is
-        shown and judged against is its own — resolved from the NODE_KEY, not from the IR's
-        (empty) `direct_deps`, which would otherwise fail closed to None."""
+        shown and judged against is its own — resolved from the NODE_KEY, never from the
+        target's harness (which a harness of another version would otherwise read as)."""
         own = "infrastructure/harness_gpu_next@0.1.0"
-        self.assertEqual(
-            self.c._pure_harness_node_key({"dependency": {"direct_deps": []}}, own), own)
-        # ...and it wins over a dependency read, which cannot apply on this shape.
-        self.assertEqual(
-            self.c._pure_harness_node_key(
-                {"dependency": {"direct_deps": [{"node_key": _HARNESS}]}}, own), own)
+        self.assertEqual(self.c._pure_harness_node_key(own), own)
 
     def test_full_document_still_carries_every_manifest(self) -> None:
         # The unnarrowed document is the canonical Z6 shape; narrowing is the leaf's projection

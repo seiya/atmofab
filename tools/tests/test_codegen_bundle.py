@@ -485,19 +485,20 @@ class DeterministicBuildGraphTest(unittest.TestCase):
                                ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
+            # Target-free since R4-a PR-3 (issue #284): the IR and its sidecar carry no harness;
+            # the pipeline closure adds the target's, which the catalog resolves.
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
-                "    build_system: make\n  target:\n    backend: serial\n"
+                "meta:\n  spec_kind: problem\n"
                 "dependency:\n"
                 f'  node_key: "{ADV}"\n'
                 "  direct_deps:\n"
-                f'    - node_key: "{FLUX}"\n'
-                f'    - node_key: "{HARNESS}"\n',
+                f'    - node_key: "{FLUX}"\n',
                 encoding="utf-8")
+            from tools.tests.orchestration_fixtures import ensure_spec_entry
+            ensure_spec_entry(repo, HARNESS)
             (ir_dir / "dependency_graph.json").write_text(json.dumps({
                 "node_key": ADV,
                 "all_nodes": [
-                    {"node_key": HARNESS, "topo_level": 0},
                     {"node_key": FLUX, "topo_level": 0},
                     {"node_key": ADV, "topo_level": 1},
                 ],

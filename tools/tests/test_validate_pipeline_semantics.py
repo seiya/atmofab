@@ -300,6 +300,51 @@ def _spawn_response_payload(session_id: str, launch_reply: str) -> dict[str, obj
     }
 
 
+def _register_target_harness(repo_root: Path) -> str:
+    """Register the target's harness in the fixture catalog (issue #284: every physics
+    pipeline's dependency set holds it, resolved there) and return its node_key."""
+    from tools.tests.orchestration_fixtures import ensure_spec_entry
+    from tools.tests.target_fixtures import FORTRAN_CPU
+    node_key = f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0"
+    ensure_spec_entry(repo_root, node_key)
+    return node_key
+
+
+def _harness_validated_elsewhere():
+    """A patch under which the target's harness reads as validated in its own pipeline, and
+    every other closure token is asked of the real predicate.
+
+    The shared execution fixture builds ONE node's pipeline, and the whole-workspace
+    `validate()` mode checks every pipeline under `workspace/` as an execution, so a harness
+    pipeline seeded beside it would have to be a complete, certifiable execution of its own.
+    Since issue #284 the harness is a closure node of every physics pipeline; the rows that
+    use this are about other gates, so the harness stands in as a dependency validated in its
+    OWN pipeline — exactly what `_closure_node_validated_in_own_pipeline` would answer for a
+    real closure — and the DAG rows that are about a missing dependency still see theirs."""
+    from unittest import mock
+    real = vps._closure_node_validated_in_own_pipeline
+    from tools.tests.target_fixtures import FORTRAN_CPU
+    harness_token = f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}"
+
+    def answer(repo_root, token, target_id):
+        return token == harness_token or real(repo_root, token, target_id)
+
+    return mock.patch.object(vps, "_closure_node_validated_in_own_pipeline", side_effect=answer)
+
+
+def _m3c_checks_source(stem: str = "shallow_water2d",
+                       state: tuple[str, ...] = ("h", "hu", "hv")) -> str:
+    """A fixed-ABI checks module for `stem` publishing the bound `state`: since R4-a PR-3 (issue
+    #284) every physics node of a runner-rendering target is M3c, so a post_generate row about
+    something else carries one."""
+    names = _abi_names()
+    return (f"module {stem}_checks\n  implicit none\n  private\n"
+            + "".join(f"  real, allocatable :: {v}(:,:)\n  public :: {v}\n" for v in state)
+            + "".join(f"  public :: {n}\n" for n in names) + "contains\n"
+            + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in names)
+            + f"end module {stem}_checks\n")
+
+
 def _create_minimal_execution_tree(
     repo_root: Path,
     *,
@@ -322,6 +367,10 @@ def _create_minimal_execution_tree(
 
     # Under the fixture target (issue #284), whose profile the validator loads from the repo.
     install_target_profile(repo_root)
+    # The target's harness is a dependency of every physics pipeline (issue #284, R4-a PR-3),
+    # resolved in the catalog; the rows that validate the whole workspace run under
+    # `_harness_validated_elsewhere()`.
+    _register_target_harness(repo_root)
     pipeline_dir = workspace / "pipelines" / node_safe / _TARGET_ID / pipeline_id
     node_dir = pipeline_dir / "runs" / run_id / "problem__shallow_water2d__0.3.0"
     raw_dir = node_dir / "raw"
@@ -427,7 +476,7 @@ def _create_minimal_execution_tree(
                     "name": "metric",
                     "shape_expr": "scalar",
                     "evidence_ref": "raw/metrics_basis.json",
-                    "raw_variables": ["h", "hu", "hv", "time"],
+                    "raw_variables": ["h", "hu", "hv", "t"],
                 }
             ],
             "semantic_dependency": {"required_sources": []},
@@ -444,36 +493,13 @@ def _create_minimal_execution_tree(
                                 {"name": "hu", "shape_expr": "[2,2]"},
                                 {"name": "hv", "shape_expr": "[2,2]"},
                             ],
-                            "time_variable": "time",
+                            "time_variable": "t",
                             "time_shape_expr": "scalar",
                         },
                     },
                 ]
             },
         }
-    if impl_resolved is None:
-        impl_resolved = {
-            "target": {
-                "class": "cpu",
-                "backend": "fortran",
-                "architecture": "x86_64",
-            },
-            "toolchain": {
-                "language": "fortran",
-                "standard": "f2008",
-                "build_system": "make",
-            },
-            "selected": {
-                "backend_key": "cpu/x86_64/fortran/make",
-            },
-            "abstract": {
-                "parallelism": "none",
-                "layout": "scalar_interfaces",
-                "fusion": "none",
-            },
-            "backend_overrides": [],
-        }
-
     # A real spec.ir.yaml always carries schema_version / meta / case as well as the four
     # sections below. Fixtures that omitted them silently disabled every gate that reaches the
     # IR through them — notably `meta.source_refs.tests`, which is how tests.md is located
@@ -498,9 +524,12 @@ def _create_minimal_execution_tree(
         "case": {"test_case_set": [{"case_id": "c1", "inputs": {}}]},
         "algorithm": algorithm_contract,
         "io_contract": io_contract,
-        "impl_defaults": impl_resolved,
         "dependency": dependency_resolved,
     }
+    # Target-free since R4-a PR-3 (issue #284): an `impl_defaults` section is written only
+    # when a caller asks for one (a stale, pre-PR-3 IR).
+    if impl_resolved is not None:
+        spec_ir_doc["impl_defaults"] = impl_resolved
     _write_json(
         workspace / "ir" / "problem__shallow_water2d__0.3.0" / "shallow-water2d_20260415_001" / "spec.ir.yaml",
         spec_ir_doc,
@@ -535,7 +564,7 @@ def _create_minimal_execution_tree(
                 {"name": "hu", "shape_expr": "[2,2]"},
                 {"name": "hv", "shape_expr": "[2,2]"},
             ],
-            "time_variable": "time",
+            "time_variable": "t",
             "time_shape_expr": "scalar",
         },
     )
@@ -545,7 +574,7 @@ def _create_minimal_execution_tree(
             "h": [[1.0, 1.0], [1.0, 1.0]],
             "hu": [[0.0, 0.0], [0.0, 0.0]],
             "hv": [[0.0, 0.0], [0.0, 0.0]],
-            "time": 0.0,
+            "t": 0.0,
         },
     )
     _write_json(
@@ -1448,7 +1477,53 @@ class MetricsBasisUnrecognizedWrapperUnitTests(unittest.TestCase):
         )
 
 
+class PipelineHarnessDagTests(unittest.TestCase):
+    """The target's harness is a closure node of every physics pipeline (issue #284, R4-a
+    PR-3), so the whole-workspace DAG checks require it: validated in its OWN pipeline for the
+    same target, or the pipeline's closure is incomplete. The rest of this module runs under
+    `_harness_validated_elsewhere()`; this class does not, and is the witness of both DAG paths
+    (the executions' `dependency DAG incomplete` and the lineages' `node plans / pipelines not
+    issued`) — each reads the IR's dependency block plus `_with_pipeline_harness`."""
+
+    _MODEL = ("module shallow_water2d_model\nuse dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+              "implicit none\ncontains\nsubroutine solve(flag)\n  logical, intent(out) :: flag\n"
+              "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+              "end subroutine solve\nend module shallow_water2d_model\n")
+    _RUNNER = ("program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
+               "end program shallow_water2d_runner\n")
+
+    def _violations(self, repo_root: Path) -> list[str]:
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text=self._MODEL, runner_text=self._RUNNER,
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+        return validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_a_harness_not_validated_for_the_target_leaves_the_dag_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            violations = self._violations(Path(tmp))
+        harness = "'infrastructure/harness_fortran_cpu'"
+        for fragment in ("dependency DAG incomplete for validation scope",
+                         "node plans not issued for validation scope",
+                         "node pipelines not issued for validation scope"):
+            self.assertTrue(any(fragment in v and harness in v for v in violations),
+                            (fragment, violations))
+
+    def test_a_harness_validated_in_its_own_pipeline_completes_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _harness_validated_elsewhere():
+            self.assertEqual(self._violations(Path(tmp)), [])
+
+
 class ValidatePipelineSemanticsTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        # The target's harness is validated in its own pipeline (issue #284); see
+        # `_harness_validated_elsewhere`.
+        patch = _harness_validated_elsewhere()
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_rejects_noncanonical_workspace_root_argument(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -8567,13 +8642,13 @@ end program shallow_water2d_runner
             self.assertTrue(
                 any("must use make_test/make_check for toolchain.language=fortran and toolchain.build_system=make" in v for v in violations)
             )
-            # The toolchain is the pipeline's TARGET's (issue #284): an IR declaring another one
-            # moves nothing (the fixture's IR agrees with the profile, so the row above alone
-            # cannot tell which of the two was read).
+            # The toolchain is the pipeline's TARGET's (issue #284): a stale IR section declaring
+            # another one — the IR is target-free since R4-a PR-3 and carries none — moves
+            # nothing.
             ir_path = (repo_root / "workspace" / "ir" / "problem__shallow_water2d__0.3.0"
                        / "shallow-water2d_20260415_001" / "spec.ir.yaml")
             ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
-            ir_doc["impl_defaults"]["toolchain"] = {"language": "python", "build_system": "none"}
+            ir_doc["impl_defaults"] = {"toolchain": {"language": "python", "build_system": "none"}}
             _write_json(ir_path, ir_doc)
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
@@ -11230,57 +11305,6 @@ end program shallow_water2d_runner
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
             self.assertTrue(any("'-c1'" in x for x in v), v)
 
-    def test_validate_compile_stage_rejects_an_unsupported_toolchain(self) -> None:
-        # Wiring test: `_validate_toolchain_backend_supported` must fire THROUGH the full
-        # compile stage, not only when invoked directly. The minimal tree's impl_defaults
-        # default to make/fortran, so only the toolchain block is swapped here.
-        preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            self._plant_tests_md(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-                io_contract=self._io_contract_with_predicates(preds),
-                impl_resolved={
-                    "target": {"class": "cpu", "backend": "cpp", "architecture": "x86_64"},
-                    "toolchain": {"language": "cpp", "standard": "c++17",
-                                  "build_system": "cmake"},
-                    "selected": {"backend_key": "cpu/x86_64/cpp/cmake"},
-                    "abstract": {"parallelism": "none", "layout": "scalar_interfaces",
-                                 "fusion": "none"},
-                    "backend_overrides": [],
-                },
-                dependency_resolved={
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "direct_deps": [{"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0", "kind": "component", "operations": ["dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"]}],
-                    "transitive_deps": [], "topo_level": 1,
-                    "all_nodes": [
-                        {"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
-                         "topo_level": 0},
-                        {"node_key": "problem/shallow_water2d@0.3.0", "topo_level": 1}]},
-            )
-            ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
-                       "/shallow-water2d_20260415_001/spec.ir.yaml")
-            doc = json.loads(ir_path.read_text())
-            doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
-            ir_path.write_text(json.dumps(doc))
-            v = validate_compile_stage(
-                repo_root, "workspace",
-                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
-            clause = backend_registry.missing_capability_reason(
-                "language", "cpp", "control_file")
-            # If `cpp` ever becomes an implemented language this is `None`, and `None in str`
-            # raises a TypeError that talks about the probe instead of the gate. Fail with the
-            # cause named instead.
-            self.assertIsNotNone(clause, "the probe language is now implemented; pick another")
-            self.assertTrue(any(clause in x for x in v), v)
-
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
         gated (`_validate_ir_source_refs_tests`) and the test-id pins read the file through it."""
@@ -11364,7 +11388,7 @@ end program shallow_water2d_runner
                         "evidence_ref": "spec.ir.yaml"}],
             "outputs": [{"name": "metric", "shape_expr": "scalar",
                          "evidence_ref": "raw/metrics_basis.json",
-                         "raw_variables": ["h", "hu", "hv", "time"]}],
+                         "raw_variables": ["h", "hu", "hv", "t"]}],
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {"required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
@@ -11372,7 +11396,7 @@ end program shallow_water2d_runner
                  "schema": {"variables": [{"name": "h", "shape_expr": "[2,2]"},
                                           {"name": "hu", "shape_expr": "[2,2]"},
                                           {"name": "hv", "shape_expr": "[2,2]"}],
-                            "time_variable": "time", "time_shape_expr": "scalar"}}]},
+                            "time_variable": "t", "time_shape_expr": "scalar"}}]},
             "diagnostics_contract": {
                 "checks": [{"id": "g"}],
                 "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
@@ -11381,7 +11405,7 @@ end program shallow_water2d_runner
             # at MOCK_TESTS_REF), so the evidence requirements must cover it exactly — a real IR
             # always carries both.
             "test_evidence_requirements": [
-                {"test_id": "t1", "required_raw_variables": ["h", "time"]}],
+                {"test_id": "t1", "required_raw_variables": ["h"]}],
             "test_predicates": predicates,
         }
         if primary is not None:
@@ -12342,7 +12366,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 runner_text=runner_text,
                 run_command=["x", "y"],
                 extra_sources={
-                    "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text
+                    "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text,
+                    "shallow_water2d_checks.f90": _m3c_checks_source(),
                 },
                 makefile_text=makefile_text,
             )
@@ -12469,7 +12494,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 runner_text=runner_text,
                 run_command=["x", "y"],
                 extra_sources={
-                    "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text
+                    "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text,
+                    "shallow_water2d_checks.f90": _m3c_checks_source(),
                 },
                 makefile_text=makefile_text,
                 dependency_resolved={
@@ -14500,15 +14526,21 @@ end program shallow_water2d_runner
             repo_root / "tools/prompt_templates/pure_generate_generate.txt"
         ).read_text(encoding="utf-8")
         for rule in (
-            "are the binding obligations rule",         # the knobs bind, not data to read past
-            "by MEANING, not by key name",              # the spellings vary per node
+            # The target binds, not data to read past. (Until R4-a PR-3, issue #284, the binding
+            # side was the IR's Compile-authored knobs, read "by MEANING, not by key name"; the
+            # producer now DECLARES the choice itself, under one named member.)
+            "it is an OBLIGATION on the source you emit, not background description",
+            "whose `model` member names the parallel model",
             "floor here is deterministic",              # which slice is deterministic
             # ... and the floor's SCOPE. Stating the punishment unconditionally is issue #22's
             # own failure mode, on the side that gets punished.
             "It does NOT run on an `infrastructure` node",
+            # ... and silence is not a declaration (R4-a PR-3 round 1): the plan is the
+            # producer's own, so an omitted model must not read as an exemption.
+            "a plan that names no model gets the target's backend, OpenMP",
             # The honest move where a loop genuinely cannot be parallelized. Without it the
             # scope sentence reads as an invitation to emit a directive to clear the floor.
-            "the honest move is to say so in prose for the reviewer",
+            "declare `\"model\": \"none\"` and say why in the plan for the reviewer",
         ):
             self.assertIn(
                 rule, generate_prompt,
@@ -17622,27 +17654,12 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             self.assertTrue(any("public_api.signatures missing" in v for v in violations),
                             violations)
 
-    def test_non_fortran_infra_language_fails_closed(self) -> None:
-        # The signature pin renders to Fortran; only a Fortran backend exists, so a non-Fortran
-        # infrastructure node must fail closed (not be silently rendered/compared as Fortran).
-        with tempfile.TemporaryDirectory() as tmp:
-            tmpp = Path(tmp)
-            (tmpp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
-            _write_json(tmpp / "spec.ir.yaml", {
-                "meta": {"spec_kind": "infrastructure", "spec_id": self._SPEC_ID,
-                         "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
-                "impl_defaults": {"toolchain": {"language": "c"}},
-                "public_api": self._full_api()})
-            violations: list[str] = []
-            _validate_published_surface(tmpp, tmpp, violations)
-            # The expected clause is ASKED OF THE GATE'S OWN PREDICATE rather than written out
-            # here, so that a test cannot go on passing after the gate stops consulting it. The
-            # earlier version asked `registry.unsupported_reason`, which is the MEMBERSHIP
-            # question the gate is forbidden to use — it agreed only because `c` is a
-            # non-member, where membership and usability return the same string.
-            reason = vps._signature_backend_refusal("c")
-            self.assertIsNotNone(reason)
-            self.assertTrue(any(reason in v for v in violations), violations)
+    # (`test_non_fortran_infra_language_fails_closed` asked this Compile gate to refuse an IR
+    # whose `impl_defaults.toolchain.language` had no signature backend. The IR is target-free
+    # since R4-a PR-3 (issue #284), so Compile has no language to ask about; the refusal is
+    # asked of the pipeline TARGET's language at the generated-signature gate, and
+    # `InfrastructureGeneratedSignatureGateTests::test_the_no_backend_refusal_names_the_node_kind_it_was_given`
+    # is its witness for an `infrastructure` node.)
 
     def test_signatures_type_drift_flagged(self) -> None:
         # An IR signature that drifts from §5.1 (here: change entries' element type) is flagged —
@@ -20384,11 +20401,32 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
             return node.id in module_vocabularies
         return False
 
-    @staticmethod
-    def _module_kind_vocabularies(tree) -> set[str]:
-        """Module-level names bound to a non-empty collection of string literals."""
+    @classmethod
+    def _module_kind_vocabularies(cls, tree, *, follow_imports: bool = True) -> set[str]:
+        """Module-level names bound to a non-empty collection of string literals — and, since
+        R4-a PR-3 (issue #284), a name imported (`from tools.<mod> import NAME [as ALIAS]`, at
+        any scope) from a repository module that binds NAME that way at ITS module level.
+
+        The import case is the #153 PR-2 lesson a second time. The M3c predicate moved from
+        `== "infrastructure"` plus a dependency count to `not in M3C_SPEC_KINDS`, imported from
+        `tools/spec_input_gates.py` because the conductor asks the same question; the scan
+        excused the imported comparand, and two live readers left the parity rule silently. The
+        source module is in this repository and its binding is as static as a local one, so it
+        is resolved rather than excused. An import from outside `tools.` stays unresolved."""
         import ast
         names: set[str] = set()
+        if follow_imports:
+            repo_root = Path(vps.__file__).resolve().parent.parent
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.ImportFrom) and node.level == 0
+                        and (node.module or "").startswith("tools.")):
+                    continue
+                path = repo_root / (node.module.replace(".", "/") + ".py")
+                if not path.is_file():
+                    continue
+                exported = cls._module_kind_vocabularies(
+                    ast.parse(path.read_text(encoding="utf-8")), follow_imports=False)
+                names.update(a.asname or a.name for a in node.names if a.name in exported)
         for node in ast.iter_child_nodes(tree):
             targets = []
             if isinstance(node, ast.Assign):
@@ -20496,6 +20534,14 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         # silently. `_kind_literal` now resolves a module-level vocabulary, which brought them back;
         # only then was 6 the honest count. Lower this number only with the same reasoning written
         # down: a reader that DISAPPEARED, not a reader the scan stopped seeing.
+        #
+        # The count went 7 -> 6 in R4-a PR-3 (issue #284), and the floor stays 6. Three readers disappeared with the
+        # code they served: `_ir_m3c_language`'s `== "infrastructure"` (the M3c predicate no longer
+        # counts an infrastructure dependency), and the infrastructure exemptions of the deleted
+        # `impl_defaults` knob gate and harness-dependency consistency gate. Two readers the scan
+        # stopped seeing — `_m3c_language` and `_validate_harness_render_preconditions`, each
+        # `not in M3C_SPEC_KINDS`, an IMPORTED vocabulary — are seen again because
+        # `_module_kind_vocabularies` now resolves a repository import (the guard first reported 4).
         lines = {lineno for lineno, _seg in self._spec_kind_sites()}
         self.assertGreaterEqual(len(lines), 6, sorted(lines))
 
@@ -20604,602 +20650,6 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
             # ...and the RULE must reject it. Asserting only that the scan sees the site
             # would leave `_CASE_OPS` free to shrink and take this test's coverage with it.
             self.assertTrue(self._parity_problems(found), case_op)
-
-
-class ToolchainBackendGateTests(unittest.TestCase):
-    """`_validate_toolchain_backend_supported` (compile stage): (make, fortran) is the only
-    implemented physical backend. A node naming another toolchain used to slip past every
-    host-authoring predicate and degrade to the removed leaf-authored-runner path, then
-    hard-fail phases later at the Build-stage `_require_make_build_system` backstop."""
-
-    def _run(self, *, spec_kind="component", toolchain: dict | None | str = "absent",
-             impl_defaults: dict | None | str = "default") -> list[str]:
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            ir: dict = {"meta": {"spec_kind": spec_kind, "spec_id": "bx"}}
-            if impl_defaults != "default":
-                if impl_defaults is not None:
-                    ir["impl_defaults"] = impl_defaults
-            else:
-                impl: dict = {"target": {"class": "cpu"}}
-                if toolchain != "absent":
-                    impl["toolchain"] = toolchain
-                ir["impl_defaults"] = impl
-            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
-            violations: list[str] = []
-            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
-            return violations
-
-    def test_make_fortran_passes(self) -> None:
-        self.assertEqual(
-            self._run(toolchain={"build_system": "make", "language": "fortran"}), [])
-        # Case is normalized before comparison.
-        self.assertEqual(
-            self._run(toolchain={"build_system": "Make", "language": "Fortran"}), [])
-
-    def test_defaults_match_the_conductors_own(self) -> None:
-        # `_conductor_authors_makefile` / `_conductor_authors_runner` read an absent
-        # build_system as "make" and an absent language as "fortran". This gate must apply
-        # the SAME defaults, or an IR that omits the toolchain would be rejected here while
-        # the conductor host-renders it happily.
-        self.assertEqual(self._run(toolchain="absent"), [])
-        self.assertEqual(self._run(toolchain={}), [])
-        self.assertEqual(self._run(toolchain={"standard": "f2008"}), [])
-        self.assertEqual(self._run(toolchain={"build_system": "make"}), [])
-        self.assertEqual(self._run(toolchain={"language": "fortran"}), [])
-        self.assertEqual(self._run(impl_defaults=None), [])
-        self.assertEqual(self._run(impl_defaults={}), [])
-
-    def test_other_build_systems_fire(self) -> None:
-        for bs in ("cmake", "meson", "ninja"):
-            v = self._run(toolchain={"build_system": bs, "language": "fortran"})
-            self.assertEqual(len(v), 1, (bs, v))
-            self.assertIn(repr(bs), v[0])
-
-    def test_other_languages_fire(self) -> None:
-        for lang in ("c", "cpp", "mixed", "python"):
-            v = self._run(toolchain={"build_system": "make", "language": lang})
-            self.assertEqual(len(v), 1, (lang, v))
-            self.assertIn(repr(lang), v[0])
-
-    def test_the_lint_evidence_preset_is_refused_with_the_registrys_clause(self) -> None:
-        """The branch this change rewrote, which had no test on either side of it.
-
-        It used to compare against a literal set and now asks
-        `registry.unimplemented_reason`. Both directions are driven: a linter that is not a
-        member at all, and — the reason this is `unimplemented_reason` and not
-        `unsupported_reason` — one that IS a declared member with no implementation anywhere.
-        A membership question would accept the second and let a preset name a linter nothing can
-        run. Review's sweep swapped the two questions and no test noticed.
-        """
-        from unittest import mock
-
-        def _run(preset: str) -> list[str]:
-            with tempfile.TemporaryDirectory() as t:
-                pipeline_root = Path(t) / "pipelines" / "p1"
-                source_dir = pipeline_root / "source" / "src_20260101_001"
-                source_dir.mkdir(parents=True)
-                (pipeline_root / "lint_evidence").mkdir()
-                (pipeline_root / "lint_evidence" / "src_20260101_001.json").write_text(
-                    json.dumps({
-                        "ok": True, "preset": "fortitude",
-                        "checked_at": "2026-08-15T00:00:00Z",
-                        "run_linter": [{"command_id": "c1", "command_log_ref": "logs/c1.json",
-                                        "preset": preset}],
-                    }), encoding="utf-8")
-                meta_path = source_dir / "source_meta.json"
-                meta_path.write_text("{}", encoding="utf-8")
-                v: list[str] = []
-                vps._validate_generate_lint_command_logs(
-                    Path(t), meta_path, {"verification_status": "pass"}, "fortran", v)
-                return v
-
-        # A non-member: refused, with the registry's clause rather than a set spelled here.
-        v = _run("no_such_linter")
-        self.assertTrue(any("no_such_linter" in x for x in v), v)
-        self.assertTrue(
-            any(backend_registry.unsupported_reason("linter", "no_such_linter") in x for x in v),
-            v)
-        # An implemented member: this branch lets it through (it fails later, on the command
-        # log, which is a different rule — the point is that the preset itself is accepted).
-        self.assertFalse(
-            any("is not a declared linter" in x for x in _run("fortitude")))
-        # A DECLARED member that implements nothing: membership would accept it; this must not.
-        record = backend_registry.Backend("linter", "zz_named_only", None)
-        with mock.patch.dict(
-                backend_registry._BACKENDS, {("linter", "zz_named_only"): record}):
-            self.assertIsNone(backend_registry.unsupported_reason("linter", "zz_named_only"))
-            v = _run("zz_named_only")
-            self.assertTrue(any("zz_named_only" in x for x in v), v)
-            self.assertTrue(any("nothing implements it" in x for x in v), v)
-
-    def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
-        """`_ir_is_m3c_physics` is the third reader of the host-authorship question, and the one
-        that had no test naming it at all.
-
-        It gates `_validate_checks_source_files` and the harness render preconditions, so if it
-        disagrees with `_conductor_authors_runner` the disagreement is a wrong verdict in one
-        direction or the other: the checks-module contract demanded of a node whose runner is
-        leaf-authored, or not demanded of one whose runner the host rendered.
-
-        Measured before this test existed: reverting the whole predicate to the literal
-        `(make, fortran)` pair was caught ONLY by the token ratchet — which
-        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector —
-        and a token-neutral corruption of the same lines survived the entire suite. Each clause
-        is driven separately here, because that is the granularity at which they were deletable.
-        """
-        from unittest import mock
-        base = {"meta": {"spec_kind": "component", "spec_id": "bx"},
-                "dependency": {"direct_deps": [
-                    {"node_key": "infrastructure/harness_fortran_cpu@0.7.0",
-                     "kind": "infrastructure"}]}}
-
-        def _ir(**toolchain) -> dict:
-            doc = json.loads(json.dumps(base))
-            doc["impl_defaults"] = {"toolchain": toolchain}
-            return doc
-
-        self.assertTrue(vps._ir_is_m3c_physics(_ir(build_system="make", language="fortran")))
-        # The padding guard: this reader `.lower()`s but does not strip, while `provides`
-        # strips — so without the guard a padded value would read as M3c here while the
-        # conductor declines to render the runner for it.
-        for padded in ({"build_system": "make ", "language": "fortran"},
-                       {"build_system": "make", "language": " fortran"}):
-            self.assertFalse(vps._ir_is_m3c_physics(_ir(**padded)), padded)
-        # The capability clauses, one at a time, against declared records that separate them.
-        compile_only = backend_registry.Backend(
-            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
-        build_only = backend_registry.Backend(
-            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
-        # A language the neutral core can RENDER a runner for but has no compile rules for.
-        # Today `fortran` declares both, so this row of the predicate is subsumed and was
-        # deletable; the census named it, so it is declared here rather than waited for.
-        render_only = backend_registry.Backend(
-            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
-        with mock.patch.dict(backend_registry._BACKENDS, {
-                ("language", "zz_compile_only"): compile_only,
-                ("language", "zz_render_only"): render_only,
-                ("build_system", "zz_build_only"): build_only}):
-            self.assertFalse(vps._ir_is_m3c_physics(
-                _ir(build_system="make", language="zz_render_only")))
-            # A language the neutral core can compile but not render: NOT M3c (the `runner_render`
-            # clause), and it agrees with the conductor, which declines to render its runner.
-            self.assertFalse(vps._ir_is_m3c_physics(
-                _ir(build_system="make", language="zz_compile_only")))
-            # A build system the in-process path can drive but has no control-file writer for.
-            self.assertFalse(vps._ir_is_m3c_physics(
-                _ir(build_system="zz_build_only", language="fortran")))
-
-    def test_the_capability_layer_refuses_a_padded_value_on_its_own(self) -> None:
-        """The second layer, driven directly — the caller returns before it.
-
-        The old gate compared `build_system != "make"` exactly, so a padded value was refused
-        twice: by the shape check and again by the toolchain comparison. `registry.provides`
-        normalizes with `.strip().lower()`, so routing the comparison through it silently
-        deleted the second layer — measured, the registry-only form refused 4 of 32 padded
-        shapes where the old code refused 24. Nothing observable changed, because the shape
-        check returns first; that is precisely why this has to be driven at the helper.
-        """
-        for build_system, language in ((" make", "fortran"), ("make", " fortran"),
-                                       ("make ", "fortran "), (" make ", " fortran ")):
-            clauses = vps._missing_toolchain_capability_clauses(
-                build_system, language, is_infrastructure=False)
-            self.assertTrue(clauses, (build_system, language))
-            self.assertIn("whitespace", clauses[0])
-        # ...and the layer does not fire on the canonical spellings it must let through.
-        self.assertEqual(
-            [], vps._missing_toolchain_capability_clauses("make", "fortran", False))
-
-    def test_a_capability_the_neutral_core_lacks_is_refused_even_when_its_sibling_holds(
-            self) -> None:
-        """`control_file` without `runner_render`: the state the clause exists for.
-
-        Every other test drives a value with ZERO capabilities, so `control_file` and
-        `runner_render` are indistinguishable — `fortran` is the only record declaring either.
-        Both reviewers' sweeps deleted the `runner_render` requirement here and in the conductor
-        with the full suite green. A language the neutral core can compile but not render is
-        exactly what the clause is for, so it is declared here rather than waited for.
-        """
-        from unittest import mock
-        record = backend_registry.Backend(
-            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
-        with mock.patch.dict(
-                backend_registry._BACKENDS, {("language", "zz_compile_only"): record}):
-            self.assertTrue(
-                backend_registry.provides("language", "zz_compile_only", "control_file"))
-            clauses = vps._missing_toolchain_capability_clauses(
-                "make", "zz_compile_only", is_infrastructure=False)
-            self.assertEqual(len(clauses), 1, clauses)
-            self.assertIn("runner_render", clauses[0])
-            v = self._run(toolchain={"build_system": "make", "language": "zz_compile_only"})
-            self.assertEqual(len(v), 1, v)
-            self.assertIn("runner_render", v[0])
-        # The build_system axis needs the same pair separated, and did not have it: a build
-        # system that can drive the in-process build but has no control-file writer must not
-        # pass the gate. Review's sweep deleted that requirement and nothing noticed.
-        build_only = backend_registry.Backend(
-            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
-        with mock.patch.dict(
-                backend_registry._BACKENDS, {("build_system", "zz_build_only"): build_only}):
-            clauses = vps._missing_toolchain_capability_clauses(
-                "zz_build_only", "fortran", is_infrastructure=False)
-            self.assertEqual(len(clauses), 1, clauses)
-            self.assertIn("control_file", clauses[0])
-            # ...and an infrastructure node, which needs `build_execute` only, still passes.
-            self.assertEqual(
-                [], vps._missing_toolchain_capability_clauses(
-                    "zz_build_only", "fortran", is_infrastructure=True))
-            # The make-quality-check contract keys on `control_file` — it reads the control
-            # file's grammar and requires its test target — NOT on `build_execute`. A build
-            # system the in-process path can drive but whose control file is leaf-authored must
-            # not have that contract enforced against it. The two capabilities are coextensive
-            # for `make`, so this row was deletable until a record separated them.
-            self.assertFalse(vps._make_quality_check_applies("zz_build_only", "fortran"))
-            self.assertTrue(vps._make_quality_check_applies("make", "fortran"))
-
-    def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
-        """The reverse pin: registering does not admit, IMPLEMENTING does.
-
-        This is the fail-open the last boundary change actually shipped, one question earlier —
-        a gate routed through membership stopped refusing the moment a member was declared,
-        while the code under it still emitted one backend's text. Driven by declaring the
-        member, because no fixture can show it otherwise: every live member is implemented.
-        """
-        from unittest import mock
-        records = {
-            ("language", "zz_lang"): backend_registry.Backend("language", "zz_lang", None),
-            ("build_system", "zz_bs"): backend_registry.Backend(
-                "build_system", "zz_bs", None),
-        }
-        with mock.patch.dict(backend_registry._BACKENDS, records):
-            # Declared — membership no longer refuses either value...
-            self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
-            self.assertIsNone(backend_registry.unsupported_reason("build_system", "zz_bs"))
-            # ...and the gate refuses both anyway.
-            v = self._run(toolchain={"build_system": "make", "language": "zz_lang"})
-            self.assertEqual(len(v), 1, v)
-            self.assertIn("zz_lang", v[0])
-            v = self._run(toolchain={"build_system": "zz_bs", "language": "fortran"})
-            self.assertEqual(len(v), 1, v)
-            self.assertIn("zz_bs", v[0])
-            # Including for an infrastructure node, which is exempt on LANGUAGE only.
-            self.assertEqual(
-                self._run(spec_kind="infrastructure",
-                          toolchain={"build_system": "make", "language": "zz_lang"}), [])
-            self.assertEqual(
-                len(self._run(spec_kind="infrastructure",
-                              toolchain={"build_system": "zz_bs", "language": "fortran"})), 1)
-
-    def test_infrastructure_kind_is_exempt_from_the_language_half_only(self) -> None:
-        # The harness is certified per (language, hardware) target, so another language is a
-        # legitimate future harness. `make` is NOT exempt: `_require_make_build_system` is
-        # kind-agnostic, so a non-make harness would die at Build — late and unrepairable,
-        # the failure class this gate exists to remove.
-        self.assertEqual(
-            self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "make", "language": "c"}), [])
-        v = self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "cmake", "language": "fortran"})
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("build_system must be 'make' on every node", v[0])
-        self.assertIn("_require_make_build_system", v[0])
-        # ...and it refuses on the BUILD-SYSTEM capability only, never ordering the harness to
-        # become fortran. Anchored on the registry clauses the gate carries, so a reformat of
-        # the declared-value prefix (which renders `language='fortran'`) cannot make this
-        # vacuous either way, and so the pin follows the registry rather than restating it.
-        self.assertIn(
-            backend_registry.missing_capability_reason(
-                "build_system", "cmake", "build_execute"),
-            v[0])
-        self.assertNotIn("for language", v[0])
-
-    def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
-        # The exemption is spelled `.strip()`-only, the same rule as
-        # `spec_input_gates.infra_dep_count_violation` and `_conductor_authors_runner` — whose
-        # comments cite THIS gate as their reason for not case-folding. Pin it at the reader
-        # they name, or the claim is asserted in three places and held in none.
-        self.assertEqual(self._run(spec_kind="  infrastructure  ",
-                                   toolchain={"language": "c"}), [])
-        v = self._run(spec_kind="Infrastructure", toolchain={"language": "c"})
-        self.assertEqual(len(v), 1, v)
-        self.assertIn(
-            backend_registry.missing_capability_reason("language", "c", "control_file"), v[0])
-
-    def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
-        # This gate exempts an infrastructure node from the `fortran` half on the grounds
-        # that `_validate_published_surface` — the only enforcement of the
-        # fortran-only language backend — rejects a non-fortran harness itself. That hand-off
-        # holds only while both gates spell the exemption the same way. They did not: this
-        # one strips, the other matched exactly, so a padded `meta.spec_kind` took the
-        # exemption here AND was skipped there, and a non-fortran harness produced no
-        # violation anywhere in the pass. Pin the hand-off at every spelling this gate exempts.
-        import tempfile as _tf
-        for spelling in ("infrastructure", "  infrastructure  "):
-            with _tf.TemporaryDirectory() as td:
-                tmp = Path(td)
-                ir_dir = tmp / "ir"
-                ir_dir.mkdir()
-                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
-                    "meta": {"spec_kind": spelling, "spec_id": "harness_c_cpu"},
-                    "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
-                                      "target": {"class": "cpu"}},
-                }))
-                v: list[str] = []
-                vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
-                self.assertEqual(v, [], f"{spelling}: exempt from the language half")
-                vps._validate_published_surface(tmp, ir_dir, v)
-                reason = vps._signature_backend_refusal("c")
-                self.assertIsNotNone(reason)
-                self.assertTrue(any(reason in x for x in v),
-                                f"{spelling}: nothing rejected the non-fortran harness: {v}")
-        # The hand-off also requires the OTHER gate to reject the spellings this one does
-        # NOT exempt — otherwise the pair would agree only where it happens to be tested.
-        # Case folding there would silently widen it past what the exemption assumes.
-        with _tf.TemporaryDirectory() as td:
-            tmp = Path(td)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
-                "meta": {"spec_kind": "Infrastructure", "spec_id": "harness_c_cpu"},
-                "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
-                                  "target": {"class": "cpu"}},
-            }))
-            v = []
-            vps._validate_published_surface(tmp, ir_dir, v)
-            # The property is NOT "this gate stays silent" — it is "this gate does not treat
-            # `Infrastructure` AS `infrastructure`". Those were the same assertion until issue #153
-            # round 5 made an unrecognised spelling a REFUSAL instead of a silent skip, which is a
-            # third behaviour neither `assertEqual(v, [])` nor case-folding describes. Pin the
-            # meaning: the language-backend refusal, which only a case-folding gate could produce,
-            # must be absent.
-            self.assertFalse(
-                [x for x in v if vps._signature_backend_refusal("c") in x],
-                f"the sibling gate case-folded: {v}")
-            # And the hand-off still covers this spelling from BOTH sides, which is what the
-            # exemption above depends on: the toolchain gate does not exempt `Infrastructure`, and
-            # the surface gate now refuses the spelling outright.
-            t_v: list[str] = []
-            vps._validate_toolchain_backend_supported(tmp, ir_dir, t_v)
-            self.assertTrue(t_v, "the toolchain gate must not exempt a spelling it does not strip")
-            self.assertTrue(any("is not a known spec_kind" in x for x in v), v)
-
-    def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
-        v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
-        self.assertEqual(len(v), 1)
-        msg = v[0]
-        self.assertIn("impl_defaults.toolchain", msg)
-        # The refusal clause is the REGISTRY's, verbatim, for each axis that is missing a
-        # capability — the gate does not spell an implemented set of its own
-        # (docs/BACKEND_BOUNDARY.md §Design Policy).
-        self.assertIn(
-            backend_registry.missing_capability_reason(
-                "build_system", "cmake", "build_execute"), msg)
-        self.assertIn(
-            backend_registry.missing_capability_reason("language", "cpp", "control_file"), msg)
-        # ONE clause per axis, not per capability: `cpp` is missing both `control_file` and
-        # `runner_render`, and a message that said so twice would read as two defects. Counted,
-        # because dropping the dedup changed nothing any assertion looked at.
-        self.assertEqual(2, msg.count("this repository implements"), msg)
-        # The message reports what the author WROTE. A present key is echoed verbatim (not
-        # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
-        # as absent rather than as a declaration nobody made.
-        self.assertIn("build_system='cmake'", msg)
-        absent_bs = self._run(toolchain={"language": "cpp"})[0]
-        self.assertIn("build_system=absent (defaults to 'make')", absent_bs)
-        self.assertNotIn("build_system='make'", absent_bs)
-        cased = self._run(toolchain={"build_system": "CMake", "language": "fortran"})[0]
-        self.assertIn("build_system='CMake'", cased)
-        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
-        # An actionable remedy: the controlled_spec pins no toolchain, so a re-author fixes it.
-        self.assertIn("re-author", msg)
-        self.assertIn("language-neutral", msg)
-        # The remedy must NOT invite omitting the keys. It once did, which contradicted V6
-        # and silently skipped the post_generate Fortran syntax-evidence gate (an absent
-        # `language` makes it return without checking). Pin the corrected wording, or the
-        # next edit reintroduces the old one with every test still green.
-        self.assertIn("stated explicitly", msg)
-        self.assertIn("V6", msg)
-        self.assertNotIn("omit the keys", msg)
-
-    def test_untrimmed_values_fire_because_the_host_readers_disagree_on_them(self) -> None:
-        # `_conductor_authors_makefile` / `_conductor_authors_runner` lower-case but do NOT
-        # strip, while the Build backstop and record_launch's line-scanning reader DO — so
-        # `"make "` makes them disagree about who authors src/Makefile. The gate turns the
-        # shape into a repairable violation naming the offending key.
-        for tc, key in (({"build_system": "make ", "language": "fortran"}, "build_system"),
-                        ({"build_system": "make", "language": " fortran"}, "language"),
-                        ({"build_system": "make\u00a0", "language": "fortran"}, "build_system")):
-            v = self._run(toolchain=tc)
-            self.assertEqual(len(v), 1, (tc, v))
-            self.assertIn(f"impl_defaults.toolchain.{key}", v[0])
-            self.assertIn("leading or trailing whitespace", v[0])
-            # The remedy must quote the STRIPPED token; echoing the padded value back would
-            # tell the author to write exactly what was just rejected.
-            self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
-        # An untrimmed value has BOTH consequences for EITHER key: the conductor compares
-        # without stripping and declines to author while record_launch's reader strips and
-        # still names the host (so the leaf's pin is suppressed and nobody owns the file),
-        # and `_conductor_authors_runner` keys on both fields, so the runner stops being
-        # host-rendered either way. (Before the readers became structural, only
-        # build_system orphaned the file — the split this used to assert was measured on
-        # that older code.)
-        bs_msg = self._run(toolchain={"build_system": "make "})[0]
-        lang_msg = self._run(toolchain={"language": " fortran"})[0]
-        for msg in (bs_msg, lang_msg):
-            self.assertIn("authored by nobody", msg)
-            self.assertIn("stops being an M3c node", msg)
-        # Both keys padded -> one violation each, and the pair check does not also fire
-        # (its message would name a value nobody wrote).
-        v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
-        self.assertEqual(len(v), 2, v)
-        # The capability clauses must NOT also appear: the shape check returns first, so the
-        # message names the padding rather than telling an author to change their toolchain.
-        # (This assertion previously searched for "only implemented physical backend", a string
-        # this branch removed from the violation text — it could no longer fail. Anchored on the
-        # registry's clause instead, which is what the gate emits today.)
-        for msg in v:
-            self.assertNotIn("this repository implements", msg)
-
-    def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
-        # The check is on the parsed SHAPE — "a plain non-empty string" — never on a
-        # predicted consequence, because the consequence is not the same across the branch:
-        # a falsy value is coerced to the default by the conductor while record_launch's
-        # line scan reads the literal token — except for the bare key and `""`, where the
-        # scan also yields nothing and the two agree — and a truthy non-string is
-        # STRINGIFIED by the conductor, so it is not the token it looks like either. `null` is one spelling
-        # among many: YAML 1.1 resolves `no` / `off` to False, and `0` / `[]` / `""` /
-        # `"   "` / `5` / `true` all land in the same branch.
-        for key in ("build_system", "language"):
-            for value in (None, False, 0, [], "", "   ", 5, True):
-                v = self._run(toolchain={key: value})
-                self.assertEqual(len(v), 1, (key, value, v))
-                self.assertIn(f"impl_defaults.toolchain.{key} must be a plain non-empty "
-                              "string token", v[0])
-                # The remedy names the token for THIS key, and carries no un-rendered
-                # placeholder.
-                self.assertIn(
-                    f"explicit value ({'make' if key == 'build_system' else 'fortran'})",
-                    v[0])
-                self.assertNotIn("{key}", v[0])
-        # The message cites the harmful outcome rather than claiming one consequence for
-        # the value at hand — a per-value story has been wrong three times here. Since the
-        # readers became structural, `null` / bare / `""` agree on both sides and only a
-        # non-string SCALAR diverges, so that is what must stay named.
-        msg = self._run(toolchain={"language": None})[0]
-        self.assertIn("authored by nobody", msg)
-        self.assertIn("happen to agree", msg)
-        self.assertNotIn("double-owned", msg)
-        # An ABSENT key is a different thing and stays legal.
-        self.assertEqual(self._run(toolchain={}), [])
-
-    def test_shape_checks_apply_to_an_infrastructure_node_too(self) -> None:
-        # The harness is exempt from the `fortran` half — it is certified per
-        # (language, hardware) target — but not from the shape checks, which are about the
-        # host readers disagreeing with each other, not about which backend is supported.
-        # `_conductor_authors_makefile` does not exempt infrastructure either, so a padded
-        # value there suppresses the Makefile pin while nobody authors the file.
-        v = self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "make ", "language": "fortran"})
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("leading or trailing whitespace", v[0])
-        v = self._run(spec_kind="infrastructure", toolchain={"language": None})
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be a plain non-empty string token", v[0])
-        # ...and the language half still does not fire for it.
-        self.assertEqual(
-            self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "make", "language": "c"}), [])
-
-    def test_non_mapping_impl_defaults_or_toolchain_fires(self) -> None:
-        # A truthy non-dict `toolchain` reaches the conductor's unguarded
-        # `impl.get("toolchain") or {}` and raises AttributeError mid-Generate — a
-        # conductor_error, not a repairable Compile violation. A truthy non-dict
-        # `impl_defaults` does NOT crash (that read IS isinstance-guarded) but silently
-        # disables every impl_defaults gate. Both are rejected here; a FALSY non-dict is
-        # coerced to {} identically by both sides and stays legal.
-        for bad in ("make", ["make"], 7):
-            v = self._run(toolchain=bad)
-            self.assertEqual(len(v), 1, (bad, v))
-            self.assertIn("impl_defaults.toolchain must be a mapping", v[0])
-            self.assertIn("unguarded", v[0])
-            v = self._run(impl_defaults=bad)
-            self.assertEqual(len(v), 1, (bad, v))
-            self.assertIn("impl_defaults must be a mapping", v[0])
-            # The reason must be the true one. `impl_defaults` is read through an
-            # isinstance guard everywhere, so the conductor does NOT crash on it — the
-            # harm is that every impl_defaults gate silently no-ops. Only a non-mapping
-            # `toolchain` crashes, and only that message may say so.
-            self.assertIn("silently no-ops", v[0])
-            self.assertNotIn("would fail mid-Generate", v[0])
-        # Falsy non-dicts are the "absent" case and keep the make/fortran defaults.
-        self.assertEqual(self._run(toolchain=[]), [])
-        self.assertEqual(self._run(toolchain=""), [])
-        self.assertEqual(self._run(impl_defaults=[]), [])
-
-    def test_a_non_mapping_ir_is_another_gates_business(self) -> None:
-        # An IR that parses cleanly but is not a mapping (a top-level list) reaches the gate
-        # as a `list`. Without the isinstance guard, `.get` raises inside Compile.static —
-        # a conductor_error instead of the other gates' violation. The unparseable-YAML test
-        # below cannot cover this: it is caught one branch earlier by the YAMLError handler.
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            (ir_dir / "spec.ir.yaml").write_text("- a\n- b\n")
-            violations: list[str] = []
-            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
-            self.assertEqual(violations, [])
-
-    def test_missing_or_unparseable_ir_is_another_gates_business(self) -> None:
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            violations: list[str] = []
-            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
-            self.assertEqual(violations, [])
-            (ir_dir / "spec.ir.yaml").write_text("[not: a: mapping\n")
-            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
-            self.assertEqual(violations, [])
-
-
-class HarnessDependencyConsistencyTests(unittest.TestCase):
-    """R1/M3c-β `_validate_harness_dependency_consistency` (compile stage)."""
-
-    def _run(self, *, spec_kind="component", language="fortran", hw_class="cpu",
-             infra_ids: list[str] | None = None, bare_string: bool = False) -> list[str]:
-        infra_ids = ["harness_fortran_cpu"] if infra_ids is None else infra_ids
-        deps: list = (
-            [f"infrastructure/{i}@0.2.0" for i in infra_ids] if bare_string
-            else [{"node_key": f"infrastructure/{i}@0.2.0"} for i in infra_ids])
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            ir: dict = {
-                "meta": {"spec_kind": spec_kind, "spec_id": "bx"},
-                "impl_defaults": {"toolchain": {"language": language},
-                                  "target": {"class": hw_class}},
-                "dependency": {"direct_deps": deps},
-            }
-            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
-            violations: list[str] = []
-            vps._validate_harness_dependency_consistency(tmp, ir_dir, violations)
-            return violations
-
-    def test_correct_harness_passes(self) -> None:
-        self.assertEqual(self._run(), [])
-
-    def test_no_infra_dep_is_noop(self) -> None:
-        # Defense-in-depth only: spec-input rejects a non-infrastructure spec with zero infra
-        # deps, so a live run never reaches here with that shape.
-        self.assertEqual(self._run(infra_ids=[]), [])
-
-    def test_infra_node_is_noop(self) -> None:
-        self.assertEqual(self._run(spec_kind="infrastructure"), [])
-
-    def test_wrong_harness_id(self) -> None:
-        v = self._run(infra_ids=["harness_fortran_gpu"])
-        self.assertTrue(any("expected 'harness_fortran_cpu'" in x for x in v), v)
-
-    def test_bare_string_infra_dep_is_parsed(self) -> None:
-        # A bare-string infra dep must be seen identically to the dict form — else the
-        # conductor host-renders while this gate (and the checks gate) treat it as legacy.
-        self.assertEqual(self._run(bare_string=True), [])
-        v = self._run(infra_ids=["harness_fortran_gpu"], bare_string=True)
-        self.assertTrue(any("expected 'harness_fortran_cpu'" in x for x in v), v)
-
-    def test_two_infra_deps(self) -> None:
-        # Also rejected upstream at spec-input; this keeps the compile-side statement of the
-        # rule for a hand-crafted IR (defense-in-depth).
-        v = self._run(infra_ids=["harness_fortran_cpu", "harness_other_cpu"])
-        self.assertTrue(any("exactly one infrastructure" in x for x in v), v)
-
-    def test_missing_target_class(self) -> None:
-        v = self._run(hw_class="")
-        self.assertTrue(any("cannot derive the expected harness id" in x for x in v), v)
 
 
 class ComponentDepOperationsGateTests(unittest.TestCase):
@@ -21511,11 +20961,9 @@ class ComponentPublicApiGateTests(unittest.TestCase):
 
     def _seed(self, tmp: Path, *, public_api: object, spec_kind: str = "component",
               cs_ref: str | None = _OMIT, write_cs: bool = True,
-              section_51: str | None = None, spec_id: str | None = None,
-              language: str | None = None) -> Path:
-        """`spec_id=""` and `language="rust"` exist so `_refusal_shapes` can reach the
-        missing-spec_id and no-signature-backend refusals; both are paths the gate takes before it
-        reads §5, and round 0 found each one's kind word unpinned."""
+              section_51: str | None = None, spec_id: str | None = None) -> Path:
+        """`spec_id=""` exists so `_refusal_shapes` can reach the missing-spec_id refusal, a path
+        the gate takes before it reads §5, whose kind word round 0 found unpinned."""
         if cs_ref is _OMIT:
             cs_ref = self._CS_REF
         if write_cs:
@@ -21527,8 +20975,6 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         if cs_ref is not None:
             meta["source_refs"] = {"controlled_spec": cs_ref}
         ir: dict = {"meta": meta}
-        if language is not None:
-            ir["impl_defaults"] = {"toolchain": {"language": language}}
         if public_api is not _OMIT:
             ir["public_api"] = public_api
         ir_dir = tmp / self._IR_SUBDIR
@@ -21859,7 +21305,11 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         rule under test — a refusal names the node's ACTUAL kind — lives in each message separately.
         Round 0 drove ONE shape and found the other SIX unpinned (seven shapes here; the driven one
         was the missing-`signatures` refusal). An earlier version of this docstring said five, which
-        disagreed with the commit that added it — the count is six."""
+        disagreed with the commit that added it — the count was six. R4-a PR-3 (issue #284) removed
+        the seventh shape, "unsupported language": the IR is target-free, so this gate asks no
+        language question; the refusal is the generated-signature gate's, whose kind word
+        `InfrastructureGeneratedSignatureGateTests::test_the_no_backend_refusal_names_the_node_kind_it_was_given`
+        pins for both kinds."""
         no_sigs = self._full_api()
         del no_sigs["signatures"]
         no_params = self._full_api()
@@ -21871,7 +21321,6 @@ class ComponentPublicApiGateTests(unittest.TestCase):
             "missing public_api": dict(public_api=_OMIT),
             "missing signatures": dict(public_api=no_sigs),
             "missing module_parameters": dict(public_api=no_params),
-            "unsupported language": dict(public_api=self._full_api(), language="rust"),
         }
 
     def test_every_refusal_names_the_node_kind_it_was_given(self) -> None:
@@ -22320,38 +21769,164 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
                 self.assertNotEqual(published, [], f"case {label!r} pins nothing")
 
 
+
+class RegistryClauseReadersTests(unittest.TestCase):
+    """Rows kept from `ToolchainBackendGateTests` when R4-a PR-3 (issue #284) deleted the
+    compile-stage toolchain gate with the IR's `impl_defaults`: each observes a LIVE reader of
+    the backend registry — the lint-evidence preset check, the M3c mirror (`_m3c_language`,
+    over the target's toolchain) and the make-quality-check predicate. The rows that observed
+    only the deleted gate (`_validate_toolchain_backend_supported`,
+    `_missing_toolchain_capability_clauses`) went with it; its capability question is the
+    target profile's at launch (`target_profile.target_profile_violations`), pinned in
+    `tools/tests/test_target_profile.py`."""
+
+    def test_the_lint_evidence_preset_is_refused_with_the_registrys_clause(self) -> None:
+        """The branch this change rewrote, which had no test on either side of it.
+
+        It used to compare against a literal set and now asks
+        `registry.unimplemented_reason`. Both directions are driven: a linter that is not a
+        member at all, and — the reason this is `unimplemented_reason` and not
+        `unsupported_reason` — one that IS a declared member with no implementation anywhere.
+        A membership question would accept the second and let a preset name a linter nothing can
+        run. Review's sweep swapped the two questions and no test noticed.
+        """
+        from unittest import mock
+
+        def _run(preset: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                pipeline_root = Path(t) / "pipelines" / "p1"
+                source_dir = pipeline_root / "source" / "src_20260101_001"
+                source_dir.mkdir(parents=True)
+                (pipeline_root / "lint_evidence").mkdir()
+                (pipeline_root / "lint_evidence" / "src_20260101_001.json").write_text(
+                    json.dumps({
+                        "ok": True, "preset": "fortitude",
+                        "checked_at": "2026-08-15T00:00:00Z",
+                        "run_linter": [{"command_id": "c1", "command_log_ref": "logs/c1.json",
+                                        "preset": preset}],
+                    }), encoding="utf-8")
+                meta_path = source_dir / "source_meta.json"
+                meta_path.write_text("{}", encoding="utf-8")
+                v: list[str] = []
+                vps._validate_generate_lint_command_logs(
+                    Path(t), meta_path, {"verification_status": "pass"}, "fortran", v)
+                return v
+
+        # A non-member: refused, with the registry's clause rather than a set spelled here.
+        v = _run("no_such_linter")
+        self.assertTrue(any("no_such_linter" in x for x in v), v)
+        self.assertTrue(
+            any(backend_registry.unsupported_reason("linter", "no_such_linter") in x for x in v),
+            v)
+        # An implemented member: this branch lets it through (it fails later, on the command
+        # log, which is a different rule — the point is that the preset itself is accepted).
+        self.assertFalse(
+            any("is not a declared linter" in x for x in _run("fortitude")))
+        # A DECLARED member that implements nothing: membership would accept it; this must not.
+        record = backend_registry.Backend("linter", "zz_named_only", None)
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("linter", "zz_named_only"): record}):
+            self.assertIsNone(backend_registry.unsupported_reason("linter", "zz_named_only"))
+            v = _run("zz_named_only")
+            self.assertTrue(any("zz_named_only" in x for x in v), v)
+            self.assertTrue(any("nothing implements it" in x for x in v), v)
+
+
+    def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
+        """`_m3c_language` is the validator's reader of the host-authorship question, over the
+        pipeline's target toolchain (issue #284; `_ir_is_m3c_physics` read the IR's until R4-a
+        PR-3). It gates `_validate_checks_source_files`, so if it disagrees with
+        `_conductor_authors_runner` the disagreement is a wrong verdict in one direction or the
+        other. Each clause is driven separately, because that is the granularity at which they
+        were deletable."""
+        from unittest import mock
+        ir = {"meta": {"spec_kind": "component", "spec_id": "bx"},
+              "dependency": {"direct_deps": []}}
+        self.assertEqual(vps._m3c_language(ir, "make", "fortran"), "fortran")
+        # The padding guard: `provides` strips, so without the guard a padded value would read
+        # as M3c here while the conductor declines to render the runner for it.
+        for build_system, language in (("make ", "fortran"), ("make", " fortran")):
+            self.assertIsNone(vps._m3c_language(ir, build_system, language))
+        # The kind clause: only a stated physics kind (`spec_input_gates.M3C_SPEC_KINDS`).
+        for kind in ("infrastructure", "profile", "", None):
+            doc = {**ir, "meta": {"spec_kind": kind}}
+            self.assertIsNone(vps._m3c_language(doc, "make", "fortran"), kind)
+        self.assertEqual(vps._m3c_language({**ir, "meta": {"spec_kind": "problem"}},
+                                           "make", "fortran"), "fortran")
+        compile_only = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        render_only = backend_registry.Backend(
+            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(backend_registry._BACKENDS, {
+                ("language", "zz_compile_only"): compile_only,
+                ("language", "zz_render_only"): render_only,
+                ("build_system", "zz_build_only"): build_only}):
+            self.assertIsNone(vps._m3c_language(ir, "make", "zz_render_only"))
+            self.assertIsNone(vps._m3c_language(ir, "make", "zz_compile_only"))
+            self.assertIsNone(vps._m3c_language(ir, "zz_build_only", "fortran"))
+
+    def test_the_make_quality_check_keys_on_the_control_file(self) -> None:
+        """The make-quality-check contract reads the control file's grammar and requires its
+        test target, so it keys on `control_file` — NOT on `build_execute`. The two are
+        coextensive for `make`, so a record separates them."""
+        from unittest import mock
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("build_system", "zz_build_only"): build_only}):
+            self.assertFalse(vps._make_quality_check_applies("zz_build_only", "fortran"))
+            self.assertTrue(vps._make_quality_check_applies("make", "fortran"))
+
+    def test_the_published_surface_gate_refuses_a_spelling_it_does_not_recognise(self) -> None:
+        """`meta.spec_kind` decides whether the published-surface gate runs, so an unrecognised
+        spelling (`Infrastructure`) is a violation rather than a skip, and a padded canonical
+        one is read as the kind. (The half of this row that pinned the compile-stage language
+        refusal went with R4-a PR-3: the IR names no language, and the signature-backend
+        question is asked at `Generate.static` over the pipeline's target.)"""
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "Infrastructure", "spec_id": "harness_c_cpu"}}))
+            v: list[str] = []
+            vps._validate_published_surface(tmp, ir_dir, v)
+            self.assertTrue(any("is not a known spec_kind" in x for x in v), v)
+            self.assertFalse(any("signature pinning needs a language backend" in x for x in v), v)
+
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
     """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
-    node built for an OpenMP-on-CPU Fortran TARGET (the pipeline's profile, issue #284) whose IR
-    claims OpenMP, a model source with counted `do` loops must carry at least one `!$omp`
-    directive. Presence floor only — which loops and which
-    schedule stay a Generate.verify G6 `major`. Fail-open in every ambiguous direction."""
+    node built for an OpenMP-on-CPU Fortran TARGET (the pipeline's profile, issue #284) whose
+    bundle's `target_lowering_plan` names OpenMP as its parallelization model, a model source with
+    counted `do` loops must carry at least one `!$omp` directive. Presence floor only — which loops
+    and which schedule stay a Generate.verify G6 finding. Fail-open in every ambiguous direction.
+    (Until R4-a PR-3 the claim was the IR's Compile-authored `impl_defaults.abstract` knob.)"""
 
     _FIRED = "counted `do` loop(s) and not one"
 
+    #: The plan the default fixture writes: it names OpenMP, the target's default. (Since R4-a
+    #: PR-3 round 1 the floor applies unless a plan DECLINES OpenMP, so a claim is no longer its
+    #: licence; the fixture still states one so a row about another input keeps a plan.)
+    _CLAIM = {"precision": {}, "state_residency": "host",
+              "parallelization": {"model": "openmp"}}
+
     def _run(self, model_text: str, *, node_key: str = "component/dep_base@0.1.0",
              hw_class: str = "cpu", backend: str = "openmp", language: str = "fortran",
-             impl: object = None, extra_models: dict[str, str] | None = None) -> list[str]:
+             plan: object = None, ir_extra: dict | None = None,
+             extra_models: dict[str, str] | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
             ir_dir = repo_root / ir_ref
             ir_dir.mkdir(parents=True)
-            if impl is None:
-                # The default fixture CLAIMS a parallel model, because that claim is the floor's
-                # licence to fail a source: a violation reopens `generate.generate`, whose leaf
-                # cannot edit the IR, so the gate may only demand what the IR itself states. Every
-                # node the floor fires on in the live corpus carries such a claim.
-                impl = {"target": {"class": hw_class, "backend": backend},
-                        "toolchain": {"language": language},
-                        "abstract": {"parallelization": "openmp"}}
-            ir: dict = {"meta": {"spec_kind": node_key.split("/", 1)[0], "spec_id": "dep_base"}}
-            if impl is not _OMIT:
-                ir["impl_defaults"] = impl
+            ir: dict = {"meta": {"spec_kind": node_key.split("/", 1)[0], "spec_id": "dep_base"},
+                        **(ir_extra or {})}
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
             # The fixed layer — class, backend, language — is the TARGET's (issue #284): declare
-            # it as the profile the pipeline's store coordinate names. The IR's `target` /
-            # `toolchain` above are not read; its `abstract` claim still is.
+            # it as the profile the pipeline's store coordinate names.
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo_root, profile_with(
                 hardware={"class": hw_class}, parallel={"backend": backend},
@@ -22360,6 +21935,10 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                             / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
+            if plan is not _OMIT:
+                (src_dir.parent / "codegen_bundle.json").write_text(json.dumps(
+                    {"target_lowering_plan": self._CLAIM if plan is None else plan}),
+                    encoding="utf-8")
             (pipeline_dir / "lineage.json").write_text(
                 json.dumps({"node_key": node_key, "ir_ref": ir_ref}), encoding="utf-8")
             model = src_dir / "dep_base_model.f90"
@@ -22371,8 +21950,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                 models.append(extra)
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            vps._validate_openmp_presence_floor(repo_root, execution, models, v)
+            vps._validate_openmp_presence_floor(repo_root, execution, src_dir, models, v)
             return v
+
+    @staticmethod
+    def _par(parallelization: object) -> dict:
+        return {"precision": {}, "state_residency": "host", "parallelization": parallelization}
 
     @staticmethod
     def _model(body: str) -> str:
@@ -22388,14 +21971,15 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertIn(self._FIRED, v[0])
         self.assertIn("1 counted `do` loop(s)", v[0])
         # Self-contained line: the rule it broke AND the remedy, on the same line (issue #12).
-        self.assertIn("impl_defaults.abstract / backend_overrides knobs are binding", v[0])
+        self.assertIn("target_lowering_plan.parallelization does not decline OpenMP", v[0])
         self.assertIn("!$omp parallel do", v[0])
         self.assertIn("dep_base_model.f90", v[0])
-        # The line must also name its own ESCAPE HATCH. The generate leaf cannot edit the IR, so a
-        # node whose loops genuinely cannot be parallelized needs to be told where the exemption
-        # lives, or the only readings of this line are "emit a directive you believe is wrong" and
-        # "fail forever".
-        self.assertIn("`impl_defaults.abstract.parallelization: none`", v[0])
+        # The line must also name its own ESCAPE HATCH: a node whose loops genuinely cannot be
+        # parallelized is told where the exemption lives — its own plan (issue #284) — or the
+        # only readings of this line are "emit a directive you believe is wrong" and "fail
+        # forever". It names who judges it too, so the hatch is not read as a free pass.
+        self.assertIn('`"model": "none"`', v[0])
+        self.assertIn("the independent reviewer holds that declaration to the loops", v[0])
 
     def test_directive_present_passes(self) -> None:
         self.assertEqual(self._run(self._model(
@@ -22418,122 +22002,86 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
             "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
 
-    def test_the_fixed_layer_is_the_targets_not_the_irs(self) -> None:
+    def test_the_fixed_layer_is_the_targets_and_the_claim_the_plans(self) -> None:
         """Issue #284: the class / backend / language the floor keys on are the pipeline's
-        TARGET's. An IR whose fixed layer contradicts the profile moves nothing, in both
-        directions (the default fixture writes the two in agreement, so it cannot tell them
-        apart)."""
-        claim = {"abstract": {"parallelization": "openmp"}}
-        ir_says_serial_gpu_c = {**claim, "target": {"class": "gpu", "backend": "serial"},
-                                "toolchain": {"language": "c"}}
-        self.assertEqual(len(self._run(self._COUNTED, impl=ir_says_serial_gpu_c)), 1)
-        ir_says_openmp_cpu = {**claim, "target": {"class": "cpu", "backend": "openmp"},
-                              "toolchain": {"language": "fortran"}}
-        self.assertEqual(self._run(self._COUNTED, backend="serial", impl=ir_says_openmp_cpu), [])
-        self.assertEqual(self._run(self._COUNTED, hw_class="gpu", impl=ir_says_openmp_cpu), [])
+        TARGET's, and the claim is the bundle's plan — an IR still carrying a (pre-PR-3)
+        `impl_defaults` is not read, in either direction."""
+        stale_serial = {"impl_defaults": {"target": {"class": "gpu", "backend": "serial"},
+                                          "toolchain": {"language": "c"},
+                                          "abstract": {"parallelization": "none"}}}
+        self.assertEqual(len(self._run(self._COUNTED, ir_extra=stale_serial)), 1)
+        stale_openmp = {"impl_defaults": {"abstract": {"parallelization": "openmp"}}}
+        self.assertEqual(self._run(self._COUNTED, ir_extra=stale_openmp,
+                                   plan=self._par({"model": "none"})), [])
+        self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
+        self.assertEqual(self._run(self._COUNTED, hw_class="gpu"), [])
 
-    def test_floor_needs_an_openmp_claim_specifically(self) -> None:
-        """The claim must name OPENMP, not merely some parallelism.
-
-        `Compile.static` deliberately accepts a novel model token, so a node claiming `cuda_streams`
-        or `mpi` on an openmp-backed target would otherwise be told to add `!$omp` — a demand that
-        contradicts its own IR and that the reopened producer cannot resolve."""
-        base = {"target": {"class": "cpu", "backend": "openmp"},
-                "toolchain": {"language": "fortran"}}
+    def test_a_plan_naming_another_model_declines_openmp(self) -> None:
+        """A plan naming `cuda_streams` or `mpi` on an openmp-backed target declines OpenMP
+        rather than being told to add `!$omp` — a demand that would contradict its own plan. An
+        OpenMP-named model, or an EMPTY one, declines nothing (the target's backend stands)."""
         for token, want in (("openmp", 1), ("OpenMP", 1), ("openmp+simd", 1), ("openmp_tasks", 1),
-                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 0)):
-            v = self._run(self._COUNTED,
-                          impl={**base, "abstract": {"parallelization": token}})
-            self.assertEqual(len(v), want, f"parallelization={token!r}: {v}")
-        # Same rule through the mapping form.
-        self.assertEqual(self._run(self._COUNTED, impl={
-            **base, "abstract": {"parallelization": {"method": "cuda_streams"}}}), [])
-        self.assertEqual(len(self._run(self._COUNTED, impl={
-            **base, "abstract": {"parallelization": {"method": "openmp"}}})), 1)
+                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 1)):
+            v = self._run(self._COUNTED, plan=self._par({"model": token}))
+            self.assertEqual(len(v), want, f"model={token!r}: {v}")
+        # Same rule through the other model-member spellings.
+        self.assertEqual(self._run(self._COUNTED, plan=self._par({"method": "cuda_streams"})),
+                         [])
+        self.assertEqual(len(self._run(self._COUNTED, plan=self._par({"method": "openmp"}))), 1)
 
-    def test_floor_needs_an_affirmative_ir_claim(self) -> None:
-        """The floor may only demand what the IR itself states.
-
-        A violation reopens `generate.generate`, whose leaf authors source and cannot touch the
-        certified IR. Keyed on the FIXED layer alone, a node whose only counted loops are inherently
-        serial had no repairable change available — the documented escape
-        (`parallelization: none`) lay on the Compile side of a boundary that leaf cannot cross, so the
-        run burned its retries and failed closed. With the claim required, a firing source is
-        ignoring an obligation its own IR states, which the leaf CAN fix."""
-        counted = self._COUNTED
-        base = {"target": {"class": "cpu", "backend": "openmp"},
-                "toolchain": {"language": "fortran"}}
-        for abstract, label, want in (
-            (None, "no abstract section at all", 0),
-            ({}, "an empty abstract section", 0),
-            ({"memory_layout": "column_major", "tiling": "none"},
-             "other knobs but no parallelization claim", 0),
-            ({"parallelization": "openmp"}, "a claim", 1),
-            ({"loop_parallelization": "openmp"}, "a claim under an alias", 1),
-            ({"parallelization": {"method": "openmp", "apply_to": "loops"}},
-             "a claim in the live mapping form", 1),
-            ({"parallelization": "openmp+simd"}, "a claim naming a novel model", 1),
+    def test_only_an_explicit_declaration_exempts(self) -> None:
+        """Round 1 of R4-a PR-3 (issue #284): the plan is the producer's OWN declaration, so a
+        floor that read "no claim" as an exemption let the producer switch its own floor off by
+        omission. On an OpenMP target the target's backend is the default: a plan with no
+        `parallelization`, an empty one, a model member under another key, a non-object, or no
+        plan at all applies the floor; only a model member that names no parallelism (or
+        another model) exempts. The mapping-form rows below pin which member is the model."""
+        for plan, label, want in (
+            ({"precision": {}, "state_residency": "host"}, "no parallelization key", 1),
+            (self._par({}), "an empty parallelization object", 1),
+            ({"precision": {}, "state_residency": "host", "tiling": {"model": "none"}},
+             "a none model member under another key", 1),
+            (self._par("none"), "a bare string where an object belongs", 1),
+            (self._par({"model": 0}), "a model value that is not a string", 1),
+            (self._par({"model": "openmp"}), "a claim", 1),
+            (self._par({"model": "openmp", "apply_to": "loops"}), "a claim with its scope", 1),
+            (self._par({"model": "openmp+simd"}), "a claim naming a novel model", 1),
+            ("none", "a plan that is not an object", 1),
+            (self._par({"model": "none"}), "an explicit declaration", 0),
         ):
-            impl = dict(base)
-            if abstract is not None:
-                impl["abstract"] = abstract
-            v = self._run(counted, impl=impl)
+            v = self._run(self._COUNTED, plan=plan)
             self.assertEqual(len(v), want, f"{label}: {v}")
 
     def test_mapping_form_claim_reads_only_the_model_member(self) -> None:
-        """A claim lives in the mapping's MODEL member, not in any of its prose.
-
-        Reading every value made `{method: none, apply_to: parallelizable_loops}` — a correctly
-        serial legacy mapping — license the floor to reject its own source, and a sibling like
-        `reduction_policy: serial_deterministic_acc` did the same. `method`/`scheme`/`kind` are the
-        spellings the live corpus uses (each carrying `openmp`); anything else yields no claim, which
-        fails the floor open."""
-        base = {"target": {"class": "cpu", "backend": "openmp"},
-                "toolchain": {"language": "fortran"}}
-        for abstract, label, want in (
-            ({"parallelization": {"method": "none", "apply_to": "parallelizable_loops"}},
+        """A declaration lives in the parallelization object's MODEL member (`model`, and the
+        `method`/`scheme`/`kind` spellings the knob layer used), not in any of its prose: a
+        serial-sounding sibling (`reduction_policy: serial_deterministic_acc`) declines nothing,
+        and a model member naming OpenMP wins over one that names none."""
+        for par, label, want in (
+            ({"model": "none", "apply_to": "parallelizable_loops"},
              "model says none, sibling is prose", 0),
-            ({"parallelization": {"scheme": "none", "default_schedule": "static"}},
+            ({"scheme": "none", "default_schedule": "static"},
              "model says none, sibling is a schedule", 0),
-            ({"parallelization": {"apply_to": "parallelizable_loops"}},
-             "no model member at all", 0),
+            ({"apply_to": "parallelizable_loops"}, "no model member at all", 1),
             ({"reduction_policy": "serial_deterministic_acc"},
-             "an unrelated knob whose value merely reads serial-ish", 0),
-            ({"parallelization": {"method": "openmp", "apply_to": "loops"}}, "method", 1),
-            ({"parallelization": {"scheme": "openmp", "apply_to": "loops"}}, "scheme", 1),
-            ({"parallelization": {"kind": "openmp", "scope": "loops"}}, "kind", 1),
-            ({"parallelization": {"Method": "OpenMP"}}, "model key and value wrong-cased", 1),
-            ({"parallelization": "openmp", "reduction_policy": "serial_deterministic_acc"},
-             "a flat claim is unaffected by a serial-ish sibling", 1),
+             "an unrelated member whose value merely reads serial-ish", 1),
+            ({"model": "openmp", "apply_to": "loops"}, "model", 1),
+            ({"method": "openmp", "apply_to": "loops"}, "method", 1),
+            ({"scheme": "openmp", "apply_to": "loops"}, "scheme", 1),
+            ({"kind": "openmp", "scope": "loops"}, "kind", 1),
+            ({"Model": "OpenMP"}, "model key and value wrong-cased", 1),
+            ({"model": "openmp", "reduction_policy": "serial_deterministic_acc"},
+             "a claim is unaffected by a serial-ish sibling", 1),
+            ({"model": "none", "method": "openmp"}, "a claim beside a none", 1),
+            ({"Model": "None"}, "a wrong-cased declaration still declines", 0),
         ):
-            v = self._run(self._COUNTED, impl={**base, "abstract": abstract})
+            v = self._run(self._COUNTED, plan=self._par(par))
             self.assertEqual(len(v), want, f"{label}: {v}")
 
-    def test_ir_declaring_no_parallelism_is_exempt(self) -> None:
-        # `_validate_impl_defaults_knobs` blesses `parallelization: none`, so the floor MUST honor
-        # it — otherwise the two gates contradict and a serial node cannot pass either one.
+    def test_a_plan_declaring_no_parallelism_is_exempt(self) -> None:
         for value in ("none", "None", "serial", "sequential", "off", "disabled"):
-            self.assertEqual(
-                self._run(self._COUNTED, impl={
-                    "target": {"class": "cpu", "backend": "openmp"},
-                    "toolchain": {"language": "fortran"},
-                    "abstract": {"parallelization": value}}),
-                [], f"parallelization={value!r} must exempt the node")
-
-    def test_no_parallelism_read_under_an_alias_too(self) -> None:
-        # The alias is a Compile-side violation, but the node's INTENT is still legible, and this
-        # direction only ever fails open — a serial node must not be trapped by a spelling.
-        self.assertEqual(
-            self._run(self._COUNTED, impl={
-                "target": {"class": "cpu", "backend": "openmp"},
-                "toolchain": {"language": "fortran"},
-                "abstract": {"loop_parallelization": "none"}}), [])
-
-    def test_openmp_parallelization_knob_still_fires(self) -> None:
-        self.assertEqual(len(self._run(self._COUNTED, impl={
-            "target": {"class": "cpu", "backend": "openmp"},
-            "toolchain": {"language": "fortran"},
-            "abstract": {"parallelization": "openmp"}})), 1)
+            self.assertEqual(self._run(self._COUNTED, plan=self._par({"model": value})), [],
+                             f"model={value!r} must exempt the node")
 
     def test_directive_must_start_its_line(self) -> None:
         # A whole-file substring scan let a doc comment mentioning the directive satisfy the floor —
@@ -22739,15 +22287,16 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             ir_dir = repo_root / ir_ref
             ir_dir.mkdir(parents=True)
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
-                "meta": {"spec_kind": "component", "spec_id": "dep_base"},
-                "impl_defaults": {"target": {"class": "cpu", "backend": "openmp"},
-                                  "toolchain": {"language": "fortran"},
-                                  "abstract": {"parallelization": "openmp"}}}), encoding="utf-8")
+                "meta": {"spec_kind": "component", "spec_id": "dep_base"}}), encoding="utf-8")
             install_target_profile(repo_root)
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
+            # The claim is the bundle's plan (issue #284) — and the caller must hand the floor
+            # the source directory it reads the bundle beside.
+            (src_dir.parent / "codegen_bundle.json").write_text(
+                json.dumps({"target_lowering_plan": self._CLAIM}), encoding="utf-8")
             (pipeline_dir / "lineage.json").write_text(
                 json.dumps({"node_key": "component/dep_base@0.1.0", "ir_ref": ir_ref}),
                 encoding="utf-8")
@@ -22791,11 +22340,15 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
     def test_non_fortran_language_passes(self) -> None:
         self.assertEqual(self._run(self._COUNTED, language="c"), [])
 
-    def test_absent_impl_defaults_passes(self) -> None:
-        self.assertEqual(self._run(self._COUNTED, impl=_OMIT), [])
+    def test_a_source_tree_with_no_bundle_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, plan=_OMIT), [])
 
-    def test_non_mapping_impl_defaults_passes(self) -> None:
-        self.assertEqual(self._run(self._COUNTED, impl="openmp"), [])
+    def test_an_unreadable_bundle_passes(self) -> None:
+        # Fail-open: the bundle tamper gate reports an unreadable bundle; the floor states no
+        # obligation it cannot read.
+        from unittest import mock
+        with mock.patch.object(vps, "_read_json", side_effect=json.JSONDecodeError("x", "", 0)):
+            self.assertEqual(self._run(self._COUNTED), [])
 
     def test_problem_node_in_scope(self) -> None:
         v = self._run(self._COUNTED, node_key="problem/dep_base@0.1.0")
@@ -22817,7 +22370,7 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             execution = vps._stub_execution(Path(t), "component/dep_base@0.1.0")
             v: list[str] = []
-            vps._validate_openmp_presence_floor(Path(t), execution, [], v)
+            vps._validate_openmp_presence_floor(Path(t), execution, Path(t) / "src", [], v)
             self.assertEqual(v, [])
 
     def test_one_violation_per_offending_file(self) -> None:
@@ -22835,547 +22388,6 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("dep_base_model.f90", v[0])
 
-
-class ImplDefaultsKnobNameGateTests(unittest.TestCase):
-    """`_validate_impl_defaults_knobs` (compile stage): the parallelization family of the
-    `impl_defaults` knob layer uses its canonical key names. Closed-table check — aliases, pinned-key
-    type violations, and the mapping form of `parallelization` are flagged; absent sections and novel
-    knob names pass, because the knob layer stays open for Tune."""
-
-    def _run(self, impl: object) -> list[str]:
-        with tempfile.TemporaryDirectory() as t:
-            ir_dir = Path(t)
-            ir: dict = {"meta": {"spec_kind": "component", "spec_id": "dep_base"}}
-            if impl is not _OMIT:
-                ir["impl_defaults"] = impl
-            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
-            v: list[str] = []
-            vps._validate_impl_defaults_knobs(ir_dir.parent, ir_dir, v)
-            return v
-
-    @staticmethod
-    def _impl(*, abstract: object = None, overrides: object = None,
-              backend: str = "openmp") -> dict:
-        impl: dict = {"target": {"class": "cpu", "backend": backend},
-                      "toolchain": {"language": "fortran"}}
-        if abstract is not None:
-            impl["abstract"] = abstract
-        if overrides is not None:
-            impl["backend_overrides"] = overrides
-        return impl
-
-    _CANONICAL = {"parallelization": "openmp", "parallel_scope": "the face loop i = 1..nf",
-                  "parallel_granularity": "loop_level"}
-
-    def test_canonical_knobs_pass(self) -> None:
-        self.assertEqual(self._run(self._impl(
-            abstract=self._CANONICAL,
-            overrides={"openmp": {"num_threads": 4, "schedule": "static",
-                                  "chunk_size": 0, "collapse": 1, "nested": False}})), [])
-
-    def test_abstract_alias_flagged_with_rename_remedy(self) -> None:
-        # Every alias here was observed in a real workspace IR.
-        for alias, canonical in (
-            ("loop_parallelization", "parallelization"),
-            ("loop_parallelism", "parallelization"),
-            ("parallelization_model", "parallelization"),
-            ("parallel_loop_scope", "parallel_scope"),
-            ("parallelization_scope", "parallel_scope"),
-            ("parallel_loops", "parallel_scope"),
-            ("parallelization_granularity", "parallel_granularity"),
-        ):
-            v = self._run(self._impl(abstract={alias: "openmp"}))
-            self.assertEqual(len(v), 1, f"{alias}: {v}")
-            self.assertIn(f"impl_defaults.abstract.{alias} is a non-canonical spelling", v[0])
-            self.assertIn(f"rename it to `{canonical}`", v[0])
-
-    def test_openmp_override_alias_flagged_with_rename_remedy(self) -> None:
-        for alias in ("threads", "threads_per_rank"):
-            v = self._run(self._impl(overrides={"openmp": {alias: 4}}))
-            self.assertEqual(len(v), 1, f"{alias}: {v}")
-            self.assertIn(
-                f"impl_defaults.backend_overrides.openmp.{alias} is a non-canonical spelling", v[0])
-            self.assertIn("rename it to `num_threads`", v[0])
-            # The remedy must say WHY, since the alias is otherwise harmless-looking — and since
-            # issue #284 the why is the schema's name, not a thread count the run falls back to
-            # (the run executes with the target profile's threads per rank).
-            self.assertIn("the knob schema names it `num_threads`", v[0])
-            self.assertNotIn("degrades to one thread", v[0])
-
-    def test_alias_beside_canonical_says_delete_not_rename(self) -> None:
-        # Two live IRs carry `parallelization: openmp` AND `loop_parallelization: "<prose>"`.
-        # Obeying a bare "rename it" there produces a duplicate YAML key, so the repair turn fails
-        # again — a remedy must survive being followed.
-        v = self._run(self._impl(abstract={
-            "parallelization": "openmp",
-            "loop_parallelization": "OpenMP applied to parallelizable loops"}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("already present, so DELETE this key", v[0])
-        self.assertNotIn("rename it to", v[0])
-
-    def test_alias_beside_a_case_different_canonical_also_says_delete(self) -> None:
-        # `Threads` beside `NUM_THREADS` is still an alias beside its canonical key. A
-        # case-sensitive presence test told it to "rename to num_threads", which would leave the
-        # section holding the same knob under two spellings.
-        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 4, "Threads": 8}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("already present, so DELETE this key" in x for x in v), v)
-        # ... and the canonical key itself is still reported for its inexact spelling.
-        self.assertTrue(any("spelled inexactly" in x for x in v), v)
-
-    def test_list_valued_alias_remedy_names_the_type_change(self) -> None:
-        # 15 live IRs carry `parallel_loops` as a LIST while `parallel_scope` is pinned to a string,
-        # so a bare rename trades a name violation for a type violation on the next turn.
-        v = self._run(self._impl(abstract={"parallel_loops": ["step_03_forward_euler_update"]}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("rename it to `parallel_scope`", v[0])
-        self.assertIn("must be str", v[0])
-        self.assertIn("convert the value in the same edit", v[0])
-
-    def test_correctly_typed_alias_remedy_stays_short(self) -> None:
-        # The type clause appears only when it is needed; issue #12's lesson is that a remedy
-        # repeated at full length on every line buries the one thing that differs.
-        v = self._run(self._impl(abstract={"parallel_loop_scope": "the face loop"}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("rename it to `parallel_scope`", v[0])
-        self.assertNotIn("convert the value", v[0])
-
-    def test_mapping_form_parallelization_flagged_once_with_decomposition(self) -> None:
-        # The live mapping spellings: {method, apply_to} / {scheme, default_schedule} /
-        # {method, applied_to, granularity}. One defect, one line — an earlier draft also ran the
-        # generic type check on this key and reported it twice.
-        v = self._run(self._impl(abstract={
-            "parallelization": {"method": "openmp", "apply_to": "parallelizable_loops"}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be a flat string, not a mapping", v[0])
-        self.assertIn("`parallel_scope`", v[0])
-
-    def test_wrong_type_num_threads_flagged(self) -> None:
-        # A live profile IR carries `num_threads: "default"`, which the host cannot read as a count.
-        v = self._run(self._impl(overrides={"openmp": {"num_threads": "default"}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be int, got str", v[0])
-
-    def test_abstract_pinned_keys_are_type_checked(self) -> None:
-        # The abstract type-check limb had no test at all: replacing its call with `pass` left the
-        # whole file green. Reachable in reality — a list-valued scope knob is what a `parallel_loops`
-        # rename produces.
-        v = self._run(self._impl(abstract={"parallel_scope": ["step_03"]}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("impl_defaults.abstract.parallel_scope must be str, got list", v[0])
-        v = self._run(self._impl(abstract={"parallel_granularity": 3}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be str, got int", v[0])
-
-    def test_bool_is_not_an_integer_thread_count(self) -> None:
-        # `bool` is an `int` subclass in Python; `num_threads: true` must not slip through.
-        v = self._run(self._impl(overrides={"openmp": {"num_threads": True}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be int, got bool", v[0])
-
-    def test_nested_accepts_a_bool(self) -> None:
-        self.assertEqual(self._run(self._impl(overrides={"openmp": {"nested": False}})), [])
-
-    def test_non_string_keys_do_not_crash(self) -> None:
-        # A YAML mapping may carry a non-string key (`2:`, `true:`, `~:`). `sorted()` over mixed
-        # types raised TypeError, which replaced the whole `FAIL - <violation>` report with a
-        # traceback and DISCARDED every violation already collected in that run — the structured
-        # output the orchestration gate parses.
-        v = self._run(self._impl(
-            abstract={2: "legacy", True: "x", None: "y", "loop_parallelization": "openmp"},
-            overrides={"openmp": {3: "legacy", "threads": 4}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(all("non-canonical spelling" in x for x in v), v)
-
-    def test_key_matching_is_case_insensitive(self) -> None:
-        # `Threads` degrades a run exactly as silently as `threads`; a capital letter must not buy
-        # an exemption from a gate whose whole subject is unreliable spellings.
-        for section, key in (("abstract", "Loop_Parallelization"),
-                             ("overrides", "THREADS"), ("overrides", "Threads")):
-            kwargs = ({"abstract": {key: "openmp"}} if section == "abstract"
-                      else {"overrides": {"openmp": {key: 4}}})
-            v = self._run(self._impl(**kwargs))
-            self.assertEqual(len(v), 1, f"{key}: {v}")
-            self.assertIn("non-canonical spelling", v[0])
-
-    def test_wrong_cased_canonical_key_is_flagged_and_still_type_checked(self) -> None:
-        # Two distinct defects, so two lines: the spelling the renderer cannot read, and the type.
-        # Normalizing for the ALIAS lookup is right (`Threads` must still be caught), but
-        # normalizing the CANONICAL side let a wrong-cased key pass as canonical — which is the
-        # silent one-thread degradation this table exists to prevent, since
-        # `the fortran backend runner's _threads` reads the literal `num_threads`.
-        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": "default"}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("spelled inexactly" in x for x in v), v)
-        self.assertTrue(any("must be int, got str" in x for x in v), v)
-
-    def test_canonical_keys_must_be_spelled_exactly(self) -> None:
-        # Correctly TYPED but inexactly spelled: the type check alone reports nothing, so before
-        # this the gate was silent while the renderer (until issue #284) returned 1.
-        for key in ("NUM_THREADS", "Num_Threads", "num_threads ", " num_threads"):
-            impl = self._impl(overrides={"openmp": {key: 4}})
-            v = self._run(impl)
-            self.assertEqual(len(v), 1, f"{key!r}: {v}")
-            self.assertIn("spelled inexactly", v[0])
-            self.assertIn("`num_threads`", v[0])
-            # The renderer reads no knob since issue #284 (the perf record's thread count is the
-            # target's), so there is no consumer verdict to agree with here any more.
-        # And the exact spelling stays clean.
-        impl = self._impl(overrides={"openmp": {"num_threads": 4}})
-        self.assertEqual(self._run(impl), [])
-
-    def test_abstract_canonical_keys_must_be_spelled_exactly(self) -> None:
-        for key in ("PARALLELIZATION", "Parallel_Scope", "parallel_granularity "):
-            v = self._run(self._impl(abstract={key: "openmp"}))
-            self.assertEqual(len(v), 1, f"{key!r}: {v}")
-            self.assertIn("spelled inexactly", v[0])
-
-    def test_a_novel_knob_name_is_not_a_spelling_violation(self) -> None:
-        # The exact-spelling rule applies ONLY to the pinned family; the knob layer stays open.
-        self.assertEqual(self._run(self._impl(
-            abstract={"Wavefront_Depth": 3, "MEMORY_LAYOUT": "column_major"},
-            overrides={"openmp": {"Proc_Bind": "spread"}})), [])
-
-    def test_backend_key_named_override_section_flagged(self) -> None:
-        # The motivating harm itself: three live IRs request 4 threads under `cpu_openmp` and run on
-        # one, because the renderer reads only the literal `openmp`. Pinning the member names while
-        # leaving the SECTION name free left that wide open.
-        for name in ("cpu_openmp", "cpu_openmp_x86_64", "openmp_cpu", "omp"):
-            v = self._run(self._impl(overrides={name: {"num_threads": 4}}))
-            self.assertEqual(len(v), 1, f"{name}: {v}")
-            self.assertIn("non-canonical section name", v[0])
-            self.assertIn("literal `openmp`", v[0])
-
-    def test_wrong_cased_override_section_flagged_and_still_inspected(self) -> None:
-        v = self._run(self._impl(overrides={"OpenMP": {"threads": 4}}))
-        # Both the section casing AND the member alias inside it are reported — the section is
-        # still descended into, so obeying only the first remedy does not hide the second.
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("must be spelled as the bare literal `openmp`" in x for x in v), v)
-        # The member line names the key AS WRITTEN, so the reported path is one that exists.
-        self.assertTrue(
-            any("backend_overrides.OpenMP.threads is a non-canonical spelling" in x for x in v), v)
-
-    def test_padded_section_key_flagged(self) -> None:
-        # A quoted `" openmp "` looks canonical to a reader and is invisible to the renderer's
-        # literal lookup, so its overrides are dropped — the harm this gate exists to catch.
-        v = self._run(self._impl(overrides={" openmp ": {"num_threads": 4}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be spelled as the bare literal `openmp`", v[0])
-
-    def test_duplicate_openmp_section_says_merge_not_rename(self) -> None:
-        # Renaming into a key that already exists produces a duplicate YAML key, so the remedy is
-        # a merge. Both mis-named shapes take this branch.
-        for name in ("OpenMP", "cpu_openmp"):
-            v = self._run(self._impl(
-                overrides={"openmp": {"num_threads": 4}, name: {"num_threads": 8}}))
-            self.assertEqual(len(v), 1, f"{name}: {v}")
-            self.assertIn("several sections that all mean OpenMP", v[0])
-            self.assertIn("MERGE their entries", v[0])
-
-    def test_two_misnamed_sections_without_a_canonical_one_say_merge(self) -> None:
-        # Both are real `selected.backend_key` spellings. Telling each separately to "key it by the
-        # literal `openmp`" produces a duplicate key, and PyYAML keeps the last — silently dropping
-        # one section's overrides, which is the harm this gate exists to prevent.
-        v = self._run(self._impl(overrides={
-            "cpu_openmp": {"num_threads": 4}, "cpu_openmp_x86_64": {"num_threads": 8}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(all("MERGE their entries" in x for x in v), v)
-        # Each line names the OTHER sections, so a line read alone is still actionable.
-        self.assertTrue(any("'cpu_openmp_x86_64'" in x for x in v), v)
-        self.assertTrue(any("'cpu_openmp'" in x for x in v), v)
-
-    def test_canonical_variant_beside_the_exact_key_says_merge(self) -> None:
-        # "Rename it to `num_threads`" collides into a duplicate YAML key when the exact key is
-        # already there, and `yaml.safe_load` keeps the last — silently discarding a value. The alias
-        # and section paths already say merge for this shape; a canonical VARIANT is the same
-        # collision one spelling further in.
-        for section, keys in (("overrides", {"num_threads": 4, "NUM_THREADS": 8}),
-                              ("abstract", {"parallelization": "openmp",
-                                            "PARALLELIZATION": "openmp"})):
-            impl = (self._impl(overrides={"openmp": keys}) if section == "overrides"
-                    else self._impl(abstract=keys))
-            v = self._run(impl)
-            self.assertTrue(any("is already present, so MERGE" in x for x in v), f"{section}: {v}")
-            self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
-        # Alone, the variant still gets the rename remedy.
-        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("rename it to the bare lowercase `num_threads`", v[0])
-
-    def test_every_parallelization_spelling_is_shape_checked(self) -> None:
-        # Checking only the first key that normalized made the result depend on YAML insertion
-        # order: with a variant listed before the exact key, the exact key's mapping-form defect went
-        # unreported and cost a second `Compile.static` turn to discover.
-        for text, label in (
-            ("    Parallelization: openmp\n    parallelization: {method: openmp}\n",
-             "variant listed first"),
-            ("    parallelization: {method: openmp}\n    Parallelization: openmp\n",
-             "exact listed first"),
-        ):
-            with tempfile.TemporaryDirectory() as tmp:
-                d = Path(tmp)
-                (d / "spec.ir.yaml").write_text(
-                    "meta:\n  spec_kind: component\nimpl_defaults:\n"
-                    "  target: {class: cpu, backend: openmp}\n"
-                    "  toolchain: {language: fortran}\n  abstract:\n" + text,
-                    encoding="utf-8")
-                v: list[str] = []
-                vps._validate_impl_defaults_knobs(d.parent, d, v)
-            self.assertTrue(any("spelled inexactly" in x for x in v), f"{label}: {v}")
-            self.assertTrue(
-                any("must be a flat string, not a mapping" in x for x in v),
-                f"{label}: the mapping-form defect must be reported whatever the key order: {v}")
-
-    def test_two_canonical_variants_without_an_exact_key_say_merge(self) -> None:
-        # Two inexact spellings of one canonical key collide on rename exactly as two aliases do,
-        # and PyYAML keeps only one value.
-        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8, "num_threads ": 4}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(all("MERGE" in x for x in v), v)
-        self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
-        # Each line names the OTHER spelling, so a line read alone is still actionable.
-        self.assertTrue(any("'num_threads '" in x for x in v), v)
-        self.assertTrue(any("'NUM_THREADS'" in x for x in v), v)
-
-    def test_two_member_aliases_of_one_canonical_say_merge(self) -> None:
-        # The member-level twin of the section-level collision: told to rename separately, both
-        # become `num_threads` and `yaml.safe_load` keeps the last silently — the 4-threads-on-1
-        # harm again.
-        v = self._run(self._impl(overrides={"openmp": {"threads": 4, "threads_per_rank": 8}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(all("MERGE them into a single `num_threads`" in x for x in v), v)
-        v = self._run(self._impl(abstract={
-            "loop_parallelization": "openmp", "parallelization_model": "openmp"}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(all("MERGE them into a single `parallelization`" in x for x in v), v)
-
-    def test_sibling_merge_remedy_also_names_the_type_change(self) -> None:
-        # Either remedy ends with the value living under the canonical key, so the type note belongs
-        # to BOTH — the merge branch shipped without it and the merged key then failed the type check
-        # on the next turn, the second-remand class this function exists to avoid.
-        v = self._run(self._impl(overrides={"openmp": {"threads": "4", "threads_per_rank": 8}}))
-        self.assertEqual(len(v), 2, v)
-        offending = [x for x in v if ".threads is a non-canonical" in x]
-        self.assertEqual(len(offending), 1, v)
-        self.assertIn("MERGE them into a single `num_threads`", offending[0])
-        self.assertIn("must be int", offending[0])
-        self.assertIn("convert the value in the same edit", offending[0])
-        # The correctly-typed sibling keeps the short form.
-        other = [x for x in v if ".threads_per_rank is a non-canonical" in x][0]
-        self.assertNotIn("convert the value", other)
-
-    def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
-        # Reporting only the section name would hide the alias inside it until the author fixed the
-        # name and came back for a second remand.
-        v = self._run(self._impl(overrides={"cpu_openmp": {"threads": 4}}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("non-canonical section name" in x for x in v), v)
-        self.assertTrue(
-            any("backend_overrides.cpu_openmp.threads is a non-canonical spelling" in x
-                for x in v), v)
-
-    def test_bool_valued_alias_remedy_names_the_type_change(self) -> None:
-        # `bool` is an `int` subclass, so `threads: true` looked type-valid for the int-pinned
-        # `num_threads` and the remedy shipped without its conversion note — then the renamed key
-        # failed the type check on the next turn. `int(True)` is 1: the silent degradation itself.
-        v = self._run(self._impl(overrides={"openmp": {"threads": True}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("rename it to `num_threads`", v[0])
-        self.assertIn("must be int", v[0])
-        self.assertIn("convert the value in the same edit", v[0])
-
-    def test_alias_beside_canonical_remedy_names_a_usable_destination(self) -> None:
-        # In the openmp section `parallel_scope` does not exist, and when the alias IS the scope
-        # alias the old wording read "move it into `parallel_scope` rather than `parallel_scope`".
-        v = self._run(self._impl(overrides={"openmp": {"num_threads": 4, "threads": 8}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertNotIn("`parallel_scope`", v[0])
-        v = self._run(self._impl(
-            abstract={"parallel_scope": "the face loop", "parallel_loops": ["s1"]}))
-        self.assertEqual(len(v), 1, v)
-        self.assertNotIn("into `parallel_scope`, not into `parallel_scope`", v[0])
-
-    def test_non_mapping_openmp_section_flagged(self) -> None:
-        # A scalar or list carries no override at all. The exact-`openmp` early return meant the
-        # CANONICAL spelling was the one case where that went unreported.
-        for value in (4, "static", ["a"], {"num_threads": 4}.items().__class__.__name__):
-            impl = self._impl(overrides={"openmp": value})
-            v = self._run(impl)
-            self.assertEqual(len(v), 1, f"{value!r}: {v}")
-            self.assertIn("must be a mapping of override names to values", v[0])
-        # A mis-named section with a non-mapping body reports both its name and its shape.
-        v = self._run(self._impl(overrides={"cpu_openmp": 4}))
-        self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("non-canonical section name" in x for x in v), v)
-        self.assertTrue(any("must be a mapping" in x for x in v), v)
-        # A null section is a V7 plug-hole, not a name/shape defect — same rule as a null member.
-        self.assertEqual(self._run(self._impl(overrides={"openmp": None})), [])
-
-    def test_inexact_canonical_key_is_also_shape_checked(self) -> None:
-        # Reporting only the spelling meant a mapping form, prose, or wrong type under that key
-        # survived until the producer had done the rename — a second remand for one defect.
-        for abstract, expected in (
-            ({"Parallelization": {"method": "openmp"}}, "must be a flat string, not a mapping"),
-            ({"parallelization ": "OpenMP applied to loops"}, "execution-model TOKEN"),
-            ({"PARALLELIZATION": 4}, "must be a string, got int"),
-        ):
-            v = self._run(self._impl(abstract=abstract))
-            self.assertEqual(len(v), 2, f"{abstract}: {v}")
-            self.assertTrue(any("spelled inexactly" in x for x in v), v)
-            self.assertTrue(any(expected in x for x in v), v)
-            # The shape line names the key AS WRITTEN, so the reported path exists.
-            written = list(abstract)[0]
-            self.assertTrue(
-                any(f"impl_defaults.abstract.{written}" in x for x in v if expected in x), v)
-
-    def test_other_backend_sections_are_untouched(self) -> None:
-        self.assertEqual(self._run(self._impl(
-            overrides={"cuda": {"block": 256}, "mpi": {"ranks": 4}})), [])
-
-    def test_prose_parallelization_value_flagged(self) -> None:
-        # The live shape: a scope description filed under the model key.
-        v = self._run(self._impl(
-            abstract={"parallelization": "OpenMP applied to parallelizable loops"}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("execution-model TOKEN", v[0])
-        self.assertIn("`parallel_scope`", v[0])
-
-    def test_novel_parallel_model_tokens_pass(self) -> None:
-        # NOT a vocabulary whitelist. An earlier draft required `openmp`/`none` and rejected these,
-        # which is a value constraint on the one knob whose purpose is exploration — the schema's
-        # own `additionalProperties: true` says otherwise, and the gate-scope doctrine ranks a false
-        # positive above a fail-open.
-        for value in ("openmp", "none", "openmp+simd", "openmp_tasks", "cuda_streams", "OpenMP"):
-            self.assertEqual(
-                self._run(self._impl(abstract={"parallelization": value})), [],
-                f"{value!r} is a single model token and must pass")
-
-    def test_value_check_is_backend_agnostic(self) -> None:
-        # The structural rule (a token, not prose) holds on every backend.
-        self.assertEqual(self._run(self._impl(
-            abstract={"parallelization": "cuda_streams"}, backend="cuda")), [])
-        self.assertEqual(len(self._run(self._impl(
-            abstract={"parallelization": "CUDA streams over the flux loops"}, backend="cuda"))), 1)
-
-    def test_non_string_non_mapping_parallelization_flagged(self) -> None:
-        v = self._run(self._impl(abstract={"parallelization": 4}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be a string, got int", v[0])
-
-    def test_null_knob_left_to_verify_v7(self) -> None:
-        # A `null` plug-hole is Compile.verify V7's finding; reporting it here would double up.
-        self.assertEqual(self._run(self._impl(
-            abstract={"parallel_scope": None},
-            overrides={"openmp": {"num_threads": None}})), [])
-
-    def test_novel_knob_name_passes(self) -> None:
-        # Tune's exploration space stays open — only the pinned family is constrained.
-        self.assertEqual(self._run(self._impl(
-            abstract={"memory_layout": "column_major", "wavefront_depth": 3},
-            overrides={"openmp": {"proc_bind": "spread"}, "cuda": {"block": 256}})), [])
-
-    def test_absent_sections_pass(self) -> None:
-        self.assertEqual(self._run(self._impl()), [])
-        self.assertEqual(self._run(_OMIT), [])
-        self.assertEqual(self._run("openmp"), [])
-        self.assertEqual(self._run(self._impl(abstract="openmp", overrides="openmp")), [])
-
-    def test_missing_ir_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as t:
-            v: list[str] = []
-            vps._validate_impl_defaults_knobs(Path(t), Path(t), v)
-            self.assertEqual(v, [])
-
-    def test_reaches_the_compile_stage_checker_list(self) -> None:
-        # Wiring pin: the checker must be reached through `validate_compile_stage`, not only by
-        # direct call — a gate nothing invokes is the dormant-gate failure this repo has hit before.
-        source = Path(vps.__file__).read_text(encoding="utf-8")
-        impl = source.index("def _validate_compile_stage_impl")
-        tail = source.index("\ndef ", impl + 1)
-        self.assertIn("_validate_impl_defaults_knobs(repo_root, ir_dir, violations)",
-                      source[impl:tail])
-
-    def test_schema_agrees_with_the_validator_constants(self) -> None:
-        """Declarative-copy mode (SCHEMA.md): the schema and the validator constants hold the same
-        facts, so the grammar changes only by editing both."""
-        repo_root = Path(vps.__file__).resolve().parent.parent
-        schema = json.loads(
-            (repo_root / "spec/schema/ir/impl_defaults.schema.json").read_text(encoding="utf-8"))
-        abstract = schema["properties"]["abstract"]["properties"]
-        openmp = (schema["properties"]["backend_overrides"]["properties"]["openmp"]["properties"])
-        # Canonical names: the schema declares exactly the keys the validator pins or names as a
-        # rename target.
-        self.assertEqual(
-            set(abstract),
-            set(vps._IMPL_ABSTRACT_KNOB_TYPES) | set(vps._IMPL_ABSTRACT_KNOB_ALIASES.values()))
-        self.assertEqual(
-            set(openmp),
-            set(vps._IMPL_OPENMP_OVERRIDE_TYPES) | set(vps._IMPL_OPENMP_OVERRIDE_ALIASES.values()))
-        # No alias may also be a declared canonical key — that would make the rename a no-op.
-        self.assertEqual(set(abstract) & set(vps._IMPL_ABSTRACT_KNOB_ALIASES), set())
-        self.assertEqual(set(openmp) & set(vps._IMPL_OPENMP_OVERRIDE_ALIASES), set())
-        # The knob layer stays open on both sides.
-        self.assertTrue(schema["properties"]["abstract"]["additionalProperties"])
-        self.assertTrue(schema["properties"]["backend_overrides"]["additionalProperties"])
-        # Types agree with the pinned table.
-        json_type = {"string": str, "integer": int, "boolean": bool}
-        for key, expected in vps._IMPL_OPENMP_OVERRIDE_TYPES.items():
-            self.assertEqual((json_type[openmp[key]["type"]],), expected, key)
-        for key, expected in vps._IMPL_ABSTRACT_KNOB_TYPES.items():
-            self.assertEqual((json_type[abstract[key]["type"]],), expected, key)
-        # Every alias the validator knows is documented as a forbidden example, so the schema
-        # teaches the same closed table the gate enforces. Matched as `<name>:` and anchored to its
-        # section: a bare `assertIn("threads", ...)` was satisfied by the `threads_per_rank` line,
-        # so deleting the `threads` example left this pin green.
-        forbidden = schema["x-forbidden-examples"]
-        for alias in vps._IMPL_ABSTRACT_KNOB_ALIASES:
-            self.assertTrue(
-                any(x.startswith(f"abstract.{alias}:") for x in forbidden),
-                f"abstract.{alias} is enforced but undocumented")
-        for alias in vps._IMPL_OPENMP_OVERRIDE_ALIASES:
-            self.assertTrue(
-                any(x.startswith(f"backend_overrides.openmp.{alias}:") for x in forbidden),
-                f"backend_overrides.openmp.{alias} is enforced but undocumented")
-        for section in vps._IMPL_OPENMP_SECTION_ALIASES:
-            self.assertTrue(
-                any(x.startswith(f"backend_overrides.{section}:") for x in forbidden),
-                f"backend_overrides.{section} is enforced but undocumented")
-        # No alias may collide with a canonical name in the other direction either.
-        self.assertEqual(
-            vps._IMPL_OPENMP_SECTION_ALIASES & {"openmp"}, set(),
-            "`openmp` cannot be its own alias")
-        self.assertEqual(
-            schema["x-canonical-validator"],
-            "tools/validate_pipeline_semantics.py:_validate_impl_defaults_knobs")
-
-    def test_canonical_knob_names_are_stated_in_the_authoring_doc(self) -> None:
-        """A tightened gate with a silent SKILL burns retries — R6-lite freshness re-runs Compile on
-        a dependency bump, so the IR author must be able to look the pinned spellings up. Both files
-        are size-ceilinged, and a ceiling is a MAXIMUM, so deleting these sentences stays green
-        without an anchor."""
-        repo_root = Path(vps.__file__).resolve().parent.parent
-        # `skills/workflow-compile-generate/SKILL.md` was the second site until Z4 (issue #171).
-        # The IR author is now a pure leaf, which reads no `SKILL` and is handed phase_01 whole,
-        # so the one document below is the one it can look the spellings up in — and "both
-        # authoring docs" is now one. The alias-to-canonical map itself is in the schema, which
-        # `x-canonical-validator` above ties to the gate.
-        for rel, needles in (
-            ("docs/workflow/phases/phase_01_compile.md",
-             ("CANONICAL key names", "spec/schema/ir/impl_defaults.schema.json",
-              # The `Compile.static` gate-list bullet, anchored on text unique to it: the bare
-              # checker name occurs twice in this file, so the boundary paragraph alone satisfied
-              # it and deleting the gate bullet stayed green.
-              "**impl_defaults knob names** (`_validate_impl_defaults_knobs`)",
-              # The IR skeleton. Reverting it to `abstract: {...}` also stayed green, yet spelling
-              # the canonical keys there is the stated justification for this file's ceiling bump —
-              # a leaf reading a `{...}` placeholder learns nothing about names it is gated on.
-              "parallel_scope: \"<which loops it covers>\"",
-              "num_threads: <int>")),
-        ):
-            text = (repo_root / rel).read_text(encoding="utf-8")
-            for needle in needles:
-                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
 
 
 def _doc_prose(rel: str, text: str) -> str:
@@ -24320,18 +23332,17 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
     Compile-authored render precondition of an M3c physics node's host-rendered runner, so a
     defect routes to compile.generate instead of render_runner's workflow-killing fail-close.
     The renderer-side unit `IrContentViolationsTest` pins the content surface exhaustively;
-    these pin the M3c gating (no-op off M3c) and the compile-path wiring."""
+    these pin the M3c gating (no-op off M3c) and the compile-path wiring.
 
-    def _baseline_ir(self, *, spec_kind="component", language="fortran",
-                     build_system="make", infra: bool = True) -> dict:
-        deps: list = ([{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
-                      if infra else [])
+    Since issue #284 (R4-a PR-3) the IR is target-free, so the gate asks once per DECLARED target
+    profile whose toolchain renders a runner, with that target's language and harness
+    (`_compile_render_targets`). `_run` declares the checked-in profile and registers its harness
+    in the scratch catalog; `targets=` overrides the declared set."""
+
+    def _baseline_ir(self, *, spec_kind="component") -> dict:
         return {
             "meta": {"spec_kind": spec_kind, "spec_id": "bx"},
-            "impl_defaults": {"toolchain": {"language": language,
-                                            "build_system": build_system},
-                              "target": {"class": "cpu"}},
-            "dependency": {"direct_deps": deps},
+            "dependency": {"direct_deps": []},
             "case": {"test_case_set": [{"case_id": "c_a"}]},
             "io_contract": {
                 "raw_requirements": {"required_evidence": [
@@ -24348,15 +23359,29 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
             },
         }
 
-    def _run(self, ir: dict) -> list[str]:
+    def _run(self, ir: dict, *, targets: list | None = None,
+             register_harness: bool = True) -> list[str]:
+        from tools.tests.orchestration_fixtures import ensure_spec_entry
+        from tools.tests.target_fixtures import FORTRAN_CPU
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
+            for profile in (targets if targets is not None else [FORTRAN_CPU]):
+                install_target_profile(tmp, profile)
+            if register_harness:
+                ensure_spec_entry(
+                    tmp, f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0")
             ir_dir = tmp / "ir"
             ir_dir.mkdir()
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
             violations: list[str] = []
             vps._validate_harness_render_preconditions(tmp, ir_dir, violations)
             return violations
+
+    def _bad(self) -> dict:
+        ir = self._baseline_ir()
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "time_variable"] = "time"
+        return ir
 
     def test_clean_baseline_passes(self) -> None:
         self.assertEqual(self._run(self._baseline_ir()), [])
@@ -24433,24 +23458,71 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         v = self._run(ir)
         self.assertTrue(v and all("spec.ir.yaml:" in x for x in v), v)
 
-    def test_non_m3c_node_is_noop(self) -> None:
-        # No harness dep -> legacy leaf-authored runner; the gate never inspects content.
-        ir = self._baseline_ir(infra=False)
-        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
-            "time_variable"] = "time"
-        self.assertEqual(self._run(ir), [])
+    def test_a_non_physics_kind_is_noop(self) -> None:
+        # A kind the IR does not state as a physics kind (`M3C_SPEC_KINDS`): no host-rendered
+        # runner, so the gate never inspects content.
+        for kind in ("profile", ""):
+            self.assertEqual(self._run({**self._bad(), "meta": {"spec_kind": kind}}), [], kind)
 
     def test_infra_node_is_noop(self) -> None:
-        ir = self._baseline_ir(spec_kind="infrastructure")
-        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
-            "time_variable"] = "time"
+        ir = self._bad()
+        ir["meta"]["spec_kind"] = "infrastructure"
         self.assertEqual(self._run(ir), [])
 
-    def test_non_make_node_is_noop(self) -> None:
-        ir = self._baseline_ir(build_system="cmake")
-        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
-            "time_variable"] = "time"
-        self.assertEqual(self._run(ir), [])
+    def test_a_target_the_host_renders_no_runner_for_is_not_asked(self) -> None:
+        # A declared target whose build system has no control-file writer: no runner is
+        # rendered for it, so it asks nothing — and with no other target, the gate is a no-op.
+        from tools.tests.target_fixtures import profile_with
+        self.assertEqual(self._run(self._bad(), targets=[
+            profile_with(toolchain={"build_system": "cmake"})]), [])
+
+    def test_no_declared_target_or_an_unresolvable_harness_asks_nothing(self) -> None:
+        # Skipped rather than reported: the launch gate refuses a run for such a target, so no
+        # Generate can reach its render, and a repository defect is not an IR defect.
+        self.assertEqual(self._run(self._bad(), targets=[]), [])
+        self.assertEqual(self._run(self._bad(), register_harness=False), [])
+
+    def test_the_IR_toolchain_and_dependencies_are_not_read(self) -> None:
+        # Target-free (issue #284): a stale `impl_defaults` naming another toolchain, or a
+        # stale harness dependency, moves nothing.
+        ir = self._bad()
+        ir["impl_defaults"] = {"toolchain": {"language": "c", "build_system": "cmake"}}
+        ir["dependency"]["direct_deps"] = [{"node_key": "infrastructure/h@0.1.0"}]
+        self.assertTrue(any("time_variable is 'time'" in x for x in self._run(ir)))
+
+    def test_a_violation_found_for_one_target_only_names_it(self) -> None:
+        # Two declared targets differing only in the harness a runner is rendered over: a
+        # finding both report is stated once, unscoped; the gate reports a per-target one
+        # with the target named. Driven with a render seam that answers per harness.
+        from unittest import mock
+
+        from tools.tests.target_fixtures import FORTRAN_CPU, second_target
+        other = second_target(FORTRAN_CPU, "fortran_cpu_other")
+
+        def fake(language, ir, spec_id, harness_sid):
+            return ["shared finding", f"only for {harness_sid}"] \
+                if harness_sid == "harness_only_here" else ["shared finding"]
+
+        from tools.tests.orchestration_fixtures import ensure_spec_entry
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            install_target_profile(tmp, FORTRAN_CPU)
+            from tools.tests.target_fixtures import profile_with
+            special = profile_with(other, harness={"infrastructure_id": "harness_only_here"})
+            install_target_profile(tmp, special)
+            ensure_spec_entry(
+                tmp, f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0")
+            ensure_spec_entry(tmp, "infrastructure/harness_only_here@0.7.0")
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(self._baseline_ir()))
+            v: list[str] = []
+            with mock.patch.object(vps.host_render, "ir_content_violations", side_effect=fake):
+                vps._validate_harness_render_preconditions(tmp, ir_dir, v)
+        self.assertEqual(sorted(x.split(": ", 1)[1] for x in v), sorted([
+            "shared finding",
+            f"only for harness_only_here [target {special.target_id}]"]))
+
 
 
 # The shape every certified spec.ir.yaml actually has, measured over the 116 IRs under
@@ -24462,11 +23534,13 @@ _REAL_IR_TOP_LEVEL_KEYS = frozenset(
         "meta",
         "case",
         "algorithm",
-        "impl_defaults",
         "io_contract",
         "dependency",
-    }  # + `public_api`, on infrastructure nodes only
+    }  # + `public_api`, on infrastructure and component nodes
 )
+# (The 2026-07-14 measurement carried `impl_defaults` too; R4-a PR-3, issue #284, removed that
+# section from the IR contract and `Conductor._pure_ir_document_violations` refuses it, so no IR
+# certified since carries it. Re-measure against the corpus once it has been re-derived.)
 _REAL_IR_STATE_CONTRACT_FIELDS = frozenset(
     {"state_variables", "required_update_paths", "diagnostics_from_state", "fallback_policy"}
 )

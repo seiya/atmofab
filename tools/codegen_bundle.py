@@ -442,9 +442,10 @@ def harness_capability_manifest_document() -> dict[str, Any]:
 def harness_capability_manifest_document_for(node_key: str | None) -> dict[str, Any]:
     """The manifest document narrowed to ONE harness's entry — the projection a pure leaf sees.
 
-    A pure producer negotiates against exactly one harness: its node's single `infrastructure`
-    direct dependency (`Conductor._pure_harness_node_key`, which `_pure_bundle_violations` also
-    resolves the acceptance layer from). Handing it the FULL table instead would show it
+    A pure producer negotiates against exactly one harness: the one its run's target names, or
+    the node itself on a harness (`orchestration_runtime.harness_node_key_for`, issue #284 —
+    through `Conductor._pure_harness_node_key`, which `_pure_bundle_violations` also resolves the
+    acceptance layer from). Handing it the FULL table instead would show it
     capabilities that another harness provides and its own does not, licensing a
     `capability_requirements` token the acceptance layer then rejects as
     `bundle_capability_unsatisfied` — a repair-budget burn on a bundle the leaf had no way to know

@@ -219,6 +219,40 @@ def spec_id_of(node_key: str) -> str:
     return node_key.split("/", 1)[1].split("@", 1)[0]
 
 
+#: The harness version `ensure_target_harness_certified` registers when the fixture catalog
+#: carries none the target's constraint matches (the checked-in catalog's current one).
+FIXTURE_HARNESS_VERSION = "0.7.0"
+
+
+def ensure_target_harness_certified(repo_root: Path, orchestration_id: str,
+                                    target: Any = None) -> str:
+    """Make the harness `target` names resolvable and certified through Validate in the
+    fixture repository, and return its node_key (issue #284, R4-a PR-3: the harness is the
+    target's, and every pipeline closure of a non-infrastructure node binds it).
+
+    The catalog entry is added at `FIXTURE_HARNESS_VERSION` only when the catalog resolves no
+    version the target's constraint matches — a test that registered its own harness keeps it.
+    An already-certified harness is left as it is, so calling this per consumer is idempotent."""
+    from tools.orchestration_runtime import DerivationResolver
+    from tools.target_profile import TargetProfileError, harness_node_key_for_target
+    from tools.tests.target_fixtures import fixture_target
+
+    target = fixture_target(repo_root, target)
+    try:
+        harness_nk = harness_node_key_for_target(repo_root, target)
+    except TargetProfileError:
+        harness_nk = (f"infrastructure/{target.harness['infrastructure_id']}"
+                      f"@{FIXTURE_HARNESS_VERSION}")
+        ensure_spec_entry(repo_root, harness_nk)
+        harness_nk = harness_node_key_for_target(repo_root, target)
+    if not DerivationResolver(repo_root, target=target).select(harness_nk, "validate").ok:
+        slug = spec_id_of(harness_nk).replace("_", "-")
+        certify_node(repo_root, orchestration_id, harness_nk, through="validate",
+                     ir_id=f"{slug}_20260101_001", pipeline_id=f"{slug}_20260101_001",
+                     reserve=False, target=target)
+    return harness_nk
+
+
 def certify_node(
     repo_root: Path,
     orchestration_id: str,
@@ -260,6 +294,12 @@ def certify_node(
         ensure_spec_entry(repo_root, node_key)
     install_target_profile(repo_root, target)
     record_orchestration_target(repo_root, orchestration_id, target)
+    if stamp and idx >= 1 and node_key.split("/", 1)[0] != "infrastructure":
+        # Since R4-a PR-3 (issue #284) the target's harness is a member of every pipeline
+        # closure of a non-infrastructure node: the generate and build keys bind its certified
+        # outputs, and readiness asks for it like any direct dependency. So a certified
+        # consumer stands on a certified harness, as it does in a real closure.
+        ensure_target_harness_certified(repo_root, orchestration_id, target)
 
     def _stamp(step: str, meta_ref: str, **refs: str | None) -> None:
         if stamp:

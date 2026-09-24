@@ -1,8 +1,8 @@
 # Checks-module contract (`<spec_id>_checks.f90`, fixed ABI)
 
 > **Audience: the `Generate.generate` / `Generate.verify` leaves of an *M3c
-> physics node* — a `build_system=make`, `language=fortran` node with exactly
-> one `infrastructure` (runner-harness) dependency.** On such a node the leaf
+> physics node* — a non-`infrastructure` node of a `build_system=make`,
+> `language=fortran` target, run over that target's harness.** On such a node the leaf
 > authors **two** Fortran sources: `<spec_id>_model.f90` (the physics kernel +
 > the published `__apply` operation) and `<spec_id>_checks.f90` (this contract).
 > It does **not** author `<spec_id>_runner.f90` or `src/Makefile` — those are

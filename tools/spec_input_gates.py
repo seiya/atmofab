@@ -47,6 +47,14 @@ MAX_SPEC_ID_LEN = 55
 CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 
 
+#: The spec kinds whose runner the host renders over their target's harness (the "M3c" node:
+#: the leaf authors model + checks). An `infrastructure` node authors its own self-test runner,
+#: and a `profile` is not a node at all (issue #175). The conductor's `_conductor_authors_runner`
+#: and the validator's `_m3c_language` read this one tuple (issue #284: the harness is the
+#: target's, so the kind — not a dependency count — is what decides).
+M3C_SPEC_KINDS: tuple[str, ...] = ("component", "problem")
+
+
 def spec_id_length_violation(spec_id: Any) -> str | None:
     """Spec-input bound on spec_id length — the M3d mass-opt-in prerequisite gate.
 
@@ -69,63 +77,28 @@ def spec_id_length_violation(spec_id: Any) -> str | None:
     return None
 
 
-def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | None:
-    """Spec-input bound on the number of ``infrastructure`` direct dependencies.
+def infra_dep_declared_violation(infra_dep_count: int) -> str | None:
+    """Spec-input bound: a ``deps.yaml`` declares NO ``infrastructure`` dependency, whatever the
+    spec's kind (issue #284, R4-a).
 
-    Returns an actionable violation message unless the node declares EXACTLY ONE
-    ``infrastructure`` (runner-harness) direct dependency, is itself an ``infrastructure``
-    spec (the harness authors its own self-test runner, so it declares none), or is a
-    ``profile`` — a compile-time component-selection policy the host resolves, which generates
-    no code and therefore has no runner to build against, so it must declare NONE (issue #175;
-    ``docs/SPEC.md`` req. 9). Sibling of
-    ``spec_id_length_violation``: both are node-IDENTITY preconditions a Compile re-author
-    cannot repair, so both are captured at spec-input rather than hoisted into the compile.static
-    gate (routing an unrepairable defect to a warm-resume retry would only spin).
+    The runner harness is an attribute of the TARGET a node is built for, not of the spec: the
+    target profile names it (``spec/targets/<target_id>.yaml`` ``harness``), and the host adds it
+    to every non-``infrastructure`` node's closure for that target
+    (``target_profile.target_harness_entries``). A harness declared in ``deps.yaml`` would
+    pin one target's harness into a spec that is meant to be built for any target, and would put
+    it into the target-free Compile closure — so a declaration is refused rather than read.
 
-    Before this gate, a physics node with zero or >1 infrastructure deps silently degraded to the
-    leaf-authored-runner path: ``_conductor_authors_runner`` requires exactly one, so the runner
-    was simply never host-rendered and the failure was a quiet loss of the harness path rather
-    than an error. That non-M3c physical path has been removed — the only live leaf-authored
-    runner is an ``infrastructure`` node's own self-test — so the degradation is now a hard
-    rejection."""
-    # `.strip()` and NOTHING else — the exemption must be spelled exactly as every
-    # downstream reader spells it. `_conductor_authors_runner`, `_pure_leaf_substep` and
-    # `_validate_toolchain_backend_supported` all compare `str(...).strip() ==
-    # "infrastructure"` with no case folding, so a `spec_kind: Infrastructure` that this
-    # gate lower-cased into an exemption would be treated as a PHYSICS node by all three —
-    # exempted here and then silently landed on the removed leaf-authored-runner path, with
-    # no gate firing anywhere. Being case-sensitive here makes that shape a spec-input
-    # rejection instead, which is the direction that fails closed.
-    kind = spec_kind.strip() if isinstance(spec_kind, str) else ""
-    if kind == "infrastructure":
+    Until R4-a PR-3 this was the opposite rule — exactly one ``infrastructure`` entry on every
+    spec that builds, none on an ``infrastructure`` or ``profile`` spec — which is the decision
+    this reverses (``docs/SPEC.md`` req. 9). Being kind-agnostic, it needs no ``spec_kind``: the
+    exemption the old rule read off the catalog has no subject any more. Like the ``spec_id``
+    bound it is a node-IDENTITY defect a Compile re-author cannot repair, so it is captured at
+    spec-input, before any phase runs."""
+    if infra_dep_count == 0:
         return None
-    if kind == "profile":
-        # A profile selects components; it is never built, so there is no runner harness for it
-        # to declare. Unlike the `infrastructure` exemption above this is a BOUND, not an
-        # exemption: a profile declaring a harness dependency would put an `infrastructure`
-        # node into the closure of every node that adopts the profile, through an edge the
-        # adopting node never declared.
-        if infra_dep_count == 0:
-            return None
-        return (
-            f"a `profile` spec must declare no `infrastructure` (runner-harness) dependency "
-            f"in deps.yaml; found {infra_dep_count}. A profile is a compile-time "
-            f"component-selection policy the host resolves at Compile, not a certified code "
-            f"node (issue #175), so it builds nothing and has no harness to build against. "
-            f"Remove the `infrastructure` entry; the node that ADOPTS this profile declares "
-            f"the harness it builds against."
-        )
-    if infra_dep_count == 1:
-        return None
-    remedy = (
-        "Add the single `infrastructure_id` entry" if infra_dep_count < 1
-        else f"Remove {infra_dep_count - 1} of them, keeping the one harness this node "
-             "builds against")
     return (
-        f"a non-infrastructure spec must declare exactly one `infrastructure` "
-        f"(runner-harness) dependency in deps.yaml; found {infra_dep_count}. The runner "
-        f"glue is host-rendered against exactly that harness, and the former "
-        f"leaf-authored-runner path for a node without it has been removed "
-        f"(docs/workflow/phases/phase_01_compile.md). {remedy} "
-        f"(see spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml)."
+        f"infrastructure_dependency_declared_in_deps: deps.yaml declares {infra_dep_count} "
+        f"`infrastructure` (runner-harness) dependenc{'y' if infra_dep_count == 1 else 'ies'}; "
+        f"a harness is a target attribute (spec/targets/<target_id>.yaml `harness`), never a "
+        f"spec dependency (issue #284). Remove the `infrastructure:` section."
     )

@@ -12,9 +12,10 @@ the canonical statement of that set for a reader; the machine-readable definitio
 - **Not a leaf-facing checklist, and that is a decision rather than an omission.** The
   `fortitude` backend has one (`docs/workflow/phases/phase_02_generate.md` §2-1) because a leaf
   that trips a rule burns a regenerate cycle. No leaf can trip these rules today: no `spec` node
-  selects `python`, because `_validate_toolchain_backend_supported` refuses any non-`fortran`
-  `language` on every non-`infrastructure` node, and an `infrastructure` node still requires an
-  extracted backend for its language. The checklist is owed the day that changes, and
+  is built for a `python` target, because the launch gate
+  (`target_profile.target_profile_violations`) refuses a target profile whose `toolchain.language`
+  is not an implemented `language` value, for every node kind (`_validate_toolchain_backend_supported`
+  refused it at `Compile.static` until R4-a PR-3, issue #284). The checklist is owed the day that changes, and
   `tools/tests/test_linter_ruff.py` fails when it does — the obligation is tied to the
   reachability gate, not left to memory.
 - Not the gate's behaviour on a finding: `docs/workflow/WORKFLOW_CORE.md` is canonical for the

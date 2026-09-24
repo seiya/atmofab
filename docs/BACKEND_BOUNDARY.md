@@ -83,8 +83,9 @@ Out of scope, each for a stated reason:
   through the one backend that exists. The refusal names the axis, the value, the implemented set,
   and the registry; `registry.unsupported_reason` / `registry.unavailable_reason` produce that
   clause, and a gate that refuses on this ground carries it verbatim rather than spelling its own.
-  An **absent** value is a separate case: it takes the default `docs/IMPL_PLAN_SPEC.md` documents,
-  which this rule does not change.
+  An **absent** value is a separate case: only an optional field can be absent (a target
+  profile's `toolchain.compiler` / `toolchain.linker` pin), and it takes the default
+  `docs/IMPL_PLAN_SPEC.md` §3 documents, which this rule does not change.
 - **There are four questions about an axis value, and a caller must ask the one it means.** They
   are separate functions in `tools/backends/registry.py` because they were once fewer, and each
   merge was a fail-open.
@@ -115,7 +116,8 @@ Out of scope, each for a stated reason:
   `provides` is the union, so the authorship answer — which is not a question about where the
   code sits — does not move with it, and no node changes hands on the migration commit.
 - An axis whose carrying artifact deliberately does not constrain its value is declared
-  `open_vocabulary` (today: `parallel`, whose knob schema states it is not a whitelist). For such
+  `open_vocabulary` (today: `parallel`, whose carrier on the bundle side,
+  `target_lowering_plan.parallelization`, is an open-valued object). For such
   an axis the registry lists the members that have code; membership answers permissively and
   usability still refuses.
 - A backend that is declared but whose knowledge has not been extracted yet is recorded with
@@ -133,6 +135,12 @@ Out of scope, each for a stated reason:
 A neutral document states the contract in neutral terms and references the backend document for
 the binding. A neutral document must not state the binding itself.
 
+A target profile (`spec/targets/<target_id>.yaml`, issue #284) is neutral DATA, not a backend
+location: it names one value per axis as an opaque token, and the host asks the registry about
+each token (`tools/target_profile.py:target_profile_violations`). Where each axis value is read
+from is `registry.AXES[<axis>].source`; for `parallel` it is the profile's `parallel.backend`
+together with the bundle's `target_lowering_plan.parallelization`.
+
 ## Operations Rules
 - **Adding a backend** requires, in this order: create `tools/backends/<axis>/<backend_id>/`; add
   the `Backend` record to `_BACKENDS` in `tools/backends/registry.py`; place the backend's
@@ -142,7 +150,9 @@ the binding. A neutral document must not state the binding itself.
   makes the registry accept the value as a member. It admits nothing further on its own, by
   design: a run reaches the value only where the registry can say the code exists. Measured over
   the gates:
-  - `_validate_toolchain_backend_supported` and the `make`-quality-check gates in
+  - The launch gate `tools/target_profile.py:target_profile_violations` (its toolchain half is
+    `toolchain_servable_reasons`; until R4-a PR-3, issue #284, the question was asked of the
+    IR at `Compile.static`), the `make`-quality-check gates in
     `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
     need and carry the registry's clause. They widen when the CAPABILITY is declared, which
@@ -155,9 +165,10 @@ the binding. A neutral document must not state the binding itself.
     backend through the registry. The bundle SCHEMA (`spec/schema/generate/`) still carries its
     own `language` enum and pattern, and `tools/tests/test_codegen_bundle.py` fails if the two
     disagree — so a new language backend must widen the schema in the same change.
-  - The two infrastructure signature gates take their refusal clause from the registry, but their
-    §5.1 helpers import one concrete backend by name and take no `language` argument, so they
-    additionally refuse any language those helpers are not wired to
+  - The signature gate (`_validate_generated_signatures`, `Generate.static`, asked of the
+    pipeline's target language) takes its refusal clause from the registry, but its
+    §5.1 helpers import one concrete backend by name and take no `language` argument, so it
+    additionally refuses any language those helpers are not wired to
     (`_signature_backend_refusal`). This is the one gate family the procedure above is still not
     sufficient for; it migrates with the `validate_pipeline_semantics.py` source-reading area.
   - `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES` remains a neutral-core policy set over language

@@ -147,12 +147,12 @@ What this module deliberately does NOT do: decide the verdict, read findings, or
 gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and
 `tools/workflow_conductor.py`'s `_gate_lint_check` reads the result.
 
-REACHABILITY, stated so the closures are not oversold. No `spec` node selects `python` today —
-`_validate_toolchain_backend_supported` refuses any non-`fortran` language on every
-non-`infrastructure` node — so this preset is reached only by `run_linter` in standalone mode.
-The channels above are closed while that is true, which is the point: the day a `python`
-`infrastructure` backend is registered, the registration is the change a reviewer looks at, not
-this file.
+REACHABILITY, stated so the closures are not oversold. No run builds for a `python` target today
+— the launch gate (`target_profile.toolchain_servable_reasons`) refuses a target profile whose
+language is not an implemented `language` value, for every node kind (the toolchain is the
+target's since issue #284) — so this preset is reached only by `run_linter` in standalone mode.
+The channels above are closed while that is true, which is the point: the day a `python` backend
+is registered, the registration is the change a reviewer looks at, not this file.
 """
 
 from __future__ import annotations
