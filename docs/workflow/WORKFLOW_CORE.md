@@ -236,7 +236,7 @@ workspace/
 
 #### Dependency workflow coverage check
 - The `all_nodes` set of the `dependency_graph.json` sidecar and the `node_key_safe` set of `workspace/ir/*/<ir_id>/` must match one-to-one.
-- The `all_nodes` set of the `dependency_graph.json` sidecar and the `node_key` set of `workspace/pipelines/*/<pipeline_id>/lineage.json` must match one-to-one.
+- The `all_nodes` set of the `dependency_graph.json` sidecar and the `node_key` set of `workspace/pipelines/*/<target_id>/<pipeline_id>/lineage.json` must match one-to-one.
 - When the code hash of `source/<source_id>/src/` generated under different `node_key` matches, except for a file explicitly stated as a common library, it must be marked `copy_based_artifact_reuse` and `invalid`.
 - Before the completion declaration of a workflow execution, the `workspace/ir` / `workspace/pipelines` artifacts of the target dependency `DAG` must not be deleted.
 

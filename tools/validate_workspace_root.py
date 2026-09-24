@@ -979,9 +979,10 @@ def _scan_workspace_layout(workspace_root: Path) -> list[str]:
                     continue
                 # A pipeline lives one level deeper, under the target it is built for:
                 # `pipelines/<node_key_safe>/<target_id>/<pipeline_id>` (issue #284). A store id
-                # directly under `<node_key_safe>/` is a pre-R4-a pipeline, which no reader
-                # selects any more and the operator may delete (docs/RUNBOOK.md); it is
-                # tolerated here so a workspace that still holds one keeps validating.
+                # directly under `<node_key_safe>/` is a pre-R4-a pipeline, which no run
+                # selects any more (only the audit tool still reports an old orchestration's
+                # own pipelines, docs/RUNBOOK.md); it is tolerated here so a workspace that
+                # still holds one keeps validating.
                 if stage_root_name == "pipelines" and is_target_id(id_dir.name):
                     for pipe_dir in sorted(id_dir.iterdir()):
                         if pipe_dir.is_dir() and not SLUG_DATE_SEQ3_PATTERN.match(pipe_dir.name):
