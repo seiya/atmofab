@@ -556,6 +556,18 @@ def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None
             f"the resumed orchestration was launched for target {recorded!r}, not "
             f"{requested!r}; resume it without --target, or start a fresh run for "
             f"{requested!r}")
+    if requested is None and recorded is not None:
+        from tools.target_profile import TARGETS_DIR, TARGET_PROFILE_SUFFIX, list_target_ids
+
+        if recorded not in list_target_ids(repo_root):
+            # Said apart from `target_unknown`'s "--target names no profile": the operator
+            # passed no `--target`, and following that message (passing the renamed id) is
+            # refused `target_changed_on_resume` above — a loop with no exit (round 1).
+            raise TargetProfileError(
+                "target_unknown",
+                f"the resumed orchestration was launched for target {recorded!r}, and "
+                f"{TARGETS_DIR}/{recorded}{TARGET_PROFILE_SUFFIX} no longer exists; restore "
+                f"that profile to resume, or start a fresh run for another target")
     return resolve_run_target(
         repo_root, requested if requested is not None else recorded,
         node_key=_infrastructure_node_key_of(repo_root, spec_ref))
@@ -1684,8 +1696,9 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
         # resumed and must be re-run cold.
         "generate_executor": _clean(invocation.get("generate_executor")),
         # The target the orchestration was launched for (issue #284). None on an orchestration
-        # launched before the field existed; the resume then selects the default target, which
-        # is the only one such a run can have been built for.
+        # launched before the field existed; the resume then selects the default target. That
+        # is the target such a run was built for only while one profile is declared — with
+        # several, the resume asks for `--target` and nothing checks the choice.
         "target_id": _clean((invocation.get("target") or {}).get("target_id")
                             if isinstance(invocation.get("target"), dict) else None),
     }
@@ -4406,7 +4419,8 @@ def _target_resume_rejection(
     closure runs for (issue #284). The entry orchestration is gated by `_resolve_launch_target`
     in `_run_main`; the others a closure resumes are gated here, in-process or before a
     `--jobs` child is launched. An orchestration that recorded no target predates the record
-    and is not refused: the default target is the only one it can have been built for."""
+    and is not refused: nothing says which target it was built for (while one profile is
+    declared, the only one)."""
     if target_profile is None:
         return None
     recorded = _load_resume_params(repo_root, orchestration_id).get("target_id")

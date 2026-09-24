@@ -9404,6 +9404,19 @@ class TargetProfileLaunchTests(unittest.TestCase):
                         repo_root, "orch_t", lc.load_llm_config(repo_root / "llm.yaml"),
                         profile_a)["reason"],
                     "target_changed_on_resume")
+            # The recorded profile was renamed away: the refusal says so, and does not point at
+            # a `--target` the resume would then refuse as a change.
+            (repo_root / "spec" / "targets" / "t_b.yaml").rename(
+                repo_root / "spec" / "targets" / "t_b2.yaml")
+            with _real_target_resolution(), \
+                    self.assertRaises(run_workflow.TargetProfileError) as cm:
+                run_workflow._resolve_launch_target(
+                    repo_root, "spec/problem/test.md", None, recorded)
+            self.assertEqual(cm.exception.reason, "target_unknown")
+            self.assertIn("spec/targets/t_b.yaml no longer exists", cm.exception.detail)
+            self.assertNotIn("--target 't_b'", cm.exception.detail)
+            (repo_root / "spec" / "targets" / "t_b2.yaml").rename(
+                repo_root / "spec" / "targets" / "t_b.yaml")
             # An orchestration from before the record is not refused.
             (orch / "orchestration_meta.json").write_text(json.dumps(
                 {"spec_ref": "spec/problem/test.md", "invocation": {}}), encoding="utf-8")
