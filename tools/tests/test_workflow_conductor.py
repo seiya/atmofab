@@ -18748,7 +18748,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 quality_check={"target_class": "cpu", "status": "pass",
                                "checks": {"diagnostics_match": True, "verdict_match": True}})
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[]):
+                            autospec=True, return_value=[]):
                 c._author_derived_validate_artifacts(refs)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
@@ -18781,7 +18781,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 repo, refs,
                 [{"test_id": "t1", "status": "xfail"}, {"test_id": "t2", "status": "skipped"}])
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[]):
+                            autospec=True, return_value=[]):
                 c._author_derived_validate_artifacts(refs)
             agg = json.loads((repo / refs.run_node_dir() / "aggregate_verdict.json").read_text())
             # every non-skipped entry is xfail -> self_verdict xfail (no fail admits it)
@@ -18810,11 +18810,14 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[fact]), \
+                            autospec=True, return_value=[fact]) as facts, \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True) as ready:
                 c._author_derived_validate_artifacts(refs)
+            # The display facts are the RUN's target's too (issue #284): without it they
+            # resolve nothing, and a ready dependency's latest `xfail` would fold as `pass`.
+            facts.assert_called_once_with(repo, refs.ir_ref, target=c.target)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
             self.assertFalse(agg["blocked"])
@@ -18842,7 +18845,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             # a direct dep that is NOT validated in its own pipeline (readiness predicate=False)
             # -> node blocked, regardless of any latest-verdict display value.
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[fact]), \
+                            autospec=True, return_value=[fact]), \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=False):
@@ -18873,7 +18876,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[fact]), \
+                            autospec=True, return_value=[fact]), \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True):
@@ -18895,7 +18898,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             c = self._conductor(repo)
             self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "blocked"}])
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            return_value=[]):
+                            autospec=True, return_value=[]):
                 c._author_derived_validate_artifacts(refs)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
