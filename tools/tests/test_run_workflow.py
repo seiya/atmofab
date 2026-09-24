@@ -9430,6 +9430,12 @@ class TargetProfileLaunchTests(unittest.TestCase):
                     run_workflow._resolve_launch_target(
                         repo_root, "spec/problem/test.md", "t_a", recorded)
                 self.assertEqual(cm.exception.reason, "target_changed_on_resume")
+                # A `--target` naming no profile is refused as that, not as a change whose
+                # remedy recommends a fresh run for it.
+                with self.assertRaises(run_workflow.TargetProfileError) as cm:
+                    run_workflow._resolve_launch_target(
+                        repo_root, "spec/problem/test.md", "nope", recorded)
+                self.assertEqual(cm.exception.reason, "target_unknown")
                 profile_a = run_workflow.resolve_run_target(repo_root, "t_a")
                 profile_b = run_workflow.resolve_run_target(repo_root, "t_b")
             # The closure's gate for the orchestrations it resumes other than its entry.

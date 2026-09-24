@@ -59,7 +59,12 @@ from tools.llm_config import (
     resolve_default_config_path,
 )
 from tools.operator_private_root import operator_secret_root
-from tools.target_profile import TargetProfile, TargetProfileError, resolve_run_target
+from tools.target_profile import (
+    TargetProfile,
+    TargetProfileError,
+    resolve_run_target,
+    select_target_id,
+)
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
 # unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
@@ -551,6 +556,9 @@ def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None
     target other than the recorded one is refused — the finished phases were built for the
     recorded one, and a run is one target. Raises `TargetProfileError`."""
     if requested is not None and recorded is not None and requested.strip() != recorded:
+        # An undeclared `--target` is refused as such first: the remedy below ("start a fresh
+        # run for it") would otherwise recommend a profile that does not exist (round 3).
+        select_target_id(repo_root, requested)
         raise TargetProfileError(
             "target_changed_on_resume",
             f"the resumed orchestration was launched for target {recorded!r}, not "
