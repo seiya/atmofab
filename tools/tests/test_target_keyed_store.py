@@ -422,19 +422,25 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
                                        target=FORTRAN_CPU)
 
     def test_the_generate_producer_is_shown_the_profiles_fixed_layer(self) -> None:
-        c = self._conductor(Path("/nonexistent"))
+        from tools.tests.target_fixtures import profile_with
+        # A profile whose class / backend / architecture differ from the checked-in one AND
+        # from the IR below, so neither a literal nor the IR's value can stand in for it.
+        target = profile_with(hardware={"class": "fpga", "architecture": "arch_t"},
+                              parallel={"backend": "vendor_x"},
+                              execution={"threads_per_rank": 5})
+        c = self._conductor(Path("/nonexistent"), target=target)
         ir = {"impl_defaults": {
             "target": {"class": "gpu", "backend": "serial", "architecture": "a"},
             "toolchain": {"language": "other"}, "selected": {"backend_key": "k"},
             "abstract": {"parallelization": "none"},
             "backend_overrides": {"openmp": {"num_threads": 4}}}}
         doc = json.loads(c._pure_target_profile_document(ir))
-        self.assertEqual(doc["target_id"], FORTRAN_CPU.target_id)
+        self.assertEqual(doc["target_id"], target.target_id)
         self.assertEqual(doc["target"], {
-            "class": FORTRAN_CPU.hardware_class, "backend": FORTRAN_CPU.parallel_backend,
-            "architecture": FORTRAN_CPU.doc["hardware"]["architecture"]})
-        self.assertEqual(doc["toolchain"], FORTRAN_CPU.toolchain)
-        self.assertEqual(doc["execution"], FORTRAN_CPU.doc["execution"])
+            "class": "fpga", "backend": "vendor_x", "architecture": "arch_t"})
+        self.assertEqual(doc["toolchain"], target.toolchain)
+        self.assertEqual(doc["execution"], {**FORTRAN_CPU.doc["execution"],
+                                            "threads_per_rank": 5})
         # The knob layer is still the IR's until R4-a PR-3; the IR's `selected` is not shown.
         self.assertEqual(doc["abstract"], {"parallelization": "none"})
         self.assertEqual(doc["backend_overrides"], {"openmp": {"num_threads": 4}})
