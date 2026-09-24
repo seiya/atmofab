@@ -9402,6 +9402,76 @@ class TargetProfileLaunchTests(unittest.TestCase):
                 {"spec_ref": "spec/problem/test.md", "invocation": {}}), encoding="utf-8")
             self.assertIsNone(run_workflow._target_resume_rejection(repo_root, "orch_t", profile_a))
 
+    def test_a_real_resume_recovers_the_recorded_target(self) -> None:
+        """Through `main --resume`, with TWO profiles and no `--target`: the recorded target is
+        the one handed on (not a `target_required` refusal), and naming another is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(  # type: ignore[arg-type]
+                self, repo_root, "orch_r", spec_ref="spec/problem/test.md",
+                until_phase="Validate", mode="dev", backend="claude",
+                invocation={"target": {"target_id": "t_b"}})
+            with _real_target_resolution():
+                code, _closure, run_node_kwargs = RunWorkflowTests._run_main_with_closure_spy(
+                    self, ["--resume", "--repo-root", str(repo_root),  # type: ignore[arg-type]
+                           "--no-run-conductor"])
+                self.assertEqual(code, 0)
+                self.assertEqual(run_node_kwargs["target_profile"].target_id, "t_b")
+                code, _closure, run_node_kwargs = RunWorkflowTests._run_main_with_closure_spy(
+                    self, ["--resume", "--repo-root", str(repo_root),  # type: ignore[arg-type]
+                           "--no-run-conductor", "--target", "t_a"])
+            self.assertEqual(code, 2)
+            self.assertIsNone(run_node_kwargs)
+
+    def test_run_node_handed_no_target_resolves_the_default(self) -> None:
+        """The fallback for a caller that resolved nothing: the default target — which, with
+        two profiles declared, is a refusal rather than either one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            with _real_target_resolution(), self.assertRaises(run_workflow.TargetProfileError) as cm:
+                run_workflow._run_node(
+                    repo_root=repo_root, base_env={}, orchestration_id="orch_n",
+                    spec_ref="spec/problem/test.md",
+                    source_dependency_ref="spec/problem/deps.yaml", until_phase="Validate",
+                    llm="claude", llm_command="claude",
+                    llm_config=lc.load_llm_config(repo_root / "llm.yaml"))
+            self.assertEqual(cm.exception.reason, "target_required")
+
+    def test_a_closure_does_not_resume_its_target_for_another_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            orch = repo_root / "workspace" / "orchestrations" / "orch_T"
+            orch.mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(json.dumps(
+                {"spec_ref": "spec/problem/test.md",
+                 "invocation": {"closure_id": "orch_T", "target": {"target_id": "t_a"}}}),
+                encoding="utf-8")
+            with _real_target_resolution():
+                profile_b = run_workflow.resolve_run_target(repo_root, "t_b")
+            buf = io.StringIO()
+            with mock.patch.object(run_workflow, "_resolve_dependency_closure",
+                                   return_value=([], None)), \
+                    mock.patch.object(run_workflow, "_generate_executor_resume_rejection",
+                                      return_value=None), \
+                    mock.patch.object(run_workflow, "_llm_config_resume_rejection",
+                                      return_value=None), \
+                    mock.patch.object(run_workflow, "_run_node") as run_node, \
+                    redirect_stdout(buf):
+                rc = run_workflow._run_with_dependency_closure(
+                    repo_root=repo_root, base_env={}, target_orchestration_id="orch_T",
+                    target_spec_ref="spec/problem/test.md",
+                    target_source_dependency_ref="spec/problem/deps.yaml",
+                    until_phase="Validate", llm="claude", llm_command="claude",
+                    llm_config=lc.load_llm_config(repo_root / "llm.yaml"),
+                    stdout_format="jsonl", resume=True, target_profile=profile_b)
+            self.assertEqual(rc, 2)
+            run_node.assert_not_called()
+            last = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(last["reason"], "target_changed_on_resume")
+
     def test_every_closure_member_is_told_the_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
