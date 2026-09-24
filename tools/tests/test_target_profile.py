@@ -155,6 +155,8 @@ class LoaderTests(unittest.TestCase):
 
     def test_the_target_id_must_be_the_file_stem(self) -> None:
         self.assertIn("is not the file stem", self._refusal(target_id="t2"))
+        # A malformed id is named as malformed, not only as a stem disagreement.
+        self.assertIn("does not match", self._refusal(target_id="T1"))
 
     def test_every_required_key_is_required(self) -> None:
         for obj_key, (required, _optional) in tp.PROFILE_SHAPE.items():
@@ -256,6 +258,11 @@ class LaunchGateTests(unittest.TestCase):
                         repo.root, self._profile(repo, **{dotted: value}))
                     self.assertTrue(violations)
                     self.assertTrue(violations[0].startswith(needle), violations)
+                    # The registry's own membership reason, not a capability clause about a
+                    # value it has never heard of (`parallel` is an open vocabulary, whose
+                    # reason is worded differently).
+                    if dotted != "parallel__backend":
+                        self.assertIn("is not a declared", violations[0])
 
     def test_a_capability_the_node_kind_needs_is_asked_by_kind(self) -> None:
         """A non-infrastructure node needs the control file and the runner render; an
@@ -274,6 +281,14 @@ class LaunchGateTests(unittest.TestCase):
                 self.assertTrue(tp.target_profile_violations(repo.root, profile))
                 self.assertEqual(tp.target_profile_violations(
                     repo.root, profile, node_key="infrastructure/harness_x@0.7.0"), [])
+
+            def without_build(axis: str, backend_id: str, capability: str) -> bool:
+                return capability != "build_execute" and real(axis, backend_id, capability)
+
+            # The build is asked of EVERY kind, the harness included.
+            with mock.patch.object(registry, "provides", without_build):
+                self.assertTrue(tp.target_profile_violations(
+                    repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
 
     def test_the_harness_resolves_to_the_highest_matching_infrastructure_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -345,6 +360,17 @@ class BridgeTests(unittest.TestCase):
         return {"impl_defaults": {
             "target": {"class": "cpu", "backend": "openmp", "architecture": "x86_64"},
             "toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make"}}}
+
+    def test_the_bridge_compares_exactly_these_fields(self) -> None:
+        """A literal, so dropping a field from `BRIDGE_FIELDS` is red: the row below iterates
+        the constant and could not notice one missing. `target.backend` is deliberately absent
+        (see the constant's comment)."""
+        self.assertEqual(dict(tp.BRIDGE_FIELDS), {
+            "target.class": "hardware.class",
+            "toolchain.language": "toolchain.language",
+            "toolchain.standard": "toolchain.standard",
+            "toolchain.build_system": "toolchain.build_system",
+        })
 
     def test_a_matching_ir_passes_and_each_bridge_field_is_compared(self) -> None:
         profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
