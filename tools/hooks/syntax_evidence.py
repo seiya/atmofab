@@ -7,7 +7,7 @@ compiler adapters (gfortran `-fsyntax-only` first, then any optional target-comp
 from `ATMOFAB_SYNTAX_COMPILERS`) over the staged sources. The `post_generate` validator
 certifies that the gate actually ran with the mandatory gfortran stage passing. That
 certificate must NOT be forgeable by the leaf, so it lives at the **pipeline root**
-(`workspace/pipelines/<safe>/<pipeline_id>/syntax_evidence/<source_id>.json`) — the same
+(`workspace/pipelines/<safe>/<target_id>/<pipeline_id>/syntax_evidence/<source_id>.json`) — the same
 leaf-non-writable location as `lint_evidence/` — and is written ONLY host-side by the
 conductor. The validator reads it read-only and fail-closes when it is missing/invalid.
 

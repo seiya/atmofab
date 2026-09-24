@@ -460,8 +460,9 @@ def ir_profile_mismatches(ir: Any, profile: TargetProfile) -> list[str]:
     `BRIDGE_FIELDS` that an IR declares differently from `profile`, each as
     `<ir field>=<declared> expected <profile value>` — short, because the conductor's reason
     detail is capped and the field names must survive the cap. An ABSENT field is a mismatch
-    too — the host fills a default for it today, and a default is exactly the unrecorded target
-    choice this bridge exists to rule out."""
+    too — until issue #284 the host filled a default for it, and the IR's remaining readers
+    (Generate.verify's G6, the compile-stage gates) still read the declared value, so an absent
+    one is exactly the unrecorded target choice this bridge exists to rule out."""
     impl = ir.get("impl_defaults") if isinstance(ir, dict) else None
     out: list[str] = []
     for ir_path, profile_path in BRIDGE_FIELDS:

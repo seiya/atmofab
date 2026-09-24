@@ -9,8 +9,8 @@ A disagreement that falls to the safe side (the stricter reading) may stay, but 
 
 | Fact | Reader A | Reader B | State |
 |---|---|---|---|
-| `impl_defaults.toolchain.build_system` | conductor `str(tc.get(...) or "make").lower()` | `_impl_defaults_toolchain_value` (structural read, `.strip().lower()`) | Agree. B is the stricter side |
-| `impl_defaults.toolchain.language` | conductor `_conductor_authors_makefile` / `_conductor_authors_runner` | `_impl_resolved_language` | Agree. **Was a line scanner, hijacked by one line of free text** |
+| `impl_defaults.toolchain.build_system` | conductor `str(tc.get(...) or "make").lower()` | `_impl_defaults_toolchain_value` (structural read, `.strip().lower()`) | Agreed (B the stricter side). **Retired as a pair by issue #284**: the conductor (`Conductor._read_toolchain`) and `record_launch` (`_pipeline_target_toolchain`) both read the TARGET PROFILE now, and `_impl_defaults_toolchain_value` is deleted. The IR's declared value is still read — by the bridge gate (`Conductor._target_ir_mismatch` over `target_profile.ir_profile_mismatches`), Generate.verify's G6 and the compile-stage gates — which is a pair of its own until R4-a PR-3 removes the key |
+| `impl_defaults.toolchain.language` | conductor `_conductor_authors_makefile` / `_conductor_authors_runner` | `_impl_resolved_language` | Agreed. **Was a line scanner, hijacked by one line of free text.** **Retired as a pair by issue #284**, as the row above: both host readers take the profile's `toolchain.language`, and `_impl_resolved_language` / the conductor's `_ir_language` are deleted |
 | the `build_system` argument | host gate (absent → make) | server (absent and under an orchestration → make) | Made to agree |
 | the `preset` argument | host gate (absent → make_test, strip+lower) | server (exact match against a fixed table) | Every difference falls to a refusal on the server side |
 | presence of `orchestration_id` | gate `is not None and strip()` | `_is_orchestrated_call` | Unified into one predicate. **Retired in Z4 (issue #171): the host gate and `_is_orchestrated_call` went with the capability gate; the server records the id as attribution and decides nothing from it** |
@@ -93,7 +93,7 @@ Run from the atmofab checkout root.
 
 ```bash
 # sweep the places that read a given fact (example: the toolchain language)
-rg -n "toolchain.*language|_impl_resolved_language|_conductor_authors" tools/ mcp_servers/
+rg -n "toolchain.*language|_read_toolchain|_pipeline_target_toolchain|_conductor_authors" tools/ mcp_servers/
 # find line scans (the shape that diverges from a structural read)
 rg -n "splitlines\(\)" tools/orchestration_runtime.py
 # does the name you are adding already exist / is it defined twice

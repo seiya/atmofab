@@ -5051,9 +5051,9 @@ def _ir_toolchain_tokens(ir: dict[str, Any]) -> tuple[str, str]:
     ONE place, for two reasons. The readers must not default differently — that is how this
     mirror and the conductor drifted before — and the neutral core must not gain a second
     spelling of either value (``docs/BACKEND_BOUNDARY.md``: the ledger counts occurrences, and a
-    new reader that re-spells the default is growth). Normalization stays the caller's, as it
-    does in ``workflow_conductor._ir_language`` / ``_ir_build_system``, because the readers of
-    these keys deliberately differ on padding.
+    new reader that re-spells the default is growth). Normalization stays the caller's,
+    because the readers of these keys deliberately differ on padding. (The conductor read
+    these keys too until issue #284; it reads the target profile now.)
     """
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
@@ -12487,8 +12487,15 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
+    Since issue #284 neither the conductor nor ``record_launch`` reads these keys — both
+    read the target profile, and the bridge gate (``Conductor._target_ir_mismatch`` over
+    ``target_profile.ir_profile_mismatches``)
+    holds the IR's declared values to it — so the divergences below are the history the
+    checks were written against, kept because the IR's remaining readers still read the
+    declared value.
+
     - a key present with a value that is not a plain non-empty string. ``record_launch``
-      decides Makefile authorship from ``_impl_resolved_build_system`` /
+      decided Makefile authorship from ``_impl_resolved_build_system`` /
       ``_impl_resolved_language``, which read ``impl_defaults.toolchain`` structurally and
       coerce anything that is not a string to ``None``; the conductor takes
       ``str(value or default)``. The two therefore agree on ``language:`` (no value),
