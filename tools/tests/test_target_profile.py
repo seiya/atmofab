@@ -131,8 +131,14 @@ class SelectionTests(unittest.TestCase):
             with self.assertRaises(tp.TargetProfileError) as cm:
                 tp.select_target_id(repo.root, None)
             self.assertEqual(cm.exception.reason, "target_profile_invalid")
-            # A file that is not `*.yaml` is not a profile at all.
+            # Nor is the other YAML suffix skipped.
             (repo.root / tp.TARGETS_DIR / "Fortran-GPU.yaml").rename(
+                repo.root / tp.TARGETS_DIR / "beta.yml")
+            with self.assertRaises(tp.TargetProfileError) as cm:
+                tp.select_target_id(repo.root, None)
+            self.assertIn("rename it", cm.exception.detail)
+            # A file that is not YAML is not a profile at all.
+            (repo.root / tp.TARGETS_DIR / "beta.yml").rename(
                 repo.root / tp.TARGETS_DIR / "README.md")
             self.assertEqual(tp.select_target_id(repo.root, None), "alpha")
 

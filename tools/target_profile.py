@@ -112,13 +112,19 @@ def _targets_dir(repo_root: Path) -> Path:
 
 def list_target_ids(repo_root: Path) -> list[str]:
     """The target ids declared under `spec/targets/`, sorted. A `*.yaml` whose stem is not a
-    valid target id is REFUSED rather than skipped: a file the operator meant as a profile and
-    misspelled must not make a different profile the only one, and so the default."""
+    valid target id is REFUSED rather than skipped, and so is a `*.yml`: a file the operator
+    meant as a profile and misspelled must not make a different profile the only one, and so
+    the default. Any other file is not a profile and is ignored."""
     root = _targets_dir(repo_root)
     if not root.is_dir():
         return []
     ids: list[str] = []
     for path in sorted(root.iterdir()):
+        if path.name.endswith(".yml"):
+            raise TargetProfileError(
+                "target_profile_invalid",
+                f"{TARGETS_DIR}/{path.name}: a target profile is named "
+                f"<target_id>{TARGET_PROFILE_SUFFIX}; rename it")
         if not path.name.endswith(TARGET_PROFILE_SUFFIX):
             continue
         stem = path.name[: -len(TARGET_PROFILE_SUFFIX)]
