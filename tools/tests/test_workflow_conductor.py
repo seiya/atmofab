@@ -20771,7 +20771,8 @@ class TargetProfileBridgeTests(unittest.TestCase):
     before any phase after Compile, the node's IR must declare the run's target. Driven through
     `conduct` with `run_phase` replaced, so the observation is which phases RAN."""
 
-    def _run(self, impl_defaults: object, *, target: bool = True) -> tuple[str, list, list]:
+    def _run(self, impl_defaults: object, *, target: bool = True,
+             ir_text: str | None = None) -> tuple[str, list, list]:
         from tools import target_profile as tp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -20784,7 +20785,8 @@ class TargetProfileBridgeTests(unittest.TestCase):
             import yaml
 
             (ir_dir / "spec.ir.yaml").write_text(
-                yaml.safe_dump({"impl_defaults": impl_defaults}), encoding="utf-8")
+                ir_text if ir_text is not None
+                else yaml.safe_dump({"impl_defaults": impl_defaults}), encoding="utf-8")
             ran: list[str] = []
             statuses: list[tuple] = []
 
@@ -20825,8 +20827,26 @@ class TargetProfileBridgeTests(unittest.TestCase):
         self.assertEqual(len(statuses), 1)
         state, code, detail = statuses[0]
         self.assertEqual((state, code), ("fail_closed", "conductor_phase_fail_closed"))
-        self.assertTrue(detail.startswith("target_profile_ir_mismatch:"), detail)
-        self.assertIn("toolchain.standard='f2018'", detail)
+        self.assertTrue(
+            detail.startswith("target_profile_ir_mismatch: impl_defaults "
+                              "toolchain.standard='f2018' expected 'f2008'"), detail)
+
+    def test_every_mismatching_field_survives_the_detail_cap(self) -> None:
+        """All four fields wrong: the capped detail still names each of them."""
+        status, ran, statuses = self._run({
+            "target": {"class": "gpu"},
+            "toolchain": {"language": "c", "standard": "c11", "build_system": "cmake"}})
+        self.assertEqual(ran, ["compile"])
+        detail = statuses[0][2]
+        self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        for field in ("target.class", "toolchain.language", "toolchain.standard",
+                      "toolchain.build_system"):
+            self.assertIn(f"{field}=", detail)
+
+    def test_an_unreadable_ir_is_named_as_unreadable_not_as_another_target(self) -> None:
+        status, ran, statuses = self._run(None, ir_text="key: [unclosed\n")
+        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
+        self.assertTrue(statuses[0][2].startswith("target_profile_ir_unreadable:"), statuses)
 
     def test_no_target_profile_is_no_bridge(self) -> None:
         """The unit-test constructor; `run_conductor` never passes None."""

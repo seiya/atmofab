@@ -380,9 +380,11 @@ def _dotted(obj: Any, path: str) -> Any:
 
 def ir_profile_mismatches(ir: Any, profile: TargetProfile) -> list[str]:
     """The bridge gate (R4-a PR-1, deleted by PR-3): the `impl_defaults` fields in
-    `BRIDGE_FIELDS` that an IR declares differently from `profile`, as `<ir field>` strings with
-    both values. An ABSENT field is a mismatch too — the host fills a default for it today, and
-    a default is exactly the unrecorded target choice this bridge exists to rule out."""
+    `BRIDGE_FIELDS` that an IR declares differently from `profile`, each as
+    `<ir field>=<declared> expected <profile value>` — short, because the conductor's reason
+    detail is capped and the field names must survive the cap. An ABSENT field is a mismatch
+    too — the host fills a default for it today, and a default is exactly the unrecorded target
+    choice this bridge exists to rule out."""
     impl = ir.get("impl_defaults") if isinstance(ir, dict) else None
     out: list[str] = []
     for ir_path, profile_path in BRIDGE_FIELDS:
@@ -390,6 +392,5 @@ def ir_profile_mismatches(ir: Any, profile: TargetProfile) -> list[str]:
         expected = _dotted(profile.doc, profile_path)
         normalized = declared.strip().lower() if isinstance(declared, str) else declared
         if normalized != expected:
-            out.append(f"impl_defaults.{ir_path}={declared!r} (target {profile.target_id} "
-                       f"{profile_path}={expected!r})")
+            out.append(f"{ir_path}={declared!r} expected {expected!r}")
     return out

@@ -382,7 +382,8 @@ class BridgeTests(unittest.TestCase):
                 changed["impl_defaults"][section][key] = "other"
                 found = tp.ir_profile_mismatches(changed, profile)
                 self.assertEqual(len(found), 1, found)
-                self.assertIn(f"impl_defaults.{ir_path}='other'", found[0])
+                self.assertEqual(
+                    found[0], f"{ir_path}='other' expected {tp._dotted(profile.doc, _profile_path)!r}")
                 absent = self._ir()
                 del absent["impl_defaults"][section][key]
                 self.assertEqual(len(tp.ir_profile_mismatches(absent, profile)), 1)

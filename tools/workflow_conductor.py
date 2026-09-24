@@ -13037,11 +13037,19 @@ clean:
         if phase == "compile" or self.target_profile is None:
             return None
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml")
+        if not isinstance(ir, dict):
+            # Named apart from a disagreement: an IR that cannot be read declares nothing, and
+            # reporting its four absent fields as a target mismatch would send the operator to
+            # re-run for another target.
+            return f"target_profile_ir_unreadable: {refs.ir_ref}/spec.ir.yaml"
         mismatches = ir_profile_mismatches(ir, self.target_profile)
         if not mismatches:
             return None
-        return (f"target_profile_ir_mismatch: {refs.ir_ref}/spec.ir.yaml was compiled for another "
-                f"target than {self.target_profile.target_id}: {'; '.join(mismatches)}")
+        # The fields FIRST: the detail is capped at `_PHASE_REASON_DETAIL_MAX_CHARS`, and an
+        # IR ref alone is 60-90 characters (round 1 measured the field names cut off on 104 of
+        # 130 IR refs when the ref led).
+        return (f"target_profile_ir_mismatch: impl_defaults {'; '.join(mismatches)} "
+                f"[target {self.target_profile.target_id}; {refs.ir_ref}]")
 
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
