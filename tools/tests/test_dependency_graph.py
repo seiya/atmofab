@@ -588,11 +588,12 @@ class BuildDependencyGraphTests(unittest.TestCase):
     def test_identity_conflict_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            # top requires `mid` as BOTH a component and an infrastructure, and the catalog
-            # resolves both to the SAME spec dir (deps_path): an identity conflict. The rule
-            # is "one directory required under two kinds", so it is stated with two kinds that
-            # are both closure NODES — a `profile` is expanded away before an edge is recorded
-            # and so can no longer witness it (issue #175).
+            # top requires two component identities (`mid`, `mid_alias`) that the catalog
+            # resolves to the SAME spec dir (deps_path): an identity conflict — one directory
+            # required under two identities. Stated with two component ids because they are the
+            # only closure NODES a deps.yaml can name: a `profile` is expanded away before an
+            # edge is recorded (issue #175), and an `infrastructure` entry is refused outright
+            # (issue #284), so neither can witness it any more.
             (repo / "spec" / "registry").mkdir(parents=True, exist_ok=True)
             (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
                 "catalog_version: 0.2.0\nupdated_at: 2026-06-18\nspecs:\n"
@@ -600,12 +601,11 @@ class BuildDependencyGraphTests(unittest.TestCase):
                 "    deps_path: spec/component/top/deps.yaml\n"
                 "  - spec_kind: component\n    spec_id: mid\n    spec_version: \"0.1.0\"\n"
                 "    deps_path: spec/shared/deps.yaml\n"
-                "  - spec_kind: infrastructure\n    spec_id: mid\n    spec_version: \"0.1.0\"\n"
+                "  - spec_kind: component\n    spec_id: mid_alias\n    spec_version: \"0.1.0\"\n"
                 "    deps_path: spec/shared/deps.yaml\n",
                 encoding="utf-8")
             _write_deps(repo, "spec/component/top", "component", "top",
-                        components=[("mid", ">=0.1.0")],
-                        infrastructure=[("mid", ">=0.1.0")])
+                        components=[("mid", ">=0.1.0"), ("mid_alias", ">=0.1.0")])
             _write_deps(repo, "spec/shared", "component", "mid")
             graph, err = build_dependency_graph(
                 repo, target_spec_ref="spec/component/top",

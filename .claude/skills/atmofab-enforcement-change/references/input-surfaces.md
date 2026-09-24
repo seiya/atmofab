@@ -439,8 +439,9 @@ buys an exemption, whose condition is a field of the artifact being gated. In th
 the SAME FIELD twice more, which is the useful lesson — the family is usually one field, not one
 gate:
 
-- `_validate_toolchain_backend_supported` (`tools/validate_pipeline_semantics.py`) takes
-  `is_infrastructure` from the IR's own `meta.spec_kind` and exempts such a node from the language
+- `_validate_toolchain_backend_supported` (`tools/validate_pipeline_semantics.py`; deleted in R4-a
+  PR-3, issue #284, when the toolchain became the target's — the episode stands) took
+  `is_infrastructure` from the IR's own `meta.spec_kind` and exempted such a node from the language
   half of its own check. Its docstring argues the exemption "admits nothing TODAY" because a
   second gate covers it — which is the layered reasoning judgment rule 1-c exists for, and the
   layer it leans on resolves the kind the same way.

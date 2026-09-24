@@ -8,7 +8,7 @@
 
 - Generate the `model` (physics computation) and the `runner` (execution and judgment coordination) for a computation task defined by a `spec`, targeting `CPU` and `GPU` hardware. The material certified in this tree is Fortran on `CPU`.
 - Manage specifications under four `spec_kind` values: `problem` (integration scenario), `component` (reusable operation), `profile` (component selection policy), and `infrastructure` (the shared runner harness, one node per `(language, hardware)` target).
-- Keep the physics definition separated from execution optimization. `spec.ir.yaml` carries physics-affecting structure in its `case` / `algorithm` / `io_contract` sections and execution discretion in `impl_defaults`.
+- Keep the physics definition separated from execution optimization. `spec.ir.yaml` carries physics-affecting structure in its `case` / `algorithm` / `io_contract` sections and names no implementation target; execution discretion is held in the target profile (`spec/targets/<target_id>.yaml`) and in the generated bundle's lowering plan (`docs/IMPL_PLAN_SPEC.md`).
 - Judge each `node` from its own execution evidence, and aggregate the judgment across its dependency closure.
 
 ## Workflow

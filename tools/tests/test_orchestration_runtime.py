@@ -18180,6 +18180,10 @@ class CrossVersionCoherenceTests(unittest.TestCase):
             spec_ref="spec/component/user",
         )
         record_orchestration_target(repo_root, orch)
+        # The target's harness is a direct dependency of `user` too (issue #284); certified, so
+        # the verdicts below are about `dep_a` alone.
+        from tools.tests.orchestration_fixtures import ensure_target_harness_certified
+        ensure_target_harness_certified(repo_root, orch)
         write_preflight(
             repo_root=repo_root, orchestration_id=orch,
             payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
@@ -21618,15 +21622,12 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                       f"    deps_path: spec/{kind}/dynamics/{fam}/{sid}/deps.yaml"]
         self._write(repo / "spec" / "registry" / "spec_catalog.yaml", "\n".join(lines) + "\n")
 
-    def _target_ir(self, repo: Path, kind: str, sid: str, ver: str,
-                   language: str = "fortran", *, infra_dep: bool = False) -> str:
+    def _target_ir(self, repo: Path, kind: str, sid: str, ver: str) -> str:
+        """The subject's IR: target-free (issue #284), so whether it is an M3c target is the
+        run's TARGET's question — every non-`infrastructure` node under the checked-in target
+        is one — and nothing written here moves it."""
         ir_ref = f"workspace/ir/{kind}__{sid}__{ver}/{sid}-node_20260101_001"
-        text = (f"meta:\n  spec_kind: {kind}\n  spec_id: {sid}\n"
-                f"impl_defaults:\n  toolchain:\n    language: {language}\n")
-        # An M3c target: exactly one infrastructure/harness direct dependency.
-        if infra_dep:
-            text += ("dependency:\n  direct_deps:\n"
-                     "    - node_key: infrastructure/harness_fortran_cpu@0.2.0\n")
+        text = f"meta:\n  spec_kind: {kind}\n  spec_id: {sid}\n"
         self._write(repo / ir_ref / "spec.ir.yaml", text)
         return ir_ref
 
@@ -21668,13 +21669,15 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion"),
                 ("component", "swe_flux", "0.1.0", "shallow_water")])  # different family
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
-            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0")
-            self._seed_certified_sibling(repo, "component", "swe_flux", "0.1.0")  # wrong family
+            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
+                                         with_checks=True)
+            self._seed_certified_sibling(repo, "component", "swe_flux", "0.1.0",
+                                         with_checks=True)  # wrong family
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertIsNotNone(ex)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
             self.assertEqual({s["filename"] for s in ex["sources"]},
-                             {"adv_bndry_model.f90", "adv_bndry_runner.f90"})
+                             {"adv_bndry_model.f90", "adv_bndry_checks.f90"})
             # A sibling is certified per target (issue #284): no target, no exemplar.
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             # WHICH source directory the exemplar was read from (issue #250): the attempt
@@ -21684,8 +21687,27 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                              "adv-bndry_20260101_001/source/src_20260101_001")
             self.assertTrue((repo / ex["source_ref"] / "src" / "adv_bndry_model.f90").is_file())
 
+    def test_an_infrastructure_target_selects_model_and_runner(self) -> None:
+        """The non-M3c branch: an `infrastructure` node authors its own runner, so its
+        exemplar is a sibling harness's model + runner, and a checks module is not asked for.
+        (Until issue #284 a physics node without an infrastructure dependency took this
+        branch; the harness is the target's now, so every physics node is M3c.)"""
+        from tools.orchestration_runtime import _resolve_exemplar_source
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._catalog(repo, [
+                ("infrastructure", "harness_a", "0.1.0", "harness"),
+                ("infrastructure", "harness_b", "0.1.0", "harness")])
+            ir_ref = self._target_ir(repo, "infrastructure", "harness_a", "0.1.0")
+            self._seed_certified_sibling(repo, "infrastructure", "harness_b", "0.1.0")
+            ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
+            self.assertIsNotNone(ex)
+            self.assertEqual(ex["node_key"], "infrastructure/harness_b@0.1.0")
+            self.assertEqual({s["filename"] for s in ex["sources"]},
+                             {"harness_b_model.f90", "harness_b_runner.f90"})
+
     def test_m3c_target_selects_model_and_checks(self) -> None:
-        # R1/M3c-β: an M3c target (one infrastructure dep) exemplifies a sibling's
+        # R1/M3c-β: an M3c target (a physics node under a runner-rendering target) exemplifies a sibling's
         # model + checks (NOT model + runner — the runner is host-rendered).
         from tools.orchestration_runtime import _resolve_exemplar_source
         with tempfile.TemporaryDirectory() as td:
@@ -21693,7 +21715,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
-            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
+            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=True)
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
@@ -21710,7 +21732,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
-            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
+            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=False)  # pre-M3c: model+runner only
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
@@ -21726,7 +21748,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
-            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
+            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
                                          with_checks=True, contract_version="pure-STALE")
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
@@ -21740,7 +21762,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
-            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", infra_dep=True)
+            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", with_checks=True)
             # Remove the bundle_meta the seed wrote, leaving model+checks but no version record.
             safe = "component__adv_bndry__0.1.0"
@@ -21766,8 +21788,10 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
-            self._seed_certified_sibling(repo, "component", "adv_flux", "0.1.0", date="20260303")  # self, fresher
-            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", date="20260101")  # sibling, older
+            self._seed_certified_sibling(repo, "component", "adv_flux", "0.1.0", date="20260303",
+                                         with_checks=True)  # self, fresher
+            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", date="20260101",
+                                         with_checks=True)  # sibling, older
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
 
@@ -21800,8 +21824,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         closes the language (the language gate that stood here, `language != "fortran"`,
         went with it). A sibling certified for the fixture target is not offered to a node
         built for a second target whose profile differs only in its id, and no target at all
-        offers nothing. The IR's own `language` is not read: a `cpp` IR still gets the
-        same-target sibling."""
+        offers nothing. The IR names no language at all (issue #284, R4-a PR-3)."""
         from tools.orchestration_runtime import _resolve_exemplar_source
         from tools.tests.target_fixtures import SECOND_TARGET
         with tempfile.TemporaryDirectory() as td:
@@ -21809,8 +21832,9 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self._catalog(repo, [
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
-            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0", language="cpp")
-            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0")
+            ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
+            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
+                                         with_checks=True)
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=SECOND_TARGET))
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
@@ -21826,8 +21850,10 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_old", "0.1.0", "advection_diffusion"),
                 ("component", "adv_new", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
-            self._seed_certified_sibling(repo, "component", "adv_old", "0.1.0", date="20260101")
-            self._seed_certified_sibling(repo, "component", "adv_new", "0.1.0", date="20260202")
+            self._seed_certified_sibling(repo, "component", "adv_old", "0.1.0", date="20260101",
+                                         with_checks=True)
+            self._seed_certified_sibling(repo, "component", "adv_new", "0.1.0", date="20260202",
+                                         with_checks=True)
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_new@0.1.0")
 
@@ -22485,22 +22511,28 @@ class DerivationKeyCertificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             refs = self._seed(repo_root)
+            from tools.target_profile import harness_node_key_for_target
+            harness_nk = harness_node_key_for_target(repo_root, _TP)
+            harness = ("infrastructure", harness_nk.split("/", 1)[1].split("@")[0],
+                       harness_nk.rsplit("@", 1)[1], 3)
+            # The target's harness is a direct dependency of `user` too (issue #284).
             snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user", target=_TP)
             self.assertEqual(snap["certified_entries"],
-                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 3)])
+                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 3),
+                              harness])
             self._recertify_dep(repo_root, model_text="module dep_a_model\n! v2\nend module\n")
             # `dep_a` re-certified: level 3 still; `dep_b`, which binds `dep_a`'s source,
             # is demoted to level 1 (its Compile stands, its Build's key moved).
             snap = _certify_and_collect_dep_artifacts(repo_root, "spec/component/user", target=_TP)
             self.assertEqual(snap["certified_entries"],
-                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 1)])
+                             [("component", "dep_a", "0.1.0", 3), ("component", "dep_b", "0.1.0", 1),
+                              harness])
             # A Build of `dep_b` (closure: `dep_a`) stages the SELECTED source of `dep_a`.
             node_refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key=self.DEP_B, spec_path="spec/component/dep_b",
                 ir_id="dep-b_20260101_001", pipeline_id="dep-b_20260101_001",
                 source_id="src_20260101_001", binary_id="bin_20260101_001")
             (repo_root / node_refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 f'dependency:\n  node_key: "{self.DEP_B}"\n'
                 f'  direct_deps:\n    - node_key: "{self.DEP}"\n', encoding="utf-8")
             conductor = wc.Conductor.__new__(wc.Conductor)
@@ -22515,13 +22547,17 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             conductor._phase_closure_bindings[(self.DEP_B, "build")] = (
                 conductor._bind_closure_sources(
                     node_refs, "build",
-                    [{"node_key": self.DEP,
-                      "source": resolver.select(self.DEP, "generate").output_hash}],
+                    [{"node_key": nk,
+                      "source": resolver.select(nk, "generate").output_hash}
+                     for nk in (harness_nk, self.DEP)],
                     resolver=resolver))
             staged = conductor._stage_dependency_sources(node_refs, obj_dir, phase="build")
             resolved, err = _resolve_certified_closure_binding(repo_root, self.DEP, target=_TP)
             self.assertIsNone(err)
-            self.assertEqual(staged, [resolved])
+            # The pipeline closure: the target's harness first, then the sidecar's `dep_a`.
+            harness_binding, _ = _resolve_certified_closure_binding(
+                repo_root, harness_nk, target=_TP)
+            self.assertEqual(staged, [harness_binding, resolved])
             self.assertEqual(resolved["source_id"], "src_20260101_002")
             self.assertEqual(
                 resolved["model_source_sha256"],
@@ -23999,14 +24035,15 @@ class DerivationInputsTests(unittest.TestCase):
     no certified output). SAMPLED: one moving input per phase, each named by
     `first_differing_input`.
 
-    The fixture is a `problem` adopting one `profile` (which selects a `component`) and one
-    `infrastructure` harness, the closure `--with-deps` would run, with every closure member
-    certified through Validate by `certify_node`.
+    The fixture is a `problem` adopting one `profile` (which selects a `component`), built for
+    the checked-in target, whose harness the catalog carries (issue #284: the harness is the
+    target's, never a `deps.yaml` edge) — the closure `--with-deps` would run, with every
+    closure member certified through Validate by `certify_node`.
     """
 
     _NK = "problem/spec_x@0.1.0"
     _DEP = "component/dep_a@0.1.0"
-    _HARNESS = "infrastructure/harness_h@0.1.0"
+    _HARNESS = "infrastructure/harness_fortran_cpu@0.7.0"
     _PROFILE = "profile/pr@0.1.0"
 
     @staticmethod
@@ -24017,40 +24054,37 @@ class DerivationInputsTests(unittest.TestCase):
     def _spec_dir(self, kind: str, sid: str) -> str:
         return f"spec/{kind}/dynamics/fam/{sid}"
 
-    def _seed_registry(self, repo: Path, *, infra_dep: bool = True) -> None:
+    def _seed_registry(self, repo: Path, *, adopt_profile: bool = True) -> None:
         lines = ["catalog_version: 0.2.0", "specs:"]
         for kind, sid, ver in (("problem", "spec_x", "0.1.0"), ("component", "dep_a", "0.1.0"),
-                               ("infrastructure", "harness_h", "0.1.0"), ("profile", "pr", "0.1.0")):
+                               ("infrastructure", "harness_fortran_cpu", "0.7.0"),
+                               ("profile", "pr", "0.1.0")):
             lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
                       f"    spec_version: \"{ver}\"", "    domain: dynamics", "    family: fam",
                       f"    deps_path: {self._spec_dir(kind, sid)}/deps.yaml"]
         self._write(repo / "spec/registry/spec_catalog.yaml", "\n".join(lines) + "\n")
         for kind, sid in (("problem", "spec_x"), ("component", "dep_a"),
-                          ("infrastructure", "harness_h"), ("profile", "pr")):
+                          ("infrastructure", "harness_fortran_cpu"), ("profile", "pr")):
             d = repo / self._spec_dir(kind, sid)
             self._write(d / "controlled_spec.md", f"# {sid}\n\nbody of {sid}\n")
             self._write(d / "tests.md", f"# tests of {sid}\n")
-        infra = ("  infrastructure:\n    - infrastructure_id: harness_h\n"
-                 "      version_constraint: \">=0.1.0\"\n") if infra_dep else "  infrastructure: []\n"
+        profiles = ("  profiles:\n    - profile_id: pr\n      version_constraint: \">=0.1.0\"\n"
+                    if adopt_profile else "  profiles: []\n")
         self._write(repo / self._spec_dir("problem", "spec_x") / "deps.yaml",
                     "spec_id: spec_x\nspec_kind: problem\ndependencies:\n  components: []\n"
-                    "  profiles:\n    - profile_id: pr\n      version_constraint: \">=0.1.0\"\n"
-                    + infra)
+                    + profiles)
         self._write(repo / self._spec_dir("profile", "pr") / "deps.yaml",
                     "spec_id: pr\nspec_kind: profile\ndependencies:\n  components:\n"
                     "    - component_id: dep_a\n      version_constraint: \">=0.1.0\"\n"
                     "  profiles: []\n")
-        for kind, sid in (("component", "dep_a"), ("infrastructure", "harness_h")):
+        for kind, sid in (("component", "dep_a"), ("infrastructure", "harness_fortran_cpu")):
             self._write(repo / self._spec_dir(kind, sid) / "deps.yaml",
                         f"spec_id: {sid}\nspec_kind: {kind}\ndependencies:\n  components: []\n"
                         "  profiles: []\n  infrastructure: []\n")
 
     _IR_TEXT = ("meta:\n  spec_kind: problem\n  spec_id: spec_x\n"
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
-                "    build_system: make\n  target:\n    class: cpu\n    backend: openmp\n"
                 "dependency:\n  direct_deps:\n"
-                "    - node_key: component/dep_a@0.1.0\n"
-                "    - node_key: infrastructure/harness_h@0.1.0\n")
+                "    - node_key: component/dep_a@0.1.0\n")
 
     def _seed(self, repo: Path, *, through: str = "validate",
               also_for: tuple[Any, ...] = ()) -> dict[str, Any]:
@@ -24061,7 +24095,9 @@ class DerivationInputsTests(unittest.TestCase):
         another target needs the closure certified for it too."""
         from tools.dependency_graph import build_dependency_graph
         self._seed_registry(repo)
-        for nk in (self._DEP, self._HARNESS):
+        # The harness first, so a consumer's certification (which certifies its target's
+        # harness when it is not yet) finds it and adds no second chain.
+        for nk in (self._HARNESS, self._DEP):
             certify_node(repo, "o1", nk, through="validate")
             for extra in also_for:
                 certify_node(repo, "o1", nk, through="validate", target=extra)
@@ -24111,8 +24147,8 @@ class DerivationInputsTests(unittest.TestCase):
             repo = Path(tmp)
             refs = self._seed(repo)
             expected = {
-                "compile": {"spec", "profiles", "dependency_graph", "closure", "dependency_surface",
-                            "toolchain_document"},
+                # Target-free since issue #284: no `toolchain_document`, no harness anywhere.
+                "compile": {"spec", "profiles", "dependency_graph", "closure", "dependency_surface"},
                 "generate": {"ir", "spec", "target", "harness", "closure"},
                 "build": {"source", "closure", "toolchain"},
                 "validate": {"binary", "ir", "spec", "run_policy"},
@@ -24158,17 +24194,13 @@ class DerivationInputsTests(unittest.TestCase):
                 "controlled_spec": _compute_sha256(
                     repo / self._spec_dir("profile", "pr") / "controlled_spec.md")}])
             # The closure is every member of the derived graph but self, sorted, each bound
-            # to the output hash of its certified IR (`_certified_ir_dir` selection).
+            # to the output hash of its certified IR (`_certified_ir_dir` selection). The
+            # target's harness is NOT a member: the Compile is target-free (issue #284).
             dep_ir = ort._certified_ir_dir(repo, "component", "dep_a", "0.1.0")
-            har_ir = ort._certified_ir_dir(repo, "infrastructure", "harness_h", "0.1.0")
             self.assertEqual(inputs["closure"], [
                 {"node_key": self._DEP,
                  "ir": self._meta_output_hash(repo, str((dep_ir / "ir_meta.json").relative_to(repo)))},
-                {"node_key": self._HARNESS,
-                 "ir": self._meta_output_hash(repo, str((har_ir / "ir_meta.json").relative_to(repo)))},
             ])
-            self.assertEqual(inputs["toolchain_document"], tools_derivation.sha256_hex(
-                ort.admissible_toolchains_document(self._NK).encode("utf-8")))
             self.assertEqual(inputs["dependency_surface"], tools_derivation.sha256_hex(
                 tools_derivation.canonical_json_bytes(ort._resolve_component_dep_surface(
                     repo, self._NK, json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
@@ -24235,9 +24267,7 @@ class DerivationInputsTests(unittest.TestCase):
                              (other.sha256, 3))
             before = (self._inputs(repo, refs, "build")["toolchain"],
                       self._inputs(repo, refs, "validate")["run_policy"])
-            self._reir(repo, refs, self._IR_TEXT
-                       .replace("language: fortran", "language: cpp")
-                       .replace("class: cpu", "class: gpu"))
+            self._reir(repo, refs, self._IR_TEXT + "notes: rewritten for another toolchain\n")
             # The IR moved (the validate key's `ir` member moves with it), but the toolchain
             # and the policy are the target's.
             self.assertEqual((self._inputs(repo, refs, "build")["toolchain"],
@@ -24311,16 +24341,17 @@ class DerivationInputsTests(unittest.TestCase):
                              "profiles[0].controlled_spec")
 
     def test_a_deps_edit_moves_the_graph_and_the_closure(self) -> None:
-        """The 13a fact under one key: dropping the harness from `deps.yaml` moves the derived
-        graph signature AND the closure list (and the deps file hash, which sorts first)."""
+        """The 13a fact under one key: dropping the adopted profile from `deps.yaml` moves the
+        derived graph signature AND the closure list (and the deps file hash). (Until issue
+        #284 the edit dropped the harness, which no `deps.yaml` declares any more.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
             before = self._inputs(repo, refs, "compile")
-            self._seed_registry(repo, infra_dep=False)
+            self._seed_registry(repo, adopt_profile=False)
             after = self._inputs(repo, refs, "compile")
             self.assertNotEqual(before["dependency_graph"], after["dependency_graph"])
-            self.assertEqual([c["node_key"] for c in after["closure"]], [self._DEP])
+            self.assertEqual(after["closure"], [])
             self.assertEqual(tools_derivation.first_differing_input(before, after), "closure")
 
     def test_a_dependency_re_derived_within_its_version_moves_every_consumer_key(self) -> None:
@@ -26996,8 +27027,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
 
     Issue #175 moved that fact: the direct dependency set used to BE the `deps.yaml`
     declaration and is now the host-derived set in `<ir_ref>/dependency_graph.json`
-    (`all_nodes` minus self minus `transitive_deps`, which INCLUDES the runner harness), because
-    a `profile` entry in `deps.yaml` is not a node and the `component` it selects are. The rule
+    (`all_nodes` minus self minus `transitive_deps`), because a `profile` entry in `deps.yaml`
+    is not a node and the `component` it selects are. Issue #284 moved it once more: the set no
+    longer includes the runner harness, which is the target's and which no `deps.yaml` declares. The rule
     is stated in eleven places across seven files — of the eight surfaces this class scans; the
     verify `SKILL` carries none — six of the seven read by a compile leaf, and FIVE consecutive
     review rounds each found a different copy still stating the old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
@@ -27056,27 +27088,20 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:6f0b533e3ffed994":
-            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected (re-read at Z6 "
-            "PR-3, which edited rule 7 of the same paragraph, and at issue #266 PR-2, which "
-            "edited rule 8 of it — rule 3 unchanged both times)",
+        "tools/prompt_templates/pure_compile_generate.txt:cbe3c547dc891e80":
+            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
+            "harness is the target's and is not in the set (issue #284, which also removed "
+            "rules 5-6 and renumbered 7-9 of the same paragraph)",
+        "docs/workflow/phases/phase_01_compile.md:e7d6a51c219d48e3":
+            "§1-1: the HOST's directly-required set, read from the graph document; no "
+            "infrastructure node in it (issue #284)",
+        "docs/GLOSSARY.md:c8caff67ee1d6529":
+            "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
+            "the host adds it as a direct dependency after Compile (issue #284)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",
         "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":
             "deps block label, reviewer side: not the set direct_deps must equal",
-        "docs/workflow/phases/phase_01_compile.md:71c13f91279256f1":
-            "§1-1: the HOST's directly-required set, read from the graph document",
-        "docs/workflow/phases/phase_01_compile.md:57f8c7b9ee3ab899":
-            "§Verification tools: the infra dep-count rule, not the direct set",
-        "spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md:"
-        "436415413eda5c0e":
-            "§4: each selected component is A direct dep, not the whole set",
-        "spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md:"
-        "fa62fb936e108ecb":
-            "§4: the same sentence",
-        "spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md:"
-        "b0f0184c054a827e":
-            "§4: the same sentence (issue #265 PR-3; p1 profile, phase 2 PR-6)",
         "docs/GLOSSARY.md:cb366ac6efb20346":
             "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
         "docs/GLOSSARY.md:41add5d95394fae2":
@@ -27264,8 +27289,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             message.append(
                 f"UNREAD {rel}:{number}\n  {text}\n  If it states the CURRENT fact — the direct "
                 f"set is <ir_ref>/dependency_graph.json's all_nodes minus self minus "
-                f"transitive_deps, which INCLUDES the runner harness, and a `profile` entry in "
-                f"deps.yaml is not a node — or is legitimately about something else, add\n"
+                f"transitive_deps — which does NOT include the runner harness (the target's, "
+                f"issue #284) — and a `profile` entry in deps.yaml is not a node — or is "
+                f"legitimately about something else, add\n"
                 f'    "{key}": "<what you read>",\n  to _READ. If it says the direct set IS the '
                 f"deps.yaml declaration, it is wrong: five review rounds of issue #175 each "
                 f"found one more copy saying that, four of them in text a leaf acts on.")
@@ -27336,8 +27362,10 @@ class ProfileExpansionTests(unittest.TestCase):
         (d / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _seed(self, repo: Path, *, profile_infra: bool = False) -> None:
-        """problem/a adopts profile/pr (which selects component/c1 and component/c2), declares
-        component/own directly, and declares the harness `h` itself."""
+        """problem/a adopts profile/pr (which selects component/c1 and component/c2) and
+        declares component/own directly. The harness `h` is registered but declared by no one
+        (issue #284: a harness is the target's); `profile_infra` makes the PROFILE declare it,
+        which is refused."""
         entries = [
             ("problem", "a", "0.1.0", "spec/problem/a"),
             ("profile", "pr", "0.1.0", "spec/profile/pr"),
@@ -27354,15 +27382,13 @@ class ProfileExpansionTests(unittest.TestCase):
         (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
             "\n".join(lines) + "\n", encoding="utf-8")
         self._write_deps(repo, "spec/problem/a", "problem", "a",
-                         components=[("own", ">=0.1.0")], profiles=[("pr", ">=0.1.0")],
-                         infrastructure=[(self.HARNESS, ">=0.1.0")])
+                         components=[("own", ">=0.1.0")], profiles=[("pr", ">=0.1.0")])
         self._write_deps(repo, "spec/profile/pr", "profile", "pr",
                          components=[("c1", ">=0.2.0"), ("c2", ">=0.3.0")],
                          infrastructure=([(self.HARNESS, ">=0.1.0")] if profile_infra
                                          else None))
         for cid in ("c1", "c2", "own"):
-            self._write_deps(repo, f"spec/component/{cid}", "component", cid,
-                             infrastructure=[(self.HARNESS, ">=0.1.0")])
+            self._write_deps(repo, f"spec/component/{cid}", "component", cid)
         self._write_deps(repo, f"spec/infrastructure/{self.HARNESS}", "infrastructure",
                          self.HARNESS)
         from tools.orchestration_runtime import _load_spec_catalog
@@ -27387,7 +27413,6 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertIsNone(err)
             self.assertEqual(sorted(expanded), sorted([
                 ("component", "own", ">=0.1.0"),
-                ("infrastructure", self.HARNESS, ">=0.1.0"),
                 ("component", "c1", ">=0.2.0"),
                 ("component", "c2", ">=0.3.0"),
             ]))
@@ -27447,7 +27472,7 @@ class ProfileExpansionTests(unittest.TestCase):
                 result = _compute_dep_readiness(repo, "spec/problem/a", target=_TP)[0]
             self.assertEqual(result, {f"{s}_verified": False
                                       for s in ort._DEPENDENCY_READINESS_STAGES})
-            self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2", self.HARNESS})
+            self.assertEqual({sid for _k, sid in asked}, {"own", "c1", "c2"})
             self.assertNotIn("profile", {kind for kind, _sid in asked})
 
     def test_readiness_fails_closed_when_the_expansion_does(self) -> None:

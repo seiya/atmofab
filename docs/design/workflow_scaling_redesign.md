@@ -1,6 +1,6 @@
 # Workflow scaling redesign roadmap
 
-Status: **partially implemented**. Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up. R2 (`tools/verdict_evaluator.py`) and R5 (exemplar injection, `7302b52`) have landed; R1, R3, R4, R6 have not.
+Status: **partially implemented**. Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up. R2 (`tools/verdict_evaluator.py`) and R5 (exemplar injection, `7302b52`) have landed; R4 is staged — R4-a has landed (issue #284), R4-b and R4-c have not (§R4); R1, R3, R6 have not.
 
 ## Purpose
 
@@ -34,7 +34,7 @@ Target construction: **the workflow self-produces its plumbing, verification ora
 
 ### R1. Harness as a generated infrastructure node
 
-Define the runner plumbing (argv/case-set parsing, case loop driver, JSON/snapshot/perf/metrics_basis emission) as one **infrastructure spec node per (language, hardware) target** (e.g. `harness__fortran__cpu`). The workflow itself generates, validates, and certifies each harness node once; humans author only its spec (consistent with premise 2). Every physics node depends on the harness node of its target through the existing dependency machinery (published operations, `<dependency_facts>` injection, `--with-deps`, certified-source selection).
+Define the runner plumbing (argv/case-set parsing, case loop driver, JSON/snapshot/perf/metrics_basis emission) as one **infrastructure spec node per (language, hardware) target** (e.g. `harness__fortran__cpu`). The workflow itself generates, validates, and certifies each harness node once; humans author only its spec (consistent with premise 2). Every physics node depends on the harness node of its target through the existing dependency machinery (published operations, `<dependency_facts>` injection, `--with-deps`, certified-source selection). Since R4-a ([issue #284](https://github.com/seiya/atmofab/issues/284)) that dependency is added by the host from the target profile's `harness`, not declared in `deps.yaml`.
 
 Consequences:
 - The physics-node generation scope shrinks to the model kernel plus a per-test checks callback; glue code between kernel and harness is host-rendered from the IR.
@@ -63,7 +63,13 @@ Verdict evaluation of all kinds flows through R2. This extension must land **bef
 
 ### R4. Hardware-neutral IR and target matrix
 
-Split the IR into a hardware-neutral semantic layer (`case` / `algorithm` / `io_contract` / `dependency`) and a target profile (language, hardware, parallelization policy; currently mixed in via `impl_defaults.toolchain`). Compile runs once per spec; Generate/Build/Validate run per target. Pipelines, certified artifacts, exemplar retrieval (R5), and harness nodes (R1) are all keyed by `node_key × target`. `validate.execute` needs a target-aware execution dispatch (the MCP `run_program` backend selects the execution environment per target).
+Split the IR into a hardware-neutral semantic layer (`case` / `algorithm` / `io_contract` / `dependency`) and a target profile (language, hardware, parallelization policy; mixed in via `impl_defaults.toolchain` until R4-a PR-3). Compile runs once per spec; Generate/Build/Validate run per target. Pipelines, certified artifacts, exemplar retrieval (R5), and harness nodes (R1) are all keyed by `node_key × target`. `validate.execute` needs a target-aware execution dispatch (the MCP `run_program` backend selects the execution environment per target).
+
+Staged status:
+
+- **R4-a — landed** ([issue #284](https://github.com/seiya/atmofab/issues/284), PRs #285 / #286 and the PR that closes the issue). The target profile `spec/targets/<target_id>.yaml` is operator-authored and selected per run (`--target`); Generate / Build / Validate artifacts are stored and keyed per `node_key × target_id` (`workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/`); the IR carries no `impl_defaults` section and Compile's derivation key contains no target; the harness is a target attribute (`harness` in the profile), not a `deps.yaml` dependency; the lowering knob layer is the CodegenBundle's `target_lowering_plan`, authored by `Generate`. Only one target profile is declared, and `run_program`'s execution dispatch is unchanged.
+- **R4-b — open.** A second (language, hardware) target: its language `backend` package and harness spec node, a target-aware `run_program` execution dispatch (launcher / device), the lift of the token-ratchet freeze (issue #182), and migration of the open areas of the backend-debt ledger in `TODO.md`. The inlining of the checks-module ABI sections of `docs/workflow/CHECKS_MODULE_CONTRACT.md` into the compile context (a fixed document versioned by `COMPILE_INLINED_DOCUMENTS_VERSION`, not a per-node key input) is an accepted residual of R4-a owned here.
+- **R4-c — open.** The `cross_target` test kind (R3): the comparand (another target's certified evidence) enters the validate key, and `tools/verdict_evaluator.py` gains the comparison predicate. It requires R4-b's second target.
 
 ### R5. Self-grown exemplar corpus
 

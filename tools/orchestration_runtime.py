@@ -643,16 +643,17 @@ def _resolve_dep_version(
     return matched[0] if matched else None
 
 
-# Required deps.yaml `dependencies:` keys (present in every deps.yaml). `infrastructure` (the R1
-# harness dependency) is OPTIONAL — added to the allowed set but NOT required, so the existing
-# deps.yaml corpus (components + profiles only) stays well-formed without migration.
+# Required deps.yaml `dependencies:` keys (present in every deps.yaml). `infrastructure` is still
+# PARSED, so that a declaration is refused by name at spec-input
+# (`spec_input_gates.infra_dep_declared_violation`, issue #284: a harness is a target attribute)
+# rather than reported as an unknown key; no deps.yaml may carry an entry under it.
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset({"components", "profiles", "infrastructure"})
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields component/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
 # `expand_profile_dependencies` and never becomes a node of any closure (issue #175); the two
 # readers that deliberately see the RAW declaration are `_dependency_readiness_state`'s
-# trivial-leaf test and `workflow_conductor._direct_infra_dep_count`.
+# trivial-leaf test and `workflow_conductor._direct_infra_dep_count` (the spec-input refusal).
 _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("components", "component_id"),
     ("profiles", "profile_id"),
@@ -834,7 +835,7 @@ def expand_profile_dependencies(
     # Imported lazily, like every other `tools.*` import in this module: it also runs as a
     # SCRIPT (`python3 tools/orchestration_runtime.py`), where the repository root is not on
     # `sys.path` and a top-level `from tools...` import aborts the CLI at load.
-    from tools.spec_input_gates import infra_dep_count_violation
+    from tools.spec_input_gates import infra_dep_declared_violation
 
     expanded: list[tuple[str, str, str | None]] = []
     profiles_record: list[dict[str, Any]] = []
@@ -889,7 +890,7 @@ def expand_profile_dependencies(
                 f"selects components only, and profile nesting is not supported",
             )
         infra_count = sum(1 for k, _s, _c in p_entries if k == "infrastructure")
-        infra_violation = infra_dep_count_violation("profile", infra_count)
+        infra_violation = infra_dep_declared_violation(infra_count)
         if infra_violation:
             return _fail(
                 "profile_declares_infrastructure",
@@ -1600,6 +1601,22 @@ def _verify_dep_stage_detail(
     return (False, f"{node_key} {step}: {sel.reason}")
 
 
+def _target_harness_entries_for_spec_ref(
+    repo_root: Path, spec_ref: Any, target: TargetProfile | None,
+) -> list[tuple[str, str, str]]:
+    """`target_profile.target_harness_entries` for the node at `spec_ref`, its kind read from
+    the CATALOG (never from `deps.yaml`'s self-declared `spec_kind`, which no schema carries): a
+    spec_id the catalog registers under exactly one kind has that kind; any other answer is
+    treated as a non-`infrastructure` node, which asks for the harness — the stricter
+    question. The catalog is read only under a target. Raises `SpecCatalogCorruption`."""
+    if target is None:
+        return []
+    from tools.target_profile import target_harness_entries
+    spec_id = Path(str(spec_ref or "").strip().rstrip("/")).name
+    kinds = {k for (k, sid) in _load_spec_catalog(str(repo_root.resolve())) if sid == spec_id}
+    return target_harness_entries(target, next(iter(kinds)) if len(kinds) == 1 else None)
+
+
 def _stale_dependency_details(
     repo_root: Path, spec_ref: Any, *, resolver: DerivationResolver | None = None,
     target: TargetProfile | None = None,
@@ -1613,9 +1630,13 @@ def _stale_dependency_details(
     if not isinstance(deps_doc, dict):
         return []
     entries, well_formed = _parse_dep_entries(deps_doc)
-    if not well_formed or not entries:
+    if not well_formed:
         return []
     try:
+        entries = list(entries) + _target_harness_entries_for_spec_ref(
+            repo_root, spec_ref, target)
+        if not entries:
+            return []
         catalog = _load_spec_catalog(str(repo_root.resolve()))
     except SpecCatalogCorruption:
         return []
@@ -2161,29 +2182,32 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #             closure[] — every closure node's certified COMPILE output hash (its IR is what
 #               the reviewer's facts come from);
 #             dependency_surface — the resolved published-operation surface of the component
-#               direct deps as the producer is shown it (`_resolve_component_dep_surface`;
-#               read off a dependency's certified SOURCE when its IR has no `public_api`);
-#             toolchain_document — the admissible-toolchain document the producer is shown.
-#   generate  ir — this node's certified compile output hash (`spec.ir.yaml`; carries the
-#               case set and every `impl_defaults` knob);
+#               direct deps as the producer is shown it (`_resolve_component_dep_surface`).
+#             Nothing here names a target: the graph is `deps.yaml`'s alone (no harness since
+#             R4-a PR-3), and the admissible-toolchain document the producer was shown until
+#             then is gone with the IR's `impl_defaults` (issue #284).
+#   generate  ir — this node's certified compile output hash (`spec.ir.yaml`: the case set,
+#               the algorithm, the contracts);
 #             spec.{controlled_spec,tests} — the reviewer reads the spec, the producer the
 #               tests;
 #             target — `{target_id, profile}`: the target the source is generated for and the
-#               hash of its profile, whose fixed layer the producer is shown (issue #284);
-#             harness — the ONE harness the producer negotiates against and the manifest
-#               document it is shown (`harness_capability_manifest_document_for`);
-#             closure[] — every closure node's certified compile AND generate output hashes:
-#               the published operations the producer transcribes come from the certified
-#               source, and the host-rendered runner is glue over the harness's certified
-#               source and IR.
+#               hash of its profile, which the producer is shown (issue #284);
+#             harness — the ONE harness the producer negotiates against — the target's
+#               (`harness_node_key_for`) — and the manifest document it is shown
+#               (`harness_capability_manifest_document_for`);
+#             closure[] — every PIPELINE closure node's certified compile AND generate output
+#               hashes (`pipeline_closure_nodes`: the sidecar's closure plus the target's
+#               harness): the published operations the producer transcribes come from the
+#               certified source, and the host-rendered runner is glue over the harness's
+#               certified source and IR.
 #             NOT hashed, because they are functions of the members above and of the
 #             transformation version: the host-rendered runner and control file
 #             (`RENDER_VERSION`), and the bundle shape (the node kind and the target's
 #             toolchain).
 #   build     source — this node's certified generate output hash (model, checks or runner,
 #               the control file, all host- or leaf-authored deliverables of Generate);
-#             closure[] — the certified generate output hash of every closure node Build
-#               stages (`_stage_dependency_sources` copies exactly these sources);
+#             closure[] — the certified generate output hash of every pipeline closure node
+#               Build stages (`_stage_dependency_sources` copies exactly these sources);
 #             toolchain — `{target_id, language, standard, build_system, backend, compiler,
 #               compiler_version}` read off the target profile, with the compiler the
 #               control-file writer would pin and the first line of its `--version`.
@@ -2196,8 +2220,8 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 # Generate, Build and Validate are `node_key × target` facts (issue #284): their outputs live
 # under `workspace/pipelines/<safe>/<target_id>/`, every closure member is selected for the
 # same target (`DerivationResolver.target`), and the target's id is in each of the three
-# keys. Compile is target-free in its STORE; its key still carries the admissible-toolchain
-# document and the harness closure member until R4-a PR-3.
+# keys. Compile is target-free in its store AND its key (R4-a PR-3): one Compile serves
+# every target.
 #
 # An UPSTREAM output hash is always the `output_hash` of the SELECTED certified output —
 # never a derivation key — so that when the selection among several certified outputs of one
@@ -2218,63 +2242,86 @@ class DerivationInputsUnresolvable(RuntimeError):
     cannot be assembled: nothing a leaf could repair."""
 
 
-def _infrastructure_direct_deps(ir: Any) -> list[str]:
-    """The `infrastructure/...` direct-dependency node_keys of an IR (the harness deps).
-    ONE definition, read by the conductor's runner / harness resolution and by the generate
-    derivation inputs, so the harness the producer is shown is the harness the key names."""
-    dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
-    out: list[str] = []
-    for d in (dep.get("direct_deps") or []) if isinstance(dep, dict) else []:
-        nk = d.get("node_key") if isinstance(d, dict) else (d if isinstance(d, str) else None)
-        if isinstance(nk, str) and nk.strip() and nk.split("/", 1)[0].strip() == "infrastructure":
-            out.append(nk.strip())
-    return out
-
-
-def harness_node_key_for(ir: Any, node_key: str) -> str | None:
-    """The ONE harness a pure generate producer negotiates against, or None.
+def harness_node_key_for(repo_root: Path, node_key: str, target: TargetProfile) -> str:
+    """The ONE harness a node built for `target` runs over and a pure generate producer
+    negotiates against.
 
     An `infrastructure` node negotiates against ITSELF (its self-test bundle declares the
-    execution model it implements); any other node against its single `infrastructure` direct
-    dependency. `infrastructure` is read off the NODE_KEY — the host's identity for the node —
-    never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's context
-    assembly and acceptance layer (`_pure_harness_node_key` delegates here) and by the generate
-    derivation inputs."""
+    execution model it implements); any other node against the harness its TARGET names
+    (`target_profile.harness_node_key_for_target`, issue #284 — the IR's `infrastructure` direct
+    dependency until R4-a PR-3). `infrastructure` is read off the NODE_KEY — the host's identity
+    for the node — never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's
+    context assembly, runner render and acceptance layer (`_pure_harness_node_key` delegates
+    here), the generate derivation inputs, the pipeline closure (`pipeline_closure_nodes`) and
+    the deterministic tamper gate. Raises `TargetProfileError` when the target's harness does
+    not resolve in the catalog (the launch gate refused that before the run started)."""
     if node_key.split("/", 1)[0].strip() == "infrastructure":
         return node_key
-    infra = _infrastructure_direct_deps(ir)
-    return infra[0] if len(infra) == 1 else None
+    from tools.target_profile import harness_node_key_for_target
+    return harness_node_key_for_target(repo_root, target)
 
 
-def admissible_toolchains_document(node_key: str) -> str:
-    """The toolchain combinations the HOST can build and render for a node of this kind, as
-    JSON — the `toolchain_document` a pure compile producer is shown, and a compile
-    derivation input.
+def with_target_harness(
+    dep_block: Any, repo_root: Path, node_key: str, target: TargetProfile | None,
+) -> dict[str, Any]:
+    """A copy of a dependency block — the IR's `dependency`, the `dependency_graph.json`
+    sidecar, or the validator's merge of the two — as a PIPELINE phase of `node_key` sees it
+    for `target`: the target's harness added as a direct dependency (to `direct_deps` and, at
+    `topo_level` 0, to `all_nodes`, each only where that list is present) unless the node is
+    itself `infrastructure` or the block already names it (issue #284).
 
-    The pairs are derived from the backend registry so no `neutral core` file names a
-    target-stack technology (`docs/BACKEND_BOUNDARY.md`). The capabilities asked are exactly
-    the ones the deterministic gate (`validate_pipeline_semantics._toolchain_capability_clauses`)
-    asks of a node of this kind: an `infrastructure` node needs only its build system to be
-    executable; every other kind additionally needs the host to author the control file and
-    render the runner. An empty result RAISES — a prompt whose admissible set is `[]` would
-    ask the producer to invent a value."""
-    from tools.target_profile import toolchain_servable_reasons
+    The target-free Compile writes blocks that no longer carry the harness (`deps.yaml` does
+    not declare it since R4-a PR-3); this is where every post-Compile reader of a node's
+    dependency SET gets it back, so the dependency facts, `lineage.json`, the pre_judge DAG
+    check, the derived `aggregate_verdict` and the validator's DAG-completeness gate ask about
+    the harness exactly as they did when `deps.yaml` declared it. Without a target, or on a
+    block that is not a mapping, the block is returned unchanged (as a mapping)."""
+    block = dict(dep_block) if isinstance(dep_block, dict) else {}
+    if target is None:
+        return block
+    harness_nk = harness_node_key_for(repo_root, node_key, target)
+    if harness_nk == node_key:
+        return block
 
-    kind = node_key.partition("@")[0].partition("/")[0].strip()
-    is_infrastructure = kind == "infrastructure"
-    # The capability question itself lives in `toolchain_servable_reasons`, which a target
-    # profile is asked at launch too (issue #284), so the two cannot answer differently.
-    pairs = [
-        {"language": lang, "build_system": b}
-        for lang in backend_registry.implemented_backend_ids("language")
-        for b in backend_registry.implemented_backend_ids("build_system")
-        if not toolchain_servable_reasons(lang, b, infrastructure=is_infrastructure)
-    ]
-    if not pairs:
-        raise RuntimeError(
-            "pure_toolchain_document_unresolvable: the backend registry declares no "
-            f"(language, build_system) pair the host can serve for a {kind!r} node")
-    return json.dumps({"admissible_toolchains": pairs}, indent=2, ensure_ascii=False)
+    def _names(items: Any) -> set[str]:
+        out: set[str] = set()
+        for item in items if isinstance(items, list) else []:
+            nk = item.get("node_key") if isinstance(item, dict) else item
+            if isinstance(nk, str):
+                out.add(nk.strip())
+        return out
+
+    if isinstance(block.get("direct_deps"), list) and harness_nk not in _names(block["direct_deps"]):
+        block["direct_deps"] = [*block["direct_deps"],
+                                {"node_key": harness_nk, "kind": "infrastructure",
+                                 "operations": []}]
+    if isinstance(block.get("all_nodes"), list) and harness_nk not in _names(block["all_nodes"]):
+        block["all_nodes"] = [{"node_key": harness_nk, "topo_level": 0}, *block["all_nodes"]]
+    return block
+
+
+def pipeline_closure_nodes(
+    repo_root: Path, ir_ref: str, node_key: str, target: TargetProfile,
+) -> list[str]:
+    """The dependency closure a PIPELINE phase of `node_key` works over for `target`, in compile
+    order (deepest first): the target's harness, then the closure the certified IR's
+    `dependency_graph.json` sidecar records (`_closure_nodes_from_graph`).
+
+    The sidecar is the target-free Compile's graph — `deps.yaml`'s alone since R4-a PR-3 (issue
+    #284) — so the harness, which every non-`infrastructure` node's runner is linked against, is
+    added here, first: it depends on nothing, and `topo_level` 0 is where the sidecar would have
+    put it. An `infrastructure` node's closure is its sidecar's. A harness the sidecar already
+    lists (an IR compiled before PR-3, which no derivation key selects) is not listed twice.
+
+    ONE definition for every reader of the pipeline closure: the generate and build keys'
+    `closure[]`, the conductor's staging and control-file order (`_dependency_closure_nodes`),
+    and the tamper gate's build graph (`validate_pipeline_semantics._pure_gate_build_graph_inputs`)."""
+    graph = _read_json_or_none(repo_root / ir_ref / "dependency_graph.json")
+    closure = _closure_nodes_from_graph(graph, node_key)
+    harness_nk = harness_node_key_for(repo_root, node_key, target)
+    if harness_nk == node_key or harness_nk in closure:
+        return closure
+    return [harness_nk, *closure]
 
 
 def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
@@ -2390,22 +2437,31 @@ def _derived_closure_graph(repo_root: Path, node_key: str, spec_ref: str) -> dic
     return graph
 
 
-def _read_ir_document(repo_root: Path, ir_ref: str) -> dict[str, Any]:
-    path = repo_root / ir_ref / "spec.ir.yaml"
+def _harness_for_key(repo_root: Path, node_key: str, target: TargetProfile) -> str:
+    """`harness_node_key_for`, with a harness the catalog cannot resolve reported as the
+    unresolvable input it is (the launch gate refused it before the run; a catalog edited
+    since is what reaches this)."""
+    from tools.target_profile import TargetProfileError
     try:
-        doc = _require_yaml().safe_load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # every read failure is the same unresolvable input
+        return harness_node_key_for(repo_root, node_key, target)
+    except TargetProfileError as exc:
         raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: {ir_ref}/spec.ir.yaml cannot be read "
-            f"({type(exc).__name__})") from exc
-    return doc if isinstance(doc, dict) else {}
+            f"derivation_inputs_unresolvable: the harness of target {target.target_id} does "
+            f"not resolve ({exc.detail})") from exc
 
 
-def _sidecar_closure(repo_root: Path, ir_ref: str, node_key: str) -> list[str]:
-    """The build closure recorded by the certified IR's `dependency_graph.json` sidecar, in
-    compile order — the closure the conductor stages and shows (`_dependency_closure_nodes`)."""
-    graph = _read_json_or_none(repo_root / ir_ref / "dependency_graph.json")
-    return _closure_nodes_from_graph(graph, node_key)
+def _pipeline_closure_for_key(
+    repo_root: Path, ir_ref: str, node_key: str, target: TargetProfile,
+) -> list[str]:
+    """`pipeline_closure_nodes` for a derivation key (the same unresolvable-harness report
+    as `_harness_for_key`)."""
+    from tools.target_profile import TargetProfileError
+    try:
+        return pipeline_closure_nodes(repo_root, ir_ref, node_key, target)
+    except TargetProfileError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: the harness of target {target.target_id} does "
+            f"not resolve ({exc.detail})") from exc
 
 
 def phase_derivation_inputs(
@@ -2494,8 +2550,6 @@ def phase_derivation_inputs(
             # both the producer and the membership gate read.
             "dependency_surface": _sha256_hex(_canonical_json_bytes(
                 _resolve_component_dep_surface(repo_root, node_key, graph, resolver=resolver))),
-            "toolchain_document": _sha256_hex(
-                admissible_toolchains_document(node_key).encode("utf-8")),
         }
 
     ir = need("ir_ref", ir_ref)
@@ -2506,10 +2560,10 @@ def phase_derivation_inputs(
             "target profile (the resolver was built without one)")
     ir_hash = _certified_output_hash(
         repo_root, repo_root / ir / "ir_meta.json", what=f"{node_key} compile")
+    closure_nodes = _pipeline_closure_for_key(repo_root, ir, node_key, target)
     if step_token == "generate":
         spec = need("spec_ref", spec_ref)
-        ir_doc = _read_ir_document(repo_root, ir)
-        harness_nk = harness_node_key_for(ir_doc, node_key)
+        harness_nk = _harness_for_key(repo_root, node_key, target)
         from tools.codegen_bundle import harness_capability_manifest_document_for
         manifest = harness_capability_manifest_document_for(harness_nk)
         return {
@@ -2518,10 +2572,10 @@ def phase_derivation_inputs(
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
             },
-            # The target the source is generated FOR: the producer is shown the profile's
-            # fixed layer (`Conductor._pure_target_profile_document`), so the profile's
-            # content is an input. The harness is still the IR's (above) until R4-a PR-3
-            # moves it onto the profile.
+            # The target the source is generated FOR: the producer is shown the profile
+            # (`Conductor._pure_target_profile_document`), so the profile's content is an
+            # input. The harness below is the one the profile names (issue #284), so a
+            # profile that names another harness moves both members.
             "target": {"target_id": target.target_id, "profile": target.sha256},
             "harness": {
                 "node_key": harness_nk,
@@ -2531,7 +2585,7 @@ def phase_derivation_inputs(
                 {"node_key": nk,
                  "ir": _dependency_output_hash(resolver, nk, "compile"),
                  "source": _dependency_output_hash(resolver, nk, "generate")}
-                for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
+                for nk in sorted(closure_nodes)],
         }
 
     if step_token == "build":
@@ -2542,7 +2596,7 @@ def phase_derivation_inputs(
                 what=f"{node_key} generate"),
             "closure": [
                 {"node_key": nk, "source": _dependency_output_hash(resolver, nk, "generate")}
-                for nk in sorted(_sidecar_closure(repo_root, ir, node_key))],
+                for nk in sorted(closure_nodes)],
             "toolchain": _target_toolchain_identity(target),
         }
 
@@ -2837,7 +2891,7 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
 
     Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
     not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
-    derivation inputs (`_sidecar_closure`, the `closure[]` of the generate and build keys)
+    derivation inputs (`pipeline_closure_nodes`, the `closure[]` of the generate and build keys)
     cannot disagree on WHICH nodes the closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
     spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
 
@@ -3590,9 +3644,17 @@ def _resolve_dependency_facts(
         direct_deps = dep.get("direct_deps") if isinstance(dep, dict) else None
         if not isinstance(direct_deps, list):
             return []
+        resolver = resolver or DerivationResolver(repo_root, target=target)
+        # The target's harness is a direct dependency of the node (issue #284; the IR listed
+        # it until R4-a PR-3). The consumer's node_key is the IR's own, which the compile
+        # gate pins to the host-derived graph (`_validate_compile_dependency_consistency`).
+        self_nk = dep.get("node_key") if isinstance(dep, dict) else None
+        if isinstance(self_nk, str) and self_nk.strip():
+            direct_deps = with_target_harness(
+                {"direct_deps": direct_deps}, repo_root, self_nk.strip(),
+                resolver.target)["direct_deps"]
         # Surface dependency call-site interfaces only when the CONSUMER is Fortran: a
         # c/cpp/mixed consumer calls via its own ABI, not the Fortran subroutine signature.
-        resolver = resolver or DerivationResolver(repo_root, target=target)
         consumer_language = (resolver.target.toolchain["language"]
                              if resolver.target is not None else None)
         consumer_is_fortran = consumer_language == "fortran"
@@ -3627,7 +3689,7 @@ def _resolve_dependency_facts(
             # interface to the leaf — the physics leaf never calls the harness API (the
             # host-rendered runner is the sole caller), so surfacing the harness surface
             # would only tempt a `use harness_*` the checks/model contract forbids. Skip it
-            # (the IR also authors `operations: []` for an infra dep, so `ops` is empty).
+            # (its entry — the target's harness, `with_target_harness` — carries `operations: []`).
             dep_kind = node_key.split("/", 1)[0].strip()
             is_infra_dep = dep_kind == "infrastructure"
             is_component_dep = dep_kind == "component"
@@ -4040,15 +4102,16 @@ def _resolve_exemplar_source(
         self_id = str(meta.get("spec_id") or "").strip()
         if not self_kind or not self_id:
             return None
-        # R1/M3c-β: an M3c target (a physics node with exactly one infrastructure/harness
-        # dependency) authors model + checks (its runner is host-rendered), so its exemplar
-        # is a sibling's model + checks — NOT the pre-M3c model + runner (injecting a
-        # 600-line self-authored runner would be misleading prior art). Both files must be
-        # present (a pre-M3c sibling without a checks.f90 is skipped, not partially injected).
-        # Mirror the conductor's `_conductor_authors_runner` predicate (a control file and a
-        # runner the host authors ∧ non-infra ∧ one infra dep) so the exemplar shape matches
-        # what the leaf actually authors. Both halves are the TARGET's, the question the
-        # conductor asks of the same profile (`_core_authors_control_file` + `runner_render`).
+        # R1/M3c-β: an M3c target (a physics node whose runner the host renders over its
+        # target's harness) authors model + checks, so its exemplar is a sibling's model +
+        # checks — NOT the pre-M3c model + runner (injecting a 600-line self-authored runner
+        # would be misleading prior art). Both files must be present (a pre-M3c sibling without
+        # a checks.f90 is skipped, not partially injected). Mirror the conductor's
+        # `_conductor_authors_runner` predicate (a control file and a runner the host authors ∧
+        # non-infra) so the exemplar shape matches what the leaf actually authors. Both halves
+        # are the TARGET's, the question the conductor asks of the same profile
+        # (`_core_authors_control_file` + `runner_render`); the harness is the target's too
+        # (issue #284), so no dependency count enters it.
         tc = target.toolchain
         host_renders = all(
             backend_registry.provides(axis, value, capability)
@@ -4056,13 +4119,7 @@ def _resolve_exemplar_source(
                 ("build_system", tc["build_system"], "control_file"),
                 ("language", tc["language"], "control_file"),
                 ("language", tc["language"], "runner_render")))
-        dep = ir_doc.get("dependency") if isinstance(ir_doc.get("dependency"), dict) else {}
-        infra_deps = [d for d in (dep.get("direct_deps") or [])
-                      if (isinstance(d, dict) and isinstance(d.get("node_key"), str)
-                          and d["node_key"].split("/", 1)[0].strip() == "infrastructure")
-                      or (isinstance(d, str) and d.split("/", 1)[0].strip() == "infrastructure")]
-        target_is_m3c = (self_kind != "infrastructure" and host_renders
-                         and len(infra_deps) == 1)
+        target_is_m3c = self_kind != "infrastructure" and host_renders
 
         catalog = _catalog_family_index(repo_root)
         self_family = next(
@@ -4158,7 +4215,8 @@ def _certify_and_collect_dep_artifacts(
     Returns a dict with:
       - `deps_doc_valid` (bool): True iff deps.yaml parsed as a dict.
       - `entries_well_formed` (bool): True iff the deps.yaml schema is strict.
-      - `has_entries` (bool): True iff deps.yaml lists any direct deps.
+      - `has_entries` (bool): True iff the direct set is non-empty: deps.yaml's entries plus,
+      under a `target`, that target's harness (`target_harness_entries`).
       - `certified_entries`: list of `(kind, spec_id, certified_version, level)`
         in deps.yaml order. `certified_version` is the HIGHEST matching
         catalog version that achieved the MAX level (any of {0,1,2,3}).
@@ -4186,6 +4244,9 @@ def _certify_and_collect_dep_artifacts(
     snap["entries_well_formed"] = well_formed
     if not well_formed:
         return snap
+    # The target's harness is a direct dependency of every node that is not itself
+    # `infrastructure` (issue #284; `deps.yaml` declared it until R4-a PR-3).
+    entries = list(entries) + _target_harness_entries_for_spec_ref(repo_root, spec_ref, target)
     if not entries:
         snap["has_entries"] = False
         return snap
@@ -4300,7 +4361,7 @@ def _compute_dep_readiness(
 
 
 def _compute_initial_dependency_readiness(
-    repo_root: Path, spec_ref: Any
+    repo_root: Path, spec_ref: Any, *, target: TargetProfile | None = None,
 ) -> dict[str, Any]:
     """Compute the canonical `dependency_readiness` payload for a fresh orchestration.
 
@@ -4320,7 +4381,22 @@ def _compute_initial_dependency_readiness(
       flip these flags after verifying each direct dependency's `ir_meta.json` /
       `binary_meta.json` / `aggregate_verdict`. The fail-closed default ensures
       that gate behaviour does not silently trust unverified state.
+
+    Under a `target` (the orchestration's, issue #284) a node that is not itself
+    `infrastructure` has the target's harness as a direct dependency even with an empty
+    `deps.yaml` (`target_harness_entries`), so it is not a trivial leaf. Asking that reads the
+    catalog, whose failure propagates like a PyYAML one (`write_preflight` handles both).
     """
+    if _target_harness_entries_for_spec_ref(repo_root, spec_ref, target):
+        return {
+            "direct_dependency_compile_readiness": False,
+            "direct_dependency_execution_readiness": False,
+            "detail": {
+                "ir_ref_verified": False,
+                "pipeline_ref_verified": False,
+                "aggregate_verdict_verified": False,
+            },
+        }
     # Codex round 34 F1: detect a canonical empty-deps leaf via a strict
     # BYTE-LEVEL recognizer BEFORE touching PyYAML, so a controller PyYAML
     # outage does not make `write_preflight` persist an all-false readiness
@@ -10134,8 +10210,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                               "profile_spec_document", "dependency_graph_document",
                               "phase_contract_document", "ir_algorithm_example_document",
                               "ir_algorithm_2d_example_document",
-                              "impl_defaults_schema_document",
-                              "checks_module_contract_document", "toolchain_document"),
+                              "checks_module_contract_document"),
     ("compile", "verify"): ("controlled_spec_document", "tests_document", "deps_document",
                             "ir_document", "dependency_surface_document",
                             "phase_contract_document", "ir_algorithm_example_document",
@@ -10144,6 +10219,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                                "ir_document",
                                "tests_document", "runner_document"),
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
+                             "target_profile",
                              "checks_module_contract_document", "severity_rubric_document",
                              "bundle_document"),
     # `validate.judge` (Z3, issue #169). The two canonical sources (tests + the IR's
@@ -10188,7 +10264,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # Its reviewer: the default generate reviewer's documents, with the runner-output contract
     # in place of the checks-module ABI (a harness bundle carries no checks module).
     ("generate", "verify", "harness"): ("controlled_spec_document", "tests_document",
-                                        "ir_document", "runner_output_contract_document",
+                                        "ir_document", "target_profile",
+                                        "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
 }
 
@@ -14760,7 +14837,8 @@ def write_preflight(
                 #     so the gate refuses launches until PyYAML is restored.
                 try:
                     computed = _compute_initial_dependency_readiness(
-                        repo_root, meta.get("spec_ref")
+                        repo_root, meta.get("spec_ref"),
+                        target=_target_of_orchestration_meta(repo_root, meta),
                     )
                 except SpecCatalogCorruption:
                     # Codex round 34 F2: catalog corruption / missing.

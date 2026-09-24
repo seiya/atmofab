@@ -434,13 +434,29 @@ class PureJudgeLoopTests(_Fixture):
 
         Only `runner_host_authored` reaches the payload (and only when TRUE, so absence is the
         node's False); `makefile_host_authored` decides the Makefile deliverable, which a pure
-        launch empties anyway. The fixture node is one the host renders NEITHER for, which is
-        exactly the case the M3c constant would have got wrong."""
+        launch empties anyway. Both directions: the fixture component IS one the host renders
+        a runner for under the checked-in target (since issue #284 the harness is the target's,
+        so no dependency count decides it), and withdrawing the language's `runner_render`
+        makes it one the host renders none for — the case the M3c constant would get wrong."""
+        from tools.backends import registry as backend_registry
+
         c = self.conductor(_envelope(json.dumps(_review("pass"))))
         c.run_substep(self.refs, "validate", "judge")
         request = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][-1]
-        self.assertFalse(c._conductor_authors_runner(self.refs))
-        self.assertFalse(request.get("runner_host_authored", False))
+        self.assertTrue(c._conductor_authors_runner(self.refs))
+        self.assertTrue(request.get("runner_host_authored", False))
+
+        real = backend_registry.provides
+        with mock.patch.object(
+                backend_registry, "provides",
+                side_effect=lambda axis, value, cap: cap != "runner_render" and real(
+                    axis, value, cap)):
+            c = self.conductor(_envelope(json.dumps(_review("pass"))))
+            c.run_substep(self.refs, "validate", "judge")
+            request = [cap["--request-json"] for s, cap in c.calls
+                       if s == "record-launch"][-1]
+            self.assertFalse(c._conductor_authors_runner(self.refs))
+            self.assertFalse(request.get("runner_host_authored", False))
 
     def test_a_fail_decision_is_a_review_rejection_not_an_error(self) -> None:
         c = self.conductor(_envelope(json.dumps(_review("fail"))))

@@ -104,11 +104,12 @@ LIMITS, stated rather than implied:
   pulled in by an `#include` is analysed as part of a translation unit but is not itself a walk
   entry.
 
-REACHABILITY. No `spec` node selects `c` / `cpp` today — `_validate_toolchain_backend_supported`
-refuses any non-`fortran` language on every non-`infrastructure` node — so this preset is reached
-only by `run_linter` in standalone mode. The channel above is closed while that is true, which is
-the point: the day a `c` `infrastructure` backend is registered, the registration is the change a
-reviewer looks at, not this file.
+REACHABILITY. No run builds for a `c` / `cpp` target today — the launch gate
+(`target_profile.toolchain_servable_reasons`) refuses a target profile whose language is not an
+implemented `language` value, for every node kind (the toolchain is the target's since issue #284)
+— so this preset is reached only by `run_linter` in standalone mode. The channel above is closed
+while that is true, which is the point: the day a `c` backend is registered, the registration is
+the change a reviewer looks at, not this file.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
 gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and

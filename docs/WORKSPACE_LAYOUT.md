@@ -99,8 +99,8 @@ workspace/
 │   └── <node_key_safe>/                           e.g. component__dynamics_shallow_water_flux_2d_rusanov_p0__0.1.0
 │       └── <ir_id>/                               e.g. flux-rsn-p0_20260510_001
 │           ├── spec.ir.yaml                       (output of the Compile/generate substep)
-│           │                                       # the single structural IR that integrates and holds the 5 sections
-│           │                                       # case / algorithm / impl_defaults / io_contract / dependency
+│           │                                       # the single structural IR that integrates and holds the 4 sections
+│           │                                       # case / algorithm / io_contract / dependency (+ public_api)
 │           ├── ir_meta.json                       (Compile/generate; verification_status by Compile/verify)
 │           ├── compile_static_meta.json            (conductor-authored Compile.static deliverable; --stage compile verdict)
 │           ├── compile_generate_meta.json          (the pure Compile.generate producer's per-attempt record)

@@ -10,7 +10,7 @@
 #
 # This file is written as an excerpt of only the algorithm section; in an actual
 # spec.ir.yaml, place this block as the value of the `algorithm:` key, alongside
-# the `case` / `impl_defaults` / `io_contract` / `dependency` sections.
+# the `case` / `io_contract` / `dependency` sections.
 #
 # Important: steps[].inputs and steps[].outputs must be a "list of non-empty strings".
 #   OK: ["U_L", "U_R", "g"]

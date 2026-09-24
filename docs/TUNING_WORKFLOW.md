@@ -1,31 +1,30 @@
 # Auto-tuning operational workflow (optional flow)
 
 ## Position
-`Tune` is treated as an **optional flow** separated from the core workflow (`Spec → Compile → Generate → Build → Validate`). The core workflow uses the `impl_defaults` of `spec.ir.yaml` as a fixed value, but `Tune` explores variants of `impl_defaults` with `spec.ir.yaml` as an invariant premise.
+`Tune` is treated as an **optional flow** separated from the core workflow (`Spec → Compile → Generate → Build → Validate`). The core workflow fixes the target profile (`spec/targets/<target_id>.yaml`) at launch and fixes the lowering plan (the CodegenBundle's `target_lowering_plan`) when `Generate` certifies the bundle (`docs/IMPL_PLAN_SPEC.md`). `Tune` explores variants of the lowering plan with `spec.ir.yaml` and the target profile as invariant premises.
 
 ## Basic policy
 The tuner is separated from the generator, and the following loop is the standard operation.
 
-1. Fix the structural IR (`spec.ir.yaml`, already passed in the core workflow)
-2. Explore implementation-discretion variants (define overrides of **only the knob layer** of `impl_defaults` in `tuning.spec`)
+1. Fix the structural IR (`spec.ir.yaml`, already passed in the core workflow) and the target profile
+2. Explore implementation-discretion variants (define overrides of **only the lowering plan** in `tuning.spec`)
 3. Automate generation/build/execution/evaluation (run the same Generate / Build / Validate as the core workflow per variant)
 4. Optimize a performance objective function with physical passing as a constraint
 5. Fix the best candidate and move to regression monitoring
 
-## The override-allowed boundary of `impl_defaults` (must read)
-The range `Tune` can override via `tuning.spec` is **limited to the knob layer of `impl_defaults`**. For the canonical fixed / knob boundary, refer to the "fixed / knob boundary of impl_defaults" section of `docs/workflow/phases/phase_01_compile.md`. Key points:
+## The override-allowed boundary (must read)
+The range `Tune` can override via `tuning.spec` is **limited to the lowering plan** (`target_lowering_plan`, `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`). Until R4-a PR-3 (issue #284) the boundary was drawn inside an IR `impl_defaults` section; the IR no longer carries one.
 
 | crossing-forbidden (fixed) | override-allowed (knob) |
 |---|---|
-| `target.class` / `target.backend` / `target.architecture` | `abstract.*` (the intent of parallelization granularity / layout / fusion / tiling, etc.) |
-| `toolchain.language` / `toolchain.standard` / `toolchain.build_system` | `backend_overrides.<key>.*` (backend-specific values such as thread count / block size / vector width) |
-| `selected.backend_key` | |
+| `spec.ir.yaml` (every section) | `target_lowering_plan.parallelization` (model, loop scope, schedule, chunk size, collapse) |
+| the target profile: `hardware.*` / `toolchain.*` / `parallel.backend` / `execution.*` / `harness` | `target_lowering_plan.data_layout` / `fusion` / `decomposition` / `communication` / `accelerator_mapping` (the intent of layout / fusion / tiling / vectorization, etc.) |
 
-The knob layer is override-allowed but **not free-form in its key names**: the parallelization family is pinned to `abstract.parallelization` / `parallel_scope` / `parallel_granularity` and `backend_overrides.openmp.num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`, using `spec/schema/ir/impl_defaults.schema.json` as the canonical source. This is a premise a variant must satisfy, not something Tune itself gates: `Tune` runs Generate / Build / Validate and never re-enters `Compile`, so a renamed key is caught only when the node is next recompiled. Until then a thread count under an aliased name — or under a section named `cpu_openmp` rather than `openmp` — is ignored by the runner renderer, so the variant silently measures one thread and reports that as the candidate's result. Introducing a NEW knob name outside that family is unrestricted — that is the exploration space.
+The plan's `parallelization.model` names a parallel model the target's `parallel.backend` supports, or `"none"`. A variant whose plan the source does not follow is a `Generate.verify` G6 fail, exactly as in the core workflow. Introducing a NEW member inside an optional plan section is unrestricted — the interior of an optional section is a target-backend extension point — and that is the exploration space.
 
-When `tuning.spec` includes an entry that overrides a fixed sub-key, `Tune` shall **stop with fail_closed at launch**, and must not generate a variant inside `Tune`. This guarantees that Tune does not break the structure of `spec.ir.yaml`.
+When `tuning.spec` includes an entry that overrides the IR or the target profile, `Tune` shall **stop with fail_closed at launch**, and must not generate a variant inside `Tune`. This guarantees that Tune does not break the structure of `spec.ir.yaml` or change the target.
 
-To change the fixed layer for new hardware/compiler, redo `Compile` from the core workflow and issue a new `ir_id`. This is not the responsibility of Tune.
+To build for new hardware or a new compiler, author or select another target profile and run the core workflow for it (`--target <target_id>`). The IR is target-free, so this does not re-run `Compile`. This is not the responsibility of Tune.
 
 Design points:
 - The physics guarantee (A fixed) and the performance exploration (B exploration) can be clearly separated (separation at the IR level)
@@ -35,11 +34,12 @@ Design points:
 ## 1. Composition of the loop (the practical minimal form)
 ### Inputs
 - `spec.ir.yaml` (invariant, finalized in the core workflow)
+- the target profile (invariant, the one the core workflow ran for)
 - `tuning.spec` (a Tune-dedicated input that defines the search_space of the exploration range)
 - code templates (a group of implementation patterns)
 
 ### Per-trial Outputs
-- a `spec.ir.yaml` for the variant (a copy with `impl_defaults` overridden by `tuning.spec`)
+- the variant's `target_lowering_plan` (the core workflow's plan overridden by `tuning.spec`)
 - `<stage>_meta.json` (the result of the in-`LLM`-stage verification)
 - `diagnostics.json` (physics)
 - `perf.json` (performance)
@@ -87,11 +87,11 @@ Select a staged strategy.
 - a performance regression compared with the baseline can be added to L3
 
 ## 5. Cache and reuse
-- cache the result by `case_hash` and `impl_hash`, and do not re-run the same trial
+- cache the result by `case_hash` and `impl_hash` (`docs/PERFORMANCE_DIAGNOSTICS.md` §3), and do not re-run the same trial
 - reuse the build artifact by hash too (if possible)
 
 ## 6. When to "fix"
-- fix the best impl obtained by tuning as an override variant of `spec.ir.yaml.impl_defaults`.
+- fix the best impl obtained by tuning as an override variant of the lowering plan (`target_lowering_plan`) for its target profile.
 - after fixing, move to regression (physics + performance).
 - re-tune only for a new architecture / new compiler
 - promote the adopted variant to `releases/` with the optional flow `Promote`.

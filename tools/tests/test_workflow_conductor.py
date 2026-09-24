@@ -9,7 +9,6 @@ assembled. The decision-table tests pin the deterministic failure routing.
 from __future__ import annotations
 
 import atexit
-import copy
 import errno
 import glob
 import hashlib
@@ -57,6 +56,9 @@ from tools.tests.target_fixtures import SECOND_TARGET
 # launch probes there and turned a pass into a failure that belonged to no change. `mkdtemp`
 # honours `TMPDIR`, so each job's scratch root holds its own.
 _SHARED_REPO_ROOT = Path(tempfile.mkdtemp(prefix="atmofab-conductor-tests-"))
+#: The target's harness as the fixture catalogs register it: the checked-in profile's
+#: `harness_fortran_cpu` at a version its constraint matches (issue #284).
+_HARNESS_NK = "infrastructure/harness_fortran_cpu@0.7.0"
 atexit.register(shutil.rmtree, _SHARED_REPO_ROOT, ignore_errors=True)
 # The same samples with every leaf narrowed to `agentic`. Used by the classes whose
 # SUBJECT is the shared agentic leaf loop: since issue #168 four of the five LLM leaves
@@ -69,6 +71,18 @@ def setUpModule() -> None:
     # backend homes through `record_launch`, and without this it writes them into
     # the operator's real `~/.atmofab/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
+    # The target's harness must resolve in the shared scratch catalog (issue #284: every
+    # pipeline closure of a non-infrastructure node holds it).
+    _register_target_harness(_SHARED_REPO_ROOT)
+
+
+def _register_target_harness(repo: Path) -> None:
+    """Register the checked-in target's harness in a scratch catalog (`_HARNESS_NK`), keeping
+    what the catalog already holds — the harness is the target's since issue #284, and the
+    pipeline closure, the harness a producer negotiates against and the dependency set every
+    post-Compile reader sees all resolve it there."""
+    from tools.tests.orchestration_fixtures import ensure_spec_entry
+    ensure_spec_entry(Path(repo), _HARNESS_NK)
 
 
 def tearDownModule() -> None:
@@ -1065,12 +1079,44 @@ def _bind_phase_closure(c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "bu
 class _TargetedConductor(wc.Conductor):
     """A real Conductor whose target reads answer the fixture repository's own profile, else
     the checked-in one, when the test passes none (issue #284, `target_fixtures.fixture_target`).
-    `target_profile` stays as the test set it, so the R4-a bridge gate's `None` arm is kept."""
+    `target_profile` stays as the test set it.
+
+    It also stands in for `run_phase`'s phase-start closure binding (`_phase_derivation` ->
+    `_bind_closure_sources`) on ONE shape: a row that drives `_build_inproc` or
+    `_gate_syntax_check` directly on a node with no dependency of its own. Since issue #284
+    that node's pipeline closure is its target's harness alone, which the real phase would
+    have bound; here the harness is registered and certified in the scratch repository and
+    bound, so the row observes what it was written about. A row whose node has dependencies of
+    its own binds them itself (or deliberately does not), exactly as before; and nothing is
+    written outside a temporary directory."""
 
     @property
     def target(self):  # type: ignore[override]
         from tools.tests.target_fixtures import fixture_target
         return fixture_target(self.repo_root, self.target_profile)
+
+    def _bind_a_harness_only_closure(self, refs: "wc.NodeRefs", phase: str) -> None:
+        from tools.tests.orchestration_fixtures import ensure_target_harness_certified
+        if (refs.node_key, phase) in self._phase_closure_bindings:
+            return
+        root = Path(self.repo_root).resolve()
+        if not root.is_relative_to(Path(tempfile.gettempdir()).resolve()):
+            return
+        if not self._conductor_authors_makefile(refs):
+            return
+        _register_target_harness(root)
+        if self._dependency_closure_nodes(refs) != [_HARNESS_NK]:
+            return
+        ensure_target_harness_certified(root, self.orchestration_id, self.target)
+        _bind_phase_closure(self, refs, phase)
+
+    def _build_inproc(self, refs, child_arid):  # type: ignore[override]
+        self._bind_a_harness_only_closure(refs, "build")
+        return super()._build_inproc(refs, child_arid)
+
+    def _gate_syntax_check(self, refs, child_arid):  # type: ignore[override]
+        self._bind_a_harness_only_closure(refs, "generate")
+        return super()._gate_syntax_check(refs, child_arid)
 
 
 class _FakeConductor(wc.Conductor):
@@ -1079,8 +1125,7 @@ class _FakeConductor(wc.Conductor):
 
     Its target reads answer the fixture repository's own profile — else the checked-in one —
     when the test passes none (issue #284, `target_fixtures.fixture_target`), WITHOUT setting
-    `target_profile`, so a fake built bare still skips the R4-a bridge gate, which
-    `TargetProfileBridgeTests` drives with an explicit profile."""
+    `target_profile`."""
 
     @property
     def target(self):  # type: ignore[override]
@@ -6091,40 +6136,37 @@ class NodeAllocationTest(unittest.TestCase):
             (spec_dir / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return repo
 
-    def test_resolve_node_requires_exactly_one_infra_dep(self) -> None:
-        # Spec-input gate (sibling of the spec_id bound): zero or >1 infrastructure direct
-        # deps used to degrade silently to the removed leaf-authored-runner path. Both are
-        # rejected before any phase runs; the message names the rule and the count.
-        for count in (0, 2):
+    def test_resolve_node_refuses_a_declared_infra_dep(self) -> None:
+        # Spec-input gate (sibling of the spec_id bound): since issue #284 no spec declares an
+        # `infrastructure` dependency — the harness is the target's. Any count above zero is
+        # rejected before any phase runs, with the reason and the count.
+        for count in (1, 2):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = self._mini_spec_repo(tmp, spec_kind="component",
                                             infra_entries=count)
                 with self.assertRaises(ValueError) as ctx:
                     wc.resolve_node(repo, "spec/x/n1")
                 self.assertIn("spec-input rejected", str(ctx.exception))
-                self.assertIn("exactly one", str(ctx.exception))
-                self.assertIn(f"found {count}", str(ctx.exception))
+                self.assertIn("infrastructure_dependency_declared_in_deps", str(ctx.exception))
+                self.assertIn(f"declares {count} `infrastructure`", str(ctx.exception))
         with tempfile.TemporaryDirectory() as tmp:
-            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=0)
             node_key, _ = wc.resolve_node(repo, "spec/x/n1")
             self.assertEqual(node_key, "component/n1@0.1.0")
 
     def test_only_infrastructure_entries_are_counted(self) -> None:
-        # The count is over `infrastructure` entries ALONE. Counting every direct dependency
-        # would reject every real spec in the catalog — advdiff1d_linear declares 3
-        # components + 1 profile + 1 infrastructure — while the tmp fixtures, which declare
-        # only the harness edge, would all still pass and hide it.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1,
-                                        other_entries=3)
-            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "component/n1@0.1.0")
-        # ...and components/profiles do not substitute for the missing harness edge either.
+        # The count is over `infrastructure` entries ALONE: components and profiles are
+        # ordinary declarations (advdiff1d_linear declares 1 component-selecting profile).
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=0,
                                         other_entries=3)
+            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "component/n1@0.1.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1,
+                                        other_entries=3)
             with self.assertRaises(ValueError) as ctx:
                 wc.resolve_node(repo, "spec/x/n1")
-            self.assertIn("found 0", str(ctx.exception))
+            self.assertIn("declares 1 `infrastructure`", str(ctx.exception))
 
     def test_resolve_node_refuses_a_profile_target(self) -> None:
         """Issue #175: a `profile` is not a node any phase runs. `run_workflow` refuses it at
@@ -6148,8 +6190,8 @@ class NodeAllocationTest(unittest.TestCase):
                     wc.resolve_node(repo, "spec/x/n1")
                 self.assertIn("spec_kind_not_certifiable", str(ctx.exception), declared)
                 self.assertIn("Run the node that ADOPTS it", str(ctx.exception))
-        # The refusal is on the KIND, not on the missing harness edge: a profile carrying one
-        # is refused with the same reason rather than with the dep-count message.
+        # The refusal is on the KIND, not on the declared harness edge: a profile carrying one
+        # is refused with the same reason rather than with the declared-dependency message.
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._mini_spec_repo(tmp, spec_kind="profile", infra_entries=1)
             with self.assertRaises(ValueError) as ctx:
@@ -6164,34 +6206,31 @@ class NodeAllocationTest(unittest.TestCase):
             self.assertEqual(node_key, "infrastructure/n1@0.1.0")
 
     def test_the_unreadable_deps_exemption_uses_the_same_spelling_rule(self) -> None:
-        # The two branches of the spec-input gate sit 12 lines apart and must agree on how
-        # `spec_kind` is spelled. `infra_dep_count_violation` is case-SENSITIVE (every
-        # downstream reader compares the stripped value without folding); if this branch
-        # lower-cased, a `spec_kind: Infrastructure` node would be REJECTED when its
-        # deps.yaml is well-formed and ADMITTED when it is unreadable — the broken input
-        # let through and the correct one refused, with the mis-cased node then invisible to
-        # every reader that decides host authorship.
-        # Both branches: infra_entries=None is the unreadable-deps.yaml branch, 0 the
-        # well-formed one. Neither may exempt the mis-cased kind.
-        for infra_entries in (None, 0):
+        # The unreadable-deps branch exempts an `infrastructure` node, and must spell the kind
+        # the way every downstream reader does: stripped, never case-folded. A mis-cased
+        # `Infrastructure` is not exempt there — it would be admitted with no readable
+        # declaration while every reader that decides host authorship treats it as a physics
+        # node. (The well-formed branch is kind-agnostic since issue #284: zero declared
+        # entries is the rule for every kind, so the spelling decides nothing there.)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="Infrastructure", infra_entries=None)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("spec-input rejected", str(ctx.exception))
+        # The canonical spelling is exempt — including when the catalog pads it, which pins
+        # the `.strip()` half of the rule the way the mis-cased row pins the no-case-folding
+        # half. `resolve_node` reads the raw catalog entry.
+        for spelling in ("infrastructure", "  infrastructure  "):
             with tempfile.TemporaryDirectory() as tmp:
-                repo = self._mini_spec_repo(tmp, spec_kind="Infrastructure",
-                                            infra_entries=infra_entries)
-                with self.assertRaises(ValueError) as ctx:
-                    wc.resolve_node(repo, "spec/x/n1")
-                self.assertIn("spec-input rejected", str(ctx.exception))
-        # The canonical spelling is exempt on both branches — including when the catalog
-        # pads it, which pins the `.strip()` half of the rule the same way the mis-cased
-        # loop above pins the no-case-folding half. `resolve_node` reads the raw catalog
-        # entry, so without the strip a padded kind would be exempt on one branch and
-        # rejected on the other.
-        for infra_entries in (None, 0):
-            for spelling in ("infrastructure", "  infrastructure  "):
-                with tempfile.TemporaryDirectory() as tmp:
-                    repo = self._mini_spec_repo(tmp, spec_kind=spelling,
-                                                infra_entries=infra_entries)
-                    self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
-                                     f"{spelling}/n1@0.1.0")
+                repo = self._mini_spec_repo(tmp, spec_kind=spelling, infra_entries=None)
+                self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
+                                 f"{spelling}/n1@0.1.0")
+        # Well-formed with zero entries: every spelling passes.
+        for spelling in ("Infrastructure", "infrastructure", "  infrastructure  "):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind=spelling, infra_entries=0)
+                self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
+                                 f"{spelling}/n1@0.1.0")
 
     def test_a_deps_yaml_that_is_not_a_mapping_is_rejected_not_crashed(self) -> None:
         # A deps.yaml whose top level parses to a LIST is readable and well-formed YAML but
@@ -6528,9 +6567,12 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                     "reserved_by_agent_run_id": "ORCH", "status": "reserved"}),
                     encoding="utf-8")
 
-            # The spec directory + catalog entry the derivation keys resolve (issue #250 PR-2).
-            from tools.tests.orchestration_fixtures import ensure_spec_entry
+            # The spec directory + catalog entry the derivation keys resolve (issue #250 PR-2),
+            # and the target's harness certified: the generate / build keys bind it (#284).
+            from tools.tests.orchestration_fixtures import (
+                ensure_spec_entry, ensure_target_harness_certified)
             ensure_spec_entry(root, self.NODE_KEY)
+            ensure_target_harness_certified(root, "o1")
 
             # --- compile: the host's own ir_meta + the leaf-authored IR document, the
             # host-authored sidecar and the derivation the conductor computes at phase start
@@ -12842,6 +12884,7 @@ class WriteLineageTest(unittest.TestCase):
     root, which must stay non-writable to the sandboxed leaf)."""
 
     def _conductor(self, repo: Path) -> _FakeConductor:
+        _register_target_harness(repo)
         c = _FakeConductor(
             repo_root=repo, orchestration_id="o",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
@@ -12878,7 +12921,8 @@ class WriteLineageTest(unittest.TestCase):
             self.assertEqual(lin["source_id"], refs.source_id)
             self.assertIsNone(lin["binary_id"])
             self.assertIsNone(lin["run_id"])
-            self.assertEqual(lin["direct_dependency_status"], {})
+            # The target's harness is a direct dependency of every physics node (issue #284).
+            self.assertEqual(lin["direct_dependency_status"], {_HARNESS_NK: "ready"})
             # Leaf node: no resolved dependency facts.
             self.assertEqual(lin["resolved_dependencies"], [])
 
@@ -12901,7 +12945,8 @@ class WriteLineageTest(unittest.TestCase):
             self.assertEqual(lin["source_id"], "src_001")
             self.assertEqual(lin["binary_id"], "bin_001")
             self.assertEqual(lin["run_id"], "run_001")
-            self.assertEqual(lin["direct_dependency_status"], {"component/dep@0.1.0": "ready"})
+            self.assertEqual(lin["direct_dependency_status"],
+                             {"component/dep@0.1.0": "ready", _HARNESS_NK: "ready"})
             # The dep has no on-disk pipeline in this fixture → resolved facts empty.
             self.assertEqual(lin["resolved_dependencies"], [])
 
@@ -13162,6 +13207,7 @@ class WriteMakefileTest(unittest.TestCase):
     like lineage.json), for build_system=make + language=fortran."""
 
     def _conductor(self, repo: Path) -> _FakeConductor:
+        _register_target_harness(repo)
         c = _FakeConductor(repo_root=repo, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.calls = []
@@ -13213,6 +13259,8 @@ class WriteMakefileTest(unittest.TestCase):
             # the test recipe invokes the runner with --cases (same argv as run_program)
             self.assertIn("$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)", text)
             self.assertIn("-std=f2008 -O2 -fopenmp -J$(OBJDIR) -I$(OBJDIR)", text)
+            # The fixture IR states no `meta.spec_kind`, so it is not M3c (the fail-safe) and
+            # no checks module sits between model and runner.
             self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ)", text)
             self.assertIn(
                 'test -x $(BINDIR)/$(BIN) || { echo "error: $(BINDIR)/$(BIN) not built',
@@ -13462,6 +13510,9 @@ class WriteMakefileTest(unittest.TestCase):
                         direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
                     ir = wc._read_yaml(repo / refs.ir_ref / "spec.ir.yaml")
                     ir.setdefault("meta", {})["spec_kind"] = "component"
+                    # On disk too: both readers need the IR to STATE a kind (issue #284).
+                    (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                        wc.yaml.safe_dump(ir), encoding="utf-8")
                     patch = {} if record is None else {
                         (record.axis, record.backend_id): record}
                     with mock.patch.dict(backend_registry._BACKENDS, patch):
@@ -13684,7 +13735,9 @@ class WriteMakefileTest(unittest.TestCase):
             refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0", spec_path="spec/component/top",
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
-            self.assertEqual(self._conductor(repo)._dependency_closure(refs), ["base", "mid"])
+            # The pipeline closure (issue #284): the target's harness first, then the sidecar's.
+            self.assertEqual(self._conductor(repo)._dependency_closure(refs),
+                             [wc.spec_id_of(_HARNESS_NK), "base", "mid"])
 
     def test_dependency_closure_one_hop_direct_only(self) -> None:
         # A one-hop chain (top -> base, base a leaf) has a non-empty direct_deps and an EMPTY
@@ -13708,8 +13761,9 @@ class WriteMakefileTest(unittest.TestCase):
                 {"node_key": "component/top@0.1.0", "topo_level": 1},
             ], transitive_deps=[])
             c = self._conductor(repo)
-            self.assertEqual(c._dependency_closure_nodes(refs), ["component/base@0.1.0"])
-            self.assertEqual(c._dependency_closure(refs), ["base"])
+            self.assertEqual(c._dependency_closure_nodes(refs),
+                             [_HARNESS_NK, "component/base@0.1.0"])
+            self.assertEqual(c._dependency_closure(refs), [wc.spec_id_of(_HARNESS_NK), "base"])
 
     def test_dependency_closure_raises_on_spec_id_basename_collision(self) -> None:
         # L6: two distinct closure node_keys sharing a spec_id (a diamond on `foo`: two
@@ -13754,11 +13808,16 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_dep_ir(repo, refs)
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
-            self.assertIn("DEP_OBJS = $(OBJDIR)/base_model.o $(OBJDIR)/mid_model.o", text)
-            # deepest-first: base before mid, and mid depends on base
-            self.assertIn("$(OBJDIR)/base_model.o: $(OBJDIR)/base_model.f90 | $(OBJDIR)", text)
+            h = wc.spec_id_of(_HARNESS_NK)
             self.assertIn(
-                "$(OBJDIR)/mid_model.o: $(OBJDIR)/mid_model.f90 $(OBJDIR)/base_model.o | $(OBJDIR)",
+                f"DEP_OBJS = $(OBJDIR)/{h}_model.o $(OBJDIR)/base_model.o $(OBJDIR)/mid_model.o",
+                text)
+            # deepest-first: the target's harness (issue #284), then base before mid, and each
+            # object depends on the ones before it
+            self.assertIn(f"$(OBJDIR)/{h}_model.o: $(OBJDIR)/{h}_model.f90 | $(OBJDIR)", text)
+            self.assertIn(
+                f"$(OBJDIR)/mid_model.o: $(OBJDIR)/mid_model.f90 $(OBJDIR)/{h}_model.o "
+                "$(OBJDIR)/base_model.o | $(OBJDIR)",
                 text)
             self.assertIn("$(MODEL_OBJ): $(MODEL_SRC) $(DEP_OBJS) | $(OBJDIR)", text)
             self.assertIn("$(BINDIR)/$(BIN): $(DEP_OBJS) $(MODEL_OBJ) $(RUNNER_OBJ)", text)
@@ -13805,12 +13864,13 @@ class WriteMakefileTest(unittest.TestCase):
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
                 refs, obj_dir, phase="build")
-            # deepest-first (base before mid), matching the Makefile object order
-            self.assertEqual(len(staged), 2)
-            self.assertTrue(staged[0]["model_source_ref"].endswith("base_model.f90"))
-            self.assertTrue(staged[1]["model_source_ref"].endswith("mid_model.f90"))
+            # deepest-first (the target's harness, then base before mid), matching the
+            # Makefile object order
+            self.assertEqual(len(staged), 3)
+            self.assertTrue(staged[1]["model_source_ref"].endswith("base_model.f90"))
+            self.assertTrue(staged[2]["model_source_ref"].endswith("mid_model.f90"))
             self.assertEqual([b["node_key"] for b in staged],
-                             ["component/base@0.1.0", "component/mid@0.1.0"])
+                             [_HARNESS_NK, "component/base@0.1.0", "component/mid@0.1.0"])
             self.assertEqual((obj_dir / "base_model.f90").read_text(encoding="utf-8"),
                              "module base_model\nend module base_model\n")
             self.assertEqual((obj_dir / "mid_model.f90").read_text(encoding="utf-8"),
@@ -13851,10 +13911,11 @@ class WriteMakefileTest(unittest.TestCase):
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
                 refs, obj_dir, phase="build")
-            self.assertEqual(len(staged), 1)
+            self.assertEqual([b["node_key"] for b in staged],
+                             [_HARNESS_NK, "component/base@0.1.0"])
             self.assertIn("CERTIFIED", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
-            self.assertIn("/src_20260101_001/", staged[0]["model_source_ref"])
-            self.assertEqual(staged[0]["source_id"], "src_20260101_001")
+            self.assertIn("/src_20260101_001/", staged[1]["model_source_ref"])
+            self.assertEqual(staged[1]["source_id"], "src_20260101_001")
 
     def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
         """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
@@ -13875,11 +13936,13 @@ class WriteMakefileTest(unittest.TestCase):
                 {"node_key": "component/top@0.1.0", "topo_level": 2},
             ], transitive_deps=[])
             got = self._conductor(repo)._dependency_closure_nodes(refs)
-            self.assertEqual(sorted(got), ["component/base@0.1.0", "component/mid@0.1.0"])
-            # ... and it is the SAME derivation the readiness comparison runs.
+            self.assertEqual(sorted(got),
+                             ["component/base@0.1.0", "component/mid@0.1.0", _HARNESS_NK])
+            # ... and it is the SAME derivation the readiness comparison runs, with the
+            # target's harness first (issue #284).
             from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
             graph = _read_dependency_graph_sidecar(repo, refs.ir_ref) or {}
-            self.assertEqual(got, _closure_nodes_from_graph(graph, refs.node_key))
+            self.assertEqual(got, [_HARNESS_NK, *_closure_nodes_from_graph(graph, refs.node_key)])
 
     def test_stage_dependency_sources_returns_the_binding_of_each_staged_source(self) -> None:
         """The record `binary_meta.dependency_check.closure_bindings` is built from: one entry
@@ -13901,7 +13964,8 @@ class WriteMakefileTest(unittest.TestCase):
             staged = self._bound(self._conductor(repo), refs)._stage_dependency_sources(
                 refs, obj_dir, phase="build")
             self.assertEqual([b["node_key"] for b in staged],
-                             ["component/base@0.1.0", "component/mid@0.1.0"])
+                             [_HARNESS_NK, "component/base@0.1.0", "component/mid@0.1.0"])
+            staged = staged[1:]  # the two the fixture seeded; the harness is its own chain
             for binding, sid in zip(staged, ("base", "mid")):
                 self.assertEqual(
                     binding["model_source_sha256"],
@@ -13947,9 +14011,9 @@ class WriteMakefileTest(unittest.TestCase):
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             staged = c._stage_dependency_sources(refs, obj_dir, phase="build")
             self.assertIn("OLD", (obj_dir / "base_model.f90").read_text(encoding="utf-8"))
-            self.assertEqual(staged[0]["source_id"], "src_20260101_001")
-            self.assertEqual(staged[0]["output_hash"],
-                             c._phase_closure_bindings[(refs.node_key, "build")][0]["output_hash"])
+            self.assertEqual(staged[1]["source_id"], "src_20260101_001")
+            self.assertEqual(staged[1]["output_hash"],
+                             c._phase_closure_bindings[(refs.node_key, "build")][1]["output_hash"])
 
     def test_staging_refuses_bytes_that_are_not_the_bound_ones(self) -> None:
         """The copy is hashed AFTER it lands and refused if it is not the binding's sha256:
@@ -14024,12 +14088,16 @@ class WriteMakefileTest(unittest.TestCase):
                              [e["node_key"] for e in derivation["derivation_inputs"]["closure"]])
             self.assertEqual([b["output_hash"] for b in bound],
                              [e["source"] for e in derivation["derivation_inputs"]["closure"]])
-            self.assertEqual(len(bound), 2)
+            self.assertEqual(len(bound), 3)  # the target's harness, base and mid
 
-    def test_stage_dependency_sources_noop_for_leaf(self) -> None:
+    def test_stage_dependency_sources_noop_for_a_harness_leaf(self) -> None:
+        # Since issue #284 a physics node's pipeline closure always holds its target's harness,
+        # so the one leaf left is an `infrastructure` node with no dependency of its own.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._refs()
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=_HARNESS_NK,
+                               spec_path="spec/infrastructure/harness_fortran_cpu",
+                               ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
             self._write_ir(repo, refs)  # leaf (direct_deps: [])
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             self.assertEqual(
@@ -14059,9 +14127,13 @@ class WriteMakefileTest(unittest.TestCase):
         # IR declares direct_deps but the closure (now from the dependency_graph.json sidecar's
         # all_nodes) resolves empty — a missing/leaf-shaped sidecar. Fail closed instead of
         # staging a leaf-shaped build.
+        # An `infrastructure` node: a physics node's closure always holds its target's harness
+        # (issue #284), so only a harness's closure can come out empty.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._refs()
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=_HARNESS_NK,
+                               spec_path="spec/infrastructure/harness_fortran_cpu",
+                               ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
             self._write_ir(repo, refs, direct_deps="[{operations: [x]}]")  # no sidecar authored
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             with self.assertRaisesRegex(RuntimeError, "empty build closure"):
@@ -14127,8 +14199,8 @@ def _runtime_makefile_host_authored(repo: Path, pipeline_ref: str) -> bool:
 
 class WriteRunnerTest(unittest.TestCase):
     """R1/M3c-β: the conductor host-renders `<spec_id>_runner.f90` for an M3c physics node
-    (make+fortran, non-infra, exactly one infrastructure/harness dep), and the Makefile
-    compiles the leaf-authored `<spec_id>_checks.f90` between model and runner."""
+    (a non-infra node of a make+fortran target, over the TARGET's harness — issue #284), and
+    the Makefile compiles the leaf-authored `<spec_id>_checks.f90` between model and runner."""
 
     SID = "boundary_x"
 
@@ -14143,27 +14215,27 @@ class WriteRunnerTest(unittest.TestCase):
             node_key=f"component/{self.SID}@0.1.0", spec_path=f"spec/component/{self.SID}",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
-    def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=1,
-                           bare_string: bool = False, spec_kind: str | None = None,
+    def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=0,
+                           spec_kind: str | None = None,
                            language: str | None = None) -> None:
+        """The consumer's IR — target-free (issue #284): its direct deps carry no harness,
+        and `infra` writes that many STALE `infrastructure` entries to show the host reads
+        none of them. The catalog carries the target's harness (`_HARNESS_NK`)."""
+        from tools.tests.orchestration_fixtures import ensure_spec_entry
         from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
+        ensure_spec_entry(repo, _HARNESS_NK)
         ir = _boundary_ir()
+        ir.pop("impl_defaults", None)
         if spec_kind is not None:
             ir.setdefault("meta", {})["spec_kind"] = spec_kind
         if language is not None:
-            ir.setdefault("impl_defaults", {}).setdefault("toolchain", {})["language"] = language
             # The language the host reads is the TARGET's (issue #284).
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo, profile_with(toolchain={"language": language}))
-        ids = ["harness_fortran_cpu"] * infra
-        if infra == 2:
-            ids = ["harness_fortran_cpu", "harness_other_cpu"]
-        if bare_string:  # deps.yaml also permits a bare `infrastructure/<id>@ver` string
-            deps: list = [f"infrastructure/{i}@0.2.0" for i in ids]
-        else:
-            deps = [{"node_key": f"infrastructure/{i}@0.2.0"} for i in ids]
-        ir["dependency"]["direct_deps"] = deps
+        ids = ["harness_fortran_cpu", "harness_other_cpu"][:infra]
+        ir["dependency"]["direct_deps"] = [{"node_key": f"infrastructure/{i}@0.2.0"}
+                                           for i in ids]
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(_yaml.safe_dump(ir), encoding="utf-8")
@@ -14195,7 +14267,7 @@ class WriteRunnerTest(unittest.TestCase):
         sigs = _harness_signatures() if signatures is None else signatures
         pub = {} if no_public_api_signatures else {"signatures": sigs}
         refs = certify_node(
-            repo, "orch_harness", "infrastructure/harness_fortran_cpu@0.2.0", through="build",
+            repo, "orch_harness", _HARNESS_NK, through="build",
             ir_id=ir_dirname, pipeline_id="harness-fortran-cpu_20260707_002",
             source_id="src_20260707_002", binary_id="bin_20260707_001",
             ir_text=_yaml.safe_dump({"public_api": pub}), model_text=source)
@@ -14213,33 +14285,18 @@ class WriteRunnerTest(unittest.TestCase):
             ir_meta_path.write_text(json.dumps(doc), encoding="utf-8")
 
     def test_conductor_authors_runner_truth_matrix(self) -> None:
+        """Since issue #284 the harness is the target's, so no dependency count decides M3c: a
+        physics node of a runner-rendering target is one whatever its IR lists — zero, one or
+        two stale `infrastructure` entries alike (spec-input refuses a `deps.yaml` that declares
+        one, and the compile gate an IR whose direct set disagrees with the graph)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             c = self._conductor(repo)
-            self._write_consumer_ir(repo, refs, infra=1)
-            self.assertTrue(c._conductor_authors_runner(refs))
-            # Zero / two infra deps -> not M3c, so the conductor does not host-render. Neither
-            # count can reach here from a live run any more (spec-input rejects both), but the
-            # predicate must stay fail-safe for a hand-crafted IR: it declines to render rather
-            # than rendering glue against a harness it cannot identify.
-            self._write_consumer_ir(repo, refs, infra=0)
-            self.assertFalse(c._conductor_authors_runner(refs))
-            self._write_consumer_ir(repo, refs, infra=2)
-            self.assertFalse(c._conductor_authors_runner(refs))
-
-    def test_conductor_authors_runner_bare_string_dep_parity(self) -> None:
-        # deps.yaml permits a bare-string infra dep as well as the dict form; the conductor
-        # predicate must count it identically to the gate (a divergence = host-render vs
-        # checks-gate skew = fail-open). Locks the prior HIGH parity bug's fix.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            c = self._conductor(repo)
-            self._write_consumer_ir(repo, refs, infra=1, bare_string=True)
-            self.assertTrue(c._conductor_authors_runner(refs))
-            self._write_consumer_ir(repo, refs, infra=2, bare_string=True)
-            self.assertFalse(c._conductor_authors_runner(refs))
+            for infra in (0, 1, 2):
+                with self.subTest(infra=infra):
+                    self._write_consumer_ir(repo, refs, infra=infra)
+                    self.assertTrue(c._conductor_authors_runner(refs))
 
     def test_conductor_authors_runner_false_for_infra_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14249,8 +14306,7 @@ class WriteRunnerTest(unittest.TestCase):
             import yaml as _yaml
             ir = _boundary_ir()
             ir["meta"]["spec_kind"] = "infrastructure"
-            ir["dependency"]["direct_deps"] = [
-                {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
+            ir["dependency"]["direct_deps"] = []
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
             self.assertFalse(self._conductor(repo)._conductor_authors_runner(refs))
@@ -14284,12 +14340,11 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1, language="zz_wr")
+            self._write_consumer_ir(repo, refs, language="zz_wr")
             with mock.patch.dict(sys.modules, {"zz_write_runner_lang": other}), \
                     mock.patch.dict(
                         backend_registry._BACKENDS, {("language", "zz_wr"): record}):
-                # Seeded under the patched registry: the harness's compile key hashes the
-                # admissible-toolchain document, which the synthesised backend changes.
+                # Seeded under the patched registry, as the consumer's run would see it.
                 self._seed_harness_pipeline(repo)
                 c = self._conductor(repo)
                 self.assertTrue(c._conductor_authors_runner(refs))
@@ -14327,7 +14382,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1, language="zz_hollow")
+            self._write_consumer_ir(repo, refs, language="zz_hollow")
             with mock.patch.dict(sys.modules, {"zz_hollow_runner_pkg": hollow}), \
                     mock.patch.dict(
                         backend_registry._BACKENDS, {("language", "zz_hollow"): record}):
@@ -14348,7 +14403,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             self._seed_harness_pipeline(repo)
             c = self._conductor(repo)
             c._write_runner(refs)
@@ -14365,7 +14420,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             # no harness pipeline seeded -> build precondition failure
             with self.assertRaises(RuntimeError):
                 self._conductor(repo)._write_runner(refs)
@@ -14375,7 +14430,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             self._seed_harness_pipeline(repo, tamper_source=True)
             with self.assertRaises(RenderError):
                 self._conductor(repo)._write_runner(refs)
@@ -14388,7 +14443,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             self._seed_harness_pipeline(repo)  # source_meta has NO ir_ref
             self._conductor(repo)._write_runner(refs)
             runner = repo / refs.source_dir() / "src" / f"{self.SID}_runner.f90"
@@ -14404,7 +14459,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             self._seed_harness_pipeline(
                 repo, extra_source_meta={"ir_ref": "workspace/ir/does/not/exist"})
             self._conductor(repo)._write_runner(refs)  # renders successfully regardless
@@ -14419,7 +14474,7 @@ class WriteRunnerTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._refs()
-                self._write_consumer_ir(repo, refs, infra=1)
+                self._write_consumer_ir(repo, refs)
                 self._seed_harness_pipeline(repo, **kwargs)
                 with self.assertRaises(RuntimeError) as cm:
                     self._conductor(repo)._write_runner(refs)
@@ -14439,11 +14494,11 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
             self._seed_harness_pipeline(repo)
             self._conductor(repo)._write_runner(refs)  # the standing chain renders
             certify_node(
-                repo, "orch_harness2", "infrastructure/harness_fortran_cpu@0.2.0",
+                repo, "orch_harness2", _HARNESS_NK,
                 through="compile", ir_id="harness-fortran-cpu_20260707_003",
                 pipeline_id="harness-fortran-cpu_20260707_002",
                 ir_text=_yaml.safe_dump({"public_api": {"signatures": [
@@ -14468,7 +14523,7 @@ class WriteRunnerTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._refs()
-                self._write_consumer_ir(repo, refs, infra=1)
+                self._write_consumer_ir(repo, refs)
                 self._seed_harness_pipeline(repo, **kwargs)
                 with self.assertRaises(RuntimeError) as cm:
                     self._conductor(repo)._write_runner(refs)
@@ -14478,7 +14533,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)  # M3c, but no harness seeded
+            self._write_consumer_ir(repo, refs)  # M3c, but no harness seeded
             c = self._conductor(repo)
             outcome = c.run_phase(refs, "generate")
             self.assertEqual(outcome.status, "fail")
@@ -14489,11 +14544,11 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=1)
+            self._write_consumer_ir(repo, refs)
+            # The target-free sidecar (issue #284): the pipeline closure adds the harness.
             (repo / refs.ir_ref / "dependency_graph.json").write_text(json.dumps({
                 "all_nodes": [
-                    {"node_key": f"component/{self.SID}@0.1.0", "topo_level": 1},
-                    {"node_key": "infrastructure/harness_fortran_cpu@0.2.0", "topo_level": 0},
+                    {"node_key": f"component/{self.SID}@0.1.0", "topo_level": 0},
                 ]}), encoding="utf-8")
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
@@ -14581,6 +14636,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         """A REAL conductor: `_bundle_shape` is this class's subject, and `_FakeConductor`
         stubs it (its `repo_root` is usually synthetic). The IR is on disk here, so the real
         reader has something to read."""
+        _register_target_harness(repo)
         return _TargetedConductor(repo_root=repo, orchestration_id="o",
                             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
@@ -14651,18 +14707,22 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
 
     def test_claude_non_m3c_is_agentic_residual(self) -> None:
-        # (c) claude but non-M3c (0 or 2 infra deps): no bundle representation for the runner, so
-        # the node keeps the agentic leaf. Spec-input rejects both counts on a live physics node,
-        # so this pins the fail-SAFE dispatch for a hand-crafted IR — the agentic loop, never a
-        # bundle producer asked to render glue against an unidentifiable harness.
+        # (c) claude but non-M3c: an IR that states no physics kind (none at all, or a
+        # `profile`, which is never a node) has no bundle representation for the runner, so the
+        # node has no pure GENERATE path — the fail-SAFE dispatch for a hand-crafted IR, never a
+        # bundle producer asked to render glue. (Until issue #284 the non-M3c shape was a
+        # physics IR with 0 or 2 infrastructure deps; the harness is the target's now, so the
+        # count decides nothing.)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             c = self._conductor(repo, "claude")
-            WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=0)
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
+            for kind in ("profile", ""):
+                with self.subTest(spec_kind=kind):
+                    WriteRunnerTest._write_consumer_ir(self, repo, refs, spec_kind=kind)
+                    self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=2)
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
 
     def _infra_refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
@@ -14758,12 +14818,11 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU
         fixture_tc = (FORTRAN_CPU.toolchain["build_system"], FORTRAN_CPU.toolchain["language"])
         answers = {vps._ir_bundle_shape(ir, nk, fixture_tc) for ir, nk in [
-            ({"meta": {"spec_kind": "component"},
-              "dependency": {"direct_deps": [{"node_key": "infrastructure/h@0.1.0"}]}},
+            ({"meta": {"spec_kind": "component"}, "dependency": {"direct_deps": []}},
              "component/x@0.1.0"),
             ({"meta": {"spec_kind": "infrastructure"}, "dependency": {"direct_deps": []}},
              "infrastructure/x@0.1.0"),
-            ({"meta": {"spec_kind": "component"}, "dependency": {"direct_deps": []}},
+            ({"meta": {"spec_kind": "infrastructure"}, "dependency": {"direct_deps": []}},
              "component/x@0.1.0")]}
         self.assertEqual(answers, {"m3c", "harness", None})
 
@@ -14789,7 +14848,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
         A `profile` catalog entry is the one kind held to the OPPOSITE assertion. Issue #175
         made a profile a compile-time selection policy the host resolves rather than a node the
-        workflow certifies, so it declares no harness (`infra_dep_count_violation`) and no
+        workflow certifies, so it declares no dependency a build would need and no
         `--with-deps` closure ever schedules it. Requiring it to have a bundle shape would
         require it to be buildable, which is exactly what it stopped being; requiring the shape
         to be None is what would break if it re-entered the closure as a node."""
@@ -15188,16 +15247,21 @@ class DeterministicBuildTest(unittest.TestCase):
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             bindings = meta["dependency_check"]["closure_bindings"]
-            self.assertEqual([b["node_key"] for b in bindings], ["component/depy@0.1.0"])
-            self.assertEqual(bindings[0]["model_source_sha256"], sha)
-            self.assertEqual(bindings[0]["source_id"], "src_20260101_001")
-            self.assertTrue(bindings[0]["output_hash"].startswith("sha256:"))
+            # The target's harness first (issue #284), then the sidecar's `depy`.
+            self.assertEqual([b["node_key"] for b in bindings],
+                             [_HARNESS_NK, "component/depy@0.1.0"])
+            self.assertEqual(bindings[1]["model_source_sha256"], sha)
+            self.assertEqual(bindings[1]["source_id"], "src_20260101_001")
+            self.assertTrue(bindings[1]["output_hash"].startswith("sha256:"))
+            # ...and the direct set it records carries the harness too.
+            self.assertIn(_HARNESS_NK, meta["dependency_check"]["direct_deps"])
 
     def test_build_records_empty_closure_bindings_for_a_leaf(self) -> None:
         """A leaf records the key with an EMPTY list. The key's PRESENCE is what tells a leaf
         apart from a legacy binary certified before this contract, and a legacy binary with a
         non-empty closure fails readiness closed — so omitting it here would make every leaf
-        (the harness of every closure) permanently stale."""
+        (the harness of every closure) permanently stale. Since issue #284 the one leaf is an
+        `infrastructure` node: a physics node's closure holds its target's harness."""
         import sys
         import tempfile
         from unittest import mock
@@ -15209,7 +15273,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
             refs = wc.NodeRefs(target_id=_TARGET_ID,
-                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                node_key=_HARNESS_NK, spec_path="spec/infrastructure/harness_fortran_cpu",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
@@ -16680,6 +16744,7 @@ class DeterministicLintTest(unittest.TestCase):
     unioned gate_meta.json + routing is exercised by DeterministicGateTest."""
 
     def _conductor(self, repo: Path) -> "wc.Conductor":
+        _register_target_harness(repo)
         return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
 
@@ -17248,6 +17313,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
     fail_closed); the unioned gate_meta.json is exercised by DeterministicGateTest."""
 
     def _conductor(self, repo: Path, env: dict[str, str] | None = None) -> "wc.Conductor":
+        _register_target_harness(repo)
         return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x", llm_config=_cfg("claude"),
                             env=env or {})
@@ -17430,6 +17496,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # closure (every physics node's closure holds its target's harness, issue #284).
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
@@ -17457,6 +17526,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # closure (every physics node's closure holds its target's harness, issue #284).
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
             with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unattributed_interaction")
@@ -17500,6 +17572,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # closure (every physics node's closure holds its target's harness, issue #284).
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
 
             def _raise(args):
                 raise SyntaxSourceNameError("refused source name '-o.f90'")
@@ -17568,6 +17643,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # closure (every physics node's closure holds its target's harness, issue #284).
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
 
             def _fn(args):
                 pd = str(args.get("project_dir", ""))
@@ -17615,8 +17693,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c = self._conductor(repo)
 
             def fake(args):
-                if self._call_kind(args) == "canary":
-                    return {"ok": True, "skipped": False, "command_id": "canary"}
+                kind = self._call_kind(args)
+                if kind in ("canary", "probe"):
+                    # The canary and the staged closure (the target's harness) compile; the
+                    # node's own source does not.
+                    return {"ok": True, "skipped": False, "command_id": kind}
                 return {"ok": False, "return_code": 1, "command_id": "sid",
                         "skipped": False,
                         "stderr": "Error: IMPLICIT NONE with spec list"}
@@ -17744,15 +17825,26 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
     DEP_REF = "workspace/pipelines/component__dep__0.1.0/p_1/source/s_1/src/dep_model.f90"
 
+    #: What a dependency attribution probe compiles: the staged closure alone. A row that
+    #: patches in `dep_model.f90` (`_with_dep`) stages that; any other row's node stages its
+    #: target's harness (issue #284: every physics node's closure holds it).
+    _probe_sources: frozenset[str] = frozenset({f"{_HARNESS_NK.split('/')[1].split('@')[0]}"
+                                                 "_model.f90"})
+
     def _with_dep(self, c: "wc.Conductor"):
         """Patch the conductor so one dependency-closure `dep_model.f90` is staged."""
         from unittest import mock
+        self._probe_sources = frozenset({"dep_model.f90"})
 
         def stage(_refs, obj_dir, **_kw):
             obj_dir.mkdir(parents=True, exist_ok=True)
             (obj_dir / "dep_model.f90").write_text(
                 "module dep_model\nend module dep_model\n", encoding="utf-8")
-            return [self.DEP_REF]
+            # The stager's real return shape: one BINDING per staged source (issue #250 PR-3).
+            # A bare path string here hid a `', '.join(staged_deps)` over dicts in the
+            # dependency-attribution message until issue #284 made the harness a staged
+            # member of every physics node's closure and the path ran unpatched.
+            return [{"node_key": "component/dep@0.1.0", "model_source_ref": self.DEP_REF}]
 
         return (mock.patch.object(c, "_stage_dependency_sources", side_effect=stage),
                 mock.patch.object(c, "_dependency_closure_nodes",
@@ -17772,7 +17864,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(staged, {"atmofab_syntax_canary.f90"})
             return "canary"
         if d.name.endswith("_deps_probe"):
-            self.assertEqual(staged, {"dep_model.f90"})
+            self.assertEqual(staged, set(self._probe_sources))
             return "probe"
         return "stage"
 
@@ -18275,6 +18367,7 @@ class DeterministicGateTest(unittest.TestCase):
     then run it through determine_substep_status -> classify_failure -> _read_repair_findings."""
 
     def _conductor(self, repo: Path, env: dict[str, str] | None = None) -> "wc.Conductor":
+        _register_target_harness(repo)
         return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
                             llm_config=_cfg("claude"), env=env or {})
@@ -18313,8 +18406,9 @@ class DeterministicGateTest(unittest.TestCase):
 
     @staticmethod
     def _syntax_fail(args):
-        # main stage fails; the invocation canary passes (isolates the failure to the source).
-        if str(args.get("project_dir", "")).endswith("_canary"):
+        # main stage fails; the invocation canary and the staged closure (the target's harness,
+        # issue #284) pass, which isolates the failure to the node's own source.
+        if str(args.get("project_dir", "")).endswith(("_canary", "_deps_probe")):
             return {"ok": True, "skipped": False, "command_id": "canary"}
         return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
                 "stderr": "Error: IMPLICIT NONE with spec list"}
@@ -18703,6 +18797,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     both graded classes write `fail_closed` on either path."""
 
     def _conductor(self, repo: Path, target: object = None) -> "wc.Conductor":
+        _register_target_harness(repo)
         return _TargetedConductor(repo_root=repo, orchestration_id="t",
                             orchestration_agent_run_id="x",
                             llm_config=_cfg("claude"), env={}, target_profile=target)
@@ -18834,12 +18929,17 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["dependency_nodes"][0]["node_key"], "component/dep@0.1.0")
             self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "pass")
             self.assertTrue(agg["dependency_nodes"][0]["ready"])
+            # The target's harness is an immediate dependency too (issue #284).
+            self.assertEqual(agg["dependency_nodes"][1]["node_key"], _HARNESS_NK)
             # Readiness is asked for the RUN's target (issue #284): a dependency validated for
             # another target does not make this one's closure ready.
-            ready.assert_called_once_with(repo, "component/dep", SECOND_TARGET.target_id)
+            self.assertEqual(
+                ready.call_args_list,
+                [mock.call(repo, "component/dep", SECOND_TARGET.target_id),
+                 mock.call(repo, _HARNESS_NK.split("@")[0], SECOND_TARGET.target_id)])
             summary = json.loads((rn / "summary.json").read_text())
-            self.assertEqual(summary["dependency_summary"]["total"], 1)
-            self.assertEqual(summary["dependency_summary"]["pass"], 1)
+            self.assertEqual(summary["dependency_summary"]["total"], 2)
+            self.assertEqual(summary["dependency_summary"]["pass"], 2)
 
     def test_author_derived_blocked_case(self) -> None:
         import tempfile
@@ -18863,10 +18963,11 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
             self.assertTrue(agg["blocked"])
             self.assertEqual(agg["aggregate_verdict"], "blocked")
-            self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0"])
+            # The target's harness (issue #284) is not validated here either.
+            self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0", _HARNESS_NK])
             self.assertFalse(agg["dependency_nodes"][0]["ready"])
             summary = json.loads((rn / "summary.json").read_text())
-            self.assertEqual(summary["dependency_summary"]["blocked"], 1)
+            self.assertEqual(summary["dependency_summary"]["blocked"], 2)
 
     def test_author_derived_regressed_dep_not_blocked(self) -> None:
         """G6 review finding #3: a dep whose LATEST verdict is `fail` but that is still
@@ -19134,14 +19235,27 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                         "transitive_deps": [], "generated_by": "conductor"}),
             encoding="utf-8")
 
-    def test_pre_spawn_single_node_skips(self) -> None:
+    def test_pre_spawn_single_node_asks_only_about_its_harness(self) -> None:
+        """A node with no dependency of its own: its closure is its target's harness alone
+        (issue #284), so the block names the harness until it is validated for the target,
+        and nothing else is ever asked about."""
         import tempfile
+        from unittest import mock
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             self._seed_ir_closure(repo, refs, [])  # only self in all_nodes
             c = self._conductor(repo)
-            # Empty closure -> None without ever consulting the (unpatched) validator.
-            self.assertIsNone(c._judge_pre_spawn_dag_block(refs))
+            harness_token = _HARNESS_NK.split("@")[0]
+            with mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=False) as ready:
+                block = c._judge_pre_spawn_dag_block(refs)
+            self.assertIn(f"missing node workflows ['{harness_token}']", block)
+            ready.assert_called_once_with(repo, harness_token, c.target.target_id)
+            with mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True):
+                self.assertIsNone(c._judge_pre_spawn_dag_block(refs))
 
     def test_pre_spawn_absent_ir_skips(self) -> None:
         import tempfile
@@ -19403,6 +19517,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
         """A fake whose verify leaf authors `verify_meta` on every run (None models a leaf that
         writes NOTHING), and whose verify gate mirrors the real one (status + freshness +
         stage-meta contract). Every other substep passes unless `status_fn` says otherwise."""
+        _register_target_harness(repo)
         meta_path = self._meta_path(repo, refs, phase)
         state = {"verify_runs": 0}
 
@@ -20838,20 +20953,14 @@ class WarmResumeUsageTest(unittest.TestCase):
 
 #: An `impl_defaults` the checked-in `fortran_cpu` profile accepts (a serial backend included,
 #: as the certified harness IR declares).
-_BRIDGE_MATCHING_IMPL = {"target": {"class": "cpu", "backend": "serial"},
-                          "toolchain": {"language": "fortran", "standard": "f2008",
-                                        "build_system": "make"}}
+class ConductTargetTests(unittest.TestCase):
+    """`conduct` and the target (issue #284). The R4-a PR-1 bridge that stood in `conduct` —
+    refusing every phase after Compile when the IR's `impl_defaults` named another target — is
+    deleted with `impl_defaults` in PR-3: the IR names no target, and a stale IR that still
+    carries the section is not read. Driven through `conduct` with `run_phase` replaced, so the
+    observation is which phases RAN."""
 
-
-class TargetProfileBridgeTests(unittest.TestCase):
-    """The R4-a PR-1 bridge in `conduct` (issue #284; PR-3 deletes it with `impl_defaults`):
-    before any phase after Compile, the node's IR must declare the run's target. Driven through
-    `conduct` with `run_phase` replaced, so the observation is which phases RAN."""
-
-    def _run(self, impl_defaults: object, *, target: bool = True,
-             ir_text: str | None = None) -> tuple[str, list, list]:
-        from tools import target_profile as tp
-
+    def test_an_ir_naming_another_target_no_longer_stops_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
@@ -20861,11 +20970,11 @@ class TargetProfileBridgeTests(unittest.TestCase):
             ir_dir.mkdir(parents=True)
             import yaml
 
-            (ir_dir / "spec.ir.yaml").write_text(
-                ir_text if ir_text is not None
-                else yaml.safe_dump({"impl_defaults": impl_defaults}), encoding="utf-8")
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({"impl_defaults": {
+                "target": {"class": "gpu"},
+                "toolchain": {"language": "c", "standard": "c11", "build_system": "cmake"}}}),
+                encoding="utf-8")
             ran: list[str] = []
-            statuses: list[tuple] = []
 
             class _C(wc.Conductor):
                 def run_phase(self, refs, phase, repair=None):  # type: ignore[override]
@@ -20873,58 +20982,19 @@ class TargetProfileBridgeTests(unittest.TestCase):
                     return wc.PhaseOutcome(phase=phase, status="pass")
 
                 def set_status(self, status, reason_code=None, reason_detail=None):  # type: ignore[override]
-                    statuses.append((status, reason_code, reason_detail))
                     return {}
 
                 def emit(self, event, **fields):  # type: ignore[override]
                     pass
 
+            from tools import target_profile as tp
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
                    llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"), env={},
-                   target_profile=(tp.load_target_profile(REPO_ROOT, "fortran_cpu")
-                                   if target else None))
+                   target_profile=tp.load_target_profile(REPO_ROOT, "fortran_cpu"))
             c._seed_repairs_from_revocations = lambda refs, phases: {}  # type: ignore[assignment]
-            return c.conduct(refs, "validate"), ran, statuses
-
-    def test_a_matching_ir_runs_every_phase(self) -> None:
-        status, ran, statuses = self._run(_BRIDGE_MATCHING_IMPL)
-        self.assertEqual(ran, ["compile", "generate", "build", "validate"])
-        self.assertEqual((status, [st[0] for st in statuses]), ("pass", ["pass"]))
-
-    def test_a_mismatching_ir_stops_before_generate_and_names_the_field(self) -> None:
-        ir = copy.deepcopy(_BRIDGE_MATCHING_IMPL)
-        ir["toolchain"]["standard"] = "f2018"
-        status, ran, statuses = self._run(ir)
-        self.assertEqual(status, "fail_closed")
-        self.assertEqual(ran, ["compile"])
-        self.assertEqual(len(statuses), 1)
-        state, code, detail = statuses[0]
-        self.assertEqual((state, code), ("fail_closed", "conductor_phase_fail_closed"))
-        self.assertTrue(
-            detail.startswith("target_profile_ir_mismatch: impl_defaults "
-                              "toolchain.standard='f2018' expected 'f2008'"), detail)
-
-    def test_every_mismatching_field_survives_the_detail_cap(self) -> None:
-        """All four fields wrong: the capped detail still names each of them."""
-        status, ran, statuses = self._run({
-            "target": {"class": "gpu"},
-            "toolchain": {"language": "c", "standard": "c11", "build_system": "cmake"}})
-        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
-        detail = statuses[0][2]
-        self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
-        for field in ("target.class", "toolchain.language", "toolchain.standard",
-                      "toolchain.build_system"):
-            self.assertIn(f"{field}=", detail)
-
-    def test_an_unreadable_ir_is_named_as_unreadable_not_as_another_target(self) -> None:
-        status, ran, statuses = self._run(None, ir_text="key: [unclosed\n")
-        self.assertEqual((status, ran), ("fail_closed", ["compile"]))
-        self.assertTrue(statuses[0][2].startswith("target_profile_ir_unreadable:"), statuses)
-
-    def test_no_target_profile_is_no_bridge(self) -> None:
-        """The unit-test constructor; `run_conductor` never passes None."""
-        status, ran, _statuses = self._run({}, target=False)
-        self.assertEqual((status, ran), ("pass", ["compile", "generate", "build", "validate"]))
+            self.assertEqual(c.conduct(refs, "validate"), "pass")
+            self.assertEqual(ran, ["compile", "generate", "build", "validate"])
+            self.assertFalse(hasattr(wc.Conductor, "_target_ir_mismatch"))
 
     def test_run_conductor_hands_the_driver_target_to_the_conductor(self) -> None:
         from tools import target_profile as tp
@@ -20955,6 +21025,8 @@ class TargetProfileBridgeTests(unittest.TestCase):
                                  llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"))
             resolve.assert_called_once_with(REPO_ROOT, None)
             self.assertIs(seen[-1], profile)
+
+
 
 
 if __name__ == "__main__":  # pragma: no cover

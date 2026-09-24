@@ -21,7 +21,6 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
@@ -56,7 +55,6 @@ _REPO_DOCUMENTS = (
     "docs/workflow/CHECKS_MODULE_CONTRACT.md",
     "docs/examples/spec_ir_algorithm_section.example.yaml",
     "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-    "spec/schema/ir/impl_defaults.schema.json",
 )
 
 _REAL_REPO = Path(__file__).resolve().parents[2]
@@ -161,7 +159,6 @@ def _valid_ir(kind: str = "component") -> dict:
         "meta": {"spec_id": _SPEC_ID, "spec_kind": kind},
         "case": {"test_case_set": []},
         "algorithm": {"execution_mode": "sequence", "steps": []},
-        "impl_defaults": {"toolchain": {}},
         "io_contract": {"inputs": [], "outputs": []},
         "dependency": {"node_key": _NODE, "direct_deps": []},
     }
@@ -249,10 +246,10 @@ class PureCompileContextTests(_Fixture):
                 self.assertIn(marker, outcome.infra_error[1])
                 self.assertEqual([s for s, _ in c.calls].count("record-launch"), 0)
 
-    #: Every declared context key that comes from a FILE, and the file it comes from. The two
-    #: that do not are `profile_spec_document` (a host sentence when no profile is declared) and
-    #: `toolchain_document` (derived from the backend registry, and non-empty by its own raise) —
-    #: both are covered by rows of their own in this class.
+    #: Every declared context key that comes from a FILE, and the file it comes from. The one
+    #: that does not is `profile_spec_document` (a host sentence when no profile is declared),
+    #: covered by rows of its own in this class. (`toolchain_document`, derived from the backend
+    #: registry, was the second until R4-a PR-3 removed it with the IR's `impl_defaults`.)
     _KEY_SOURCE = {
         "generate": {
             "controlled_spec_document": "{spec}/controlled_spec.md",
@@ -264,7 +261,6 @@ class PureCompileContextTests(_Fixture):
                 "docs/examples/spec_ir_algorithm_section.example.yaml",
             "ir_algorithm_2d_example_document":
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-            "impl_defaults_schema_document": "spec/schema/ir/impl_defaults.schema.json",
             "checks_module_contract_document": "docs/workflow/CHECKS_MODULE_CONTRACT.md",
         },
         "verify": {
@@ -317,10 +313,10 @@ class PureCompileContextTests(_Fixture):
                                     "survives the reason_detail cap")
 
     def test_the_key_source_table_covers_every_declared_key(self) -> None:
-        """Set identity between the table above and the contract, with the two derived keys
-        named explicitly — so a new key is either given a file row or a deliberate exemption,
-        and never silently neither."""
-        derived = {"generate": {"profile_spec_document", "toolchain_document"}, "verify": set()}
+        """Set identity between the table above and the contract, with the derived key named
+        explicitly — so a new key is either given a file row or a deliberate exemption, and
+        never silently neither."""
+        derived = {"generate": {"profile_spec_document"}, "verify": set()}
         for substep, sources in self._KEY_SOURCE.items():
             with self.subTest(builder=substep):
                 self.assertEqual(
@@ -328,22 +324,13 @@ class PureCompileContextTests(_Fixture):
                     set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", substep)]))
 
     def test_the_derived_keys_are_non_empty_by_construction(self) -> None:
-        """The two keys with no file. `toolchain_document` raises rather than returning an empty
-        admissible set; `profile_spec_document` returns the host's fixed sentence when the node
-        declares no profile, and a named line when the catalog cannot resolve one — so neither
-        has a path that yields `""`."""
+        """The key with no file: `profile_spec_document` returns the host's fixed sentence when
+        the node declares no profile, and a named line when the catalog cannot resolve one — so
+        it has no path that yields `""`."""
         c = self.conductor()
         ctx = c._build_pure_compile_context(self.refs)
-        self.assertTrue(ctx["toolchain_document"].strip())
         self.assertEqual(ctx["profile_spec_document"],
                          wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
-        # The registry-empty branch of `_pure_toolchain_document` raises rather than shipping
-        # `[]`, which is the same disposition every file-backed key has.
-        with mock.patch.object(backend_registry, "implemented_backend_ids",
-                               return_value=()):
-            with self.assertRaises(RuntimeError) as caught:
-                c._pure_toolchain_document(self.refs)
-        self.assertIn("pure_toolchain_document_unresolvable", str(caught.exception))
 
     def _build(self, substep: str):
         c = self.conductor()
@@ -406,8 +393,6 @@ class PureCompileContextTests(_Fixture):
         for rel, marker in (
             (ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"], "pure_phase_contract_document_missing"),
             ("docs/workflow/CHECKS_MODULE_CONTRACT.md", "pure_checks_contract_document_missing"),
-            ("spec/schema/ir/impl_defaults.schema.json",
-             "pure_impl_defaults_schema_document_missing"),
             (f"{self.refs.ir_ref}/dependency_graph.json",
              "pure_dependency_graph_document_missing"),
         ):
@@ -431,26 +416,10 @@ class PureCompileContextTests(_Fixture):
         self.assertEqual(ctx["profile_spec_document"],
                          wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
 
-    def test_the_toolchain_document_is_derived_from_the_registry(self) -> None:
-        """The expected value is COMPUTED from the registry, never transcribed: transcribing it
-        would turn a legitimate new backend into a red test instead of a wider document."""
-        c = self.conductor()
-        doc = json.loads(c._build_pure_compile_context(self.refs)["toolchain_document"])
-        expected = [
-            {"language": lang, "build_system": bs}
-            for lang in backend_registry.implemented_backend_ids("language")
-            if backend_registry.provides("language", lang, "control_file")
-            and backend_registry.provides("language", lang, "runner_render")
-            for bs in backend_registry.implemented_backend_ids("build_system")
-            if backend_registry.provides("build_system", bs, "build_execute")
-            and backend_registry.provides("build_system", bs, "control_file")
-        ]
-        self.assertTrue(expected, "the registry offers no admissible pair; this observes nothing")
-        self.assertEqual(doc["admissible_toolchains"], expected)
-
     def test_the_templates_name_no_backend_identifier(self) -> None:
-        """The whole reason `toolchain_document` exists: the two templates are `neutral core`
-        files (`docs/BACKEND_BOUNDARY.md`), so the toolchain values must travel as DATA.
+        """The two templates are `neutral core` files (`docs/BACKEND_BOUNDARY.md`), so no
+        toolchain value may be spelled in them — and since R4-a PR-3 (issue #284) the compile
+        leaf is told none at all: the IR is target-free.
 
         The probe set is DERIVED from the registry, so a newly registered id is checked too.
         One id is excluded by name and the exclusion is self-tested: `make` is an ordinary
@@ -679,8 +648,7 @@ class PureIrDocumentViolationTests(_Fixture):
                 self.assertIn("spec_kind", result[1])
         # ...and the node's own kind is accepted, so this is not a blanket refusal — including
         # PADDED, which every reader of this field resolves with `.strip()` and no case folding
-        # (`_validate_published_surface`, `_validate_toolchain_backend_supported`,
-        # `_conductor_authors_runner`). Refusing a spelling those readers agree on would be an
+        # (`_validate_published_surface`, `_m3c_language`, `_conductor_authors_runner`). Refusing a spelling those readers agree on would be an
         # over-refusal; `"Component"` above is refused because they do NOT case-fold.
         self.assertIsNone(self.violations(_doc()))
         padded = _valid_ir()
@@ -707,6 +675,25 @@ class PureIrDocumentViolationTests(_Fixture):
             self.assertIsNone(c._pure_ir_document_violations(refs, {"ir": ir,
                                                                     "last_fail_reason": None}))
 
+    def test_an_impl_defaults_section_is_refused(self) -> None:
+        """The IR is target-free (issue #284, R4-a PR-3): a document that still carries the
+        section the target and the lowering knobs lived in is a repairable violation naming it,
+        so no certified IR records a target choice nothing reads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_compile_node(repo)
+            c = _conductor(repo)
+            ir = _valid_ir()
+            ir["impl_defaults"] = {"toolchain": {"language": "x"}}
+            found = c._pure_ir_document_violations(refs, {"ir": ir, "last_fail_reason": None})
+            self.assertIsNotNone(found)
+            assert found is not None
+            self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+            self.assertIn("impl_defaults", found[1])
+            self.assertIn("target-free", found[1])
+            self.assertEqual(wc.Conductor._PURE_IR_FORBIDDEN_SECTIONS, ("impl_defaults",))
+            self.assertNotIn("impl_defaults", wc.Conductor._PURE_IR_REQUIRED_SECTIONS)
+
     def test_the_round_trip_probe_accepts_an_adversarial_json_document(self) -> None:
         """The OVER-REFUSAL direction of the serialize/parse probe, which is the direction that
         matters here: the values a JSON document can carry are exactly the ones `yaml.safe_dump`
@@ -725,7 +712,7 @@ class PureIrDocumentViolationTests(_Fixture):
             {"name": "null", "shape_expr": "~"},
             {"name": "on", "shape_expr": "0x10"},
         ]
-        ir["impl_defaults"]["toolchain"] = {"on": "yes", "off": "no", "n": "1_000"}
+        ir["io_contract"]["notes"] = {"on": "yes", "off": "no", "n": "1_000"}
         ir["meta"]["notes"] = "  leading and trailing  "
         self.assertIsNone(self.violations(_doc(ir)))
 

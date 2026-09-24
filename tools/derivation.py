@@ -29,10 +29,11 @@ each decision):
   tuple, which the drift tests pin (`tools/tests/test_pure_prompt_contract_drift.py`,
   `tools/tests/test_derivation_transformation_drift.py`), so a maintainer decides once —
   bump or re-pin — instead of a typo fix invalidating every certified node. A host-derived
-  document that VARIES by node — the harness capability manifest of the node's harness, the
-  admissible-toolchain document of the node's kind — is a node input and is hashed as one;
-  an edit to the manifest table re-derives the Generate of every node on that harness, a
-  registry change the Compile of every node.
+  document that VARIES by node or by target — the harness capability manifest of the target's
+  harness, the target profile itself — is an input and is hashed as one; an edit to the
+  manifest table re-derives the Generate of every node on that harness, a profile edit every
+  Generate, Build and Validate built for that target. Compile hashes nothing target-derived
+  (issue #284, R4-a PR-3).
 
 `DERIVATION_KEY_VERSION` is the version of the KEY'S OWN construction (which inputs a phase
 hashes, in which shape). Changing that rule changes every key at once, which is the intended
@@ -48,20 +49,24 @@ from typing import Any, NamedTuple
 
 #: The version of the key construction rule itself (`derivation_key`'s payload shape and the
 #: per-phase input sets the runtime resolves). Bump when the RULE changes; every key changes.
-DERIVATION_KEY_VERSION = 1
+#: v2 (issue #284, R4-a PR-3): the compile key lost `toolchain_document` and its graph lost the
+#: harness (target-free Compile); the generate / build `closure[]` became the PIPELINE closure
+#: (the sidecar's plus the target's harness) and the generate `harness` became the target's.
+DERIVATION_KEY_VERSION = 2
 
 #: The version of the eligible-output selection policy (`select_eligible`). v1 = the latest
 #: attempt among the eligible outputs of one key. A performance-aware policy is the `Tune`
 #: flow's exit and takes the next number; the outputs it chooses among are the same set.
 SELECTION_POLICY_VERSION = 1
 
-#: The version of the compile-inlined documents (`phase_01_compile.md`, the two IR examples,
-#: the `impl_defaults` schema). Pinned separately from `PURE_PROMPT_CONTRACT_VERSION` because a
+#: The version of the compile-inlined documents (`phase_01_compile.md`, the two IR examples; the
+#: `impl_defaults` schema was the fourth until R4-a PR-3, issue #284, which deleted it with the IR
+#: section). Pinned separately from `PURE_PROMPT_CONTRACT_VERSION` because a
 #: bump of that one has two side effects this one must not have (it stops `_resolve_exemplar_source`
 #: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
 #: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
 #: node's Compile, and nothing downstream whose IR comes out byte-identical.
-COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-4"
+COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-5"
 
 #: The versions of the DETERMINISTIC transformations. Each is the identity of the implementing
 #: code, pinned by `tools/tests/test_derivation_transformation_drift.py` as a digest of the
@@ -70,7 +75,7 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-4"
 RENDER_VERSION = "render-4"      # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-1"        # build-runtime server `compile_project` + the in-process build
 EXECUTE_VERSION = "execute-3"    # `run_program` / `run_quality_checks` + the in-process execute
-VERDICT_VERSION = "verdict-4"    # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
+VERDICT_VERSION = "verdict-5"    # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
 
 #: The phases that ARE derivations, in pipeline order.
 DERIVATION_STEPS: tuple[str, ...] = ("compile", "generate", "build", "validate")

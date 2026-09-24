@@ -34,7 +34,7 @@
 - `memory_bytes_read/write`: may be an estimate
 - `device`: GPU name, SM count, etc.
 - `compiler`: compiler/version, main flags
-- `impl_hash`: the hash of `spec.ir.yaml.impl_defaults`
+- `impl_hash`: the hash of the implementation choice the run measured: the target profile (`spec/targets/<target_id>.yaml`) together with the bundle's `target_lowering_plan`
 - `git_sha`: the commit of the executed code
 
 ## 4. Measurement notes

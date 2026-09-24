@@ -497,8 +497,8 @@ recipes are in `references/input-surfaces.md`:
   leaf the off switch. Issue #168: `_validate_published_surface` takes `spec_kind` from the IR's
   own `meta`, and a `component` IR self-declaring `problem` passes the whole deterministic compile
   gate with rc 0 — measured on a real certified IR — dropping every published-surface pin. **The
-  same field, twice more**: `_validate_toolchain_backend_supported` reads it to decide whether a
-  node is exempt from half its own check, and the phase contract warns that whichever of three
+  same field, twice more**: `_validate_toolchain_backend_supported` (deleted with the IR's toolchain in R4-a PR-3, issue #284) read it to decide whether a
+  node was exempt from half its own check, and the phase contract warns that whichever of three
   places a multi-dimensional state contract appears in FIRST is the one the gate validates — so an
   empty mapping in the highest-priority place makes it validate nothing. This tree has also
   CLOSED one instance already, and it is the shape to copy:

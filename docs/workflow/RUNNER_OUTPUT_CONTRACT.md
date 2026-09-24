@@ -8,8 +8,8 @@
 > `PERFORMANCE_DIAGNOSTICS.md` §2/§6. The deterministic `Build` / `Validate.execute`
 > steps take their contract from `phase_03_build.md` / `phase_04_validate.md`.
 
-> **Scope note (R1/M3c-β → M3d).** On an *M3c node* (make+fortran physics node with
-> exactly one `infrastructure`/harness dependency) the `runner` is **host-rendered** —
+> **Scope note (R1/M3c-β → M3d).** On an *M3c node* (a physics node of a
+> make+fortran target, over that target's harness) the `runner` is **host-rendered** —
 > the leaf authors `<spec_id>_model.f90` + `<spec_id>_checks.f90` (see
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
@@ -136,7 +136,7 @@ source; do not uniformly require a fixed minimal composition.
 JSON object restorable by a standard JSON parser. Numeric tokens follow RFC 8259
 (`.123` / `-.123` with a missing leading zero are forbidden).
 
-**Fortran runner (`impl_defaults.toolchain.language=fortran`) descriptor
+**Fortran runner (target profile `toolchain.language=fortran`) descriptor
 rules** — enforcement is **descriptor-syntactic**: `post_generate`
 (`validate_pipeline_semantics --stage post_generate`) flags the mere *presence*
 of a forbidden descriptor in a runner JSON write format spec; it never inspects
@@ -171,7 +171,7 @@ descriptor must not appear at all.
 
 ## 5. Other runner constraints
 
-- When `impl_defaults.toolchain.language` is a `fortran` / `c` / `cpp` /
+- When the target profile's `toolchain.language` is a `fortran` / `c` / `cpp` /
   `mixed` family, the `runner` must not launch an external interpreter
   (`python` / `bash` / `sh` / `node`).
 - The `runner` writes its output paths **relatively** so a `cd $(RUNDIR)` in the

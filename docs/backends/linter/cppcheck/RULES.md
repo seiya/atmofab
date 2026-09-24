@@ -136,7 +136,7 @@ from does not enumerate what the tool reports.
 
 ## Limits
 - **`--std` is not pinned**, so it is an unpinned input to the verdict: its default varies by
-  build. It is not pinned because the standard is a NODE's `toolchain.standard`, and pinning one
+  build. It is not pinned because the standard is a target profile's `toolchain.standard`, and pinning one
   here would invent a policy for a node type the corpus does not contain. The route, the day a
   `c` node exists, is the one `docs/backends/linter/fortitude/RULES.md` describes for
   `--target-std` and rejects for the same reason: it makes the argv node-dependent.
@@ -156,8 +156,9 @@ from does not enumerate what the tool reports.
   read as "there are findings" and routed to the leaf as defects in its own source, which is
   worse. Neither behaviour is right, and the correct fix belongs to the composite rather than to
   this backend — a sub-preset should be skipped over a tree holding nothing it can analyse.
-  Unreachable today: `_validate_toolchain_backend_supported` refuses `language: mixed` on every
-  non-`infrastructure` node, and the corpus is `fortran` throughout. `TODO.md` carries it.
+  Unreachable today: the launch gate (`target_profile.target_profile_violations`) refuses a target
+  profile whose `toolchain.language` is not an implemented `language` value, `mixed` included, and
+  the corpus is `fortran` throughout. `TODO.md` carries it.
 
 ## Supported versions
 `>=2.7,<2.18`, declared as `MIN_VERSION` / `BELOW_VERSION` in `lint.py` and quoted by

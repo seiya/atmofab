@@ -89,10 +89,10 @@ class Axis(NamedTuple):
     #: True when the artifact that carries this axis deliberately does NOT constrain its value,
     #: so `_BACKENDS` lists the members that have code and is not a whitelist. Membership
     #: questions answer permissively for such an axis; extraction questions do not. Declaring a
-    #: closed set here for an open knob would refuse values the schema exists to allow —
-    #: `spec/schema/ir/impl_defaults.schema.json` says of `parallelization` that "the vocabulary
-    #: is deliberately NOT a whitelist, since this is an exploration knob", and the validator
-    #: accepts `openmp+simd` / `openmp_tasks` / `cpu_openmp` today.
+    #: closed set here for an open value would refuse what the carrier exists to allow — the
+    #: bundle's `target_lowering_plan.parallelization` is an open-valued object
+    #: (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Target lowering plan), and the Generate
+    #: floor reads `openmp+simd` / `openmp_tasks` there as OpenMP claims.
     open_vocabulary: bool = False
 
 
@@ -139,9 +139,8 @@ AXES: dict[str, Axis] = {
         name="parallel",
         source=(
             "target profile parallel.backend (the model a run is built and run for, "
-            "spec/targets/<target_id>.yaml), and the node's own "
-            "ir.impl_defaults.abstract.parallelization knob until R4-a PR-3 moves it into "
-            "the bundle's target_lowering_plan"
+            "spec/targets/<target_id>.yaml), and the Generate producer's "
+            "target_lowering_plan.parallelization (the model its source uses)"
         ),
         description=(
             "The parallel execution model: its directive or construct spelling in the target "

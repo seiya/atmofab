@@ -414,6 +414,18 @@ def _package_of(rel: str) -> str:
 _IMPORTER_CALLS = frozenset({"import_module", "__import__"})
 
 
+
+def _declare_target_with_language(repo_root: Path, language: str) -> None:
+    """Declare, in a fixture repository, the one target profile with `language` and a catalog
+    carrying its harness — what the Compile-stage render-precondition gate asks of since R4-a
+    PR-3 (issue #284: it renders once per declared target, the IR naming none)."""
+    from tools.tests.orchestration_fixtures import ensure_spec_entry
+    from tools.tests.target_fixtures import FORTRAN_CPU, install_target_profile, profile_with
+
+    install_target_profile(repo_root, profile_with(toolchain={"language": language}))
+    ensure_spec_entry(repo_root,
+                      f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0")
+
 class UnparseableNeutralModule(Exception):
     """A neutral-core module the import pin could not parse.
 
@@ -1861,9 +1873,12 @@ class RegistryConsistencyTests(unittest.TestCase):
             [], membership_calls,
             "a signature gate guards a Fortran-only renderer on membership alone "
             f"(line(s) {[n.lineno for n in membership_calls]})")
+        # ONE gate since R4-a PR-3 (issue #284): the Compile-stage published-surface gate asked
+        # it of the IR's `impl_defaults.toolchain.language`, and the IR is target-free now; the
+        # Generate-stage `_validate_generated_signatures` asks it of the pipeline's target.
         self.assertEqual(
-            2, source.count("unsupported = _signature_backend_refusal(language)"),
-            "both infrastructure signature gates must go through the one refusal predicate")
+            1, source.count("unsupported = _signature_backend_refusal(language)"),
+            "the signature gate must go through the one refusal predicate")
 
     def test_the_signature_helper_backend_matches_what_the_module_imports(self) -> None:
         """`_SIGNATURE_HELPERS_BACKEND_ID` must name the backend the helpers actually import.
@@ -1933,7 +1948,8 @@ class RegistryConsistencyTests(unittest.TestCase):
 
         This test used to assert the language id SET was exactly the signature backend's, on the
         grounds that `_validate_toolchain_backend_supported` also spelled `(make, fortran)`
-        itself. That gate now dispatches on registry capabilities, so the set equality was
+        itself. That gate came to dispatch on registry capabilities (and was deleted in R4-a
+        PR-3, issue #284, with the IR's toolchain), so the set equality was
         pinning a RESULT — registering a second language backend would fail it even after the
         gate had been migrated correctly. What survives is the actual constraint: the §5.1
         helpers import one backend by name and take no `language` argument, so any OTHER
@@ -2175,7 +2191,8 @@ class RegistryConsistencyTests(unittest.TestCase):
                 continue
             # Two shapes, and only these two — the instrument was wrong twice before settling
             # here, in both directions. Scanning call arguments alone missed `build_execute`,
-            # which `_missing_toolchain_capability_clauses` passes through a tuple it loops over;
+            # which `_missing_toolchain_capability_clauses` (deleted in R4-a PR-3) passed through a
+            # tuple it looped over;
             # scanning every capability-named string in the file instead picked up an unrelated
             # `{"lint": ...}` dict key in the conductor. So: a direct argument to the call, or an
             # element of a sequence literal that also names an axis — which is the
@@ -2752,18 +2769,17 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         ir = {
             "meta": {"spec_kind": "component", "spec_id": "bx"},
-            "impl_defaults": {"toolchain": {"language": "zz_second", "build_system": "make"}},
-            "dependency": {"direct_deps": [
-                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+            "dependency": {"direct_deps": []},
         }
         with mock.patch.dict(sys.modules, {"zz_second_lang": other}), \
                 mock.patch.dict(registry._BACKENDS, {("language", "zz_second"): record}):
-            # (1) the validator's mirror hands the seam the language it read from the IR
-            self.assertEqual("zz_second", vps._ir_m3c_language(ir))
+            # (1) the validator's mirror hands the seam the language the TARGET names
+            self.assertEqual("zz_second", vps._m3c_language(ir, "make", "zz_second"))
             self.assertEqual(
                 ["zz_second says no"],
                 list(host_render.ir_content_violations(
-                    vps._ir_m3c_language(ir), ir, "bx", "harness_fortran_cpu")))
+                    vps._m3c_language(ir, "make", "zz_second"), ir, "bx",
+                    "harness_fortran_cpu")))
             # (2) the checks-source gate holds the leaf to THIS language's ABI. Driven through
             # the gate body, not through the seam: hard-coding the language inside the gate
             # survived the whole suite, because the seam's own witness never enters it.
@@ -2782,12 +2798,11 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 f"the gate demanded some other language's ABI: {violations}")
 
             # (3) the render-precondition gate asks THIS language's renderer for its objections
+            # — the language of a declared target (the Compile is target-free, issue #284)
             with tempfile.TemporaryDirectory() as tmp:
                 ir_dir = Path(tmp)
-                (ir_dir / "spec.ir.yaml").write_text(json.dumps({
-                    **ir, "dependency": {"direct_deps": [
-                        {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]}}),
-                    encoding="utf-8")
+                _declare_target_with_language(ir_dir, "zz_second")
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps(ir), encoding="utf-8")
                 pre: list[str] = []
                 vps._validate_harness_render_preconditions(ir_dir, ir_dir, pre)
             self.assertTrue(
@@ -2967,13 +2982,12 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         ir = {
             "meta": {"spec_kind": "component", "spec_id": "bx"},
-            "impl_defaults": {"toolchain": {"language": "zz_no_pkg", "build_system": "make"}},
-            "dependency": {"node_key": "component/bx@0.1.0", "direct_deps": [
-                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+            "dependency": {"node_key": "component/bx@0.1.0", "direct_deps": []},
         }
         with self._patched(record):
             with tempfile.TemporaryDirectory() as tmp:
                 ir_dir = Path(tmp)
+                _declare_target_with_language(ir_dir, "zz_no_pkg")
                 (ir_dir / "spec.ir.yaml").write_text(json.dumps(ir), encoding="utf-8")
                 violations = ["a sibling gate already found this"]
                 vps._validate_harness_render_preconditions(ir_dir, ir_dir, violations)

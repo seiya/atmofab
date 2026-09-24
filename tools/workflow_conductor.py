@@ -49,7 +49,6 @@ import yaml
 from tools.backends import registry as backend_registry
 from tools.target_profile import (
     TargetProfile,
-    ir_profile_mismatches,
     pipeline_ref_for,
     pipelines_dir,
     resolve_run_target,
@@ -3498,10 +3497,10 @@ class Conductor:
     #: The target profile the run builds for (issue #284), resolved by the driver at launch.
     #: Every host read of the target goes through `target` (the toolchain, the parallel
     #: backend, the hardware class and threads per rank, the store coordinate of the pipeline,
-    #: the resolver every certified selection is made with). None — a conductor built without
-    #: a driver, as many unit tests build it — skips the R4-a PR-1 bridge gate
-    #: (`_target_ir_mismatch`) and makes every one of those reads RAISE (`target`), never
-    #: default; `run_conductor`, the only production constructor, never passes None.
+    #: the resolver every certified selection is made with, and the harness every physics
+    #: pipeline's closure starts with). None — a conductor built without a driver, as many
+    #: unit tests build it — makes every one of those reads RAISE (`target`), never default;
+    #: `run_conductor`, the only production constructor, never passes None.
     target_profile: TargetProfile | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
@@ -5203,7 +5202,10 @@ class Conductor:
         disk. `[]` for a leaf node or when no dependency resolves on disk."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         dep = ir.get("dependency") if isinstance(ir, dict) else None
-        direct_deps = dep.get("direct_deps") if isinstance(dep, dict) else None
+        # With the target's harness (issue #284), as the launch gate that confirmed readiness
+        # asked about it.
+        direct_deps = (self._pipeline_dependency_block(refs, dep).get("direct_deps")
+                       if isinstance(dep, dict) else None)
         status: dict[str, str] = {}
         for d in direct_deps or []:
             nk = d.get("node_key") if isinstance(d, dict) else d
@@ -5374,9 +5376,9 @@ class Conductor:
         authors it too and the generate leaf must not. Single source of truth for the live
         author call AND the write-authorization removal, so they cannot disagree (which would
         orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
-        authoring — which since the toolchain gate landed means only an `infrastructure` node
-        on a future non-fortran language, every physics node being rejected at compile. The
-        toolchain is the run's target's (`_read_toolchain`, issue #284)."""
+        authoring — unreachable today for every node kind, because the toolchain is the run's
+        target's (`_read_toolchain`, issue #284) and the launch gate refuses a target whose
+        toolchain the host cannot serve."""
         tc = self._read_toolchain(refs)
         return self._core_authors_control_file(tc["build_system"], tc["language"])
 
@@ -5441,19 +5443,20 @@ class Conductor:
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
-        PHYSICS node whose toolchain the neutral core both writes a control file for and renders
-        a runner for (today make+fortran — asked of the registry, see
-        `_core_authors_control_file`), with exactly one `infrastructure` (runner-harness) direct
-        dependency. On such a node the runner is glue over the certified harness plumbing + the
-        leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
-        interface (`tools/host_render.render_runner`) — the leaf authors model+checks, not
-        the runner. An `infrastructure` node authors its own self-test runner (not glue), and is
-        the only live leaf-authored-runner node: a physics node that is not make+fortran with
-        exactly one infra dep is rejected upstream (spec-input for the dep count,
-        `_validate_toolchain_backend_supported` for the toolchain), so the False branch here is a
-        fail-safe for a hand-crafted IR rather than a live path. Single source of truth for
-        the live render call (`_write_runner`), the write-authorization swap (`build_launch_request`
-        / `phase_required_outputs`), and the Makefile CHECKS rule, so they cannot disagree."""
+        PHYSICS node whose target toolchain the neutral core both writes a control file for and
+        renders a runner for (today make+fortran — asked of the registry, see
+        `_core_authors_control_file`). On such a node the runner is glue over the plumbing of
+        the TARGET's certified harness (`_pure_harness_node_key`, issue #284) + the leaf-authored
+        `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness interface
+        (`tools/host_render.render_runner`) — the leaf authors model+checks, not the runner. An
+        `infrastructure` node authors its own self-test runner (not glue), and is the only live
+        leaf-authored-runner node: a target whose toolchain the host cannot serve for a physics
+        node is refused at launch (`target_profile.target_profile_violations`), so the False
+        branch here is a fail-safe rather than a live path. Until R4-a PR-3 this also required
+        exactly one `infrastructure` direct dependency in the IR; the harness is the target's
+        now, so no dependency count enters it. Single source of truth for the live render call
+        (`_write_runner`), the write-authorization swap (`build_launch_request` /
+        `phase_required_outputs`), and the Makefile CHECKS rule, so they cannot disagree."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         if not isinstance(ir, dict):
             return False
@@ -5466,10 +5469,14 @@ class Conductor:
             return False
         if not backend_registry.provides("language", language, "runner_render"):
             return False
-        meta = (ir.get("meta") or {}) if isinstance(ir, dict) else {}
-        if str(meta.get("spec_kind") or "").strip() == "infrastructure":
-            return False
-        return len(self._infra_direct_deps(ir)) == 1
+        # A physics kind the IR states (`M3C_SPEC_KINDS`). An IR stating none, or another kind,
+        # declines — the fail-safe the dependency count used to give; the pure producer's
+        # document is refused unless `meta.spec_kind` is the node's own kind
+        # (`_pure_ir_document_violations`), so no certified IR reaches here without one. The
+        # validator's twin (`validate_pipeline_semantics._m3c_language`) asks the same.
+        from tools.spec_input_gates import M3C_SPEC_KINDS
+        meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+        return str(meta.get("spec_kind") or "").strip() in M3C_SPEC_KINDS
 
     def _shape_for_spec(self, refs: NodeRefs, phase: str) -> str | None:
         """`_bundle_shape` for the phase that has one, None otherwise.
@@ -5564,18 +5571,10 @@ class Conductor:
             return False
         return self._bundle_shape(refs) is not None
 
-    @staticmethod
-    def _infra_direct_deps(ir: dict[str, Any]) -> list[str]:
-        """The `infrastructure/...` direct-dependency node_keys of an IR (the harness deps).
-        The definition lives in the runtime (`_infrastructure_direct_deps`), which the
-        generate derivation inputs read too; this is the conductor's name for it."""
-        from tools.orchestration_runtime import _infrastructure_direct_deps
-        return _infrastructure_direct_deps(ir)
-
     def _write_runner(self, refs: NodeRefs) -> None:
         """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`).
 
-        Resolves the single infrastructure dependency's CERTIFIED harness — the exact
+        Resolves the TARGET's CERTIFIED harness (`_pure_harness_node_key`) — the exact
         `<harness>_model.f90` Build stages/links (`_certified_model_source`, the harness's
         SELECTED certified Generate output under its derivation key) and the IR
         `public_api.signatures` that source was certified against (`_certified_ir_dir`, its
@@ -5607,12 +5606,7 @@ class Conductor:
         # impossible; two earlier versions of this comment declared it impossible and were
         # wrong.
         language = self._read_toolchain(refs)["language"]
-        infra = self._infra_direct_deps(ir)
-        if len(infra) != 1:
-            raise RuntimeError(
-                f"M3c runner authoring for {refs.node_key} requires exactly one infrastructure "
-                f"dependency, found {infra}")
-        harness_nk = infra[0]
+        harness_nk = self._pure_harness_node_key(refs.node_key)
         harness_sid = spec_id_of(harness_nk)
         safe = node_key_safe(harness_nk)
         # ONE resolver for both selections, so the source and the IR come from one evaluation
@@ -5686,13 +5680,14 @@ class Conductor:
         path.write_text(runner_text, encoding="utf-8")
 
     def _dependency_closure_nodes(self, refs: NodeRefs) -> list[str]:
-        """Dependency node_keys in compile order (deepest first) from the closure sidecar.
+        """Dependency node_keys in compile order (deepest first): the PIPELINE closure of this
+        node for the run's target (`orchestration_runtime.pipeline_closure_nodes`).
 
-        The complete closure is `dependency_graph.json`'s `all_nodes` (the conductor-authored
-        derived graph; see `_write_dependency_graph`). `all_nodes` includes the target itself,
-        so self is excluded here; the remainder — direct + transitive deps — is the build
-        closure, ordered by `topo_level` ascending (deepest deps, which provide modules the
-        shallower ones `use`, compile first). Reading the sidecar's `all_nodes` directly
+        That is the target's harness (issue #284 — the harness is the target's, and the
+        target-free Compile's graph no longer carries it), then the closure sidecar's
+        `all_nodes` (the conductor-authored derived graph; see `_write_dependency_graph`) minus
+        the node itself, ordered by `topo_level` ascending (deepest deps, which provide modules
+        the shallower ones `use`, compile first). Reading the sidecar's `all_nodes` directly
         replaces the old union of the IR's `direct_deps[]` + `transitive_deps[]` (the derived
         graph no longer lives in the IR). The node_keys carry the resolved `@<version>`, so the
         staging path (`_stage_dependency_sources`) and the Makefile object names
@@ -5700,14 +5695,19 @@ class Conductor:
         on which dep / which version. The spec_id basenames must nonetheless be unique across the
         closure (the staged `<spec_id>_model.f90` / object rules are keyed on the bare spec_id);
         a same-spec_id clash (diamond) raises here (L6)."""
-        from tools.orchestration_runtime import _closure_nodes_from_graph
-        from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
-        graph = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
-        # The ordering itself lives in `_closure_nodes_from_graph`, so the derivation inputs
-        # (`_sidecar_closure`, the `closure[]` of the generate and build keys) derive the SAME
-        # closure from the SAME sidecar. What stays here is this caller's own policy: reading
-        # the sidecar, and the L6 guard below.
-        closure = _closure_nodes_from_graph(graph, refs.node_key)
+        from tools.orchestration_runtime import pipeline_closure_nodes
+        from tools.target_profile import TargetProfileError
+        # The closure itself lives in `pipeline_closure_nodes`, so the derivation inputs (the
+        # `closure[]` of the generate and build keys) derive the SAME closure from the SAME
+        # sidecar and the same target. What stays here is this caller's own policy: the L6
+        # guard below.
+        try:
+            closure = pipeline_closure_nodes(
+                self.repo_root, refs.ir_ref, refs.node_key, self.target)
+        except TargetProfileError as exc:
+            raise RuntimeError(
+                f"dependency closure of {refs.node_key}: the harness of target "
+                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
         # L6 guard: the Model B staged source basename (`<spec_id>_model.f90`) and the
         # Makefile object rules (`$(OBJDIR)/<spec_id>_model.o`) are keyed on the bare
         # spec_id (kind/@version dropped), and the dep's generated source declares a Fortran
@@ -5730,6 +5730,22 @@ class Conductor:
                 f"other. Version-qualify the object/staged/module basenames before allowing "
                 f"multi-version/diamond closures (deterministic_followups.md L6).")
         return closure
+
+    def _pipeline_dependency_block(self, refs: NodeRefs, block: Any) -> dict[str, Any]:
+        """A dependency block (the IR's `dependency`, or the closure sidecar) as this node's
+        pipeline sees it for the run's target: the target's harness added as a direct
+        dependency (`orchestration_runtime.with_target_harness`, issue #284). The one call every
+        conductor reader of a node's post-Compile dependency SET goes through — `lineage.json`,
+        `binary_meta.dependency_check`, the pre_judge DAG check, the derived `aggregate_verdict`.
+        A harness the catalog no longer resolves raises RuntimeError (a build precondition)."""
+        from tools.orchestration_runtime import with_target_harness
+        from tools.target_profile import TargetProfileError
+        try:
+            return with_target_harness(block, self.repo_root, refs.node_key, self.target)
+        except TargetProfileError as exc:
+            raise RuntimeError(
+                f"dependency set of {refs.node_key}: the harness of target "
+                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
 
     def _dependency_closure(self, refs: NodeRefs) -> list[str]:
         """Dependency spec_ids in compile order (deepest first) — the `<dep>_model.o`/`.f90`
@@ -5909,30 +5925,39 @@ clean:
     # and the bundle-derived Makefile. Gated by `_pure_leaf_substep`; unreachable on the agentic
     # leaf path (existing suite green proves the agentic path is byte-for-byte unchanged).
 
-    def _pure_harness_node_key(self, ir: dict[str, Any], node_key: str) -> str | None:
-        """The ONE harness a pure leaf negotiates against, or None when it cannot be resolved.
+    def _pure_harness_node_key(self, node_key: str) -> str:
+        """The ONE harness a node of this run renders its runner over and a pure leaf
+        negotiates against.
 
-        On an `m3c` node that is the node's single `infrastructure` direct dependency: the
-        certified harness whose plumbing its runner glue drives. On a `harness` node it is the
-        node ITSELF (issue #169) — a harness's self-test bundle declares the execution model the
-        harness implements, so it negotiates against its own manifest. `infrastructure` is read
-        off the NODE_KEY, the host's own identity for the node, never off the IR's self-declared
-        `meta.spec_kind`; see `_bundle_shape`.
+        On an `m3c` node that is the harness the run's TARGET names (issue #284; the IR's single
+        `infrastructure` direct dependency until R4-a PR-3): the certified harness whose
+        plumbing its runner glue drives. On a `harness` node it is the node ITSELF (issue #169)
+        — a harness's self-test bundle declares the execution model the harness implements, so
+        it negotiates against its own manifest. `infrastructure` is read off the NODE_KEY, the
+        host's own identity for the node, never off the IR's self-declared `meta.spec_kind`;
+        see `_bundle_shape`.
 
-        The SINGLE resolution shared by the context assembly (`_build_pure_context`, which shows
-        the leaf that harness's manifest) and the acceptance layer (`_pure_bundle_violations`,
-        which negotiates `capability_requirements` against it). One source, so the capabilities
-        the leaf is shown are by construction the capabilities it is judged against. Every caller
-        is on the GENERATE side, where `_pure_leaf_substep` requires a bundle shape — so an
-        `m3c` node here has exactly one infra dep by construction. None is the fail-closed answer
-        for anything else, including an `infrastructure` node no manifest declares (an undeclared
-        harness provides nothing, so every requirement is unsatisfied).
+        The SINGLE resolution shared by the runner render (`_write_runner`), the context
+        assembly (`_build_pure_context`, which shows the leaf that harness's manifest) and the
+        acceptance layer (`_pure_bundle_violations`, which negotiates `capability_requirements`
+        against it). One source, so the capabilities the leaf is shown are by construction the
+        capabilities it is judged against, and the harness it is judged against is the one its
+        runner is linked to. An `infrastructure` node no manifest declares provides nothing, so
+        every requirement is unsatisfied.
 
-        The resolution itself lives in the runtime (`harness_node_key_for`) since issue #250,
-        because the generate derivation inputs name the same harness — a third reader of one
-        rule, so it is one definition."""
+        The resolution itself lives in the runtime (`harness_node_key_for`), because the
+        generate derivation inputs, the pipeline closure and the tamper gate name the same
+        harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
+        catalog edited under the run) raises RuntimeError — a build precondition every caller
+        already routes to a fail-closed transport outcome, never a content retry."""
         from tools.orchestration_runtime import harness_node_key_for
-        return harness_node_key_for(ir, node_key)
+        from tools.target_profile import TargetProfileError
+        try:
+            return harness_node_key_for(self.repo_root, node_key, self.target)
+        except TargetProfileError as exc:
+            raise RuntimeError(
+                f"harness of target {self.target.target_id} does not resolve for {node_key}: "
+                f"{exc.detail}") from exc
 
     def _build_pure_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
@@ -5972,7 +5997,6 @@ clean:
             tests_text = (self.repo_root / refs.spec_path / "tests.md").read_text(encoding="utf-8")
         except OSError:
             tests_text = ""
-        ir = _read_yaml(ir_path) or {}
         # A missing runner RAISES rather than degrading to "" the way ir/tests do above.
         # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
         # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
@@ -5992,38 +6016,27 @@ clean:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._pure_harness_node_key(ir, refs.node_key)),
+                    self._pure_harness_node_key(refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": self._pure_target_profile_document(ir),
+            "target_profile": self._pure_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_document": runner_text,
         }
 
-    def _pure_target_profile_document(self, ir: Any) -> str:
-        """The `<target_profile>` a pure `generate.generate` producer is shown, on both bundle
-        shapes: the host-resolved `impl_defaults` its template's rule calls OBLIGATIONS.
+    def _pure_target_profile_document(self) -> str:
+        """The `<target_profile>` a pure Generate leaf is shown — the producer on both bundle
+        shapes, and the reviewer on both: the run's target profile, whole
+        (`spec/targets/<target_id>.yaml` as the loader parsed it).
 
-        Since issue #284 the FIXED layer is the run's target profile, not the IR — `target_id`,
-        `target` (`class` / `backend` / `architecture`), `toolchain`, `execution` — because the
-        host builds, renders and runs for the profile, and a producer told the IR's values could
-        be held to a target nothing builds. The KNOB layer (`abstract`, `backend_overrides`) is
-        still the IR's until R4-a PR-3 moves it into the bundle's `target_lowering_plan`; the
-        IR's `selected` label is not shown (the profile does not carry one). The profile's hash
-        is in the generate key (`phase_derivation_inputs`), so a profile edit re-derives."""
-        target = self.target
-        impl = ir.get("impl_defaults") if isinstance(ir, dict) else None
-        doc: dict[str, Any] = {
-            "target_id": target.target_id,
-            "target": {"class": target.hardware_class, "backend": target.parallel_backend,
-                       "architecture": target.doc["hardware"]["architecture"]},
-            "toolchain": target.toolchain,
-            "execution": dict(target.doc["execution"]),
-        }
-        for knob in ("abstract", "backend_overrides"):
-            if isinstance(impl, dict) and knob in impl:
-                doc[knob] = impl[knob]
-        return json.dumps(doc, indent=2, ensure_ascii=False)
+        The profile is what the host builds, renders and runs for, so it is the fixed layer the
+        producer's template rule calls OBLIGATIONS; the lowering decisions over it (parallel
+        scope, layout, fusion, tiling, vectorization) are the producer's own, written into the
+        bundle's `target_lowering_plan` (issue #284 — until R4-a PR-3 the IR's `impl_defaults`
+        carried them as a Compile-authored knob layer, and this rendered the two together). The
+        profile's hash is in the generate key (`phase_derivation_inputs`), so a profile edit
+        re-derives."""
+        return json.dumps(self.target.doc, indent=2, ensure_ascii=False)
 
     def _build_pure_harness_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees on the HARNESS shape.
@@ -6073,7 +6086,6 @@ clean:
             tests_text = (self.repo_root / refs.spec_path / "tests.md").read_text(encoding="utf-8")
         except OSError:
             tests_text = ""
-        ir = _read_yaml(ir_path) or {}
         contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -6095,9 +6107,9 @@ clean:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._pure_harness_node_key(ir, refs.node_key)),
+                    self._pure_harness_node_key(refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": self._pure_target_profile_document(ir),
+            "target_profile": self._pure_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_output_contract_document": contract_text,
@@ -6174,12 +6186,12 @@ clean:
             pure_bundle_contract_violation, harness_provided_capabilities,
             published_operations_from_ir, snapshot_variables_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        # Capability negotiation against the SINGLE infrastructure (harness) dependency, resolved
-        # by the same `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a
-        # capability the context advertises is always one this layer accepts. Its manifest MUST be
-        # declared (None => nothing provided => every requirement unsatisfied, fail-closed).
-        harness_nk = self._pure_harness_node_key(ir, refs.node_key)
-        provided = harness_provided_capabilities(harness_nk) if harness_nk else None
+        # Capability negotiation against the target's harness, resolved by the same
+        # `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
+        # the context advertises is always one this layer accepts. Its manifest MUST be declared
+        # (an undeclared harness provides nothing => every requirement unsatisfied, fail-closed).
+        harness_nk = self._pure_harness_node_key(refs.node_key)
+        provided = harness_provided_capabilities(harness_nk)
         return pure_bundle_contract_violation(
             doc, node_key=refs.node_key, spec_id=refs.spec_id,
             shape=(self._bundle_shape(refs) or ""),
@@ -6536,15 +6548,6 @@ clean:
                                     "does not resolve it to a controlled spec)"))
         return "\n\n".join(sections)
 
-    def _pure_toolchain_document(self, refs: NodeRefs) -> str:
-        """The toolchain combinations the HOST can build and render for, as JSON — the runtime's
-        `admissible_toolchains_document`, which is also a compile derivation input (issue #250),
-        so the document the producer is shown and the one the key hashes are one value. Its
-        docstring carries the rationale (registry-derived so no `neutral core` file names a
-        technology; the capabilities asked are the deterministic gate's; an empty set RAISES)."""
-        from tools.orchestration_runtime import admissible_toolchains_document
-        return admissible_toolchains_document(refs.node_key)
-
     def _build_pure_compile_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.generate` producer sees, each value a plain
         string the renderer data-fences.
@@ -6554,8 +6557,15 @@ clean:
         producer's `""` degradation), the repository documents through `_pure_repo_document`,
         and the two derivations below on their own terms. The caller converts any of them into a
         `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned: a spec
-        document, a repository document, a host-derived sidecar and an empty admissible-toolchain
-        set are all things a producer retry cannot repair.
+        document, a repository document and a host-derived sidecar are all things a producer
+        retry cannot repair.
+
+        Nothing here names a target (issue #284): Compile is target-free, so the admissible-
+        toolchain document and the `impl_defaults` knob-name schema this context carried until
+        R4-a PR-3 are gone with the IR section they governed. The one target-coloured document
+        left is the checks-module contract's ABI sections, a fixed repository document (its
+        version is `COMPILE_INLINED_DOCUMENTS_VERSION`'s, not a per-node input), recorded as an
+        accepted residual for R4-b on issue #284.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
@@ -6593,10 +6603,7 @@ clean:
             "ir_algorithm_2d_example_document": self._pure_repo_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
-            "impl_defaults_schema_document": self._pure_repo_document(
-                "spec/schema/ir/impl_defaults.schema.json", "impl_defaults_schema"),
             "checks_module_contract_document": contract_abi,
-            "toolchain_document": self._pure_toolchain_document(refs),
         }
 
     def _build_pure_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
@@ -6633,8 +6640,12 @@ clean:
     #: a surface must carry. This is a SHAPE floor for the bounded document repair, NOT the
     #: schema: `Compile.static` is the single semantic gate and owns every field inside them.
     _PURE_IR_REQUIRED_SECTIONS: tuple[str, ...] = (
-        "schema_version", "meta", "case", "algorithm", "impl_defaults",
-        "io_contract", "dependency")
+        "schema_version", "meta", "case", "algorithm", "io_contract", "dependency")
+    #: Top-level sections an IR must NOT carry. `impl_defaults` held the target (toolchain,
+    #: hardware class, parallel model) and the lowering knobs until R4-a PR-3 (issue #284); the
+    #: target is the host's profile now and the knobs are the Generate producer's lowering plan,
+    #: so an IR carrying the section would record a target choice nothing reads.
+    _PURE_IR_FORBIDDEN_SECTIONS: tuple[str, ...] = ("impl_defaults",)
     _PURE_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
 
     def _pure_ir_document_violations(self, refs: NodeRefs,
@@ -6689,6 +6700,13 @@ clean:
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     (f"`ir` is missing the required top-level section(s): {', '.join(absent)} "
                      f"(this node's kind is {kind!r})"))
+        forbidden = [k for k in self._PURE_IR_FORBIDDEN_SECTIONS if k in ir]
+        if forbidden:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir` carries the top-level section(s) {', '.join(forbidden)}, which an IR "
+                     f"no longer has: the IR is target-free — the toolchain, hardware and "
+                     f"parallel model are the host's target profile, and the lowering choices "
+                     f"are made at Generate. Remove the section."))
         # The document's SELF-DECLARED kind must equal the node's real one. `meta.spec_kind` is
         # not a description the later gates ignore: `--stage compile`'s published-surface gate
         # (`_validate_published_surface`) resolves the kind from THIS field and returns without
@@ -7874,6 +7892,9 @@ clean:
             "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
             "tests_document": _read(f"{refs.spec_path}/tests.md"),
             "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
+            # `target_lowering_plan` and the source against it — the producer's own document.
+            "target_profile": self._pure_target_profile_document(),
             "checks_module_contract_document": contract_abi,
             "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
@@ -7921,6 +7942,9 @@ clean:
             "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
             "tests_document": _read(f"{refs.spec_path}/tests.md"),
             "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
+            # `target_lowering_plan` and the source against it — the producer's own document.
+            "target_profile": self._pure_target_profile_document(),
             "runner_output_contract_document": contract_text,
             "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
@@ -9473,7 +9497,9 @@ clean:
 
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
-        direct_deps = dep.get("direct_deps") or []
+        # The node's direct set as the pipeline sees it: the IR's, plus the target's harness
+        # (issue #284; the IR listed it until R4-a PR-3).
+        direct_deps = self._pipeline_dependency_block(refs, dep).get("direct_deps") or []
         dep_keys = [d.get("node_key") if isinstance(d, dict) else d for d in direct_deps]
         # The dependency-encapsulation contract (phase_03 §23-25,53) is enforced by the
         # post_build gate below (`validate_pipeline_semantics --stage post_build` →
@@ -10308,7 +10334,8 @@ clean:
                                 f"case fix toolchain.standard in spec/targets/"
                                 f"{self.target.target_id}.yaml (Build would compile the same "
                                 f"closure under the same -std). The diagnostics below say which. "
-                                f"Staged: {', '.join(staged_deps)}\n"
+                                f"Staged: "
+                                f"{', '.join(b['model_source_ref'] for b in staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
                     # Attribution step 3 — WHICH SIDE of src/ is the finding on (issue #112)?
                     # The two probes above answer "not the invocation" and "not the dependency
@@ -11737,6 +11764,9 @@ clean:
             graph = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
             if not isinstance(graph, dict):
                 return None
+        # The target's harness is a closure node of the pipeline (issue #284), as the
+        # validator's DAG-completeness gate reads it (`_dependency_resolved_for_execution`).
+        graph = self._pipeline_dependency_block(refs, graph)
         # Exclude self: its own pipeline is the one under validation now, not a
         # separately-completed dependency.
         self_token = _normalize_node_key_token(refs.node_key)
@@ -11851,6 +11881,9 @@ clean:
         dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
         if not isinstance(dep, dict):
             dep = {}
+        # The immediate dependencies include the target's harness (issue #284), which the
+        # pre_judge DAG check has just required validated for this target.
+        dep = self._pipeline_dependency_block(refs, dep)
         facts_by_token: dict[str, dict[str, Any]] = {}
         for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target):
             try:
@@ -11925,7 +11958,8 @@ clean:
         dependency_set: list[str] = []
         try:
             self_token = _normalize_node_key_token(refs.node_key)
-            graph = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
+            graph = self._pipeline_dependency_block(
+                refs, _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {})
             dependency_set = sorted(
                 t for t in _dependency_expected_node_keys(graph) if t != self_token)
         except Exception:
@@ -13066,35 +13100,6 @@ clean:
             return "fail_closed"
         return None
 
-    def _target_ir_mismatch(self, refs: NodeRefs, phase: str) -> str | None:
-        """The R4-a PR-1 bridge gate (issue #284; PR-3 deletes it with `impl_defaults`): before
-        any phase after Compile, the IR the node's later phases read must declare the target the
-        run was launched for. Since PR-2 the HOST reads every target field off the profile, so
-        what the bridge still protects is the IR's other readers: the `generate.verify`
-        reviewer judges the source against the IR's `impl_defaults` (G6), the compile-stage
-        validator's gates read them, and an IR written for another target would be reviewed
-        against a toolchain nothing builds.
-
-        A transport `fail_closed`, not a leaf repair: the compile producer is not shown the
-        profile in PR-1, so it cannot have satisfied it — the fix is a `--rederive compile` or a
-        run for the target the IR was built for. Returns the reason detail, or None."""
-        if phase == "compile" or self.target_profile is None:
-            return None
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml")
-        if not isinstance(ir, dict):
-            # Named apart from a disagreement: an IR that cannot be read declares nothing, and
-            # reporting its four absent fields as a target mismatch would send the operator to
-            # re-run for another target.
-            return f"target_profile_ir_unreadable: {refs.ir_ref}/spec.ir.yaml"
-        mismatches = ir_profile_mismatches(ir, self.target_profile)
-        if not mismatches:
-            return None
-        # The fields FIRST: the detail is capped at `_PHASE_REASON_DETAIL_MAX_CHARS`, and with
-        # the IR ref leading, a round-1 review found the field names cut off on 104 of the 130
-        # IR refs then under `workspace/ir/`.
-        return (f"target_profile_ir_mismatch: impl_defaults {'; '.join(mismatches)} "
-                f"[target {self.target_profile.target_id}; {refs.ir_ref}]")
-
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
         reopen an upstream (already-passed) phase, fail_closed, or escalate. The
@@ -13109,11 +13114,6 @@ clean:
         idx = 0
         while idx < len(phases):
             phase = phases[idx]
-            mismatch = self._target_ir_mismatch(refs, phase)
-            if mismatch:
-                self.set_status("fail_closed", reason_code="conductor_phase_fail_closed",
-                                reason_detail=mismatch[:_PHASE_REASON_DETAIL_MAX_CHARS])
-                return "fail_closed"
             self.emit("phase_start", node_key=refs.node_key, phase=phase,
                       attempt=attempts[phase] + 1)
             phase_started = time.monotonic()
@@ -13517,11 +13517,11 @@ _SPEC_REF_FILE_NAMES = frozenset({"controlled_spec.md", "tests.md", "deps.yaml"}
 
 
 def _direct_infra_dep_count(repo_root: Path, spec_path: str) -> int | None:
-    """Count of `infrastructure` direct dependencies declared in <spec_path>/deps.yaml.
+    """Count of `infrastructure` dependencies declared in <spec_path>/deps.yaml — which must be
+    zero on every spec (`spec_input_gates.infra_dep_declared_violation`, issue #284).
 
-    Returns None when the file is missing or its dependency schema is malformed: the
-    exactly-one precondition then cannot be PROVEN from the spec input, so the caller
-    fails closed rather than reading the absence as "zero"."""
+    Returns None when the file is missing or its dependency schema is malformed: the caller
+    then cannot read the declaration at all, and fails closed on a node that builds."""
     from tools.orchestration_runtime import _parse_dep_entries, _read_deps_yaml
     deps_doc = _read_deps_yaml(repo_root, spec_path)
     if not isinstance(deps_doc, dict):
@@ -13556,11 +13556,10 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
     # fortran. When a backend with a different identifier limit is added, move the bound to
     # a language-aware point.
-    # (2) infrastructure direct-dependency count (see
-    # spec_input_gates.infra_dep_count_violation), checked below once the catalog fixes the
-    # node's spec_kind. Same rationale: a re-author cannot repair a node's dependency
-    # identity, and the non-M3c physical path it used to degrade to has been removed.
-    from tools.spec_input_gates import infra_dep_count_violation, spec_id_length_violation
+    # (2) no `infrastructure` dependency declared (see
+    # spec_input_gates.infra_dep_declared_violation): the harness is the target's (issue #284).
+    # Same rationale: a re-author cannot repair a node's dependency declaration.
+    from tools.spec_input_gates import infra_dep_declared_violation, spec_id_length_violation
     _sid_violation = spec_id_length_violation(spec_id)
     if _sid_violation:
         raise ValueError(
@@ -13589,24 +13588,20 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
                     f"(from spec_ref {spec_ref})")
             _infra_count = _direct_infra_dep_count(repo_root, spec_path)
             if _infra_count is None:
-                # `.strip()` and nothing else — the SAME spelling rule as
-                # `infra_dep_count_violation` (called below) and as every downstream reader.
-                # Lower-casing only here would exempt a `spec_kind: Infrastructure` node
-                # whose deps.yaml is unreadable, while the well-formed sibling shape is
-                # rejected: the broken input admitted and the correct one refused.
+                # `.strip()` and nothing else — the spelling rule every downstream reader of
+                # `spec_kind` uses. An `infrastructure` node is exempt, as it was when this
+                # branch proved an exactly-one count: its closure is its own deps.yaml alone.
                 if str(kind).strip() != "infrastructure":
                     raise ValueError(
                         f"spec-input rejected: {spec_path}/deps.yaml is missing or its "
-                        f"dependency schema is malformed, so the required exactly one "
-                        f"`infrastructure` (runner-harness) dependency cannot be verified "
-                        f"(docs/workflow/phases/phase_01_compile.md). Author a deps.yaml "
-                        f"whose `dependencies:` block holds exactly the keys `components` / "
-                        f"`profiles` / `infrastructure` (a typo such as `infrastructures:` "
-                        f"makes the whole file malformed; see spec/problem/dynamics/"
-                        f"advection_diffusion/advdiff1d_linear/deps.yaml) "
+                        f"dependency schema is malformed, so the node's dependency "
+                        f"declaration cannot be read (docs/SPEC.md req. 9). Author a deps.yaml "
+                        f"whose `dependencies:` block holds the keys `components` / `profiles` "
+                        f"(a typo such as `component:` makes the whole file malformed; see "
+                        f"spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml) "
                         f"(from spec_ref {spec_ref})")
             else:
-                _infra_violation = infra_dep_count_violation(kind, _infra_count)
+                _infra_violation = infra_dep_declared_violation(_infra_count)
                 if _infra_violation:
                     raise ValueError(
                         f"spec-input rejected: {_infra_violation} (from spec_ref {spec_ref})")

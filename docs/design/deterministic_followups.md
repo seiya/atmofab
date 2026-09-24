@@ -15,6 +15,7 @@ Priority key: **P1** blocks auto-repair; **P2** data/robustness; **P3** latent.
 > and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
 > `Compile.static` violation and the dep count a spec-input rejection. The only
 > leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
+> (Superseded in part by R4-a PR-3, issue #284: no `deps.yaml` declares an `infrastructure` dependency, M3c takes no dependency count, and the toolchain is the target profile's, refused at launch; see "R4-a" at the end of this file.)
 
 The `src/Makefile` is a pure function of known inputs (pinned `<spec_id>_model/runner.f90`
 names, the fixed `use`-graph, structured `impl_defaults.toolchain`/`target`), yet the LLM
@@ -1498,6 +1499,7 @@ Unit suite green (1972).
 > dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
 > `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
 > self-test. The history below is left as written.
+> (Superseded in part by R4-a PR-3, issue #284: no `deps.yaml` declares an `infrastructure` dependency, M3c takes no dependency count, and the toolchain is the target profile's, refused at launch; see "R4-a" at the end of this file.)
 
 Canonical plan: `~/.claude/plans/dapper-baking-thompson.md` (M3d). With the harness host-render path
 proven (M3c-β / billed E2E #3), M3d recovers the now-obsolete leaf-authored-runner scaffolding and
@@ -2121,6 +2123,7 @@ in turn under `--with-deps`, where the precise `_spec_ref_candidates` check catc
 > dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
 > `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
 > self-test. The history below is left as written.
+> (Superseded in part by R4-a PR-3, issue #284: no `deps.yaml` declares an `infrastructure` dependency, M3c takes no dependency count, and the toolchain is the target profile's, refused at launch; see "R4-a" at the end of this file.)
 
 Bug (4) above put a case_id safe-token gate in `runner_renderer._case_ids`, but that runs only for M3c host-rendered
 nodes. A **non-M3c** physics node has a leaf-authored runner (contractually building `raw/state_snapshots/'//trim(
@@ -3257,6 +3260,7 @@ ABI, `compile.generate` authoring variance).
 > and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
 > `Compile.static` violation and the dep count a spec-input rejection. The only
 > leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
+> (Superseded in part by R4-a PR-3, issue #284: no `deps.yaml` declares an `infrastructure` dependency, M3c takes no dependency count, and the toolchain is the target profile's, refused at launch; see "R4-a" at the end of this file.)
 
 The final `Z2` migration milestone: legacy generate execution is deleted so `pure` is the ONLY generate-executor. This
 is *migration-scope* removal only — the broad hook / preflight / contract-doc teardown remains `Z4`.
@@ -3824,3 +3828,44 @@ form. Those are what the billed run buys.
 `parse_signatures_from_fortran`, rendered back with `render_symbol_to_fortran`, and compared with
 `stanza_atoms` — the gate's own normalizer — then compacted to the harness spec's house style and
 re-checked to render to the same atoms. `dims` survives the lowering (`['nx - 1']`).
+
+## R4-a — target-free IR and the target-owned harness (LANDED, issue #284)
+
+Record of the stage of `workflow_scaling_redesign.md` R4 that makes the semantic layer target-free
+([issue #284](https://github.com/seiya/atmofab/issues/284); PR #285, PR #286, and the PR that closes
+the issue). Canonical for the current behaviour: `docs/IMPL_PLAN_SPEC.md` (target profile and
+lowering plan), `docs/SPEC.md` req. 9, `docs/GLOSSARY.md` §1 (`target profile`, `infrastructure
+spec`), and `docs/ORCHESTRATION.md` §13d.
+
+- **The IR carries no target.** `spec.ir.yaml` has no `impl_defaults` section, and the host refuses a
+  Compile reply that carries one. `spec/schema/ir/impl_defaults.schema.json` is deleted. The compile
+  derivation key hashes the spec files, the adopted profiles, the `deps.yaml`-only closure signature,
+  the closure's compile outputs and the dependency surface; `toolchain_document` and the knob-name
+  schema are gone from the key and from the producer's context.
+- **The harness is a target attribute.** `deps.yaml` has no `infrastructure:` section; a declaration
+  is refused at spec-input (`infrastructure_dependency_declared_in_deps`, `spec_input_gates
+  .infra_dep_declared_violation`) and inside a profile (`profile_declares_infrastructure`). The
+  target profile's `harness` resolves to a node_key (`target_profile.harness_node_key_for_target`),
+  and the host adds it as a direct dependency of every non-`infrastructure` node wherever a target
+  exists (`target_profile.target_harness_entries`, `orchestration_runtime.pipeline_closure_nodes`,
+  `orchestration_runtime.with_target_harness`). The rule it reverses — every building spec declares
+  exactly one `infrastructure` dependency, `infra_dep_count_invalid` — no longer exists.
+- **The lowering knob layer moved to the bundle.** Parallel model and scope, schedule, layout,
+  fusion, tiling and vectorization are the `Generate` producer's `target_lowering_plan`. The
+  parallel-directive floor fires when the plan names OpenMP as its `parallelization` model
+  (`_lowering_plan_claims_openmp`); `Generate.verify` G6 (harness H9) judges the plan and the source
+  against the whole target profile.
+- **Deleted gates and their successors.** `_validate_impl_defaults_knobs` (no subject);
+  `_validate_harness_dependency_consistency` (launch gate `target_harness_mismatch` and the profile's
+  harness resolution); `_validate_toolchain_backend_supported` with
+  `_missing_toolchain_capability_clauses` (`target_profile.target_profile_violations` at launch); the
+  PR-1 bridge `target_profile_ir_mismatch`. `Compile.verify` V5–V7 are retired and their numbers are
+  not reused.
+- **Versions.** `DERIVATION_KEY_VERSION = 2`, `COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-5"`,
+  `PURE_PROMPT_CONTRACT_VERSION = "pure-49"`, `VERDICT_VERSION = "verdict-5"` (the derived-artifact
+  author's dependency set carries the harness); `render-4` and `build-1` are re-pinned
+  behaviour-preserving. The legacy corpus re-derives from Compile; nothing is
+  backfilled.
+- **Accepted residual.** The checks-module ABI sections of `docs/workflow/CHECKS_MODULE_CONTRACT.md`
+  are still inlined into the compile context. They are a fixed transformation-version document, not a
+  per-node key input, so the key stays target-free; R4-b owns them.

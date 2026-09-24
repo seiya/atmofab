@@ -12,10 +12,7 @@ from unittest import mock
 import yaml
 
 from tools import target_profile as tp
-from tools.orchestration_runtime import (
-    _load_spec_catalog,
-    admissible_toolchains_document,
-)
+from tools.orchestration_runtime import _load_spec_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "spec" / "schema" / "targets" / "target_profile.schema.json"
@@ -371,77 +368,34 @@ class LaunchGateTests(unittest.TestCase):
             self.assertEqual(tp.resolve_run_target(
                 repo.root, "t1", node_key="component/harness_y@0.7.0").target_id, "t1")
 
-    def test_the_admissible_toolchain_document_asks_the_same_question(self) -> None:
-        """ONE capability question: the compile producer's admissible set is exactly the set of
-        (language, build_system) pairs a profile could name and pass the launch gate with."""
-        from tools.backends import registry
 
-        for node_key in ("component/x@0.1.0", "infrastructure/x@0.1.0"):
-            with self.subTest(node_key=node_key):
-                admissible = {
-                    (p["language"], p["build_system"])
-                    for p in json.loads(admissible_toolchains_document(node_key))[
-                        "admissible_toolchains"]}
-                servable = {
-                    (lang, b)
-                    for lang in registry.backend_ids("language")
-                    for b in registry.backend_ids("build_system")
-                    if not tp.toolchain_servable_reasons(
-                        lang, b, infrastructure=node_key.startswith("infrastructure/"))}
-                self.assertEqual(admissible, servable)
-                self.assertTrue(admissible)
+class HarnessEntriesTests(unittest.TestCase):
+    """`target_harness_entries`: the dependency entry a node gains from its target (issue #284,
+    R4-a PR-3) — the harness, for every node whose kind is not `infrastructure`."""
 
-
-class BridgeTests(unittest.TestCase):
-    """The R4-a PR-1 bridge (PR-3 deletes it with `impl_defaults`)."""
-
-    def _ir(self) -> dict:
-        return {"impl_defaults": {
-            "target": {"class": "cpu", "backend": "openmp", "architecture": "x86_64"},
-            "toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make"}}}
-
-    def test_the_bridge_compares_exactly_these_fields(self) -> None:
-        """A literal, so dropping a field from `BRIDGE_FIELDS` is red: the row below iterates
-        the constant and could not notice one missing. `target.backend` is deliberately absent
-        (see the constant's comment)."""
-        self.assertEqual(dict(tp.BRIDGE_FIELDS), {
-            "target.class": "hardware.class",
-            "toolchain.language": "toolchain.language",
-            "toolchain.standard": "toolchain.standard",
-            "toolchain.build_system": "toolchain.build_system",
-        })
-
-    def test_a_matching_ir_passes_and_each_bridge_field_is_compared(self) -> None:
+    def test_a_non_infrastructure_node_gains_the_targets_harness(self) -> None:
         profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
-        self.assertEqual(tp.ir_profile_mismatches(self._ir(), profile), [])
-        for ir_path, _profile_path in tp.BRIDGE_FIELDS:
-            section, key = ir_path.split(".")
-            with self.subTest(field=ir_path):
-                changed = self._ir()
-                changed["impl_defaults"][section][key] = "other"
-                found = tp.ir_profile_mismatches(changed, profile)
-                self.assertEqual(len(found), 1, found)
-                self.assertEqual(
-                    found[0], f"{ir_path}='other' expected {tp._dotted(profile.doc, _profile_path)!r}")
-                absent = self._ir()
-                del absent["impl_defaults"][section][key]
-                self.assertEqual(len(tp.ir_profile_mismatches(absent, profile)), 1)
+        harness = _checkout_doc()["harness"]
+        expected = [("infrastructure", harness["infrastructure_id"],
+                     harness["version_constraint"])]
+        for kind in ("component", "problem", " component ", None, "Infrastructure"):
+            with self.subTest(kind=kind):
+                self.assertEqual(tp.target_harness_entries(profile, kind), expected)
 
-    def test_case_is_normalized_and_the_parallel_backend_is_not_compared(self) -> None:
-        """A node that parallelizes nothing (the certified harness IR declares a serial backend)
-        still runs on the target: that is a lowering choice, not a target attribute."""
+    def test_an_infrastructure_node_and_a_run_with_no_target_gain_nothing(self) -> None:
         profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
-        ir = self._ir()
-        ir["impl_defaults"]["toolchain"]["language"] = "Fortran"
-        ir["impl_defaults"]["target"]["backend"] = "serial"
-        self.assertEqual(tp.ir_profile_mismatches(ir, profile), [])
+        self.assertEqual(tp.target_harness_entries(profile, "infrastructure"), [])
+        self.assertEqual(tp.target_harness_entries(profile, " infrastructure "), [])
+        self.assertEqual(tp.target_harness_entries(None, "component"), [])
 
-    def test_an_ir_without_impl_defaults_mismatches_every_field(self) -> None:
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
-        for ir in ({}, None, {"impl_defaults": "x"}):
-            with self.subTest(ir=ir):
-                self.assertEqual(len(tp.ir_profile_mismatches(ir, profile)),
-                                 len(tp.BRIDGE_FIELDS))
+    def test_the_entry_is_the_profiles_harness_not_a_constant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", harness={"infrastructure_id": "harness_x",
+                                      "version_constraint": ">=0.3.0 <0.5.0"})
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual(tp.target_harness_entries(profile, "component"),
+                             [("infrastructure", "harness_x", ">=0.3.0 <0.5.0")])
 
 
 if __name__ == "__main__":

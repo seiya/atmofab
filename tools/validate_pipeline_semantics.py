@@ -242,9 +242,9 @@ QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
 # The languages whose quality check runs through the build system's test target rather than a
 # script. This is a POLICY set over language families, NOT a set of implemented backends: `c` /
-# `cpp` / `mixed` are not registry members, and a physics node naming one is rejected by
-# `_validate_toolchain_backend_supported` before this set is consulted — an INFRASTRUCTURE node,
-# which that gate exempts on language, is what keeps them live. It is the same kind of set as
+# `cpp` / `mixed` are not registry members, and a target profile naming one is refused at launch
+# (`target_profile.toolchain_servable_reasons`) before this set is consulted, for every node
+# kind — the toolchain is the pipeline TARGET's since issue #284. It is the same kind of set as
 # `mcp_servers/build_runtime_server.py`'s `FORTRAN_C_FAMILY` and migrates with it (ledger:
 # TODO.md, the compiler / linter adapters area). The BUILD-SYSTEM half of the same condition is
 # asked of the registry instead — see `_make_quality_check_applies`.
@@ -5028,47 +5028,40 @@ _FORTRAN_NAME_LIMIT = 63
 # node's own value through `tools/host_render.py`.
 
 
-def _infra_direct_dep_node_keys(ir: dict[str, Any]) -> list[str]:
-    """The ``infrastructure/...`` direct-dependency node_keys of an IR, accepting BOTH the
-    dict form (``{node_key: ...}``) AND the bare-string form (``"infrastructure/..."``) —
-    the same dual shape the conductor's ``_infra_direct_deps`` and the rest of the dep
-    machinery (``_component_dep_spec_ids`` / ``_dep_node_key_tokens``) accept. Keeping the M3c
-    predicate's parse identical across the conductor / Generate.static / Compile consumers is
-    load-bearing: a shape one side counts and another drops would host-render the runner while
-    the other side skips the checks gate (fail-open) — see docs/design/deterministic_followups."""
-    dep = ir.get("dependency") if isinstance(ir.get("dependency"), dict) else {}
-    out: list[str] = []
-    for d in (dep.get("direct_deps") or []) if isinstance(dep, dict) else []:
-        nk = d.get("node_key") if isinstance(d, dict) else (d if isinstance(d, str) else None)
-        if isinstance(nk, str) and nk.strip() and nk.split("/", 1)[0].strip() == "infrastructure":
-            out.append(nk.strip())
+def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
+    """``(target_id, language, harness_spec_id)`` of every declared target profile whose
+    toolchain the host renders an M3c runner for — the targets a COMPILE-stage render
+    precondition is asked against (issue #284, R4-a PR-3).
+
+    Compile is target-free: one IR serves every target, so "the IR renders" means it renders for
+    each target a run could be launched for, not for one run's. A profile that does not load, or
+    whose harness the catalog does not resolve, is skipped rather than reported: the launch gate
+    (``target_profile.resolve_run_target``) refuses a run for it, so no Generate can reach its
+    render, and a repository defect must not be routed to ``compile.generate`` as an IR defect.
+    Sorted by target id, so a node's violations are deterministic."""
+    from tools.target_profile import (
+        TargetProfileError, harness_node_key_for_target, list_target_ids, load_target_profile)
+    out: list[tuple[str, str, str]] = []
+    try:
+        ids = list_target_ids(repo_root)
+    except TargetProfileError:
+        return out
+    for target_id in ids:
+        try:
+            profile = load_target_profile(repo_root, target_id)
+            harness_nk = harness_node_key_for_target(repo_root, profile)
+        except TargetProfileError:
+            continue
+        tc = profile.toolchain
+        if not all(backend_registry.provides(axis, value, capability)
+                   for axis, value, capability in (
+                       ("build_system", tc["build_system"], "control_file"),
+                       ("language", tc["language"], "control_file"),
+                       ("language", tc["language"], "runner_render"))):
+            continue
+        out.append((target_id, tc["language"],
+                    harness_nk.partition("@")[0].partition("/")[2]))
     return out
-
-
-def _ir_toolchain_tokens(ir: dict[str, Any]) -> tuple[str, str]:
-    """The ``(build_system, language)`` an IR declares, with the defaults its readers apply.
-
-    ONE place, for two reasons. The readers must not default differently — that is how this
-    mirror and the conductor drifted before — and the neutral core must not gain a second
-    spelling of either value (``docs/BACKEND_BOUNDARY.md``: the ledger counts occurrences, and a
-    new reader that re-spells the default is growth). Normalization stays the caller's,
-    because the readers of these keys deliberately differ on padding. (The conductor read
-    these keys too until issue #284; it reads the target profile now.)
-    """
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    return (str(tc.get("build_system") or "make").lower(),
-            str(tc.get("language") or "fortran").lower())
-
-
-def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
-    """`_m3c_language` over the toolchain the IR itself declares — the COMPILE-stage reader,
-    where no pipeline (and so no target coordinate) exists yet. Every post-Compile reader asks
-    `_m3c_language` with the pipeline's target instead (`_execution_m3c_language`, issue #284).
-    R4-a PR-3 removes the IR's toolchain and this reader with it."""
-    if not isinstance(ir, dict):
-        return None
-    return _m3c_language(ir, *_ir_toolchain_tokens(ir))
 
 
 def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str | None:
@@ -5081,13 +5074,16 @@ def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str |
     how this mirror and the conductor drifted before.
 
     M3c means: a toolchain the host both writes a control file for and renders a runner for,
-    ``spec_kind`` != ``infrastructure``, and exactly one ``infrastructure`` (runner-harness)
-    direct dependency. On such a node the runner is host-rendered and the leaf authors the checks
-    module — mirrors ``workflow_conductor._conductor_authors_runner``."""
+    and a ``spec_kind`` the IR states that is a physics kind (``M3C_SPEC_KINDS``). On such a
+    node the runner is host-rendered over the target's harness and the leaf authors the checks
+    module — mirrors ``workflow_conductor._conductor_authors_runner``. Until R4-a PR-3 it
+    required exactly one ``infrastructure`` direct dependency in the IR instead; the harness is
+    the target's now (issue #284), so no dependency count enters it."""
     if not isinstance(ir, dict):
         return None
+    from tools.spec_input_gates import M3C_SPEC_KINDS
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if str(meta.get("spec_kind") or "").strip() == "infrastructure":
+    if str(meta.get("spec_kind") or "").strip() not in M3C_SPEC_KINDS:
         return None
     # The SAME question the conductor asks, asked the same way — see
     # `Conductor._core_authors_control_file` and `_conductor_authors_runner`. This mirror kept
@@ -5101,12 +5097,7 @@ def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str |
                                     ("language", language, "runner_render")):
         if value != value.strip() or not backend_registry.provides(axis, value, capability):
             return None
-    return language if len(_infra_direct_dep_node_keys(ir)) == 1 else None
-
-
-def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
-    """True iff the IR dict describes an M3c physics node (see ``_ir_m3c_language``)."""
-    return _ir_m3c_language(ir) is not None
+    return language
 
 
 def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
@@ -5117,8 +5108,8 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
     gate re-runs the producer's acceptance contract, and that contract's file-shape layer is
     selected by this answer, so the two must give the same one. A parity test pins them.
 
-    ``m3c`` is exactly ``_ir_m3c_language(ir) is not None`` — the predicate that already mirrors
-    ``_conductor_authors_runner``. ``harness`` is an ``infrastructure`` node whose toolchain the
+    ``m3c`` is exactly ``_m3c_language(ir, *toolchain) is not None`` — the predicate that already
+    mirrors ``_conductor_authors_runner``. ``harness`` is an ``infrastructure`` node whose toolchain the
     neutral core writes a control file for and whose language has a bundle backend. The
     ``infrastructure`` question is asked of the NODE_KEY, the host's own identity for the node,
     never of the IR's self-declared ``meta.spec_kind``: it decides which admissibility rules the
@@ -5148,11 +5139,12 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
 def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | None:
     """The implementation language of an M3c physics node, or ``None`` when it is not one.
 
-    One read of the IR answering both questions the caller has. They cannot be answered
-    separately: the checks ABI belongs to the backend that renders the runner, and
-    ``_ir_is_m3c_physics`` is the predicate that already established such a backend exists for
-    this value — re-deriving the language elsewhere would be a second reader of the same field
-    with its own defaulting, which is how the conductor and this mirror drifted before.
+    One read answering both questions the caller has, over the pipeline's target toolchain.
+    They cannot be answered separately: the checks ABI belongs to the backend that renders the
+    runner, and ``_m3c_language`` is the predicate that already established such a backend
+    exists for this value — re-deriving the language elsewhere would be a second reader of the
+    same field with its own defaulting, which is how the conductor and this mirror drifted
+    before.
     """
     ir_dir = _ir_dir_for_execution(repo_root, execution)
     if ir_dir is None:
@@ -5210,7 +5202,7 @@ def _validate_checks_source_files(
     # sibling gates have already collected and replaces an actionable list with a traceback.
     #
     # REACHABLE, and it took three review rounds to stop claiming otherwise. `language` comes
-    # from `_ir_m3c_language`, which gates on `registry.provides` — a DECLARATION question, over
+    # from `_m3c_language`, which gates on `registry.provides` — a DECLARATION question, over
     # the union of both capability sets. `runner_render_refusal` asks whether the seam can
     # actually dispatch, which additionally requires the record's package to really carry the
     # capability. Those two cannot be made identical: the registry must not import a backend at
@@ -5529,8 +5521,8 @@ def _validate_generate_outputs_for_generation(
     # for them to police. NOTE they are NOT a full no-op: the leaf-authored-runner path stays
     # live for the harness self-test. What used to make it live for physics nodes too — a node
     # without an infra dep, or a non-`(fortran, make)` toolchain — is now pinned shut: the
-    # infra-dep count is a spec-input rejection (`spec_input_gates.infra_dep_count_violation`)
-    # and the toolchain is a compile.static violation (`_validate_toolchain_backend_supported`).
+    # harness is the target's (issue #284), and a target whose toolchain the host cannot render
+    # a runner for is refused at launch (`target_profile.target_profile_violations`).
     # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
     # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
     # R1/M3c-β: the leaf-authored checks module (fixed ABI) is gated only on an M3c node. Read
@@ -5605,11 +5597,12 @@ def _validate_generate_outputs_for_generation(
     _validate_component_generated_surface(
         repo_root, execution, model_files, violations
     )
-    # Issue #22: a presence floor for the impl-defaults reflection rule — an OpenMP-on-CPU Fortran
-    # profile with counted `do` loops and zero `!$omp` directives. Everything above that floor
-    # (which loops, which schedule) stays with Generate.verify G6.
+    # Issue #22: a presence floor for the target-lowering rule — an OpenMP-on-CPU Fortran target
+    # whose bundle's lowering plan names OpenMP, with counted `do` loops and zero `!$omp`
+    # directives. Everything above that floor (which loops, which schedule) stays with
+    # Generate.verify G6.
     _validate_openmp_presence_floor(
-        repo_root, execution, model_files, violations
+        repo_root, execution, src_dir, model_files, violations
     )
 
 
@@ -5850,18 +5843,18 @@ _WRAPPED_DO_RE = re.compile(
 # contains — from satisfying the floor, and likewise a commented-out `!!$omp`.
 _OMP_DIRECTIVE_RE = re.compile(rf"^{_BLANK}*!\$omp\b", re.IGNORECASE | re.MULTILINE)
 
-# Values of the parallelization knob that mean "no parallelism here". `_validate_impl_defaults_knobs`
-# blesses `none` explicitly, so without this the two new gates contradicted each other: Compile
-# accepted `parallelization: none` and Generate then hard-failed every source that honored it,
-# leaving the node unsatisfiable. Read generously — this direction only ever fails the floor OPEN.
+# Values of a parallelization model that mean "no parallelism here". Read generously — this
+# direction only ever fails the floor OPEN.
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
 
-# Inside the mapping form of the parallelization knob, the members that name the execution MODEL.
-# Taken from the live corpus, where each carries `openmp`: the sibling members are scope / schedule /
-# granularity / reduction prose (`apply_to`, `default_schedule`, `reduction_policy`, …) and must not
-# be read as a model, or a correctly serial `{method: none, apply_to: parallelizable_loops}` licenses
-# the floor to reject its own source.
-_IMPL_PARALLELIZATION_MODEL_KEYS = frozenset({"method", "scheme", "kind"})
+# Inside `target_lowering_plan.parallelization` (an object, `codegen_bundle`'s envelope), the
+# members that name the execution MODEL. `model` is the one the producer's template names; the other
+# three are the spellings the Compile-authored knob layer used to carry the model under (until R4-a
+# PR-3, issue #284), kept so a producer reusing them states a claim rather than dodging one. The
+# sibling members are scope / schedule / granularity prose (`apply_to`, `schedule`, `loops`, …) and
+# must not be read as a model, or a correctly serial `{model: none, apply_to: parallelizable_loops}`
+# licenses the floor to reject its own source.
+_LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "kind"})
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
@@ -5872,113 +5865,75 @@ _IMPL_PARALLELIZATION_MODEL_KEYS = frozenset({"method", "scheme", "kind"})
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
-def _impl_claims_openmp(impl: dict[str, Any]) -> bool:
-    """True when the ``impl_defaults`` knob layer AFFIRMATIVELY claims OPENMP as its model.
+def _lowering_plan_claims_openmp(plan: Any) -> bool:
+    """True when a bundle's ``target_lowering_plan`` AFFIRMATIVELY names OPENMP as the model of
+    its ``parallelization``.
 
-    This is the floor's licence to fail a source, and it replaced a weaker test (fire whenever the
-    FIXED layer resolves to OpenMP) that could demand the impossible. A `post_generate` violation
-    reopens ``generate.generate``, whose leaf authors source and cannot touch the certified IR — so
-    when a node's only counted loops are inherently serial (a recurrence), a floor keyed on the fixed
-    layer alone rejected every correct source it could produce and the documented escape
-    (``parallelization: none``) lay on the far side of a boundary that leaf cannot cross. That is the
-    failure-attribution bug class: a gate whose violation routes to someone who cannot fix it.
+    This is the floor's licence to fail a source. Until R4-a PR-3 (issue #284) the licence was
+    the IR's Compile-authored knob layer, which the Generate leaf could not edit — which is why
+    it had to be an affirmative claim: a floor keyed on the target alone rejected every correct
+    source of a node whose only loops are inherently serial, with the escape on the far side of
+    a boundary the leaf could not cross. The plan is now the SAME leaf's declaration, so the
+    violation (a source that does not do what its own plan says) is always one the reopened
+    producer can repair, and the plan's appropriateness — declaring ``none`` over loops that are
+    plainly parallelizable — is ``Generate.verify`` G6's judgment.
 
-    Requiring the IR's own claim makes the reopen fair. A source that ignores a model the IR names is
-    a real defect the leaf can repair; a node whose knob is SILENT is out of scope, and the
-    "cpu defaults to OpenMP" rule stays where a soft rule belongs, with ``Generate.verify`` G6. The
-    residual — an IR that claims OpenMP over loops that cannot be parallelized — is a contradiction
-    in the IR rather than a legitimate source being rejected, and the violation says so.
-
-    Read under EVERY spelling, canonical and aliased, and through the mapping form
-    (``{method: openmp, …}``), because this decides whether to fire: a claim missed here fails the
-    floor open, which is the safe direction, but a claim invented here would not be."""
-    abstract = impl.get("abstract")
-    if not isinstance(abstract, dict):
+    OPENMP specifically, not merely "some parallelism": a plan naming ``mpi`` or
+    ``cuda_streams`` on an openmp-backed target would otherwise be told to add ``!$omp`` — a
+    demand that contradicts its own plan. Substring, so ``openmp+simd`` / ``openmp_tasks`` count.
+    Only the model-bearing members of the object are read; a plan with no ``parallelization``
+    object, or one naming its model under some other key, yields no claim, which fails the
+    floor OPEN."""
+    if not isinstance(plan, dict):
         return False
-    model_keys = {"parallelization"} | {
-        alias
-        for alias, canonical in _IMPL_ABSTRACT_KNOB_ALIASES.items()
-        if canonical == "parallelization"
-    }
-
-    def names_a_model(value: Any) -> bool:
+    par = plan.get("parallelization")
+    if not isinstance(par, dict):
+        return False
+    for key, value in par.items():
+        if str(key).strip().lower() not in _LOWERING_PARALLELIZATION_MODEL_KEYS:
+            continue
         if isinstance(value, str):
             token = value.strip().lower()
-            # OPENMP specifically, not merely "some parallelism". The compile gate deliberately
-            # accepts a novel model token, so a node claiming `cuda_streams` or `mpi` on an
-            # openmp-backed target would otherwise be told to add `!$omp` — a demand that
-            # contradicts its own IR and that the reopened producer leaf cannot resolve. Substring,
-            # so `openmp+simd` / `openmp_tasks` / `cpu_openmp` all count.
-            return "openmp" in token and token not in _NO_PARALLELISM_VALUES
-        if isinstance(value, dict):
-            # ONLY the model-bearing members. Reading every value made any prose member a claim, so
-            # `{method: none, apply_to: parallelizable_loops}` — a correctly serial legacy mapping —
-            # licensed the floor to reject its source, and `reduction_policy:
-            # serial_deterministic_acc` did the same. The three keys are the ones the live corpus
-            # actually uses to name the model (each with the value `openmp`); a mapping using some
-            # other spelling yields no claim, which fails the floor OPEN.
-            return any(
-                names_a_model(v)
-                for k, v in value.items()
-                if str(k).strip().lower() in _IMPL_PARALLELIZATION_MODEL_KEYS
-            )
-        return False
-
-    return any(
-        names_a_model(value)
-        for key, value in abstract.items()
-        if str(key).strip().lower() in model_keys
-    )
+            if "openmp" in token and token not in _NO_PARALLELISM_VALUES:
+                return True
+    return False
 
 
 def _validate_openmp_presence_floor(
     repo_root: Path,
     execution: NodeExecution,
+    src_dir: Path,
     model_files: list[Path],
     violations: list[str],
 ) -> None:
     """Issue #22 deterministic floor: on a node built for an OpenMP-on-CPU Fortran target (the
-    pipeline's target profile, issue #284), a generated model source that contains counted ``do``
+    pipeline's target profile, issue #284) whose bundle's ``target_lowering_plan`` names OpenMP
+    (``_lowering_plan_claims_openmp``), a generated model source that contains counted ``do``
     loops must contain at least one ``!$omp`` directive.
 
     This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
-    schedule matches ``backend_overrides.openmp.schedule``, or whether the parallelization is
-    correct. A present-but-wrong or present-but-partial reflection of the knobs stays the province
-    of ``Generate.verify`` G6 (the ``major`` remand for an unreflected impl-defaults profile). Only
-    the unambiguous case — the profile says OpenMP, the source has loops to parallelize, and there
-    is not one directive anywhere — is decided here, where it costs no judgment and no tokens.
+    schedule matches the plan, or whether the parallelization is correct. A present-but-wrong or
+    present-but-partial reflection of the plan stays the province of ``Generate.verify`` G6. Only
+    the unambiguous case — the target is OpenMP, the plan says OpenMP, the source has loops to
+    parallelize, and there is not one directive anywhere — is decided here, where it costs no
+    judgment and no tokens.
 
-    The floor exists because the rule was asymmetric: ``Generate.verify`` has always remanded on it
-    while the producer prompt never stated it, so whether a node passed depended on which loops the
-    verify leaf happened to look at. Fail-open by design in every ambiguous direction: whole-array
-    sources (zero counted loops) pass, non-OpenMP / non-CPU / non-Fortran profiles pass, an
-    unresolvable IR passes, a file containing a ``do concurrent`` passes, a file whose ``do`` header
-    wraps before it can be classified passes, a loop reached only through a ``;`` or a joined
-    continuation is not counted, and only `component/` / `problem/` nodes are in scope at all.
+    Fail-open by design in every ambiguous direction: whole-array sources (zero counted loops)
+    pass, non-OpenMP / non-CPU / non-Fortran targets pass, a source tree with no readable
+    ``codegen_bundle.json`` passes, a file containing a ``do concurrent`` passes, a file whose
+    ``do`` header wraps before it can be classified passes, a loop reached only through a ``;``
+    or a joined continuation is not counted, and only `component/` / `problem/` nodes are in
+    scope at all.
 
-    The floor fires only when the IR AFFIRMATIVELY claims a parallel model
-    (`_impl_claims_openmp`), not merely because the fixed layer resolves to OpenMP. That is what
-    keeps the reopen fair: a violation routes to ``generate.generate``, whose leaf authors source and
-    cannot touch the certified IR, so a demand it can only satisfy by editing the IR would be
-    unrepairable. With the claim required, the source is failing an obligation the IR itself states —
-    something the leaf can fix — and a node whose knob is silent or says ``none`` is out of scope,
-    leaving the soft "cpu defaults to OpenMP" rule with ``Generate.verify`` G6 where it belongs.
-
-    The residual case is an IR that claims OpenMP over loops that cannot be parallelized (a strict
-    recurrence). That is a contradiction inside the IR rather than a legitimate source being
-    rejected, and the violation names it: the fix is ``abstract.parallelization: none`` on the
-    Compile side, which this predicate then takes out of scope."""
+    The residual case is a plan that claims OpenMP over loops that cannot be parallelized (a
+    strict recurrence). The fix is the producer's own: ``"model": "none"`` in the plan, which
+    takes the node out of scope."""
     if not execution.node_key.startswith(_OPENMP_FLOOR_NODE_KINDS):
         return
     if not model_files:
         return  # missing model already flagged upstream
 
-    impl = _impl_contract_for_execution(repo_root, execution)
-    if not isinstance(impl, dict):
-        return
-    # The FIXED layer is the target's (issue #284): the class, backend and language the node
-    # is built and run for. The knob that claims a parallel model is still the IR's own
-    # (`_impl_claims_openmp`) until R4-a PR-3. A pipeline whose target does not resolve is
+    # The target is the pipeline's (issue #284). A pipeline whose target does not resolve is
     # refused by `_validate_pipeline_targets_resolve`, so the early return is not a pass.
     target = _pipeline_target(repo_root, execution.pipeline_dir)
     if target is None:
@@ -5988,8 +5943,13 @@ def _validate_openmp_presence_floor(
     language = target.toolchain["language"]
     if hw_class != "cpu" or backend != "openmp" or language != "fortran":
         return
-    if not _impl_claims_openmp(impl):
-        return  # the IR claims no parallel model here, so there is no stated obligation to enforce
+    try:
+        bundle = _read_json(src_dir.parent / "codegen_bundle.json")
+    except (OSError, json.JSONDecodeError):
+        return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
+    if not isinstance(bundle, dict) or not _lowering_plan_claims_openmp(
+            bundle.get("target_lowering_plan")):
+        return  # the plan claims no OpenMP model here, so there is no stated obligation
 
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
@@ -6004,14 +5964,13 @@ def _validate_openmp_presence_floor(
             continue  # whole-array syntax: nothing to parallelize, verify G6's province
         violations.append(
             f"{model_file}: the target profile resolves to OpenMP on CPU "
-            "(target.class=cpu, target.backend=openmp, toolchain.language=fortran) but this "
+            "(hardware.class=cpu, parallel.backend=openmp, toolchain.language=fortran) and the "
+            "bundle's target_lowering_plan.parallelization names OpenMP as its model, but this "
             f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
-            "directive — the impl_defaults.abstract / backend_overrides knobs are binding, so add "
-            "`!$omp parallel do` to the parallelizable loops the abstract parallel-scope knob names "
-            "(a `do concurrent` loop already counts as parallel; when NO loop here is "
-            "parallelizable the IR's own claim is the defect — it must say "
-            "`impl_defaults.abstract.parallelization: none`, which is a Compile-side fix and exempts "
-            "the node — so never force a directive you believe is wrong)"
+            "directive — add `!$omp parallel do` to the parallelizable loops the plan names (a "
+            "`do concurrent` loop already counts as parallel; when NO loop here is "
+            "parallelizable, say so in the plan with `\"model\": \"none\"`, which exempts the "
+            "node — so never force a directive you believe is wrong)"
         )
 
 
@@ -6340,31 +6299,6 @@ def _ir_document_path_for_execution(
     if ir_dir is None:
         return None
     return ir_dir / "spec.ir.yaml"
-
-
-def _impl_contract_for_execution(
-    repo_root: Path, execution: NodeExecution
-) -> dict[str, Any] | None:
-    ir_dir = _ir_dir_for_execution(repo_root, execution)
-    if ir_dir is None:
-        return None
-
-    contract_path = ir_dir / "spec.ir.yaml"
-    if not contract_path.exists():
-        return None
-
-    try:
-        data = _read_yaml(contract_path)
-    except yaml.YAMLError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    # spec.ir.yaml nests impl-defaults under `impl_defaults:` (was a flat
-    # impl.resolved.yaml in the legacy layout).
-    impl_section = data.get("impl_defaults")
-    if isinstance(impl_section, dict):
-        return impl_section
-    return data
 
 
 def _resolve_logged_path(repo_root: Path, raw_path: str) -> Path:
@@ -6751,13 +6685,13 @@ def _signature_backend_refusal(language: str) -> str | None:
     2. It HAS one, but the §5.1 helpers in this module import `_SIGNATURE_HELPERS_BACKEND_ID`
        directly and would render this node's signatures through that backend instead.
 
-    An absent `language` is not refused here: it takes the default `docs/IMPL_PLAN_SPEC.md`
-    documents, and `_validate_toolchain_backend_supported` owns the shape rules for the key.
+    An absent `language` is not refused here: the one caller reads it off the pipeline's target
+    profile, and an unresolvable target is reported by `_validate_pipeline_targets_resolve`.
 
-    The value is normalized HERE rather than trusted from the caller. Both current call sites
-    already strip and case-fold, so this is unreachable today — but the identity comparison
-    below is exact, and a caller that passed `Fortran` would get a false `Compile fail` on a
-    node that is perfectly valid. `registry.unavailable_reason` normalizes for its own answer,
+    The value is normalized HERE rather than trusted from the caller. The one call site passes
+    a profile token (lowercase by the loader's grammar), so this is unreachable today — but the
+    identity comparison below is exact, and a caller that passed `Fortran` would get a false
+    refusal on a node that is perfectly valid. `registry.unavailable_reason` normalizes for its own answer,
     which made the two halves of this predicate disagree about the same string.
     """
     normalized = str(language or "").strip().lower()
@@ -9113,6 +9047,32 @@ def _dep_node_key_tokens(node: Any) -> list[str]:
     return tokens
 
 
+def _with_pipeline_harness(
+    repo_root: Path, dep_data: dict[str, Any], node_key: str, pipeline_dir: Path,
+    violations: list[str],
+) -> dict[str, Any]:
+    """``dep_data`` as the pipeline at ``pipeline_dir`` sees it: the harness of the pipeline's
+    target added as a direct dependency and a closure node
+    (``orchestration_runtime.with_target_harness``, issue #284). The target-free Compile wrote a
+    graph without it; the conductor's pre_judge DAG check and derived aggregate add it the same
+    way, so the DAG-completeness gate asks about the harness exactly as it did when ``deps.yaml``
+    declared it. A pipeline whose target does not resolve is left as it is — it is refused by
+    ``_validate_pipeline_targets_resolve`` in the same stage — and a harness the catalog cannot
+    resolve is a violation here rather than a node silently dropped from the DAG."""
+    target = _pipeline_target(repo_root, pipeline_dir)
+    if target is None:
+        return dep_data
+    from tools.orchestration_runtime import with_target_harness
+    from tools.target_profile import TargetProfileError
+    try:
+        return with_target_harness(dep_data, repo_root, node_key, target)
+    except TargetProfileError as exc:
+        violations.append(
+            f"{pipeline_dir / 'lineage.json'}: the harness of target {target.target_id} does not "
+            f"resolve ({exc.detail}), so the dependency DAG cannot be checked against it")
+        return dep_data
+
+
 def _dependency_expected_node_keys(dep_data: dict[str, Any]) -> set[str]:
     expected: set[str] = set()
 
@@ -11433,420 +11393,9 @@ def _validate_compile_stage_impl(
     _validate_test_predicates(repo_root, ir_dir, violations)
     _validate_case_ids(ir_dir, violations)
     _validate_published_surface(repo_root, ir_dir, violations)
-    _validate_harness_dependency_consistency(repo_root, ir_dir, violations)
-    _validate_toolchain_backend_supported(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
-    _validate_impl_defaults_knobs(repo_root, ir_dir, violations)
 
     return violations
-
-
-# The canonical parallelization-family knob names, and the CLOSED table of live misspellings that
-# map onto them. Declarative copy of `spec/schema/ir/impl_defaults.schema.json` (SCHEMA.md's
-# codegen_bundle mode): the names are held here as constants so an unreadable schema cannot
-# fail-open a running gate, and `test_schema_agrees_with_the_validator_constants` pins the two
-# copies together. The alias->canonical direction is the load-bearing part and can live ONLY here —
-# draft-07 has no way to say "this misspelling means that key".
-#
-# Every entry was observed in a real workspace IR. Four recompiles of one harness spec produced four
-# vocabularies for the same knobs. Until R4-a PR-2 (issue #284) the language backend's runner read
-# only `num_threads`, so an aliased thread count degraded a 4-thread request to 1 with nothing
-# reporting it; since then the thread count a run executes with is the target profile's
-# (`execution.threads_per_rank`) and no machine consumer reads these names — what the gate still
-# keeps is one spelling per knob for the producer and reviewer that are shown the knob layer, until
-# R4-a PR-3 deletes the layer and this gate with it.
-# Keys are matched case-INSENSITIVELY (compared lowercased), because `Threads` and `NUM_THREADS`
-# are the same knob misspelled — a one-character change must not buy an exemption from a gate
-# whose whole subject is unreliable spellings.
-_IMPL_ABSTRACT_KNOB_ALIASES = {
-    "loop_parallelization": "parallelization",
-    "loop_parallelism": "parallelization",
-    "parallelization_model": "parallelization",
-    "parallel_loop_scope": "parallel_scope",
-    "parallelization_scope": "parallel_scope",
-    "parallel_loops": "parallel_scope",
-    "parallelization_granularity": "parallel_granularity",
-}
-# `backend_overrides` SECTION names that mean OpenMP. These are `selected.backend_key` spellings
-# taken from live IRs; the knob schema names the literal `openmp`.
-_IMPL_OPENMP_SECTION_ALIASES = frozenset(
-    {"cpu_openmp", "cpu_openmp_x86_64", "openmp_cpu", "omp"}
-)
-# NOTE `threads_per_rank` is ALSO a legitimate, unrelated field name — `perf.json`'s `parallelism`
-# object and the harness's `__write_perf` signature both use it (RUNNER_OUTPUT_CONTRACT.md §58,
-# PERFORMANCE_DIAGNOSTICS.md §2). It is an alias only HERE, under
-# `impl_defaults.backend_overrides.openmp`. That is why this table is applied to that one section by
-# key lookup and never as a repository-wide search: renaming the perf.json field would break the
-# runner-output contract.
-_IMPL_OPENMP_OVERRIDE_ALIASES = {
-    "threads": "num_threads",
-    "threads_per_rank": "num_threads",
-}
-# Pinned types on the canonical keys. A knob name this table does not mention is NOT type-checked:
-# the knob layer stays open for Tune, so only the pinned family is constrained.
-# `parallelization` is absent on purpose: it carries its own dedicated messages below (the mapping
-# form names the decomposition remedy, which a generic type line cannot), and listing it here too
-# reported one defect twice.
-_IMPL_ABSTRACT_KNOB_TYPES: dict[str, tuple[type, ...]] = {
-    "parallel_scope": (str,),
-    "parallel_granularity": (str,),
-}
-_IMPL_OPENMP_OVERRIDE_TYPES: dict[str, tuple[type, ...]] = {
-    "num_threads": (int,),
-    "schedule": (str,),
-    "chunk_size": (int,),
-    "collapse": (int,),
-    "nested": (bool,),
-}
-
-
-def _validate_impl_defaults_knobs(
-    repo_root: Path, ir_dir: Path, violations: list[str]
-) -> None:
-    """The parallelization family of the ``impl_defaults`` knob layer uses its CANONICAL key names.
-
-    The knob layer was un-pinned, and an unpinned name is not a contract: the same spec recompiled
-    produced ``parallelization`` as a flat string and as a mapping, and spelled the scope knob and
-    the thread count five and three ways respectively. Nothing downstream can key off a name that
-    changes every regeneration — and until R4-a PR-2 the one consumer that did (the language
-    backend's runner read exactly ``backend_overrides.openmp.num_threads``) silently ignored every
-    alias, so a node asking for 4 threads ran on 1. Since that PR the run's thread count is the
-    target profile's and the runner reads no knob, so no machine consumer remains; R4-a PR-3
-    deletes the knob layer from the IR and this gate with it.
-
-    Deliberately NARROW, per the deterministic-gate scope doctrine. Flagged: a name in the closed
-    alias table (with the rename as the remedy), a pinned key carrying the wrong type, and the
-    mapping form of ``parallelization``. Everything else PASSES — an absent ``impl_defaults`` /
-    ``abstract`` / ``backend_overrides``, a novel knob name (Tune's exploration space is the point
-    of a knob layer), and any value of a non-pinned key. This checker runs inside every existing
-    compile-stage test, so fail-open outside the closed table is a correctness requirement, not
-    caution.
-
-    Certified dependencies never re-run this gate on resume, so tightening it does not invalidate
-    the alias-carrying IRs already on disk."""
-    ir_path = ir_dir / "spec.ir.yaml"
-    if not ir_path.is_file():
-        return  # absence is reported by the caller
-    try:
-        ir = _read_yaml(ir_path)
-    except yaml.YAMLError:
-        return  # malformed YAML is reported by _validate_algorithm_contract_file
-    if not isinstance(ir, dict):
-        return
-    impl = ir.get("impl_defaults")
-    if not isinstance(impl, dict):
-        return
-
-    # Deliberately NOT gated on `target.backend`: four live IRs still carry a legacy
-    # `cpu_fortran_reference` backend alongside real `backend_overrides`, and a name defect is a
-    # name defect whatever backend the node targets. (The `!$omp` presence floor IS
-    # backend-gated — that one is about generated code, not about key spellings.)
-    abstract = impl.get("abstract")
-    if isinstance(abstract, dict):
-        _append_impl_alias_violations(
-            ir_path, "impl_defaults.abstract", abstract,
-            _IMPL_ABSTRACT_KNOB_ALIASES, _IMPL_ABSTRACT_KNOB_TYPES, violations,
-        )
-        # Resolve the key case-insensitively, and report the path as WRITTEN. An exact lookup let a
-        # `Parallelization` or a space-padded key be reported for its spelling and nothing else, so a
-        # mapping form or prose value under it survived until the producer had done the rename — a
-        # second `Compile.static` remand out of a bounded repair budget for one defect.
-        # EVERY key that normalizes to `parallelization`, not just the first. Picking one made the
-        # result depend on YAML insertion order: with a variant listed before the exact key, the
-        # exact key's mapping-form defect went unreported and only surfaced on the NEXT
-        # `Compile.static` attempt, spending a second turn of a bounded repair budget on a defect
-        # already visible here.
-        for par_key in [k for k in abstract if str(k).strip().lower() == "parallelization"]:
-            par_path = f"impl_defaults.abstract.{par_key}"
-            parallelization = abstract[par_key]
-            if isinstance(parallelization, dict):
-                violations.append(
-                    f"{ir_path}: {par_path} must be a flat string, not a "
-                    "mapping — decompose it: the execution model goes in `parallelization`, the "
-                    "loops it covers in `parallel_scope`, the nesting level in "
-                    "`parallel_granularity`, and any schedule/thread override in "
-                    "`backend_overrides.openmp`"
-                )
-            elif isinstance(parallelization, str):
-                # STRUCTURAL check only, not a vocabulary whitelist. An earlier draft required the
-                # value to be `openmp` or `none`, which rejected a legitimate novel model
-                # (`openmp+simd`, `openmp_tasks`) on the one knob whose whole purpose is
-                # exploration — a value constraint the schema's own `additionalProperties: true`
-                # contradicts. What is unambiguously wrong is PROSE in a slot that carries a token:
-                # the live `'OpenMP applied to parallelizable loops'` is a scope description filed
-                # under the model key, and multi-word text can never be a model identifier.
-                if parallelization.strip() and len(parallelization.split()) > 1:
-                    violations.append(
-                        f"{ir_path}: {par_path} is "
-                        f"{parallelization.strip()!r} — this knob carries the execution-model TOKEN "
-                        "only (e.g. `openmp`, `none`); move the prose describing which loops it "
-                        "applies to into `parallel_scope`"
-                    )
-            elif parallelization is not None:
-                violations.append(
-                    f"{ir_path}: {par_path} must be a string, got "
-                    f"{type(parallelization).__name__} ({parallelization!r}) — the parallelization "
-                    "knob types are pinned by spec/schema/ir/impl_defaults.schema.json"
-                )
-        _append_impl_knob_type_violations(
-            ir_path, "impl_defaults.abstract", abstract,
-            _IMPL_ABSTRACT_KNOB_TYPES, violations,
-        )
-
-    overrides = impl.get("backend_overrides")
-    if not isinstance(overrides, dict):
-        return
-
-    # The SECTION name is pinned too, not just its members. The knob schema names the literal
-    # `openmp` key, so a section keyed by `selected.backend_key` (`cpu_openmp`,
-    # `cpu_openmp_x86_64`) is a second spelling of one section — three live IRs file overrides that
-    # way (until R4-a PR-2 the runner renderer read only `openmp`, and two of them asked for 4
-    # threads and ran on 1). `openmp` must be spelled exactly — no casing
-    # variation, and no surrounding whitespace (a quoted `" openmp "` looks canonical to a reader
-    # and is invisible to `_dget`). Every section that MEANS OpenMP is collected, so a mis-named one
-    # still gets its members checked: reporting only the section name would hide a `threads` alias
-    # inside it until the author fixed the name and came back for a second remand.
-    # Every key that MEANS OpenMP, canonical or not. A rename remedy is only followable when this
-    # node has exactly one such key: with two, "key it by the literal `openmp`" told twice produces
-    # a duplicate YAML key, and PyYAML keeps the last — silently dropping one section's overrides,
-    # which is the harm this gate exists to prevent. `cpu_openmp` and `cpu_openmp_x86_64` are both
-    # real `selected.backend_key` spellings, so the pair is plausible rather than synthetic.
-    openmp_keys = [
-        k for k in overrides
-        if str(k).strip().lower() == "openmp"
-        or str(k).strip().lower() in _IMPL_OPENMP_SECTION_ALIASES
-    ]
-    must_merge = len(openmp_keys) > 1
-    openmp_sections: list[tuple[str, dict[str, Any]]] = []
-    for key in sorted(overrides, key=str):
-        raw = str(key)
-        name = raw.strip()
-        lowered = name.lower()
-        if lowered != "openmp" and lowered not in _IMPL_OPENMP_SECTION_ALIASES:
-            continue
-        if isinstance(overrides[key], dict):
-            openmp_sections.append((raw, overrides[key]))
-        elif overrides[key] is not None:
-            # A scalar or list where a mapping belongs: a non-mapping carries no override at all —
-            # and the exact-`openmp` early return below meant the canonical spelling was the ONE
-            # case where that went unreported.
-            violations.append(
-                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be a mapping of override "
-                f"names to values, got {type(overrides[key]).__name__} "
-                f"({overrides[key]!r}) — the knob schema (spec/schema/ir/impl_defaults.schema.json) "
-                "declares it as that mapping, so a non-mapping carries no override at all"
-            )
-        if raw == "openmp":
-            continue
-        # More than one OpenMP-meaning section: renaming any of them collides, so say merge.
-        if must_merge:
-            others = ", ".join(
-                sorted(repr(str(k)) for k in openmp_keys if str(k) != raw))
-            violations.append(
-                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} is one of several sections "
-                f"that all mean OpenMP ({others}) — MERGE their entries into a single section "
-                "keyed by the literal `openmp` and delete the rest; renaming each of them "
-                "separately collides into a duplicate key, and the knob schema names only "
-                "`backend_overrides.openmp`"
-            )
-        elif lowered == "openmp":
-            violations.append(
-                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be spelled as the bare "
-                "literal `openmp` — the knob schema names that exact key, so any casing or "
-                "surrounding whitespace is a section it does not declare"
-            )
-        else:
-            violations.append(
-                f"{ir_path}: impl_defaults.backend_overrides.{name} is a non-canonical section "
-                "name — key the OpenMP overrides by the literal `openmp`, never by "
-                "`selected.backend_key` (the knob schema names the section `openmp`; the thread "
-                "count a run executes with is the target profile's `execution.threads_per_rank`, "
-                "not this knob)"
-            )
-
-    for raw, section in openmp_sections:
-        prefix = f"impl_defaults.backend_overrides.{raw}"
-        _append_impl_alias_violations(
-            ir_path, prefix, section,
-            _IMPL_OPENMP_OVERRIDE_ALIASES, _IMPL_OPENMP_OVERRIDE_TYPES, violations,
-            destination="the canonical key",
-            extra_why=(
-                " (the knob schema names it `num_threads`; the thread count a run executes with "
-                "is the target profile's `execution.threads_per_rank`, not this knob)"
-            ),
-        )
-        _append_impl_knob_type_violations(
-            ir_path, prefix, section, _IMPL_OPENMP_OVERRIDE_TYPES, violations,
-        )
-
-
-def _append_impl_alias_violations(
-    ir_path: Path,
-    prefix: str,
-    section: dict[str, Any],
-    aliases: dict[str, str],
-    pinned: dict[str, tuple[type, ...]],
-    violations: list[str],
-    destination: str = "`parallel_scope`",
-    extra_why: str = "",
-) -> None:
-    """Report each aliased knob name in ``section``, with a remedy that survives being obeyed.
-
-    Two shapes make a bare "rename it" remedy produce a SECOND remand, and both are live:
-
-    * the canonical key is already present next to the alias (two IRs carry `parallelization` AND
-      `loop_parallelization`), so renaming would collide into a duplicate YAML key;
-    * the alias holds a value the canonical key's pinned type rejects (15 IRs carry
-      ``parallel_loops`` as a LIST, and ``parallel_scope`` is pinned to a string), so obeying the
-      rename trades a name violation for a type violation.
-
-    ``sorted(section, key=str)`` rather than ``sorted(section)``: a YAML mapping may carry a
-    non-string key (``2:``, ``true:``, ``~:``), and comparing those against a string raised an
-    unhandled ``TypeError`` that replaced the whole ``FAIL - <violation>`` report with a traceback,
-    losing every violation already collected in that run."""
-    present_lowered = {str(k).strip().lower() for k in section}
-    # Every name this table pins, as a canonical target or as a type-checked key.
-    canonical_names = set(pinned) | set(aliases.values())
-    # Aliases grouped by the canonical key they all mean, so a colliding set can be told to merge.
-    siblings: dict[str, list[str]] = {}
-    # Every key that normalizes to a canonical name, exact or not, grouped the same way. Two inexact
-    # variants of one canonical key (`NUM_THREADS` and `"num_threads "`) collide on rename exactly as
-    # two aliases do, and PyYAML keeps only one value.
-    canonical_variants: dict[str, list[str]] = {}
-    for key in sorted(section, key=str):
-        raw = str(key)
-        name = raw.strip()
-        canonical = aliases.get(name.lower())
-        if canonical is not None:
-            siblings.setdefault(canonical, []).append(name)
-        elif name.lower() in canonical_names:
-            canonical_variants.setdefault(name.lower(), []).append(raw)
-    for key in sorted(section, key=str):
-        raw = str(key)
-        name = raw.strip()
-        canonical = aliases.get(name.lower())
-        if canonical is None:
-            # A key that IS a canonical knob but is not spelled exactly. Normalizing for the alias
-            # lookup is right — `Threads` must still be caught as an alias — but normalizing the
-            # CANONICAL side let a wrong-cased or space-padded key pass as canonical — a second
-            # spelling of one knob, which is what this whole table exists to prevent. (Until R4-a
-            # PR-2 the runner renderer read the literal `num_threads` and returned 1 for
-            # `NUM_THREADS` or `"num_threads "`; since then no knob has a machine consumer.)
-            if name.lower() in canonical_names and raw != name.lower():
-                canonical_exact = name.lower()
-                group = canonical_variants.get(canonical_exact, [])
-                # "Rename it" is followable only when this spelling would land on a free key. With
-                # the exact key already present, or with a second variant of the same canonical name,
-                # renaming collides into a duplicate that `yaml.safe_load` resolves by keeping the
-                # last — silently discarding a value. Both the alias path and the section path say
-                # merge for this shape; a canonical VARIANT is the same collision one spelling in.
-                others = [k for k in group if k != raw]
-                if any(str(k) == canonical_exact for k in section):
-                    remedy = (
-                        f"the exact `{canonical_exact}` is already present, so MERGE this key's "
-                        "value into it and delete this one; renaming would collide into a "
-                        "duplicate key"
-                    )
-                elif others:
-                    listed = ", ".join(sorted(repr(o) for o in others))
-                    remedy = (
-                        f"it and {listed} are all `{canonical_exact}` spelled differently — MERGE "
-                        f"them into a single bare lowercase `{canonical_exact}` and delete the rest; "
-                        "renaming each separately collides into a duplicate key"
-                    )
-                else:
-                    remedy = f"rename it to the bare lowercase `{canonical_exact}`"
-                violations.append(
-                    f"{ir_path}: {prefix}.{raw!r} is the canonical knob `{canonical_exact}` spelled "
-                    f"inexactly — {remedy} (the knob schema names the literal key, so any casing "
-                    f"or surrounding whitespace is a knob it does not declare){extra_why}"
-                )
-            continue
-        # Case-insensitive, like every other comparison here: a `Threads` beside a `NUM_THREADS`
-        # is still an alias beside its canonical key, and telling it to "rename to num_threads"
-        # would leave the section holding the same knob twice.
-        if canonical in present_lowered:
-            where = (
-                f"into {destination}"
-                if destination != f"`{canonical}`"
-                else "into the key that should carry it"
-            )
-            remedy = (
-                f"the canonical `{canonical}` is already present, so DELETE this key — move any "
-                f"detail it carries {where}, not into `{canonical}`"
-            )
-        else:
-            if len(siblings[canonical]) > 1:
-                # Several aliases of the SAME canonical key with the canonical absent. Told to
-                # rename separately they collide into a duplicate YAML key, and `yaml.safe_load`
-                # keeps the last silently — the argument the section-level check makes, one level
-                # down.
-                others = ", ".join(f"`{s}`" for s in siblings[canonical] if s != name)
-                remedy = (
-                    f"it and {others} all mean `{canonical}` — MERGE them into a single "
-                    f"`{canonical}` and delete the rest; renaming each separately collides into a "
-                    "duplicate key"
-                )
-            else:
-                remedy = f"rename it to `{canonical}`"
-            # The type note belongs to BOTH remedies: either one ends with the value living under
-            # `canonical`, so a value the pinned type rejects becomes a second remand on the next
-            # turn. `bool` is an `int` subclass, so `threads: true` looks int-valid without
-            # `_value_matches_pinned_type` — and `int(True)` is 1, the silent degradation itself.
-            expected = pinned.get(canonical)
-            value = section[key]
-            if expected and value is not None and not _value_matches_pinned_type(value, expected):
-                names = " or ".join(t.__name__ for t in expected)
-                remedy += (
-                    f", whose value must be {names} — this key holds "
-                    f"{type(value).__name__}, so convert the value in the same edit"
-                )
-        violations.append(
-            f"{ir_path}: {prefix}.{name} is a non-canonical spelling — {remedy} (the "
-            "parallelization knob names are pinned by "
-            f"spec/schema/ir/impl_defaults.schema.json){extra_why}"
-        )
-
-
-def _value_matches_pinned_type(value: Any, expected: tuple[type, ...]) -> bool:
-    """Whether ``value`` satisfies a pinned knob type.
-
-    Shared by the type checker and the alias remedy so the two cannot disagree — they did, and the
-    disagreement shipped a remedy that failed on the next turn. `bool` is an `int` subclass, so an
-    int-pinned key needs it excluded explicitly (`num_threads: true` is not a thread count, and
-    `int(True)` is 1, which is the silent degradation this family of checks exists to catch)."""
-    if not isinstance(value, expected):
-        return False
-    return not (bool not in expected and isinstance(value, bool))
-
-
-def _append_impl_knob_type_violations(
-    ir_path: Path,
-    prefix: str,
-    section: dict[str, Any],
-    pinned: dict[str, tuple[type, ...]],
-    violations: list[str],
-) -> None:
-    """Type-check only the PINNED knob names in ``section``; leave every other key alone.
-
-    Matched case-insensitively, for the same reason the alias table is: a `NUM_THREADS` the renderer
-    cannot read must not escape the check that a `num_threads` gets."""
-    by_lowered = {str(k).strip().lower(): k for k in section}
-    for key, expected in pinned.items():
-        actual_key = by_lowered.get(key)
-        if actual_key is None:
-            continue
-        value = section[actual_key]
-        if value is None:
-            continue  # a null plug-hole is Compile.verify V7's finding, not a name/type one
-        if _value_matches_pinned_type(value, expected):
-            continue
-        names = " or ".join(t.__name__ for t in expected)
-        violations.append(
-            f"{ir_path}: {prefix}.{key} must be {names}, got "
-            f"{type(value).__name__} ({value!r}) — the parallelization knob types are pinned by "
-            "spec/schema/ir/impl_defaults.schema.json"
-        )
 
 
 def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
@@ -12294,351 +11843,6 @@ def _op_has_lowering_signal(
     return False
 
 
-def _validate_harness_dependency_consistency(
-    repo_root: Path, ir_dir: Path, violations: list[str]
-) -> None:
-    """R1/M3c-β deterministic compile gate: an M3c physics node that declares an
-    ``infrastructure`` (runner-harness) dependency must declare EXACTLY the harness derived
-    from its own target — ``harness_<language>_<target.class>`` (e.g. ``harness_fortran_cpu``).
-    A wrong / multiple / mistyped harness dependency is caught at Compile (cheap) rather than
-    surfacing as a render / link failure, because the runner glue is host-rendered against
-    exactly this harness.
-
-    No-op when the node is itself an infrastructure node, or when it declares NO infrastructure
-    dependency — a shape spec-input rejects on every non-infrastructure spec, so the no-op is
-    reachable only from a hand-crafted IR. Routes (via ``classify_compile_static_failure``) back to
-    ``compile.generate`` to re-author ``dependency.direct_deps``."""
-    derived_path = ir_dir / "spec.ir.yaml"
-    if not derived_path.exists():
-        return
-    try:
-        ir = _read_yaml(derived_path)
-    except (json.JSONDecodeError, yaml.YAMLError):
-        return
-    if not isinstance(ir, dict):
-        return
-    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if str(meta.get("spec_kind") or "").strip() == "infrastructure":
-        return
-    infra = _infra_direct_dep_node_keys(ir)
-    if not infra:
-        return  # no harness dependency declared (spec-input rejects it) -> nothing to pin
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
-    language = str(tc.get("language") or "").strip().lower()
-    hw_class = str(target.get("class") or "").strip().lower()
-    if not language or not hw_class:
-        violations.append(
-            f"{derived_path}: node declares an infrastructure dependency but "
-            "impl_defaults.toolchain.language / impl_defaults.target.class is missing — "
-            "cannot derive the expected harness id")
-        return
-    expected = f"harness_{language}_{hw_class}"
-    if len(infra) != 1:
-        violations.append(
-            f"{derived_path}: a physics node must declare exactly one infrastructure (harness) "
-            f"dependency; found {infra} (expected the single {expected!r})")
-        return
-    dep_spec = _spec_id_from_node_key(infra[0])
-    if dep_spec != expected:
-        violations.append(
-            f"{derived_path}: declared infrastructure dependency {infra[0]!r} (spec_id "
-            f"{dep_spec!r}) does not match the harness derived from this node's target "
-            f"(language={language}, class={hw_class}): expected {expected!r}")
-
-
-def _missing_toolchain_capability_clauses(
-    build_system: str, language: str, is_infrastructure: bool
-) -> list[str]:
-    """The registry clauses for what this node's toolchain cannot do, one per AXIS.
-
-    What a node NEEDS of its toolchain, asked of the registry one capability at a time rather
-    than by comparing against a pair spelled here. Each capability is the reason the caller's
-    scope text gives, made answerable: ``build_execute`` is the kind-agnostic in-process build /
-    execute path, ``control_file`` is the host-authored control file (whose syntax is the build
-    system's and whose compile rules are the language's), and ``runner_render`` is the
-    host-rendered runner source. An infrastructure node needs only the first: it authors its own
-    runner and its control file is leaf-authored, which is exactly why its exemption is
-    language-shaped.
-
-    ONE CLAUSE PER AXIS, not per capability: two clauses about the same value read as two defects
-    and lengthen a message an author has to act on. The first missing capability of an axis is
-    the one reported.
-
-    A value that is not equal to its stripped form is refused here WITHOUT asking the registry.
-    That is defense in depth, and it is a layer this gate had and briefly lost: the old code
-    compared ``build_system != "make"`` exactly, so a padded value was refused twice — by the
-    shape check above the caller and again by the comparison — whereas ``registry.provides``
-    normalizes with ``.strip().lower()`` and would answer as if the padding were not there.
-    Measured with the caller's shape check neutered, the registry-only form refused 4 of 32
-    padded shapes where the old code refused 24. The class this protects is real (a padded value
-    leaves ``src/Makefile`` authored by nobody, because the conductor compares unstripped and
-    declines while ``record_launch``'s reader strips and suppresses the leaf's write-pin), the
-    conductor re-added the same guard for the same reason
-    (``Conductor._core_authors_control_file``), and a defense that exists in one of two readers
-    is the asymmetry this pair keeps paying for. Extracted from the gate so this layer can be
-    driven directly, rather than only through a caller that returns before it.
-    """
-    required: tuple[tuple[str, str, str], ...] = (
-        ("build_system", build_system, "build_execute"),
-    ) if is_infrastructure else (
-        ("build_system", build_system, "build_execute"),
-        ("build_system", build_system, "control_file"),
-        ("language", language, "control_file"),
-        ("language", language, "runner_render"),
-    )
-    clauses: list[str] = []
-    reported_axes: set[str] = set()
-    for axis, value, capability in required:
-        if axis in reported_axes:
-            continue
-        if value != value.strip():
-            clauses.append(
-                f"the {axis} value {value!r} has leading or trailing whitespace, so it is not "
-                f"the token it looks like; the host's readers of this key disagree about "
-                f"padding and one of them would author nothing")
-            reported_axes.add(axis)
-            continue
-        reason = backend_registry.missing_capability_reason(axis, value, capability)
-        if reason is not None:
-            clauses.append(reason)
-            reported_axes.add(axis)
-    return clauses
-
-
-def _validate_toolchain_backend_supported(
-    repo_root: Path, ir_dir: Path, violations: list[str]
-) -> None:
-    """Deterministic compile gate: the only implemented physical backend is
-    ``(build_system=make, language=fortran)``.
-
-    Everything the host authors for a physics node — ``src/Makefile``
-    (``_conductor_authors_makefile``) and ``src/<spec_id>_runner.f90``
-    (``_conductor_authors_runner``) — is make+fortran only, and the in-process build /
-    execute path is likewise make-only (``_require_make_build_system``). A node whose IR
-    named another toolchain used to slip past every one of those predicates, and the two
-    halves failed differently — both late, and neither with a message naming the toolchain:
-    a non-``make`` ``build_system`` reached the Build stage's ``_require_make_build_system``
-    backstop (a hard fail, phases later, with no repair route), while a non-``fortran``
-    ``language`` under ``make`` passed that backstop — it tests ``build_system`` only — and
-    lost host authorship of the runner and Makefile. On a node with a harness dependency the
-    language half was caught one gate earlier, by
-    ``_validate_harness_dependency_consistency``, but only INDIRECTLY: it fires because the
-    derived ``harness_<language>_<class>`` id no longer matches the declared dependency, so
-    it reads as a wrong-harness defect and its remedy points at ``dependency.direct_deps``.
-
-    Naming the toolchain here makes the defect cheap, REPAIRABLE and correctly attributed:
-    ``impl_defaults.toolchain`` is authored content, so the violation routes (via
-    ``classify_compile_static_failure`` → ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm
-    ``compile.generate`` re-author. The Build backstop stays as defense-in-depth.
-
-    An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness is
-    certified per ``(language, hardware)`` target, so another language is a legitimate
-    future harness. It is NOT exempt from ``make`` — ``_require_make_build_system`` is
-    kind-agnostic, so a non-make harness would die at Build, late and unrepairable, which is
-    the failure class this gate exists to remove — nor from the SHAPE checks below, which
-    are about the host's readers disagreeing rather than about which backend is supported.
-
-    That language exemption admits nothing TODAY: ``_validate_published_surface``
-    — in the same pass, so the order does not matter, both violations land in one list —
-    rejects any node it covers whose language has no EXTRACTED backend, carrying
-    ``tools/backends/registry.unavailable_reason``'s clause, which names the implemented
-    set and where to register another. That is the accurate remedy for the shape, and
-    better than a second violation from here saying "use fortran". Since issue #153 PR-2 the
-    set that gate covers is ``infrastructure`` AND ``component``, so the sentence above is
-    about the harness only because the harness is the only kind THIS gate exempts.
-
-    THIS gate no longer spells ``(make, fortran)`` itself: it asks
-    ``registry.missing_capability_reason`` for the capabilities a node needs of its toolchain
-    (``build_execute`` of every node's build system; ``control_file`` and ``runner_render``
-    besides on a physics node) and carries the registry's clause. What it refuses therefore
-    follows the registry rather than a pair written here — but note what that does and does not
-    mean. Registering a backend does not widen this gate; DECLARING THE CAPABILITY does, and a
-    capability declaration asserts that code in this repository already does that job for the
-    value — inlined in the neutral core, or in the backend's own package (docs/BACKEND_BOUNDARY.md
-    §Design Policy; the two are separate declarations and this gate is blind to which). So the gate cannot be widened past what the host can actually author, which
-    is the fail-open the previous version of this paragraph would have created had it been
-    routed through membership: `_write_makefile` emits GNU make syntax with Fortran compile
-    rules, and a predicate that answered "implemented?" would have handed a second build
-    system's nodes to it.
-
-    That hand-off only holds while both gates spell the exemption the SAME way: they
-    now agree on ``.strip()`` with no case folding (as do
-    ``spec_input_gates.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
-    divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
-    exemption while the other gate's exact match skipped the node, so a non-fortran harness
-    produced no violation at all. The value is the IR's self-declared ``meta.spec_kind``,
-    which a physics node cannot abuse to take the exemption because declaring it drags in
-    that same infrastructure public-API gate.
-
-    Absent ``build_system`` / ``language`` default to make / fortran, the SAME defaults
-    ``_conductor_authors_makefile`` and ``_conductor_authors_runner`` apply, so an IR that
-    omits the toolchain passes here exactly as it is host-rendered in the conductor. That
-    equivalence is why the defaults exist; it is NOT a licence to omit the keys, which V6
-    and ``docs/IMPL_PLAN_SPEC.md`` require and which ``post_generate`` gates read (an absent
-    ``language`` silently skips the fortran syntax-check evidence gate).
-
-    Three SHAPE checks close divergences between the host readers of these two keys:
-
-    - a truthy non-mapping ``toolchain`` (a string, a list) — the conductor's ``tc =
-      (impl.get("toolchain") or {})`` keeps it and raises ``AttributeError`` mid-Generate.
-      A truthy non-mapping ``impl_defaults`` does NOT crash the conductor (that read IS
-      isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
-      rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
-      sides identically and is left alone.
-    Since issue #284 neither the conductor nor ``record_launch`` reads these keys — both
-    read the target profile, and the bridge gate (``Conductor._target_ir_mismatch`` over
-    ``target_profile.ir_profile_mismatches``)
-    holds the IR's declared values to it — so the divergences below are the history the
-    checks were written against, kept because the IR's remaining readers still read the
-    declared value.
-
-    - a key present with a value that is not a plain non-empty string. ``record_launch``
-      decided Makefile authorship from ``_impl_resolved_build_system`` /
-      ``_impl_resolved_language``, which read ``impl_defaults.toolchain`` structurally and
-      coerce anything that is not a string to ``None``; the conductor takes
-      ``str(value or default)``. The two therefore agree on ``language:`` (no value),
-      ``language: null`` and ``""`` — all of them default on both sides — and diverge on a
-      non-string SCALAR: ``build_system: 5`` / ``true`` reads as ``None`` (→ make) for one
-      side and as ``"5"`` / ``"true"`` for the other, which leaves ``src/Makefile``
-      authored by NOBODY. The same happens to an untrimmed value of EITHER key
-      (``"make "``, ``" fortran"``), since the reader strips and the conductor does not. Because the parsed IR cannot tell the harmless spellings from
-      that one, every such value is rejected — give the key a plain token or remove it. An
-      ABSENT key is a different thing and stays legal.
-    - a value that is not equal to its stripped form (``"make "``, ``" fortran"``). The
-      conductor compares with ``.lower()`` and no ``.strip()``, so a padded value is not the
-      token it looks like and host authorship of the Makefile and the runner silently flips
-      off, while ``record_launch``'s reader DOES strip and concludes the host authored the
-      file — suppressing the leaf's write-pin and leaving ``src/Makefile`` authored by
-      NOBODY. This holds for either key. (The pair comparison below is ``.lower()``-only
-      too, but that is unobservable: this check returns first for every untrimmed value.)
-
-    The former RESIDUAL here — spellings that parse to the right token but line-scanned to
-    a different one (a duplicate ``language:`` key, a block scalar, a YAML alias, or a
-    decoy ``language:`` line in a free-text field above ``impl_defaults``) — is closed at
-    the root: both readers parse the document instead of scanning it, so a parse-visible
-    check now covers the whole class.
-
-    A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
-    derived_path = ir_dir / "spec.ir.yaml"
-    if not derived_path.exists():
-        return
-    try:
-        ir = _read_yaml(derived_path)
-    except (json.JSONDecodeError, yaml.YAMLError):
-        return
-    if not isinstance(ir, dict):
-        return
-    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    is_infrastructure = str(meta.get("spec_kind") or "").strip() == "infrastructure"
-    raw_impl = ir.get("impl_defaults")
-    if raw_impl and not isinstance(raw_impl, dict):
-        violations.append(
-            f"{derived_path}: impl_defaults must be a mapping (found "
-            f"{type(raw_impl).__name__}); every impl_defaults gate reads it through "
-            "`isinstance(..., dict)` and silently no-ops on any other shape, so the whole "
-            "section would go unchecked (docs/workflow/phases/phase_01_compile.md). "
-            "Re-author impl_defaults as the documented target/toolchain/selected/abstract "
-            "mapping.")
-        return
-    impl = raw_impl if isinstance(raw_impl, dict) else {}
-    raw_tc = impl.get("toolchain")
-    if raw_tc and not isinstance(raw_tc, dict):
-        violations.append(
-            f"{derived_path}: impl_defaults.toolchain must be a mapping (found "
-            f"{type(raw_tc).__name__}); the conductor reads `language` / `build_system` off "
-            "it unguarded and would fail mid-Generate "
-            "(docs/workflow/phases/phase_01_compile.md). "
-            "Re-author it as `{language: fortran, build_system: make, ...}`.")
-        return
-    tc = raw_tc if isinstance(raw_tc, dict) else {}
-    shape_bad = False
-    for key in ("build_system", "language"):
-        if key not in tc:
-            continue
-        value = tc[key]
-        if not isinstance(value, str) or not value.strip():
-            shape_bad = True
-            # Measured over the two readers, this branch spans two outcomes — which is why
-            # the message states the RULE and cites the harmful one rather than claiming a
-            # consequence for the value at hand:
-            #   key: 5 / true (a non-string SCALAR)  -> src/Makefile authored by NOBODY
-            #   key: "   " (whitespace only)          -> likewise NOBODY (the reader strips)
-            #   `key:` (bare), `key: null`, `key: ""` -> both readers default (harmless)
-            # The harmless spellings are rejected anyway because the PARSED value cannot be
-            # told from the harmful one: record_launch reads impl_defaults.toolchain
-            # structurally and coerces a non-string to None, which is the same default the
-            # bare key takes.
-            violations.append(
-                f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
-                f"string token; found {value!r}. The conductor reads the parsed value as "
-                f"`str(value or default)` while record_launch, which decides src/Makefile "
-                f"authorship, coerces anything that is not a string to the default, so for a "
-                f"value that is not a plain token the two CAN reach different answers: "
-                f"measured, `{key}: 5` or `{key}: true` leaves src/Makefile authored by "
-                f"nobody, while the bare `{key}:`, `{key}: null` and `{key}: \"\"` spellings "
-                f"happen to agree. The parsed IR cannot tell them apart, so every "
-                f"present-but-not-a-plain-token value is "
-                f"rejected (docs/workflow/phases/phase_01_compile.md). Give the key an "
-                f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or remove "
-                f"it entirely — an ABSENT key is legal and takes that same default.")
-        elif value != value.strip():
-            shape_bad = True
-            # Measured, for EITHER key: an untrimmed value orphans the file AND drops the
-            # node out of M3c. The conductor compares without stripping and declines to
-            # author, while record_launch's reader strips and still reports the host as the
-            # author, which suppresses the leaf's write-pin; and
-            # `_conductor_authors_runner` keys on both `build_system` and `language`, so a
-            # padded value of either stops the runner being host-rendered.
-            consequence = (
-                "src/Makefile ends up authored by nobody: record_launch's reader — which "
-                "does strip — still reports the host as the author and suppresses the "
-                "leaf's write-pin, and the node silently stops being an M3c node: its "
-                "runner is no longer host-rendered and its checks-module ABI no longer "
-                "applies")
-            violations.append(
-                f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
-                "leading or trailing whitespace. The conductor compares this value with "
-                "`.lower()` and no `.strip()`, so it is not the token it looks like: host "
-                f"authorship silently flips off, and {consequence} "
-                "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
-                f"({value.strip()!r}).")
-    if shape_bad:
-        return
-    build_system = str(tc.get("build_system") or "make").lower()
-    language = str(tc.get("language") or "fortran").lower()
-    clauses = _missing_toolchain_capability_clauses(build_system, language, is_infrastructure)
-    if not clauses:
-        return
-    scope = ("build_system must be 'make' on every node, an infrastructure node included: "
-             "the in-process build / execute path is make-only and kind-agnostic "
-             "(_require_make_build_system)"
-             if is_infrastructure else
-             "the host-authored src/Makefile and src/<spec_id>_runner.f90 exist only where the "
-             "neutral core implements them, and the node path for a toolchain it does not has "
-             "been removed")
-    def _declared(key: str, default: str) -> str:
-        # Report what the author wrote. An absent key is "absent (defaults to X)", never a
-        # value they never typed, and a present one is echoed verbatim rather than normalized.
-        return repr(tc[key]) if key in tc else f"absent (defaults to {default!r})"
-
-    violations.append(
-        f"{derived_path}: impl_defaults.toolchain declares "
-        f"(build_system={_declared('build_system', 'make')}, "
-        f"language={_declared('language', 'fortran')}); {scope} "
-        "(docs/workflow/phases/phase_01_compile.md). "
-        # Terminated, not merely joined: the registry clause ends in a parenthesis, so `" ".join`
-        # ran two sentences together mid-message.
-        + " ".join(f"{clause.rstrip('.')}." for clause in clauses)
-        + " The controlled_spec is language-neutral, so nothing in it pins another toolchain, so "
-        "re-authoring impl_defaults.toolchain to a supported one is a content change with no "
-        "spec consequence (keys stated explicitly — V6 requires every fixed impl_defaults "
-        "sub-key to have a value, and the post_generate lint/syntax gates read `language`). The "
-        "values are compared case-insensitively; an untrimmed value never reaches this "
-        "comparison because the shape check above rejects it first.")
-
-
 def _validate_harness_render_preconditions(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -12662,26 +11866,25 @@ def _validate_harness_render_preconditions(
     mirror by construction, so a defect routes back to ``compile.generate`` (warm re-author)
     instead. The renderer keeps every assertion as a defense-in-depth backstop.
 
-    EXCLUDED (by ``ir_content_violations``, via ``RenderError.identity``): node-identity defects
-    a re-author cannot repair — the spec_id / derived-name length and >1 infra dep. These are
-    NOT hoisted here (routing an unrepairable defect to a warm-resume retry would only spin).
-    Neither identity defect can reach the render backstop from a live run. BOTH are bounded at
-    SPEC-INPUT, before any phase runs, by ``spec_input_gates.spec_id_length_violation`` and
-    ``spec_input_gates.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
-    (workflow_conductor) and mirrored over the whole closure by run_workflow's dependency visit.
-    So a spec_id over 55 is an early, clear rejection rather than a late workflow-kill (and the
-    derived ``<spec_id>_runner``/``_checks``/``_model`` names, spec_id + 7, stay inside the f2008
-    63-char limit), and a node declaring anything other than exactly one infrastructure dep never
-    starts at all. The renderer keeps the spec_id bound and the >1-infra case as defense-in-depth
-    backstops; the ZERO-infra case has no renderer backstop at all (with no infrastructure dep the
-    runner is never host-rendered), which is why spec-input is its only capture point. The catalog's former
-    over-length offender (a 61-char ``advection_diffusion`` profile node) has since been renamed,
-    and no catalog ``spec_id`` now exceeds the bound — the gate stands as a guard on future
-    additions.
+    The Compile is target-free (issue #284, R4-a PR-3), so the question is asked once per
+    declared target whose toolchain the host renders a runner for (``_compile_render_targets``),
+    each with that target's language and harness — the ``(language, harness_spec_id)`` the
+    conductor's ``_write_runner`` passes for a run of that target. A message found for one target
+    only names the target; one found for every target is reported once. Until PR-3 the language
+    was the IR's ``impl_defaults.toolchain.language`` and the harness the IR's single
+    ``infrastructure`` direct dependency.
 
-    No-op only when the node is not M3c — an ``infrastructure`` node (whose self-test runner is
-    leaf-authored), or a hand-crafted IR that names another toolchain, which its sibling gate
-    ``_validate_toolchain_backend_supported`` rejects in the same pass."""
+    EXCLUDED (by ``ir_content_violations``, via ``RenderError.identity``): node-identity defects
+    a re-author cannot repair — the spec_id / derived-name length (and the renderer's >1-harness
+    backstop, which an IR can no longer reach: no ``infrastructure`` node is a direct
+    dependency). These are NOT hoisted here (routing an unrepairable defect to a warm-resume
+    retry would only spin). The spec_id bound is enforced at SPEC-INPUT, before any phase runs,
+    by ``spec_input_gates.spec_id_length_violation`` — unconditionally in ``resolve_node``
+    (workflow_conductor) and over the whole closure by run_workflow's dependency visit.
+
+    No-op when the node is not M3c — an IR stating no physics kind (``M3C_SPEC_KINDS``; an
+    ``infrastructure`` node's self-test runner is leaf-authored) — or when no declared target
+    renders a runner."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -12689,9 +11892,12 @@ def _validate_harness_render_preconditions(
         ir = _read_yaml(derived_path)
     except (json.JSONDecodeError, yaml.YAMLError):
         return
-    language = _ir_m3c_language(ir) if isinstance(ir, dict) else None
-    if language is None:
+    if not isinstance(ir, dict):
         return
+    from tools.spec_input_gates import M3C_SPEC_KINDS
+    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+    if str(meta.get("spec_kind") or "").strip() not in M3C_SPEC_KINDS:
+        return  # the same kind question `_m3c_language` asks
     # Derive the node's spec_id from its node IDENTITY — the same source the conductor's
     # `_write_runner` uses (`refs.spec_id`, from the node key), NOT the optional `meta.spec_id`.
     # Gating on `meta.spec_id` was a defect: a harness-backed IR with `meta.spec_id` absent or
@@ -12705,43 +11911,39 @@ def _validate_harness_render_preconditions(
     node_key = dep.get("node_key")
     spec_id = _spec_id_from_node_key(node_key) if isinstance(node_key, str) and node_key else None
     if not spec_id:
-        meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
         ms = meta.get("spec_id")
         spec_id = ms.strip() if isinstance(ms, str) and ms.strip() else "node"
-    # Mirror the conductor's `_write_runner`: the harness spec_id is the single infrastructure
-    # direct dep's spec_id (`_ir_is_m3c_physics` guarantees exactly one).
-    infra = _infra_direct_dep_node_keys(ir)
-    if len(infra) != 1:  # defensive; _ir_is_m3c_physics already pins this
-        return
-    harness_sid = infra[0].partition("@")[0].partition("/")[2]
-    # REACHABLE, for the reason spelled out in `_validate_checks_source_files`: the predicate
-    # asks a DECLARATION question and the seam asks whether it can dispatch, and no rule can
-    # make those identical while the registry declines to import backends at declaration time.
-    # The refusal is a VIOLATION rather than a raise because an uncaught exception here discards
-    # every violation the sibling gates already collected.
-    try:
-        # SEAM ENTRY ONLY. `ir_content_violations` is deliberately outside: it reports the NODE's
-        # defects, and catching it here would relabel an unrenderable IR as a host load failure
-        # and return without emitting the content violations the gate exists to hoist. The
-        # backend converts its own internal failures to violations; this handler is for the one
-        # thing it cannot — its package failing to load at all.
-        refusal = host_render.runner_render_refusal(language)
-    except Exception as exc:  # noqa: BLE001
-        # See the note in `_validate_checks_source_files`: a backend that cannot be imported is
-        # a host fault, and letting it escape from inside this gate would discard every sibling
-        # gate's violations.
-        refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
-    messages = (
-        [] if refusal is not None
-        else host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid))
-    if refusal is not None:
-        violations.append(
-            f"{derived_path}: this node is host-rendered, but no backend renders a runner for "
-            f"language {language!r}: {refusal}")
-        return
-
-    for msg in messages:
-        violations.append(f"{derived_path}: {msg}")
+    targets = _compile_render_targets(repo_root)
+    per_message: dict[str, list[str]] = {}
+    for target_id, language, harness_sid in targets:
+        # REACHABLE, for the reason spelled out in `_validate_checks_source_files`: the
+        # predicate asks a DECLARATION question and the seam asks whether it can dispatch, and
+        # no rule can make those identical while the registry declines to import backends at
+        # declaration time. The refusal is a VIOLATION rather than a raise because an uncaught
+        # exception here discards every violation the sibling gates already collected.
+        try:
+            # SEAM ENTRY ONLY. `ir_content_violations` is deliberately outside: it reports the
+            # NODE's defects, and catching it here would relabel an unrenderable IR as a host
+            # load failure and return without emitting the content violations the gate exists
+            # to hoist. The backend converts its own internal failures to violations; this
+            # handler is for the one thing it cannot — its package failing to load at all.
+            refusal = host_render.runner_render_refusal(language)
+        except Exception as exc:  # noqa: BLE001
+            # See the note in `_validate_checks_source_files`: a backend that cannot be imported
+            # is a host fault, and letting it escape from inside this gate would discard every
+            # sibling gate's violations.
+            refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
+        if refusal is not None:
+            per_message.setdefault(
+                f"this node is host-rendered, but no backend renders a runner for language "
+                f"{language!r}: {refusal}", []).append(target_id)
+            continue
+        for msg in host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid):
+            per_message.setdefault(msg, []).append(target_id)
+    for msg, target_ids in per_message.items():
+        scope = ("" if len(target_ids) == len(targets)
+                 else f" [target {', '.join(target_ids)}]")
+        violations.append(f"{derived_path}: {msg}{scope}")
 
 
 def _validate_public_api_name_surface(
@@ -12892,12 +12094,12 @@ def _validate_published_surface(
       an exact match here was once the outlier and let `"  infrastructure  "` skip the gate whose
       language check is the ONLY enforcement of the language backend) — a kind outside the set is a
       no-op, because its interface is legitimately derived post-hoc.
-    - a usable signature backend for `impl_defaults.toolchain.language`. The §5.1 pin renders the
-      structured signatures to the target language, so a language with no backend is refused rather
-      than silently rendered as Fortran and compared against non-Fortran source. The question asked
-      is `unavailable_reason`, NOT `unsupported_reason`: a declared member whose knowledge still
-      sits in the neutral core would be rendered by the hard-coded Fortran import below, so
-      membership is not usability. The set lives in `tools/backends/registry.py`, not here.
+    - (no language question: the IR is target-free since R4-a PR-3, issue #284. The §5.1-vs-IR
+      comparison below is between two language-NEUTRAL documents, rendered through the §5.1
+      helpers' backend only as a canonical form for both sides. Whether the TARGET's language has
+      a signature backend is asked where a target exists — `_validate_generated_signatures`, at
+      `Generate.static`, over the pipeline's target, and the launch gate before that. Until
+      PR-3 this gate asked it of `impl_defaults.toolchain.language`.)
     - `meta.spec_id`, `meta.source_refs.controlled_spec`, and that the §5 parse yields at least one
       operation.
     - `public_api` present, its NAME surface == §5 (`_validate_public_api_name_surface`).
@@ -12943,16 +12145,6 @@ def _validate_published_surface(
         return
     if kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
         return  # every other kind's interface is derived post-hoc, by design
-
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    language = str(tc.get("language") or "").strip().lower()
-    unsupported = _signature_backend_refusal(language)
-    if unsupported:
-        violations.append(
-            f"{derived_path}: {kind} signature pinning needs a language backend — "
-            f"{unsupported}")
-        return
 
     spec_id = meta.get("spec_id")
     if not isinstance(spec_id, str) or not spec_id.strip():
@@ -13608,8 +12800,8 @@ def _validate_generated_signatures(
     # language has no EXTRACTED backend is fail-closed rather than pinned against the wrong
     # language — `unavailable_reason`, not `unsupported_reason`, because a declared-but-
     # unextracted member has no renderer of its own and would silently take Fortran's.
-    # (Compile's `_validate_published_surface` already fail-closes it with the same
-    # registry clause, so this is a defense-in-depth stop; no non-Fortran infra node exists.)
+    # This is the ONE place the question is asked of a node (Compile's `_validate_published_
+    # surface` asked it of the IR's toolchain until R4-a PR-3; the IR is target-free now).
     # The language of the target the pipeline is built for (issue #284). An unresolvable
     # target reads as "" — the documented default, as an absent key always did — and is not
     # passed by it: `_validate_pipeline_targets_resolve` reports it in the same stage.
@@ -14620,11 +13812,14 @@ def _pure_gate_build_graph_inputs(
     Mirrors `workflow_conductor._read_toolchain` + `_dependency_closure_nodes` +
     `_build_pure_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
     the gate assembles is the graph the producer's acceptance built. The toolchain is the
-    pipeline's target's (issue #284), the profile the conductor read it from. The L6
-    spec_id-clash raise of `_dependency_closure_nodes` is not replicated: at gate time the
-    closure is identical to the accepted production closure (same sidecar), so it cannot
-    introduce a new clash — only a tampered bundle's own files can collide, which
-    `derive_build_graph` itself detects."""
+    pipeline's target's (issue #284), the profile the conductor read it from; the closure is
+    `orchestration_runtime.pipeline_closure_nodes`, the one definition the conductor's staging
+    reads too (the sidecar's closure plus the target's harness). The L6 spec_id-clash raise of
+    `_dependency_closure_nodes` is not replicated: at gate time the closure is identical to the
+    accepted production closure (same sidecar, same target), so it cannot introduce a new clash
+    — only a tampered bundle's own files can collide, which `derive_build_graph` itself detects.
+    Raises `TargetProfileError` when the target's harness does not resolve."""
+    from tools.orchestration_runtime import pipeline_closure_nodes
     tc = target.toolchain
     toolchain = {
         "language": str(tc["language"]),
@@ -14636,8 +13831,6 @@ def _pure_gate_build_graph_inputs(
         toolchain["compiler"] = str(tc["compiler"])
     sidecar = _read_dependency_graph_sidecar(repo_root, ir_ref) or {}
     all_nodes = sidecar.get("all_nodes") if isinstance(sidecar, dict) else None
-    levels: dict[str, int] = {}
-    closure: list[str] = []
     edges: dict[str, list[str]] = {}
     for entry in all_nodes or []:
         if not (isinstance(entry, dict) and isinstance(entry.get("node_key"), str)):
@@ -14646,10 +13839,7 @@ def _pure_gate_build_graph_inputs(
         deps = [d.get("node_key") if isinstance(d, dict) else d
                 for d in (entry.get("direct_deps") or [])]
         edges[nk] = [d for d in deps if isinstance(d, str)]
-        if nk and nk != node_key and nk not in levels:
-            levels[nk] = entry.get("topo_level") or 0
-            closure.append(nk)
-    closure.sort(key=lambda n: levels.get(n, 0))
+    closure = pipeline_closure_nodes(repo_root, str(ir_ref or ""), node_key, target)
     return toolchain, tuple(closure), edges
 
 
@@ -14706,16 +13896,22 @@ def _validate_post_generate_bundle(
     shape = _ir_bundle_shape(
         ir, node_key, (target.toolchain["build_system"], target.toolchain["language"]))
     # The harness a bundle negotiates against: on `harness` the node ITSELF (a harness declares
-    # the execution model it implements), otherwise its single infrastructure dependency. The
-    # conductor's `_pure_harness_node_key` is the twin of these two lines.
-    if shape == "harness":
-        harness_nk: str | None = node_key
-    else:
-        infra = _infra_direct_dep_node_keys(ir)
-        harness_nk = infra[0] if len(infra) == 1 else None
-    provided = harness_provided_capabilities(harness_nk) if harness_nk else None
-    toolchain, closure, edges = _pure_gate_build_graph_inputs(
-        repo_root, ir_ref, node_key, target)
+    # the execution model it implements), otherwise the harness the pipeline's TARGET names
+    # (issue #284) — `orchestration_runtime.harness_node_key_for`, the one resolution the
+    # conductor's `_pure_harness_node_key` delegates to as well.
+    from tools.orchestration_runtime import harness_node_key_for
+    from tools.target_profile import TargetProfileError
+    try:
+        harness_nk: str = (node_key if shape == "harness"
+                           else harness_node_key_for(repo_root, node_key, target))
+        toolchain, closure, edges = _pure_gate_build_graph_inputs(
+            repo_root, ir_ref, node_key, target)
+    except TargetProfileError as exc:
+        violations.append(
+            f"{bundle_path}: the harness of target {target.target_id} does not resolve "
+            f"({exc.detail}), so the host acceptance contract cannot be re-checked")
+        return
+    provided = harness_provided_capabilities(harness_nk)
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
     # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
     host_glue: tuple[str, ...] = (() if shape == "harness"
@@ -15111,6 +14307,8 @@ def _validate_impl(
             source_hash_map.setdefault(fp.digest, []).append(fp)
         dep_data = _dependency_resolved_for_execution(repo_root, execution)
         if isinstance(dep_data, dict):
+            dep_data = _with_pipeline_harness(
+                repo_root, dep_data, execution.node_key, execution.pipeline_dir, violations)
             expected_nodes = _dependency_expected_node_keys(dep_data)
             if expected_nodes:
                 dep_contexts.append(
@@ -15156,6 +14354,8 @@ def _validate_impl(
         all_nodes = dep_data.get("all_nodes")
         if not isinstance(all_nodes, list) or not all_nodes:
             continue
+        dep_data = _with_pipeline_harness(
+            repo_root, dep_data, lineage.node_key, lineage.pipeline_dir, violations)
         expected_nodes = _dependency_expected_node_keys(dep_data)
         if expected_nodes:
             lineage_contexts.append((lineage, expected_nodes, _dependency_run_token(dep_data)))
