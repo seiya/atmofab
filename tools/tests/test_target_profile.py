@@ -311,6 +311,10 @@ class LaunchGateTests(unittest.TestCase):
                         tp.harness_node_key_for_target(repo.root, profile)
                     violations = tp.target_profile_violations(repo.root, profile)
                     self.assertEqual(len(violations), 1, violations)
+                    with self.assertRaises(tp.TargetProfileError) as cm:
+                        tp.resolve_run_target(repo.root, "t1")
+                    self.assertEqual(cm.exception.detail.count("target t1"), 1,
+                                     cm.exception.detail)
             (repo.root / "spec" / "registry" / "spec_catalog.yaml").write_text(
                 "", encoding="utf-8")
             with self.assertRaises(tp.TargetProfileError):

@@ -249,7 +249,8 @@ def harness_node_key_for_target(repo_root: Path, profile: TargetProfile) -> str:
     catalog version satisfying its `version_constraint` — the version choice
     `tools/dependency_graph.py` makes for a dependency edge. Refuses (`target_profile_invalid`)
     a harness the catalog does not carry as an `infrastructure` spec, or whose constraint
-    matches no version."""
+    matches no version. The message does not name the target: every caller that reports it
+    (`resolve_run_target`) prefixes the target itself, and naming it here printed it twice."""
     from tools.orchestration_runtime import (
         SpecCatalogCorruption,
         _load_spec_catalog,
@@ -265,11 +266,11 @@ def harness_node_key_for_target(repo_root: Path, profile: TargetProfile) -> str:
     except SpecCatalogCorruption as exc:
         raise TargetProfileError(
             "target_profile_invalid",
-            f"target {profile.target_id}: the harness cannot be resolved: {exc}") from exc
+            f"the harness cannot be resolved: {exc}") from exc
     if not matched:
         raise TargetProfileError(
             "target_profile_invalid",
-            f"target {profile.target_id}: harness infrastructure/{infra_id} "
+            f"harness infrastructure/{infra_id} "
             f"{harness['version_constraint']!r} matches no `infrastructure` version in "
             f"spec/registry/spec_catalog.yaml")
     return f"infrastructure/{infra_id}@{matched[0]}"
