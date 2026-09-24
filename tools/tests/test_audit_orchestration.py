@@ -17,9 +17,6 @@ from unittest import mock
 from tools import audit_orchestration as ao
 from tools import orchestration_diagnostics as diag
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
-
-#: A reservation written before issue #284 carries no `target_id` key at all.
-_NO_TARGET = object()
 from tools.tests.test_orchestration_diagnostics import (
     CHILD_ARID,
     _open_dangling_window,
@@ -34,6 +31,9 @@ from tools.audit_orchestration import (
     _render_pure_leaf_row,
     _render_incident_body,
 )
+
+#: A reservation written before issue #284 carries no `target_id` key at all.
+_NO_TARGET = object()
 
 
 def _write_jsonl(path: Path, records: list) -> None:
