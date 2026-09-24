@@ -236,7 +236,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # execute-3 (issue #284, R4-a PR-2): the execute body runs with the TARGET's hardware class
     # and threads per rank (the thread count was a literal 1), and `trial_meta.json#environment`
     # records the target id and the target's parallel backend (it read a key the IR never had).
-    "execute-3": "c9368b321f4f0e473ffc1ed5507a30fd73084360d8b90fe5525627592ae74a07",
+    # Re-pinned within PR-2's review (round 1): quality_check.json's note names the thread
+    # count run instead of a literal 1 — byte-identical for every run at threads_per_rank 1,
+    # which is every run stamped execute-3 so far.
+    "execute-3": "c58d0d4b1df5250180634dca834c0d6d64c2000bac0f8793ae0e450c64c71aab",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

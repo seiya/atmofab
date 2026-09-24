@@ -15451,10 +15451,17 @@ class DeterministicBuildTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
 
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        # Every value differs from the literals execute used before issue #284 (class `cpu`,
+        # backend `openmp`, one thread), and from the IR below, so each is observed.
+        target = profile_with(hardware={"class": "gpu"}, parallel={"backend": "serial"},
+                              execution={"threads_per_rank": 3})
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
+            install_target_profile(repo, target)
             c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                              orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            self.assertEqual(c.target, target)
             refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
@@ -15467,8 +15474,10 @@ class DeterministicBuildTest(unittest.TestCase):
                 "  target:\n    class: cpu\n    backend: openmp\n"
                 "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            run_envs: list[dict] = []
 
             def fake_run_program(args):
+                run_envs.append(dict(args))
                 run_tmp = Path(args["project_dir"])
                 (run_tmp / "diagnostics.json").write_text(
                     json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
@@ -15494,11 +15503,14 @@ class DeterministicBuildTest(unittest.TestCase):
                                         "threads_per_rank", "openmp_env", "platform"})
             # The target's, not the IR's (issue #284) — `backend` read a key the IR never had
             # until then, so every record said the fallback.
-            from tools.tests.target_fixtures import FORTRAN_CPU
             self.assertEqual(
                 (env["target_id"], env["target_class"], env["backend"], env["threads_per_rank"]),
-                (FORTRAN_CPU.target_id, FORTRAN_CPU.hardware_class,
-                 FORTRAN_CPU.parallel_backend, FORTRAN_CPU.threads_per_rank))
+                (target.target_id, "gpu", "serial", 3))
+            self.assertEqual(run_envs[0]["threads_per_rank"], 3)
+            self.assertEqual(env["openmp_env"], {"OMP_NUM_THREADS": "3", "OMP_THREAD_LIMIT": "3"})
+            qc = json.loads((repo / refs.run_node_dir() / "quality_check.json").read_text("utf-8"))
+            self.assertEqual(qc["comparison"]["reference"]["threads_per_rank"], 3)
+            self.assertIn("threads_per_rank=3", qc["notes"])
             self.assertEqual(env["platform"], wc._host_platform_record())
             self.assertEqual(env["platform"]["machine"], _platform.machine())
             self.assertEqual(env["platform"]["node"], _platform.node())

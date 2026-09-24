@@ -10721,7 +10721,7 @@ clean:
                 "diagnostics_checks_match": checks_match,
                 "per_case_verdict_match": per_case,
             },
-            "notes": ("conductor in-process: run_program (threads_per_rank=1) and "
+            "notes": (f"conductor in-process: run_program (threads_per_rank={threads}) and "
                       f"{preset} re-run diagnostics checks and verdicts compared."),
         }
         (node_dir / "quality_check.json").write_text(
