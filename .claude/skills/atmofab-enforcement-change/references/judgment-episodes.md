@@ -440,3 +440,51 @@ extending the clause to dependencies knows it re-runs every member of today's cl
 
 **The rule** (SKILL.md, rule 1-d): a premise about what a driver does for every member is a
 premise about the member it skips; name that member and run the driver on it.
+
+## Section 4: a whole-function mock hid a missing argument (issue #284 PR-2 / PR #286, 2026-09-24)
+
+PR-2 made `_closure_node_validated_in_own_pipeline(repo_root, token)` take a third argument,
+`target_id`, and updated the validator's callers. The two conductor callers
+(`_judge_pre_spawn_dag_block`, `_author_derived_validate_artifacts`) were missed. The full suite
+was green: every conductor test replaced the predicate wholesale —
+`mock.patch("…_closure_node_validated_in_own_pipeline", return_value=True)` and lambdas
+`lambda repo_root, tok: …` — so no test ever called the real signature. One of the two callers
+sat inside `try: … except Exception: ready = False`, so in production the `TypeError` would have
+become "dependency not ready" and a `blocked` aggregate, not a crash. What found it was the
+billed `--with-deps` run on a component (`conductor_error: … missing 1 required positional
+argument: 'target_id'`) — the other caller, the one without the `try`.
+
+The fix: `autospec=True` on every mock of the predicate, lambdas with the new arity, and one row
+asserting the call carries the conductor's target. Then an AST sweep over non-test code, binding
+each call's positional/keyword shape to the current `inspect.signature` of the function its name
+resolves to, found no further drift (five hits, all same-named helpers in unrelated modules):
+
+```python
+import ast, importlib, inspect, pathlib
+sigs = {}  # name -> [signature], for the modules whose functions changed
+for m in ("tools.orchestration_runtime", "tools.workflow_conductor", ...):
+    for n, o in vars(importlib.import_module(m)).items():
+        if inspect.isfunction(o) and o.__module__ == m:
+            sigs.setdefault(n, []).append(inspect.signature(o))
+for f in pathlib.Path("tools").rglob("*.py"):  # skip tools/tests
+    for c in (n for n in ast.walk(ast.parse(f.read_text())) if isinstance(n, ast.Call)):
+        name = getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+        if name in sigs and not any(isinstance(a, ast.Starred) for a in c.args):
+            if not any(_binds(s, c) for s in sigs[name]):
+                print(f, c.lineno, name)
+# _binds: inspect.Signature(params[1:] for a method).bind(*range(len(c.args)),
+#         **{k.arg: 0 for k in c.keywords}) without TypeError
+```
+
+The SAME review loop then spent two rounds on the second half of the rule: the pins compared
+against the one declared profile, whose values are also the old code's constants, so a caller
+hardcoding them survived — rounds 1 and 2 found six such survivors, three sites passing the
+target id as the constant `"fortran_cpu"` (the validator's `_xp_satisfied`, both conductor
+readiness calls) and three execute reads replaced by the pre-#284 literals (one thread, class
+`cpu`, backend `openmp`), closed by running the rows under a second fixture target or a variant
+profile. A pin on a new argument has to run
+under a value the old code could not have produced.
+
+**The rule** (SKILL.md §4): a signature change makes every wholesale mock of the function a
+blindfold; autospec them, assert the new argument under a non-default value, and bind every
+real caller to the new signature.

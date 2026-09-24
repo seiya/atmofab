@@ -667,6 +667,19 @@ that could not converge in principle).
   actually happened (4 of 5 sites)
 - **Keep one test that pushes a production payload through the real validator.** The conductor's
   tests mock each tool function, so they never traverse the validation layer
+- **A mock that replaces a function WHOLESALE hides every change to its signature.** When a
+  change adds a parameter to a function, every `mock.patch(<fn>, return_value=…)` (or a lambda
+  with the old arity) of it stays green while a real caller that was not updated raises
+  `TypeError` — and a caller inside `try: … except Exception` turns that into a silent wrong
+  answer. Issue #284 PR-2 shipped two such callers through a full green suite; a billed
+  `--with-deps` run found them. **Rule: when you change a signature, (a) make every mock of that
+  function `autospec=True` (or a lambda with the new arity) and assert the NEW argument in at
+  least one row, and (b) check every non-test caller binds to the new signature** — an AST pass
+  that binds each call's argument shape to `inspect.signature` does it in one command
+  (`references/judgment-episodes.md` §"a whole-function mock hid a missing argument" carries it).
+  And **assert the value, not just the presence**: a row checking the new argument equals the
+  DEFAULT value is killed by nothing that hardcodes the default — run it under a non-default
+  value (the same PR's rounds 1 and 2 found six rows that could not tell a hardcoded default from the real value)
 - **Do not call a sample a pin.** A test placed **outside** the place that defines the set cannot
   claim set identity — it can only sample rejections. **Write in the docstring what is pinned and
   what is sampled**, and if the predicate has several branches (`==` / `startswith` / trailing
