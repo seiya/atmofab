@@ -197,8 +197,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-4": "55a12fc15fa5c311c213a4ff6d2f14f47dc45fed931328580c750de4554a28ac",
     # compile-docs-5 (issue #284, R4-a PR-3): the IR is target-free. `phase_01_compile.md` loses
     # the `impl_defaults` section contract, the fixed/knob split, V5-V7 and the harness-in-graph
-    # statements; the two IR examples lose their `impl_defaults` blocks; the `impl_defaults`
-    # schema leaves the set (deleted with the section). Every node's Compile re-derives — it does
+    # statements; the two IR examples' header comments stop naming an `impl_defaults` section
+    # (neither ever carried one); the `impl_defaults` schema leaves the set (deleted with the
+    # section). Every node's Compile re-derives — it does
     # anyway, `DERIVATION_KEY_VERSION = 2`.
     "compile-docs-5": "65569909a396b72ecfbdd2b3ec0a6a9256069c51cdb6aadc02c1ecc61f890d79",
 }
