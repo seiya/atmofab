@@ -593,8 +593,13 @@ class ValidatorToolchainReadsTests(unittest.TestCase):
             self._pipeline_with_ir(repo, {"impl_defaults": {
                 "toolchain": {"language": "c", "standard": "c99", "build_system": "cmake"},
                 "target": {"backend": "openmp"}}})
-            toolchain, _closure, _edges = vps._pure_gate_build_graph_inputs(
+            toolchain, closure, _edges = vps._pure_gate_build_graph_inputs(
                 repo, f"workspace/ir/{_SAFE}/spec-x_20260101_001", _NK, target)
+            # The gate's closure is the PIPELINE closure (issue #284): the target's harness,
+            # which the IR's sidecar no longer lists, is its first member — the same list the
+            # conductor stages and the generate key hashes (`pipeline_closure_nodes`).
+            self.assertEqual(
+                closure[:1], (f"infrastructure/{target.harness['infrastructure_id']}@0.7.0",))
             self.assertEqual(toolchain, {
                 "language": target.toolchain["language"], "standard": "f2018",
                 "build_system": target.toolchain["build_system"], "backend": "serial",
