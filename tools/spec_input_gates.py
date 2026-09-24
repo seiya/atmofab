@@ -84,7 +84,7 @@ def infra_dep_declared_violation(infra_dep_count: int) -> str | None:
     The runner harness is an attribute of the TARGET a node is built for, not of the spec: the
     target profile names it (``spec/targets/<target_id>.yaml`` ``harness``), and the host adds it
     to every non-``infrastructure`` node's closure for that target
-    (``orchestration_runtime.target_harness_entries``). A harness declared in ``deps.yaml`` would
+    (``target_profile.target_harness_entries``). A harness declared in ``deps.yaml`` would
     pin one target's harness into a spec that is meant to be built for any target, and would put
     it into the target-free Compile closure — so a declaration is refused rather than read.
 

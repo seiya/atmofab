@@ -570,8 +570,8 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
 
     It EXCLUDES only ``RenderError``s flagged ``identity=True`` — the node-identity defects a
     re-author cannot repair (``_check_identifier_lengths``: spec_id/derived-name length; and >1
-    infra dep, itself unreachable for an M3c node, which has exactly one infra dep by
-    construction). Those belong to spec-input validation, NOT a compile.generate retry; they
+    infra dep, itself unreachable: since R4-a PR-3, issue #284, an IR declares no infra dep and
+    the harness is the target's). Those belong to spec-input validation, NOT a compile.generate retry; they
     remain ``render_runner`` fail-closes as a backstop (see the module docstring)."""
     try:
         render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET)

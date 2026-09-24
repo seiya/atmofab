@@ -229,7 +229,9 @@ PINNED_RENDER: dict[str, str] = {
     # `infrastructure` direct dependency. For a given generate key the harness is the same node
     # — the key's `harness.node_key` input moved to the target in the same change — so the
     # runner text rendered for it is unchanged.
-    "render-4": "af8c86fbb8b14503e4c728c9cc2dc661be1085bc62ebad87252f06c41a174d21",
+    # Re-pinned again in PR-3's round 3, behaviour-preserving: a `runner.py` docstring no longer
+    # says an M3c node has exactly one infra dep.
+    "render-4": "194ee0ba4bfd05a93d548f0d010a17f2b19ecf65116351521b06f1fc1b98bd35",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
