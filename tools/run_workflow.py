@@ -557,7 +557,11 @@ def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None
             f"{requested!r}; resume it without --target, or start a fresh run for "
             f"{requested!r}")
     if requested is None and recorded is not None:
-        from tools.target_profile import TARGETS_DIR, TARGET_PROFILE_SUFFIX, list_target_ids
+        from tools.target_profile import (
+            TARGET_PROFILE_SUFFIX,
+            TARGETS_DIR,
+            list_target_ids,
+        )
 
         if recorded not in list_target_ids(repo_root):
             # Said apart from `target_unknown`'s "--target names no profile": the operator
