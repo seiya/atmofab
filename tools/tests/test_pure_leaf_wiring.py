@@ -726,6 +726,22 @@ class PureRenderTests(unittest.TestCase):
             ort._validate_launch_prompt_text(prepared, forged)
         ort._validate_launch_prompt_text(prepared, good)  # canonical still passes
 
+    def test_both_producer_templates_name_every_closed_lowering_plan_key(self) -> None:
+        """The plan envelope is CLOSED (`codegen_bundle.LOWERING_PLAN_OPTIONAL_KEYS`). R4-a PR-3's
+        first adoption run (orch_20260924T133218Z_79824f73) lost a harness Generate attempt to
+        `target_lowering_plan.unknown key 'layout'` / `'tiling'`: the templates said a layout /
+        tiling choice goes "under the plan's other keys" without naming them. Each producer
+        template must name every optional key, and the set comes from the schema, so a key
+        added there is red here until the prompt says it."""
+        from tools.codegen_bundle import LOWERING_PLAN_OPTIONAL_KEYS
+        root = Path(ort.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+        for name in ("pure_generate_generate.txt", "pure_generate_generate_harness.txt"):
+            text = (root / name).read_text(encoding="utf-8")
+            with self.subTest(template=name):
+                self.assertIn("the plan is a CLOSED object", text)
+                for key in LOWERING_PLAN_OPTIONAL_KEYS:
+                    self.assertIn(f"`{key}`", text, f"{name} does not name `{key}`")
+
     def test_pure_launch_prompt_carries_authoring_rules_tokens(self) -> None:
         # Defect C (billed E2E, 2026-07-16): the pure template stated NO authoring rules, so the
         # producer met the deterministic gates blind and oscillated between the two wrong

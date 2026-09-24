@@ -580,7 +580,10 @@ PINNED: dict[str, str] = {
     # templates gain a `<target_profile>` block. `RUNNER_OUTPUT_CONTRACT.md` and the
     # checks-module contract's audience line drop the deps.yaml-harness wording (both trimmed
     # under their ceilings); phase_02's rubric example follows G6.
-    "pure-49": "cd4d1ff164389e4966472558c0cc15141a7c4ebac382d957a8fe5e6f1382aa4b",}
+    # Re-pinned before merge (pure-49 was never released): both producer templates name the
+    # plan's closed optional keys; "the plan's other keys" cost the first adoption run a
+    # harness Generate attempt to `unknown key 'layout'` / `'tiling'`.
+    "pure-49": "e6d9062fdd061d9358d01d42f78cf7fcabfaf887f61ef74844f70ded77ef8de6",}
 
 
 def _contract_tuple() -> dict[str, object]:
