@@ -525,8 +525,11 @@ def _pure_source_dirs_of(
     (`reservations/<node_key_safe>/generate.json#reserved_ir_id` and `#target_id`, the
     target the pipeline is built for — issue #284), which `prepare_node` writes before
     Compile runs and which `resume_node_refs` already treats as the authority for the
-    pipeline id. A reservation that names no target (written before R4-a PR-2) names no
-    directory, and is skipped like any other unusable reservation.
+    pipeline id. A reservation that names no target was written before R4-a PR-2, whose
+    pipelines sat directly under `workspace/pipelines/<node_key_safe>/`; the audit describes
+    such a run where it put its pipeline (no reader SELECTS a pipeline there any more — this
+    one only reports what an orchestration already produced). A reservation naming a
+    `target_id` that is not a target id is skipped like any other unusable reservation.
 
     Globbing `<pipeline_ref>/source/*` (rather than reading a pass-only ledger) is what
     keeps a terminally-failed generate and
@@ -558,13 +561,17 @@ def _pure_source_dirs_of(
         reservation = _load_json_if_dict(node_dir / "generate.json") or {}
         reserved = reservation.get("reserved_ir_id")
         target_id = reservation.get("target_id")
-        if not (isinstance(reserved, str) and reserved) or not is_target_id(target_id):
+        if not (isinstance(reserved, str) and reserved):
+            continue
+        if target_id is not None and not is_target_id(target_id):
             continue
         # The reserved id is JSON-sourced: require a single clean segment so it can
-        # never traverse out of `workspace/pipelines/<node_key_safe>/<target_id>/`.
+        # never traverse out of `workspace/pipelines/<node_key_safe>/[<target_id>/]`.
         if reserved in {".", ".."} or PurePosixPath(reserved).parts != (reserved,):
             continue
-        pref = pipeline_ref_for(node_dir.name, str(target_id), reserved)
+        pref = (pipeline_ref_for(node_dir.name, str(target_id), reserved)
+                if target_id is not None
+                else f"workspace/pipelines/{node_dir.name}/{reserved}")
         if pref not in pipeline_refs:
             pipeline_refs.append(pref)
     for pref in pipeline_refs:
@@ -628,8 +635,9 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
     one row per attempt, never rewritten. A `validate` request carries `pipeline_ref` and
     `run_id` rather than the run-node path, so the directory is composed the way `NodeRefs`
     composes it: `<pipeline_ref>/runs/<run_id>/<node_key_safe>`. The safe node key is READ OUT
-    of `pipeline_ref` (`workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, the same
-    `NodeRefs` property) rather than recomputed from `node_key` — this tree already carries two
+    of `pipeline_ref` (`workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, or the
+    pre-R4-a `workspace/pipelines/<safe>/<pipeline_id>` of an older run; the same `NodeRefs`
+    property) rather than recomputed from `node_key` — this tree already carries two
     spellings of that transform, and a third living in an audit tool would be the one nothing
     checks.
     """
@@ -648,8 +656,10 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
         if not (pipeline_ref and run_id):
             continue
         parts = PurePosixPath(pipeline_ref).parts
-        if (len(parts) != 5 or parts[:2] != ("workspace", "pipelines")
-                or not is_target_id(parts[3])):
+        # `workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, or the pre-R4-a
+        # `workspace/pipelines/<safe>/<pipeline_id>` a request recorded before issue #284.
+        if parts[:2] != ("workspace", "pipelines") or not (
+                len(parts) == 4 or (len(parts) == 5 and is_target_id(parts[3]))):
             continue
         if any(p in {".", ".."} for p in parts):
             continue
