@@ -4159,6 +4159,22 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(run_workflow._check_host_tool_versions(_TP_RW.target_id), [])
         versions.assert_called_once_with(resolve_launch_axis_selection(_TP_RW))
 
+    def test_a_profile_the_launch_gate_refuses_is_not_probed(self) -> None:
+        """A `--target` whose language the registry does not implement is the launch gate's
+        structured refusal (`target_profile_violations`), a few steps on. Probing it first
+        raised a bare RuntimeError out of `main` (round-2 finding F1); the probe defers."""
+        from unittest import mock
+
+        from tools.target_profile import target_profile_violations
+        from tools.tests.target_fixtures import profile_with
+        unimplemented = profile_with(toolchain={"language": "no_such_language"})
+        root = Path(run_workflow.__file__).resolve().parent.parent
+        self.assertTrue(target_profile_violations(root, unimplemented))  # the gate refuses it
+        with mock.patch.object(run_workflow, "load_target_profile", return_value=unimplemented):
+            self.assertIsNone(run_workflow._host_probe_selection(None))
+            self.assertEqual(run_workflow._check_required_host_tools(None), [])
+            self.assertEqual(run_workflow._check_host_tool_versions(None), [])
+
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
         separator change cannot drift away from what an operator is told to install."""

@@ -65,6 +65,7 @@ from tools.target_profile import (
     load_target_profile,
     resolve_run_target,
     select_target_id,
+    target_profile_violations,
 )
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
@@ -160,8 +161,11 @@ def _host_probe_selection(requested: str | None) -> dict[str, str] | None:
     """The axis selection the host probes are asked about: the target this invocation names
     (`--target`), else the default one (issue #284). None when that cannot be told yet — an
     undeclared `--target`, or several profiles and no `--target` on a resume that will recover
-    its own — and then the probes do not run here: the launch's target resolution refuses or
-    resolves it with its own reason a few steps on, and the mid-run gates stay the backstop.
+    its own — or when the launch gate (`target_profile_violations`) will refuse the profile, an
+    axis value this repository does not implement included, which the probe could only answer
+    with a traceback: then the probes do not run here, the launch's target resolution refuses
+    or resolves it with its own structured reason a few steps on, and the mid-run gates stay
+    the backstop.
 
     Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
     reaches the MCP server's argv tables, and a startup path that has not yet decided it is
@@ -170,10 +174,12 @@ def _host_probe_selection(requested: str | None) -> dict[str, str] | None:
 
     root = Path(__file__).resolve().parent.parent
     try:
-        return resolve_launch_axis_selection(
-            load_target_profile(root, select_target_id(root, requested)))
+        profile = load_target_profile(root, select_target_id(root, requested))
     except TargetProfileError:
         return None
+    if target_profile_violations(root, profile):
+        return None
+    return resolve_launch_axis_selection(profile)
 
 
 def _check_required_host_tools(requested: str | None = None) -> list[str]:
