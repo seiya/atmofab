@@ -286,6 +286,14 @@ def _shape_violations(doc: Any) -> list[str]:
         threads = execution["threads_per_rank"]
         if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
             out.append(f"execution.threads_per_rank: must be an integer >= 1, got {threads!r}")
+        elif threads != 1:
+            # Validate.execute's run IS the single-thread reference the quality check compares
+            # a parallel re-run against (docs/workflow/phases/phase_04_validate.md §4-2); a
+            # profile running more threads per rank would leave that comparison two parallel
+            # runs. Refused until execute gains a separate serial reference run.
+            out.append(f"execution.threads_per_rank: must be 1 until Validate.execute runs a "
+                       f"separate single-thread reference for the quality check "
+                       f"(phase_04_validate.md §4-2), got {threads}")
     harness = doc.get("harness")
     if isinstance(harness, dict) and "version_constraint" in harness:
         constraint = harness["version_constraint"]

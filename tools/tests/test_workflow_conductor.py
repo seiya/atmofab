@@ -15451,16 +15451,19 @@ class DeterministicBuildTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
 
-        from tools.tests.target_fixtures import install_target_profile, profile_with
+        from tools.tests.target_fixtures import profile_with
         # Every value differs from the literals execute used before issue #284 (class `cpu`,
-        # backend `openmp`, one thread), and from the IR below, so each is observed.
+        # backend `openmp`, one thread), and from the IR below, so each is observed. The
+        # loader refuses threads_per_rank != 1 today (the quality check's serial reference),
+        # so the profile is handed to the conductor rather than loaded: this row pins the
+        # READ, which a future parallel reference run will keep.
         target = profile_with(hardware={"class": "gpu"}, parallel={"backend": "serial"},
                               execution={"threads_per_rank": 3})
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            install_target_profile(repo, target)
             c = _TargetedConductor(repo_root=repo, orchestration_id="t",
-                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={},
+                             target_profile=target)
             self.assertEqual(c.target, target)
             refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
