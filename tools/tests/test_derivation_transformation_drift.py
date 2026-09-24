@@ -119,6 +119,11 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(server.tool_run_quality_checks),
         "build_runtime_server._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
+        # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam
+        # and the one parallel backend whose package composes an environment today.
+        "tools/host_execution.py": _file_digest("tools/host_execution.py"),
+        "tools/backends/parallel/openmp/execution.py":
+            _file_digest("tools/backends/parallel/openmp/execution.py"),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
@@ -259,6 +264,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # count run instead of a literal 1 — byte-identical for every run at threads_per_rank 1,
     # which is every run stamped execute-3 so far.
     "execute-3": "c58d0d4b1df5250180634dca834c0d6d64c2000bac0f8793ae0e450c64c71aab",
+    # execute-4 (issue #289, R4-b PR-1): the binary is launched with the shape
+    # `tools/host_execution.py` composes from the target profile — `run_program` is handed the
+    # parallel model's environment as `env` instead of a hardware class and a thread count, a
+    # class this host cannot run on is refused, and `trial_meta.json#environment` records
+    # `launch` and `platform.site` in place of `openmp_env`.
+    "execute-4": "83529b48a4ff24f4d21ae03aeeb7870290290eae2e614de16fc832e068418e47",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

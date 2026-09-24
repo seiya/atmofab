@@ -20,7 +20,7 @@
       "additionalProperties": false,
       "required": ["class", "architecture"],
       "properties": {
-        "class": {"type": "string", "enum": ["cpu", "gpu"]},
+        "class": {"$ref": "#/definitions/token", "description": "The `hardware` axis value; which classes exist, and which this host can execute on, is the backend registry's (`tools/backends/registry.py`)."},
         "architecture": {"$ref": "#/definitions/token"}
       }
     },

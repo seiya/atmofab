@@ -74,7 +74,7 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-5"
 #: either re-pins (behaviour-preserving) or bumps the constant (every key of that phase moves).
 RENDER_VERSION = "render-4"      # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-1"        # build-runtime server `compile_project` + the in-process build
-EXECUTE_VERSION = "execute-3"    # `run_program` / `run_quality_checks` + the in-process execute
+EXECUTE_VERSION = "execute-4"    # `run_program` / `run_quality_checks` + the in-process execute
 VERDICT_VERSION = "verdict-5"    # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
 
 #: The phases that ARE derivations, in pipeline order.

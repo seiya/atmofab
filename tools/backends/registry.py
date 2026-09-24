@@ -12,9 +12,7 @@ repository implements and which of them have actually been extracted into a back
 It does NOT enforce that the neutral core goes through it — nothing at import time can tell a
 `re.compile(r"subroutine")` inlined in a gate from a neutral one. That enforcement is the
 `tools/tests/test_backend_boundary.py` ratchet, and the two work as a pair: this module says
-where the knowledge belongs, the ratchet says the neutral core is not accumulating more of it —
-when it is run, which since issue #182 is on request (`--check-baseline`) rather than in the
-suite. `docs/BACKEND_BOUNDARY.md` §Enforcement carries the freeze and how it ends.
+where the knowledge belongs, the ratchet says the neutral core is not accumulating more of it.
 
 `extracted=False` is the honest state of an axis whose knowledge is still inlined in the
 neutral core. It is not a stub and not a plan — it is a member whose module is `None`, so
@@ -148,6 +146,14 @@ AXES: dict[str, Axis] = {
         ),
         open_vocabulary=True,
     ),
+    "hardware": Axis(
+        name="hardware",
+        source="target profile hardware.class (spec/targets/<target_id>.yaml)",
+        description=(
+            "The class of machine a run executes on: whether this host can launch a binary "
+            "built for it, and the parallelism facts a runner records about the run."
+        ),
+    ),
 }
 
 
@@ -194,6 +200,25 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         ("parallel",),
         "The host renders this parallel model's directives and knobs into the generated source.",
     ),
+    "execution_env": (
+        ("parallel",),
+        "The host knows the process environment a binary built for this parallel model is "
+        "launched with (`tools/host_execution.py`). An empty environment is an answer, and a "
+        "value that does not declare this job has no answer: the launch shape refuses it rather "
+        "than running the binary with whatever the host process happens to carry.",
+    ),
+    "execution": (
+        ("hardware",),
+        "This host can launch a binary built for this hardware class and collect its evidence "
+        "(`Validate.execute`). Asked only of a run that reaches `Validate` "
+        "(`target_profile.target_profile_violations`): building for a class needs no machine "
+        "of that class, running on it does.",
+    ),
+    "perf_facts": (
+        ("hardware",),
+        "This hardware class states the facts a profile's `hardware.architecture` must satisfy "
+        "and the parallelism a runner records for a run on it.",
+    ),
 }
 
 
@@ -218,6 +243,8 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     # Same submodule as `lint`, a different declared job — the case this table's docstring
     # contemplates when it says a package with two capabilities has no single "the module".
     "lint_rules": "lint",
+    "execution_env": "execution",
+    "perf_facts": "perf",
 }
 
 
@@ -310,7 +337,15 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # row is the exception to that wording, and the wording rather than the row is what was
         # wrong — the rule the migration serves is about knowing, not about naming.
         Backend("linter", "mixed", None, core_provides=frozenset({"lint"})),
-        Backend("parallel", "openmp", None, core_provides=frozenset({"parallel_directives"})),
+        # Extracted for its launch environment only (issue #289, R4-b PR-1): the thread-count
+        # variables the runtime reads are this model's knowledge, and until then the build-runtime
+        # server set them itself, for `hardware.class == cpu` alone. Its directive knowledge is
+        # still inlined in the neutral core (the Generate presence floor).
+        Backend(
+            "parallel", "openmp", "tools.backends.parallel.openmp",
+            core_provides=frozenset({"parallel_directives"}),
+            backend_provides=frozenset({"execution_env"}),
+        ),
         # A node that declares no parallel model. It exists as a member so the axis has a
         # spelling for "serial" alongside its open vocabulary, and it carries the capability
         # because the neutral core does implement it: rendering no directive is what the
@@ -322,7 +357,27 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` lists as such —
         # so there is no observer to fail. It gains one when the `parallel` area of the
         # migration ledger lands and the directive rendering moves into a backend.
-        Backend("parallel", "none", None, core_provides=frozenset({"parallel_directives"})),
+        #
+        # `execution_env` is core for the same reason: a serial binary is launched with no
+        # environment of its own, and `tools/host_execution.py` answers that as an empty mapping.
+        Backend("parallel", "none", None,
+                core_provides=frozenset({"parallel_directives", "execution_env"})),
+        # `cpu` is the class THIS host is: `Validate.execute` launches the binary in-process
+        # (`workflow_conductor._execute_inproc` through `tools/host_execution.py`), and that path
+        # is neutral code, so `execution` is core. It declares no `perf_facts` because nothing
+        # reads one for it yet — its `architecture` stays a recorded token, as it was.
+        Backend("hardware", "cpu", None, core_provides=frozenset({"execution"})),
+        # `gpu` does NOT declare `execution`, and that is the point of the record: building for a
+        # GPU needs no GPU, running on one does, and this host has no way to reach one. A profile
+        # naming it therefore passes the launch gate for a run that stops before `Validate` and
+        # is refused for one that reaches it (`target_profile.target_profile_violations`), which
+        # is the refusal the remote-execution feature lifts by declaring `execution` here (issue
+        # #289 §9). Until R4-b PR-1 the class passed the gate and was silently ignored at
+        # `run_program`.
+        Backend(
+            "hardware", "gpu", "tools.backends.hardware.gpu",
+            backend_provides=frozenset({"perf_facts"}),
+        ),
     )
 }
 

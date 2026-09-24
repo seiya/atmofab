@@ -77,7 +77,7 @@ def _backend_registry() -> Any:
 
 
 def _refuse_retired_arguments(args: dict[str, Any], tool_name: str) -> None:
-    """Refuse an argument this server used to gate on and no longer reads.
+    """Refuse an argument this server used to read and no longer does.
 
     `capability_token` named a secret in `capabilities/<agent_run_id>.json`, which the
     orchestration gate compared against the launch record before serving a call. The gate
@@ -90,17 +90,37 @@ def _refuse_retired_arguments(args: dict[str, Any], tool_name: str) -> None:
     Refused rather than ignored: a caller still sending one is running against a contract
     this server no longer implements, and reading it as a no-op would serve the call as if
     the check had passed.
+
+    `run_program` retired four more (issue #289, R4-b PR-1): `target_class`, `target.class`,
+    `target` and `threads_per_rank`. From them the server derived an OpenMP environment for a
+    `cpu` class and ran every other class with none, so a `gpu` target reached a CPU run
+    without a word. The launch environment is now composed by the host from the target profile
+    (`tools/host_execution.py`) and arrives as `env`; a caller still sending the old arguments
+    would otherwise run with no thread variables at all while believing it had set them. They
+    are refused on `run_program` alone — `target` is `compile_project`'s build goal.
     """
-    offending = sorted(key for key in _RETIRED_ARGUMENTS if key in args)
+    retired = _RETIRED_ARGUMENTS + _RETIRED_ARGUMENTS_BY_TOOL.get(tool_name, ())
+    offending = sorted(key for key in retired if key in args)
     if offending:
         raise ValueError(
-            f"{tool_name} no longer accepts " + ", ".join(offending)
-            + ": the orchestration capability gate was retired in issue #171; pass "
-              "orchestration_id / agent_run_id for attribution instead"
+            f"{tool_name} no longer accepts " + ", ".join(offending) + ": "
+            + _RETIRED_ARGUMENT_REMEDY.get(tool_name, _CAPABILITY_TOKEN_REMEDY)
         )
 
 
 _RETIRED_ARGUMENTS = ("capability_token",)
+_CAPABILITY_TOKEN_REMEDY = (
+    "the orchestration capability gate was retired in issue #171; pass "
+    "orchestration_id / agent_run_id for attribution instead")
+_RETIRED_ARGUMENTS_BY_TOOL: dict[str, tuple[str, ...]] = {
+    "run_program": ("target_class", "target.class", "target", "threads_per_rank"),
+}
+_RETIRED_ARGUMENT_REMEDY: dict[str, str] = {
+    "run_program": (
+        "the launch environment is the caller's to compose (issue #289: the workflow builds it "
+        "from the target profile in tools/host_execution.py); pass it as env, and drop "
+        "capability_token too if you send it (retired in issue #171)"),
+}
 
 
 def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
@@ -226,9 +246,11 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     over names does not terminate, which is why this one covers only the names that
     redirect what is EXECUTED rather than what a build control file reads.
 
-    Call this on the raw `env` argument, before the server composes its own additions
-    (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
-    server's own decisions and are not caller-controlled.
+    Call this on the raw `env` argument, before the server composes its own addition
+    (`PYTHONPATH` for the pytest preset) — that is the server's own decision and is not
+    caller-controlled. A parallel runtime's thread variables used to be a second such
+    addition on `run_program`; since issue #289 they are the caller's and arrive here, and
+    none of them is an execution-redirecting name.
     """
     if not env:
         return
@@ -790,35 +812,6 @@ def _run_command(
         return result
 
 
-def _resolve_target_class(args: dict[str, Any]) -> str | None:
-    raw_target_class = args.get("target_class")
-    if raw_target_class is None:
-        raw_target_class = args.get("target.class")
-
-    if raw_target_class is None:
-        target_obj = args.get("target")
-        if isinstance(target_obj, dict):
-            raw_target_class = target_obj.get("class")
-
-    if raw_target_class is None:
-        return None
-
-    target_class = str(raw_target_class).strip().lower()
-    if not target_class:
-        return None
-    return target_class
-
-
-def _parse_threads_per_rank(args: dict[str, Any]) -> int | None:
-    raw_threads = args.get("threads_per_rank")
-    if raw_threads is None:
-        return None
-    threads_per_rank = int(raw_threads)
-    if threads_per_rank < 1:
-        raise ValueError("threads_per_rank must be >= 1")
-    return threads_per_rank
-
-
 def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]:
     root = Path(project_dir)
     lang = (language or "").strip().lower()
@@ -1007,8 +1000,6 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
     env = args.get("env")
-    target_class = _resolve_target_class(args)
-    threads_per_rank = _parse_threads_per_rank(args)
     command = args.get("command")
     if not isinstance(command, list) or not command:
         raise ValueError("command must be a non-empty string array")
@@ -1023,16 +1014,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     else:
         run_env = {str(k): str(v) for k, v in env.items()}
 
-    openmp_env_applied = False
-    if target_class == "cpu" and threads_per_rank is not None:
-        if run_env is None:
-            run_env = {}
-        thread_count = str(threads_per_rank)
-        run_env["OMP_NUM_THREADS"] = thread_count
-        run_env["OMP_THREAD_LIMIT"] = thread_count
-        openmp_env_applied = True
-
-    result = _run_command(
+    return _run_command(
         command=command,
         cwd=project_dir,
         tool_name="run_program",
@@ -1042,15 +1024,6 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
         command_log_path=command_log_path,
         attribution=_attribution(args),
     )
-    result["target_class"] = target_class
-    result["threads_per_rank"] = threads_per_rank
-    result["openmp_env_applied"] = openmp_env_applied
-    if openmp_env_applied:
-        result["openmp_env"] = {
-            "OMP_NUM_THREADS": str(threads_per_rank),
-            "OMP_THREAD_LIMIT": str(threads_per_rank),
-        }
-    return result
 
 
 def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
@@ -1618,8 +1591,8 @@ TOOLS: dict[str, Tool] = {
         name="run_program",
         description=(
             "Run a program without shell expansion and capture stdout/stderr. "
-            "When target_class is cpu and threads_per_rank is specified, "
-            "set OpenMP thread env vars."
+            "The launch environment (e.g. a parallel runtime's thread count) is the "
+            "caller's, passed as env; target_class / target / threads_per_rank are refused."
         ),
         input_schema={
             "type": "object",
@@ -1635,16 +1608,6 @@ TOOLS: dict[str, Tool] = {
                         "from project_dir."
                     ),
                 },
-                "target_class": {"type": "string"},
-                "target.class": {"type": "string"},
-                "target": {
-                    "type": "object",
-                    "properties": {
-                        "class": {"type": "string"},
-                    },
-                    "additionalProperties": True,
-                },
-                "threads_per_rank": {"type": "integer", "minimum": 1},
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ATTRIBUTION_PROPERTIES,
             },

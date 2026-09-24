@@ -184,7 +184,9 @@ class LoaderTests(unittest.TestCase):
     def test_field_grammar(self) -> None:
         cases = {
             "target_profile_version": (2, "target_profile_version"),
-            "hardware__class": ("tpu", "hardware.class"),
+            # Grammar only: WHICH classes exist is the registry's, asked by the launch gate
+            # (`LaunchGateTests`), since the `hardware` axis (issue #289).
+            "hardware__class": ("CPU", "hardware.class"),
             "hardware__architecture": ("X86_64", "hardware.architecture"),
             "toolchain__language": ("", "toolchain.language"),
             "toolchain__build_system": (["make"], "toolchain.build_system"),
@@ -247,8 +249,11 @@ class SchemaAgreementTests(unittest.TestCase):
             {"type": "integer", "minimum": 1, "maximum": 1})
         self.assertEqual(schema["properties"]["target_profile_version"]["enum"],
                          [tp.TARGET_PROFILE_VERSION])
-        self.assertEqual(schema["properties"]["hardware"]["properties"]["class"]["enum"],
-                         list(tp.HARDWARE_CLASSES))
+        # An open token, like every other axis value: the vocabulary is the registry's
+        # (issue #289). A closed enum here would be a second list of hardware classes.
+        self.assertEqual(schema["properties"]["hardware"]["properties"]["class"]["$ref"],
+                         "#/definitions/token")
+        self.assertNotIn("enum", schema["properties"]["hardware"]["properties"]["class"])
         self.assertEqual(schema["properties"]["target_id"]["pattern"],
                          f"^{tp.TARGET_ID_PATTERN.pattern}(?![\\s\\S])")
         # A blank constraint is refused by both copies (the loader strips).
@@ -269,6 +274,7 @@ class LaunchGateTests(unittest.TestCase):
             "toolchain__build_system": ("bazel", "toolchain:"),
             "parallel__backend": ("cuda_streams", "parallel.backend"),
             "toolchain__compiler": ("icx", "toolchain.compiler"),
+            "hardware__class": ("tpu", "hardware.class"),
         }
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
@@ -284,6 +290,89 @@ class LaunchGateTests(unittest.TestCase):
                     # reason is worded differently).
                     if dotted != "parallel__backend":
                         self.assertIn("is not a declared", violations[0])
+
+    def test_the_execution_half_is_asked_of_a_run_that_reaches_validate_only(self) -> None:
+        """Issue #289: a class this host cannot launch on can be BUILT for, not run.
+
+        `gpu` declares no `execution`, so it is the live witness: refused for a run ending at
+        Validate — and for one whose end is unstated or not a phase this module exempts, which
+        is the fail-closed direction — and accepted for a run that stops before it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            gpu = self._profile(repo, hardware__class="gpu", hardware__architecture="sm_90")
+            for until in ("Compile", "Generate", "Build", "build", " BUILD "):
+                with self.subTest(until_phase=until):
+                    self.assertEqual(tp.target_profile_violations(
+                        repo.root, gpu, until_phase=until), [])
+            for until in ("Validate", "validate", None, "", "Buld"):
+                with self.subTest(until_phase=until):
+                    violations = tp.target_profile_violations(repo.root, gpu, until_phase=until)
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertTrue(violations[0].startswith("hardware.class:"), violations)
+                    self.assertIn("'execution'", violations[0])
+                    self.assertIn("reaches Validate", violations[0])
+            # The negative control: this host's own class runs, at every end.
+            cpu = self._profile(repo)
+            for until in ("Build", "Validate", None):
+                with self.subTest(cpu_until_phase=until):
+                    self.assertEqual(tp.target_profile_violations(
+                        repo.root, cpu, until_phase=until), [])
+            # And `resolve_run_target` carries the phase through to the gate.
+            (repo.root / tp.TARGETS_DIR / "t1.yaml").unlink()
+            repo.write("t_gpu", hardware__class="gpu", hardware__architecture="sm_90")
+            self.assertEqual(tp.resolve_run_target(repo.root, "t_gpu", until_phase="Build")
+                             .hardware_class, "gpu")
+            with self.assertRaises(tp.TargetProfileError) as ctx:
+                tp.resolve_run_target(repo.root, "t_gpu", until_phase="Validate")
+            self.assertEqual(ctx.exception.reason, "target_profile_invalid")
+            self.assertIn("hardware.class", ctx.exception.detail)
+
+    def test_the_execution_half_asks_the_parallel_backend_for_its_launch_env(self) -> None:
+        # Driven by withdrawal: every implemented parallel value declares `execution_env`
+        # today, so only a withdrawn one shows the gate asks it — and asks it only of a run that
+        # launches the binary.
+        from tools.backends import registry
+
+        real = registry.provides
+
+        def provides(axis: str, backend_id: str, capability: str) -> bool:
+            return capability != "execution_env" and real(axis, backend_id, capability)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            profile = self._profile(repo)
+            with mock.patch.object(registry, "provides", provides):
+                violations = tp.target_profile_violations(repo.root, profile,
+                                                          until_phase="Validate")
+                self.assertEqual(len(violations), 1, violations)
+                self.assertTrue(violations[0].startswith("parallel.backend:"), violations)
+                self.assertIn("'execution_env'", violations[0])
+                self.assertEqual(tp.target_profile_violations(
+                    repo.root, profile, until_phase="Build"), [])
+
+    def test_the_architecture_is_held_to_the_classs_perf_facts_where_it_states_them(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            for arch in ("sm_90", "sm_90a", "sm_75"):
+                with self.subTest(gpu_architecture=arch):
+                    self.assertEqual(tp.target_profile_violations(
+                        repo.root, self._profile(repo, hardware__class="gpu",
+                                                 hardware__architecture=arch),
+                        until_phase="Build"), [])
+            for arch in ("x86_64", "sm90", "gfx90a", "sm_"):
+                with self.subTest(gpu_architecture=arch):
+                    violations = tp.target_profile_violations(
+                        repo.root, self._profile(repo, hardware__class="gpu",
+                                                 hardware__architecture=arch),
+                        until_phase="Build")
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertTrue(violations[0].startswith("hardware.architecture:"))
+                    self.assertIn(repr(arch), violations[0])
+            # A class stating no `perf_facts` keeps its architecture a recorded token.
+            self.assertEqual(tp.target_profile_violations(
+                repo.root, self._profile(repo, hardware__architecture="sm_90"),
+                until_phase="Validate"), [])
 
     def test_a_capability_the_node_kind_needs_is_asked_by_kind(self) -> None:
         """A non-infrastructure node needs the control file and the runner render; an

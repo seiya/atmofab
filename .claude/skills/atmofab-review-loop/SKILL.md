@@ -1123,8 +1123,7 @@ reviewer:
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
 Practical notes on reading a census: keep **"killed only by the token ratchet" as a fourth
-class** (empty while the ratchet is frozen, issue #182, unless the census ran `--check-baseline`
-explicitly and says so); **a vacuous finding may be closed by marking rather than deleting**; **aim "does it wrongly refuse
+class**; **a vacuous finding may be closed by marking rather than deleting**; **aim "does it wrongly refuse
 legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
 measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
 after you consume it, recording the conclusions that survive re-measurement rather than the
@@ -1310,7 +1309,7 @@ that tells you how it closed.
   run, and put the injection in the next round's prompt rather than asking a reviewer to notice.
   **The fix is injection, not deletion** — give the production function the root or path the
   witness needs and drive a synthetic one; the coverage is real, it just must not be taken from
-  the corpus the change stopped reading (issue #182)
+  the corpus the change stopped reading (PR #187)
 - **Your change SELECTS a subset — of text, of behaviour, of an allowlist — and you are choosing
   what goes IN** → the DEFAULT for an element nobody considered is a design decision made once, and
   it decides whether a MISS is loud or silent. Criterion, one question: **if I never think about
