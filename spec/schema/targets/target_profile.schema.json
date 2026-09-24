@@ -73,5 +73,5 @@
     {"toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make", "flags": "-O2"}, "why": "unknown key: the toolchain is closed"},
     {"execution": {"threads_per_rank": 0}, "why": "at least one thread"}
   ],
-  "x-forbidden-examples-note": "The schema rejects all three on its own. The loader additionally rejects a `target_id` that is not the file stem and a harness the catalog does not resolve."
+  "x-forbidden-examples-note": "The schema rejects all three on its own. The loader additionally rejects a `target_id` that is not the file stem; the launch gate (`target_profile_violations`) rejects a harness the catalog does not resolve."
 }

@@ -14,9 +14,13 @@ checked in this module's constants and the schema at ``spec/schema/targets/targe
 is the declarative copy of the same facts (``spec/schema/SCHEMA.md``; the two are pinned together
 by ``tools/tests/test_target_profile.py``).
 
-The loader is fail-closed: an unknown key, a missing key, a wrongly typed value, a ``target_id``
-that is not the file's stem, or a harness the catalog cannot resolve is a refusal, never a
-default. A profile the host would have to guess about is a run nobody can reproduce.
+Both layers are fail-closed. The loader (``load_target_profile``) refuses an unknown key, a
+missing key, a wrongly typed value and a ``target_id`` that is not the file's stem; it does NOT
+resolve the harness or ask the registry. The launch gate (``target_profile_violations``, run by
+``resolve_run_target``) refuses a harness the catalog cannot resolve and a language, build
+system, parallel backend or pinned compiler the host does not implement — and nothing else:
+``hardware.*``, ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens it does not
+check. A profile the host would have to guess about is a run nobody can reproduce.
 """
 
 from __future__ import annotations

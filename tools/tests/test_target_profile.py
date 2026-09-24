@@ -235,6 +235,9 @@ class SchemaAgreementTests(unittest.TestCase):
                 self.assertIs(node["additionalProperties"], False)
                 self.assertEqual(set(node["required"]), set(required))
                 self.assertEqual(set(node["properties"]), set(required | optional))
+        self.assertEqual(
+            schema["properties"]["execution"]["properties"]["threads_per_rank"],
+            {"type": "integer", "minimum": 1})
         self.assertEqual(schema["properties"]["target_profile_version"]["enum"],
                          [tp.TARGET_PROFILE_VERSION])
         self.assertEqual(schema["properties"]["hardware"]["properties"]["class"]["enum"],
