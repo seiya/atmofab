@@ -5876,11 +5876,14 @@ def _lowering_plan_declines_openmp(plan: Any) -> bool:
     Until R4-a PR-3 (issue #284) the exemption was the IR's Compile-authored knob layer, which
     the Generate leaf could not edit; the knob layer is now the SAME leaf's plan, so the floor
     reading "no claim" as an exemption let the producer switch its own floor off by omission —
-    the round-1 finding this shape closes. What stays is the explicit ``"model": "none"`` a node
-    whose loops are inherently serial needs (three certified July sources are such nodes, their
-    IRs saying ``none``); whether that declaration is honest is ``Generate.verify`` G6's
-    judgment, told in its template that a ``none`` over plainly parallelizable loops is itself
-    the finding.
+    the round-1 finding this shape closes. What stays is the explicit ``"model": "none"`` for a
+    model source whose every counted loop carries a dependence — a construct the corpus does not
+    contain (measured in R4-a PR-3's round 3: the only passing counted-loop, directive-free
+    physics sources are three July 2026 ones whose IRs claimed OpenMP and which predate the
+    floor, and the five real ``none`` plans belong to the harness and two whole-array nodes);
+    whether that declaration is honest is ``Generate.verify`` G6's judgment, told in its
+    template that a ``none`` over plainly parallelizable loops, or with a reason the loops
+    contradict, is itself the finding.
 
     OpenMP specifically: a plan naming ``mpi`` or ``cuda_streams`` declines OpenMP rather than
     being told to add ``!$omp`` — a demand that would contradict its own plan. Substring, so
