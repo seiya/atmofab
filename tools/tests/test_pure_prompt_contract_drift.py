@@ -588,7 +588,11 @@ PINNED: dict[str, str] = {
     # and both producer templates say `fusion` fuses optimization-unit members, never loops.
     # Re-pinned in round 2: G6's scope sentence no longer lists "no model at all" among the
     # plans the floor skips, and says a declared `none` is the producer's claim the floor trusts.
-    "pure-49": "00771fda28762e8316cf61d9882e1f1215e34e1880908f9d50bb7fd62b057f0b",}
+    # Re-pinned in round 3: G6 also fails a stated reason the loops contradict, and H9 drops the
+    # knob layer's "read the plan by MEANING rather than by key name". (Unmerged, not unused:
+    # the adoption run's Generate outputs were certified under an earlier pure-49 digest; a
+    # re-pin moves no derivation key, and none of them fails the floor at HEAD.)
+    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",}
 
 
 def _contract_tuple() -> dict[str, object]:
