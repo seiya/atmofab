@@ -492,9 +492,10 @@ pure data under exactly three keys:
   by origin: `staged:` (a dependency source the host stages), `bundle:` (a bundle file),
   `glue:` (a host-rendered file).
 - `link.objects`, the ordered link line.
-- `toolchain`, the caller's `impl_defaults.toolchain` **projected onto a fixed declarative
+- `toolchain`, the caller's toolchain (the run's target profile since issue #284; the IR's
+  `impl_defaults.toolchain` before it) **projected onto a fixed declarative
   allowlist and value-validated** (`TOOLCHAIN_ECHO_KEYS`: `language`, `standard`,
-  `build_system`, `compiler`, `linker`, `backend`) for the target backend. The IR's toolchain
+  `build_system`, `compiler`, `linker`, `backend`) for the target backend. The caller's toolchain
   object is not closed, so the graph projects rather than echoes verbatim: only the
   declarative key set keeps the "no command and no flag string" guarantee structural.
   `compiler` and `linker` are **executable selectors** a backend runs as a program, so

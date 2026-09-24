@@ -308,9 +308,12 @@ class BuildLaunchRequestTest(unittest.TestCase):
     What the corpus does NOT hold: a repair-turn capture (a `reuse` turn carries
     `repair_findings` and `warm_resume` and no `pure_context`), an HTTP-provider or codex
     capture, a row with an `exemplar`, a `pure_shape` other than the default (this node has
-    none), and a `problem` / `infrastructure` node's pure pair. The COMPARISON accepts each of
-    those shapes (`_assert_builder_reproduces` was driven on recorded requests of every one at
-    this branch's review; the pull request records the probe). The CORPUS is one row per
+    none), and a `problem` / `infrastructure` node's pure pair. The COMPARISON is not limited to
+    the corpus: at issue #171's review `_assert_builder_reproduces` was driven on recorded
+    requests of each shape its list then named (a `component` / `infrastructure` pure pair among
+    them; a `problem` pair was the corpus itself), and that pull request records the probe.
+    Since issue #284 no recorded `problem` request carries the target segment a `pipeline_ref`
+    needs, so that shape cannot be re-driven until a `problem` node runs on the per-target store. The CORPUS is one row per
     (step, substep) — `_load_real_requests` refuses a second file for a pair, `expected_keys`
     below and the count in `test_orchestration_runtime` pin the set, and the script names its
     output by pair and overwrites — so adding a capture of one of those shapes means either
