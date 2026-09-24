@@ -18,7 +18,7 @@ The range `Tune` can override via `tuning.spec` is **limited to the lowering pla
 | crossing-forbidden (fixed) | override-allowed (knob) |
 |---|---|
 | `spec.ir.yaml` (every section) | `target_lowering_plan.parallelization` (model, loop scope, schedule, chunk size, collapse) |
-| the target profile: `hardware.*` / `toolchain.*` / `parallel.backend` / `execution.*` / `harness` | `target_lowering_plan.data_layout` / `fusion` / `decomposition` / `communication` / `accelerator_mapping` (the intent of layout / fusion / tiling / vectorization, etc.) |
+| the target profile: `hardware.*` / `toolchain.*` / `parallel.backend` / `execution.*` / `harness` | `target_lowering_plan.data_layout` / `decomposition` / `communication` / `accelerator_mapping` (the intent of layout / loop fusion / tiling / vectorization, etc.) and `fusion` (which unit members are fused) |
 
 The plan's `parallelization.model` names a parallel model the target's `parallel.backend` supports, or `"none"`. A variant whose plan the source does not follow is a `Generate.verify` G6 fail, exactly as in the core workflow. Introducing a NEW member inside an optional plan section is unrestricted — the interior of an optional section is a target-backend extension point — and that is the exploration space.
 

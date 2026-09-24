@@ -739,6 +739,9 @@ class PureRenderTests(unittest.TestCase):
             text = (root / name).read_text(encoding="utf-8")
             with self.subTest(template=name):
                 self.assertIn("the plan is a CLOSED object", text)
+                # `fusion` members are node_keys of the unit (`codegen_bundle` refuses anything
+                # else, round 1 of R4-a PR-3): the prompt must not read as loop fusion.
+                self.assertIn("it fuses unit MEMBERS, never loops", text)
                 for key in LOWERING_PLAN_OPTIONAL_KEYS:
                     self.assertIn(f"`{key}`", text, f"{name} does not name `{key}`")
 

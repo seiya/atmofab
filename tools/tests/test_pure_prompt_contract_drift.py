@@ -584,8 +584,9 @@ PINNED: dict[str, str] = {
     # plan's closed optional keys; "the plan's other keys" cost the first adoption run a
     # harness Generate attempt to `unknown key 'layout'` / `'tiling'`.
     # Re-pinned in round 1: the OpenMP floor applies unless the plan EXPLICITLY declines
-    # OpenMP (an absent model is the target's backend), in rule (7) and in G6's scope sentence.
-    "pure-49": "4b0b0ae042cee6c46bf51d693d71c6fb1e52cf13617bce9f7cd8bf9d05cc8f12",}
+    # OpenMP (an absent model is the target's backend), in rule (7) and in G6's scope sentence;
+    # and both producer templates say `fusion` fuses optimization-unit members, never loops.
+    "pure-49": "b967b2d85f8c8c78c80af7bfbea3ad7873d9f541c374d8ece285fb2585cd38f8",}
 
 
 def _contract_tuple() -> dict[str, object]:

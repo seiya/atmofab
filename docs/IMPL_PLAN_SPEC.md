@@ -45,7 +45,7 @@ Rules:
 - Calling a compiler directly for a one-off build is forbidden; every build runs through `toolchain.build_system` (`AGENTS.md` §MCP execution rules).
 
 ### Lowering plan
-The remaining implementation choices are the bundle's `target_lowering_plan`, authored by the `Generate` producer. `precision` and `state_residency` are required members; `data_layout`, `parallelization`, `decomposition`, `communication`, `accelerator_mapping`, and `fusion` are optional (`tools/codegen_bundle.py:LOWERING_PLAN_REQUIRED_KEYS` / `LOWERING_PLAN_OPTIONAL_KEYS`).
+The remaining implementation choices are the bundle's `target_lowering_plan`, authored by the `Generate` producer. `precision` and `state_residency` are required members; `data_layout`, `parallelization`, `decomposition`, `communication`, `accelerator_mapping`, and `fusion` (whose groups' `members` are node_keys of the optimization unit — member fusion, not loop fusion, which is a member inside one of the objects) are optional (`tools/codegen_bundle.py:LOWERING_PLAN_REQUIRED_KEYS` / `LOWERING_PLAN_OPTIONAL_KEYS`).
 
 - `parallelization` is an object whose `model` member names the parallel model, and `"none"` when nothing is parallelized. Its other members state which loops the model covers and with what schedule, chunk size, and collapse.
 - When the target's `hardware.class` is `cpu` and the user does not specify the loop parallelization method, the producer parallelizes the parallelizable loops with the target's `parallel.backend`.
