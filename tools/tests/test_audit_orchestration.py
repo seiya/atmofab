@@ -1580,11 +1580,15 @@ class PureJudgeAbRollupTests(unittest.TestCase):
         transform, and a third here would be the one nothing checks. A request whose
         `pipeline_ref` is neither `<safe>/<target_id>/<id>` (issue #284) nor the pre-target
         `<safe>/<id>` an older run recorded names no directory at all."""
+        # The judge record EXISTS at each bad path (`meta=`), so an empty result is the shape
+        # check refusing the ref, not a missing file; the good ref, same setup, is found.
+        good, _ = self._rollup(request=self._REQUEST, meta=self._META)
+        self.assertEqual(len(good["pure_validate_nodes"]), 1)
         for bad in ("workspace/pipelines/component__spec_x__0.1.0",
                     "workspace/pipelines/component__spec_x__0.1.0/Not_A_Target/p_1",
                     "workspace/pipelines/component__spec_x__0.1.0/a/b/p_1"):
             request = dict(self._REQUEST, pipeline_ref=bad)
-            summary, _ = self._rollup(request=request, meta=None)
+            summary, _ = self._rollup(request=request, meta=self._META)
             self.assertEqual(summary["pure_validate_nodes"], [], bad)
 
     def test_a_pre_target_run_is_audited_where_it_put_its_pipeline(self) -> None:
