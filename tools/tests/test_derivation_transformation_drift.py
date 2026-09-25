@@ -254,7 +254,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # the bound state is a module-level float64 variable, a §5.1 signature is not source text
     # and Generate renders it to the target language, and the runner-name ASCII rule speaks of
     # the runner's language. The IR contract it states is unchanged; Compile is target-free.
-    "compile-docs-6": "000b8fc9b183dbc79d95a7efe626c58befaf4645477ef42e1d41ffcce0718106",
+    # Unshipped, so re-pinned in place in round 3 of its review, which found the first version
+    # had left five mentions (a snapshot's `real(dp)`, "the Fortran-language backend", the §5.1
+    # kind name, the "gfortran backstop", the runner's file name): now none.
+    "compile-docs-6": "57dc25cde7e484ddef3f15eceac9d91ba51b72eb25854dcd3032cc311aadd6ac",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

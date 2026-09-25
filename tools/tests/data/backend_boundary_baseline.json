@@ -102,11 +102,8 @@
       "make-control-file": 2
     },
     "docs/workflow/phases/phase_01_compile.md": {
-      "compiler-driver": 1,
-      "fortran": 2,
       "fortran-standard": 1,
-      "fortran-subroutine": 2,
-      "fortran-suffix": 1
+      "fortran-subroutine": 2
     },
     "docs/workflow/phases/phase_02_generate.md": {
       "compiler-driver": 2,

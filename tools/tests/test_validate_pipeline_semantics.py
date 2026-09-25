@@ -9930,7 +9930,7 @@ end program shallow_water2d_runner
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
             "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-            "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+            "valued numerically (a snapshot variable is a float64 module variable the runner "
             "serializes); a case INPUT — an enumerated selector included — is not an evidence "
             "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
             "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "

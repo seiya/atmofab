@@ -143,15 +143,16 @@ RAW_EVIDENCE_ARTIFACTS = {
 # same routing the contract states; the document does not cite this constant, so
 # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` is
 # what holds the two spellings together. Stated in the form the PRODUCER supports, not
-# only the form this validator accepts: a snapshot variable is a `real(dp)` module
+# only the form this validator accepts: a snapshot variable is a float64 module
 # variable of the checks module that the host-rendered runner serializes
-# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b), and a metrics_basis.json
+# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b; Compile, whose leaf reads this remedy, is
+# target-free, so it names no language's spelling — issue #289), and a metrics_basis.json
 # row is valued from a test's required_raw_variables, which must be snapshot
 # variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
 # and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
     "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-    "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+    "valued numerically (a snapshot variable is a float64 module variable the runner "
     "serializes); a case INPUT — an enumerated selector included — is not an evidence "
     "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
     "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
