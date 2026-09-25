@@ -1013,7 +1013,9 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
          "# condition scope — the three ways",
          "#   checks.<id>",
          "checks.<id>.{leaf}"),
-        ("tools/prompt_templates/pure_generate_generate.txt",
+        # The checks behavioral contract (A)-(F) is the Fortran fragment the host composes into
+        # `pure_generate_generate.txt` since issue #289 (R4-b PR-2), moved verbatim.
+        ("tools/prompt_templates/backends/language/fortran/generate_generate.txt",
          "(A) Author an honest `status` for each id.",
          "(B) `metric_compute(",
          "checks.<id>",
@@ -1071,7 +1073,7 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
         # A loop over an emptied tuple asserts nothing and stays green.
         self.assertEqual({rel for rel, *_ in self._SURFACES},
                          {"docs/workflow/phases/phase_01_compile.md",
-                          "tools/prompt_templates/pure_generate_generate.txt",
+                          "tools/prompt_templates/backends/language/fortran/generate_generate.txt",
                           "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md"})
         for rel, *_ in self._SURFACES:
             self.assertTrue((self._REPO / rel).is_file(), f"{rel}: a surface the code names "
@@ -1119,7 +1121,7 @@ class CheckRefLeafStatementSitesTest(unittest.TestCase):
         token = "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
         by_rel = {rel: (anchor, bound) for rel, anchor, bound, *_ in self._SURFACES}
         self.assertEqual(set(self._VALUE_SURFACES), set(by_rel) - {
-            "tools/prompt_templates/pure_generate_generate.txt"})
+            "tools/prompt_templates/backends/language/fortran/generate_generate.txt"})
         for rel in self._VALUE_SURFACES:
             with self.subTest(surface=rel):
                 window = self._window(rel, *by_rel[rel])

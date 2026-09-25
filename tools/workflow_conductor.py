@@ -6622,10 +6622,12 @@ clean:
         R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
         sections were the one target-coloured document left (R4-a's accepted residual); since
         issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
-        only to the `generate` leaves. Being inlined into a pure leaf's prompt, the slice is
-        pinned under `PURE_PROMPT_CONTRACT_VERSION` (`test_pure_prompt_contract_drift`); it is
-        also a document this context inlines, so a change to it bumps
-        `COMPILE_INLINED_DOCUMENTS_VERSION` as well.
+        only to the `generate` leaves. Its version is `PURE_PROMPT_CONTRACT_VERSION`'s, the
+        classification `test_derivation_transformation_drift.INLINED_DOCUMENT_CLASS` gives it
+        (`contract`, pinned by `test_pure_prompt_contract_drift`) — not
+        `COMPILE_INLINED_DOCUMENTS_VERSION`'s, which pins the three documents this context
+        inlines whole. The compile transformation carries both, so a change to either re-derives
+        every node's Compile.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as

@@ -594,7 +594,18 @@ PINNED: dict[str, str] = {
     # knob layer's "read the plan by MEANING rather than by key name". (Unmerged, not unused:
     # the adoption run's Generate outputs were certified under an earlier pure-49 digest; a
     # re-pin moves no derivation key, and none of them fails the floor at HEAD.)
-    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",}
+    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",
+    # pure-50 (issue #289, R4-b PR-2): the generate templates' Fortran rules move into language
+    # fragments the host composes by the request's `pure_language` (composed for `fortran` the
+    # two templates are byte-identical to pure-49's), and the checks-module contract splits
+    # into a language-neutral §1-§4 and a language binding: Compile is shown the neutral
+    # sections only, the `generate.verify` reviewer the neutral sections followed by the
+    # binding's (its template's label says so), and the `harness` producer's gate guards are
+    # the binding's §5. The runner-output contract's Fortran descriptor rules move to a binding
+    # inlined after it in the `harness` prompts. Known side effects, as for every bump:
+    # `_resolve_exemplar_source` stops offering exemplars certified at pure-49 or earlier, and
+    # an orchestration whose `generate` ran under pure-49 cannot be `--resume`d across it.
+    "pure-50": "053962135f30a3a0e4b7001749dbac4564bb728fa0a9f1f0b404ff1c616d8673",}
 
 
 def _contract_tuple() -> dict[str, object]:
