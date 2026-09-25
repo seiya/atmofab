@@ -138,6 +138,7 @@ def _fixture_derivation(repo_root: Path, step: str) -> dict:
 # which stops short of it.
 _PURE_GENERATE_OVERRIDE = {
     "leaf_mode": "pure",
+    "pure_language": "fortran",
     "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
     "allowed_output_paths": [],
     "skill_name": "",
@@ -436,6 +437,7 @@ def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
         shape["deterministic"] = True
     else:
         shape["leaf_mode"] = "pure"
+        shape["pure_language"] = "fortran"
         shape["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
         shape["pure_context"] = _PURE_GENERATE_CONTEXT
     src = f"{_FIX_PIPE_REF}/source/src_20260509_001"
@@ -12244,6 +12246,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                 "skill_must_read_refs": "",
                 "leaf_mode": "pure",
+                "pure_language": "fortran",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
@@ -12266,6 +12269,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                         "skill_must_read_refs": "",
                         "leaf_mode": "pure",
+                        "pure_language": "fortran",
                         "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                         "pure_context": _PURE_GENERATE_CONTEXT,
                         "allowed_output_paths": [],
@@ -23273,6 +23277,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         if pure:
             request: dict = {
                 "leaf_mode": "pure",
+                "pure_language": "fortran",
                 "agent_model": "some-model",
                 "agent_run_id": arid,
                 "agent_role": "substep",

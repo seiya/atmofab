@@ -37,6 +37,7 @@ from tools.orchestration_runtime import (
 )
 from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.target_fixtures import TARGET_ID
+from tools.tests.target_fixtures import composed_pure_template
 from tools.pure_leaf import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
@@ -176,6 +177,8 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
     ctx = _pure_generate_context() if substep == "generate" else _pure_verify_context()
     req: dict[str, object] = {
         "leaf_mode": "pure",
+        # The target language the generate templates are composed for (issue #289).
+        "pure_language": "fortran",
         "agent_model": "opus",
         # DERIVED from the step, not fixed: `build`'s child is a `step` agent, and
         # record-launch refuses a role that disagrees with `STEP_REQUIRED_CHILD_AGENT`. The
@@ -608,7 +611,7 @@ class PureRenderTests(unittest.TestCase):
         self.assertNotIn("Controlled spec", prompt)
         self.assertNotIn("Audusse reconstruction: h_star = max(0, eta - z_b)", prompt)
         # The template's own bytes carry no controlled_spec surface either.
-        tpl = ort._load_launch_prompt_templates()["pure generate.generate"]
+        tpl = composed_pure_template("pure generate.generate")
         self.assertNotIn("controlled_spec", tpl)
 
     def test_prompt_states_the_static_prohibitions_the_leaf_cannot_otherwise_know(self) -> None:
@@ -616,7 +619,7 @@ class PureRenderTests(unittest.TestCase):
         # pre-empt, so each is a phase reopen — the failure mode this whole change exists to
         # remove. A tool-less leaf can only learn them here. The harness ban is the sharpest:
         # the injected runner IS a `use harness_fortran_cpu_model` block the leaf must not copy.
-        tpl = ort._load_launch_prompt_templates()["pure generate.generate"]
+        tpl = composed_pure_template("pure generate.generate")
         for token in ("use harness_", "open(", "verdict.json", "aggregate_verdict.json",
                       "summary.json", "trial_meta.json"):
             self.assertIn(token, tpl, f"prompt must name the {token!r} prohibition")
@@ -632,7 +635,7 @@ class PureRenderTests(unittest.TestCase):
         # Pin the two together: a name added to the gate's tuple and not to the prompt is a rule
         # the producer is punished for breaking and never told about.
         from tools.validate_pipeline_semantics import FORBIDDEN_RUNNER_OUTPUTS
-        tpl = ort._load_launch_prompt_templates()["pure generate.generate"]
+        tpl = composed_pure_template("pure generate.generate")
         for name in FORBIDDEN_RUNNER_OUTPUTS:
             self.assertIn(name, tpl, f"the prompt must name {name!r}, which the gate rejects")
 
@@ -735,8 +738,11 @@ class PureRenderTests(unittest.TestCase):
         added there is red here until the prompt says it."""
         from tools.codegen_bundle import LOWERING_PLAN_OPTIONAL_KEYS
         root = Path(ort.__file__).resolve().parents[1] / "tools" / "prompt_templates"
-        for name in ("pure_generate_generate.txt", "pure_generate_generate_harness.txt"):
-            text = (root / name).read_text(encoding="utf-8")
+        for name, key in (("pure_generate_generate.txt", "pure generate.generate"),
+                          ("pure_generate_generate_harness.txt", "pure generate.generate.harness")):
+            # Composed for the target language: what the leaf reads (issue #289).
+            text = composed_pure_template(key)
+            assert (root / name).is_file(), name
             with self.subTest(template=name):
                 self.assertIn("the plan is a CLOSED object", text)
                 # `fusion` members are node_keys of the unit (`codegen_bundle` refuses anything
@@ -1366,6 +1372,12 @@ class PureRenderTests(unittest.TestCase):
         # `SKILL` does, and issue #143's leftover was in exactly that position.
         ("tools/prompt_templates/pure_generate_generate.txt", None, None),
         ("tools/prompt_templates/pure_bundle_repair.txt", None, None),
+        # Issue #289 (R4-b PR-2): the generate templates' language rules moved into fragment
+        # files the host composes into them, so each fragment file is a leaf-read template
+        # surface of its own — a severity spelled in one reaches the leaf exactly as one spelled
+        # in the template did.
+        ("tools/prompt_templates/backends/language/fortran/generate_generate.txt", None, None),
+        ("tools/prompt_templates/backends/language/fortran/generate_verify.txt", None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
         # Round 5 found the tuple short of its own docstring twice over.
         # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
@@ -1463,8 +1475,12 @@ class PureRenderTests(unittest.TestCase):
         # `pure-30`: the checklist's input-side clause points at the rubric's `major` bullet
         # instead of re-enumerating its cases, which is a POINTER — and the gate did its job by
         # making that new mention be read before it shipped.
+        # Re-taken for issue #289 (R4-b PR-2): the line's runner FILE NAME became the language
+        # marker `{{language:host_rendered_runner_file}}` (the name is the language backend's);
+        # composed, the line is byte-identical to the one approved above. READ: the same
+        # pointer to the rubric's `major` bullet, nothing assigned.
         "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
-        "to judge the bundle aga #13a2cbb5bb66",
+        "to judge the bundle aga #743f958977ae",
         # `pure-37` (issue #169): the same input-side clause on the `harness` shape's reviewer
         # template, where it stands as its own paragraph rather than inside the checklist
         # sentence. Same judgment as the line above — it POINTS at the rubric's `major` bullet
@@ -1580,8 +1596,10 @@ class PureRenderTests(unittest.TestCase):
         # as well as the two producer-side ones), and the tuple is still hand-listed. Correcting
         # here because a commit message cannot be amended once it is not HEAD.
         templates_dir = repo_root / "tools" / "prompt_templates"
-        found_templates = {f"tools/prompt_templates/{p.name}"
-                           for p in templates_dir.iterdir() if p.suffix == ".txt"}
+        # Recursive since issue #289: the language fragment files under `backends/` are
+        # composed into the templates, so a new language's fragments are red here until listed.
+        found_templates = {str(p.relative_to(repo_root))
+                           for p in templates_dir.rglob("*.txt")}
         self.assertTrue(found_templates, "no launch-prompt templates found; this reads nothing")
         self.assertEqual(found_templates - scanned, set(),
                          "a launch-prompt template is not scanned for hand-assigned severities. "
@@ -1862,7 +1880,9 @@ class PureRenderTests(unittest.TestCase):
                       else "pure_verdict_repair")
             for shape in (*self._RENDER_COLD_SHAPES, "pure-repair-warm", "pure-repair-cold"):
                 kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
-                          runner_host_authored=True)
+                          runner_host_authored=True,
+                          # The conductor names the target language on a generate launch only.
+                          pure_language=("fortran" if step == "generate" else ""))
                 extra: dict = {}
                 if shape in self._RENDER_COLD_SHAPES:
                     kw["pure_context"] = ctx
@@ -1946,16 +1966,18 @@ class PureRenderTests(unittest.TestCase):
         `generate.verify` warm repair turn would have been subtracted unread.
         """
         templates = ort._load_launch_prompt_templates()
-        names: set[str] = set()
+        texts: list[str] = []
         if ort._is_pure_launch_request(request_payload):
+            launch = (not str(request_payload.get("repair_findings", "")).strip()
+                      or not request_payload.get("warm_resume"))
             if str(request_payload.get("repair_findings", "")).strip():
-                names.add("pure bundle repair")
-                if not request_payload.get("warm_resume"):
-                    names.add(ort._pure_launch_template_name(request_payload))
-            else:
-                names.add(ort._pure_launch_template_name(request_payload))
-        return {ln for name in names if name in templates
-                for ln in templates[name].splitlines() if ln.strip()}
+                texts.append(templates["pure bundle repair"])
+            if launch and ort._pure_launch_template_name(request_payload) in templates:
+                # COMPOSED for the request's language (issue #289): the fragment lines are
+                # template text the leaf reads, reviewed where they live — the fragment files
+                # are on `_SEVERITY_ASSIGNMENT_SURFACES` beside the templates.
+                texts.append(ort._pure_launch_template(request_payload))
+        return {ln for text in texts for ln in text.splitlines() if ln.strip()}
 
     def _host_built_severity_mentions(self, validate: bool = True) -> dict[str, set[str]]:
         """Severity mentions on the HOST-BUILT lines of every rendered launch prompt.
@@ -2124,6 +2146,8 @@ class PureRenderTests(unittest.TestCase):
     _NON_PROSE_PROMPT_HELPERS = frozenset({
         "_load_launch_prompt_templates",     # reads the template files verbatim
         "_pure_launch_template_name",        # returns a template NAME
+        "_pure_launch_template",             # reads + composes a template (fragments are swept)
+        "_compose_language_fragments",       # splices fragment FILE text, adds none of its own
         "_pure_template_paragraph",          # lifts a template paragraph VERBATIM (subtracted)
         "_fence_pure_doc",                   # wraps a value in the data fence
         "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
@@ -3036,3 +3060,62 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LanguageFragmentCompositionTests(unittest.TestCase):
+    """The generate templates carry `{{language:<name>}}` markers the host composes with the
+    target language's `prompt_fragments` before anything is substituted (issue #289, R4-b PR-2).
+    Every failure of that composition is a NAMED refusal — the alternative is a prompt that
+    silently omits the rules the gates hold the leaf to, or carries another language's."""
+
+    _KEYS = ("pure generate.generate", "pure generate.verify")
+
+    def test_a_composed_template_carries_no_marker_and_every_marker_is_defined(self) -> None:
+        for key in self._KEYS:
+            with self.subTest(template=key):
+                raw = ort._load_launch_prompt_templates()[key]
+                self.assertTrue(ort._LANGUAGE_FRAGMENT_RE.search(raw), f"{key} has no marker")
+                composed = composed_pure_template(key)
+                self.assertIsNone(ort._LANGUAGE_FRAGMENT_RE.search(composed))
+                self.assertNotIn("{{", composed)
+
+    def test_composition_refuses_every_way_it_can_fail(self) -> None:
+        template = "a {{language:rule}} b"
+        with self.assertRaises(ValueError) as caught:
+            ort._compose_language_fragments(template, "pure_generate_generate.txt", "")
+        self.assertIn("carries no `pure_language`", str(caught.exception))
+        for language, needle in (("cpp", "cannot be composed for language 'cpp'"),
+                                 ("zz_nothing", "cannot be composed for language 'zz_nothing'")):
+            with self.subTest(language=language):
+                with self.assertRaises(ValueError) as caught:
+                    ort._compose_language_fragments(
+                        template, "pure_generate_generate.txt", language)
+                self.assertIn(needle, str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            ort._compose_language_fragments(template, "pure_generate_generate.txt", "fortran")
+        self.assertIn("defines no fragment for rule", str(caught.exception))
+        # A template with no marker asks nothing — no language is needed to render it.
+        self.assertEqual("plain", ort._compose_language_fragments("plain", "x.txt", None))
+
+    def test_the_render_refuses_a_generate_launch_that_names_no_language(self) -> None:
+        req = _pure_request("generate")
+        req.pop("pure_language")
+        with self.assertRaises(ValueError) as caught:
+            ort.prepare_launch_request_payload(req)
+        self.assertIn("carries no `pure_language`", str(caught.exception))
+
+    def test_a_malformed_language_is_refused_by_the_validator(self) -> None:
+        for bad in ("", "  ", 3):
+            with self.subTest(pure_language=bad):
+                req = _pure_request("generate", pure_language=bad)
+                with self.assertRaises(ValueError):
+                    ort._validate_pure_launch_request_payload(req)
+
+    def test_the_conductor_names_the_target_language_on_a_generate_launch_only(self) -> None:
+        from types import SimpleNamespace
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        holder = SimpleNamespace(target=FORTRAN_CPU)
+        self.assertEqual(wc.Conductor._pure_language(holder, "generate"),
+                         FORTRAN_CPU.toolchain["language"])
+        for phase in ("compile", "validate"):
+            self.assertEqual(wc.Conductor._pure_language(holder, phase), "", phase)

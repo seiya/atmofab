@@ -185,6 +185,13 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "the identifier grammar, compiler-driver families), and the host knows the compiler it "
         "defaults to for it — which is also the syntax stage `Generate.gate` must pass.",
     ),
+    "prompt_fragments": (
+        ("language",),
+        "The pure `generate` prompts have this value's authoring and review rules to carry: the "
+        "neutral templates mark where a language's rules go (`{{language:<name>}}`), and the "
+        "backend supplies the text. Without it those templates cannot be composed for a node "
+        "of this value, and its launch is refused rather than sent another language's rules.",
+    ),
     "syntax_promotions": (
         ("language",),
         "The `Generate.gate` syntax-only stage knows which files of this value are sources, the "
@@ -264,6 +271,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     # line, the language's says what it is run over.
     "syntax_check": "syntax",
     "syntax_promotions": "syntax",
+    "prompt_fragments": "prompts",
 }
 
 
@@ -320,7 +328,8 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions"}),
+            backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
+                                        "prompt_fragments"}),
         ),
         Backend(
             "build_system", "make", None,

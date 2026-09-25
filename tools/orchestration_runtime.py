@@ -10342,6 +10342,60 @@ def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
     return f"pure {step}.{substep}.{shape}" if shape else f"pure {step}.{substep}"
 
 
+#: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
+#: PR-2). Composed away before any `<key>` substitution, so a composed template is exactly the
+#: text the leaf reads and every paragraph lift (`_pure_template_paragraph`) sees it too. A
+#: distinct spelling from `<key>` on purpose: a marker left in a rendered prompt is a composer
+#: defect, and it must not be mistaken for an unfilled data slot.
+_LANGUAGE_FRAGMENT_RE = re.compile(r"\{\{language:([a-z0-9_]+)\}\}")
+
+
+def _compose_language_fragments(template: str, template_file: str, language: Any) -> str:
+    """`template` with every `{{language:<name>}}` marker replaced by the target language's
+    fragment of that name (`prompt_fragments`, asked of the registry). A template with no marker
+    is returned unchanged and asks nothing.
+
+    Every failure RAISES a named `ValueError`: no language on the request, a language that does
+    not declare `prompt_fragments`, a marker its fragments do not define. The alternative to a
+    refusal is a prompt that silently omits the rules the gates hold the leaf to — or carries
+    another language's."""
+    markers = set(_LANGUAGE_FRAGMENT_RE.findall(template))
+    if not markers:
+        return template
+    lang = str(language or "").strip().lower()
+    if not lang:
+        raise ValueError(
+            f"pure launch request carries no `pure_language`, and its template {template_file} "
+            f"holds language fragments ({', '.join(sorted(markers))}) — the host must name the "
+            f"target language the prompt is composed for")
+    try:
+        module = backend_registry.capability_module("language", lang, "prompt_fragments")
+        sections = module.fragments(template_file.removeprefix("pure_").removesuffix(".txt"))
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+            ValueError) as exc:
+        raise ValueError(
+            f"pure launch prompt {template_file} cannot be composed for language {lang!r}: "
+            f"{exc}") from None
+    missing = sorted(markers - set(sections))
+    if missing:
+        raise ValueError(
+            f"pure launch prompt {template_file}: language {lang!r} defines no fragment for "
+            f"{', '.join(missing)}")
+    return _LANGUAGE_FRAGMENT_RE.sub(lambda m: sections[m.group(1)], template)
+
+
+def _pure_launch_template(request_payload: dict[str, Any]) -> str:
+    """The launch template this pure request renders, composed for its `pure_language`.
+
+    The ONE place a pure launch template is read by name, so the cold launch, the cold-repair
+    paragraph lift and the output-contract lift all see the same composed text. `KeyError`
+    when no template matches the request (each caller decides what that means)."""
+    name = _pure_launch_template_name(request_payload)
+    template = _load_launch_prompt_templates()[name]
+    return _compose_language_fragments(
+        template, _PROMPT_TEMPLATE_FILES[name], request_payload.get("pure_language"))
+
+
 def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     """Render a cold pure-function launch prompt from its `pure_{step}_{substep}.txt` template.
 
@@ -10350,10 +10404,9 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     (each inlined document fenced as data), the reused dependency-facts / exemplar renderers,
     and the identity block. No `_template_placeholder_values` (no gate runbook / task card /
     capability paths — a pure leaf runs no gate and writes nothing)."""
-    templates = _load_launch_prompt_templates()
     name = _pure_launch_template_name(request_payload)
     try:
-        template = templates[name]
+        template = _pure_launch_template(request_payload)
     except KeyError:
         # A NAMED refusal, not a KeyError. `prepare_launch_request_payload` force-renders a
         # pure request BEFORE `_validate_launch_request_payload` runs, so a payload missing
@@ -10411,8 +10464,7 @@ def _pure_template_paragraph(request_payload: dict[str, Any], prefix: str) -> st
     (defensive) or when this template has no such paragraph (e.g. the verify template has no
     authoring rules) — the caller then omits the section."""
     try:
-        templates = _load_launch_prompt_templates()
-        template = templates[_pure_launch_template_name(request_payload)]
+        template = _pure_launch_template(request_payload)
     except (KeyError, OSError):
         return ""
     for block in template.split("\n\n"):
@@ -10524,8 +10576,7 @@ def _pure_authoring_rules_text(request_payload: dict[str, Any]) -> str:
     # readability reorder of the tuple would have silently reordered a cold repair against the
     # launch prompt a warm session holds, with nothing red. Resolve the order from the template.
     try:
-        template = _load_launch_prompt_templates()[
-            _pure_launch_template_name(request_payload)]
+        template = _pure_launch_template(request_payload)
     except (KeyError, OSError):
         template = ""
     ordered = sorted(
@@ -11677,6 +11728,15 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_shape must be a non-empty string when present; "
             f"got {shape!r}")
+    # The target language the template is composed for (issue #289). Refused when malformed for
+    # the reason a malformed `pure_shape` is: an absent value means "this template carries no
+    # language fragment", and a blank one read as absent would render a prompt missing the rules
+    # the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
+    language = request_payload.get("pure_language")
+    if language is not None and not (isinstance(language, str) and language.strip()):
+        raise ValueError(
+            f"pure launch request pure_language must be a non-empty string when present; "
+            f"got {language!r}")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.

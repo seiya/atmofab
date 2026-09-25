@@ -601,6 +601,15 @@ def _contract_tuple() -> dict[str, object]:
         "templates": {
             name: (tpl_dir / name).read_text(encoding="utf-8") for name in _TEMPLATE_FILES
         },
+        # The language fragment files the neutral templates are composed with (issue #289, R4-b
+        # PR-2): the text that replaces a template's `{{language:<name>}}` marker is template
+        # bytes a leaf reads, moved, so it is pinned exactly as the template files are. Every
+        # file under the directory, keyed by its path below it, so a new language's fragments
+        # join the pin by existing (`TODO.md`'s `project_pure_prompt_gate_drift_guard_gap`).
+        "language_fragments": {
+            str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
+            for path in sorted((tpl_dir / "backends").rglob("*.txt"))
+        },
         "system_prompt": PURE_SYSTEM_PROMPT,
         "repair_static_prefixes": list(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
         "checks_public_names": list(rr.CHECKS_PUBLIC_NAMES),

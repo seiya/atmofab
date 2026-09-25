@@ -583,7 +583,10 @@ class ProseCouplingTests(unittest.TestCase):
         # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
         # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
         # defect, one file over, found by the round-3 attack axis.
-        ("tools/prompt_templates/pure_generate_generate.txt",
+        # Since issue #289 (R4-b PR-2) those rules live in the Fortran fragment file the host
+        # composes into that template (`{{language:authoring_rules_1_to_4}}`), still as four
+        # consecutive lines, so the region moved with them unchanged.
+        ("tools/prompt_templates/backends/language/fortran/generate_generate.txt",
          "(1) Style lint (the `Generate.gate` lint check", 3,
          "(4) Dependency-dataflow gate"),
         # Anchored at the bullet ABOVE the lint paragraph, not at the paragraph: round 2 found

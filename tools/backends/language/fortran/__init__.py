@@ -12,6 +12,8 @@ a module name:
   glue over the certified harness, plus the harness-interface pin that guards it.
 * `syntax` — the `syntax_promotions` capability: which files the `Generate.gate` syntax stage
   reads, their order, and the warning classes it promotes to errors.
+* `prompts` — the `prompt_fragments` capability: the Fortran authoring and review rules the
+  pure `generate` prompt templates carry (`tools/prompt_templates/backends/language/fortran/`).
 * `lines` — free-form logical-line scanning (comments, `&` continuations, `;` statements).
 * `structure` — the tree-sitter-fortran structural front end the model gates read through.
 * `signatures` — the language-neutral structured signature form <-> Fortran interface stanzas.
@@ -21,5 +23,6 @@ a module name:
 """
 
 from tools.backends.language.fortran import bundle as bundle  # noqa: F401  (re-export)
+from tools.backends.language.fortran import prompts as prompts  # noqa: F401  (re-export)
 from tools.backends.language.fortran import runner as runner  # noqa: F401  (re-export)
 from tools.backends.language.fortran import syntax as syntax  # noqa: F401  (re-export)

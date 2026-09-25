@@ -1517,6 +1517,7 @@ def build_launch_request(
     pure_leaf: bool = False,
     pure_context: dict[str, str] | None = None,
     pure_shape: str = "",
+    pure_language: str = "",
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1839,6 +1840,11 @@ def build_launch_request(
         # of the request rather than something the renderer re-derives from the node.
         if pure_shape:
             req["pure_shape"] = pure_shape
+        # The target language a template's `{{language:<name>}}` markers are composed for
+        # (issue #289). Carried rather than re-derived by the renderer, like the shape: the
+        # renderer holds the request and no target.
+        if pure_language:
+            req["pure_language"] = pure_language
         if pure_context is not None:
             req["pure_context"] = dict(pure_context)
     return req
@@ -5381,6 +5387,12 @@ class Conductor:
         tc = self._read_toolchain(refs)
         return self._core_authors_control_file(tc["build_system"], tc["language"])
 
+    def _pure_language(self, phase: str) -> str:
+        """The language a pure launch of `phase` composes its template for: the target's, on
+        the phase that renders language rules (`generate`). Compile is target-free (issue #284)
+        and Validate's judge reads output documents, so neither is told one."""
+        return str(self.target.toolchain["language"]) if phase == "generate" else ""
+
     def _language_facts(self) -> Any:
         """The target language's `bundle_facts` module: the names the host gives its files."""
         return backend_registry.capability_module(
@@ -7521,6 +7533,7 @@ clean:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
+                pure_language=self._pure_language(phase),
                 # On a warm reuse repair the resumed session already holds the context, so it is
                 # omitted — but ONLY when the validator's exemption holds (warm + reuse +
                 # findings). A cold launch, or a cold-fallback repair (session GC'd), carries the
@@ -8319,6 +8332,7 @@ clean:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
+                pure_language=self._pure_language(phase),
                 # Same context-omission rule as the producer: a warm reuse repair's resumed session
                 # already holds the context (the validator exempts it); a cold launch or a
                 # cold-fallback repair (session GC'd) carries the full context.

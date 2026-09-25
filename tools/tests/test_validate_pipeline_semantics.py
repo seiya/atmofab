@@ -14507,8 +14507,10 @@ end program shallow_water2d_runner
         # Z4 (issue #171): both SKILLs are deleted with the agentic leaf, and each half of the
         # symmetry moves to the surface that leaf's pure replacement actually reads — its own
         # launch template, which reaches it before anything else.
+        # Since issue #289 (R4-b PR-2) the floor's scope sentence is the Fortran fragment the
+        # host composes into that template, so the fragment file is where it is anchored.
         verify_prompt = (
-            repo_root / "tools/prompt_templates/pure_generate_verify.txt"
+            repo_root / "tools/prompt_templates/backends/language/fortran/generate_verify.txt"
         ).read_text(encoding="utf-8")
         phase_02 = (
             repo_root / "docs/workflow/phases/phase_02_generate.md"
@@ -14528,9 +14530,10 @@ end program shallow_water2d_runner
         # a `component` / `problem` node and on no other kind — so its template is where the
         # rule has to be. The `harness` shape's template carries no floor statement and needs
         # none: that shape is an `infrastructure` node, which the floor exempts.
-        generate_prompt = (
-            repo_root / "tools/prompt_templates/pure_generate_generate.txt"
-        ).read_text(encoding="utf-8")
+        # COMPOSED for the target language (issue #289): the neutral half of rule (7) stays in
+        # the template and the floor half is the Fortran fragment, and the leaf reads both.
+        from tools.tests.target_fixtures import composed_pure_template
+        generate_prompt = composed_pure_template("pure generate.generate")
         for rule in (
             # The target binds, not data to read past. (Until R4-a PR-3, issue #284, the binding
             # side was the IR's Compile-authored knobs, read "by MEANING, not by key name"; the
@@ -24163,7 +24166,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         if pure_prompt:
             pure_render_req = prepare_launch_request_payload({
-                "leaf_mode": "pure", "agent_model": "opus", "agent_role": "substep",
+                "leaf_mode": "pure", "pure_language": "fortran",
+                "agent_model": "opus", "agent_role": "substep",
                 "node_key": self._NODE, "step": "generate", "substep": "generate",
                 "orchestration_id": self._ORCH, "agent_run_id": self._ARID,
                 "parent_agent_run_id": "orch_run_001",

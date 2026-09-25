@@ -24,6 +24,7 @@ os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
+from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
@@ -2296,6 +2297,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                        "runner_document": "program r\nend program\n"}
         req = {
             "leaf_mode": "pure", "step": "generate", "substep": "generate",
+            "pure_language": "fortran",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "repair_findings": "capability_requirements missing",
@@ -2381,9 +2383,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # item (reviewer), with the suite green. Deriving the keys is what makes a THIRD template
         # impossible to omit the same way.
         for substep, shape in self._generate_template_variants():
-            template = ort._load_launch_prompt_templates()[
-                ort._pure_launch_template_name({"step": "generate", "substep": substep,
-                                                "pure_shape": shape})]
+            template = composed_pure_template(ort._pure_launch_template_name(
+                {"step": "generate", "substep": substep, "pure_shape": shape}))
             text = ort._render_pure_repair_prompt(self._req(substep=substep, shape=shape))
             for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
                 if prefix not in template:
@@ -2430,7 +2431,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # line would vanish from the cold repair with the test still green.
         text = ort._pure_authoring_rules_text(self._req())
         self.assertTrue(text.startswith("Authoring rules"))
-        template = ort._load_launch_prompt_templates()["pure generate.generate"]
+        template = composed_pure_template("pure generate.generate")
         start = template.index("Authoring rules")
         end = template.index("**Harness capabilities")  # the next section of the static prefix
         for line in (ln.strip() for ln in template[start:end].splitlines()):
@@ -2459,7 +2460,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # pinned the moment a paragraph between them is lifted.
         req = self._req(substep="verify")
         lifted = ort._pure_authoring_rules_text(req)
-        template = ort._load_launch_prompt_templates()["pure generate.verify"]
+        template = composed_pure_template("pure generate.verify")
 
         # (a) every lifted block is a paragraph of THIS template
         for block in lifted.split("\n\n"):
@@ -2493,7 +2494,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         of the `\n\n` split that does the lifting, so re-introducing a blank line is red here."""
         req = self._req(substep="verify", shape="harness")
         lifted = ort._pure_authoring_rules_text(req)
-        template = ort._load_launch_prompt_templates()["pure generate.verify.harness"]
+        template = composed_pure_template("pure generate.verify.harness")
 
         for block in lifted.split("\n\n"):
             head = block.lstrip().splitlines()[0]
@@ -2521,7 +2522,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         findings text and not the contract it violated (the recorded Z2 defect D, in the
         recovery path)."""
         lifted = ort._pure_authoring_rules_text(self._req(shape="harness"))
-        template = ort._load_launch_prompt_templates()["pure generate.generate.harness"]
+        template = composed_pure_template("pure generate.generate.harness")
         for prefix, terminator in (("What makes this shape different", "Output contract ("),
                                    ("File shape (", "Authoring rules ("),
                                    ("Authoring rules (", "**Harness capabilities"),
@@ -2543,7 +2544,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # session holds, with nothing red. Measured before the fix: reordering the tuple put the
         # contract label ahead of the checklist and left 197 tests green.
         for substep in ("generate", "verify"):
-            template = ort._load_launch_prompt_templates()[f"pure generate.{substep}"]
+            template = composed_pure_template(f"pure generate.{substep}")
             lifted = ort._pure_authoring_rules_text(self._req(substep=substep))
             heads = [b.lstrip().splitlines()[0] for b in lifted.split("\n\n") if b.strip()]
             self.assertEqual(heads, sorted(heads, key=template.index),
@@ -2556,7 +2557,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # dummy is `status`, whose width MUST match the one authority the runner renders against
         # (the fortran backend runner's CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
         from tools.backends.language.fortran.runner import CHECK_STATUS_WIDTH
-        template = ort._load_launch_prompt_templates()["pure generate.generate"]
+        template = composed_pure_template("pure generate.generate")
         start = template.index("(1) Style lint")
         end = template.index("\n(2)", start)
         style = template[start:end]

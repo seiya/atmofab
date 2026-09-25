@@ -1163,6 +1163,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
     def test_verify_output_contract_paragraph_lifts_whole(self) -> None:
         import tools.orchestration_runtime as ort
         req = {"leaf_mode": "pure", "step": "generate", "substep": "verify",
+               "pure_language": "fortran",
                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
         text = ort._pure_output_contract_text(req)
         self.assertTrue(text.startswith("Output contract"))

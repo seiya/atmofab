@@ -466,6 +466,7 @@ class ExemplarFenceCannotBeForgedTests(unittest.TestCase):
         payload = {
             "node_key": "component/x@0.1.0", "step": "generate", "substep": "generate",
             "orchestration_id": "o", "agent_run_id": "arid-1", "leaf_mode": "pure",
+            "pure_language": "fortran",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "pure_context": {k: f"<{k}>" for k in
                              ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "generate")]},
