@@ -251,6 +251,14 @@ def _remote_site(site_id: str, body: dict, where: str) -> Site:
             "sites_config_invalid_field",
             f"{workdir!r} must be an absolute path below '/', with no '..' segment: each job "
             f"is created and removed beneath it", where=f"{where}.workdir")
+    if ":" in workdir:
+        # Every path a job uses lives under the workdir and reaches the remote quality check as
+        # a directory variable of the build control file, whose rule lines read ':' as a
+        # separator: the check then aborts before it runs, and a correct kernel fails.
+        raise SitesConfigError(
+            "sites_config_invalid_field",
+            f"{workdir!r} carries ':', which the build control file's rules read as a "
+            f"separator when a job's directories under it are passed in", where=f"{where}.workdir")
     executes = _executes(body["executes"], f"{where}.executes")
     scheduler = _token(body["scheduler"], f"{where}.scheduler")
     reason = registry.unimplemented_reason("scheduler", scheduler)

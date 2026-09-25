@@ -10,7 +10,7 @@ sites_version: 1
 sites:
   cpu_box:                          # site id: a lowercase token
     host: cpu-box                   # ssh destination [user@]name; no ':', '/', or spaces
-    workdir: /scratch/atmofab-jobs  # absolute remote path; each job is created and removed beneath it
+    workdir: /scratch/atmofab-jobs  # absolute remote path, no ':'; each job is created and removed beneath it
     executes: [cpu]                 # the hardware classes this site runs
     scheduler: none                 # the job script runs in the foreground over ssh
   gpu_box:

@@ -159,6 +159,30 @@ class LoadTests(unittest.TestCase):
             es.load_sites(Path(tmp), path="no_such.yaml")
         self.assertEqual(ctx.exception.rule, "sites_config_unreadable")
 
+    def test_the_sha_follows_the_target_mapping(self) -> None:
+        """The sha is the provenance of where each target ran: a changed `targets:` with the
+        same sites must change it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            a = repo.load(_BASE + "targets:\n  t_cpu: box\n").sha256
+            b = repo.load(_BASE + "targets:\n  t_cpu: local\n").sha256
+            c = repo.load(_BASE).sha256
+        self.assertEqual(len({a, b, c}), 3)
+
+    def test_a_file_without_a_version_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+                self.assertRaises(es.SitesConfigError) as ctx:
+            _Repo(tmp).load(_BASE.replace("sites_version: 1\n", ""))
+        self.assertEqual(ctx.exception.rule, "sites_config_missing_field")
+
+    def test_a_file_that_is_not_utf8_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            (repo.root / es.DEFAULT_SITES_PATH).write_bytes(b"sites_version: 1\n# \xff\xfe\n")
+            with self.assertRaises(es.SitesConfigError) as ctx:
+                es.load_sites(repo.root)
+        self.assertEqual(ctx.exception.rule, "sites_config_unreadable")
+
     def test_the_sha_ignores_comments_and_key_order_and_follows_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _Repo(tmp)
@@ -303,7 +327,8 @@ class RefusalTests(unittest.TestCase):
                         self.assertEqual(exc.where, where)
 
     def test_a_workdir_must_be_absolute_below_root_without_dotdot(self) -> None:
-        for workdir in ("scratch/jobs", "/", "//", "/./", "/scratch/../jobs", "/scratch/.."):
+        for workdir in ("scratch/jobs", "/", "//", "/./", "/scratch/../jobs", "/scratch/..",
+                        "/scratch/a:b"):
             with self.subTest(workdir=workdir):
                 exc = self._refuse(_BASE.replace("/scratch/jobs", workdir))
                 self.assertEqual(exc.rule, "sites_config_invalid_field", str(exc))
