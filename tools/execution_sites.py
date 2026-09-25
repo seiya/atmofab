@@ -344,15 +344,20 @@ def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
 
 def load_sites(repo_root: Path, *, path: str | Path | None = None) -> SitesConfig:
     """Load the operator's site configuration, `<repo_root>/sites.yaml` unless `path` says
-    otherwise. A missing file is the configuration with the local site only; a path that exists
-    and cannot be read as a file — a directory, a dangling symlink — is not missing, and anything
-    the loader cannot read or does not admit raises `SitesConfigError`. A `targets:` mapping reads
-    `spec/targets/`, whose own malformation raises `target_profile.TargetProfileError`."""
+    otherwise (a relative `path` is resolved against `repo_root`). A missing DEFAULT file is the
+    configuration with the local site only; a `path` the caller named must exist. A path that
+    exists and cannot be read as a file — a directory, a dangling symlink — is not missing, and
+    anything the loader cannot read or does not admit raises `SitesConfigError`. A `targets:`
+    mapping reads `spec/targets/`, whose own malformation raises
+    `target_profile.TargetProfileError`."""
     repo_root = Path(repo_root)
-    p = Path(path) if path is not None else repo_root / DEFAULT_SITES_PATH
+    p = Path(path) if path is not None else Path(DEFAULT_SITES_PATH)
     if not p.is_absolute():
         p = repo_root / p
     if not os.path.lexists(p):
+        if path is not None:
+            raise SitesConfigError("sites_config_unreadable",
+                                   f"{p}: the site configuration named does not exist")
         return SitesConfig(
             sites={LOCAL_SITE: Site(site_id=LOCAL_SITE, executes=LOCAL_DEFAULT_EXECUTES)})
     try:

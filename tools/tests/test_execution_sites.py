@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import textwrap
@@ -135,6 +136,28 @@ class LoadTests(unittest.TestCase):
             cfg = es.load_sites(repo.root, path="alt.yaml")
         self.assertEqual(cfg.path, repo.root / "alt.yaml")
         self.assertIn("box", cfg.sites)
+
+    def test_a_relative_repo_root_finds_the_default_file(self) -> None:
+        """Codex, round 2: the default path was `repo_root / "sites.yaml"` and then, being
+        relative, joined to `repo_root` again — so a relative root read `root/root/sites.yaml`
+        and silently returned the local-only configuration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            (repo.root / es.DEFAULT_SITES_PATH).write_text(_BASE, encoding="utf-8")
+            cwd = os.getcwd()
+            os.chdir(repo.root.parent)
+            try:
+                cfg = es.load_sites(Path(repo.root.name))
+            finally:
+                os.chdir(cwd)
+        self.assertIn("box", cfg.sites)
+        self.assertEqual(cfg.path, Path(repo.root.name) / es.DEFAULT_SITES_PATH)
+
+    def test_a_named_path_that_does_not_exist_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(es.SitesConfigError) as ctx:
+                es.load_sites(Path(tmp), path="no_such.yaml")
+        self.assertEqual(ctx.exception.rule, "sites_config_unreadable")
 
     def test_the_sha_ignores_comments_and_key_order_and_follows_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
