@@ -75,6 +75,9 @@
       "fortran-standard": 1,
       "fortran-subroutine": 2
     },
+    "docs/examples/sites.example.yaml": {
+      "fortran": 1
+    },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
       "fortran": 4,
       "fortran-intent": 1,

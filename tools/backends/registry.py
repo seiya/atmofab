@@ -164,6 +164,14 @@ AXES: dict[str, Axis] = {
             "built for it, and the facts a profile naming it must satisfy."
         ),
     ),
+    "scheduler": Axis(
+        name="scheduler",
+        source="execution site sites.<site_id>.scheduler (./sites.yaml, machine-local)",
+        description=(
+            "The batch scheduler a remote execution site submits a job through: how a job "
+            "script is submitted, how its state is polled, and how its terminal state is read."
+        ),
+    ),
 }
 
 
@@ -284,6 +292,12 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "This hardware class states the grammar a profile's `hardware.architecture` must "
         "satisfy (asked at launch).",
     ),
+    "job_submit": (
+        ("scheduler",),
+        "The host knows how a rendered job script is submitted at a site running this "
+        "scheduler, how the job's state is polled, and how its terminal state is read "
+        "(issue #293: the remote executor drives the loop, the scheduler spells the commands).",
+    ),
 }
 
 
@@ -324,6 +338,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "source_reading": "source",
     "signatures": "signatures",
     "interface_header": "header",
+    "job_submit": "submit",
 }
 
 
@@ -498,6 +513,15 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             "hardware", "gpu", "tools.backends.hardware.gpu",
             backend_provides=frozenset({"perf_facts"}),
         ),
+        # A site that submits nothing: the job script runs in the foreground over the site's
+        # transport (`sites.yaml`, `scheduler: none`; issue #293). It is core because running a
+        # script is not a scheduler's knowledge. DECLARED AHEAD OF ITS EXECUTOR, and stated
+        # rather than pretended: the remote executor that runs it lands in the next pull request
+        # of issue #293, and until then nothing dispatches on `job_submit` — it is in the
+        # declaration-only group of
+        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` — and no run reads
+        # `sites.yaml`, so no run can reach a site that uses it.
+        Backend("scheduler", "none", None, core_provides=frozenset({"job_submit"})),
     )
 }
 

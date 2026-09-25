@@ -1,0 +1,22 @@
+# Execution sites: where Validate.execute runs each target's binary (docs/ORCHESTRATION.md
+# §Execution sites). Copy to ./sites.yaml and edit; that file is machine-local and gitignored.
+# Without ./sites.yaml every target runs at the `local` site.
+#
+# The host names and paths below are placeholders. Authentication, user and port are ssh's own
+# configuration, not this file's: a site names one ssh destination and nothing else about it.
+sites_version: 1
+sites:
+  cpu_box:                          # site id: a lowercase token
+    host: cpu-box                   # ssh destination; no spaces, no shell-active characters
+    workdir: /scratch/atmofab-jobs  # absolute remote path; each job is created and removed beneath it
+    executes: [cpu]                 # the hardware classes this site runs
+    scheduler: none                 # the job script runs in the foreground over ssh
+  gpu_box:
+    host: gpu-box
+    workdir: /scratch/atmofab-jobs
+    executes: [gpu]
+    scheduler: none
+  local:                            # optional; `executes` is the only key it takes
+    executes: [cpu]
+targets:                            # target id -> site id; a target not listed runs at `local`
+  fortran_cpu: local                # write `cpu_box` here to run this target's binary there
