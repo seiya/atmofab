@@ -387,6 +387,15 @@ def target_harness_entries(target: TargetProfile | None,
     return [("infrastructure", harness["infrastructure_id"], harness["version_constraint"])]
 
 
+#: What `Generate` asks of the target LANGUAGE for every node kind: `bundle_facts` (the bundle
+#: contract's file facts and the host-given names), `syntax_promotions` (the syntax stage),
+#: `prompt_fragments` (the generate prompts' rules and the runner-output binding) and
+#: `checks_abi` (the checks-module binding and the gate guards). A capability the phase reads
+#: for one kind only belongs in `toolchain_servable_reasons`' kind-specific list instead.
+LANGUAGE_CAPABILITIES_EVERY_NODE: tuple[str, ...] = (
+    "bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi")
+
+
 def toolchain_servable_reasons(language: str, build_system: str, *,
                                infrastructure: bool) -> list[str]:
     """Why the host cannot build and render a node of this kind in (`language`, `build_system`);
@@ -395,8 +404,13 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
     set a compile producer was shown, and of the IR's `impl_defaults.toolchain` at Compile;
     the target is the profile's alone now, so the launch gate is where it is asked.
 
-    An `infrastructure` node needs only its build system to be executable; every other kind also
-    needs the host to author the control file (both axes) and render the runner (language)."""
+    Every node needs its build system to be executable and its language to declare what the
+    `Generate` phase asks of it (issue #289, R4-b PR-2): the bundle facts, the syntax-stage
+    facts, the prompt fragments and the checks-ABI binding (`LANGUAGE_CAPABILITIES_EVERY_NODE`).
+    A language missing one is refused HERE, at launch, rather than at the first dispatch that
+    needs it — mid-run, after Compile has been billed — and never silently served with another
+    language's rules. Every other kind than `infrastructure` also needs the host to author the
+    control file (both axes) and render the runner (language)."""
     from tools.backends import registry as backend_registry
 
     reasons: list[str] = []
@@ -407,6 +421,7 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
     if reasons:
         return reasons
     required: list[tuple[str, str, str]] = [("build_system", build_system, "build_execute")]
+    required += [("language", language, c) for c in LANGUAGE_CAPABILITIES_EVERY_NODE]
     if not infrastructure:
         required += [("build_system", build_system, "control_file"),
                      ("language", language, "control_file"),

@@ -138,6 +138,7 @@ def _fixture_derivation(repo_root: Path, step: str) -> dict:
 # which stops short of it.
 _PURE_GENERATE_OVERRIDE = {
     "leaf_mode": "pure",
+    "pure_language": "fortran",
     "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
     "allowed_output_paths": [],
     "skill_name": "",
@@ -436,6 +437,7 @@ def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
         shape["deterministic"] = True
     else:
         shape["leaf_mode"] = "pure"
+        shape["pure_language"] = "fortran"
         shape["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
         shape["pure_context"] = _PURE_GENERATE_CONTEXT
     src = f"{_FIX_PIPE_REF}/source/src_20260509_001"
@@ -12244,6 +12246,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                 "skill_must_read_refs": "",
                 "leaf_mode": "pure",
+                "pure_language": "fortran",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
@@ -12266,6 +12269,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                         "skill_must_read_refs": "",
                         "leaf_mode": "pure",
+                        "pure_language": "fortran",
                         "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                         "pure_context": _PURE_GENERATE_CONTEXT,
                         "allowed_output_paths": [],
@@ -13471,7 +13475,9 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
         # The consumer's language is the TARGET's (issue #284): a target whose language is
         # not Fortran, with the dependency certified for that same target.
-        c_target = profile_with(toolchain={"language": "c"})
+        # The profile pins the compiler: `c` states no `bundle_facts`, so it has no default
+        # for the build identity to fall back on (issue #289).
+        c_target = profile_with(toolchain={"language": "c", "compiler": "gcc"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             safe = "component__dep_base__0.1.0"
@@ -13607,7 +13613,9 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
         # The consumer's language is the TARGET's (issue #284): a target whose language is
         # not Fortran, with the dependency certified for that same target.
-        c_target = profile_with(toolchain={"language": "c"})
+        # The profile pins the compiler: `c` states no `bundle_facts`, so it has no default
+        # for the build identity to fall back on (issue #289).
+        c_target = profile_with(toolchain={"language": "c", "compiler": "gcc"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_multi_op_pipeline(repo_root, target=c_target)
@@ -14108,6 +14116,32 @@ class CertifiedModelSourceTests(unittest.TestCase):
             self.assertEqual(
                 _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP),
                 repo_root / refs["model_ref"])
+
+    def test_the_file_name_is_the_target_languages(self) -> None:
+        """The source is found under the name the TARGET language gives a model source
+        (`bundle_facts.model_basename`, issue #289), not a spelling of this module's. Driven by
+        giving the language another name for it: the file under the old name is then not the
+        source, and the one under the new name is."""
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        from tools.orchestration_runtime import _certified_model_source
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = certify_node(
+                repo_root, "orch_dep", "component/dep_base@0.1.0", through="generate",
+                ir_id="dep-base_20260601_001", pipeline_id="p_20260601_002",
+                source_id="src_20260601_001",
+                model_text="subroutine dep_base__scale(x, n, y)\nend subroutine\n")
+            model = repo_root / refs["model_ref"]
+            renamed = model.with_name("dep_base_model.zz")
+            renamed.write_text(model.read_text(encoding="utf-8"), encoding="utf-8")
+            with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"):
+                self.assertEqual(
+                    _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP),
+                    renamed)
+                renamed.unlink()
+                self.assertIsNone(
+                    _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP))
 
     def test_returns_none_on_missing_artifacts(self) -> None:
         from tools.orchestration_runtime import _certified_model_source
@@ -20953,8 +20987,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
     #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
     #                                 producer and reviewer, whole; the pure judge, sliced)
     #   - CHECKS_MODULE_CONTRACT.md  (§1-4 as `checks_module_contract_document` to the `m3c`
-    #                                 reviewer and the compile producer's ABI slice; §5 as
+    #                                 reviewer and the compile producer's ABI slice)
+    #   - backends/language/fortran/CHECKS_ABI.md (issue #289: its §1-4 after the contract's in
+    #                                 the `m3c` reviewer's document; its §5 as
     #                                 `gate_guards_document` to the `harness` producer)
+    #   - backends/language/fortran/RUNNER_OUTPUT.md (issue #289: after RUNNER_OUTPUT_CONTRACT.md
+    #                                 in the `harness` shape's two prompts)
     #   - phase_01_compile.md        (`phase_contract_document`: both compile leaves, whole)
     # The five phase `SKILL`s were guarded here and are deleted: no leaf reads one.
     # `AGENT_CONTRACT.md` was the every-leaf entry and is deleted with them — it was the
@@ -20989,7 +21027,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 11000->11500 (Z6, issue #255): §3 gains the `raw/state_snapshots/initial/
         # <case_id>.json` bullet — the host-rendered runner's second capture, which the judge's
         # inlined slice must name because `post_execute` shape-checks it. Measured 11431.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11500,
+        # Lowered 11500->10800 (issue #289, R4-b PR-2): the Fortran descriptor rules of §4 moved
+        # to the Fortran binding. Measured 10410 at 33dacd5c.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 10800,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
@@ -21058,7 +21098,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # refuses a non-allocatable one — the one §1 declaration no compiler check sees.
         # Measured 18464 at ee09daf6; 18571 after the round-1 and round-3 rewordings of that
         # bullet.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 18600,
+        # Lowered 18600->13600 (issue #289, R4-b PR-2): §1-4 became language-neutral and §5 moved
+        # to the Fortran binding below. Measured 13223 at 33dacd5c.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13600,
+        # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
+        # 11479 and 4418 at 33dacd5c.
+        "docs/backends/language/fortran/CHECKS_ABI.md": 11900,
+        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 4800,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -21890,7 +21936,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         })
         self.assertIn("the contract wins", out)
         self.assertIn("associate (unused_<name> => <name>)", out)
-        self.assertIn("CHECKS_MODULE_CONTRACT.md", out)
+        self.assertIn("CHECKS_ABI.md", out)
 
     def test_build_launch_request_attaches_exemplar_only_for_generate_generate(self) -> None:
         import tools.workflow_conductor as wc
@@ -23269,6 +23315,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         if pure:
             request: dict = {
                 "leaf_mode": "pure",
+                "pure_language": "fortran",
                 "agent_model": "some-model",
                 "agent_run_id": arid,
                 "agent_role": "substep",
@@ -24254,7 +24301,8 @@ class DerivationInputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             other = second_target(profile_with(
-                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake"},
+                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake",
+                           "compiler": "g++"},
                 parallel={"backend": "cuda"}, hardware={"class": "gpu"},
                 execution={"threads_per_rank": 3}))
             refs = self._seed(repo, also_for=(other,))
@@ -24272,15 +24320,17 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual((self._inputs(repo, refs, "build")["toolchain"],
                               self._inputs(repo, refs, "validate")["run_policy"]), before)
 
-    def test_build_toolchain_takes_the_profile_pin_else_the_server_default(self) -> None:
+    def test_build_toolchain_takes_the_profile_pin_else_the_language_default(self) -> None:
         from tools.tests.target_fixtures import FORTRAN_CPU, profile_with, second_target
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             pinned = second_target(profile_with(toolchain={"compiler": "no_such_fc_x"}))
             refs = self._seed(repo, also_for=(pinned,))
+            from tools.backends import registry as backend_registry
             server = ort._build_runtime_server_module()
             tc = self._inputs(repo, refs, "build")["toolchain"]
-            self.assertEqual(tc["compiler"], server.MANDATORY_SYNTAX_COMPILER)
+            self.assertEqual(tc["compiler"], backend_registry.capability_module(
+                "language", FORTRAN_CPU.toolchain["language"], "bundle_facts").DEFAULT_COMPILER)
             self.assertEqual(tc["compiler_version"],
                              server._syntax_compiler_version((tc["compiler"], "--version")))
             self.assertEqual(

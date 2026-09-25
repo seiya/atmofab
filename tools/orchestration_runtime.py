@@ -2330,15 +2330,15 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     and the compiler with the first line of its `--version` (issue #284; before R4-a PR-2 the
     same fields were read off the IR's `impl_defaults`).
 
-    The compiler is the profile's pin, else the build-runtime server's
-    `MANDATORY_SYNTAX_COMPILER` — asked of the server, which owns the compiler adapters and
-    whose value the conductor's `DEFAULT_COMPILER` is pinned equal to
-    (`tools/tests/test_host_prerequisites.py`). The VERSION is probed from the executable,
+    The compiler is the profile's pin, else the language backend's `DEFAULT_COMPILER`
+    (`bundle_facts`) — the compiler the conductor's control-file writer pins in the same case,
+    and the one the mandatory syntax stage runs. The VERSION is probed from the executable,
     because a profile names a compiler and not the build of it on this machine;
     `compiler_version` is `None` when it cannot be probed (recorded, not refused)."""
     tc = target.toolchain
     server = _build_runtime_server_module()
-    compiler = str(tc.get("compiler") or "") or str(server.MANDATORY_SYNTAX_COMPILER)
+    compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
+        "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
     return {
         "target_id": target.target_id,
         "language": tc["language"],
@@ -2848,8 +2848,9 @@ def _certified_model_source(
     repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
     target: TargetProfile | None = None,
 ) -> Path | None:
-    """Resolve the certified Fortran model source of a dependency — the EXACT
-    `<spec_id>_model.f90` Build stages/links — or ``None`` if it cannot be resolved.
+    """Resolve the certified model source of a dependency — the EXACT file Build stages/links,
+    named by the target language's ``bundle_facts.model_basename`` — or ``None`` if it cannot
+    be resolved.
 
     Single-sources the load-bearing selection every reader of a dependency's source depends
     on: the orientation hint (``_resolve_dependency_facts``), the compile-time published
@@ -2873,7 +2874,11 @@ def _certified_model_source(
         stage_dir = sel.stage_dir()
         if not sel.ok or stage_dir is None:
             return None
-        model_src = stage_dir / "src" / f"{spec_id}_model.f90"
+        # Named as the target's language names a model source (issue #289): the selection above
+        # succeeded, so the resolver holds the target it selected for.
+        language = resolver.target.toolchain["language"]
+        facts = backend_registry.capability_module("language", language, "bundle_facts")
+        model_src = stage_dir / "src" / facts.model_basename(spec_id)
         return model_src if model_src.is_file() else None
     except Exception:
         return None
@@ -4120,6 +4125,7 @@ def _resolve_exemplar_source(
                 ("language", tc["language"], "control_file"),
                 ("language", tc["language"], "runner_render")))
         target_is_m3c = self_kind != "infrastructure" and host_renders
+        facts = backend_registry.capability_module("language", tc["language"], "bundle_facts")
 
         catalog = _catalog_family_index(repo_root)
         self_family = next(
@@ -4166,8 +4172,9 @@ def _resolve_exemplar_source(
                 if target_is_m3c and not _exemplar_contract_version_matches(model_src):
                     continue
                 exemplar_files = (
-                    (f"{cand_id}_model.f90", f"{cand_id}_checks.f90") if target_is_m3c
-                    else (f"{cand_id}_model.f90", f"{cand_id}_runner.f90"))
+                    (facts.model_basename(cand_id), facts.checks_basename(cand_id))
+                    if target_is_m3c
+                    else (facts.model_basename(cand_id), facts.runner_basename(cand_id)))
                 sources: list[dict[str, str]] = []
                 missing = False
                 for fname in exemplar_files:
@@ -4616,8 +4623,9 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
 # (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`
-# leaf INLINED, each half to the leaf it binds — §1-4 to the `m3c` reviewer, §5 to the
-# `harness` producer; it was a force-read must-read whose SKILL branched on the node kind
+# leaf INLINED: §1-4 to the `m3c` reviewer (followed by the target language's binding of them)
+# and to the compile producer; the `harness` producer's gate guards are the BINDING's §5 since
+# issue #289. It was a force-read must-read whose SKILL branched on the node kind
 # until Z4 (issue #171). NOT given to validate.judge (it never sees the checks source).
 CHECKS_MODULE_CONTRACT_REF = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
 # Canonical step -> phase-doc map. Of these, only `compile` reaches a leaf — inlined whole
@@ -9944,8 +9952,8 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted its "
         "current `-Werror` classes can show an ABI-fixed dummy "
         "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
-        "`associate (unused_<name> => <name>); end associate` per "
-        "`docs/workflow/CHECKS_MODULE_CONTRACT.md` §5.",
+        "`associate (unused_<name> => <name>); end associate` per §5 of the target language's "
+        "checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).",
     ]
     for src in sources:
         if not isinstance(src, dict):
@@ -10253,7 +10261,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # The harness self-test producer. Same four host-resolved documents as the default generate
     # producer, with the runner-output contract in place of the host-rendered runner: on this
     # shape there is no host-rendered runner, and the leaf authors the executable entry itself.
-    # `gate_guards_document` is §5 of the checks-module contract — the deterministic gate's rule
+    # `gate_guards_document` is §5 of the target language's checks-ABI binding (of the neutral
+    # checks-module contract until issue #289) — the deterministic gate's rule
     # set for every leaf-authored source. The AGENTIC leaf force-read it; a pure leaf force-reads
     # nothing, so it is inlined here or the leaf is held to rules no document it receives states.
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
@@ -10335,6 +10344,60 @@ def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
     return f"pure {step}.{substep}.{shape}" if shape else f"pure {step}.{substep}"
 
 
+#: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
+#: PR-2). Composed away before any `<key>` substitution, so a composed template is exactly the
+#: text the leaf reads and every paragraph lift (`_pure_template_paragraph`) sees it too. A
+#: distinct spelling from `<key>` on purpose: a marker left in a rendered prompt is a composer
+#: defect, and it must not be mistaken for an unfilled data slot.
+_LANGUAGE_FRAGMENT_RE = re.compile(r"\{\{language:([a-z0-9_]+)\}\}")
+
+
+def _compose_language_fragments(template: str, template_file: str, language: Any) -> str:
+    """`template` with every `{{language:<name>}}` marker replaced by the target language's
+    fragment of that name (`prompt_fragments`, asked of the registry). A template with no marker
+    is returned unchanged and asks nothing.
+
+    Every failure RAISES a named `ValueError`: no language on the request, a language that does
+    not declare `prompt_fragments`, a marker its fragments do not define. The alternative to a
+    refusal is a prompt that silently omits the rules the gates hold the leaf to — or carries
+    another language's."""
+    markers = set(_LANGUAGE_FRAGMENT_RE.findall(template))
+    if not markers:
+        return template
+    lang = str(language or "").strip().lower()
+    if not lang:
+        raise ValueError(
+            f"pure launch request carries no `pure_language`, and its template {template_file} "
+            f"holds language fragments ({', '.join(sorted(markers))}) — the host must name the "
+            f"target language the prompt is composed for")
+    try:
+        module = backend_registry.capability_module("language", lang, "prompt_fragments")
+        sections = module.fragments(template_file.removeprefix("pure_").removesuffix(".txt"))
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+            ValueError) as exc:
+        raise ValueError(
+            f"pure launch prompt {template_file} cannot be composed for language {lang!r}: "
+            f"{exc}") from None
+    missing = sorted(markers - set(sections))
+    if missing:
+        raise ValueError(
+            f"pure launch prompt {template_file}: language {lang!r} defines no fragment for "
+            f"{', '.join(missing)}")
+    return _LANGUAGE_FRAGMENT_RE.sub(lambda m: sections[m.group(1)], template)
+
+
+def _pure_launch_template(request_payload: dict[str, Any]) -> str:
+    """The launch template this pure request renders, composed for its `pure_language`.
+
+    The ONE place a pure launch template is read by name, so the cold launch, the cold-repair
+    paragraph lift and the output-contract lift all see the same composed text. `KeyError`
+    when no template matches the request (each caller decides what that means)."""
+    name = _pure_launch_template_name(request_payload)
+    template = _load_launch_prompt_templates()[name]
+    return _compose_language_fragments(
+        template, _PROMPT_TEMPLATE_FILES[name], request_payload.get("pure_language"))
+
+
 def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     """Render a cold pure-function launch prompt from its `pure_{step}_{substep}.txt` template.
 
@@ -10343,10 +10406,9 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     (each inlined document fenced as data), the reused dependency-facts / exemplar renderers,
     and the identity block. No `_template_placeholder_values` (no gate runbook / task card /
     capability paths — a pure leaf runs no gate and writes nothing)."""
-    templates = _load_launch_prompt_templates()
     name = _pure_launch_template_name(request_payload)
     try:
-        template = templates[name]
+        template = _pure_launch_template(request_payload)
     except KeyError:
         # A NAMED refusal, not a KeyError. `prepare_launch_request_payload` force-renders a
         # pure request BEFORE `_validate_launch_request_payload` runs, so a payload missing
@@ -10404,8 +10466,7 @@ def _pure_template_paragraph(request_payload: dict[str, Any], prefix: str) -> st
     (defensive) or when this template has no such paragraph (e.g. the verify template has no
     authoring rules) — the caller then omits the section."""
     try:
-        templates = _load_launch_prompt_templates()
-        template = templates[_pure_launch_template_name(request_payload)]
+        template = _pure_launch_template(request_payload)
     except (KeyError, OSError):
         return ""
     for block in template.split("\n\n"):
@@ -10517,8 +10578,7 @@ def _pure_authoring_rules_text(request_payload: dict[str, Any]) -> str:
     # readability reorder of the tuple would have silently reordered a cold repair against the
     # launch prompt a warm session holds, with nothing red. Resolve the order from the template.
     try:
-        template = _load_launch_prompt_templates()[
-            _pure_launch_template_name(request_payload)]
+        template = _pure_launch_template(request_payload)
     except (KeyError, OSError):
         template = ""
     ordered = sorted(
@@ -11670,6 +11730,15 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_shape must be a non-empty string when present; "
             f"got {shape!r}")
+    # The target language the template is composed for (issue #289). Refused when malformed for
+    # the reason a malformed `pure_shape` is: an absent value means "this template carries no
+    # language fragment", and a blank one read as absent would render a prompt missing the rules
+    # the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
+    language = request_payload.get("pure_language")
+    if language is not None and not (isinstance(language, str) and language.strip()):
+        raise ValueError(
+            f"pure launch request pure_language must be a non-empty string when present; "
+            f"got {language!r}")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.

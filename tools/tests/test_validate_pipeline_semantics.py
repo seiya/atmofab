@@ -9930,7 +9930,7 @@ end program shallow_water2d_runner
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
             "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-            "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+            "valued numerically (a snapshot variable is a float64 module variable the runner "
             "serializes); a case INPUT — an enumerated selector included — is not an evidence "
             "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
             "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
@@ -13602,16 +13602,22 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             self.assertTrue(
                 any("missing conductor syntax evidence" in v for v in violations), violations)
 
-    def test_validate_generate_syntax_skips_for_non_fortran_language(self) -> None:
-        # cpp has no syntax-check adapter: the gate passes through with no evidence, so
-        # certification must not demand it even when verify claims pass.
+    def test_validate_generate_syntax_refuses_a_language_with_no_syntax_stage(self) -> None:
+        # cpp declares no `syntax_promotions`: until issue #289 (R4-b PR-2) the gate passed it
+        # through with no evidence and this certification demanded none. Now neither half
+        # passes it — there is no stage whose pass could certify the source.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, None)
+            meta_path = self._syntax_evidence_fixture(repo_root, {
+                "checked_at": "t", "source_id": "src_x", "ok": True,
+                "stages": [{"compiler": "gfortran", "status": "pass", "command_id": "a",
+                            "command_log_ref": "workspace/x/command_log.jsonl"}],
+            })
             violations: list[str] = []
             vps._validate_generate_syntax_command_logs(
                 repo_root, meta_path, {"verification_status": "pass"}, "cpp", violations)
-            self.assertEqual(violations, [])
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("toolchain.language='cpp' has no syntax stage", violations[0])
 
     def test_validate_generate_syntax_rejects_evidence_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14501,8 +14507,10 @@ end program shallow_water2d_runner
         # Z4 (issue #171): both SKILLs are deleted with the agentic leaf, and each half of the
         # symmetry moves to the surface that leaf's pure replacement actually reads — its own
         # launch template, which reaches it before anything else.
+        # Since issue #289 (R4-b PR-2) the floor's scope sentence is the Fortran fragment the
+        # host composes into that template, so the fragment file is where it is anchored.
         verify_prompt = (
-            repo_root / "tools/prompt_templates/pure_generate_verify.txt"
+            repo_root / "tools/prompt_templates/backends/language/fortran/generate_verify.txt"
         ).read_text(encoding="utf-8")
         phase_02 = (
             repo_root / "docs/workflow/phases/phase_02_generate.md"
@@ -14522,9 +14530,10 @@ end program shallow_water2d_runner
         # a `component` / `problem` node and on no other kind — so its template is where the
         # rule has to be. The `harness` shape's template carries no floor statement and needs
         # none: that shape is an `infrastructure` node, which the floor exempts.
-        generate_prompt = (
-            repo_root / "tools/prompt_templates/pure_generate_generate.txt"
-        ).read_text(encoding="utf-8")
+        # COMPOSED for the target language (issue #289): the neutral half of rule (7) stays in
+        # the template and the floor half is the Fortran fragment, and the leaf reads both.
+        from tools.tests.target_fixtures import composed_pure_template
+        generate_prompt = composed_pure_template("pure generate.generate")
         for rule in (
             # The target binds, not data to read past. (Until R4-a PR-3, issue #284, the binding
             # side was the IR's Compile-authored knobs, read "by MEANING, not by key name"; the
@@ -24157,7 +24166,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         if pure_prompt:
             pure_render_req = prepare_launch_request_payload({
-                "leaf_mode": "pure", "agent_model": "opus", "agent_role": "substep",
+                "leaf_mode": "pure", "pure_language": "fortran",
+                "agent_model": "opus", "agent_role": "substep",
                 "node_key": self._NODE, "step": "generate", "substep": "generate",
                 "orchestration_id": self._ORCH, "agent_run_id": self._ARID,
                 "parent_agent_run_id": "orch_run_001",

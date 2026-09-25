@@ -1,6 +1,6 @@
 {
   "name": "run_syntax_check",
-  "description": "Run a compiler front-end in syntax-only mode over staged Fortran sources (Generate-stage gate). Registered compiler adapters only (gfortran); no custom command, no build artifacts, does not route through build_system.",
+  "description": "Run a compiler front-end in syntax-only mode over staged sources (Generate-stage gate). Registered compiler adapters only (the `compiler` axis values whose record declares `syntax_check` in tools/backends/registry.py); no custom command, no build artifacts, does not route through build_system.",
   "arguments": {
     "type": "object",
     "properties": {
@@ -10,12 +10,10 @@
       },
       "compiler": {
         "type": "string",
-        "default": "gfortran",
-        "description": "Registered compiler adapter id (gfortran)."
+        "description": "Registered compiler adapter id; its language decides which files are sources and which warning classes are promoted to errors."
       },
       "std": {
         "type": "string",
-        "default": "f2008",
         "description": "Language standard from the target profile's toolchain.standard."
       },
       "openmp": {
@@ -23,12 +21,16 @@
         "default": false,
         "description": "Enable the adapter's OpenMP flag (the target profile's parallel.backend=openmp)."
       },
+      "architecture": {
+        "type": "string",
+        "description": "The target profile's hardware.architecture. An adapter whose compiler takes a device architecture passes it; one that has none accepts it and does not read it."
+      },
       "sources": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Source file names in compile order — plain names in project_dir, no paths and no compiler options. Omit to let the tool order the project_dir Fortran sources by a module/use scan."
+        "description": "Source file names in compile order — plain names in project_dir, no paths and no compiler options. Omit to let the tool order the project_dir sources the way the adapter's language orders them."
       },
       "timeout_sec": {
         "type": "integer",
@@ -63,7 +65,9 @@
       }
     },
     "required": [
-      "project_dir"
+      "project_dir",
+      "compiler",
+      "std"
     ]
   }
 }

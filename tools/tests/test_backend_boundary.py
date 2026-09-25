@@ -83,6 +83,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2162,7 +2163,9 @@ class RegistryConsistencyTests(unittest.TestCase):
         anyone registers.
         """
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
-                      "execution", "execution_env", "perf_facts"}
+                      "execution", "execution_env", "perf_facts", "bundle_facts",
+                      "syntax_check", "syntax_promotions", "prompt_fragments",
+                      "checks_abi"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2184,9 +2187,15 @@ class RegistryConsistencyTests(unittest.TestCase):
         # `tools/host_execution.launch_shape` asks the first two when `Validate.execute` launches
         # the binary.
         #
+        # `syntax_check`, `syntax_promotions` and `bundle_facts` joined them with issue #289
+        # (R4-b PR-2): the syntax-only adapter moved out of the build-runtime server into the
+        # compiler's package and the language's, and the conductor's `Generate.gate`, the
+        # server's `run_syntax_check`, the post_generate certification and the default-compiler
+        # readers ask the registry for them.
+        #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands (the compiler adapters and the
-        # parallel knobs are still inlined in the neutral core).
+        # and they gain a dispatch when their ledger area lands (the parallel knobs are still
+        # inlined in the neutral core).
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()
@@ -2364,12 +2373,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         """
         source = Path(vps.__file__).read_text(encoding="utf-8")
         linter_ids = set(registry.backend_ids("linter"))
-        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it flags
-        # `_LINT_PRESET_FOR_LANGUAGE`, which is a legitimate structure carrying a different fact
-        # (which linter a language is linted with), so the guard would have refused correct code
-        # and taught the reader to route around it. That mapping's drift risk is real and is
-        # closed by the containment test below — the right instrument for a mapping is what its
-        # values must satisfy, not whether it exists.
+        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it
+        # flagged the validator's language -> linter table, which was a legitimate structure
+        # carrying a different fact (which linter a language is linted with). That fact is the
+        # linter backends' own declaration since issue #289 (R4-b PR-2), answered by
+        # `registry.linter_for_language`, and its drift is pinned below.
         literals = [
             node.lineno for node in ast.walk(ast.parse(source))
             if isinstance(node, (ast.Set, ast.List, ast.Tuple))
@@ -2398,23 +2406,112 @@ class RegistryConsistencyTests(unittest.TestCase):
                 f"the lint gate accepts preset '{backend_id}' but cannot infer it from a logged "
                 f"command, so the evidence check refuses it for an unrelated-sounding reason")
 
-    def test_the_language_to_linter_mapping_cannot_drift_from_the_registry(self) -> None:
-        """The other half of the same fact, which the guard above deliberately allows.
+    def test_the_language_to_linter_answer_is_the_linters_own_declaration(self) -> None:
+        """Which linter a language is linted with is declared by each linter (`LANGUAGES` in its
+        `lint` module) and answered by `registry.linter_for_language` (issue #289, R4-b PR-2).
 
-        `_LINT_PRESET_FOR_LANGUAGE` maps a language to the linter it is linted with. That is
-        language knowledge, not a copy of the accepted-preset set, so it stays — but its VALUES
-        are linter backend ids, and review measured the drift: dropping the `ruff` member from
-        the registry leaves this mapping producing `ruff` for `python` while the gate refuses
-        it, suite green. Pinned as a containment (the mapping may name fewer linters than exist,
-        never one that does not), because equality would fail the day a linter is registered
-        before any language uses it.
-        """
+        It was a table in the validator whose VALUES could drift from the registry — review
+        measured dropping the `ruff` member leaving the table producing `ruff` for `python`
+        while the gate refused it, suite green. Now: every implemented language has an answer,
+        every answer is an implemented linter, and no language is declared by two linters."""
         implemented = set(registry.implemented_backend_ids("linter"))
-        used = set(vps._LINT_PRESET_FOR_LANGUAGE.values())
-        self.assertEqual(
-            set(), used - implemented,
-            "the language->linter mapping names a linter the registry does not implement, so "
-            "the lint evidence gate will refuse the preset this mapping produces")
+        for language in registry.implemented_backend_ids("language"):
+            with self.subTest(language=language):
+                linter = registry.linter_for_language(language)
+                self.assertIsNotNone(
+                    linter, f"implemented language '{language}' has no linter declaring it, so "
+                    "its Generate.gate lint check fails closed on every node")
+                self.assertIn(linter, implemented)
+        declared: dict[str, list[str]] = {}
+        for linter in registry.implemented_backend_ids("linter"):
+            if "lint" not in registry.get("linter", linter).backend_provides:
+                continue
+            for language in registry.capability_module("linter", linter, "lint").LANGUAGES:
+                declared.setdefault(language, []).append(linter)
+        self.assertEqual({}, {k: v for k, v in declared.items() if len(v) > 1})
+        self.assertIn(registry.linter_for_language("mixed"), implemented)
+
+    def test_compiled_is_the_backends_declaration(self) -> None:
+        """`registry.is_compiled_language` answers the language backend's `COMPILED`, not the
+        presence of bundle facts (round 2, issue #289: ignoring the flag survived — no backend
+        declared `COMPILED = False`). A value with no bundle facts is not compiled either."""
+        from tools.backends.language.fortran import bundle
+        self.assertTrue(registry.is_compiled_language("fortran"))
+        with mock.patch.object(bundle, "COMPILED", False):
+            self.assertFalse(registry.is_compiled_language("fortran"))
+        self.assertFalse(registry.is_compiled_language("c"))
+
+    def test_every_syntax_adapter_carries_the_contract_its_readers_use(self) -> None:
+        """The `syntax_check` adapter contract is what `run_syntax_check`, the gate and the
+        post_generate certification read off the module (round 2, issue #289: it was written
+        down nowhere, and an adapter missing `STANDARD_SPELLING_EXAMPLE` would pass every row and
+        turn the canary's fail_closed remedy into an AttributeError). Asked of every compiler
+        that declares the capability, and the language it names must declare
+        `syntax_promotions`."""
+        required = ("EXECUTABLE", "LANGUAGE", "VERSION_ARGV", "CANARY_SOURCE",
+                    "CANARY_FILENAME", "STANDARD_SPELLING_EXAMPLE", "argv")
+        compilers = [c for c in registry.backend_ids("compiler")
+                     if registry.provides("compiler", c, "syntax_check")]
+        self.assertTrue(compilers)
+        for compiler in compilers:
+            with self.subTest(compiler=compiler):
+                module = registry.capability_module("compiler", compiler, "syntax_check")
+                self.assertEqual([a for a in required if not hasattr(module, a)], [])
+                self.assertTrue(registry.provides("language", module.LANGUAGE,
+                                                  "syntax_promotions"))
+                facts = registry.capability_module("language", module.LANGUAGE,
+                                                   "syntax_promotions")
+                self.assertTrue(module.CANARY_FILENAME.endswith(tuple(facts.SOURCE_SUFFIXES)))
+
+    #: What each LANGUAGE capability's readers take off its module (issue #289, R4-b PR-2;
+    #: round 3 found `prompt_fragments.runner_output_document` stated nowhere and checked by
+    #: nothing — a second language missing it passes the launch gate, which asks `provides`
+    #: only, and dies unnamed at the harness producer's context assembly).
+    _LANGUAGE_CAPABILITY_CONTRACT: ClassVar[dict[str, tuple[str, ...]]] = {
+        "bundle_facts": ("SOURCE_EXTENSIONS", "COMPILER_SELECTOR_FAMILIES", "IDENTIFIER_MAX",
+                         "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
+                         "COMPILED", "model_basename", "checks_basename", "runner_basename"),
+        "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
+        "prompt_fragments": ("fragments", "runner_output_document"),
+        "checks_abi": ("document",),
+        "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
+                          "CHECKS_PUBLIC_NAMES"),
+    }
+
+    def test_every_language_capability_carries_the_contract_its_readers_use(self) -> None:
+        for capability, names in self._LANGUAGE_CAPABILITY_CONTRACT.items():
+            languages = [lang for lang in registry.backend_ids("language")
+                         if capability in registry.get("language", lang).backend_provides]
+            self.assertTrue(languages, capability)
+            for language in languages:
+                with self.subTest(capability=capability, language=language):
+                    module = registry.capability_module("language", language, capability)
+                    self.assertEqual([n for n in names if not hasattr(module, n)], [])
+        # and every language capability the launch gate requires has a contract row
+        from tools.target_profile import LANGUAGE_CAPABILITIES_EVERY_NODE
+        self.assertEqual(set(LANGUAGE_CAPABILITIES_EVERY_NODE) - set(
+            self._LANGUAGE_CAPABILITY_CONTRACT), set())
+        # the documents a language serves are readable and non-empty
+        for language in registry.backend_ids("language"):
+            if registry.provides("language", language, "checks_abi"):
+                self.assertTrue(registry.capability_module(
+                    "language", language, "checks_abi").document().strip())
+            if registry.provides("language", language, "prompt_fragments"):
+                self.assertTrue(registry.capability_module(
+                    "language", language, "prompt_fragments").runner_output_document().strip())
+
+    def test_a_language_two_linters_declare_is_refused_not_resolved_by_order(self) -> None:
+        import types
+        pkg = types.ModuleType("zz_second_fortran_linter")
+        pkg.lint = types.ModuleType("zz_second_fortran_linter.lint")
+        pkg.lint.LANGUAGES = ("fortran",)
+        record = registry.Backend("linter", "zzlint", "zz_second_fortran_linter",
+                                  backend_provides=frozenset({"lint"}))
+        with mock.patch.dict(sys.modules, {"zz_second_fortran_linter": pkg}), \
+                mock.patch.dict(registry._BACKENDS, {("linter", "zzlint"): record}):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry.linter_for_language("fortran")
+        self.assertIn("more than one linter", str(ctx.exception))
 
     def test_a_registered_backend_module_lives_under_the_backend_package(self) -> None:
         for axis in registry.AXES:
@@ -2832,7 +2929,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
                            "content": "module bx_checks\nend module bx_checks\n",
                            "modules": ["bx_checks"]}],
             }
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            # `language` names the files (the target's); the ABI is still the FILE's language's
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
             self.assertIsNotNone(violation)
             self.assertIn("zz_only_abi_name", violation)
 
@@ -3046,7 +3144,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             "member_node_key": "component/bx@0.1.0",
             "content": "module bx_checks\nend module bx_checks\n", "modules": ["bx_checks"]}]}
         with self._patched(record):
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
         self.assertIsNotNone(violation)
         self.assertIn("could not be loaded", violation)
 

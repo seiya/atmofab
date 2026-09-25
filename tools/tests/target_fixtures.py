@@ -98,3 +98,14 @@ def pipes_dir(node_key_safe: str, target_id: str = TARGET_ID) -> str:
 def pipe_ref(node_key_safe: str, pipeline_id: str, target_id: str = TARGET_ID) -> str:
     """`workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>` for the fixture target."""
     return pipeline_ref_for(node_key_safe, target_id, pipeline_id)
+
+
+def composed_pure_template(key: str, profile: TargetProfile = FORTRAN_CPU) -> str:
+    """The pure launch template `key` (an `_PROMPT_TEMPLATE_FILES` key, e.g.
+    `"pure generate.generate"`) composed for `profile`'s language — the text a leaf of that
+    target reads, and what a test pinning a template's wording must read since issue #289 moved
+    the language's rules into `tools/prompt_templates/backends/language/<id>/`."""
+    from tools import orchestration_runtime as ort
+    return ort._compose_language_fragments(
+        ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
+        profile.toolchain["language"])

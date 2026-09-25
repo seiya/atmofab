@@ -8,15 +8,15 @@
 > `PERFORMANCE_DIAGNOSTICS.md` §2/§6. The deterministic `Build` / `Validate.execute`
 > steps take their contract from `phase_03_build.md` / `phase_04_validate.md`.
 
-> **Scope note (R1/M3c-β → M3d).** On an *M3c node* (a physics node of a
-> make+fortran target, over that target's harness) the `runner` is **host-rendered** —
-> the leaf authors `<spec_id>_model.f90` + `<spec_id>_checks.f90` (see
+> **Scope note (R1/M3c-β → M3d).** On an *M3c node* (a physics node of a target the host
+> authors the build control file and renders the runner for, over that target's harness) the
+> `runner` is **host-rendered** — the leaf authors the model and the checks module (see
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
-> `Validate.judge`. Since issue #169 both are pure and get it INLINED: whole in the
-> `harness` shape's two `generate` prompts, §1+§3 in the judge's. The *authoring* rules
-> below survive as
+> `Validate.judge`. Since issue #169 both are pure and get it INLINED: whole, followed by the
+> target language's runner-output binding (issue #289), in the `harness` shape's two
+> `generate` prompts, §1+§3 in the judge's. The *authoring* rules below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > snapshot-filename gates in `validate_pipeline_semantics.py`).
 
@@ -78,7 +78,7 @@ source; do not uniformly require a fixed minimal composition.
   `required_raw_variables` without omission as **direct sibling keys of `test_id`**, valued
   from the entry's own case (an excerpt DERIVED from these values is what `Validate.judge` sees; `post_execute` checks only that the keys exist). An
   entry omitting `case_id` is rejected. Wrapping the variables under an unrecognized key —
-  notably `values`, a Fortran identifier of the harness entry record and never a JSON key —
+  notably `values`, an identifier of the harness entry record and never a JSON key —
   fails `post_execute`. So does a structure with no per-test index, e.g. a single
   `evidence[]` (`must contain per_test list or tests object`). The legacy `tests` **object**
   form still parses but is **deprecated**: keyed by `test_id`, it cannot hold a multi-target
@@ -136,43 +136,15 @@ source; do not uniformly require a fixed minimal composition.
 JSON object restorable by a standard JSON parser. Numeric tokens follow RFC 8259
 (`.123` / `-.123` with a missing leading zero are forbidden).
 
-**Fortran runner (target profile `toolchain.language=fortran`) descriptor
-rules** — enforcement is **descriptor-syntactic**: `post_generate`
-(`validate_pipeline_semantics --stage post_generate`) flags the mere *presence*
-of a forbidden descriptor in a runner JSON write format spec; it never inspects
-runtime output, so a manual leading-zero fixup does **not** pass — the
-descriptor must not appear at all.
-
-- Do **not** use the `F0` / `F0.d` numeric descriptor for a JSON numeric token.
-- Do **not** use the `L`-family logical descriptor (`L1` etc., which emits
-  `T`/`F`) for a JSON boolean. Branch on the logical and write the literal
-  `true` / `false`.
-- **Canonical safe idiom:** reals via a scientific descriptor `ES24.16E3`
-  (always a leading digit; width 24 fits a sign so negatives never overflow to
-  `***` — `ES23.16E3` is one column too narrow) then `trim(adjustl(...))`, or a
-  bounded explicit-width `Fw.d` (e.g. `F20.6`, never `F0`/`F0.d`) with
-  `trim(adjustl(...))`; integers via `I0`; booleans via the `true`/`false`
-  literal.
-
-  ```fortran
-  function jnum(x) result(s)
-    real(8), intent(in) :: x
-    character(len=32) :: s
-    write(s, '(ES24.16E3)') x      ! leading digit guaranteed; width fits a sign; never F0/F0.d
-    s = adjustl(s)                 ! trim(adjustl(s)) at the JSON write site
-  end function jnum
-
-  function jbool(b) result(s)
-    logical, intent(in) :: b
-    character(len=5) :: s
-    s = merge('true ', 'false', b) ! literal true/false; never an L descriptor
-  end function jbool
-  ```
+The writer rules a runner of a given language follows to satisfy this — which of its
+format descriptors are forbidden for a JSON token and the canonical safe idiom — are that
+language backend's: `docs/backends/language/<language>/RUNNER_OUTPUT.md`. The host inlines it
+after this document wherever this document is inlined whole.
 
 ## 5. Other runner constraints
 
-- When the target profile's `toolchain.language` is a `fortran` / `c` / `cpp` /
-  `mixed` family, the `runner` must not launch an external interpreter
+- When the target profile's `toolchain.language` is a compiled language (its language
+  backend declares `COMPILED`), the `runner` must not launch an external interpreter
   (`python` / `bash` / `sh` / `node`).
 - The `runner` writes its output paths **relatively** so a `cd $(RUNDIR)` in the
   `make test`/`check` target redirects them under the run dir (see the Makefile

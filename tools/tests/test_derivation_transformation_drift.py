@@ -81,6 +81,10 @@ def render_tuple() -> dict[str, str]:
         "tools/host_render.py": _file_digest("tools/host_render.py"),
         "tools/backends/language/fortran/runner.py":
             _file_digest("tools/backends/language/fortran/runner.py"),
+        # The names the host gives the runner and the build compiler it pins when the profile
+        # pins none are the language's `bundle_facts` since issue #289 (R4-b PR-2).
+        "tools/backends/language/fortran/bundle.py":
+            _file_digest("tools/backends/language/fortran/bundle.py"),
         "Conductor._write_runner": _source_digest(wc.Conductor._write_runner),
         "Conductor._write_makefile": _source_digest(wc.Conductor._write_makefile),
         "Conductor._render_pure_makefile_from_graph":
@@ -106,6 +110,9 @@ def build_tuple() -> dict[str, str]:
         "Conductor._stage_dependency_sources":
             _source_digest(wc.Conductor._stage_dependency_sources),
         "codegen_bundle.derive_build_graph": _source_digest(cb.derive_build_graph),
+        # The staged dependency's name is the language's `bundle_facts` since issue #289.
+        "tools/backends/language/fortran/bundle.py":
+            _file_digest("tools/backends/language/fortran/bundle.py"),
     }
 
 
@@ -243,6 +250,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # section). Every node's Compile re-derives — it does
     # anyway, `DERIVATION_KEY_VERSION = 2`.
     "compile-docs-5": "65569909a396b72ecfbdd2b3ec0a6a9256069c51cdb6aadc02c1ecc61f890d79",
+    # compile-docs-6 (issue #289, R4-b PR-2): `phase_01_compile.md` stops naming a language —
+    # the bound state is a module-level float64 variable, a §5.1 signature is not source text
+    # and Generate renders it to the target language, and the runner-name ASCII rule speaks of
+    # the runner's language. The IR contract it states is unchanged; Compile is target-free.
+    # Unshipped, so re-pinned in place in round 3 of its review, which found the first version
+    # had left five mentions (a snapshot's `real(dp)`, "the Fortran-language backend", the §5.1
+    # kind name, the "gfortran backstop", the runner's file name): now none.
+    "compile-docs-6": "57dc25cde7e484ddef3f15eceac9d91ba51b72eb25854dcd3032cc311aadd6ac",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -273,6 +288,11 @@ PINNED_RENDER: dict[str, str] = {
     # Re-pinned again in PR-3's round 3, behaviour-preserving: a `runner.py` docstring no longer
     # says an M3c node has exactly one infra dep.
     "render-4": "194ee0ba4bfd05a93d548f0d010a17f2b19ecf65116351521b06f1fc1b98bd35",
+    # render-5 (issue #289, R4-b PR-2): the runner's file name and the control file's default
+    # `FC` come from the target language's `bundle_facts` (`runner_basename`,
+    # `DEFAULT_COMPILER`), whose module joins the tuple. For `fortran` every emitted byte is
+    # unchanged; the bump is the plan's (every Generate key moves with `pure-50` anyway).
+    "render-5": "4ac71ca1c71bd3e63eed41a34511aba5e062109fd520bf9a4a135f46f75187f3",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -286,7 +306,12 @@ PINNED_BUILD: dict[str, str] = {
     # beside the IR's direct dependencies (the harness left deps.yaml and the IR), a record the
     # certification does not hash; the staged closure it compiles was already the pipeline
     # closure, so the compile invocation and the binary are unchanged.
-    "build-1": "fb945cea89482b12f97440a80e09fa892a9e2a7ce45a275f68f9f9bc797d6403",
+    # Re-pinned (issue #289, R4-b PR-2), behaviour-preserving for this transformation: the
+    # staged dependency's file name and the build graph's staged source come from the target
+    # language's `bundle_facts.model_basename` (the module joins the tuple) — for `fortran` the
+    # same `<spec_id>_model.f90` byte for byte, so the compile invocation and the binary are
+    # unchanged.
+    "build-1": "461105b20f1fb84437c093810dc58ff93b2bbcd1e536f566b14b5c7058bc9dad",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

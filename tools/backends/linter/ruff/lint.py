@@ -163,6 +163,12 @@ import re
 #: name of its own (`tools/host_prerequisites.py`).
 EXECUTABLE = "ruff"
 
+#: The `language` values a node is linted with THIS linter for — the language -> linter fact
+#: `registry.linter_for_language` answers from every linter's declaration (issue #289, R4-b
+#: PR-2; it was a table in `tools/validate_pipeline_semantics.py`). A language declared by two
+#: linters is refused there rather than resolved by order.
+LANGUAGES: tuple[str, ...] = ("python",)
+
 #: The rule set the `Generate.gate` lint check applies, and the only place it is written.
 #:
 #: Derived, not invented: ruff's own default set on 0.14.0 and 0.15.20, byte-identical on both,

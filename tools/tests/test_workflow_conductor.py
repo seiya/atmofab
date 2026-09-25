@@ -286,6 +286,19 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
                    f"{step}/{substep}: builder missing fields")
 
 
+
+def _fortran_named_bundle_facts(name: str):
+    """A `bundle_facts` module for a language a test invents: the file names the host gives it
+    are the Fortran backend's, so the rest of a fixture built for Fortran stays valid."""
+    import types
+    from tools.backends.language.fortran import bundle as fortran_bundle
+    module = types.ModuleType(name)
+    for attr in ("model_basename", "checks_basename", "runner_basename", "DEFAULT_COMPILER",
+                 "MANDATORY_SYNTAX_COMPILER", "SOURCE_EXTENSIONS", "IDENTIFIER_MAX",
+                 "IDENTIFIER_PATTERN", "COMPILER_SELECTOR_FAMILIES", "COMPILED"):
+        setattr(module, attr, getattr(fortran_bundle, attr))
+    return module
+
 class BuildLaunchRequestTest(unittest.TestCase):
     """build_launch_request reproduces real request.json payloads exactly.
 
@@ -14234,9 +14247,12 @@ class WriteRunnerTest(unittest.TestCase):
         if spec_kind is not None:
             ir.setdefault("meta", {})["spec_kind"] = spec_kind
         if language is not None:
-            # The language the host reads is the TARGET's (issue #284).
+            # The language the host reads is the TARGET's (issue #284). The profile pins the
+            # build compiler too: a language this test invents states no `bundle_facts`, so it
+            # has no default compiler for the build identity to fall back on (issue #289).
             from tools.tests.target_fixtures import install_target_profile, profile_with
-            install_target_profile(repo, profile_with(toolchain={"language": language}))
+            install_target_profile(repo, profile_with(
+                toolchain={"language": language, "compiler": "gfortran"}))
         ids = ["harness_fortran_cpu", "harness_other_cpu"][:infra]
         ir["dependency"]["direct_deps"] = [{"node_key": f"infrastructure/{i}@0.2.0"}
                                            for i in ids]
@@ -14337,10 +14353,12 @@ class WriteRunnerTest(unittest.TestCase):
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
         other.runner = runner
+        # The names the host gives this language's files are its `bundle_facts` (issue #289).
+        other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
         record = backend_registry.Backend(
             "language", "zz_wr", "zz_write_runner_lang",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts"}))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -14378,11 +14396,12 @@ class WriteRunnerTest(unittest.TestCase):
 
         from tools.backends import registry as backend_registry
 
-        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries nothing
+        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries no runner
+        hollow.bundle = _fortran_named_bundle_facts("zz_hollow_runner_pkg.bundle")
         record = backend_registry.Backend(
             "language", "zz_hollow", "zz_hollow_runner_pkg",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts"}))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -15186,8 +15205,8 @@ class DeterministicBuildTest(unittest.TestCase):
                                    lambda argv: f"probed {argv[0]}"):
                 expected = ort._target_toolchain_identity(FORTRAN_CPU)
             self.assertEqual(meta["target_id"], FORTRAN_CPU.target_id)
-            self.assertEqual(meta["compiler"], build_runtime_server.MANDATORY_SYNTAX_COMPILER)
-            self.assertEqual(meta["compiler"], wc.DEFAULT_COMPILER)
+            self.assertEqual(meta["compiler"], wc.default_compiler(
+                FORTRAN_CPU.toolchain["language"]))
             self.assertEqual((meta["compiler"], meta["compiler_version"]),
                              (expected["compiler"], f"probed {expected['compiler']}"))
 
@@ -17769,7 +17788,54 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertFalse(ev["ok"])
             self.assertEqual(ev["stages"][0]["status"], "fail")
 
-    def test_gate_syntax_check_non_fortran_passes_through(self) -> None:
+    def test_the_host_given_file_names_are_the_target_languages(self) -> None:
+        """`_runner_basename` / `_model_basename` answer the target language's
+        `bundle_facts` (issue #289). Driven by renaming both in the language. What this does NOT
+        pin: each call site's use of them — they are read at the method, and a site that
+        re-spelled a name would pass this row."""
+        import tempfile
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            c = self._conductor(repo)
+            with mock.patch.object(bundle, "runner_basename", lambda sid: f"{sid}_runner.zz"), \
+                    mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"):
+                self.assertEqual(c._runner_basename(refs), f"{refs.spec_id}_runner.zz")
+                self.assertEqual(c._model_basename(refs), f"{refs.spec_id}_model.zz")
+
+    def test_every_syntax_run_is_handed_the_target_architecture(self) -> None:
+        """The adapter takes the target profile's `hardware.architecture` (issue #289: a device
+        compiler needs it; a CPU front end accepts it and does not read it). Every run the gate
+        makes — the stage itself and the canary / closure probes of a failing one — is handed the
+        profile's value, so an adapter that reads it never syntax-checks for another device."""
+        import tempfile
+        seen: list[str | None] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def fake(args):
+                seen.append(args.get("architecture"))
+                if self._call_kind(args) in ("canary", "probe"):
+                    return {"ok": True, "skipped": False, "command_id": "x"}
+                return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
+                        "stderr": "Error: boom"}
+
+            with self._patch_syntax(fake):
+                c._gate_syntax_check(refs, "child-1")
+            expected = c.target.doc["hardware"]["architecture"]
+        self.assertGreaterEqual(len(seen), 2)   # the stage and at least its canary
+        self.assertEqual(set(seen), {expected})
+
+    def test_gate_syntax_check_refuses_a_language_with_no_syntax_stage(self) -> None:
+        """A language that declares no `syntax_promotions` has no stage to run, and the gate
+        fails CLOSED on it (issue #289, R4-b PR-2). Until then every language but Fortran
+        passed this checker with `skipped_reason` and no evidence — a node of a second
+        language would have reached Build having had its syntax checked by nothing."""
         import tempfile
         from tools.hooks.syntax_evidence import syntax_evidence_path
         with tempfile.TemporaryDirectory() as td:
@@ -17778,16 +17844,13 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed(repo, refs, language="cpp", sources={"m.cpp": "int main(){}\n"})
             c = self._conductor(repo)
 
-            def fake(args):  # must never be called for a non-fortran node
+            def fake(args):  # must never be called for a language with no syntax stage
                 raise AssertionError("run_syntax_check must not run for language=cpp")
 
-            with self._patch_syntax(fake):
-                out = c._gate_syntax_check(refs, "child-1")
-            self.assertEqual(out["status"], "pass")
-            meta = out
-            self.assertEqual(meta["status"], "pass")
-            self.assertIn("language=cpp", meta["skipped_reason"])
-            self.assertEqual(meta["stages"], [])
+            with self._patch_syntax(fake), self.assertRaises(RuntimeError) as ctx:
+                c._gate_syntax_check(refs, "child-1")
+            self.assertIn("toolchain.language='cpp' has no syntax stage", str(ctx.exception))
+            self.assertIn("syntax_promotions", str(ctx.exception))
             self.assertFalse(
                 syntax_evidence_path(pipeline_root=repo / refs.pipeline_ref,
                                      source_id="src_1").exists())
@@ -17820,21 +17883,21 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     c._gate_syntax_check(refs, "child-1")
 
     def test_gate_syntax_check_optional_stage_skipped_records_and_passes(self) -> None:
-        import sys
         import tempfile
         from unittest import mock
+        from tools.backends import registry as backend_registry
         from tools.hooks.syntax_evidence import read_syntax_evidence
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs)
-            # frt is a REGISTERED adapter here (temporarily) but its binary is not
-            # installed: the tool returns skipped, the gate records it and still passes.
+            # frt is a REGISTERED adapter here (temporarily — a record declaring
+            # `syntax_check` over the gfortran package) but its binary is not installed:
+            # the tool returns skipped, the gate records it and still passes.
             c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "frt,gfortran"})
-            registry = dict(build_runtime_server._SYNTAX_COMPILER_ADAPTERS)
-            registry["frt"] = registry["gfortran"]
+            frt = backend_registry.Backend(
+                "compiler", "frt", "tools.backends.compiler.gfortran",
+                backend_provides=frozenset({"syntax_check"}))
 
             def fake(args):
                 if args["compiler"] == "frt":
@@ -17843,8 +17906,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "command_id": "sid",
                         "compiler_version": "GNU Fortran 13", "skipped": False}
 
-            with mock.patch.object(
-                    build_runtime_server, "_SYNTAX_COMPILER_ADAPTERS", registry), \
+            with mock.patch.dict(backend_registry._BACKENDS, {("compiler", "frt"): frt}), \
                     self._patch_syntax(fake):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
@@ -17858,6 +17920,68 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(ev["stages"][0]["compiler"], "gfortran")
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frt"]["status"], "skipped")
+
+    def test_a_mandatory_stage_whose_adapter_reads_another_language_fails_closed(self) -> None:
+        """The optional-stage skip must not reach the MANDATORY stage: a language whose
+        `bundle_facts.MANDATORY_SYNTAX_COMPILER` names an adapter of another language is a
+        declaration defect in `tools/backends/`, and the gate raises (transport fail_closed)
+        rather than recording the stage skipped and leaving the refusal to certification
+        (round 1, issue #289: `if compiler == mandatory` on that branch was unpinned)."""
+        import tempfile
+        from unittest import mock
+        from tools.backends.compiler.gfortran import syntax as gfortran_syntax
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def fake(args):  # must never run: the adapter is refused before any stage
+                raise AssertionError("run_syntax_check must not run")
+
+            with mock.patch.object(gfortran_syntax, "LANGUAGE", "cpp"), \
+                    self._patch_syntax(fake), self.assertRaises(RuntimeError) as ctx:
+                c._gate_syntax_check(refs, "child-1")
+        self.assertIn("mandatory gfortran stage reads cpp sources, not fortran",
+                      str(ctx.exception))
+
+    def test_an_optional_stage_for_another_language_is_skipped_not_run(self) -> None:
+        """An adapter reads ITS language's sources. Listing one of another language in
+        ATMOFAB_SYNTAX_COMPILERS must not hand it this node's files (it would refuse their
+        names, or compile them as the wrong language); the stage is recorded skipped."""
+        import sys
+        import tempfile
+        import types
+        from unittest import mock
+        from tools.backends import registry as backend_registry
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,zzc"})
+            pkg = types.ModuleType("zz_other_compiler")
+            pkg.syntax = types.ModuleType("zz_other_compiler.syntax")
+            pkg.syntax.LANGUAGE = "cpp"
+            pkg.syntax.EXECUTABLE = "zzc"
+            record = backend_registry.Backend(
+                "compiler", "zzc", "zz_other_compiler",
+                backend_provides=frozenset({"syntax_check"}))
+            ran: list[str] = []
+
+            def fake(args):
+                ran.append(args["compiler"])
+                return {"ok": True, "return_code": 0, "command_id": "sid",
+                        "compiler_version": "GNU Fortran 13", "skipped": False}
+
+            with mock.patch.dict(sys.modules, {"zz_other_compiler": pkg}), \
+                    mock.patch.dict(backend_registry._BACKENDS, {("compiler", "zzc"): record}), \
+                    self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+        self.assertEqual(out["status"], "pass")
+        self.assertNotIn("zzc", ran)
+        by_compiler = {s["compiler"]: s for s in out["stages"]}
+        self.assertEqual(by_compiler["zzc"]["status"], "skipped")
+        self.assertIn("reads cpp sources, not fortran", by_compiler["zzc"]["reason"])
 
     def test_gate_syntax_check_nonmake_with_deps_fails_closed_not_loops(self) -> None:
         # A fortran node whose dependency modules cannot be staged (non-make: the conductor
@@ -18022,6 +18146,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             msg = str(ctx.exception)
             self.assertIn("not viable", msg)
             self.assertIn("toolchain.standard", msg)
+            # the remedy carries the ADAPTER's spelling example (issue #289: it was a literal here)
+            from tools.backends.compiler.gfortran import syntax as gfortran_syntax
+            self.assertIn(gfortran_syntax.STANDARD_SPELLING_EXAMPLE, msg)
             self.assertNotIn(self.DEP_REF, msg)  # the dependency must NOT be blamed
 
     def test_gate_syntax_check_dep_failure_message_names_both_causes(self) -> None:

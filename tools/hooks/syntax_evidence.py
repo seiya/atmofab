@@ -3,9 +3,10 @@
 
 The compiler syntax gate is the syntax checker of the deterministic `generate.gate` substep,
 run in-process by the conductor (`Conductor._gate_inproc -> _gate_syntax_check`), NOT by the leaf. It runs the MCP `run_syntax_check`
-compiler adapters (gfortran `-fsyntax-only` first, then any optional target-compiler stages
-from `ATMOFAB_SYNTAX_COMPILERS`) over the staged sources. The `post_generate` validator
-certifies that the gate actually ran with the mandatory gfortran stage passing. That
+compiler adapters (the target language's mandatory syntax-only stage first, then any optional
+target-compiler stages from `ATMOFAB_SYNTAX_COMPILERS`) over the staged sources. The
+`post_generate` validator certifies that the gate actually ran with the language's mandatory
+stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`) passing. That
 certificate must NOT be forgeable by the leaf, so it lives at the **pipeline root**
 (`workspace/pipelines/<safe>/<target_id>/<pipeline_id>/syntax_evidence/<source_id>.json`) — the same
 leaf-non-writable location as `lint_evidence/` — and is written ONLY host-side by the
@@ -25,8 +26,7 @@ Stage schema: each entry of `stages` records one compiler adapter run —
 an optional target compiler with no registered adapter or no installed binary, and a stage
 that refused before running (a staged source whose NAME the tool rejects). Either
 way nothing ran, so there is no record to cite. The reader does not distinguish them and
-does not need to: a `skipped` MANDATORY gfortran stage fails certification whichever
-produced it.
+does not need to: a `skipped` MANDATORY stage fails certification whichever produced it.
 """
 
 from __future__ import annotations

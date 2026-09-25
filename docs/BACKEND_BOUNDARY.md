@@ -152,7 +152,10 @@ together with the bundle's `target_lowering_plan.parallelization`.
   the gates:
   - The launch gate `tools/target_profile.py:target_profile_violations` (its toolchain half is
     `toolchain_servable_reasons`; until R4-a PR-3, issue #284, the question was asked of the
-    IR at `Compile.static`), the `make`-quality-check gates in
+    IR at `Compile.static`) requires a language to declare every capability `Generate` reads of
+    it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`
+    (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue #289) — and, for a non-`infrastructure` node,
+    `control_file` and `runner_render`. It, together with the `make`-quality-check gates in
     `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
     need and carry the registry's clause. They widen when the CAPABILITY is declared, which
@@ -166,19 +169,40 @@ together with the bundle's `target_lowering_plan.parallelization`.
     hardware class with no `execution` is admitted for a run that stops at `Build` and refused
     for one that runs the binary — building for a class needs no machine of that class.
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
-    allowlist, the compiler-driver families and the identifier bound are read from the language
-    backend through the registry. The bundle SCHEMA (`spec/schema/generate/`) still carries its
-    own `language` enum and pattern, and `tools/tests/test_codegen_bundle.py` fails if the two
-    disagree — so a new language backend must widen the schema in the same change.
+    allowlist, the compiler-driver families, the identifier grammar and the names the host gives
+    a language's files are the language backend's `bundle_facts`, reached through
+    `capability_module`. The identifier check is per-file-language: the schema-level pattern is
+    the union of the bundle languages' grammars and a cross-field layer holds each identifier to
+    its own file's language (issue #289). The bundle SCHEMA (`spec/schema/generate/`) still
+    carries its own `language` enum and that union pattern, and `tools/tests/test_codegen_bundle.py`
+    fails if the two disagree — so a new language backend must widen the schema in the same change.
+  - The `Generate.gate` syntax check reaches its argv through the compiler's `syntax_check` and
+    the language's `syntax_promotions` (issue #289): a language that declares none is a transport
+    `fail_closed` there and a certification violation, not a pass-through. The generate prompts
+    carry a language's rules only as its `prompt_fragments`, composed by the request's
+    `pure_language`; the checks-module contract is neutral and its binding is the language's
+    `checks_abi`. Which linter a language is linted with is each linter backend's `LANGUAGES`
+    (`registry.linter_for_language`).
   - The signature gate (`_validate_generated_signatures`, `Generate.static`, asked of the
     pipeline's target language) takes its refusal clause from the registry, but its
     §5.1 helpers import one concrete backend by name and take no `language` argument, so it
     additionally refuses any language those helpers are not wired to
-    (`_signature_backend_refusal`). This is the one gate family the procedure above is still not
-    sufficient for; it migrates with the `validate_pipeline_semantics.py` source-reading area.
-  - `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES` remains a neutral-core policy set over language
-    families (`fortran`, `c`, `cpp`, `mixed`), not an implemented set; it migrates with the
-    compiler / linter adapters area, alongside `FORTRAN_C_FAMILY` in `mcp_servers/`.
+    (`_signature_backend_refusal`). It migrates with the `validate_pipeline_semantics.py`
+    source-reading area.
+  - **The validator and the conductor still spell one language's file names**, and for the
+    validator that is FAIL-OPEN, not a refusal (measured on issue #289's R4-b PR-2 review): its
+    runner-output gates find the runner by a suffix glob, so a runner under another language's
+    suffix is not seen and adds no violation — a forbidden judge-artifact write in it passes
+    `post_generate`. The same spellings sit in `_expected_runner_name`, the checks / model source
+    readers, and the conductor's `phase_required_outputs`. They migrate with the source-reading
+    area (R4-b PR-3), and that migration is a precondition of running a second language: until
+    it lands, registering one and declaring its capabilities is NOT sufficient, whatever the gates
+    above answer.
+  - Whether a language's quality check runs through the build system's test target, and whether
+    `compile_project` holds it to a dependency-aware build tool, is asked of the language
+    backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that
+    answered it in the neutral core (`MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES`, `FORTRAN_C_FAMILY`)
+    are gone (issue #289).
   - The `static lint` step reaches a registered linter's argv through `capability_module` only
     where that record declares `lint` in `backend_provides`. Every linter that HAS an argv does
     (issues #111 and #120), so no linter invocation is spelled in

@@ -305,13 +305,14 @@ _MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TARGET_REFUSED_CHARS = _SHELL_ACTIVE_CHARS | set(" ")
 
 
-def _build_syntax_source_re() -> re.Pattern[str]:
-    """A source name: a Fortran file name, over the one suffix set the tool uses.
+def _build_syntax_source_re(suffixes: tuple[str, ...]) -> re.Pattern[str]:
+    """A source name: a file name carrying one of the language's source suffixes.
 
-    Derived from `_FORTRAN_SYNTAX_SOURCE_SUFFIXES` so an added suffix cannot make
-    auto-discovery accept a file an explicit `sources` list refuses."""
-    suffixes = "|".join(s.lstrip(".") for s in _FORTRAN_SYNTAX_SOURCE_SUFFIXES)
-    return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({suffixes})$", re.IGNORECASE)
+    `suffixes` is the language's `syntax_promotions.SOURCE_SUFFIXES`, the set auto-discovery
+    also filters on, so an added suffix cannot make auto-discovery accept a file an explicit
+    `sources` list refuses."""
+    alternation = "|".join(re.escape(s.lstrip(".")) for s in suffixes)
+    return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({alternation})$", re.IGNORECASE)
 
 
 #: The build systems whose command line takes a VARIABLE ASSIGNMENT and interpolates its
@@ -509,17 +510,18 @@ class SyntaxSourceNameError(ValueError):
     transport failure. Catching by `ValueError` there would blame the leaf for both."""
 
 
-def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: str) -> None:
+def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: str, *,
+                             suffixes: tuple[str, ...], language: str) -> None:
     """Constrain the source list appended to the compiler front-end argv.
 
-    A source is a Fortran file sitting in `project_dir`. Anything else the driver would
+    A source is a file of the adapter's language (`suffixes`) sitting in `project_dir`. Anything else the driver would
     accept there — an option, a response file, a path out of the directory, a symlink
     to one — makes the check compile something other than what was staged, and it
     reports `ok: True` either way. Refused in every mode; the workflow never passes
     this argument at all, and an operator passing it means file names.
     """
     root = Path(project_dir).resolve()
-    source_re = _build_syntax_source_re()
+    source_re = _build_syntax_source_re(suffixes)
     offending = []
     for name in sources:
         if not source_re.match(name):
@@ -530,7 +532,7 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
             offending.append(name)
     if offending:
         raise SyntaxSourceNameError(
-            f"{tool_name} sources must be Fortran source files in project_dir; "
+            f"{tool_name} sources must be {language} source files in project_dir; "
             "refused: " + ", ".join(sorted(offending))
         )
 
@@ -539,15 +541,12 @@ SERVER_VERSION = "0.1.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_COMMAND_LOG_FILE = "command_log.jsonl"
 
-FORTRAN_C_FAMILY = {
-    "fortran",
-    "c",
-    "cpp",
-    "c++",
-    "cuda_fortran",
-    "cuda_c",
-    "mixed",
-}
+def _is_compiled_language(language: str) -> bool:
+    """Whether `language` is compiled — its language backend's `bundle_facts.COMPILED`. A
+    compiled language needs a build tool that tracks dependencies between its sources; which
+    languages are compiled is the backend's fact, not a set spelled here (issue #289)."""
+    return bool(_backend_registry().is_compiled_language((language or "").strip().lower()))
+
 
 DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "make",
@@ -843,10 +842,10 @@ def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]
                 "reason": f"{marker} was detected",
             }
 
-    if lang in FORTRAN_C_FAMILY:
+    if _is_compiled_language(lang):
         return {
             "build_system": "make",
-            "reason": "for Fortran/C family, make is the default standard build tool",
+            "reason": "for a compiled language, make is the default standard build tool",
         }
 
     return {
@@ -972,14 +971,14 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     target = _validate_build_argv_overrides(
         target, extra_args, "compile_project", build_system=build_system)
 
-    if language in FORTRAN_C_FAMILY and build_system not in {
+    if _is_compiled_language(str(language or "")) and build_system not in {
         "make",
         "cmake",
         "meson",
         "ninja",
     }:
         raise ValueError(
-            "for Fortran/C family, use make/cmake/meson/ninja. make is the default."
+            "for a compiled language, use make/cmake/meson/ninja. make is the default."
         )
 
     command = _build_command(build_system, target, jobs, extra_args)
@@ -1136,9 +1135,6 @@ _LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = {
     "mixed": ("fortitude", "cppcheck"),
 }
 
-#: The preset a caller that names none gets.
-DEFAULT_LINT_PRESET = "fortitude"
-
 
 def _check_lint_preset_declarations() -> None:
     """Fail at import on a preset table these two readers would disagree about.
@@ -1158,8 +1154,6 @@ def _check_lint_preset_declarations() -> None:
         unknown = sorted(set(subs) - set(_LINT_PRESET_COMMANDS))
         if unknown:
             raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
-    if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
-        raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
 
 
 _check_lint_preset_declarations()
@@ -1207,10 +1201,15 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "run_linter")
-    preset = str(args.get("preset", DEFAULT_LINT_PRESET)).strip().lower()
 
     if "command" in args:
         raise ValueError("run_linter does not allow custom command; use preset")
+    # REQUIRED: which linter a node is linted with is its language's answer
+    # (`registry.linter_for_language`), and a default here was one language's (issue #289).
+    raw_preset = args.get("preset")
+    if not isinstance(raw_preset, str) or not raw_preset.strip():
+        raise ValueError("run_linter requires a non-empty string 'preset'")
+    preset = raw_preset.strip().lower()
 
     run_env: dict[str, str] | None
     if env is None:
@@ -1248,161 +1247,66 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
 
 # --- run_syntax_check: compiler-frontend syntax gate (Generate stage only) ----------------
 #
-# Runs a real compiler front-end in syntax-only mode over the staged Fortran sources so the
-# Generate stage catches, before Build, the whole class of syntax / standard-conformance
-# errors the (non-compiling) post_generate text heuristics could only approximate one
-# observed failure at a time. Producing NO build artifacts (module files go to a throwaway
-# scratch dir inside project_dir), this is lint-class, not a build — it sits with
-# run_linter outside the "compile must go through a standard build tool" rule.
+# Runs a real compiler front-end in syntax-only mode over the staged sources so the Generate
+# stage catches, before Build, the whole class of syntax / standard-conformance errors the
+# (non-compiling) post_generate text heuristics could only approximate one observed failure at
+# a time. Producing NO build artifacts (module files go to a throwaway scratch dir inside
+# project_dir), this is lint-class, not a build — it sits with run_linter outside the "compile
+# must go through a standard build tool" rule.
 #
-# Compilers are an adapter REGISTRY (no custom commands, mirroring run_linter's
-# preset-only rule). Each adapter builds the full argv from (std, scratch_dir, openmp,
-# sources); the scratch dir is passed so a future adapter without a true syntax-only mode
-# (e.g. Fujitsu frt, which would `-c` with objects discarded into the scratch dir) fits
-# the same interface. Module files are compiler-/version-specific formats: every call
-# gets its own scratch dir and must never share Build's $(OBJDIR).
-#
-# Three warning classes are promoted to errors over the whole staged set:
-# unused-dummy-argument, unused-variable and ampersand. A dummy an interface fixes but the
-# algorithm never consumes (an inert input, an ABI-fixed `name` / `case_id`) must stay a live
-# dummy bound by `associate (unused_<name> => <name>); end associate` — the canonical idiom is
-# docs/workflow/CHECKS_MODULE_CONTRACT.md §5, and this gate is what makes it load-bearing
-# rather than advisory. The third promotes gfortran's extension of resuming a continued
-# character literal with NO leading `&`: accepting it (issue #23 measured it at rc=0) let a
-# counted-`do` spelling written inside a string reach a PHYSICAL line start, where the
-# fail_closed OpenMP presence floor — anchored at line starts, deliberately stateless — counted
-# it and falsely rejected a source this gate had passed (issue #25). Rejecting the shape here
-# is what makes the floor's anchoring argument sound; a conforming literal resumes with `&` and
-# is unaffected. Only these three classes are promoted: promoting -Wall/-Wextra wholesale would
-# reject correct-as-written sources — -Wcompare-reals fires on the harness self-test runner's
-# deliberate bitwise equality comparisons, which are the point of the assertion.
+# Compilers are the `syntax_check` capability of the `compiler` axis (no custom commands,
+# mirroring run_linter's preset-only rule): each adapter builds the full argv, knows its
+# executable, its version probe and a canary source, and names the LANGUAGE whose sources it
+# reads. That language's `syntax_promotions` says which files are sources, their order and the
+# warning classes the stage promotes to errors — the facts this section held inline for one
+# language until issue #289 (R4-b PR-2). The scratch dir is passed so a future adapter without
+# a true syntax-only mode (one that would compile with objects discarded into it) fits the same
+# interface. Module files are compiler-/version-specific formats: every call gets its own
+# scratch dir and must never share Build's object directory.
 
-_FORTRAN_SYNTAX_SOURCE_SUFFIXES = (".f90", ".f95", ".f03", ".f08")
 _SYNTAX_SCRATCH_DIR_NAME = ".mods"
 
 
-def _gfortran_syntax_argv(
-    std: str, scratch_dir: str, openmp: bool, sources: list[str]
-) -> list[str]:
-    argv = [
-        "gfortran", "-fsyntax-only", f"-std={std}",
-        # `-Werror=<class>` self-enables the warning, so no companion `-W<class>` is needed.
-        "-Werror=unused-dummy-argument", "-Werror=unused-variable", "-Werror=ampersand",
-        "-J", scratch_dir, "-I", scratch_dir,
-    ]
-    if openmp:
-        argv.append("-fopenmp")
-    return argv + list(sources)
+def syntax_check_compilers() -> tuple[str, ...]:
+    """The compiler ids with a syntax-only adapter, sorted — the set a refusal names."""
+    registry = _backend_registry()
+    return tuple(c for c in registry.backend_ids("compiler")
+                 if registry.provides("compiler", c, "syntax_check"))
 
 
-_SYNTAX_COMPILER_ADAPTERS: dict[str, dict[str, Any]] = {
-    "gfortran": {
-        "exe": "gfortran",
-        "argv": _gfortran_syntax_argv,
-        "version_argv": ["gfortran", "--version"],
-    },
-}
+def syntax_adapter(compiler: str) -> Any:
+    """The `syntax_check` module of `compiler`, or `ValueError` naming the supported set.
 
-#: The syntax-only stage `Generate.gate` runs whatever `ATMOFAB_SYNTAX_COMPILERS` lists, and the
-#: compiler `run_syntax_check` assumes when a caller names none. The conductor's build
-#: control-file writer takes the SAME value for `FC` when the target profile pins no
-#: `toolchain.compiler`, so the mandatory syntax stage and the default build
-#: compiler are one value rather than several independent spellings. That equality is what lets
-#: the launch-time host probe (`tools/host_prerequisites.py`) cover the Build compiler by probing
-#: the mandatory stage; `tools/tests/test_host_prerequisites.py` pins it against the conductor's
-#: own `DEFAULT_COMPILER`, which is the other half of the pair.
-MANDATORY_SYNTAX_COMPILER = "gfortran"
+    A `ValueError`, as the inline table's miss was, because every caller already routes that
+    class: the conductor treats an unregistered OPTIONAL stage as skipped before asking, and a
+    direct caller naming an unknown compiler made a caller-side mistake."""
+    registry = _backend_registry()
+    try:
+        return registry.capability_module("compiler", compiler, "syntax_check")
+    except (registry.UnsupportedBackend, registry.BackendNotExtracted) as exc:
+        supported = ", ".join(syntax_check_compilers())
+        raise ValueError(
+            f"unsupported compiler: {compiler}. supported={supported} ({exc})") from None
+
+
+def syntax_language(adapter: Any) -> Any:
+    """The `syntax_promotions` module of the language `adapter` reads.
+
+    Raises the registry's own refusal: an adapter naming a language that declares no syntax
+    facts is a declaration defect in `tools/backends/`, not a caller mistake."""
+    return _backend_registry().capability_module(
+        "language", adapter.LANGUAGE, "syntax_promotions")
 
 
 def syntax_compiler_executable(compiler: str) -> str:
     """The host executable a registered syntax-check adapter launches.
 
-    The same `exe` `tool_run_syntax_check` probes before it runs the stage, so the launch-time
-    host probe (`tools/host_prerequisites.py`) cannot look for a different program. Raises for a
-    compiler with no registered adapter, which is a build-tooling bug rather than a host one.
+    The same executable `tool_run_syntax_check` probes before it runs the stage, so the
+    launch-time host probe (`tools/host_prerequisites.py`) cannot look for a different program.
+    Raises for a compiler with no registered adapter, which is a build-tooling bug rather than a
+    host one.
     """
-    adapter = _SYNTAX_COMPILER_ADAPTERS.get(compiler)
-    if adapter is None:
-        supported = ", ".join(sorted(_SYNTAX_COMPILER_ADAPTERS))
-        raise ValueError(f"unsupported compiler: {compiler}. supported={supported}")
-    return str(adapter["exe"])
-
-
-# A source valid under every Fortran standard the adapters accept. `std` reaches the gate
-# from the target profile (`toolchain.standard`) and goes straight into
-# `-std=<value>`: a value the driver does not know (`-std=2008` — the elided-`f` form)
-# makes it reject the COMMAND LINE, so no source is ever parsed and every file in the
-# invocation "fails" at once. Compiling this canary with the same argv separates a broken
-# invocation from broken sources by the compiler's own verdict, without enumerating the
-# stds a given compiler version happens to accept (`f2023` exists on GCC>=13 but not
-# before, so any hard-coded set is wrong on some machine).
-SYNTAX_CANARY_SOURCE = "module atmofab_syntax_canary\n  implicit none\nend module atmofab_syntax_canary\n"
-
-# `module <name>` definitions (excluding submodule-procedure headers) and `use <name>`
-# references, scanned to order the staged sources so each module is compiled before its
-# consumers within ONE compiler invocation (gfortran resolves same-invocation `use`
-# against the module files it just wrote to the scratch dir, even under -fsyntax-only).
-# Deliberately approximate: a mis-ordering only reorders the argv and the compiler then
-# reports the real diagnosis; correctness judgment always stays with the compiler.
-_FORTRAN_MODULE_DECL_RE = re.compile(
-    r"^\s*module\s+(?!procedure\b|subroutine\b|function\b)([a-z][a-z0-9_]*)\s*(?:!.*)?$",
-    re.IGNORECASE | re.MULTILINE,
-)
-# `use\b` (word boundary) so only a real `use` STATEMENT matches — `use foo`, `use::foo`,
-# `use, intrinsic :: foo` — and an ordinary identifier that merely starts with the letters
-# "use" (`user_flag = ...`, `usedcount = ...`) does NOT (there is no word boundary between
-# `use` and a following word char). Without the boundary the old `use\s*` over-matched such
-# names and minted a spurious dependency edge in the source ordering.
-_FORTRAN_USE_STMT_RE = re.compile(
-    r"^\s*use\b\s*(?:,\s*(?:non_)?intrinsic\s*)?(?:::)?\s*([a-z][a-z0-9_]*)",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def _fortran_syntax_source_order(project_dir: Path) -> list[str]:
-    """Topologically order the free-form Fortran sources in `project_dir` (define-before-use).
-
-    `use` of a module no local file defines (intrinsic modules, and genuinely missing
-    dependencies) is ignored for ordering — if it is a real omission the compiler emits
-    the authoritative "Cannot open module file" finding. On a definition cycle the
-    remaining files are appended name-sorted and the compiler diagnoses the cycle.
-    """
-    names = sorted(
-        p.name
-        for p in project_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in _FORTRAN_SYNTAX_SOURCE_SUFFIXES
-    )
-    provided_by: dict[str, str] = {}
-    uses: dict[str, set[str]] = {}
-    for name in names:
-        try:
-            text = (project_dir / name).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            text = ""
-        for mod in _FORTRAN_MODULE_DECL_RE.findall(text):
-            provided_by.setdefault(mod.lower(), name)
-        uses[name] = {mod.lower() for mod in _FORTRAN_USE_STMT_RE.findall(text)}
-
-    ordered: list[str] = []
-    placed: set[str] = set()
-    remaining = list(names)
-    while remaining:
-        progressed = False
-        for name in list(remaining):
-            deps = {
-                provided_by[mod]
-                for mod in uses.get(name, set())
-                if mod in provided_by and provided_by[mod] != name
-            }
-            if deps <= placed:
-                ordered.append(name)
-                placed.add(name)
-                remaining.remove(name)
-                progressed = True
-        if not progressed:
-            ordered.extend(remaining)
-            break
-    return ordered
+    return str(syntax_adapter(compiler).EXECUTABLE)
 
 
 @lru_cache(maxsize=8)
@@ -1422,13 +1326,17 @@ def _syntax_compiler_version(version_argv: tuple[str, ...]) -> str | None:
 
 
 def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
-    """Run a compiler front-end in syntax-only mode over staged Fortran sources.
+    """Run a compiler front-end in syntax-only mode over staged sources.
 
-    Adapter-registry only; arbitrary user commands are not allowed. Produces no
+    Registered adapters only; arbitrary user commands are not allowed. Produces no
     build artifacts (lint-class, not a build; does not route through build_system).
     A missing compiler binary returns {ok: True, skipped: True, ...} — whether a
-    stage may be skipped (optional target-compiler stage) or must hard-fail
-    (the mandatory gfortran stage) is the caller's policy, not this tool's.
+    stage may be skipped (an optional stage) or must hard-fail (the language's
+    mandatory stage) is the caller's policy, not this tool's.
+
+    `compiler` and `std` are REQUIRED: both are the caller's target facts (the language's
+    mandatory syntax compiler, the profile's `toolchain.standard`), and a default here would
+    be one language's spelling in a tool that serves every language.
     """
     project_dir = str(args.get("project_dir", "."))
     _refuse_retired_arguments(args, "run_syntax_check")
@@ -1441,19 +1349,24 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "run_syntax_check")
-    compiler = str(args.get("compiler", MANDATORY_SYNTAX_COMPILER)).strip().lower()
-    std = str(args.get("std", "f2008")).strip().lower()
-    openmp = bool(args.get("openmp", False))
 
     if "command" in args:
         raise ValueError(
             "run_syntax_check does not allow custom command; use a registered compiler adapter"
         )
+    for required in ("compiler", "std"):
+        value = args.get(required)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"run_syntax_check requires a non-empty string {required!r}")
+    compiler = str(args["compiler"]).strip().lower()
+    std = str(args["std"]).strip().lower()
+    openmp = bool(args.get("openmp", False))
+    architecture = args.get("architecture")
+    if architecture is not None and not isinstance(architecture, str):
+        raise ValueError("architecture must be a string")
 
-    adapter = _SYNTAX_COMPILER_ADAPTERS.get(compiler)
-    if adapter is None:
-        supported = ", ".join(sorted(_SYNTAX_COMPILER_ADAPTERS))
-        raise ValueError(f"unsupported compiler: {compiler}. supported={supported}")
+    adapter = syntax_adapter(compiler)
+    language = syntax_language(adapter)
 
     sources = args.get("sources")
     if sources is not None and (
@@ -1465,23 +1378,26 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     if not proj.is_dir():
         raise ValueError(f"project_dir is not a directory: {project_dir}")
 
-    ordered_sources = list(sources) if sources is not None else _fortran_syntax_source_order(proj)
+    suffixes = tuple(language.SOURCE_SUFFIXES)
+    ordered_sources = list(sources) if sources is not None else language.compile_order(proj)
     # The same rule for both readings, and BEFORE the compiler-availability skip below:
     # the rule is about the names, not about what a compiler would do with them, and an
     # optional stage skipping on a machine without that compiler must not be the reason
     # a bad name goes unnoticed. Auto-discovery filters on suffix alone, so a staged file
-    # named `-o.f90` or `@resp.f90` walked into the compiler argv as an option — and the
-    # workflow always takes that branch, since it passes no `sources`. A stray one is a
+    # named `-o.<suffix>` or `@resp.<suffix>` walked into the compiler argv as an option — and
+    # the workflow always takes that branch, since it passes no `sources`. A stray one is a
     # visible gate failure rather than a silently skipped file.
-    _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check")
+    _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check",
+                             suffixes=suffixes, language=str(adapter.LANGUAGE))
 
-    if shutil.which(str(adapter["exe"])) is None:
+    executable = str(adapter.EXECUTABLE)
+    if shutil.which(executable) is None:
         return {
             "ok": True,
             "skipped": True,
             "compiler": compiler,
             "std": std,
-            "reason": f"compiler not available: {adapter['exe']}",
+            "reason": f"compiler not available: {executable}",
         }
 
     if not ordered_sources:
@@ -1490,7 +1406,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
             "skipped": True,
             "compiler": compiler,
             "std": std,
-            "reason": "no fortran sources found",
+            "reason": f"no {adapter.LANGUAGE} sources found",
         }
 
     (proj / _SYNTAX_SCRATCH_DIR_NAME).mkdir(exist_ok=True)
@@ -1501,8 +1417,10 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     else:
         run_env = {str(k): str(v) for k, v in env.items()}
 
-    argv_builder: Callable[[str, str, bool, list[str]], list[str]] = adapter["argv"]
-    command = argv_builder(std, _SYNTAX_SCRATCH_DIR_NAME, openmp, ordered_sources)
+    command = adapter.argv(
+        standard=std, scratch_dir=_SYNTAX_SCRATCH_DIR_NAME, openmp=openmp,
+        promotions=tuple(language.PROMOTED_WARNINGS), architecture=architecture,
+        sources=ordered_sources)
     result = _run_command(
         command=command,
         cwd=project_dir,
@@ -1515,7 +1433,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     )
     return result | {
         "compiler": compiler,
-        "compiler_version": _syntax_compiler_version(tuple(adapter["version_argv"])),
+        "compiler_version": _syntax_compiler_version(tuple(adapter.VERSION_ARGV)),
         "std": std,
         "openmp": openmp,
         "skipped": False,
@@ -1539,7 +1457,7 @@ TOOLS: dict[str, Tool] = {
         name="compile_project",
         description=(
             "Compile using a dependency-aware standard build tool. "
-            "For Fortran/C family, make/cmake/meson/ninja are allowed, and make is default."
+            "For a compiled language, make/cmake/meson/ninja are allowed, and make is default."
         ),
         input_schema={
             "type": "object",
@@ -1662,7 +1580,6 @@ TOOLS: dict[str, Tool] = {
                 "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "preset": {
                     "type": "string",
-                    "default": "fortitude",
                     "description": "fortitude | cppcheck | ruff | mixed",
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
@@ -1677,15 +1594,16 @@ TOOLS: dict[str, Tool] = {
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ATTRIBUTION_PROPERTIES,
             },
-            "required": ["project_dir"],
+            "required": ["project_dir", "preset"],
         },
         handler=tool_run_linter,
     ),
     "run_syntax_check": Tool(
         name="run_syntax_check",
         description=(
-            "Run a compiler front-end in syntax-only mode over staged Fortran sources "
-            "(Generate-stage gate). Registered compiler adapters only (gfortran); "
+            "Run a compiler front-end in syntax-only mode over staged sources "
+            "(Generate-stage gate). Registered compiler adapters only (the `compiler` axis "
+            "values whose record declares `syntax_check` in tools/backends/registry.py); "
             "no custom command, no build artifacts, does not route through build_system."
         ),
         input_schema={
@@ -1694,12 +1612,13 @@ TOOLS: dict[str, Tool] = {
                 "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "compiler": {
                     "type": "string",
-                    "default": "gfortran",
-                    "description": "Registered compiler adapter id (gfortran).",
+                    "description": (
+                        "Registered compiler adapter id; its language decides which files "
+                        "are sources and which warning classes are promoted to errors."
+                    ),
                 },
                 "std": {
                     "type": "string",
-                    "default": "f2008",
                     "description": "Language standard from the target profile's toolchain.standard.",
                 },
                 "openmp": {
@@ -1707,13 +1626,21 @@ TOOLS: dict[str, Tool] = {
                     "default": False,
                     "description": "Enable the adapter's OpenMP flag (the target profile's parallel.backend=openmp).",
                 },
+                "architecture": {
+                    "type": "string",
+                    "description": (
+                        "The target profile's hardware.architecture. An adapter whose "
+                        "compiler takes a device architecture passes it; one that has none "
+                        "accepts it and does not read it."
+                    ),
+                },
                 "sources": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "Source file names in compile order — plain names in project_dir, "
                         "no paths and no compiler options. Omit to let the tool order the "
-                        "project_dir Fortran sources by a module/use scan."
+                        "project_dir sources the way the adapter's language orders them."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
@@ -1728,7 +1655,7 @@ TOOLS: dict[str, Tool] = {
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ATTRIBUTION_PROPERTIES,
             },
-            "required": ["project_dir"],
+            "required": ["project_dir", "compiler", "std"],
         },
         handler=tool_run_syntax_check,
     ),

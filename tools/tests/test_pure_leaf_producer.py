@@ -24,6 +24,7 @@ os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
+from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
@@ -417,7 +418,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         ok = _valid_bundle()
         ok["files"][1]["modules"] = [f"{_SPEC_ID}_CHECKS"]
-        self.assertIsNone(cb.m3c_literal_name_violation(ok, _SPEC_ID))
+        self.assertIsNone(cb.m3c_literal_name_violation(ok, _SPEC_ID, language="fortran"))
 
     def test_m3c_name_violation(self) -> None:
         c, refs = self._c_refs()
@@ -475,7 +476,7 @@ class PureBundleViolationsTests(unittest.TestCase):
                 {("language", "zz_bundle_only"): record}):
             self.assertFalse(
                 backend_registry.provides("language", "zz_bundle_only", "runner_render"))
-            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID)
+            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID, language="fortran")
         self.assertIsNotNone(violation, "a language with no checks ABI must not be waived")
         self.assertIn("zz_bundle_only", violation)
         # The registry's own clause, carried rather than re-worded.
@@ -2296,6 +2297,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                        "runner_document": "program r\nend program\n"}
         req = {
             "leaf_mode": "pure", "step": "generate", "substep": "generate",
+            "pure_language": "fortran",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "repair_findings": "capability_requirements missing",
@@ -2381,9 +2383,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # item (reviewer), with the suite green. Deriving the keys is what makes a THIRD template
         # impossible to omit the same way.
         for substep, shape in self._generate_template_variants():
-            template = ort._load_launch_prompt_templates()[
-                ort._pure_launch_template_name({"step": "generate", "substep": substep,
-                                                "pure_shape": shape})]
+            template = composed_pure_template(ort._pure_launch_template_name(
+                {"step": "generate", "substep": substep, "pure_shape": shape}))
             text = ort._render_pure_repair_prompt(self._req(substep=substep, shape=shape))
             for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
                 if prefix not in template:
@@ -2430,7 +2431,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # line would vanish from the cold repair with the test still green.
         text = ort._pure_authoring_rules_text(self._req())
         self.assertTrue(text.startswith("Authoring rules"))
-        template = ort._load_launch_prompt_templates()["pure generate.generate"]
+        template = composed_pure_template("pure generate.generate")
         start = template.index("Authoring rules")
         end = template.index("**Harness capabilities")  # the next section of the static prefix
         for line in (ln.strip() for ln in template[start:end].splitlines()):
@@ -2459,7 +2460,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # pinned the moment a paragraph between them is lifted.
         req = self._req(substep="verify")
         lifted = ort._pure_authoring_rules_text(req)
-        template = ort._load_launch_prompt_templates()["pure generate.verify"]
+        template = composed_pure_template("pure generate.verify")
 
         # (a) every lifted block is a paragraph of THIS template
         for block in lifted.split("\n\n"):
@@ -2493,7 +2494,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         of the `\n\n` split that does the lifting, so re-introducing a blank line is red here."""
         req = self._req(substep="verify", shape="harness")
         lifted = ort._pure_authoring_rules_text(req)
-        template = ort._load_launch_prompt_templates()["pure generate.verify.harness"]
+        template = composed_pure_template("pure generate.verify.harness")
 
         for block in lifted.split("\n\n"):
             head = block.lstrip().splitlines()[0]
@@ -2521,7 +2522,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         findings text and not the contract it violated (the recorded Z2 defect D, in the
         recovery path)."""
         lifted = ort._pure_authoring_rules_text(self._req(shape="harness"))
-        template = ort._load_launch_prompt_templates()["pure generate.generate.harness"]
+        template = composed_pure_template("pure generate.generate.harness")
         for prefix, terminator in (("What makes this shape different", "Output contract ("),
                                    ("File shape (", "Authoring rules ("),
                                    ("Authoring rules (", "**Harness capabilities"),
@@ -2543,7 +2544,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # session holds, with nothing red. Measured before the fix: reordering the tuple put the
         # contract label ahead of the checklist and left 197 tests green.
         for substep in ("generate", "verify"):
-            template = ort._load_launch_prompt_templates()[f"pure generate.{substep}"]
+            template = composed_pure_template(f"pure generate.{substep}")
             lifted = ort._pure_authoring_rules_text(self._req(substep=substep))
             heads = [b.lstrip().splitlines()[0] for b in lifted.split("\n\n") if b.strip()]
             self.assertEqual(heads, sorted(heads, key=template.index),
@@ -2556,7 +2557,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # dummy is `status`, whose width MUST match the one authority the runner renders against
         # (the fortran backend runner's CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
         from tools.backends.language.fortran.runner import CHECK_STATUS_WIDTH
-        template = ort._load_launch_prompt_templates()["pure generate.generate"]
+        template = composed_pure_template("pure generate.generate")
         start = template.index("(1) Style lint")
         end = template.index("\n(2)", start)
         style = template[start:end]
@@ -3000,7 +3001,16 @@ class PureHarnessShapeTests(unittest.TestCase):
         contract = (Path(wc.__file__).resolve().parents[1]
                     / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(
                         encoding="utf-8")
-        self.assertEqual(ctx["runner_output_contract_document"], contract)
+        # ... followed by the target language's runner-output binding (issue #289), whole too.
+        from tools.backends.language.fortran import prompts as fortran_prompts
+        self.assertEqual(ctx["runner_output_contract_document"],
+                         contract.rstrip() + "\n\n" + fortran_prompts.runner_output_document())
+        # A failed binding read is a named refusal, not a shorter document.
+        with mock.patch.object(fortran_prompts, "runner_output_document",
+                               side_effect=OSError("gone")):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_runner_output_binding_missing", str(caught.exception))
         # ...and the manifest it is shown is its OWN.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
@@ -3030,8 +3040,8 @@ class PureHarnessShapeTests(unittest.TestCase):
         that is not shown the rule set cannot satisfy it, so an empty slot is the defect, not a
         smaller prompt. The caller turns each into `pure_context_assembly_failed`."""
         from tools.backends.linter.fortitude import lint as fortitude
-        with mock.patch.dict(
-                "tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE", {}, clear=True):
+        from tools.backends import registry as backend_registry
+        with mock.patch.object(backend_registry, "linter_for_language", lambda language: None):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
@@ -3047,8 +3057,8 @@ class PureHarnessShapeTests(unittest.TestCase):
         # asserted "four named failure modes, all RAISING": a preset whose package does not
         # DECLARE the `lint_rules` capability. Replacing the registry refusal with a silent
         # fallback to fortitude survived every test file until this row.
-        with mock.patch.dict("tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE",
-                             {"fortran": "cppcheck"}, clear=True):
+        with mock.patch.object(backend_registry, "linter_for_language",
+                               lambda language: "cppcheck"):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
@@ -3077,8 +3087,9 @@ class PureHarnessShapeTests(unittest.TestCase):
         shape has no file for and the slicer's docstring says is excluded. Nothing noticed,
         because the only assertion was that the value was non-empty."""
         ctx = self.c._build_pure_harness_context(self.refs)
-        real = (Path(wc.__file__).resolve().parents[1]
-                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        # The target language's binding (issue #289): §5 of it is the gate-guard section.
+        from tools.backends.language.fortran import checks_abi
+        real = checks_abi.document()
         self.assertEqual(ctx["gate_guards_document"],
                          wc._checks_contract_gate_guards_section(real))
         self.assertNotEqual(ctx["gate_guards_document"],
@@ -3094,8 +3105,8 @@ class PureHarnessShapeTests(unittest.TestCase):
 
         Driven on synthetic text, because the real document must not carry a §6 for this to be
         checkable, and on the real document, so the two cannot diverge."""
-        real = (Path(wc.__file__).resolve().parents[1]
-                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        from tools.backends.language.fortran import checks_abi
+        real = checks_abi.document()
         self.assertTrue(wc._checks_contract_gate_guards_section(real).startswith("## 5."))
         with self.assertRaises(ValueError) as later:
             wc._checks_contract_gate_guards_section(real + "\n## 6. Appendix\n\nbody\n")
@@ -3114,22 +3125,30 @@ class PureHarnessShapeTests(unittest.TestCase):
         """The two RAISING reads the context builder added. Same shape as the reviewer's row in
         `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
         neither was: soft-failing either one to `""` survived seven test files."""
-        target = self.repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
-        body = target.read_text(encoding="utf-8")
-        target.unlink()
-        try:
+        # The guards are the target language's binding since issue #289, read through its
+        # `checks_abi` capability; the three ways that read fails are each a named refusal.
+        from tools.backends.language.fortran import checks_abi
+        body = checks_abi.document()
+
+        def _unreadable() -> str:
+            raise OSError("gone")
+
+        with mock.patch.object(checks_abi, "document", _unreadable):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
-            self.assertIn("pure_gate_guards_document_missing", str(caught.exception))
-        finally:
-            target.write_text(body, encoding="utf-8")
-        target.write_text(body.replace("## 5. ", "## Five ", 1), encoding="utf-8")
-        try:
+        self.assertIn("pure_checks_abi_binding_missing", str(caught.exception))
+        with mock.patch.object(checks_abi, "document",
+                               lambda: body.replace("## 5. ", "## Five ", 1)):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
-            self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
-        finally:
-            target.write_text(body, encoding="utf-8")
+        self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
+        from tools.backends import registry as backend_registry
+        record = backend_registry.get("language", "fortran")
+        with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
+                backend_provides=record.backend_provides - {"checks_abi"})}):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_checks_abi_binding_unavailable", str(caught.exception))
 
     def test_the_producer_context_raises_when_the_contract_is_unreadable(self) -> None:
         """The disposition the m3c producer's runner read has: a document the leaf cannot repair
@@ -3146,6 +3165,11 @@ class PureHarnessShapeTests(unittest.TestCase):
 
     def test_the_verify_context_carries_the_output_contract_not_the_checks_abi(self) -> None:
         ctx = self.c._build_pure_harness_verify_context(self.refs)
+        # The reviewer is shown the same runner-output document the producer wrote against:
+        # the neutral contract followed by the target language's binding (issue #289).
+        from tools.backends.language.fortran import prompts as fortran_prompts
+        self.assertTrue(ctx["runner_output_contract_document"].endswith(
+            fortran_prompts.runner_output_document()))
         self.assertEqual(
             sorted(ctx),
             sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("generate", "verify", "harness")]))

@@ -844,34 +844,66 @@ class FieldGrammarTest(unittest.TestCase):
         self.assertFalse(hasattr(cb, "no_such_attribute"))
         self.assertEqual(63, cb.IDENTIFIER_MAX)
 
-    def test_the_single_identifier_grammar_refuses_to_pick_a_winner(self) -> None:
-        """The collapse guard, driven — it had no witness.
+    def test_two_identifier_grammars_are_a_schema_union_and_a_per_file_check(self) -> None:
+        """The collapse, driven over two grammars (issue #289, R4-b PR-2).
 
-        The bundle schema carries ONE identifier pattern, so this module collapses the language
-        backends' patterns to one. If a second language backend disagreed, silently picking
-        either would validate one language's symbols against the other's grammar. Review's sweep
-        replaced the refusal with a winner-picking `patterns.pop()` and nothing failed, because
-        the live registry has one language. Both empty and disagreeing are driven here; the
-        empty case previously died on `max()` of an empty sequence with a message that named
-        nothing.
+        The bundle schema carries ONE identifier pattern per field, so a second language used to
+        be refused here outright ("make the check per-file-language first"). It is per-file now:
+        the schema-level pattern is the UNION, so neither language's identifiers are refused at
+        the schema layer, and the cross-field layer holds each identifier to the grammar of the
+        language of the file that declares it — so a name only the OTHER language admits is
+        refused in a file of this one. Picking either grammar as the winner would pass one of
+        the two rows below. The empty case previously died on `max()` of an empty sequence with
+        a message that named nothing.
         """
         class _OtherGrammar:
             SOURCE_EXTENSIONS = (".zz",)
             COMPILER_SELECTOR_FAMILIES = ("zzc",)
             IDENTIFIER_MAX = 31
-            IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,30}(?![\s\S])"
+            IDENTIFIER_PATTERN = r"^_[a-z0-9_]{0,30}(?![\s\S])"   # must START with `_`
 
         real = cb._language_bundle
 
         def _two_languages(language: str):
             return _OtherGrammar if language == "zzlang" else real(language)
 
+        cb._language_identifier_re.cache_clear()
+        self.addCleanup(cb._language_identifier_re.cache_clear)
         with mock.patch.object(cb, "LANGUAGES", ("fortran", "zzlang")), \
                 mock.patch.object(cb, "_language_bundle", _two_languages):
-            with self.assertRaises(ValueError) as caught:
-                cb._bundle_identifier_pattern()
-            self.assertIn("do not agree", str(caught.exception))
-            self.assertIn("docs/BACKEND_BOUNDARY.md", str(caught.exception))
+            union = re.compile(cb._bundle_identifier_pattern())
+            self.assertTrue(union.fullmatch("abc"))      # only fortran admits it
+            self.assertTrue(union.fullmatch("_abc"))     # only zzlang admits it
+            self.assertFalse(union.fullmatch("1abc"))    # neither does
+            files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"]},
+                     {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"]}]
+            # The entrypoints are listed in the OPPOSITE order to their files: an owner resolved
+            # by any position — the first file (round 2, #289) or the file at the entrypoint's
+            # own index (round 3) — holds one of them to the other file's grammar.
+            entrypoints = [{"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"},
+                           {"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"}]
+            owner = {"_ok": files[1]}
+            bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok"}]
+            found = cb._identifier_language_violations(files, entrypoints, bindings, owner)
+            self.assertEqual(sorted(v.split(" ", 1)[0] for v in found), [
+                "entrypoints[1].module", "entrypoints[1].symbol", "files[0].modules[0]",
+                "files[1].modules[1]", "state_bindings[0].state_variable",
+                "state_bindings[0].storage_symbol"])
+            # ... and the layer is WIRED into the contract, not only callable (round 1, issue
+            # #289: deleting the call from `bundle_invariant_violations` left this row green
+            # while it drove the function directly). A Fortran file's entrypoint named with a
+            # spelling only the other language admits passes the schema's union and is refused
+            # by `validate_bundle` through the per-file layer.
+            cb._identifier_re.cache_clear()
+            self.addCleanup(cb._identifier_re.cache_clear)
+            doc = _minimal_bundle()
+            doc["entrypoints"][0]["symbol"] = "_adv1d__apply"
+            refused = cb.validate_bundle(doc)
+            self.assertEqual(
+                [v for v in refused if "not a fortran identifier" in v],
+                [v for v in refused if v.startswith("entrypoints[0].symbol")], refused)
+            self.assertTrue(any("entrypoints[0].symbol '_adv1d__apply' is not a fortran "
+                                "identifier" in v for v in refused), refused)
         with mock.patch.object(cb, "LANGUAGES", ()):
             for call in (cb._bundle_identifier_pattern, cb._bundle_identifier_max):
                 with self.assertRaises(ValueError) as caught:
@@ -1156,6 +1188,38 @@ class NullValueTest(unittest.TestCase):
                 self.assertTrue(any(v.startswith(clause) for v in cb.validate_bundle(doc)))
 
 
+class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
+    """The names the bundle contract requires or derives for host-given files are the target
+    language's `bundle_facts` (issue #289), not spellings of this module's. Driven by giving
+    the language other names: every reader follows."""
+
+    def test_the_staged_source_and_the_m3c_names_follow_the_language(self) -> None:
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"), \
+                mock.patch.object(bundle, "checks_basename", lambda sid: f"{sid}_checks.zz"):
+            graph = cb.derive_build_graph(
+                _minimal_bundle(), dependency_closure=("component/diffuse@0.1.0",),
+                toolchain={"language": "fortran"})
+            self.assertIn("staged:diffuse_model.zz",
+                          [u["source"] for u in graph["compile_units"]])
+            violation = cb.m3c_literal_name_violation(
+                {"files": [{"logical_path": "bx_model.f90", "role": "model",
+                            "modules": ["bx_model"]}]}, "bx", language="fortran")
+            self.assertIn("bx_model.zz", violation)
+            violation = cb.m3c_checks_abi_violation({"files": []}, "bx", language="fortran")
+            self.assertIn("bx_checks.zz", violation)
+
+    def test_a_language_with_no_bundle_facts_is_refused_not_defaulted(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            cb.derive_build_graph(_minimal_bundle(),
+                                  dependency_closure=("component/diffuse@0.1.0",),
+                                  toolchain={"language": "cpp"})
+        self.assertIn("no bundle facts", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            cb.m3c_literal_name_violation({"files": []}, "bx", language="cpp")
+
+
 class ObjectNameCollisionTest(unittest.TestCase):
     """Two sources deriving one object name would compile as one unit and drop the other
     from the link. Within the bundle that is a validation violation; across origins it is
@@ -1181,7 +1245,7 @@ class ObjectNameCollisionTest(unittest.TestCase):
         doc["files"].append(_file("diffuse_model.f90", "helper", ADV))
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
 
     def test_a_bare_spec_id_in_the_closure_is_rejected(self) -> None:
         # dependency_closure is node_keys; a bare spec_id (the shape _dependency_closure returns)
@@ -1189,7 +1253,7 @@ class ObjectNameCollisionTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "must be node_keys"):
             cb.derive_build_graph(
                 _minimal_bundle(), dependency_closure=("diffuse", "component/mid@0.1.0"),
-                toolchain={})
+                toolchain={"language": "fortran"})
 
     def test_bundle_module_cannot_collide_with_a_staged_dependency_module(self) -> None:
         # Even at a DISTINCT object name, a bundle file declaring a module a staged dependency
@@ -1200,18 +1264,18 @@ class ObjectNameCollisionTest(unittest.TestCase):
         self.assertEqual(cb.validate_bundle(doc), [])  # the bundle alone is well-formed
         with self.assertRaisesRegex(RuntimeError, "module name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
         # case-insensitively (Fortran module names are case-insensitive)
         doc["files"][-1]["modules"] = ["DIFFUSE_MODEL"]
         with self.assertRaisesRegex(RuntimeError, "module name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
 
     def test_a_member_model_module_does_not_false_collide_with_the_closure(self) -> None:
         # A member is excluded from the staged closure, so the bundle's own `<spec_id>_model`
         # module is not a staged module — no false collision.
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0 declares module adv_flux_model
-        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={})
+        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"language": "fortran"})
         self.assertIn("adv_flux_model.o", graph["link"]["objects"])
 
     def test_a_distinct_dep_sharing_a_member_spec_id_is_not_silently_dropped(self) -> None:
@@ -1222,7 +1286,7 @@ class ObjectNameCollisionTest(unittest.TestCase):
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/adv_flux@2.0.0",), toolchain={})
+                doc, dependency_closure=("component/adv_flux@2.0.0",), toolchain={"language": "fortran"})
 
     def test_object_names_collide_case_insensitively(self) -> None:
         # `a/b.f90` and `A__B.f90` differ after case folding as PATHS, but their objects
@@ -1592,7 +1656,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         # implementation is in the bundle (its own model file); it must be excluded from the
         # staged closure, or `<spec_id>_model.o` collides / links twice.
         doc = _multi_node_bundle()  # members: adv_flux, adv1d
-        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={})
+        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"language": "fortran"})
         sources = [unit["source"] for unit in graph["compile_units"]]
         self.assertNotIn("staged:adv_flux_model.f90", sources)
         objects = graph["link"]["objects"]
@@ -1604,7 +1668,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         # closure deepest-first: base (index 0, staged) then FLUX (index 1, member) — the
         # member is shallower than the staged dep, so this is the buildable shape.
         graph = cb.derive_build_graph(
-            doc, dependency_closure=("component/base@0.1.0", FLUX), toolchain={})
+            doc, dependency_closure=("component/base@0.1.0", FLUX), toolchain={"language": "fortran"})
         sources = [unit["source"] for unit in graph["compile_units"]]
         self.assertIn("staged:base_model.f90", sources)          # a real dep, kept
         self.assertNotIn("staged:adv_flux_model.f90", sources)   # a member (FLUX), dropped
@@ -1619,7 +1683,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         dependent = "component/dependent@0.1.0"
         with self.assertRaisesRegex(RuntimeError, "straddles a staged dependency"):
             cb.derive_build_graph(
-                doc, dependency_closure=(FLUX, dependent), toolchain={},
+                doc, dependency_closure=(FLUX, dependent), toolchain={"language": "fortran"},
                 dependency_edges={dependent: {FLUX}})
 
     def test_independent_staged_branch_is_not_a_straddle(self) -> None:
@@ -1629,9 +1693,9 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0
         independent = "component/independent@0.1.0"
         self.assertTrue(cb.derive_build_graph(
-            doc, dependency_closure=(FLUX, independent), toolchain={}))
+            doc, dependency_closure=(FLUX, independent), toolchain={"language": "fortran"}))
         self.assertTrue(cb.derive_build_graph(
-            doc, dependency_closure=(FLUX, independent), toolchain={},
+            doc, dependency_closure=(FLUX, independent), toolchain={"language": "fortran"},
             dependency_edges={independent: set()}))  # explicitly no dep on FLUX
 
 
@@ -2785,7 +2849,7 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
     def _run(self, doc: dict, node_key: str, ir_published):
         return cb.pure_bundle_contract_violation(
             doc, node_key=node_key, spec_id="bx", shape="m3c",
-            runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
             harness_provided={"sync_single_case@1", "state_registration@1"},
             build_graph=lambda d: None, ir_published_operations=ir_published)
 
@@ -2994,7 +3058,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
     def _run(self, doc: dict, snapshot_vars, shape: str = "m3c"):
         return cb.pure_bundle_contract_violation(
             doc, node_key=self._NK, spec_id="bx", shape=shape,
-            runner_basename="bx_runner.f90", ir_snapshot_variables=snapshot_vars,
+            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=snapshot_vars,
             harness_provided={"sync_single_case@1", "state_registration@1"},
             build_graph=lambda d: None, ir_published_operations=None)
 
@@ -3045,7 +3109,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
                     doc["capability_requirements"] = ["sync_single_case@1", over["capability"]]
                 r = cb.pure_bundle_contract_violation(
                     doc, node_key=self._NK, spec_id="bx", shape="m3c",
-                    runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+                    language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
                     harness_provided={"sync_single_case@1", "state_registration@1",
                                       "state_registration@2"},
                     build_graph=lambda d: None, ir_published_operations=None)
@@ -3140,6 +3204,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
             "capability": "state_registration@1"}]
         r = cb.pure_bundle_contract_violation(
             doc, node_key=HARNESS, spec_id="harness_fortran_cpu", shape="harness",
+            language="fortran",
             runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=["x_out"],
             harness_provided={"sync_single_case@1", "state_registration@1"},
             build_graph=lambda d: None, ir_published_operations=None)
@@ -3178,6 +3243,7 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
     def _run(self, doc: dict, shape: str, **kw):
         params = dict(
             node_key=HARNESS, spec_id="harness_fortran_cpu", shape=shape,
+            language="fortran",
             runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=[],
             harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
             ir_published_operations=["harness_fortran_cpu__parse_cases"])
@@ -3326,7 +3392,8 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         # non-None answer would not tell the two apart, so pin that the ACCEPTED harness
         # bundle is exactly the one the M3c name layer rejects.
         self.assertIsNotNone(
-            cb.m3c_literal_name_violation(self._harness_doc(), "harness_fortran_cpu"))
+            cb.m3c_literal_name_violation(self._harness_doc(), "harness_fortran_cpu",
+                                          language="fortran"))
         self.assertIsNone(self._run(self._harness_doc(), "harness"))
 
     def test_l1c_applies_on_the_harness_shape(self) -> None:

@@ -179,9 +179,40 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "The host renders the runner glue over the certified harness for this value, rather "
         "than a leaf authoring it.",
     ),
+    "bundle_facts": (
+        ("language",),
+        "The `CodegenBundle` contract has this value's file facts to apply (source extensions, "
+        "the identifier grammar, compiler-driver families), and the host knows the compiler it "
+        "defaults to for it — which is also the syntax stage `Generate.gate` must pass.",
+    ),
+    "checks_abi": (
+        ("language",),
+        "This value states how the language-neutral checks-module contract "
+        "(`docs/workflow/CHECKS_MODULE_CONTRACT.md`) is spelled in it, and the legality and "
+        "gate-guard rules its leaf-authored sources are held to: the document the `Generate` "
+        "leaves are shown beside the neutral contract.",
+    ),
+    "prompt_fragments": (
+        ("language",),
+        "The pure `generate` prompts have this value's authoring and review rules to carry: the "
+        "neutral templates mark where a language's rules go (`{{language:<name>}}`), and the "
+        "backend supplies the text (`fragments(<template>)`), plus the runner-output binding "
+        "inlined after the runner-output contract (`runner_output_document()`). Without it "
+        "those templates cannot be composed for a node of this value, and its launch is "
+        "refused rather than sent another language's rules.",
+    ),
+    "syntax_promotions": (
+        ("language",),
+        "The `Generate.gate` syntax-only stage knows which files of this value are sources, the "
+        "order they are handed to the compiler in, and which warning classes it promotes to "
+        "errors. Without it the stage has nothing to check, and a node of this value is refused "
+        "rather than passed through unchecked.",
+    ),
     "syntax_check": (
         ("compiler",),
-        "The syntax-only gate has an argv adapter and a diagnostic reader for this value.",
+        "The syntax-only gate has an adapter for this value: its argv, its executable, a version "
+        "probe and a canary source (a failing stage is attributed by re-running the adapter, "
+        "never by reading its diagnostics).",
     ),
     "lint": (
         ("linter",),
@@ -246,6 +277,13 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "lint_rules": "lint",
     "execution_env": "execution",
     "perf_facts": "perf",
+    "bundle_facts": "bundle",
+    # `syntax` on both axes, a different job on each: the compiler's package builds the command
+    # line, the language's says what it is run over.
+    "syntax_check": "syntax",
+    "syntax_promotions": "syntax",
+    "prompt_fragments": "prompts",
+    "checks_abi": "checks_abi",
 }
 
 
@@ -296,18 +334,25 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
     for b in (
         # This record is extracted AND still carries a `core_provides` capability, because
         # extraction and capability are independent: the neutral core still holds this value's
-        # control-file compile rules (an open ledger area), while its runner render has moved
-        # into the package and is dispatched through `capability_module`.
+        # control-file compile rules (an open ledger area), while its runner render, its bundle
+        # facts and its syntax-stage facts have moved into the package and are dispatched
+        # through `capability_module`.
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}),
+            backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
+                                        "prompt_fragments", "checks_abi"}),
         ),
         Backend(
             "build_system", "make", None,
             core_provides=frozenset({"control_file", "build_execute"}),
         ),
-        Backend("compiler", "gfortran", None, core_provides=frozenset({"syntax_check"})),
+        # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
+        # the version probe `run_syntax_check` used to hold inline.
+        Backend(
+            "compiler", "gfortran", "tools.backends.compiler.gfortran",
+            backend_provides=frozenset({"syntax_check"}),
+        ),
         # The linter members ARE the presets the `Generate` lint evidence gate accepts: that gate
         # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the
         # only place the accepted presets are written. Listing only `fortitude` here would
@@ -530,6 +575,51 @@ def implemented_backend_ids(axis: str) -> tuple[str, ...]:
     a verdict on one value. Registering a member with no code does not widen it.
     """
     return tuple(bid for bid in backend_ids(axis) if _BACKENDS[(axis, bid)].implemented)
+
+
+#: The one language token whose linter is not declared by a linter backend: `mixed` names a
+#: COMPOSITE (the `mixed` linter record runs several linters in order), not a language any
+#: backend implements, so no linter's `LANGUAGES` can carry it. Naming the pair here is naming
+#: two axis values, which is what the neutral core may do.
+_COMPOSITE_LINTER_FOR_LANGUAGE: dict[str, str] = {"mixed": "mixed"}
+
+
+def linter_for_language(language: str) -> str | None:
+    """The linter a node of `language` is linted with, or `None` when no linter declares it.
+
+    Answered from each `lint`-capable linter backend's own `LANGUAGES` declaration, so the
+    language -> linter fact is written where the linter's knowledge is (issue #289, R4-b PR-2;
+    it was a table in the post_generate validator, carrying tokens no backend implements). A
+    language two linters declare RAISES: resolving it by order would make the gate run one
+    linter and the certification expect whichever the next reader happened to pick.
+
+    Loads the linter packages it asks — the reason this is a function rather than a table built
+    at import (this module imports no backend package at import time)."""
+    normalized = str(language or "").strip().lower()
+    if normalized in _COMPOSITE_LINTER_FOR_LANGUAGE:
+        return _COMPOSITE_LINTER_FOR_LANGUAGE[normalized]
+    matches = [
+        bid for bid in backend_ids("linter")
+        if "lint" in _BACKENDS[("linter", bid)].backend_provides
+        and normalized in capability_module("linter", bid, "lint").LANGUAGES
+    ]
+    if len(matches) > 1:
+        raise UnsupportedBackend(
+            f"language '{language}' is declared by more than one linter ({', '.join(matches)}); "
+            f"a language is linted by exactly one — see docs/BACKEND_BOUNDARY.md")
+    return matches[0] if matches else None
+
+
+def is_compiled_language(language: str) -> bool:
+    """Whether `language` is one whose sources are compiled — the language backend's own
+    `bundle_facts.COMPILED` declaration (issue #289, R4-b PR-2; two policy sets in the neutral
+    core used to list language tokens for it, most of them values no backend implements).
+
+    `False` for a value that declares no `bundle_facts`: this repository states nothing about
+    how it is built, so a policy keyed on "compiled" does not bind it."""
+    if not provides("language", language, "bundle_facts"):
+        return False
+    return bool(capability_module("language", language, "bundle_facts").COMPILED)
 
 
 def get(axis: str, backend_id: str) -> Backend:

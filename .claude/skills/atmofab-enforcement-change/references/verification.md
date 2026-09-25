@@ -425,12 +425,15 @@ Confirm through `mcp_call.py` rather than `import`, so the JSON-RPC layer and th
 environment are included.
 
 ```bash
-# standalone works
-env -u ATMOFAB_WORKFLOW_MODE -u ATMOFAB_ORCHESTRATION_ID \
-  python3 mcp_servers/mcp_call.py --tool run_syntax_check --args-json '{"project_dir": "<abs>"}'
-# under the workflow, dropping orchestration_id is refused
-ATMOFAB_WORKFLOW_MODE=1 python3 mcp_servers/mcp_call.py --tool run_linter --args-json '{"project_dir": "<abs>"}'
+# `compiler` / `std` (run_syntax_check) and `preset` (run_linter) are required since issue #289
+python3 mcp_servers/mcp_call.py --tool run_syntax_check \
+  --args-json '{"project_dir": "<abs>", "compiler": "gfortran", "std": "f2008"}'
+python3 mcp_servers/mcp_call.py --tool run_linter \
+  --args-json '{"project_dir": "<abs>", "preset": "fortitude"}'
 ```
+
+The server reads no workflow environment variable (issue #171 PR-2 retired the orchestrated
+mode), so the same call answers the same way with or without `ATMOFAB_WORKFLOW_MODE`.
 
 ## What an LLM CLI actually does (unbilled capture harness)
 

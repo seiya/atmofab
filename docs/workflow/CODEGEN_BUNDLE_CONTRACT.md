@@ -173,8 +173,10 @@ can name one.
 
 ### `modules`
 
-`modules` is the non-empty list of Fortran modules the file defines. A module name is unique
-across the whole bundle (one `.mod` per module; compared case-insensitively). This list is
+`modules` is the non-empty list of modules the file defines — the language's unit of
+publication (a language backend's binding says what a module is in that language:
+`docs/backends/language/<language>/BUNDLE_BINDING.md`). A module name is unique across the whole
+bundle (compared case-insensitively). This list is
 what ties an `entrypoints[].module` or a `state_bindings[].module` to the file that owns it —
 and, through the file's `member_node_key`, to a member: without it, an attribution that names
 the member's own file in `defined_in` could still route the rendered `use <module>, only:
@@ -212,7 +214,7 @@ is shared by the whole unit, and only `helper` / `internal_module` may be shared
 
 **Privacy invariant.** A `helper` or `internal_module` file cannot be the `defined_in`
 of any entrypoint. This *is* the definition of "private" in this contract: privacy is
-declared by role, not inferred from a Fortran `private` statement. A `runner` file cannot be
+declared by role, not inferred from a language's own accessibility statement. A `runner` file cannot be
 one either, for the opposite reason: it is the executable entry, which nothing may `use`.
 
 ### `logical_path`
@@ -222,19 +224,19 @@ within the bundle. The rules (canonical implementation:
 `tools/codegen_bundle.py:logical_path_violations`):
 
 - POSIX separators only; a backslash is rejected.
-- Already normalized: `posixpath.normpath(p) == p`. This rejects `./x.f90`, `a/../b.f90`,
-  `a//b.f90`, a trailing `/`, and the empty string.
+- Already normalized: `posixpath.normpath(p) == p`. This rejects `./x.<ext>`, `a/../b.<ext>`,
+  `a//b.<ext>`, a trailing `/`, and the empty string.
 - Relative and confined: no leading `/`, and no `.` / `..` segment anywhere.
 - Each segment matches `[A-Za-z0-9_][A-Za-z0-9_.-]*`.
-- The extension is the one allowed for the file's `language`
-  (`LANGUAGE_EXTENSION_ALLOWLIST`; `fortran` → `.f90`).
+- The extension is one allowed for the file's `language` (`LANGUAGE_EXTENSION_ALLOWLIST`,
+  read from each language backend's `bundle_facts.SOURCE_EXTENSIONS`).
 - The basename is not a reserved build filename (`Makefile`, `makefile`, `GNUmakefile`,
   `CMakeLists.txt`, `configure`) and the extension is not a build/script extension
   (`.sh`, `.bash`, `.mk`, `.cmake`, `.py`).
 - Paths are unique **after case folding**, so a bundle cannot depend on a
-  case-sensitive filesystem to keep `A.f90` and `a.f90` apart.
+  case-sensitive filesystem to keep `A.<ext>` and `a.<ext>` apart.
 - No two paths derive the same object name, compared case-folded (see "Build-graph
-  derivation"): `a/b.f90` and `a__b.f90` both flatten to `a__b.o`, and a colliding pair
+  derivation"): `a/b.<ext>` and `a__b.<ext>` both flatten to `a__b.o`, and a colliding pair
   would compile as one object and silently drop the other from the link.
 
 ### `compile_after`
@@ -252,13 +254,16 @@ source; the bundle declares them, and `derive_build_graph` topologically sorts b
 
 ### Language
 
-`language` is `fortran` in v1. A new language is added by extending the schema enum and
-`LANGUAGE_EXTENSION_ALLOWLIST` together.
+`language` is a language whose backend declares `bundle_facts` (`codegen_bundle.LANGUAGES`,
+derived from the registry). The schema's `language` enum names the same set and is extended with
+it; the facts themselves — extensions, identifier grammar, compiler-driver families, the names
+the host gives the language's files — are the backend's (`bundle_facts`), and a language's
+binding of this contract is `docs/backends/language/<language>/BUNDLE_BINDING.md`.
 
 ## Entrypoints
 
-`entrypoints[]` is non-empty. Each entry declares `symbol` (an identifier), `module` (the
-Fortran module that publishes `symbol`), `kind` (`operation` or `checks_interface`),
+`entrypoints[]` is non-empty. Each entry declares `symbol` (an identifier of the language of
+its `defined_in` file), `module` (the module that publishes `symbol`), `kind` (`operation` or `checks_interface`),
 `node_key` (a unit member), and `defined_in` (the `logical_path` of a file in this bundle).
 An identifier — `symbol`, `module`, and in `state_bindings` (`state_variable`,
 `storage_symbol`, `module`) — is at most `codegen_bundle.IDENTIFIER_MAX` characters and matches
@@ -287,7 +292,8 @@ declares it.
   the member's own file in `defined_in` while `module`/`symbol` route the rendered `use` to
   another member's export.
 - **Symbol uniqueness**: a symbol is published at most once **per module**, compared
-  case-insensitively (Fortran is case-insensitive in both). A symbol is module-qualified, so
+  case-insensitively (stricter than a case-sensitive language needs, exactly what a
+  case-insensitive one does). A symbol is module-qualified, so
   each member's checks module legitimately exports the same fixed ABI name (`case_run`,
   `get_time`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
   same name in the same module is an unlinkable duplicate.
@@ -460,8 +466,8 @@ implements the convention, and the checks-ABI layer then requires each bound var
 published by that module. The `harness` shape carries no binding (its runner is its own
 writer, and there is no checks module to bind).
 
-`module` is the Fortran module that publishes `storage_symbol`, so the host renders
-`use <module>, only: <storage_symbol>` mechanically (as for an entrypoint). It must be a
+`module` is the module that publishes `storage_symbol`, so the host renders the runner's
+import of it mechanically (as for an entrypoint). It must be a
 module a `checks`-role file **owned by the binding's own `node_key`** declares — for **either
 capture**. Otherwise a binding for member A could name member B's checks module and
 capture/register B's storage as A's state, producing incorrect verification evidence with no
@@ -516,13 +522,13 @@ pure data under exactly three keys:
   compiler/linker driver for the bundle's language** (`COMPILER_SELECTOR_FAMILIES_BY_LANGUAGE`)
   — a bare program name with no path separator (the backend resolves it on a trusted PATH),
   optionally version-suffixed and prefixed by a **target triple that begins with a known CPU
-  architecture** (`COMPILER_TARGET_TRIPLE_ARCHES`), so `gfortran`,
-  `x86_64-linux-gnu-gfortran-12`, `frt`, and `frtpx` are kept for a Fortran bundle while a
-  driver for the wrong language (`gcc`, `g++`, `clang`) is dropped — the backend pins it as `FC`
-  and it would deterministically fail on `.f90` — and an arbitrary prefix that merely ends in a
-  family name (`payload-gfortran`, `sh-gfortran`) is dropped too. An unrecognized selector is
-  dropped and the backend uses its default (`gfortran`); a new compiler, architecture, or
-  language adds its driver family set. The other declarative fields are carried only as single
+  architecture** (`COMPILER_TARGET_TRIPLE_ARCHES`); a driver for the wrong language is dropped —
+  the backend would pin it as the build compiler and it would deterministically fail on the
+  sources — and so is an arbitrary prefix that merely ends in a family name. An unrecognized
+  selector is dropped and the backend uses the language's default compiler
+  (`bundle_facts.DEFAULT_COMPILER`); a new compiler, architecture, or language adds its driver
+  family set. The families and examples for a language are its binding
+  (`docs/backends/language/<language>/BUNDLE_BINDING.md`). The other declarative fields are carried only as single
   tokens without whitespace or shell metacharacters. This keeps the graph free of any runnable
   command even though its input is an open, LLM-authored IR object.
 
@@ -531,11 +537,11 @@ to the target backend (`Z2`); a graph that could carry a command would reintrodu
 build authority the file-role rules exist to deny.
 
 Ordering is derived from roles and the bundle's declared `compile_after` edges — never from
-`use`-statement analysis of the generated Fortran:
+import-statement analysis of the generated source:
 
 1. the dependency closure, deepest first, as **`node_key`s** (`_dependency_closure_nodes`
    semantics) — a bare `spec_id` (the shape `_dependency_closure` returns) is rejected, since it
-   would derive an empty spec_id and emit a corrupt `staged:_model.f90` — **minus any
+   would derive an empty spec_id and emit a corrupt staged source name — **minus any
    dependency that is itself a member of this optimization unit**. A member's implementation is
    generated inside the bundle (its own `model` file), so staging
    it from the closure would collide on `<spec_id>_model.o` or link two implementations of the
@@ -570,7 +576,7 @@ which — combined with the `compile_after` topological order — guarantees eve
 dependency is already built.
 
 An object name is derived from its source path: the extension becomes `.o` and any `/` is
-flattened to `__` (`core/util.f90` → `core__util.o`), so a flat `<name>.f90` keeps the
+flattened to `__` (`core/util.<ext>` → `core__util.o`), so a flat `<name>.<ext>` keeps the
 `<name>.o` the current Makefile uses. Derivation **fails closed** when two sources of any
 origin derive the same object name. Within the bundle that is already a validation
 violation; across origins only assembly can see it, and it is the case that matters: a
@@ -579,10 +585,11 @@ and so capture the contract boundary the `m3c` shape's refusal of the `runner` r
 it. On the `harness` shape there is no glue to capture: the host renders none, the assembly
 is handed an EMPTY glue set, and the bundle's own `runner` file is what links.
 
-Derivation **also fails closed on a Fortran module-name collision** across origins: a bundle
-file may declare a `modules` name equal to a staged dependency's derived `<spec_id>_model`
-module even when the object names differ, and two definitions of one module overwrite the
-dependency's `.mod`. `validate_bundle` enforces module uniqueness only within the bundle; the
+Derivation **also fails closed on a module-name collision** across origins: a bundle file may
+declare a `modules` name equal to a staged dependency's derived `<spec_id>_model` module even
+when the object names differ, and two definitions of one module name the same publishing unit
+twice (a compiled module interface is written per module name, so the second overwrites the
+dependency's). `validate_bundle` enforces module uniqueness only within the bundle; the
 closure's module names are a host input only assembly holds. (A unit member is excluded from
 the staged closure, so the bundle's own `<spec_id>_model` module never false-collides.)
 
@@ -620,7 +627,7 @@ targets that `Build` and `Validate.execute` drive.
 
 **Scope of the guarantee.** The prohibition is about the **host-side assembly** of a bundle:
 nothing a bundle declares can inject a command into the build the host derives and runs. It is
-**not** a claim that the compiled program is harmless — generated Fortran can call
+**not** a claim that the compiled program is harmless — generated source can call
 `execute_command_line`, `system`, or open files, exactly as any leaf-authored source can today.
 That runtime behavior is contained by the **separate execution sandbox** the workflow already
 applies to Build/Validate (`bwrap`), not by this contract. Z0 does not change the runtime trust
@@ -631,7 +638,7 @@ document is closed outside the declared `target_lowering_plan` extension point (
 field carries a command), the role and path rules reject build and script files, and the
 build-graph type has no command slot — so nothing a bundle declares reaches a shell **during
 assembly**. `files[].content` is **not** scanned for shell-looking strings, and neither is a
-lowering-plan interior. A Fortran source legitimately contains string literals (error messages,
+lowering-plan interior. A source legitimately contains string literals (error messages,
 format strings, file names) and legitimate calls, so a content scan is a false-positive source
 that adds no guarantee the three structural rules give and cannot soundly bound runtime
 behavior anyway. What a target backend does with model-authored text — `files[].content`, a

@@ -77,24 +77,38 @@ ROLE_BUILD_PRECEDENCE: tuple[str, ...] = (
     "internal_module", "helper", "model", "checks", "runner")
 
 def _language_bundle(language: str) -> Any | None:
-    """The language backend's bundle interface, or `None` when there is none to reach.
+    """The language backend's `bundle_facts` module, or `None` when it declares none.
 
-    `unavailable_reason` is the question — declared AND extracted — because this is about to READ
-    backend code. Membership would answer `None` for a value whose knowledge is still inlined in
-    the neutral core, and `load` would then raise on it.
+    The capability is the question (issue #289, R4-b PR-2): until then this asked "is the
+    backend extracted" and then took whatever attribute named `bundle` the package happened to
+    carry — the same-named-attribute dispatch `registry.capability_module` exists to prevent. A
+    value that does not DECLARE `bundle_facts` has no facts for the contract to apply.
     """
-    if backend_registry.unavailable_reason("language", language) is not None:
+    if not backend_registry.provides("language", language, "bundle_facts"):
         return None
-    return getattr(backend_registry.load("language", language), "bundle", None)
+    return backend_registry.capability_module("language", language, "bundle_facts")
 
 
-#: The languages a bundle may declare: those with a language backend that carries a bundle
-#: interface. Derived, so registering a backend is what widens it — this module does not keep a
-#: second list of the implemented set (docs/BACKEND_BOUNDARY.md).
-# The `implemented_backend_ids` half is redundant and kept as an intent marker: `_language_bundle`
-# answers non-None only for an EXTRACTED backend, and extracted implies implemented, so the outer
-# filter cannot change the result for any registry state. A census proved that; it is stated here
-# rather than left to read as a live narrowing.
+def language_facts(language: Any) -> Any:
+    """The `bundle_facts` module of `language`, or `ValueError` naming why there is none.
+
+    For the readers that need a fact rather than a membership answer — the names the host gives
+    this language's files, the compiler it defaults to. A raise, not a default: a name spelled
+    for another language is a file nothing compiles."""
+    facts = _language_bundle(str(language or ""))
+    if facts is None:
+        reason = backend_registry.missing_capability_reason(
+            "language", str(language or ""), "bundle_facts")
+        raise ValueError(f"language {language!r} has no bundle facts: {reason}")
+    return facts
+
+
+#: The languages a bundle may declare: those with a language backend that declares
+#: `bundle_facts`. Derived, so registering a backend is what widens it — this module does not
+#: keep a second list of the implemented set (docs/BACKEND_BOUNDARY.md).
+# The `implemented_backend_ids` half is redundant and kept as an intent marker: a declared
+# capability implies an implemented record, so the outer filter cannot change the result for any
+# registry state. It is stated here rather than left to read as a live narrowing.
 LANGUAGES: tuple[str, ...] = tuple(
     lang for lang in backend_registry.implemented_backend_ids("language")
     if _language_bundle(lang) is not None
@@ -125,17 +139,26 @@ def _bundle_identifier_max() -> int:
 
 
 def _bundle_identifier_pattern() -> str:
+    """The schema-level identifier grammar: the UNION of every bundle language's.
+
+    The schema carries one `pattern` per identifier field and cannot know which file an
+    entrypoint's `symbol` belongs to, so it admits what ANY bundle language admits; the
+    cross-field layer then holds each identifier to the grammar of the language of the file
+    that declares it (`_identifier_language_violations`). With one language the union IS that
+    language's pattern, byte for byte. Each member is a whole-string pattern (`^` …
+    `(?![\\s\\S])`), so an alternation of them is one too, in Python and in ECMA-262 alike."""
     if not LANGUAGES:
         raise ValueError(_no_bundle_language_reason())
-    patterns = {_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES}
-    if len(patterns) != 1:
-        raise ValueError(
-            "the CodegenBundle schema carries ONE identifier pattern, and the implemented "
-            f"languages {', '.join(LANGUAGES)} do not agree on one ({sorted(patterns)}). Make "
-            "the identifier check per-file-language before implementing a second language "
-            "backend whose identifier grammar differs — see docs/BACKEND_BOUNDARY.md"
-        )
-    return patterns.pop()
+    patterns = sorted({_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES})
+    if len(patterns) == 1:
+        return patterns[0]
+    return "|".join(f"(?:{pattern})" for pattern in patterns)
+
+
+@lru_cache(maxsize=8)
+def _language_identifier_re(language: str) -> re.Pattern[str] | None:
+    facts = _language_bundle(language)
+    return None if facts is None else re.compile(facts.IDENTIFIER_PATTERN)
 
 # The no-arbitrary-command rule is structural: the schema is closed (no field a command
 # could travel in), these path rules reject build/script files, and the derived build
@@ -168,11 +191,12 @@ _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
 # here: a symbol over the bound cannot pass the mandatory `Generate.gate` syntax check, and the
 # contract rejects it before assembly rather than deferring the failure to the build.
 #
-# The bundle SCHEMA carries one pattern (`spec/schema/generate/codegen_bundle.schema.json`),
-# because its `language` enum has one member. So does this module-level constant, and
-# `_bundle_identifier_pattern` is where the collapse happens — it refuses rather than picking a
-# winner if a second language backend ever disagrees, instead of silently validating one
-# language's symbols against another's grammar.
+# The bundle SCHEMA carries one pattern per field (`spec/schema/generate/codegen_bundle.schema.json`),
+# and so does this module-level constant: the union of the bundle languages' grammars
+# (`_bundle_identifier_pattern`). The per-language check is the cross-field layer's
+# (`_identifier_language_violations`), which knows the file an identifier belongs to — issue
+# #289 (R4-b PR-2) made it per-file-language ahead of a second language, as this comment used
+# to demand.
 # LAZY, and that is the point. Computing these at import made a legitimate second language
 # backend with a different identifier grammar raise inside `import tools.codegen_bundle` — which
 # `validate_pipeline_semantics`, `workflow_conductor` and `pure_leaf` all import, so the refusal
@@ -865,7 +889,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"files[{index}].member_node_key {member!r} is not a member of optimization_unit")
 
     # The build graph keys objects on the derived object name, so two files deriving the
-    # same object (`a/b.f90` and `a__b.f90` both flatten to `a__b.o`) would silently
+    # same object (`a/b.<ext>` and `a__b.<ext>` both flatten to `a__b.o`) would silently
     # compile to one object and drop the other from the link. Compared case-folded, for the
     # same reason logical_path is: on a case-insensitive filesystem `A__B.o` and `a__b.o`
     # are one file.
@@ -889,9 +913,11 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         if isinstance(entry.get("logical_path"), str)
     }
 
-    # module -> defining file. A Fortran module name is globally unique in a build (one `.mod`
-    # per module), and case-insensitive, so a name defined by two files is a violation. This
-    # map ties an entrypoint's / binding's `module` to the file (and thus member) that owns it.
+    # module -> defining file. A module name identifies one publishing unit across the build,
+    # so a name defined by two files is a violation — and the map below, which ties an
+    # entrypoint's / binding's `module` to the file (and thus member) that owns it, would be
+    # ambiguous without it. Compared case-folded: stricter than a case-sensitive language needs,
+    # and exactly what a case-insensitive one does.
     module_owner: dict[str, Mapping[str, Any]] = {}
     for index, entry in enumerate(files):
         modules = entry.get("modules")
@@ -904,7 +930,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             if folded in module_owner:
                 violations.append(
                     f"files[{index}].modules {module!r} is already defined by another file "
-                    "(a Fortran module name is unique across the build)")
+                    "(a module name is unique across the build)")
             else:
                 module_owner[folded] = entry
 
@@ -1154,7 +1180,50 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             violations.append(
                 f"capability_requirements declares {token} but no state_bindings[] entry "
                 "captures through 'harness_registration' with it")
+    violations += _identifier_language_violations(files, entrypoints, bindings, module_owner)
     return violations
+
+
+def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
+                                    entrypoints: Sequence[Mapping[str, Any]],
+                                    bindings: Sequence[Mapping[str, Any]],
+                                    module_owner: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Each identifier held to the grammar of the language of the FILE that declares it.
+
+    The schema layer admits the union of the bundle languages' grammars
+    (`_bundle_identifier_pattern`) because it cannot know which file an entrypoint belongs to;
+    this layer can. A file's `modules` are its own; an entrypoint's `symbol` / `module` belong
+    to its `defined_in` file; a binding's names belong to the file that defines its `module`.
+    An identifier whose file does not resolve is left to the invariants that report the
+    unresolved reference. With one bundle language the union IS its grammar, so this layer
+    adds no refusal today; it is what stops a second language's identifiers being validated
+    against another's grammar (issue #289, R4-b PR-2)."""
+    def check(value: Any, language: Any, where: str) -> list[str]:
+        pattern = _language_identifier_re(str(language)) if isinstance(language, str) else None
+        if pattern is None or not isinstance(value, str) or pattern.fullmatch(value):
+            return []
+        return [f"{where} {value!r} is not a {language} identifier ({pattern.pattern})"]
+
+    out: list[str] = []
+    files_by_path = {e.get("logical_path"): e for e in files
+                     if isinstance(e.get("logical_path"), str)}
+    for index, entry in enumerate(files):
+        for mod_index, module in enumerate(entry.get("modules") or []):
+            out += check(module, entry.get("language"), f"files[{index}].modules[{mod_index}]")
+    for index, entry in enumerate(entrypoints):
+        owner = files_by_path.get(entry.get("defined_in"))
+        if owner is None:
+            continue
+        for key in ("symbol", "module"):
+            out += check(entry.get(key), owner.get("language"), f"entrypoints[{index}].{key}")
+    for index, entry in enumerate(bindings):
+        module = entry.get("module")
+        owner = module_owner.get(module.casefold()) if isinstance(module, str) else None
+        if owner is None:
+            continue
+        for key in ("state_variable", "storage_symbol", "module"):
+            out += check(entry.get(key), owner.get("language"), f"state_bindings[{index}].{key}")
+    return out
 
 
 def validate_bundle(doc: Any) -> list[str]:
@@ -1320,7 +1389,7 @@ def unsatisfied_capability_requirements(
 # --------------------------------------------------------------------------------------
 
 def _object_name(logical_path: str) -> str:
-    """The object basename for a bundle/glue source. A flat `<name>.f90` yields
+    """The object basename for a bundle/glue source. A flat `<name>.<ext>` yields
     `<name>.o` (parity with the current Makefile); a nested path is flattened with `__`
     so two files with the same basename in different directories cannot collide."""
     stem, _ = posixpath.splitext(logical_path)
@@ -1329,7 +1398,7 @@ def _object_name(logical_path: str) -> str:
 
 def _spec_id_of_node_key(node_key: str) -> str:
     """The bare `spec_id` of a `node_key` (`<spec_kind>/<spec_id>@<spec_version>`) — the
-    basename the dependency closure and its staged `<spec_id>_model.f90` are keyed on."""
+    basename the dependency closure and its staged model source are keyed on."""
     if not isinstance(node_key, str) or "/" not in node_key:
         return ""
     return node_key.split("/", 1)[1].split("@", 1)[0]
@@ -1404,13 +1473,13 @@ def derive_build_graph(doc: Mapping[str, Any], *,
 
     `dependency_closure` is the deepest-first dependency **node_key** list
     (`workflow_conductor._dependency_closure_nodes` semantics); each dependency contributes
-    the staged `<spec_id>_model.f90`. node_keys, not bare spec_ids, so a dependency absorbed
-    into this optimization unit is matched by its exact identity (a distinct dependency that
+    its staged model source (`bundle_facts.model_basename` of `toolchain["language"]`).
+    node_keys, not bare spec_ids, so a dependency absorbed into this optimization unit is matched by its exact identity (a distinct dependency that
     merely shares a `spec_id` with a member — `component/foo@2.0.0` vs a `component/foo@1.0.0`
     member — is NOT dropped; it stays, and the `<spec_id>_model.o` basename collision it then
     forms surfaces loudly rather than silently omitting an implementation).
-    `host_glue_sources` are the host-rendered contract-boundary files (today:
-    `<spec_id>_runner.f90`), which link last. `dependency_edges` (optional) maps each closure
+    `host_glue_sources` are the host-rendered contract-boundary files (today: the runner
+    glue, `bundle_facts.runner_basename`), which link last. `dependency_edges` (optional) maps each closure
     node_key to the node_keys it depends on; when supplied it rejects a staged dependency that
     depends on an absorbed optimization-unit member (an unbuildable straddle). It is derived
     from the dependency-graph sidecar, not from the flat closure's order.
@@ -1472,7 +1541,11 @@ def derive_build_graph(doc: Mapping[str, Any], *,
 
     staged = [_spec_id_of_node_key(nk) for nk in staged_nodes]
 
-    sources: list[str] = [f"staged:{spec_id}_model.f90" for spec_id in staged]
+    # A staged dependency is the dependency's certified model source, named as the TARGET's
+    # language names it (one run is one target, so the closure shares the node's language).
+    # Resolved only when there is a dependency to stage, so a closure-free graph asks nothing.
+    facts = language_facts(toolchain.get("language")) if staged else None
+    sources: list[str] = [f"staged:{facts.model_basename(spec_id)}" for spec_id in staged]
     objects: list[str] = [f"{spec_id}_model.o" for spec_id in staged]
 
     # Role precedence is the DEFAULT order; explicit compile_after edges refine it so a file
@@ -1512,11 +1585,12 @@ def derive_build_graph(doc: Mapping[str, Any], *,
             f"dependency closure {staged} (unit members excluded), and the host glue "
             f"{list(host_glue_sources)} must derive distinct object names")
 
-    # Fail closed on a Fortran MODULE-name collision the bundle validator cannot see either: a
-    # bundle file may declare a `modules` name equal to a staged dependency's derived
-    # `<spec_id>_model` module even when the OBJECT names differ, and two definitions of one
-    # module overwrite the dependency's `.mod` and break the build. `validate_bundle` checks
-    # module uniqueness only WITHIN the bundle; the closure's module names are a host input.
+    # Fail closed on a MODULE-name collision the bundle validator cannot see either: a bundle
+    # file may declare a `modules` name equal to a staged dependency's derived `<spec_id>_model`
+    # module even when the OBJECT names differ, and two definitions of one module name the same
+    # publishing unit twice (a compiled module interface is written per module name, so the
+    # second overwrites the dependency's). `validate_bundle` checks module uniqueness only
+    # WITHIN the bundle; the closure's module names are a host input.
     staged_modules = {f"{spec_id}_model".casefold(): f"{spec_id}_model" for spec_id in staged}
     module_clashes = sorted({
         module for entry in files for module in (entry.get("modules") or [])
@@ -1525,7 +1599,7 @@ def derive_build_graph(doc: Mapping[str, Any], *,
         raise RuntimeError(
             f"build graph module name collision {module_clashes}: a bundle file declares a "
             f"module a staged dependency also defines as `<spec_id>_model` (closure {staged}); "
-            "two definitions of one Fortran module overwrite the dependency's .mod")
+            "two definitions of one module overwrite the dependency's module interface")
 
     compile_units = [
         {"source": source, "object": obj, "prerequisite_objects": objects[:index]}
@@ -1543,17 +1617,21 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     }
 
 
-def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str) -> str | None:
+def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
+                               language: str) -> str | None:
     """The M3c host-runner literal-name constraint on a bundle's model/checks files, or None.
 
-    The host-rendered runner glue emits `use <spec_id>_model` / `use <spec_id>_checks`, so the
-    bundle MUST carry a `model`-role file named `<spec_id>_model.f90` declaring module
-    `<spec_id>_model`, and a `checks`-role file `<spec_id>_checks.f90` declaring `<spec_id>_checks`.
+    The host-rendered runner glue `use`s modules `<spec_id>_model` / `<spec_id>_checks`, so the
+    bundle MUST carry a `model`-role file named as `language` names a model source
+    (`bundle_facts.model_basename`) declaring module `<spec_id>_model`, and a `checks`-role file
+    named `bundle_facts.checks_basename` declaring `<spec_id>_checks`. `language` is the
+    TARGET's — the language the runner is rendered in — not a file's own declaration.
     A different name leaves the runner's `use` unresolved at link — a defect only the host (which
     owns the runner) can see, so it is caught here rather than at build."""
+    facts = language_facts(language)
     want = {
-        "model": (f"{spec_id}_model.f90", f"{spec_id}_model"),
-        "checks": (f"{spec_id}_checks.f90", f"{spec_id}_checks"),
+        "model": (facts.model_basename(spec_id), f"{spec_id}_model"),
+        "checks": (facts.checks_basename(spec_id), f"{spec_id}_checks"),
     }
     files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
     for role, (want_path, want_module) in want.items():
@@ -1562,12 +1640,12 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str) -> str | No
             return (f"the host-rendered runner requires a {role}-role file named "
                     f"{want_path!r} declaring module {want_module!r}; the bundle has none")
         # EXACT, not casefold: `logical_path` becomes a filename, and the gate that ultimately
-        # demands it opens `src_dir / f"{spec_id}_checks.f90"` on a case-sensitive filesystem
-        # (`_validate_checks_source_files`). Casefolding here accepted `Shallow_Water2d_Checks.f90`
-        # — which lints and compiles fine, since Fortran resolves `use` by module name and never
-        # by filename — and then `Generate.gate` static check rejected it on the name, reopening the phase.
-        # The module comparison below stays casefolded for the mirror-image reason: a Fortran
-        # identifier IS case-insensitive.
+        # demands it opens the checks source by that exact name on a case-sensitive filesystem
+        # (`_validate_checks_source_files`). Casefolding here accepted a mixed-case checks file
+        # — which lints and compiles fine where `use` resolves by module name and never by
+        # filename — and then `Generate.gate` static check rejected it on the name, reopening
+        # the phase. The module comparison below stays casefolded: a module name is compared
+        # the way the bundle's module map compares it.
         match = next((e for e in candidates
                       if str(e.get("logical_path", "")) == want_path), None)
         if match is None:
@@ -1582,7 +1660,8 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str) -> str | No
     return None
 
 
-def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None:
+def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
+                             language: str) -> str | None:
     """The fixed-ABI constraint on the bundle's checks module, or None.
 
     An M3c node's `<spec_id>_checks` module must publish the SAME fixed set of names for every
@@ -1646,7 +1725,7 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     # `m3c_literal_name_violation` runs first and guarantees this file exists and declares this
     # module. Scope to it: a bundle may legally carry OTHER checks-role files, and reading their
     # text too would let a sibling module vouch for a name `use <spec_id>_checks` cannot resolve.
-    want_path = f"{spec_id}_checks.f90"
+    want_path = language_facts(language).checks_basename(spec_id)
     match = next((e for e in (doc.get("files") or [])
                   if isinstance(e, dict) and e.get("role") == "checks"
                   and str(e.get("logical_path", "")) == want_path), None)
@@ -1924,6 +2003,7 @@ def pure_bundle_contract_violation(
     node_key: str,
     spec_id: str,
     shape: str,
+    language: str,
     runner_basename: str,
     ir_snapshot_variables: Iterable[str],
     harness_provided: Iterable[str] | None,
@@ -1940,9 +2020,10 @@ def pure_bundle_contract_violation(
 
     `shape` (one of `BUNDLE_SHAPES`) selects the file-shape layer and nothing else — every other
     layer runs identically for both. An unknown value is REFUSED rather than defaulted: the shape
-    decides which admissibility rules apply. `runner_basename` is the caller's own spelling of
-    the host glue / executable-entry filename, passed in so this module does not become a second
-    place that says what it is called.
+    decides which admissibility rules apply. `language` is the target's (the language the
+    host renders the runner in), which names the files the m3c layer requires.
+    `runner_basename` is the caller's own spelling of the host glue / executable-entry filename,
+    passed in so this module does not become a second place that says what it is called.
 
     Fail-closed layers, in order, each STOPPING at the first that fails (so one defect is one
     report AND a later layer never runs on a doc an earlier one already rejected): shape
@@ -2039,10 +2120,10 @@ def pure_bundle_contract_violation(
         if shape_violation is not None:
             return ("bundle_shape_unsupported", shape_violation)
     else:
-        name_violation = m3c_literal_name_violation(doc, spec_id)
+        name_violation = m3c_literal_name_violation(doc, spec_id, language=language)
         if name_violation is not None:
             return ("bundle_assembly_collision", name_violation)
-        abi_violation = m3c_checks_abi_violation(doc, spec_id)
+        abi_violation = m3c_checks_abi_violation(doc, spec_id, language=language)
         if abi_violation is not None:
             return ("bundle_checks_abi_violation", abi_violation)
     # L1c: a component's `operation` entrypoint symbols must equal its IR public_api published

@@ -143,15 +143,16 @@ RAW_EVIDENCE_ARTIFACTS = {
 # same routing the contract states; the document does not cite this constant, so
 # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` is
 # what holds the two spellings together. Stated in the form the PRODUCER supports, not
-# only the form this validator accepts: a snapshot variable is a `real(dp)` module
+# only the form this validator accepts: a snapshot variable is a float64 module
 # variable of the checks module that the host-rendered runner serializes
-# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b), and a metrics_basis.json
+# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b; Compile, whose leaf reads this remedy, is
+# target-free, so it names no language's spelling — issue #289), and a metrics_basis.json
 # row is valued from a test's required_raw_variables, which must be snapshot
 # variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
 # and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
     "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-    "valued numerically (a snapshot variable is a real(dp) module variable the runner "
+    "valued numerically (a snapshot variable is a float64 module variable the runner "
     "serializes); a case INPUT — an enumerated selector included — is not an evidence "
     "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
     "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
@@ -240,15 +241,6 @@ FORTRAN_KEYWORDS = {
 }
 QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
-# The languages whose quality check runs through the build system's test target rather than a
-# script. This is a POLICY set over language families, NOT a set of implemented backends: `c` /
-# `cpp` / `mixed` are not registry members, and a target profile naming one is refused at launch
-# (`target_profile.toolchain_servable_reasons`) before this set is consulted, for every node
-# kind — the toolchain is the pipeline TARGET's since issue #284. It is the same kind of set as
-# `mcp_servers/build_runtime_server.py`'s `FORTRAN_C_FAMILY` and migrates with it (ledger:
-# TODO.md, the compiler / linter adapters area). The BUILD-SYSTEM half of the same condition is
-# asked of the registry instead — see `_make_quality_check_applies`.
-MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES = {"fortran", "c", "cpp", "mixed"}
 
 
 def _make_quality_check_applies(build_system: str | None, language: str | None) -> bool:
@@ -258,7 +250,10 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     `run_quality_checks` command rule — read the control file's grammar and require its
     `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
     registry which value the neutral core carries it for instead of naming one. The language half
-    is `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES`, a policy set (see there).
+    is the policy "a compiled language's quality check runs through the build system's test
+    target rather than a script", and which languages are compiled is the language backend's
+    declaration (`registry.is_compiled_language`); it was a set of language tokens here until
+    issue #289 (R4-b PR-2), three of them values no backend implements.
 
     The three gates spelled the condition out rather than sharing a predicate, and the third of
     them (`_validate_quality_check_commands`) wrote it INVERTED, so any change had to be made in
@@ -273,7 +268,7 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     """
     return (
         backend_registry.provides("build_system", build_system or "", "control_file")
-        and str(language or "") in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES
+        and backend_registry.is_compiled_language(str(language or ""))
     )
 
 
@@ -552,27 +547,12 @@ AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 #: modules this file actually imports, so the two cannot drift.
 _SIGNATURE_HELPERS_BACKEND_ID = "fortran"
 
-_LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
-    "fortran": "fortitude",
-    "cuda_fortran": "fortitude",
-    "c": "cppcheck",
-    "cpp": "cppcheck",
-    "c++": "cppcheck",
-    "cuda_c": "cppcheck",
-    "mixed": "mixed",
-    "python": "ruff",
-}
 # NOTE: there is deliberately no lint-preset SET here. Which presets are accepted is asked of
 # `backend_registry.unimplemented_reason` per value rather than held as a copy — the copy was a
 # drift pair, where registering a linter left the gate refusing it and narrowing the set left the
-# registry claiming it.
-#
-# The mapping ABOVE is a different fact — which linter a language is linted with — and it is
-# language knowledge that migrates with the language backends, not a second copy of the accepted
-# set. But its VALUES are linter backend ids, so it can drift the same way: review measured that
-# dropping the `ruff` member from the registry leaves this mapping producing `ruff` for `python`
-# while the gate refuses it, with the suite green. `test_backend_boundary` pins the values
-# against the registry's implemented linters so that pair cannot open.
+# registry claiming it. Which linter a LANGUAGE is linted with is asked of
+# `backend_registry.linter_for_language`, which reads each linter backend's own declaration; it
+# was a table here until issue #289 (R4-b PR-2).
 _NODE_KEY_SAFE_PATTERN_LINEAGE = re.compile(
     r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
 )
@@ -3022,8 +3002,9 @@ def _validate_makefile_test_invokes_cases(
     (b) a run that hardcodes ``--cases <spec> <ids>`` instead of referencing the
     ``$(SPEC)``/``$(CASES)`` variables — the env override has no effect and make
     test runs a different spec/case set than ``run_program`` (wrong-evidence
-    comparison). The conductor-authored fortran Makefile already satisfies this;
-    the check guards the LLM-authored c/cpp/mixed path. Best-effort static parse —
+    comparison). The conductor-authored Makefile already satisfies this; the check
+    guards a control file a LEAF would author for a compiled language the conductor
+    writes none for (none is registered today). Best-effort static parse —
     the runtime ``quality_check`` is the deterministic backstop. Scoped to the
     make-based quality-check toolchains (same as the no-relink check)."""
     if not _make_quality_check_applies(build_system, language):
@@ -7105,7 +7086,7 @@ def _validate_generate_lint_command_logs(
         )
         return
 
-    expected = _LINT_PRESET_FOR_LANGUAGE.get(impl_language)
+    expected = backend_registry.linter_for_language(impl_language)
     if expected is None:
         violations.append(
             f"{meta_path}: toolchain.language={impl_language!r} has no static lint mapping"
@@ -7259,9 +7240,10 @@ def _validate_generate_syntax_command_logs(
     The syntax gate is the deterministic `generate.gate` substep run in-process by the
     conductor (Conductor._gate_syntax_check -> MCP run_syntax_check). Mirrors
     `_validate_generate_lint_command_logs`: the certificate cannot be forged by the leaf
-    (the pipeline root is read-only inside the sandbox). Required only for
-    toolchain.language=fortran (the only language with a syntax-check adapter); the
-    MANDATORY stage is gfortran and must have passed. Optional additional stages (the
+    (the pipeline root is read-only inside the sandbox). Required for every language: the
+    language backend names the MANDATORY stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`),
+    and it must have passed; a language that declares no syntax stage
+    (`syntax_promotions`) cannot be certified at all. Optional additional stages (the
     ATMOFAB_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
     their compiler has no registered adapter or no installed binary, or when the stage
     refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
@@ -7270,10 +7252,11 @@ def _validate_generate_syntax_command_logs(
     pipeline_root = meta_path.parents[2]
     from tools.hooks.syntax_evidence import read_syntax_evidence, syntax_evidence_path
 
-    # fortran is the only language the gate runs for; other languages pass through the
-    # generate.gate syntax check without evidence, so there is nothing to certify.
-    if not impl_language or impl_language.strip().lower() != "fortran":
+    # A missing language is the caller's to report (the lint certification beside this one
+    # does); the question here is only what the syntax stage of a named one must show.
+    if not impl_language:
         return
+    language = impl_language.strip().lower()
 
     # Same trigger rule as the lint certification: certify whenever the conductor-run
     # evidence exists (the static-stage flow) OR the leaf is claiming pass; skip only when
@@ -7317,7 +7300,24 @@ def _validate_generate_syntax_command_logs(
         )
         return
 
-    gfortran_passed = False
+    if not backend_registry.provides("language", language, "syntax_promotions"):
+        violations.append(
+            f"{meta_path}: toolchain.language={language!r} has no syntax stage to certify — "
+            + str(backend_registry.missing_capability_reason(
+                "language", language, "syntax_promotions")))
+        return
+    mandatory = str(backend_registry.capability_module(
+        "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
+
+    def _stage_executable(compiler: str) -> str:
+        # What a registered adapter launches; an unregistered id (a forged or a future stage)
+        # is held to its own spelling, as every stage was before the adapters moved.
+        if compiler and backend_registry.provides("compiler", compiler, "syntax_check"):
+            return str(backend_registry.capability_module(
+                "compiler", compiler, "syntax_check").EXECUTABLE).lower()
+        return compiler
+
+    mandatory_passed = False
     for idx, entry in enumerate(stages):
         if not isinstance(entry, dict):
             violations.append(
@@ -7333,9 +7333,9 @@ def _validate_generate_syntax_command_logs(
             )
             continue
         if stage_status == "skipped":
-            if compiler == "gfortran":
+            if compiler == mandatory:
                 violations.append(
-                    f"{meta_path}: syntax evidence stages[{idx}]: the mandatory gfortran "
+                    f"{meta_path}: syntax evidence stages[{idx}]: the mandatory {mandatory} "
                     "stage must not be skipped"
                 )
             continue
@@ -7366,19 +7366,19 @@ def _validate_generate_syntax_command_logs(
         if command is None:
             continue
         exe_basename = Path(str(command[0])).name.strip().lower()
-        if exe_basename != compiler:
+        if exe_basename != _stage_executable(compiler):
             violations.append(
                 f"{meta_path}: syntax evidence stages[{idx}]: logged command does not "
                 f"match compiler {compiler!r} (argv[0] is {command[0]!r})"
             )
             continue
-        if compiler == "gfortran":
-            gfortran_passed = True
+        if compiler == mandatory:
+            mandatory_passed = True
 
-    if not gfortran_passed:
+    if not mandatory_passed:
         violations.append(
-            f"{meta_path}: syntax evidence must record a passing gfortran stage "
-            "(the mandatory syntax gate for toolchain.language=fortran)"
+            f"{meta_path}: syntax evidence must record a passing {mandatory} stage "
+            f"(the mandatory syntax gate for toolchain.language={language})"
         )
 
 
@@ -9407,8 +9407,16 @@ def _expected_runner_name(spec_id: str) -> str:
     have to agree — a split that disagreed with the name gate would attribute that gate's own
     finding to the wrong author, which is the defect the split was written to repair.
 
-    Mirrors `workflow_conductor.Conductor._runner_basename`. The two modules do not import each
-    other; what keeps them in step is that both are derived from the node's `spec_id`.
+    Mirrors `workflow_conductor.Conductor._runner_basename` FOR THE ONE LANGUAGE THE REGISTRY
+    HOLDS TODAY. Since issue #289 (R4-b PR-2) the conductor asks the target language's
+    `bundle_facts.runner_basename`, while this module still spells that language's name: it is
+    part of this module's source-reading debt (the runner glob beside its reader included;
+    `TODO.md`, the `validate_pipeline_semantics.py` source-reading area), which migrates with that
+    issue's PR-3, and that migration is a PRECONDITION of running a second language. Until then
+    such a runner is misread here in two directions (round 2 measured the second): an m3c node's
+    host glue is refused as undeclared, and a harness self-test runner under another suffix is
+    not SEEN by this module's runner-output gates at all — the glob returns nothing and they add
+    no violation, so a forbidden judge-artifact write in it would pass post_generate.
     """
     return f"{spec_id}_runner.f90"
 
@@ -13944,7 +13952,8 @@ def _validate_post_generate_bundle(
 
     contract = pure_bundle_contract_violation(
         doc, node_key=node_key, spec_id=spec_id,
-        shape=(shape or ""), runner_basename=_expected_runner_name(spec_id),
+        shape=(shape or ""), language=str(toolchain.get("language") or ""),
+        runner_basename=_expected_runner_name(spec_id),
         ir_snapshot_variables=snapshot_variables_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))

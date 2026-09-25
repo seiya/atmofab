@@ -96,6 +96,8 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
+import tools.backends.language.fortran.checks_abi as _fortran_checks_abi
+import tools.backends.language.fortran.prompts as _fortran_prompts
 import tools.backends.linter.fortitude.lint as _fortitude_lint
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
@@ -592,7 +594,21 @@ PINNED: dict[str, str] = {
     # knob layer's "read the plan by MEANING rather than by key name". (Unmerged, not unused:
     # the adoption run's Generate outputs were certified under an earlier pure-49 digest; a
     # re-pin moves no derivation key, and none of them fails the floor at HEAD.)
-    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",}
+    "pure-49": "c365b94e438dbe75a43a0a096993166f263e8a9f55ccc8f0747c7b9302b2142f",
+    # pure-50 (issue #289, R4-b PR-2): the generate templates' Fortran rules move into language
+    # fragments the host composes by the request's `pure_language` (composed for `fortran` the
+    # two templates are byte-identical to pure-49's), and the checks-module contract splits
+    # into a language-neutral §1-§4 and a language binding: Compile is shown the neutral
+    # sections only, the `generate.verify` reviewer the neutral sections followed by the
+    # binding's (its template's label says so), and the `harness` producer's gate guards are
+    # the binding's §5. The runner-output contract's Fortran descriptor rules move to a binding
+    # inlined after it in the `harness` prompts. Known side effects, as for every bump:
+    # `_resolve_exemplar_source` stops offering exemplars certified at pure-49 or earlier, and
+    # an orchestration whose `generate` ran under pure-49 cannot be `--resume`d across it.
+    # `pure-50` has not shipped; round 1 of its review renumbered the Fortran binding so its
+    # §1-§4 correspond section for section to the neutral contract's (the bound state is §1-b,
+    # and §2 spells the neutral §2's values), which is part of the same contract change.
+    "pure-50": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
 
 
 def _contract_tuple() -> dict[str, object]:
@@ -600,6 +616,15 @@ def _contract_tuple() -> dict[str, object]:
     return {
         "templates": {
             name: (tpl_dir / name).read_text(encoding="utf-8") for name in _TEMPLATE_FILES
+        },
+        # The language fragment files the neutral templates are composed with (issue #289, R4-b
+        # PR-2): the text that replaces a template's `{{language:<name>}}` marker is template
+        # bytes a leaf reads, moved, so it is pinned exactly as the template files are. Every
+        # file under the directory, keyed by its path below it, so a new language's fragments
+        # join the pin by existing (`TODO.md`'s `project_pure_prompt_gate_drift_guard_gap`).
+        "language_fragments": {
+            str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
+            for path in sorted((tpl_dir / "backends").rglob("*.txt"))
         },
         "system_prompt": PURE_SYSTEM_PROMPT,
         "repair_static_prefixes": list(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
@@ -673,9 +698,16 @@ def _contract_tuple() -> dict[str, object]:
         # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
         # and has to bump the version rather than ship silently.
         "lint_rules_document": _fortitude_lint.lint_rules_document(),
+        # Since issue #289 (R4-b PR-2) §5 is the LANGUAGE's (its checks-ABI binding), and the
+        # reviewer is shown the binding's §1-§4 after the neutral ones: both slices are leaf
+        # INPUT on the same ground as the neutral slice above.
         "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
-            (Path(wc.__file__).resolve().parents[1]
-             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
+            _fortran_checks_abi.document()),
+        "checks_abi_binding_sections": wc._checks_contract_abi_sections(
+            _fortran_checks_abi.document()),
+        # ... and the runner-output binding, inlined after the whole runner-output contract in
+        # the `harness` shape's two prompts on the same ground as that document.
+        "runner_output_binding_document": _fortran_prompts.runner_output_document(),
     }
 
 

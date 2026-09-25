@@ -409,6 +409,18 @@ class LaunchGateTests(unittest.TestCase):
             with mock.patch.object(registry, "provides", without("build_system", "build_execute")):
                 self.assertTrue(tp.target_profile_violations(
                     repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
+            # ... and so is every language capability `Generate` reads for any kind (issue
+            # #289, R4-b PR-2): a language missing one is refused at launch, for a harness as
+            # for a physics node, naming the capability.
+            self.assertEqual(
+                tp.LANGUAGE_CAPABILITIES_EVERY_NODE,
+                ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi"))
+            for capability in tp.LANGUAGE_CAPABILITIES_EVERY_NODE:
+                with self.subTest(every_node=capability), \
+                        mock.patch.object(registry, "provides", without("language", capability)):
+                    for node_key in (None, "infrastructure/harness_x@0.7.0"):
+                        found = tp.target_profile_violations(repo.root, profile, node_key=node_key)
+                        self.assertTrue(any(capability in v for v in found), (node_key, found))
 
     def test_the_harness_resolves_to_the_highest_matching_infrastructure_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

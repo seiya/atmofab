@@ -98,30 +98,38 @@ class PureVerifyContextTests(unittest.TestCase):
     def test_checks_contract_document_is_sections_1_to_4_of_the_real_doc(self) -> None:
         # issue #142: the reviewer receives the ABI half of the contract and nothing else. What is
         # pinned is the SPAN — §1 opens it, §4's content is inside, §5 and the preamble are out.
+        # Since issue #289 (R4-b PR-2) the span is TWO documents in order: §1-§4 of the neutral
+        # contract, then §1-§4 of the target language's binding of it — and §5 of neither.
+        from tools.backends.language.fortran import checks_abi
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             doc = _conductor(repo)._build_pure_verify_context(
                 refs)["checks_module_contract_document"]
-            self.assertTrue(doc.startswith("## 1. "), doc[:80])
+            self.assertTrue(doc.startswith("## 1. The fixed ABI\n"), doc[:80])
+            neutral_end = doc.index("## 1. The fixed ABI in Fortran")
             for present in ("## 2. Semantics the harness relies on",
                             "## 3. Module-level state is expected",
                             "## 4. Prohibitions",
-                            "ok=.false.",
+                            "`ok` false",
                             "runner always captures the case's state"):
-                self.assertIn(present, doc)
-            # Every literal here must occur in the REAL document, or the assertion is true of any
-            # slice and pins nothing — an earlier version of this test named a preamble sentence
-            # the same commit had rewritten away.
-            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8")
+                self.assertIn(present, doc[:neutral_end])
+            for present in ("### 1-b. The bound state in Fortran",
+                            "## 2. The semantics, spelled in Fortran",
+                            "## 4. Prohibitions in Fortran",
+                            "ok = .false.", "character(len=4), intent(out) :: status"):
+                self.assertIn(present, doc[neutral_end:])
+            # Every literal here must occur in the REAL documents, or the assertion is true of
+            # any slice and pins nothing — an earlier version of this test named a preamble
+            # sentence the same commit had rewritten away.
+            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8") + checks_abi.document()
             for absent in ("## 5.",
                            "Fortran legality and gate guards",
+                           "## 5. Language binding",
                            "# Checks-module contract",
-                           # A banner sentence, re-pointed when Z4 (issue #171) rewrote the
-                           # previous one away — which this row caught, exactly as its comment
-                           # above says it must.
+                           "# Checks-module ABI",
                            "NO leaf reads this document from disk"):
-                self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
+                self.assertIn(absent, real, f"{absent!r} no longer occurs in the documents, so "
                                             f"asserting its absence from the slice pins nothing")
                 self.assertNotIn(absent, doc)
 
@@ -148,6 +156,36 @@ class PureVerifyContextTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
+
+    def test_the_language_binding_fails_closed_three_ways(self) -> None:
+        """The binding appended to the neutral §1-§4 (issue #289) raises a NAMED refusal when the
+        target language declares none, when it cannot be read, and when its section anchors are
+        gone — never a shorter document with the header still promising the binding (round 2:
+        replacing the unsliceable raise with an empty binding survived every test file)."""
+        from unittest import mock
+        from tools.backends import registry as backend_registry
+        from tools.backends.language.fortran import checks_abi
+        body = checks_abi.document()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            c = _conductor(repo)
+            with mock.patch.object(checks_abi, "document",
+                                   lambda: body.replace("## 1. ", "## One ", 1)):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
+            self.assertIn("checks-ABI binding", str(cm.exception))
+            with mock.patch.object(checks_abi, "document", side_effect=OSError("gone")):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_abi_binding_missing", str(cm.exception))
+            record = backend_registry.get("language", "fortran")
+            with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
+                    backend_provides=record.backend_provides - {"checks_abi"})}):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_abi_binding_unavailable", str(cm.exception))
 
     def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
         # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
@@ -788,6 +826,21 @@ class PureVerifySubstepTests(unittest.TestCase):
     _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
 
+    def test_every_reviewer_launch_names_the_target_language(self) -> None:
+        """The generate reviewer's template carries `{{language:<name>}}` markers, and the
+        request must name the language they are composed for (issue #289): a launch without
+        `pure_language` is refused at render. Driven through the real reviewer loop, cold launch
+        and repair turn both — the render in the unit tests builds its own requests."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope("nope"), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertGreaterEqual(len(c.requests), 2)
+        import tools.orchestration_runtime as ort
+        for request in c.requests:
+            self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
+            ort._pure_launch_template(request)  # composes, i.e. does not raise
+
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
         classifier tags `llm_usage_limit` is waited out in place on the fixed schedule and
@@ -1163,6 +1216,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
     def test_verify_output_contract_paragraph_lifts_whole(self) -> None:
         import tools.orchestration_runtime as ort
         req = {"leaf_mode": "pure", "step": "generate", "substep": "verify",
+               "pure_language": "fortran",
                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
         text = ort._pure_output_contract_text(req)
         self.assertTrue(text.startswith("Output contract"))

@@ -587,11 +587,11 @@ class DeferredLeafChecklistTests(unittest.TestCase):
         this fails, and the failure names the document that has to grow.
         """
         from tools.backends import registry
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
 
-        ours = sorted(lang for lang, preset in _LINT_PRESET_FOR_LANGUAGE.items()
-                      if preset == "ruff")
+        ours = sorted(registry.capability_module("linter", "ruff", "lint").LANGUAGES)
         self.assertEqual(ours, ["python"])
+        for language in ours:
+            self.assertEqual(registry.linter_for_language(language), "ruff")
         for language in ours:
             self.assertIsNotNone(
                 registry.unimplemented_reason("language", language),

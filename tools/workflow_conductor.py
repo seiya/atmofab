@@ -168,10 +168,11 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     # one attempt per class:
     #   - lint   (Conductor._gate_lint_check):   runs run_linter. Always runs.
     #   - syntax (Conductor._gate_syntax_check): runs the MCP run_syntax_check compiler
-    #     front-end gate (gfortran -fsyntax-only, plus optional target-compiler stages from
-    #     ATMOFAB_SYNTAX_COMPILERS) over the staged node + dependency-closure sources, so the
-    #     whole class of syntax / standard-conformance compile_errors surfaces here instead
-    #     of at Build (fortran-language nodes only; non-fortran passes through). Always runs
+    #     front-end gate (the language's mandatory syntax-only stage, plus optional
+    #     target-compiler stages from ATMOFAB_SYNTAX_COMPILERS) over the staged node +
+    #     dependency-closure sources, so the whole class of syntax / standard-conformance
+    #     compile_errors surfaces here instead of at Build (a language that declares no
+    #     `syntax_promotions` is a transport fail_closed, not a pass-through). Always runs
     #     (independent of lint); an unfixable-by-leaf attribution (canary / dependency-closure)
     #     raises and surfaces as a transport fail_closed, suppressing gate_meta (fail_closed
     #     dominates a co-occurring lint content-fail — the same order as today, only sooner).
@@ -1053,12 +1054,15 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
 
 
 def _checks_contract_abi_sections(text: str) -> str:
-    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`, by `_numbered_section_range`,
-    which owns the anchoring and fail-closed semantics.
+    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — or of a language's binding of
+    it (`docs/backends/language/<id>/CHECKS_ABI.md`, numbered section for section like it,
+    issue #289) — by `_numbered_section_range`, which owns the anchoring and fail-closed
+    semantics.
 
-    What is specific to this document: the real file holds ONE fenced block (its two markers are
-    the only ``` lines in it) and no line inside it takes the shape of a `## 1.` / `## 5.`
-    heading (measured), so the engine's fence-unawareness has nothing to catch here — but a
+    What is specific to these documents: the neutral contract holds no fenced block, and the
+    Fortran binding holds ONE (its two markers are the only ``` lines in it) with no line inside
+    it taking the shape of a `## 1.` / `## 5.` heading (measured), so the engine's
+    fence-unawareness has nothing to catch here — but a
     maintainer reading "the `## 5.` heading line" would not otherwise know that a heading QUOTED
     in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the slice is
     pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which goes red
@@ -1068,8 +1072,9 @@ def _checks_contract_abi_sections(text: str) -> str:
 
 
 def _checks_contract_gate_guards_section(text: str) -> str:
-    """Return §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality and gate-guard
-    section — from that heading to the end of the document.
+    """Return §5 of a language's checks-ABI binding (`docs/backends/language/<id>/CHECKS_ABI.md`;
+    §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289 moved it there) — its
+    legality and gate-guard section — from that heading to the end of the document.
 
     NOT `_numbered_section_range`, because §5 is the LAST section and that engine requires an
     end anchor by design (a missing one is a contract change it must stop on). The same
@@ -1516,6 +1521,7 @@ def build_launch_request(
     pure_leaf: bool = False,
     pure_context: dict[str, str] | None = None,
     pure_shape: str = "",
+    pure_language: str = "",
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1656,7 +1662,9 @@ def build_launch_request(
             # the leaf — it sits at the pipeline root which must stay non-writable to the
             # sandboxed leaf. So it is NOT in the leaf's allowed_output_paths.
             req["allowed_output_paths"] = [
-                f"{src}/src/{Conductor._model_basename(refs)}",
+                # A dead list for a pure leaf (the pure override below empties it), spelled like
+                # its two siblings above; this function has no target to ask.
+                f"{src}/src/{refs.spec_id}_model.f90",
                 runner_or_checks,
                 *make_entry,
                 f"{src}/src/command_log.jsonl",
@@ -1836,6 +1844,11 @@ def build_launch_request(
         # of the request rather than something the renderer re-derives from the node.
         if pure_shape:
             req["pure_shape"] = pure_shape
+        # The target language a template's `{{language:<name>}}` markers are composed for
+        # (issue #289). Carried rather than re-derived by the renderer, like the shape: the
+        # renderer holds the request and no target.
+        if pure_language:
+            req["pure_language"] = pure_language
         if pure_context is not None:
             req["pure_context"] = dict(pure_context)
     return req
@@ -3424,20 +3437,16 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
-#: The compiler the host uses when the target profile pins no `toolchain.compiler`. It is BOTH
-#: the `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage,
-#: and it has to
-#: be one value for the two: the syntax gate certifies that stage and the build then runs this
-#: one, so a divergence would certify one compiler and build with another. It was seven
-#: independent spellings in this file.
-#:
-#: It must also equal `mcp_servers/build_runtime_server.MANDATORY_SYNTAX_COMPILER`, which is that
-#: module's own default for the same reason. The two are separate constants rather than one
-#: import because the server is standalone-runnable and does not import `tools/`, and this file
-#: reaches the server only lazily from inside the in-process gate bodies. The equality is pinned
-#: by `tools/tests/test_host_prerequisites.py` -- and it is what lets the launch-time host probe
-#: cover the BUILD compiler by probing the mandatory SYNTAX stage.
-DEFAULT_COMPILER = "gfortran"
+def default_compiler(language: str) -> str:
+    """The compiler the host uses for `language` when the target profile pins no
+    `toolchain.compiler`: the language backend's `bundle_facts.DEFAULT_COMPILER`. It is BOTH the
+    `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage (the
+    backend binds `MANDATORY_SYNTAX_COMPILER` to it), so the syntax gate certifies the compiler
+    the build then runs, and the launch-time host probe covers the BUILD compiler by probing the
+    mandatory SYNTAX stage. It was one module constant, spelled for one language, until issue
+    #289 (R4-b PR-2); the registry refuses a language that declares no `bundle_facts`."""
+    return str(backend_registry.capability_module(
+        "language", language, "bundle_facts").DEFAULT_COMPILER)
 
 
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
@@ -5319,7 +5328,7 @@ class Conductor:
     def _read_toolchain(self, refs: NodeRefs) -> dict[str, str]:
         """The target's toolchain fields every host-side author shares: `language`,
         `standard`, `build_system`, `compiler` (the profile's OPTIONAL pin, `""` when it pins
-        none — the environment default, `DEFAULT_COMPILER`, is then used) and `backend` (the
+        none — the language's `default_compiler` is then used) and `backend` (the
         parallel backend). ONE read, so the control-file FC/FFLAGS derivation, the lint preset
         pick and the syntax gate's std/openmp flags cannot diverge from each other.
 
@@ -5382,22 +5391,69 @@ class Conductor:
         tc = self._read_toolchain(refs)
         return self._core_authors_control_file(tc["build_system"], tc["language"])
 
-    @staticmethod
-    def _runner_basename(refs: NodeRefs) -> str:
-        """The basename of the host-rendered runner glue for a node. ONE spelling.
+    def _pure_language(self, phase: str) -> str:
+        """The language a pure launch of `phase` composes its template for: the target's, on
+        the phase that renders language rules (`generate`). Compile is target-free (issue #284)
+        and Validate's judge reads output documents, so neither is told one."""
+        return str(self.target.toolchain["language"]) if phase == "generate" else ""
+
+    def _checks_abi_binding_text(self) -> str:
+        """The target language's binding of the checks-module contract (`checks_abi`), whole.
+
+        RAISES a named `RuntimeError` on every failure — a language that declares no binding, a
+        binding document that cannot be read — for the reason the neutral contract's reader
+        does: a leaf handed half a contract is the blindness these injections remove, and the
+        caller converts the raise into a `pure_context_assembly_failed` fail_closed outcome."""
+        language = self.target.toolchain["language"]
+        try:
+            module = backend_registry.capability_module("language", language, "checks_abi")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"pure_checks_abi_binding_unavailable: {exc}") from exc
+        try:
+            return str(module.document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_checks_abi_binding_missing: language {language!r}: {exc}") from exc
+
+    def _runner_output_contract_with_binding(self, contract_text: str) -> str:
+        """`RUNNER_OUTPUT_CONTRACT.md` whole, followed by the target language's runner-output
+        binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
+        the neutral document). The binding is read through `prompt_fragments`, and every failure
+        RAISES a named `RuntimeError` for the reason `_checks_abi_binding_text` gives."""
+        language = self.target.toolchain["language"]
+        try:
+            module = backend_registry.capability_module("language", language, "prompt_fragments")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"pure_runner_output_binding_unavailable: {exc}") from exc
+        try:
+            binding = str(module.runner_output_document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_runner_output_binding_missing: language {language!r}: {exc}") from exc
+        return f"{contract_text.rstrip()}\n\n{binding}"
+
+    def _language_facts(self) -> Any:
+        """The target language's `bundle_facts` module: the names the host gives its files."""
+        return backend_registry.capability_module(
+            "language", self.target.toolchain["language"], "bundle_facts")
+
+    def _runner_basename(self, refs: NodeRefs) -> str:
+        """The basename of the host-rendered runner glue for a node. ONE spelling, and the
+        target language's (`bundle_facts.runner_basename`, issue #289).
 
         Extracted so `_host_rendered_src_names` does not become a second place that says what the
         renderer's output is called; the build-graph seam reads it too."""
-        return f"{refs.spec_id}_runner.f90"
+        return str(self._language_facts().runner_basename(refs.spec_id))
 
-    @staticmethod
-    def _model_basename(refs: NodeRefs) -> str:
-        """The basename of the node's model source. ONE spelling, like the runner's above.
+    def _model_basename(self, refs: NodeRefs) -> str:
+        """The basename of the node's model source. ONE spelling, like the runner's above, and
+        the target language's (`bundle_facts.model_basename`, issue #289).
 
-        Extracted when `_semantic_review_scope` became a second reader (issue #169): the name is
-        pre-existing backend debt that `docs/BACKEND_BOUNDARY.md`'s ledger records, and the way
-        NOT to add to it is to call the one place that says it rather than to write it again."""
-        return f"{refs.spec_id}_model.f90"
+        Extracted when `_semantic_review_scope` became a second reader (issue #169); the name
+        was written here until the language backend said it."""
+        return str(self._language_facts().model_basename(refs.spec_id))
 
     #: The basename of the build control file the host writes. ONE spelling, for the same reason.
     CONTROL_FILE_BASENAME = "Makefile"
@@ -5616,7 +5672,7 @@ class Conductor:
         if model_src is None:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: cannot resolve certified "
-                f"{harness_sid}_model.f90 under "
+                f"{self._language_facts().model_basename(harness_sid)} under "
                 f"{pipelines_dir(safe, self.target.target_id)} "
                 f"({resolver.select(harness_nk, 'generate').reason}; harness not built ready — "
                 f"run_workflow.py --with-deps first)")
@@ -5633,7 +5689,8 @@ class Conductor:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: no certified IR (ir_meta.json "
                 f"verification_status=pass) bound to the linked source under workspace/ir/{safe} "
-                f"to pin {refs.spec_id}_runner.f90 against — run_workflow.py --with-deps first")
+                f"to pin {self._runner_basename(refs)} against — run_workflow.py --with-deps "
+                f"first")
         harness_ir = _read_yaml(harness_ir_dir / "spec.ir.yaml") or {}
         pub = harness_ir.get("public_api") if isinstance(harness_ir, dict) else None
         harness_signatures: Any = pub.get("signatures") if isinstance(pub, dict) else None
@@ -5675,7 +5732,7 @@ class Conductor:
         # error path is worse than none: it reads as a second live guard.
         runner_text = render_runner(language, ir, refs.spec_id, harness_sid,
                                     target=self.target.doc)
-        path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
+        path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
 
@@ -5798,9 +5855,9 @@ class Conductor:
             # strip — which the predicate relies on, so do not normalize again here.
             return
         backend = tc["backend"]
-        # The optional toolchain.compiler pins FC (a Fujitsu frt build only needs this IR
-        # field plus a run_syntax_check adapter); unset keeps the gfortran default.
-        fc = tc["compiler"] or DEFAULT_COMPILER
+        # The optional toolchain.compiler pins FC (another compiler's build only needs this
+        # profile field plus a run_syntax_check adapter); unset keeps the language's default.
+        fc = tc["compiler"] or default_compiler(tc["language"])
 
         model = f"{refs.spec_id}_model"
         runner = f"{refs.spec_id}_runner"
@@ -6004,7 +6061,7 @@ clean:
         # way; the caller converts this into a fail_closed transport outcome (no leaf spawned),
         # and it is the four ir/tests DEGRADATIONS above whose recorded rationale this
         # measurement actually invalidates (TODO.md residual).
-        runner_path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
+        runner_path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         try:
             runner_text = runner_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -6060,8 +6117,10 @@ clean:
         the answer is the placement that rule prescribes, and it means a code added to the
         declared set reaches the leaf in the same edit that starts enforcing it.
 
-        The SIXTH document is §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality
-        and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
+        The SIXTH document is §5 of the target language's checks-ABI binding
+        (`docs/backends/language/<language>/CHECKS_ABI.md`, reached through the `checks_abi`
+        capability; it was §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289) —
+        its legality and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
         rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
         leaf-authored source, and it reached this leaf as a force-read must-read while the leaf
         was agentic. A pure leaf force-reads nothing, so without this it would be held to seven
@@ -6075,8 +6134,7 @@ clean:
         way the m3c producer's runner does — the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
-                                                 RUNNER_OUTPUT_CONTRACT_REF)
+        from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
         ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
         try:
             ir_text = ir_path.read_text(encoding="utf-8")
@@ -6092,17 +6150,15 @@ clean:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
-        guards_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
-        try:
-            guards_text = guards_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_gate_guards_document_missing: {guards_path}: {exc}") from exc
+        # The gate guards are the TARGET LANGUAGE's (issue #289, R4-b PR-2): §5 of its
+        # checks-ABI binding, sliced by the same engine the neutral contract's sections are.
+        guards_text = self._checks_abi_binding_text()
         try:
             gate_guards = _checks_contract_gate_guards_section(guards_text)
         except ValueError as exc:
             raise RuntimeError(
-                f"pure_gate_guards_document_unsliceable: {guards_path}: {exc}") from exc
+                f"pure_gate_guards_document_unsliceable: the "
+                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
         lint_rules = self._lint_rules_document(refs)
         return {
             "harness_capabilities": json.dumps(
@@ -6112,7 +6168,8 @@ clean:
             "target_profile": self._pure_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
-            "runner_output_contract_document": contract_text,
+            "runner_output_contract_document": self._runner_output_contract_with_binding(
+                contract_text),
             "gate_guards_document": gate_guards,
             "lint_rules_document": lint_rules,
         }
@@ -6135,13 +6192,12 @@ clean:
         it, and shipping one that has not been shown it is how issue #169's round 4 defined the
         defect this closes. The caller turns the raise into `pure_context_assembly_failed`."""
         from tools.backends import registry as backend_registry
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
         language = self._read_toolchain(refs)["language"]
-        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        preset = backend_registry.linter_for_language(language)
         if preset is None:
             raise RuntimeError(
                 f"pure_lint_rules_document_unavailable: toolchain.language={language!r} has no "
-                f"static lint preset (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+                f"static lint preset: no linter backend declares it in LANGUAGES")
         try:
             module = backend_registry.capability_module("linter", preset, "lint_rules")
         except Exception as exc:
@@ -6195,6 +6251,7 @@ clean:
         return pure_bundle_contract_violation(
             doc, node_key=refs.node_key, spec_id=refs.spec_id,
             shape=(self._bundle_shape(refs) or ""),
+            language=self._read_toolchain(refs)["language"],
             runner_basename=self._runner_basename(refs),
             ir_snapshot_variables=snapshot_variables_from_ir(ir),
             harness_provided=provided, harness_label=harness_nk,
@@ -6253,7 +6310,7 @@ clean:
         before make), a `bundle:` / `glue:` source is a filename in the src/ cwd. Objects live
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
         tc = self._read_toolchain(refs)
-        fc = tc["compiler"] or DEFAULT_COMPILER
+        fc = tc["compiler"] or default_compiler(tc["language"])
         flags = f"-std={tc['standard']} -O2"
         if tc["backend"] == "openmp":
             flags += " -fopenmp"
@@ -6562,10 +6619,15 @@ clean:
 
         Nothing here names a target (issue #284): Compile is target-free, so the admissible-
         toolchain document and the `impl_defaults` knob-name schema this context carried until
-        R4-a PR-3 are gone with the IR section they governed. The one target-coloured document
-        left is the checks-module contract's ABI sections, a fixed repository document (its
-        version is `COMPILE_INLINED_DOCUMENTS_VERSION`'s, not a per-node input), recorded as an
-        accepted residual for R4-b on issue #284.
+        R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
+        sections were the one target-coloured document left (R4-a's accepted residual); since
+        issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
+        only to the `generate` leaves. Its version is `PURE_PROMPT_CONTRACT_VERSION`'s, the
+        classification `test_derivation_transformation_drift.INLINED_DOCUMENT_CLASS` gives it
+        (`contract`, pinned by `test_pure_prompt_contract_drift`) — not
+        `COMPILE_INLINED_DOCUMENTS_VERSION`'s, which pins the three documents this context
+        inlines whole. The compile transformation carries both, so a change to either re-derives
+        every node's Compile.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
@@ -7517,6 +7579,7 @@ clean:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
+                pure_language=self._pure_language(phase),
                 # On a warm reuse repair the resumed session already holds the context, so it is
                 # omitted — but ONLY when the validator's exemption holds (warm + reuse +
                 # findings). A cold launch, or a cold-fallback repair (session GC'd), carries the
@@ -7835,9 +7898,9 @@ clean:
         not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
         supplies the complete review input.
 
-        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — the same
-        contract the agentic leaf force-reads (`CHECKS_MODULE_CONTRACT_REF`), sliced by
-        `_checks_contract_abi_sections` (issue #142). Without it the reviewer judged the checks
+        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`
+        (`CHECKS_MODULE_CONTRACT_REF`), sliced by `_checks_contract_abi_sections` (issue #142),
+        followed by §1-§4 of the target language's binding of it (`checks_abi`, issue #289). Without it the reviewer judged the checks
         module's callbacks against its own guess at what the runner does with each result, and
         failed a bundle that followed the contract verbatim. §5 is excluded because it is the
         deterministic legality/gate section the template already tells the reviewer not to
@@ -7877,6 +7940,18 @@ clean:
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
+        # ... followed by the TARGET LANGUAGE's binding of the same four sections (issue #289,
+        # R4-b PR-2): the neutral contract says what each callback does, the binding says how
+        # the reviewer will see it spelled. One document, in that order, so the reviewer reads
+        # a section's meaning before its spelling.
+        binding_text = self._checks_abi_binding_text()
+        try:
+            binding_abi = _checks_contract_abi_sections(binding_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_checks_contract_document_unsliceable: the "
+                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
+        contract_abi = f"{contract_abi}\n\n{binding_abi}"
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
         try:
             phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
@@ -7945,7 +8020,8 @@ clean:
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._pure_target_profile_document(),
-            "runner_output_contract_document": contract_text,
+            "runner_output_contract_document": self._runner_output_contract_with_binding(
+                contract_text),
             "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }
@@ -8315,6 +8391,7 @@ clean:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
+                pure_language=self._pure_language(phase),
                 # Same context-omission rule as the producer: a warm reuse repair's resumed session
                 # already holds the context (the validator exempts it); a cold launch or a
                 # cold-fallback repair (session GC'd) carries the full context.
@@ -9404,7 +9481,7 @@ clean:
         staged: list[dict[str, Any]] = []
         for nk in nodes:
             binding = by_node[nk]
-            target = obj_dir / f"{spec_id_of(nk)}_model.f90"
+            target = obj_dir / self._language_facts().model_basename(spec_id_of(nk))
             shutil.copy2(self.repo_root / binding["model_source_ref"], target)
             digest = hashlib.sha256(target.read_bytes()).hexdigest()
             if digest != binding["model_source_sha256"]:
@@ -9897,19 +9974,18 @@ clean:
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import tool_run_linter
-        # Same language->preset table the post_generate validator certifies against, so the
-        # preset the conductor RUNS cannot drift from the preset the validator EXPECTS.
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
+        # Same language->linter answer the post_generate validator certifies against (the
+        # registry's), so the preset the conductor RUNS cannot drift from the one it EXPECTS.
         from tools.hooks.lint_evidence import write_lint_evidence
 
         language = self._read_toolchain(refs)["language"]
-        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        preset = backend_registry.linter_for_language(language)
         if preset is None:
             # No static-lint mapping for this language: a precondition error, not a content
             # failure the generate retry loop could fix -> transport fail_closed.
             raise RuntimeError(
-                f"generate.gate lint check: toolchain.language={language!r} has no static lint preset "
-                f"mapping (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+                f"generate.gate lint check: toolchain.language={language!r} has no static lint preset: "
+                f"no linter backend declares it in LANGUAGES")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         # Canonical lint command-log placement: <src>/command_log.jsonl (same file the
@@ -10004,13 +10080,13 @@ clean:
 
     def _gate_syntax_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate syntax checker: in-process run_syntax_check (a real compiler
-        front-end, gfortran -fsyntax-only) over the staged node + dependency-closure
-        sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
+        front-end in syntax-only mode, the language's mandatory syntax compiler) over the staged
+        node + dependency-closure sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
         `syntax` section of gate_meta (status / language / stages / skipped_reason /
         failure_category / failure_excerpt); `_gate_inproc` composes the single gate_meta.json
         verdict. This catches the whole class of syntax / standard-conformance compile_errors
         BEFORE Build (where they would force the expensive regenerate->rebuild loop) — replacing
-        the retired post_generate text heuristics that could only mimic gfortran one observed
+        the retired post_generate text heuristics that could only mimic a compiler one observed
         failure at a time.
 
         Compiler findings are a CONTENT failure (status="fail") the gate routes to
@@ -10022,39 +10098,52 @@ clean:
         dependency closure alone (fails => the closure is at fault — either a defective
         certified source or a node standard too narrow for it). Both are a transport
         fail_closed naming what to fix, since the leaf authors neither the IR nor a
-        dependency's certified source. A missing MANDATORY gfortran (or a genuine tool/infra
-        error) raises and surfaces as a transport fail_closed likewise — an environment
-        problem, not something the generate retry loop could fix. Optional additional stages
-        from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
+        dependency's certified source. A missing MANDATORY stage compiler (or a genuine
+        tool/infra error) raises and surfaces as a transport fail_closed likewise — an
+        environment problem, not something the generate retry loop could fix. Optional
+        additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
-        registered adapter or its binary is not installed, so one configuration runs on
-        machines with and without the target compiler.
+        registered adapter, reads another language's sources, or its binary is not installed,
+        so one configuration runs on machines with and without the target compiler.
+
+        Which files are sources, the mandatory stage, the canary and the argv are the
+        registry's answers (`syntax_promotions` / `bundle_facts` of the language, `syntax_check`
+        of the compiler). A language that declares no `syntax_promotions` has no stage to run,
+        and is a transport fail_closed rather than a pass-through: until issue #289 (R4-b PR-2)
+        every language but one passed this checker unchecked.
 
         Staging: each compiler stage gets its own throwaway dir under
-        workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src *.f90 plus
-        the certified dependency-closure `<dep>_model.f90` (`_stage_dependency_sources`).
+        workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src sources plus
+        the certified dependency-closure model sources (`_stage_dependency_sources`).
         Module files are compiler-/version-specific, so stages never share a dir and
-        never touch Build's $(OBJDIR). Non-fortran languages (c/cpp/mixed/cuda_*) pass
-        through: gfortran cannot check them, Build stays their backstop."""
+        never touch Build's object directory."""
         import sys as _sys
         mcp_dir = str(self.repo_root / "mcp_servers")
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import (
-            _FORTRAN_SYNTAX_SOURCE_SUFFIXES,
-            _SYNTAX_COMPILER_ADAPTERS,
-            SYNTAX_CANARY_SOURCE,
             SyntaxSourceNameError,
+            syntax_adapter,
             tool_run_syntax_check,
         )
         from tools.hooks.syntax_evidence import write_syntax_evidence
 
-        # Single source of truth for the free-form Fortran suffix set: the tool that owns
-        # source discovery. The conductor's "no source to check" test and the tool's
-        # discover-and-order set must not drift.
-        suffixes = _FORTRAN_SYNTAX_SOURCE_SUFFIXES
         tc = self._read_toolchain(refs)
         language = tc["language"]
+        if not backend_registry.provides("language", language, "syntax_promotions"):
+            raise RuntimeError(
+                f"generate.gate syntax check: toolchain.language={language!r} has no syntax "
+                f"stage — "
+                + str(backend_registry.missing_capability_reason(
+                    "language", language, "syntax_promotions")))
+        # Single source of truth for the source suffix set: the language backend the tool also
+        # discovers and orders by. The conductor's "no source to check" test and the tool's
+        # discover-and-order set must not drift.
+        suffixes = tuple(backend_registry.capability_module(
+            "language", language, "syntax_promotions").SOURCE_SUFFIXES)
+        mandatory = str(backend_registry.capability_module(
+            "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
+        architecture = str(self.target.doc["hardware"]["architecture"])
         src_dir = self.repo_root / refs.source_dir() / "src"
         command_log_ref = self._rel(src_dir / "command_log.jsonl")
 
@@ -10073,13 +10162,11 @@ clean:
             if p.is_file() and p.suffix.lower() in suffixes
         ) if src_dir.is_dir() else []
 
-        if language != "fortran":
-            skipped_reason = f"language={language}: no syntax-check adapter (fortran only)"
-        elif not node_sources:
+        if not node_sources:
             ok = False
             failure_category = "syntax_error"
             failure_excerpt = (
-                f"{self._rel(src_dir)}: no free-form Fortran source "
+                f"{self._rel(src_dir)}: no {language} source "
                 f"({'/'.join(suffixes)}) to syntax-check"
             )
         else:
@@ -10110,30 +10197,47 @@ clean:
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
-            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", DEFAULT_COMPILER)
+            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", mandatory)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
             # The mandatory stage runs regardless of the env list's content/order: it is the one
             # stage post_generate certification requires to have passed. Its identity is the
-            # module constant the build `FC` default above shares -- so the launch-time host
-            # probe covers both by probing one.
-            if DEFAULT_COMPILER in compilers:
-                compilers.remove(DEFAULT_COMPILER)
-            compilers.insert(0, DEFAULT_COMPILER)
+            # language backend's, bound to the build `FC` default above -- so the launch-time
+            # host probe covers both by probing one.
+            if mandatory in compilers:
+                compilers.remove(mandatory)
+            compilers.insert(0, mandatory)
             for compiler in compilers:
-                # An entry with no registered adapter (e.g. a future `frt` listed before its
-                # adapter ships) is recorded skipped, not crashed: the tool would raise
-                # ValueError for an unknown compiler, which — unlike the "binary not
-                # installed" skip — would propagate as a transport fail_closed even though
-                # the mandatory gfortran stage passed. gfortran must always be registered.
-                if compiler not in _SYNTAX_COMPILER_ADAPTERS:
-                    if compiler == DEFAULT_COMPILER:
+                # An entry with no registered adapter (e.g. a future target compiler listed
+                # before its adapter ships), or whose adapter reads another language's sources,
+                # is recorded skipped, not crashed: the tool would raise ValueError for an
+                # unknown compiler, which — unlike the "binary not installed" skip — would
+                # propagate as a transport fail_closed even though the mandatory stage passed.
+                # The mandatory compiler must always be registered, for this language.
+                try:
+                    adapter = syntax_adapter(compiler)
+                except ValueError as exc:
+                    if compiler == mandatory:
                         raise RuntimeError(
-                            "generate.gate syntax check: gfortran has no registered syntax-check "
-                            "adapter (build-tooling bug)")
+                            f"generate.gate syntax check: the mandatory {compiler} stage has no "
+                            f"registered syntax-check adapter (build-tooling bug): {exc}"
+                        ) from None
                     stages.append({
                         "compiler": compiler,
                         "status": "skipped",
                         "reason": f"no registered syntax-check adapter for {compiler}",
+                    })
+                    continue
+                if str(adapter.LANGUAGE) != language:
+                    if compiler == mandatory:
+                        raise RuntimeError(
+                            f"generate.gate syntax check: the mandatory {compiler} stage reads "
+                            f"{adapter.LANGUAGE} sources, not {language} (build-tooling bug in "
+                            f"tools/backends/)")
+                    stages.append({
+                        "compiler": compiler,
+                        "status": "skipped",
+                        "reason": (f"the {compiler} syntax-check adapter reads "
+                                   f"{adapter.LANGUAGE} sources, not {language}"),
                     })
                     continue
                 stage_dir = (self.repo_root / "workspace" / "tmp" / child_arid
@@ -10148,6 +10252,7 @@ clean:
                         "compiler": compiler,
                         "std": tc["standard"],
                         "openmp": tc["backend"] == "openmp",
+                        "architecture": architecture,
                         "project_dir": str(stage_dir),
                         "repo_root": str(self.repo_root),
                         "command_log_path": str(src_dir / "command_log.jsonl"),
@@ -10195,9 +10300,9 @@ clean:
                         "failure_excerpt": str(exc),
                     }
                 if result.get("skipped"):
-                    if compiler == DEFAULT_COMPILER:
+                    if compiler == mandatory:
                         raise RuntimeError(
-                            f"generate.gate syntax check: mandatory gfortran stage unavailable "
+                            f"generate.gate syntax check: mandatory {compiler} stage unavailable "
                             f"({result.get('reason')})")
                     stages.append({
                         "compiler": compiler,
@@ -10227,6 +10332,7 @@ clean:
                             "compiler": compiler,
                             "std": tc["standard"],
                             "openmp": tc["backend"] == "openmp",
+                            "architecture": architecture,
                             "project_dir": str(sub_dir),
                             "repo_root": str(self.repo_root),
                             "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -10249,8 +10355,8 @@ clean:
                     canary_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                   / "syntax" / f"{compiler}_canary")
                     canary_dir.mkdir(parents=True, exist_ok=True)
-                    (canary_dir / "atmofab_syntax_canary.f90").write_text(
-                        SYNTAX_CANARY_SOURCE, encoding="utf-8")
+                    (canary_dir / adapter.CANARY_FILENAME).write_text(
+                        adapter.CANARY_SOURCE, encoding="utf-8")
                     canary = _sub_check(canary_dir)
                     if not canary.get("skipped") and not canary.get("ok"):
                         canary_excerpt = ((canary.get("stdout", "") or "")
@@ -10261,8 +10367,9 @@ clean:
                             f"failure is the invocation, not the sources. Check the target "
                             f"profile's toolchain.standard={tc['standard']!r} (spec/targets/"
                             f"{self.target.target_id}.yaml; it is passed "
-                            f"verbatim as -std=<value>; spell it the way the compiler names it, "
-                            f"e.g. `f2008`, not `2008`) and the compiler installation. The leaf "
+                            f"verbatim as the compiler's standard argument; spell it the way the "
+                            f"compiler names it, e.g. {adapter.STANDARD_SPELLING_EXAMPLE}) and "
+                            f"the compiler installation. The leaf "
                             f"does not author the profile, so no retry of this node can clear it.\n"
                             + "\n".join(canary_excerpt.splitlines()[-20:]))
 
@@ -10406,9 +10513,10 @@ clean:
                         + f"\n[{compiler} {tc['standard']} syntax check fail]\n{tail}")
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
-        # against (mirrors write_lint_evidence). Only written when the gate actually ran
-        # stages (fortran nodes); certification requires it for language=fortran only.
-        if language == "fortran" and stages:
+        # against (mirrors write_lint_evidence). Written whenever the gate recorded a stage:
+        # every language reaching this line has one (a language with no syntax stage raised
+        # above), and certification requires it for every language.
+        if stages:
             write_syntax_evidence(
                 pipeline_root=self.repo_root / refs.pipeline_ref,
                 source_id=refs.source_id or "",

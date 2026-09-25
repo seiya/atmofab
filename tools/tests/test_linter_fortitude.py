@@ -572,9 +572,12 @@ class ProseCouplingTests(unittest.TestCase):
     #: every entry below to 5000 lines was measured to leave this whole class green, because the
     #: only bound assertion was a probe string that occurs nowhere in the tree.
     _SITES = (
-        ("docs/workflow/phases/phase_02_generate.md",
-         "- `static lint` is NOT run by the `Generate.generate` leaf.", 12,
-         "- **The `Generate.gate` static check traces the dependency dataflow"),
+        # The fortitude idioms moved out of `docs/workflow/phases/phase_02_generate.md` §2-1 into
+        # the Fortran backend's generate rules in issue #289 (R4-b PR-2), verbatim; phase_02
+        # now points there and states no rule code.
+        ("docs/backends/language/fortran/GENERATE_RULES.md",
+         "- **fortitude rule idioms", 11,
+         "## 2. The syntax stage"),
         # `skills/workflow-generate-generate/SKILL.md` was a regioned site until Z4 (issue
         # #171) deleted it with the agentic leaf. The producer that replaced it reads
         # `tools/prompt_templates/pure_generate_generate.txt`, already a row below, and the
@@ -583,14 +586,19 @@ class ProseCouplingTests(unittest.TestCase):
         # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
         # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
         # defect, one file over, found by the round-3 attack axis.
-        ("tools/prompt_templates/pure_generate_generate.txt",
+        # Since issue #289 (R4-b PR-2) those rules live in the Fortran fragment file the host
+        # composes into that template (`{{language:authoring_rules_1_to_4}}`), still as four
+        # consecutive lines, so the region moved with them unchanged.
+        ("tools/prompt_templates/backends/language/fortran/generate_generate.txt",
          "(1) Style lint (the `Generate.gate` lint check", 3,
          "(4) Dependency-dataflow gate"),
         # Anchored at the bullet ABOVE the lint paragraph, not at the paragraph: round 2 found
         # a MANDATE for the abolished directive one line above the old anchor, outside every
         # region this class watched. Three axes reported it independently; none of them was this
         # test.
-        ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
+        # Since issue #289 (R4-b PR-2) the gate-guard section is the Fortran checks-ABI binding's
+        # §5, moved verbatim, so the region moved with it.
+        ("docs/backends/language/fortran/CHECKS_ABI.md",
          "- **`spec_id` \u2264 55 characters**", 19,
          "- **A dummy argument no interface fixes is deleted, not bound.**"),
     )
