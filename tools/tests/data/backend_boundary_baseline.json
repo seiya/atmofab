@@ -202,6 +202,9 @@
     "tools/spec_input_gates.py": {
       "fortran": 1
     },
+    "tools/structured_signatures.py": {
+      "fortran-subroutine": 6
+    },
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 1,
       "fortran": 13,

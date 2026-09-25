@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tools import structured_signatures
 from tools.backends.language.fortran import signatures as fortran_signatures
 from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import (
@@ -1116,17 +1117,17 @@ class ProcedureTypedArgumentTest(unittest.TestCase):
         # `_validate_spec` indexes a dict by `type`; a member of `_VALID_SPEC_TYPES` with no row
         # would escape as a `KeyError` — a gate crash, not a fail-closed violation. Pinned two
         # ways: set identity of the table's keys, and the crash itself when a row is removed.
-        self.assertEqual(set(fortran_signatures._INAPPLICABLE_SPEC_FIELDS),
-                         set(fortran_signatures._VALID_SPEC_TYPES))
-        for t in sorted(fortran_signatures._VALID_SPEC_TYPES):
+        self.assertEqual(set(structured_signatures.INAPPLICABLE_SPEC_FIELDS),
+                         set(structured_signatures.VALID_SPEC_TYPES))
+        for t in sorted(structured_signatures.VALID_SPEC_TYPES):
             with self.subTest(type=t):
                 spec = {"type": t}
                 spec.update({"string": {"len": "4"}, "derived": {"name": "t"},
                              "procedure": {"interface": "i"}}.get(t, {}))
                 render_symbol_to_fortran({"kind": "subroutine", "name": "hx__f",
                                           "args": [{"name": "x", "spec": spec}]})  # accepted
-                table = dict(fortran_signatures._INAPPLICABLE_SPEC_FIELDS); del table[t]
-                with mock.patch.object(fortran_signatures, "_INAPPLICABLE_SPEC_FIELDS", table), \
+                table = dict(structured_signatures.INAPPLICABLE_SPEC_FIELDS); del table[t]
+                with mock.patch.object(structured_signatures, "INAPPLICABLE_SPEC_FIELDS", table), \
                         self.assertRaises(KeyError):  # the shape the identity assertion forbids
                     render_symbol_to_fortran({"kind": "subroutine", "name": "hx__f",
                                               "args": [{"name": "x", "spec": spec}]})
@@ -1351,8 +1352,8 @@ class NeutralVocabularyTest(unittest.TestCase):
         m = re.search(r"neutral `type` \(([^)]*)\)", section)
         self.assertIsNotNone(m, "§5.1 no longer states the neutral `type` enumeration")
         tokens = re.findall(r"`([a-z_]+)`", m.group(1))
-        self.assertEqual(set(tokens), set(fortran_signatures._VALID_SPEC_TYPES))  # names the token
-        self.assertEqual(len(tokens), len(fortran_signatures._VALID_SPEC_TYPES))  # no repeat
+        self.assertEqual(set(tokens), set(structured_signatures.VALID_SPEC_TYPES))  # names the token
+        self.assertEqual(len(tokens), len(structured_signatures.VALID_SPEC_TYPES))  # no repeat
 
     def test_real_section51_fence_text_has_no_fortran_tokens(self) -> None:
         # (#5) A hand-edit that reintroduces a Fortran token into the real §5.1 fence is caught:
