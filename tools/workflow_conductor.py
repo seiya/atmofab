@@ -10368,7 +10368,8 @@ clean:
                             f"profile's toolchain.standard={tc['standard']!r} (spec/targets/"
                             f"{self.target.target_id}.yaml; it is passed "
                             f"verbatim as the compiler's standard argument; spell it the way the "
-                            f"compiler names it) and the compiler installation. The leaf "
+                            f"compiler names it, e.g. {adapter.STANDARD_SPELLING_EXAMPLE}) and "
+                            f"the compiler installation. The leaf "
                             f"does not author the profile, so no retry of this node can clear it.\n"
                             + "\n".join(canary_excerpt.splitlines()[-20:]))
 

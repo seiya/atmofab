@@ -18146,6 +18146,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             msg = str(ctx.exception)
             self.assertIn("not viable", msg)
             self.assertIn("toolchain.standard", msg)
+            # the remedy carries the ADAPTER's spelling example (issue #289: it was a literal here)
+            from tools.backends.compiler.gfortran import syntax as gfortran_syntax
+            self.assertIn(gfortran_syntax.STANDARD_SPELLING_EXAMPLE, msg)
             self.assertNotIn(self.DEP_REF, msg)  # the dependency must NOT be blamed
 
     def test_gate_syntax_check_dep_failure_message_names_both_causes(self) -> None:

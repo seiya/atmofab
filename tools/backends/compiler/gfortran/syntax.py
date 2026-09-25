@@ -38,6 +38,11 @@ CANARY_SOURCE = "module atmofab_syntax_canary\n  implicit none\nend module atmof
 #: The name the canary is staged under; its suffix is one the language's source rule accepts.
 CANARY_FILENAME = "atmofab_syntax_canary.f90"
 
+#: How this driver spells a standard, for the remedy an operator reads when the canary shows the
+#: invocation itself is refused (the usual cause: the profile's `toolchain.standard` spelled the
+#: way another tool names it).
+STANDARD_SPELLING_EXAMPLE = "`f2008`, not `2008`"
+
 
 def argv(*, standard: str, scratch_dir: str, openmp: bool, promotions: tuple[str, ...],
          architecture: str | None, sources: list[str]) -> list[str]:
