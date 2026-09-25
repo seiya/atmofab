@@ -93,6 +93,11 @@ def render_tuple() -> dict[str, str]:
         "tools/backends/language/fortran/control_file.py":
             _file_digest("tools/backends/language/fortran/control_file.py"),
         "Conductor._write_makefile": _source_digest(wc.Conductor._write_makefile),
+        # What the two writers hand the renderer, and which renderer: the language's rules are
+        # built from the target's toolchain here (the flags, `-fopenmp` among them) — logic the
+        # writers held inline until R4-b PR-3, when it left the digested sources above.
+        "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
+        "Conductor._control_file_module": _source_digest(wc.Conductor._control_file_module),
         "Conductor._render_pure_makefile_from_graph":
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
         "Conductor._write_pure_bundle_artifacts":
@@ -306,9 +311,15 @@ PINNED_RENDER: dict[str, str] = {
     # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the two control-file templates
     # moved out of the conductor into the `make` backend's renderer, which composes the
     # language's `control_file` rules (both modules join the tuple). Measured byte-identical to
-    # the templates they replace over 240 parameter combinations (leaf / closure / checks, each
-    # parallel backend, compiler pin, case set, standard; and the bundle-graph shapes).
-    "render-5": "7b99571339079b3ecbaaa1d58e5ea8fe057d8532d6e00ab3f5d9160a458dc0ea",
+    # the templates they replace over 240 parameter combinations: the IR-shaped writer over
+    # checks module present / absent (2) × parallel backend openmp / none / serial (3) × closure
+    # of 0 / 1 / 3 dependencies (3) × compiler gfortran / ifx (2) × case sets of 0 / 1 / 2 (3) ×
+    # standard f2008 / f2018 (2) = 216, and the graph writer over 3 graph shapes × 2 backends × 2
+    # compilers × 2 case sets = 24 (a scratch differential against bf2871e5's templates, not
+    # kept in the tree). Re-pinned again in round 1 of that PR's review: the tuple gained
+    # `_control_file_rules` / `_control_file_module`, the conductor methods that now build what the
+    # renderer composes — a change there moved no pin until then (found by two reviewers).
+    "render-5": "d759bac62226b5ec2c5d7f9499b1efd3a47b516c356005251dd705ade27115ab",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
