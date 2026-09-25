@@ -190,8 +190,8 @@ together with the bundle's `target_lowering_plan.parallelization`.
     and dependency-use gates through `source_reading`; the §5.1 signature gates through
     `signatures` — at `Generate.static` in the pipeline's target language, and at the
     target-free `Compile.static` in EVERY language that declares it; the dependency facts a
-    consumer is shown through the consumer language's `signatures` (their RENDERED wording is
-    still Fortran's — a recorded precondition of R4-b PR-4, `TODO.md`); the file names the gates and
+    consumer is shown through the consumer language's `signatures`, which also states how they
+    are SHOWN (the call-site guidance, since the R4-b PR-4 preconditions); the file names the gates and
     `phase_required_outputs` read through `bundle_facts`. A language that does not declare the
     capability a gate needs is refused there (`validate_pipeline_semantics._language_module`),
     never read as another language — until that PR these gates imported one language backend by
@@ -200,6 +200,12 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `control_file` (`tools/backends/build_system/make/`), with the language's compile rules as
     its `control_file` half; the Generate presence floor is the parallel backend's
     `parallel_directives`.
+  - **A remedy or prompt paragraph a leaf reads that names a language's statements is stated by
+    that language's backend**, whichever neutral gate decides the finding (issue #289, the R4-b
+    PR-4 preconditions): the checks-ABI and bound-state remedies by the runner backend through
+    `host_render`, the component-surface remedies by `source_reading`, the dependency-operation
+    guidance by `signatures`, the exemplar's unreferenced-dummy idiom by `prompt_fragments`. A
+    target-free message (Compile's) names no language's statements at all.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that
