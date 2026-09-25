@@ -556,6 +556,39 @@ def implemented_backend_ids(axis: str) -> tuple[str, ...]:
     return tuple(bid for bid in backend_ids(axis) if _BACKENDS[(axis, bid)].implemented)
 
 
+#: The one language token whose linter is not declared by a linter backend: `mixed` names a
+#: COMPOSITE (the `mixed` linter record runs several linters in order), not a language any
+#: backend implements, so no linter's `LANGUAGES` can carry it. Naming the pair here is naming
+#: two axis values, which is what the neutral core may do.
+_COMPOSITE_LINTER_FOR_LANGUAGE: dict[str, str] = {"mixed": "mixed"}
+
+
+def linter_for_language(language: str) -> str | None:
+    """The linter a node of `language` is linted with, or `None` when no linter declares it.
+
+    Answered from each `lint`-capable linter backend's own `LANGUAGES` declaration, so the
+    language -> linter fact is written where the linter's knowledge is (issue #289, R4-b PR-2;
+    it was a table in the post_generate validator, carrying tokens no backend implements). A
+    language two linters declare RAISES: resolving it by order would make the gate run one
+    linter and the certification expect whichever the next reader happened to pick.
+
+    Loads the linter packages it asks — the reason this is a function rather than a table built
+    at import (this module imports no backend package at import time)."""
+    normalized = str(language or "").strip().lower()
+    if normalized in _COMPOSITE_LINTER_FOR_LANGUAGE:
+        return _COMPOSITE_LINTER_FOR_LANGUAGE[normalized]
+    matches = [
+        bid for bid in backend_ids("linter")
+        if "lint" in _BACKENDS[("linter", bid)].backend_provides
+        and normalized in capability_module("linter", bid, "lint").LANGUAGES
+    ]
+    if len(matches) > 1:
+        raise UnsupportedBackend(
+            f"language '{language}' is declared by more than one linter ({', '.join(matches)}); "
+            f"a language is linted by exactly one — see docs/BACKEND_BOUNDARY.md")
+    return matches[0] if matches else None
+
+
 def get(axis: str, backend_id: str) -> Backend:
     """The `Backend` record, or raise naming why there is none.
 

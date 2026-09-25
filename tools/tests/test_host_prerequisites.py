@@ -44,14 +44,12 @@ class LaunchSelectionTests(unittest.TestCase):
         self.assertEqual(hp.resolve_launch_axis_selection(other)["build_system"], "no_such_bs")
 
     def test_the_linter_comes_from_the_language_to_preset_mapping_the_gate_uses(self) -> None:
-        """The same private name `_gate_lint_check` reads. A second copy would send the probe
+        """The same registry answer `_gate_lint_check` reads. A second copy would send the probe
         after a linter the gate never runs, which is the whole failure mode this check exists to
         remove."""
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
-
         selection = hp.resolve_launch_axis_selection()
         self.assertEqual(
-            selection["linter"], _LINT_PRESET_FOR_LANGUAGE[selection["language"]]
+            selection["linter"], backend_registry.linter_for_language(selection["language"])
         )
 
     def test_every_selected_axis_value_is_a_registered_implemented_member(self) -> None:
@@ -136,9 +134,6 @@ class NoDriftFromWhatActuallyRunsTests(unittest.TestCase):
                 self.assertIn(facts.MANDATORY_SYNTAX_COMPILER, server.syntax_check_compilers())
                 self.assertEqual(
                     server.syntax_adapter(facts.MANDATORY_SYNTAX_COMPILER).LANGUAGE, language)
-
-    def test_the_default_lint_preset_is_a_row_of_the_table_that_runs_it(self) -> None:
-        self.assertIn(server.DEFAULT_LINT_PRESET, server._LINT_PRESET_COMMANDS)
 
 
 class ProbeShapeTests(unittest.TestCase):

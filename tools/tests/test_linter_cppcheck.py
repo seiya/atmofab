@@ -590,11 +590,11 @@ class DeferredLeafChecklistTests(unittest.TestCase):
     def test_no_language_this_preset_lints_is_reachable_by_a_node(self) -> None:
         """The obligation this backend defers, tied to the gate that makes it deferrable."""
         from tools.backends import registry
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
 
-        ours = sorted(lang for lang, preset in _LINT_PRESET_FOR_LANGUAGE.items()
-                      if preset == "cppcheck")
-        self.assertEqual(ours, ["c", "c++", "cpp", "cuda_c"])
+        ours = sorted(registry.capability_module("linter", "cppcheck", "lint").LANGUAGES)
+        self.assertEqual(ours, ["c", "cpp"])
+        for language in ours:
+            self.assertEqual(registry.linter_for_language(language), "cppcheck")
         for language in ours:
             self.assertIsNotNone(
                 registry.unimplemented_reason("language", language),

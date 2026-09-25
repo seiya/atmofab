@@ -2371,12 +2371,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         """
         source = Path(vps.__file__).read_text(encoding="utf-8")
         linter_ids = set(registry.backend_ids("linter"))
-        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it flags
-        # `_LINT_PRESET_FOR_LANGUAGE`, which is a legitimate structure carrying a different fact
-        # (which linter a language is linted with), so the guard would have refused correct code
-        # and taught the reader to route around it. That mapping's drift risk is real and is
-        # closed by the containment test below — the right instrument for a mapping is what its
-        # values must satisfy, not whether it exists.
+        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it
+        # flagged the validator's language -> linter table, which was a legitimate structure
+        # carrying a different fact (which linter a language is linted with). That fact is the
+        # linter backends' own declaration since issue #289 (R4-b PR-2), answered by
+        # `registry.linter_for_language`, and its drift is pinned below.
         literals = [
             node.lineno for node in ast.walk(ast.parse(source))
             if isinstance(node, (ast.Set, ast.List, ast.Tuple))
@@ -2405,23 +2404,43 @@ class RegistryConsistencyTests(unittest.TestCase):
                 f"the lint gate accepts preset '{backend_id}' but cannot infer it from a logged "
                 f"command, so the evidence check refuses it for an unrelated-sounding reason")
 
-    def test_the_language_to_linter_mapping_cannot_drift_from_the_registry(self) -> None:
-        """The other half of the same fact, which the guard above deliberately allows.
+    def test_the_language_to_linter_answer_is_the_linters_own_declaration(self) -> None:
+        """Which linter a language is linted with is declared by each linter (`LANGUAGES` in its
+        `lint` module) and answered by `registry.linter_for_language` (issue #289, R4-b PR-2).
 
-        `_LINT_PRESET_FOR_LANGUAGE` maps a language to the linter it is linted with. That is
-        language knowledge, not a copy of the accepted-preset set, so it stays — but its VALUES
-        are linter backend ids, and review measured the drift: dropping the `ruff` member from
-        the registry leaves this mapping producing `ruff` for `python` while the gate refuses
-        it, suite green. Pinned as a containment (the mapping may name fewer linters than exist,
-        never one that does not), because equality would fail the day a linter is registered
-        before any language uses it.
-        """
+        It was a table in the validator whose VALUES could drift from the registry — review
+        measured dropping the `ruff` member leaving the table producing `ruff` for `python`
+        while the gate refused it, suite green. Now: every implemented language has an answer,
+        every answer is an implemented linter, and no language is declared by two linters."""
         implemented = set(registry.implemented_backend_ids("linter"))
-        used = set(vps._LINT_PRESET_FOR_LANGUAGE.values())
-        self.assertEqual(
-            set(), used - implemented,
-            "the language->linter mapping names a linter the registry does not implement, so "
-            "the lint evidence gate will refuse the preset this mapping produces")
+        for language in registry.implemented_backend_ids("language"):
+            with self.subTest(language=language):
+                linter = registry.linter_for_language(language)
+                self.assertIsNotNone(
+                    linter, f"implemented language '{language}' has no linter declaring it, so "
+                    "its Generate.gate lint check fails closed on every node")
+                self.assertIn(linter, implemented)
+        declared: dict[str, list[str]] = {}
+        for linter in registry.implemented_backend_ids("linter"):
+            if "lint" not in registry.get("linter", linter).backend_provides:
+                continue
+            for language in registry.capability_module("linter", linter, "lint").LANGUAGES:
+                declared.setdefault(language, []).append(linter)
+        self.assertEqual({}, {k: v for k, v in declared.items() if len(v) > 1})
+        self.assertIn(registry.linter_for_language("mixed"), implemented)
+
+    def test_a_language_two_linters_declare_is_refused_not_resolved_by_order(self) -> None:
+        import types
+        pkg = types.ModuleType("zz_second_fortran_linter")
+        pkg.lint = types.ModuleType("zz_second_fortran_linter.lint")
+        pkg.lint.LANGUAGES = ("fortran",)
+        record = registry.Backend("linter", "zzlint", "zz_second_fortran_linter",
+                                  backend_provides=frozenset({"lint"}))
+        with mock.patch.dict(sys.modules, {"zz_second_fortran_linter": pkg}), \
+                mock.patch.dict(registry._BACKENDS, {("linter", "zzlint"): record}):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry.linter_for_language("fortran")
+        self.assertIn("more than one linter", str(ctx.exception))
 
     def test_a_registered_backend_module_lives_under_the_backend_package(self) -> None:
         for axis in registry.AXES:

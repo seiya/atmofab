@@ -6132,13 +6132,12 @@ clean:
         it, and shipping one that has not been shown it is how issue #169's round 4 defined the
         defect this closes. The caller turns the raise into `pure_context_assembly_failed`."""
         from tools.backends import registry as backend_registry
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
         language = self._read_toolchain(refs)["language"]
-        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        preset = backend_registry.linter_for_language(language)
         if preset is None:
             raise RuntimeError(
                 f"pure_lint_rules_document_unavailable: toolchain.language={language!r} has no "
-                f"static lint preset (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+                f"static lint preset: no linter backend declares it in LANGUAGES")
         try:
             module = backend_registry.capability_module("linter", preset, "lint_rules")
         except Exception as exc:
@@ -9894,19 +9893,18 @@ clean:
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import tool_run_linter
-        # Same language->preset table the post_generate validator certifies against, so the
-        # preset the conductor RUNS cannot drift from the preset the validator EXPECTS.
-        from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
+        # Same language->linter answer the post_generate validator certifies against (the
+        # registry's), so the preset the conductor RUNS cannot drift from the one it EXPECTS.
         from tools.hooks.lint_evidence import write_lint_evidence
 
         language = self._read_toolchain(refs)["language"]
-        preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+        preset = backend_registry.linter_for_language(language)
         if preset is None:
             # No static-lint mapping for this language: a precondition error, not a content
             # failure the generate retry loop could fix -> transport fail_closed.
             raise RuntimeError(
-                f"generate.gate lint check: toolchain.language={language!r} has no static lint preset "
-                f"mapping (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})")
+                f"generate.gate lint check: toolchain.language={language!r} has no static lint preset: "
+                f"no linter backend declares it in LANGUAGES")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         # Canonical lint command-log placement: <src>/command_log.jsonl (same file the

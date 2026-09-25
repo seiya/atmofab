@@ -10,7 +10,6 @@
       },
       "preset": {
         "type": "string",
-        "default": "fortitude",
         "description": "fortitude | cppcheck | ruff | mixed"
       },
       "timeout_sec": {
@@ -46,7 +45,8 @@
       }
     },
     "required": [
-      "project_dir"
+      "project_dir",
+      "preset"
     ]
   }
 }

@@ -1138,9 +1138,6 @@ _LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = {
     "mixed": ("fortitude", "cppcheck"),
 }
 
-#: The preset a caller that names none gets.
-DEFAULT_LINT_PRESET = "fortitude"
-
 
 def _check_lint_preset_declarations() -> None:
     """Fail at import on a preset table these two readers would disagree about.
@@ -1160,8 +1157,6 @@ def _check_lint_preset_declarations() -> None:
         unknown = sorted(set(subs) - set(_LINT_PRESET_COMMANDS))
         if unknown:
             raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
-    if DEFAULT_LINT_PRESET not in _LINT_PRESET_COMMANDS:
-        raise ValueError(f"default lint preset {DEFAULT_LINT_PRESET!r} has no command row")
 
 
 _check_lint_preset_declarations()
@@ -1209,10 +1204,15 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "run_linter")
-    preset = str(args.get("preset", DEFAULT_LINT_PRESET)).strip().lower()
 
     if "command" in args:
         raise ValueError("run_linter does not allow custom command; use preset")
+    # REQUIRED: which linter a node is linted with is its language's answer
+    # (`registry.linter_for_language`), and a default here was one language's (issue #289).
+    raw_preset = args.get("preset")
+    if not isinstance(raw_preset, str) or not raw_preset.strip():
+        raise ValueError("run_linter requires a non-empty string 'preset'")
+    preset = raw_preset.strip().lower()
 
     run_env: dict[str, str] | None
     if env is None:
@@ -1583,7 +1583,6 @@ TOOLS: dict[str, Tool] = {
                 "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "preset": {
                     "type": "string",
-                    "default": "fortitude",
                     "description": "fortitude | cppcheck | ruff | mixed",
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
@@ -1598,7 +1597,7 @@ TOOLS: dict[str, Tool] = {
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ATTRIBUTION_PROPERTIES,
             },
-            "required": ["project_dir"],
+            "required": ["project_dir", "preset"],
         },
         handler=tool_run_linter,
     ),

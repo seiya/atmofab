@@ -104,11 +104,10 @@ def resolve_launch_axis_selection(target=None) -> dict[str, str]:
     DEFAULT target (`select_target_id`: the only declared profile), and raises
     `TargetProfileError` when that is ambiguous — the caller decides whether to refuse or to
     leave the question to the launch's own target resolution."""
-    # The language -> linter mapping, from the module that owns it. The conductor's
-    # `_gate_lint_check` reaches the same private name for the same reason: a second copy is a
-    # drift pair, and this one would send the probe after a linter the gate never runs.
+    # The language -> linter answer is the registry's, the one the conductor's
+    # `_gate_lint_check` runs and the certification expects: a second copy would be a drift
+    # pair, and this one would send the probe after a linter the gate never runs.
     from tools.backends import registry as backend_registry
-    from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
 
     if target is None:
         from tools.target_profile import load_target_profile, select_target_id
@@ -117,11 +116,11 @@ def resolve_launch_axis_selection(target=None) -> dict[str, str]:
     language = target.toolchain["language"]
     build_system = target.toolchain["build_system"]
 
-    preset = _LINT_PRESET_FOR_LANGUAGE.get(language)
+    preset = backend_registry.linter_for_language(language)
     if preset is None:
         raise RuntimeError(
             f"launch host prerequisite probe: toolchain.language={language!r} has no static lint "
-            f"preset mapping (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})"
+            f"preset: no linter backend declares it in LANGUAGES (tools/backends/linter/)"
         )
     _require_implemented("language", language)
     return {

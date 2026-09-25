@@ -95,6 +95,12 @@ import re
 #: name of its own (`tools/host_prerequisites.py`).
 EXECUTABLE = "fortitude"
 
+#: The `language` values a node is linted with THIS linter for — the language -> linter fact
+#: `registry.linter_for_language` answers from every linter's declaration (issue #289, R4-b
+#: PR-2; it was a table in `tools/validate_pipeline_semantics.py`). A language declared by two
+#: linters is refused there rather than resolved by order.
+LANGUAGES: tuple[str, ...] = ("fortran",)
+
 #: The rule set the `Generate.gate` lint check applies, and the only place it is written.
 #:
 #: Derived, not invented: it is 0.8.0's default set (41 codes) minus `OB001` and `C003`, both of

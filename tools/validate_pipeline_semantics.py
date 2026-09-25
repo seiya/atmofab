@@ -552,27 +552,12 @@ AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 #: modules this file actually imports, so the two cannot drift.
 _SIGNATURE_HELPERS_BACKEND_ID = "fortran"
 
-_LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
-    "fortran": "fortitude",
-    "cuda_fortran": "fortitude",
-    "c": "cppcheck",
-    "cpp": "cppcheck",
-    "c++": "cppcheck",
-    "cuda_c": "cppcheck",
-    "mixed": "mixed",
-    "python": "ruff",
-}
 # NOTE: there is deliberately no lint-preset SET here. Which presets are accepted is asked of
 # `backend_registry.unimplemented_reason` per value rather than held as a copy — the copy was a
 # drift pair, where registering a linter left the gate refusing it and narrowing the set left the
-# registry claiming it.
-#
-# The mapping ABOVE is a different fact — which linter a language is linted with — and it is
-# language knowledge that migrates with the language backends, not a second copy of the accepted
-# set. But its VALUES are linter backend ids, so it can drift the same way: review measured that
-# dropping the `ruff` member from the registry leaves this mapping producing `ruff` for `python`
-# while the gate refuses it, with the suite green. `test_backend_boundary` pins the values
-# against the registry's implemented linters so that pair cannot open.
+# registry claiming it. Which linter a LANGUAGE is linted with is asked of
+# `backend_registry.linter_for_language`, which reads each linter backend's own declaration; it
+# was a table here until issue #289 (R4-b PR-2).
 _NODE_KEY_SAFE_PATTERN_LINEAGE = re.compile(
     r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
 )
@@ -7105,7 +7090,7 @@ def _validate_generate_lint_command_logs(
         )
         return
 
-    expected = _LINT_PRESET_FOR_LANGUAGE.get(impl_language)
+    expected = backend_registry.linter_for_language(impl_language)
     if expected is None:
         violations.append(
             f"{meta_path}: toolchain.language={impl_language!r} has no static lint mapping"

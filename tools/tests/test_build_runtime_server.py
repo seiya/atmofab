@@ -517,6 +517,10 @@ class EnvOverrideDenylistTests(unittest.TestCase):
             args["command"] = ["true"]
         if tool == "compile_project":
             args["build_system"] = "make"
+        if tool == "run_linter":
+            args["preset"] = "fortitude"
+        if tool == "run_syntax_check":
+            args.update(compiler="gfortran", std="f2008")
         return args
 
     def test_denylisted_keys_are_refused_by_every_env_accepting_tool(self) -> None:
@@ -2551,9 +2555,6 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             ("a composite naming an unregistered sub-preset",
              {"_LINT_PRESET_COMPOSITES": {**self.mod._LINT_PRESET_COMPOSITES,
                                           "zz_composite": ("zz_absent",)}},
-             "zz_absent"),
-            ("a default preset with no command row",
-             {"DEFAULT_LINT_PRESET": "zz_absent"},
              "zz_absent"),
         )
         for label, attrs, expected in cases:

@@ -3030,8 +3030,8 @@ class PureHarnessShapeTests(unittest.TestCase):
         that is not shown the rule set cannot satisfy it, so an empty slot is the defect, not a
         smaller prompt. The caller turns each into `pure_context_assembly_failed`."""
         from tools.backends.linter.fortitude import lint as fortitude
-        with mock.patch.dict(
-                "tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE", {}, clear=True):
+        from tools.backends import registry as backend_registry
+        with mock.patch.object(backend_registry, "linter_for_language", lambda language: None):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
@@ -3047,8 +3047,8 @@ class PureHarnessShapeTests(unittest.TestCase):
         # asserted "four named failure modes, all RAISING": a preset whose package does not
         # DECLARE the `lint_rules` capability. Replacing the registry refusal with a silent
         # fallback to fortitude survived every test file until this row.
-        with mock.patch.dict("tools.validate_pipeline_semantics._LINT_PRESET_FOR_LANGUAGE",
-                             {"fortran": "cppcheck"}, clear=True):
+        with mock.patch.object(backend_registry, "linter_for_language",
+                               lambda language: "cppcheck"):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
