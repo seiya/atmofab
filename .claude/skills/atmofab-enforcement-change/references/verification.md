@@ -109,6 +109,18 @@ recorded, now absent` line — output so obviously wrong that it read as a catas
 rather than as a bad measurement. `git status` was clean and `git diff` on the file was empty
 throughout, because the restore had already happened; the only tell was the file's mtime.
 
+**Those two rows no longer write the real path** (the fix after PR #295). They were hit a second
+time by a concurrent reader that was the suite ITSELF: under `pytest -n 16`, a sibling worker's
+`TokenRatchetTests` read the sentinel and failed, two mutants were scored killed on that alone and
+SURVIVED a serial re-run, and a run with `-x` skipped the `finally` and left the sentinel in the
+checkout. Both rows now point `BASELINE_PATH` / `ALLOWLIST_PATH` at copies in a temporary
+directory (`DirectImportPinTests._data_files_in_a_temporary_directory`) and assert the real files
+byte-identical afterwards. The one row left that can write the real baseline is
+`test_the_refused_pair_writes_nothing_through_the_real_command`, a subprocess, and it writes only
+when the dispatch it witnesses is broken. **The class stays**: any row that writes a checked-in
+path and restores it in a `finally` is invisible to `git status` and visible to every concurrent
+reader — patch the path the code under test resolves instead.
+
 (**This entry named the wrong test TWICE while being written** — first `ScannedSetTests`, which
 builds its synthetic tree and baseline in a `tempfile` directory and never touches the real
 path, then a `test_the_command_writes_only_the_baseline` that does not exist at all. Both were

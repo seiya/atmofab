@@ -119,7 +119,7 @@ only to tell a real failure from a suite that never ran. Hunks run in separate w
 time by default and never more than the hunk count (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
 `--test-cmd`**: each job already gets its own temp root, a prefix puts them all back on one, and
 failures then belong to no hunk and are recorded as `killed` — a false pin (at more than one job
-the script refuses the combination, exit 2). **Run the un-mutated baseline first**; a red
+the script refuses the combination, exit 2). **Never give `--test-cmd` both `-x` and `-n`** (pytest-xdist): `-x` stops the workers mid-test, a `finally` that restores a file is skipped, and the file stays changed in the checkout — measured 2026-09-25 on the backend-boundary baseline. `-n` inside a job also multiplies with `--jobs`, and it is only available where xdist is installed; a kill that a parallel run alone reports is re-run serially before it is banked (the `/tmp/repo` bullet below). **Run the un-mutated baseline first**; a red
 baseline exits 2 (`--skip-baseline` removes the check — write down why).
 
 **Exit codes**: 0 = clean, or the sole survivors are prose-only, or nothing was left to check —
