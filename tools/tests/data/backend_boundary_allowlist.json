@@ -4,18 +4,7 @@
     "tools/prompt_templates/backends",
     "docs/backends"
   ],
-  "direct_backend_imports": {
-    "tools/orchestration_runtime.py": [
-      "tools.backends.language.fortran",
-      "tools.backends.language.fortran.lines"
-    ],
-    "tools/validate_pipeline_semantics.py": [
-      "tools.backends.language.fortran",
-      "tools.backends.language.fortran.lines",
-      "tools.backends.language.fortran.signatures",
-      "tools.backends.language.fortran.structure"
-    ]
-  },
+  "direct_backend_imports": {},
   "excluded_prefixes": [
     "docs/design/",
     "tools/tests/"

@@ -410,11 +410,13 @@ class LaunchGateTests(unittest.TestCase):
                 self.assertTrue(tp.target_profile_violations(
                     repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
             # ... and so is every language capability `Generate` reads for any kind (issue
-            # #289, R4-b PR-2): a language missing one is refused at launch, for a harness as
-            # for a physics node, naming the capability.
+            # #289, R4-b PR-2; the source reader and the signature module since R4-b PR-3): a
+            # language missing one is refused at launch, for a harness as for a physics node,
+            # naming the capability.
             self.assertEqual(
                 tp.LANGUAGE_CAPABILITIES_EVERY_NODE,
-                ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi"))
+                ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
+                 "source_reading", "signatures"))
             for capability in tp.LANGUAGE_CAPABILITIES_EVERY_NODE:
                 with self.subTest(every_node=capability), \
                         mock.patch.object(registry, "provides", without("language", capability)):

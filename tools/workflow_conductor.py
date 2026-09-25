@@ -5845,7 +5845,6 @@ class Conductor:
         """
         tc = self._read_toolchain(refs)
         language = tc["language"]
-        standard = tc["standard"]
         build_system = tc["build_system"]
         if not self._core_authors_control_file(build_system, language):
             # A toolchain the neutral core has no control-file writer for keeps LLM authoring.
@@ -5854,121 +5853,28 @@ class Conductor:
             # double-owned. `_read_toolchain` has already lowered both values, and it does not
             # strip — which the predicate relies on, so do not normalize again here.
             return
-        backend = tc["backend"]
-        # The optional toolchain.compiler pins FC (another compiler's build only needs this
-        # profile field plus a run_syntax_check adapter); unset keeps the language's default.
-        fc = tc["compiler"] or default_compiler(tc["language"])
-
-        model = f"{refs.spec_id}_model"
-        runner = f"{refs.spec_id}_runner"
-        checks = f"{refs.spec_id}_checks"
-        exe = self._resolve_exe_name(refs)  # canonical <spec_id>_runner
-        # R1/M3c-β: a harness-backed physics node also compiles a leaf-authored
-        # <spec_id>_checks.f90 (which `use`s the model kernel) between the model and the
-        # host-rendered runner: model.o <- checks.o <- runner.o, checks.o added to the link.
+        # The optional toolchain.compiler pins the compiler (another compiler's build only needs
+        # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
+        compiler = tc["compiler"] or default_compiler(tc["language"])
+        # R1/M3c-β: a harness-backed physics node also compiles a leaf-authored checks module
+        # (which `use`s the model kernel) between the model and the host-rendered runner.
         authors_runner = self._conductor_authors_runner(refs)
-        # CASES default baked from the IR so a local `make all test` runs the full
-        # case set standalone; Validate.execute overrides CASES/SPEC via the env so
-        # `make test` invokes the runner identically to run_program (`--cases <spec>
-        # <case_id>...`). The runner takes the spec path positionally but does not
-        # read it, so the `SPEC ?=` default is a harmless placeholder.
-        cases_default = " ".join(self.read_case_ids(refs))
-        flags = f"-std={standard} -O2"
-        if backend == "openmp":
-            flags += " -fopenmp"
-        flags += " -J$(OBJDIR) -I$(OBJDIR)"
-
-        # Dependency closure (Model B). Empty for leaf nodes -> the blocks
-        # below collapse to "" and the leaf template is emitted byte-for-byte.
-        closure = self._dependency_closure(refs)
-        dep_objs_line = ""
-        dep_rules = ""
-        model_dep_prereq = ""
-        link_dep_prereq = ""
-        if closure:
-            dep_objs = " ".join(f"$(OBJDIR)/{d}_model.o" for d in closure)
-            dep_objs_line = f"\nDEP_OBJS = {dep_objs}\n"
-            model_dep_prereq = " $(DEP_OBJS)"
-            link_dep_prereq = "$(DEP_OBJS) "
-            # Deepest-first: each dep object depends on all deeper dep objects so their
-            # `.mod` exist first (conservative over-ordering — safe for correctness). The
-            # conductor stages `<dep>_model.f90` into $(OBJDIR) before make.
-            parts = []
-            for i, d in enumerate(closure):
-                deeper = " ".join(f"$(OBJDIR)/{closure[j]}_model.o" for j in range(i))
-                deeper = (deeper + " ") if deeper else ""
-                parts.append(
-                    f"$(OBJDIR)/{d}_model.o: $(OBJDIR)/{d}_model.f90 {deeper}| $(OBJDIR)\n"
-                    f"\t$(FC) $(FFLAGS) -c $(OBJDIR)/{d}_model.f90 -o $(OBJDIR)/{d}_model.o\n")
-            dep_rules = "\n" + "\n".join(parts)
-
-        # M3c checks-module blocks (empty for a non-M3c node -> the template is emitted
-        # byte-for-byte as before). checks.o `use`s the model, so it depends on MODEL_OBJ; the
-        # runner links against it, so it is a runner prereq + link input.
-        checks_src_decl = f"CHECKS_SRC = {checks}.f90\n" if authors_runner else ""
-        checks_obj_decl = f"CHECKS_OBJ = $(OBJDIR)/{checks}.o\n" if authors_runner else ""
-        checks_prereq = "$(CHECKS_OBJ) " if authors_runner else ""
-        checks_rule = (
-            "$(CHECKS_OBJ): $(CHECKS_SRC) $(MODEL_OBJ) | $(OBJDIR)\n"
-            "\t$(FC) $(FFLAGS) -c $(CHECKS_SRC) -o $(CHECKS_OBJ)\n\n"
-            if authors_runner else "")
-
-        template = f"""\
-# Deterministic Makefile authored by the conductor (build_system=make, language=fortran).
-# Out-of-source capable: OBJDIR/BINDIR/RUNDIR default to "." and are overridden by
-# Build (compile_project) and Validate.execute (run_quality_checks).
-
-# FC is pinned with := (not ?=): make ships a built-in FC=f77 (origin default), and ?= does
-# NOT override a default-origin variable, so `FC ?= gfortran` would silently leave FC=f77.
-# The pinned value is the target profile's toolchain.compiler when it sets one, else gfortran.
-# The dirs/BIN stay ?= because Build/Validate.execute inject them via command line / env.
-# SPEC/CASES stay ?= because Validate.execute injects them via the make-test env so the
-# `make test` re-run invokes the runner identically to run_program (`--cases <spec> <ids>`);
-# the ?= defaults keep a local `make all test` runnable standalone.
-FC      := {fc}
-OBJDIR  ?= .
-BINDIR  ?= .
-RUNDIR  ?= .
-FFLAGS  ?= {flags}
-
-BIN ?= {exe}
-SPEC ?= spec.ir.yaml
-CASES ?= {cases_default}
-
-MODEL_SRC  = {model}.f90
-{checks_src_decl}RUNNER_SRC = {runner}.f90
-
-MODEL_OBJ  = $(OBJDIR)/{model}.o
-{checks_obj_decl}RUNNER_OBJ = $(OBJDIR)/{runner}.o
-{dep_objs_line}
-.PHONY: all test clean
-.DEFAULT_GOAL := all
-
-all: $(BINDIR)/$(BIN)
-{dep_rules}
-$(MODEL_OBJ): $(MODEL_SRC){model_dep_prereq} | $(OBJDIR)
-\t$(FC) $(FFLAGS) -c $(MODEL_SRC) -o $(MODEL_OBJ)
-
-{checks_rule}$(RUNNER_OBJ): $(RUNNER_SRC) {checks_prereq}$(MODEL_OBJ) | $(OBJDIR)
-\t$(FC) $(FFLAGS) -c $(RUNNER_SRC) -o $(RUNNER_OBJ)
-
-$(BINDIR)/$(BIN): {link_dep_prereq}$(MODEL_OBJ) {checks_prereq}$(RUNNER_OBJ) | $(BINDIR)
-\t$(FC) $(FFLAGS) {link_dep_prereq}$(MODEL_OBJ) {checks_prereq}$(RUNNER_OBJ) -o $(BINDIR)/$(BIN)
-
-# $(sort ...) dedups the target list: when OBJDIR==BINDIR (in-source make, both ".")
-# it collapses to a single target, avoiding the harmless `target '.' given more than
-# once` warning (and without two recipes for the same target).
-$(sort $(OBJDIR) $(BINDIR)):
-\tmkdir -p $@
-
-test:
-\ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
-\tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
-
-clean:
-\trm -f $(OBJDIR)/*.o $(OBJDIR)/*.mod $(BINDIR)/$(BIN)
-"""
+        # CASES default baked from the IR so a local `make all test` runs the full case set
+        # standalone; Validate.execute overrides CASES/SPEC via the env so `make test` invokes
+        # the runner identically to run_program (`--cases <spec> <case_id>...`). The runner
+        # takes the spec path positionally but does not read it, so the `SPEC ?=` default is a
+        # harmless placeholder.
+        template = self._control_file_module(build_system).render_node(
+            rules=self._control_file_rules(tc),
+            compiler=compiler,
+            bin_name=self._resolve_exe_name(refs),  # canonical <spec_id>_runner
+            cases_default=" ".join(self.read_case_ids(refs)),
+            model_stem=f"{refs.spec_id}_model",
+            runner_stem=f"{refs.spec_id}_runner",
+            checks_stem=f"{refs.spec_id}_checks" if authors_runner else None,
+            # Dependency closure (Model B). Empty for leaf nodes -> the leaf template.
+            closure=self._dependency_closure(refs),
+        )
         path = self.repo_root / refs.source_dir() / "src" / self.CONTROL_FILE_BASENAME
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(template, encoding="utf-8")
@@ -6310,66 +6216,38 @@ clean:
         before make), a `bundle:` / `glue:` source is a filename in the src/ cwd. Objects live
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
         tc = self._read_toolchain(refs)
-        fc = tc["compiler"] or default_compiler(tc["language"])
-        flags = f"-std={tc['standard']} -O2"
-        if tc["backend"] == "openmp":
-            flags += " -fopenmp"
-        flags += " -J$(OBJDIR) -I$(OBJDIR)"
-        exe = self._resolve_exe_name(refs)
-        cases_default = " ".join(self.read_case_ids(refs))
+        return self._control_file_module(tc["build_system"]).render_from_graph(
+            rules=self._control_file_rules(tc),
+            compiler=tc["compiler"] or default_compiler(tc["language"]),
+            bin_name=self._resolve_exe_name(refs),
+            cases_default=" ".join(self.read_case_ids(refs)),
+            graph=graph,
+        )
 
-        def _src_path(source: str) -> str:
-            kind, _, name = source.partition(":")
-            return f"$(OBJDIR)/{name}" if kind == "staged" else name
+    @staticmethod
+    def _control_file_module(build_system: str) -> Any:
+        """The target build system's `control_file` module — the renderer of its control file
+        (issue #289, R4-b PR-3). Reached only once `_core_authors_control_file` has answered
+        True for the pair, so a refusal here is a registry / package disagreement, raised as the
+        `RuntimeError` a host precondition is."""
+        try:
+            return backend_registry.capability_module("build_system", build_system,
+                                                      "control_file")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"control_file_renderer_unavailable: {exc}") from exc
 
-        compile_units = graph.get("compile_units") or []
-        rules: list[str] = []
-        for unit in compile_units:
-            src = _src_path(str(unit.get("source", "")))
-            obj = f"$(OBJDIR)/{unit.get('object')}"
-            prereqs = " ".join(f"$(OBJDIR)/{o}" for o in (unit.get("prerequisite_objects") or []))
-            prereqs = (prereqs + " ") if prereqs else ""
-            rules.append(
-                f"{obj}: {src} {prereqs}| $(OBJDIR)\n"
-                f"\t$(FC) $(FFLAGS) -c {src} -o {obj}")
-        link_objs = " ".join(f"$(OBJDIR)/{o}" for o in (graph.get("link") or {}).get("objects") or [])
-        rules_block = "\n\n".join(rules)
-        return f"""\
-# Deterministic Makefile authored by the conductor from the CodegenBundle build graph
-# (Z2 pure producer). Out-of-source capable: OBJDIR/BINDIR/RUNDIR default to "." and are
-# overridden by Build (compile_project) and Validate.execute (run_quality_checks).
-FC      := {fc}
-OBJDIR  ?= .
-BINDIR  ?= .
-RUNDIR  ?= .
-FFLAGS  ?= {flags}
-
-BIN ?= {exe}
-SPEC ?= spec.ir.yaml
-CASES ?= {cases_default}
-
-.PHONY: all test clean
-.DEFAULT_GOAL := all
-
-all: $(BINDIR)/$(BIN)
-
-{rules_block}
-
-$(BINDIR)/$(BIN): {link_objs} | $(BINDIR)
-\t$(FC) $(FFLAGS) {link_objs} -o $(BINDIR)/$(BIN)
-
-# $(sort ...) dedups the target list when OBJDIR==BINDIR (in-source make, both ".").
-$(sort $(OBJDIR) $(BINDIR)):
-\tmkdir -p $@
-
-test:
-\ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
-\tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
-
-clean:
-\trm -f $(OBJDIR)/*.o $(OBJDIR)/*.mod $(BINDIR)/$(BIN)
-"""
+    @staticmethod
+    def _control_file_rules(tc: dict[str, str]) -> dict[str, Any]:
+        """The target language's half of the control file: what it must say to compile and link
+        this language (`control_file` of the language axis, `rules(...)`)."""
+        try:
+            module = backend_registry.capability_module("language", tc["language"],
+                                                        "control_file")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"control_file_rules_unavailable: {exc}") from exc
+        return module.rules(standard=tc["standard"], parallel_backend=tc["backend"])
 
     def _write_pure_bundle_artifacts(self, refs: NodeRefs, doc: dict[str, Any],
                                      graph: dict[str, Any]) -> list[str]:
@@ -9343,27 +9221,28 @@ clean:
         return f"{refs.spec_id}_runner"
 
     @staticmethod
-    def _require_make_build_system(build_system: str, phase: str) -> None:
-        """The in-process deterministic bodies hard-code the in-source Make layout
-        (OBJDIR/BINDIR/RUNDIR overrides, make_test preset, binary under binary/<id>/bin,
-        Make command-log placement). Non-Make toolchains (cmake/meson/ninja) would be
-        silently misplaced, so fail loudly until in-process support is implemented for
-        them. All current specs are build_system=make."""
-        if str(build_system).strip().lower() != "make":
+    def _require_build_execute(build_system: str, phase: str) -> None:
+        """The in-process deterministic bodies hard-code one build system's layout
+        (OBJDIR/BINDIR/RUNDIR overrides, the quality-check preset, binary under
+        binary/<id>/bin, the command-log placement). A build system they do not drive would be
+        silently misplaced, so fail loudly unless the registry says the in-process path drives
+        it (`build_execute`, issue #289 R4-b PR-3 — until then this compared the value against
+        one spelling). The launch gate asks the same capability first
+        (`target_profile.toolchain_servable_reasons`)."""
+        reason = backend_registry.missing_capability_reason(
+            "build_system", str(build_system), "build_execute")
+        if reason is not None:
             raise RuntimeError(
-                f"deterministic in-process {phase} supports build_system=make only "
-                f"(got {build_system!r}); non-Make toolchains are not implemented for the "
-                f"in-process path")
+                f"deterministic in-process {phase} does not drive build_system "
+                f"{build_system!r}: {reason}")
 
     @staticmethod
-    def _classify_build_failure_category(return_code: int, stderr: str) -> str:
-        """Mechanical classification per phase_03_build.md (no LLM)."""
-        s = (stderr or "").lower()
-        if "no rule to make target" in s:
-            return "make_error"
-        if "undefined reference" in s or "unresolved external" in s:
-            return "link_error"
-        return "compile_error"
+    def _classify_build_failure_category(build_system: str, return_code: int,
+                                         stderr: str) -> str:
+        """Mechanical classification per phase_03_build.md (no LLM), by the target build
+        system's `control_file` backend (`classify_build_failure`)."""
+        return Conductor._control_file_module(build_system).classify_build_failure(
+            return_code, stderr)
 
     @staticmethod
     def _extract_failure_source_refs(stderr: str, src_ref: str) -> list[str]:
@@ -9504,7 +9383,7 @@ clean:
         tc = self._read_toolchain(refs)
         language = tc["language"]
         build_system = tc["build_system"]
-        self._require_make_build_system(build_system, "build")
+        self._require_build_execute(build_system, "build")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         bin_dir = self.repo_root / refs.binary_dir() / "bin"
@@ -9636,7 +9515,8 @@ clean:
                 f"Makefile build rule must produce $(BINDIR)/$(BIN)")
             binary_meta["failure_source_refs"] = [f"{self._rel(src_dir)}/Makefile"]
         elif not ok:
-            binary_meta["failure_category"] = self._classify_build_failure_category(rc, stderr)
+            binary_meta["failure_category"] = self._classify_build_failure_category(
+                build_system, rc, stderr)
             binary_meta["failure_excerpt"] = "\n".join(stderr.splitlines()[-50:])
             # Point Generate at the offending source(s) (phase_03 retry trigger).
             binary_meta["failure_source_refs"] = self._extract_failure_source_refs(
@@ -10184,7 +10064,7 @@ clean:
             #     module as a content `syntax_error` and warm-resume generate.generate in a
             #     futile loop (the regenerated source references the same real module). Fail
             #     closed cleanly instead — such a node is unbuildable regardless (Build's
-            #     `_require_make_build_system` rejects non-make fortran).
+            #     `_require_build_execute` rejects a build system it does not drive).
             deps_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                         / "syntax" / "_deps")
             deps_dir.mkdir(parents=True, exist_ok=True)
@@ -10571,7 +10451,7 @@ clean:
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             if pg.returncode != 0:
                 from tools.validate_pipeline_semantics import (
-                    FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                    SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                     HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                     STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
@@ -10597,7 +10477,7 @@ clean:
                 #
                 # Neither marker string is imported here any more: nothing in this function reads
                 # the gate's output to decide anything.
-                if pg.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
+                if pg.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
                 elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                     failure_category = "stale_dependency_ir"
@@ -10896,7 +10776,7 @@ clean:
         target_class = target.hardware_class
         threads = target.threads_per_rank
         launch = launch_shape(target)
-        self._require_make_build_system(
+        self._require_build_execute(
             self._read_toolchain(refs)["build_system"], "validate.execute")
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
 
@@ -11121,11 +11001,11 @@ clean:
             # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
             # from the `problem` model gates that post_execute runs.
             from tools.validate_pipeline_semantics import (
-                FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                 HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                 STALE_DEPENDENCY_IR_EXIT_CODE,
             )
-            if gate.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
+            if gate.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                 failure_category = "static_frontend_unavailable"
             elif gate.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                 failure_category = "stale_dependency_ir"
@@ -12237,12 +12117,12 @@ clean:
         # rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         from tools.validate_pipeline_semantics import (
-            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         terminal_category = {
-            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
+            SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
             STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
             HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
         }.get(gate.returncode)
@@ -12477,7 +12357,8 @@ clean:
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
                 runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
-                bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ())),
+                bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
+                bundle_facts=(self._language_facts() if phase == "generate" else None)),
             "executor_agent_run_id": executor,
             "substep_agent_run_ids": substep_arids,
             "failed_substeps": failed,
@@ -13472,10 +13353,15 @@ def _host_platform_record() -> dict[str, str | None]:
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, runner_host_authored: bool = False,
-                           bundle_sources: Sequence[str] = ()) -> list[str]:
+                           bundle_sources: Sequence[str] = (),
+                           bundle_facts: Any = None) -> list[str]:
     """The deliverables a phase's terminal step_result declares — and, on a pass, the set
     `_stamp_certification` byte-pins into the certifying meta and hashes into the phase's
     output hash (issue #250). So this is the definition of what a phase's OUTPUT is.
+
+    `bundle_facts` (generate only, REQUIRED there) is the target language's `bundle_facts`
+    module, which names the model, checks and runner sources (issue #289, R4-b PR-3; this
+    function spelled one language's names until then).
 
     `bundle_sources` (generate only) is every `files[].logical_path` of the ACCEPTED bundle,
     as `Conductor._bundle_source_names` reads it off `codegen_bundle.json`: the model and the
@@ -13496,12 +13382,16 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
         # and leaving them out meant the generate output hash — what Build's derivation key
         # binds to — did not see the glue and the control file Build actually compiles.
         # lineage.json stays out: it is a pipeline-root record, not a source.
-        checks_entry = ([f"{src}/src/{refs.spec_id}_checks.f90"] if runner_host_authored
-                        else [])
+        if bundle_facts is None:
+            raise ValueError(
+                "phase_required_outputs(generate) needs the target language's bundle_facts: "
+                "the source names it declares are the language's, not this function's")
+        checks_entry = ([f"{src}/src/{bundle_facts.checks_basename(refs.spec_id)}"]
+                        if runner_host_authored else [])
         fixed = [
-            f"{src}/src/{refs.spec_id}_model.f90",
+            f"{src}/src/{bundle_facts.model_basename(refs.spec_id)}",
             *checks_entry,
-            f"{src}/src/{refs.spec_id}_runner.f90",
+            f"{src}/src/{bundle_facts.runner_basename(refs.spec_id)}",
         ]
         extra = [f"{src}/src/{name.strip()}" for name in bundle_sources
                  if isinstance(name, str) and name.strip()]

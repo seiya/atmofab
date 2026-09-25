@@ -36,6 +36,13 @@ import pytest
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
+
+#: The target language's `bundle_facts`, which names a node's sources for
+#: `phase_required_outputs("generate")` since issue #289 (R4-b PR-3).
+from tools.backends import registry as _bb_registry  # noqa: E402
+from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
+_FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
+    "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.tests.private_root_fixture import (
@@ -6434,7 +6441,7 @@ class NodeAllocationTest(unittest.TestCase):
         for phase in ("compile", "generate", "build", "validate"):
             with self.subTest(phase=phase):
                 declared = wc.phase_required_outputs(
-                    refs, phase, exe_name="spec_x_runner")
+                    refs, phase, exe_name="spec_x_runner", bundle_facts=_FORTRAN_BUNDLE_FACTS)
                 ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
                 self.assertIn(ref, declared)
 
@@ -6615,7 +6622,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="generate",
-                required_outputs=wc.phase_required_outputs(refs, "generate"),
+                required_outputs=wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS),
                 derivation=c._phase_derivation(refs, "generate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate", target=_TP)
             self.assertTrue(ok, detail)
@@ -13290,9 +13297,11 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertNotIn("\n$(OBJDIR) $(BINDIR):", text)
 
     def test_authored_makefile_passes_post_generate_validators(self) -> None:
-        from tools.validate_pipeline_semantics import (
-            _validate_fortran_makefile_src_dir, _validate_makefile_bin_overridable,
-            _validate_makefile_test_invokes_cases, _validate_makefile_test_no_relink)
+        # The Makefile gates live in the make backend since issue #289 (R4-b PR-3); the
+        # validator's one dispatch into them is `_validate_control_file`, driven here as the
+        # post_generate / post_build stages drive it.
+        from tools.backends.build_system.make.control_file import validate_bin_overridable
+        from tools.validate_pipeline_semantics import _validate_control_file
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -13307,10 +13316,9 @@ class WriteMakefileTest(unittest.TestCase):
                 encoding="utf-8")
             mk = src / "Makefile"
             violations: list[str] = []
-            _validate_makefile_bin_overridable(mk, mk.read_text(encoding="utf-8"), violations)
-            _validate_fortran_makefile_src_dir(src, violations)
-            _validate_makefile_test_no_relink(src, violations, build_system="make", language="fortran")
-            _validate_makefile_test_invokes_cases(src, violations, build_system="make", language="fortran")
+            validate_bin_overridable(mk, mk.read_text(encoding="utf-8"), violations)
+            _validate_control_file(src, violations, build_system="make", language="fortran",
+                                   report_language_refusal=True)
             self.assertEqual(violations, [])
 
     def test_no_fopenmp_when_backend_not_openmp(self) -> None:
@@ -14630,16 +14638,31 @@ class WriteRunnerTest(unittest.TestCase):
         the one entry that follows the shape."""
         refs = self._refs()
         src = refs.source_dir()
-        m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True)
+        m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS)
         self.assertEqual(m3c, [
             f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_checks.f90",
             f"{src}/src/{self.SID}_runner.f90", f"{src}/src/Makefile",
             f"{src}/source_meta.json"])
         # Runner-authoring node (the infrastructure self-test): no checks module.
-        leaf_authored = wc.phase_required_outputs(refs, "generate")
+        leaf_authored = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS)
         self.assertEqual(leaf_authored, [
             f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_runner.f90",
             f"{src}/src/Makefile", f"{src}/source_meta.json"])
+        # The names are the LANGUAGE's (issue #289, R4-b PR-3): another language's facts name
+        # other files, and a caller that hands none is refused rather than given one
+        # language's names by default.
+        from types import SimpleNamespace
+        other = SimpleNamespace(model_basename=lambda s: f"{s}_model.zz",
+                                checks_basename=lambda s: f"{s}_checks.zz",
+                                runner_basename=lambda s: f"{s}_runner.zz")
+        self.assertEqual(
+            wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
+                                      bundle_facts=other)[:3],
+            [f"{src}/src/{self.SID}_model.zz", f"{src}/src/{self.SID}_checks.zz",
+             f"{src}/src/{self.SID}_runner.zz"])
+        with self.assertRaises(ValueError):
+            wc.phase_required_outputs(refs, "generate")
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -14952,7 +14975,8 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         outs = wc.phase_required_outputs(
             refs, "generate", runner_host_authored=True,
             bundle_sources=[f"{sid}_model.f90", "sw_private_helpers.f90",
-                            f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""])
+                            f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""],
+            bundle_facts=_FORTRAN_BUNDLE_FACTS)
         self.assertEqual(outs, [
             f"{src}/src/{sid}_model.f90", f"{src}/src/{sid}_checks.f90",
             f"{src}/src/{sid}_runner.f90", f"{src}/src/sw_private_helpers.f90",
@@ -14982,8 +15006,9 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         write authority, which is empty; this is the phase's output."""
         refs = self._refs()
         mk = f"{refs.source_dir()}/src/Makefile"
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate"))
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS))
 
 
 class DeterministicBuildTest(unittest.TestCase):
@@ -15740,13 +15765,19 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(outcome.decision.target_phase, "generate")
             self.assertNotIn("transport", (outcome.decision.reason or ""))
 
-    def test_require_make_build_system_rejects_non_make(self) -> None:
+    def test_require_build_execute_rejects_a_build_system_it_does_not_drive(self) -> None:
+        # Asked of the registry's `build_execute` (issue #289, R4-b PR-3) rather than compared
+        # against one spelling: `make` declares it, and the refusal carries the registry's reason.
+        from tools.backends import registry as backend_registry
         c = _TargetedConductor(repo_root=Path("/tmp/r"), orchestration_id="o",
                          orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
-        c._require_make_build_system("make", "build")  # no raise
+        c._require_build_execute("make", "build")  # no raise
         for bs in ("cmake", "meson", "ninja"):
-            with self.assertRaisesRegex(RuntimeError, "build_system=make only"):
-                c._require_make_build_system(bs, "build")
+            with self.assertRaises(RuntimeError) as caught:
+                c._require_build_execute(bs, "build")
+            self.assertIn(f"does not drive build_system {bs!r}", str(caught.exception))
+            self.assertIn(str(backend_registry.missing_capability_reason(
+                "build_system", bs, "build_execute")), str(caught.exception))
 
     def test_execute_failure_routes_to_generate(self) -> None:
         # An execute-substep failure (no verdict.json, judge never ran) is a runner code
@@ -16455,11 +16486,11 @@ class DeterministicBuildTest(unittest.TestCase):
         # warm. rc 5 (issue #112) is a violation whose subject is a file this repository authors.
         import tempfile
         from tools.validate_pipeline_semantics import (
-            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
-        for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+        for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
                              (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
@@ -16482,11 +16513,11 @@ class DeterministicBuildTest(unittest.TestCase):
         # quality_check). Issue #180 removed the second symptom this row used to seed, a
         # non-zero artifact-syntax gate, along with that gate.
         import tempfile
-        from tools.validate_pipeline_semantics import FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
+        from tools.validate_pipeline_semantics import SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE
         with tempfile.TemporaryDirectory() as td:
             out, meta = self._b1_execute(
                 Path(td), self._B1_IR_MINIMAL,
-                gate_result=(FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                gate_result=(SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                              "pipeline semantic validation: FAIL\n- boom"),
                 matching_diagnostics=False)
         self.assertEqual(meta["failure_category"], "static_frontend_unavailable", meta)
@@ -18321,7 +18352,7 @@ class DeterministicStaticTest(unittest.TestCase):
         # must also BE terminal, which is asserted where GATE_FAILURE_TERMINAL is (routing test
         # above); this row asserts the mapping, and neither implies the other.
         import tempfile
-        from tools.validate_pipeline_semantics import FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
+        from tools.validate_pipeline_semantics import SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -18334,7 +18365,7 @@ class DeterministicStaticTest(unittest.TestCase):
                     return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
                 if script.endswith("validate_pipeline_semantics.py"):
                     return wc.subprocess.CompletedProcess(
-                        cmd, FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                        cmd, SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                         "pipeline semantic validation: FAIL\n"
                         "- [fortran-structure-unavailable] the Fortran structure front end is "
                         "not available on this machine", "")
@@ -19346,14 +19377,14 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
         import tempfile
         from tools.validate_pipeline_semantics import (
-            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         recoverable_bullet = ("pipeline semantic validation: FAIL\n"
                               "- workspace/runs/n/semantic_review.json: review_method must be "
                               "llm_semantic_review\n")
-        for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+        for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
                              (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,

@@ -60,6 +60,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from tools.backends import registry as backend_registry
 from tools.backends.language.fortran import signatures as fortran_signatures
 
 #: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
@@ -110,7 +111,7 @@ _REQUIRED_NODE_TYPES = (
 )
 
 
-class FortranStructureUnavailableError(RuntimeError):
+class FortranStructureUnavailableError(backend_registry.BackendFrontendUnavailable):
     """The front end itself could not be loaded — a machine problem, not a source problem.
 
     Raised only for an absent/broken `tree_sitter` / `tree_sitter_fortran`. A source this module

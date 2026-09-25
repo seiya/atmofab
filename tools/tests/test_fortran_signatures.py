@@ -1264,7 +1264,8 @@ class NameCollisionTest(unittest.TestCase):
             self.assertIsNone(err, f"{rel}: {err}")
             self.assertIsNotNone(body, str(rel))
             seen.append(cs)
-            *_stanzas, parse_err = _parse_canonical_interface_from_controlled_spec(cs)
+            *_stanzas, parse_err = _parse_canonical_interface_from_controlled_spec(
+                cs, fortran_signatures)
             self.assertIsNone(parse_err, f"{rel}: {parse_err}")
         self.assertIn(HARNESS_SPEC, seen, "the sweep found no §5.1 — its reader has drifted")
 

@@ -1709,7 +1709,8 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     `Generate.gate` static check, so being more permissive than it would just move the rejection later and
     recreate the disagreement this defect is about, in the other direction. The certified idiom
     (a bare `private` plus an explicit `public ::` list, which authoring rule 1 mandates and all
-    16 certified modules use) is well inside what both accept. The parse is delegated to `validate_pipeline_semantics.checks_module_abi_facts` —
+    16 certified modules use) is well inside what both accept. The parse is delegated to the language
+    backend's `source_reading.checks_module_abi_facts` —
     the SAME parser `Generate.gate` static check uses, so the two gates cannot disagree about what a given
     source publishes. (A second implementation is exactly how this layer came to accept output
     `Generate.gate` static check rejected.)"""
@@ -1717,10 +1718,6 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
         checks_abi_dummy_violation,
         checks_public_names,
         runner_render_refusal,
-    )
-    from tools.validate_pipeline_semantics import (
-        checks_module_abi_facts,
-        unpublished_bound_state,
     )
     # `m3c_literal_name_violation` runs first and guarantees this file exists and declares this
     # module. Scope to it: a bundle may legally carry OTHER checks-role files, and reading their
@@ -1748,6 +1745,18 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     if refusal is not None:
         return (f"{want_path} declares language {match.get('language')!r}, whose checks ABI this "
                 f"repository cannot state: {refusal}")
+    # The publication facts are read by the language's own source reader — the SAME reader the
+    # `Generate.gate` static check asks (`source_reading.checks_module_abi_facts`), so the two
+    # gates cannot disagree about what a given source publishes.
+    if not backend_registry.provides("language", str(match.get("language") or ""),
+                                     "source_reading"):
+        return (f"{want_path} declares language {match.get('language')!r}, whose sources this "
+                "repository cannot read: "
+                f"{backend_registry.missing_capability_reason('language', str(match.get('language') or ''), 'source_reading')}")
+    source_reading = backend_registry.capability_module(
+        "language", str(match.get("language")), "source_reading")
+    checks_module_abi_facts = source_reading.checks_module_abi_facts
+    unpublished_bound_state = source_reading.unpublished_bound_state
     CHECKS_PUBLIC_NAMES = checks_public_names(match.get("language"))
     published, subroutines, defined = checks_module_abi_facts(
         str(match.get("content") or ""), spec_id)

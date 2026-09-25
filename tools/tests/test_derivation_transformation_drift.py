@@ -86,6 +86,12 @@ def render_tuple() -> dict[str, str]:
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
         "Conductor._write_runner": _source_digest(wc.Conductor._write_runner),
+        # The control file's text is the build system's renderer composing the language's
+        # rules since issue #289 (R4-b PR-3); the two conductor writers below only call them.
+        "tools/backends/build_system/make/control_file.py":
+            _file_digest("tools/backends/build_system/make/control_file.py"),
+        "tools/backends/language/fortran/control_file.py":
+            _file_digest("tools/backends/language/fortran/control_file.py"),
         "Conductor._write_makefile": _source_digest(wc.Conductor._write_makefile),
         "Conductor._render_pure_makefile_from_graph":
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
@@ -113,6 +119,11 @@ def build_tuple() -> dict[str, str]:
         # The staged dependency's name is the language's `bundle_facts` since issue #289.
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
+        # The failed build's `failure_category` (a `binary_meta.json` field) is the build
+        # system's classification since issue #289 (R4-b PR-3); it was a conductor staticmethod
+        # `_build_inproc` called, which no member of this tuple digested.
+        "tools/backends/build_system/make/failure.py":
+            _file_digest("tools/backends/build_system/make/failure.py"),
     }
 
 
@@ -292,7 +303,12 @@ PINNED_RENDER: dict[str, str] = {
     # `FC` come from the target language's `bundle_facts` (`runner_basename`,
     # `DEFAULT_COMPILER`), whose module joins the tuple. For `fortran` every emitted byte is
     # unchanged; the bump is the plan's (every Generate key moves with `pure-50` anyway).
-    "render-5": "4ac71ca1c71bd3e63eed41a34511aba5e062109fd520bf9a4a135f46f75187f3",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the two control-file templates
+    # moved out of the conductor into the `make` backend's renderer, which composes the
+    # language's `control_file` rules (both modules join the tuple). Measured byte-identical to
+    # the templates they replace over 240 parameter combinations (leaf / closure / checks, each
+    # parallel backend, compiler pin, case set, standard; and the bundle-graph shapes).
+    "render-5": "7b99571339079b3ecbaaa1d58e5ea8fe057d8532d6e00ab3f5d9160a458dc0ea",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -311,7 +327,12 @@ PINNED_BUILD: dict[str, str] = {
     # language's `bundle_facts.model_basename` (the module joins the tuple) — for `fortran` the
     # same `<spec_id>_model.f90` byte for byte, so the compile invocation and the binary are
     # unchanged.
-    "build-1": "461105b20f1fb84437c093810dc58ff93b2bbcd1e536f566b14b5c7058bc9dad",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving for this transformation: the
+    # build-failure classification moved into the `make` backend (`failure.py` joins the tuple,
+    # its patterns and categories unchanged), and `_build_inproc` asks the registry's
+    # `build_execute` where it compared the build system against `make` — the same answer for
+    # every profile the launch gate admits.
+    "build-1": "2af31f91909b7a20603635fb8bfb0032e9ad2b232ce37ebc6bb707eafd9194f5",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -333,7 +354,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # (rounds 1 and 2), before any run was stamped execute-4: the tuple gained what the launch
     # seam resolves through the registry (`launch_declarations`), and the docstrings the env's
     # override semantics.
-    "execute-4": "0952b393330f5f4356e0ad02a923aabd13520fba05c8e5787a45d6b74266b0d9",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the `openmp` package's
+    # `__init__` (a digested launch member) re-exports its new `directives` module beside
+    # `execution`; the environment `launch_shape` resolves is unchanged.
+    "execute-4": "e850442fd518a1e57031142090834ebae329d302ed233c8b7b967d4cd4a89eb4",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

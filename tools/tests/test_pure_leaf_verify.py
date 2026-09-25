@@ -23,6 +23,13 @@ os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as wc_ort
 import tools.workflow_conductor as wc
+
+#: The target language's `bundle_facts`, which names a node's sources for
+#: `phase_required_outputs("generate")` since issue #289 (R4-b PR-3).
+from tools.backends import registry as _bb_registry  # noqa: E402
+from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
+_FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
+    "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
     _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
@@ -1260,7 +1267,8 @@ class PureStepResultValidationTests(unittest.TestCase):
                 json.dumps({"leaf_mode": "pure", "step": "generate", "substep": substep}),
                 encoding="utf-8")
         # Host-authored deliverables on disk (what the pure producer + verify write).
-        required = wc.phase_required_outputs(refs, "generate", runner_host_authored=True)
+        required = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS)
         for ref in required:
             p = repo / ref
             p.parent.mkdir(parents=True, exist_ok=True)

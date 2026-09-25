@@ -64,11 +64,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.backends.language.fortran import structure as fortran_structure  # noqa: E402
-from tools.validate_pipeline_semantics import (  # noqa: E402
-    NodeExecution,
-    _fortran_procedure_envelopes,
-    _FortranSourceStructureError,
-    _run_problem_model_gates,
+from tools.backends.language.fortran.source import (  # noqa: E402
+    SourceStructureError as _FortranSourceStructureError,
+)
+from tools.backends.language.fortran.source import (
+    procedure_envelopes as _fortran_procedure_envelopes,
+)
+from tools.backends.language.fortran.source import (
+    run_problem_model_gates as _run_problem_model_gates,
 )
 
 #: The candidates in the order the DECIDED note measured them. `flang-new` is the LLVM 17-19
@@ -107,12 +110,9 @@ def gate_violations(path: Path, lowered: str) -> list[str]:
     of the silent check this harness exists to catch.
     """
     spec_id = path.name[: -len("_model.f90")]
-    execution = NodeExecution(
-        node_key=f"problem/{spec_id}@0.0.0",
-        node_dir=path.parent,
-        exec_dir=path.parent,
-        pipeline_dir=path.parent,
-    )
+    # The validator's multi-dimensional-node rule (`_is_multidim_problem_node_key`): a spec id
+    # naming `2d` / `3d`. Stated here rather than imported so this harness reads no neutral gate.
+    multidim_spec_id = spec_id if ("2d" in spec_id.lower() or "3d" in spec_id.lower()) else None
     # THE PRODUCTION ENTRY POINT, not the three gates called by hand. Calling them directly
     # skipped `_run_problem_model_gates`, and with it both new violation classes — the
     # `module procedure` refusal and the unresolvable-structure refusal — so the harness the
@@ -121,11 +121,12 @@ def gate_violations(path: Path, lowered: str) -> list[str]:
     # a `problem/` one.
     violations: list[str] = []
     _run_problem_model_gates(
-        execution=execution,
+        node_key=f"problem/{spec_id}@0.0.0",
         model_file=path,
         lowered=lowered,
         dep_spec_ids=dep_spec_ids_of(lowered),
         violations=violations,
+        multidim_spec_id=multidim_spec_id,
     )
     return violations
 

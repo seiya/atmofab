@@ -12764,8 +12764,11 @@ class DependencyFactsRenderTests(unittest.TestCase):
             "argument_order": ["u", "rhs", "dt", "u_next"],
             "arguments": [
                 {"name": "u", "type": "real(dp)", "intent": "in", "rank": 1, "dimension": ":"},
+                # `procedure_interface` is what the certified source's reader states on a
+                # procedure-typed dummy (issue #289, R4-b PR-3); the renderer keys on it rather
+                # than parsing the type text.
                 {"name": "rhs", "type": "procedure(hx_rhs_1d)", "intent": None, "rank": 0,
-                 "dimension": None},
+                 "dimension": None, "procedure_interface": "hx_rhs_1d"},
                 {"name": "dt", "type": "real(dp)", "intent": "in", "rank": 0, "dimension": None},
                 {"name": "u_next", "type": "real(dp)", "intent": "out", "rank": 1,
                  "dimension": ":"}],
@@ -13400,6 +13403,10 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             rhs = op["arguments"][1]
             self.assertEqual((rhs["type"], rhs["rank"], rhs["intent"]),
                              ("procedure(hx_rhs_1d)", 0, None))
+            # The reader states the prototype on the argument (issue #289, R4-b PR-3), which is
+            # what the renderer keys on — and only on a procedure-typed one.
+            self.assertEqual(rhs["procedure_interface"], "hx_rhs_1d")
+            self.assertNotIn("procedure_interface", op["arguments"][0])
             # The two scope statements of the interface body are NOT carried (a consumer
             # copying them into its own procedure would earn a syntax refusal).
             self.assertEqual(op["procedure_interfaces"]["hx_rhs_1d"], [
@@ -13436,11 +13443,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         # every spelling of the two scope statements is left out (`import::dp`,
         # `import, only: dp`); a dummy typed by a prototype no interface block declares (a
         # module procedure of that name) carries no prototype and the line says so.
-        from tools.orchestration_runtime import (
+        from tools.backends.language.fortran.interface import (
             _extract_interface_prototype,
             _fortran_logical_lines,
-            _published_operations_lines,
         )
+        from tools.orchestration_runtime import _published_operations_lines
         tricky = (
             "module m\ninterface hx_gen\n  module procedure hx_rhs_1d\nend interface\n"
             "abstract interface\n  subroutine hx_other(hx_rhs_1d)\n    external hx_rhs_1d\n"
@@ -13933,7 +13940,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
     block re-declarations / prefixes; never raises."""
 
     def test_selects_prefixed_only_in_source_order(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "module m\ncontains\n"
             "  subroutine dep__two(a)\n  end subroutine\n"
@@ -13945,13 +13952,13 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
             _list_prefixed_subroutines(src, "dep__"), ["dep__two", "dep__one"])
 
     def test_case_insensitive_match(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = "subroutine DEP__Compute(a)\nend subroutine\n"
         self.assertEqual(
             _list_prefixed_subroutines(src, "dep__"), ["DEP__Compute"])
 
     def test_continuation_header(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "  subroutine dep__wrapped(a, &\n"
             "       & b, c)\n"
@@ -13961,7 +13968,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
             _list_prefixed_subroutines(src, "dep__"), ["dep__wrapped"])
 
     def test_interface_block_redeclaration_deduped(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "interface\n"
             "  subroutine dep__op(a)\n  end subroutine\n"
@@ -13973,9 +13980,9 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
     def test_a_prefixed_prototype_inside_an_interface_block_is_not_an_entry_point(self) -> None:
         # Issue #266: `dep__cb` exists only as a prototype (the shape of a procedure a caller
         # passes); listing it would hand the consumer's leaf a symbol nothing defines.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
-        from tools.validate_pipeline_semantics import (
-            _list_component_published_subroutines,
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
+        from tools.backends.language.fortran.source import (
+            published_subroutines as _list_component_published_subroutines,
         )
         src = (
             "module m\n"
@@ -13997,7 +14004,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         self.assertEqual(_list_component_published_subroutines(src, "dep"), ["dep__ext", "dep__op"])
 
     def test_pure_and_module_prefixes(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "pure subroutine dep__p(a)\nend subroutine\n"
             "module subroutine dep__m(a)\nend subroutine\n"
@@ -14008,7 +14015,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
     def test_parenless_zero_arg_subroutine_surfaced(self) -> None:
         # A zero-argument subroutine declared without a parameter list must still be
         # discovered by the fallback (Codex round-3 P2), and a call-site line must NOT match.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "subroutine dep__ping\nend subroutine\n"
             "subroutine dep__go(a)\nend subroutine\n"
@@ -14020,7 +14027,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
     def test_semicolon_packed_statements_surfaced(self) -> None:
         # Fortran allows several statements on one line via `;`; a declaration after a `;`
         # (e.g. `contains; subroutine dep__ping()`) must still be discovered (Codex round-4 P2).
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = (
             "module m\n"
             "contains; subroutine dep__ping()\nend subroutine\n"
@@ -14032,7 +14039,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
 
     def test_semicolon_inside_string_is_not_a_separator(self) -> None:
         # A `;` inside a string literal must not split the statement (else a spurious match).
-        from tools.orchestration_runtime import _split_fortran_statements
+        from tools.backends.language.fortran.interface import _split_fortran_statements
         self.assertEqual(
             _split_fortran_statements("write(*,*) 'a;b'; x = 1"),
             ["write(*,*) 'a;b'", "x = 1"])
@@ -14046,7 +14053,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         # comment early and re-admitted its tail AS CODE — here inventing a published
         # operation that does not exist in the certified source, which the dependency facts
         # would then tell a leaf to call.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
                          ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
@@ -14062,7 +14069,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         # literal, so the rest of the string is read as code: the `;` inside it then separates
         # a "statement" and the prose after it is published as an operation that does not
         # exist. `<dependency_facts>` would tell a consumer leaf to call it.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         for gap, label in (("\n", "blank line"), ("      ! wrap note\n", "comment line")):
             with self.subTest(gap=label):
                 src = ("  subroutine dep__scale(x)\n"
@@ -14082,7 +14089,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         # syntax gate, so this exact fixture no longer reaches one. The scanner must still read
         # it the compiler's way: it is a general Fortran reader, and being right only about
         # sources some other gate happens to admit is what the `\v` defect already was.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         src = ("module dep_mod\n  implicit none\n"
                "  character(*), parameter :: note = 'see &\n"
                "\x0b&\n"
@@ -14092,7 +14099,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__real"])
 
     def test_garbage_and_empty_prefix_return_empty(self) -> None:
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         self.assertEqual(_list_prefixed_subroutines("not fortran at all", "dep__"), [])
         self.assertEqual(_list_prefixed_subroutines(None, "dep__"), [])  # type: ignore[arg-type]
         self.assertEqual(_list_prefixed_subroutines("subroutine dep__x(a)\n", ""), [])
@@ -14170,7 +14177,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
         ]
 
     def test_simple_signature(self) -> None:
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = "subroutine foo__bar(a, b, c)\nend subroutine\n"
         # No body declarations -> `arguments` carries all-unknown entries (never guessed).
         self.assertEqual(
@@ -14184,7 +14191,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
         # comment used to end the comment early, so the stale argument order of a commented-out
         # header was published — a leaf told to call the dependency in the wrong positional
         # order builds against a type/rank mismatch.
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = ("! old signature \x0c subroutine foo__bar(c, b, a)\n"
                "subroutine foo__bar(a, b, c)\nend subroutine\n")
         self.assertEqual(
@@ -14196,7 +14203,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
         # survived ended in `&`, the buffer stayed open, and it swallowed the NEXT statement —
         # here `a`'s declaration, which is exactly the type/intent the dependency facts publish
         # for the call site. Legal free-form Fortran throughout.
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = ("subroutine foo__bar(a, b)\n"
                "  character(len=*), parameter :: msg = 'x&\n"
                "    &y& ! not a comment'\n"
@@ -14210,7 +14217,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
     def test_zero_arg_subroutine_without_parens(self) -> None:
         # A zero-argument subroutine may be declared without a parameter list (legal Fortran);
         # the extractor returns an empty argument_order rather than None (Codex round-3 P2).
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         self.assertEqual(
             _extract_subroutine_interface("subroutine foo__ping\nend subroutine\n", "foo__ping"),
             {"interface": "subroutine foo__ping", "argument_order": [], "arguments": []})
@@ -14221,7 +14228,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
             "pure subroutine foo__reset")
 
     def test_continuation_and_comments(self) -> None:
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = (
             "  subroutine foo__bar(a, &  ! lead arg\n"
             "       & b, c,  &\n"
@@ -14235,7 +14242,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
     def test_full_line_comment_between_continuations(self) -> None:
         # Regression: a comment-only (or blank) line between continuation lines must not
         # flush the partial header — the wrapped signature must still parse.
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = (
             "  subroutine foo__bar(a, &\n"
             "    ! a full-line comment between continuations\n"
@@ -14256,14 +14263,14 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
              "arguments": self._unknown("a", "b", "c")})
 
     def test_case_insensitive_and_prefixes(self) -> None:
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = "PURE elemental subroutine Foo__Bar(x)\nend subroutine\n"
         out = _extract_subroutine_interface(src, "foo__bar")
         self.assertEqual(out["argument_order"], ["x"])
         self.assertIn("Foo__Bar(x)", out["interface"])
 
     def test_selects_correct_subroutine_among_several(self) -> None:
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = (
             "subroutine m__guard(n, ok)\nend subroutine\n"
             "subroutine m__scale(x, n, y)\nend subroutine\n"
@@ -14273,7 +14280,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
             ["x", "n", "y"])
 
     def test_op_not_found_and_function_return_none(self) -> None:
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         self.assertIsNone(
             _extract_subroutine_interface("subroutine a(x)\nend subroutine\n", "b"))
         self.assertIsNone(
@@ -14284,7 +14291,7 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
 
     @staticmethod
     def _args(body: str, arglist: str, op: str = "s"):
-        from tools.orchestration_runtime import _extract_subroutine_interface
+        from tools.backends.language.fortran.interface import _extract_subroutine_interface
         src = f"subroutine {op}({arglist})\n{body}\nend subroutine\n"
         out = _extract_subroutine_interface(src, op)
         assert out is not None
