@@ -46,7 +46,7 @@ $$
 In the flux arrays, $F_{i+1/2}$ is element `i + 2` and $F_{i-1/2}$ is element `i + 1`; $L_i$ is element `i + 1` of the tendency array.
 4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing `nx`, this `node`'s own interior state $u^n$ (`nx` values) as its `u_n`, the $L$ of step 3 as its `L_flux`, and the `dt` of the current step. Its `u_np1` is $u^{n+1}$.
 
-The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule.
+The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. When a `component` returns `guard_pass` false, its other outputs are undefined: the run stops with an error at that step, and no later step consumes them.
 
 The composition is equivalent to the discrete update
 $$
