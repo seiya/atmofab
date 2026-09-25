@@ -158,15 +158,18 @@ def _check_required_cli_tools() -> list[str]:
 # launches. `docs/RUNBOOK.md` §0-1 carries the install lines.
 
 
-def _host_probe_selection(requested: str | None) -> dict[str, str] | None:
+def _host_probe_selection(requested: str | None,
+                          until_phase: str | None = None) -> dict[str, str] | None:
     """The axis selection the host probes are asked about: the target this invocation names
     (`--target`), else the default one (issue #284). None when that cannot be told yet — an
     undeclared `--target`, or several profiles and no `--target` on a resume that will recover
-    its own — or when the launch gate (`target_profile_violations`) will refuse the profile, an
-    axis value this repository does not implement included, which the probe could only answer
-    with a traceback: then the probes do not run here, the launch's target resolution refuses
-    or resolves it with its own structured reason a few steps on, and the mid-run gates stay
-    the backstop.
+    its own — or when the launch gate (`target_profile_violations`, for a run ending at
+    `until_phase`) will refuse the profile, an axis value this repository does not implement
+    included, which the probe could only answer with a traceback: then the probes do not run
+    here, the launch's target resolution refuses or resolves it with its own structured reason
+    a few steps on, and the mid-run gates stay the backstop. `until_phase` is the invocation's
+    own, so a run that stops before `Validate` on a class this host cannot execute on is still
+    probed for the tools it builds with (issue #289).
 
     Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
     reaches the MCP server's argv tables, and a startup path that has not yet decided it is
@@ -178,23 +181,25 @@ def _host_probe_selection(requested: str | None) -> dict[str, str] | None:
         profile = load_target_profile(root, select_target_id(root, requested))
     except TargetProfileError:
         return None
-    if target_profile_violations(root, profile):
+    if target_profile_violations(root, profile, until_phase=until_phase):
         return None
     return resolve_launch_axis_selection(profile)
 
 
-def _check_required_host_tools(requested: str | None = None) -> list[str]:
+def _check_required_host_tools(requested: str | None = None,
+                               until_phase: str | None = None) -> list[str]:
     """The executables of `tools/host_prerequisites` this host cannot resolve on `PATH`, for
     the target `_host_probe_selection` resolves (none when it resolves none)."""
     from tools.host_prerequisites import missing_host_executables
 
-    selection = _host_probe_selection(requested)
+    selection = _host_probe_selection(requested, until_phase)
     if selection is None:
         return []
     return [item.executable for item in missing_host_executables(selection)]
 
 
-def _check_host_tool_versions(requested: str | None = None) -> list[Any]:
+def _check_host_tool_versions(requested: str | None = None,
+                              until_phase: str | None = None) -> list[Any]:
     """The required host tools whose installed version this repository has not measured.
 
     The second half of the check above, and it is checked SECOND for the same reason it is
@@ -209,7 +214,7 @@ def _check_host_tool_versions(requested: str | None = None) -> list[Any]:
     """
     from tools.host_prerequisites import unsupported_host_tool_versions
 
-    selection = _host_probe_selection(requested)
+    selection = _host_probe_selection(requested, until_phase)
     if selection is None:
         return []
     return list(unsupported_host_tool_versions(selection))
@@ -580,11 +585,14 @@ def _infrastructure_node_key_of(repo_root: Path, spec_ref: str) -> str | None:
 
 
 def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None,
-                           recorded: str | None) -> TargetProfile:
+                           recorded: str | None, *,
+                           until_phase: str | None = None) -> TargetProfile:
     """The target of this invocation (issue #284): `--target`, else the one a resumed
     orchestration recorded, else the default (`select_target_id`). A resume that names a
     target other than the recorded one is refused — the finished phases were built for the
-    recorded one, and a run is one target. Raises `TargetProfileError`."""
+    recorded one, and a run is one target. Gated for a run ending at `until_phase` (issue
+    #289: a run that reaches `Validate` must be one this host can execute); None is the stricter
+    question, and every caller in this module passes its own. Raises `TargetProfileError`."""
     if requested is not None and recorded is not None and requested.strip() != recorded:
         # An undeclared `--target` is refused as such first: the remedy below ("start a fresh
         # run for it") would otherwise recommend a profile that does not exist (round 3).
@@ -612,7 +620,7 @@ def _resolve_launch_target(repo_root: Path, spec_ref: str, requested: str | None
                 f"that profile to resume, or start a fresh run for another target")
     return resolve_run_target(
         repo_root, requested if requested is not None else recorded,
-        node_key=_infrastructure_node_key_of(repo_root, spec_ref))
+        node_key=_infrastructure_node_key_of(repo_root, spec_ref), until_phase=until_phase)
 
 
 def _validate_source_dependency_ref(source_dependency_ref: str) -> str:
@@ -2400,7 +2408,11 @@ def _run_main(
             args.stdout_format,
         )
         return 2
-    missing_host_tools = _check_required_host_tools(getattr(args, "target", None))
+    # The invocation's own `until_phase`, as typed (None on a resume that recovers it): the
+    # launch gate reads it case-insensitively and answers an unstated one strictly.
+    probe_until_phase = getattr(args, "until_phase", None)
+    missing_host_tools = _check_required_host_tools(
+        getattr(args, "target", None), probe_until_phase)
     if missing_host_tools:
         from tools.host_prerequisites import required_host_executables
 
@@ -2414,13 +2426,15 @@ def _run_main(
                 ),
                 "missing": missing_host_tools,
                 "required": [item.executable for item in required_host_executables(
-                    _host_probe_selection(getattr(args, "target", None)))],
+                    _host_probe_selection(getattr(args, "target", None),
+                                          probe_until_phase))],
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,
         )
         return 2
-    unsupported_versions = _check_host_tool_versions(getattr(args, "target", None))
+    unsupported_versions = _check_host_tool_versions(
+        getattr(args, "target", None), probe_until_phase)
     if unsupported_versions:
         _emit_unlogged_event(
             {
@@ -2871,7 +2885,8 @@ def _run_main(
     # phases into a billed run. An `infrastructure` target must be the profile's own harness.
     try:
         target_profile = _resolve_launch_target(
-            repo_root, spec_ref, getattr(args, "target", None), resume_recovered_target_id)
+            repo_root, spec_ref, getattr(args, "target", None), resume_recovered_target_id,
+            until_phase=until_phase)
     except TargetProfileError as exc:
         _emit_unlogged_event(
             {"status": "fail", "reason": exc.reason, "detail": exc.detail},
@@ -3511,7 +3526,7 @@ def _run_node(
     launch. None — a caller that did not resolve one — resolves the default here, which is the
     only profile when one is declared and a `target_required` refusal when several are."""
     if target_profile is None:
-        target_profile = resolve_run_target(repo_root, None)
+        target_profile = resolve_run_target(repo_root, None, until_phase=until_phase)
     env = dict(base_env)
     env["ATMOFAB_ORCHESTRATION_ID"] = orchestration_id
 
@@ -5278,7 +5293,8 @@ def _run_with_dependency_closure(
         # and run under `--jobs 1` (the round-2 Codex pass).
         if target_profile is not None:
             try:
-                _resolve_launch_target(repo_root, spec_ref, target_profile.target_id, None)
+                _resolve_launch_target(repo_root, spec_ref, target_profile.target_id, None,
+                                       until_phase=dep_until_phase)
             except TargetProfileError as exc:
                 _emit_unlogged_event(
                     {

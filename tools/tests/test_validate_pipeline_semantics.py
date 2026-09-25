@@ -23481,6 +23481,14 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         # Generate can reach its render, and a repository defect is not an IR defect.
         self.assertEqual(self._run(self._bad(), targets=[]), [])
         self.assertEqual(self._run(self._bad(), register_harness=False), [])
+        # A hardware class the registry does not implement: the loader refused such a profile
+        # until issue #289 moved the class question to the registry, so it is skipped here as it
+        # was then — and the same profile under an implemented class IS asked (control).
+        from tools.tests.target_fixtures import profile_with
+        self.assertEqual(self._run(self._bad(), targets=[
+            profile_with(hardware={"class": "tpu"})]), [])
+        self.assertTrue(self._run(self._bad(), targets=[
+            profile_with(hardware={"class": "gpu", "architecture": "sm_90"})]))
 
     def test_the_IR_toolchain_and_dependencies_are_not_read(self) -> None:
         # Target-free (issue #284): a stale `impl_defaults` naming another toolchain, or a

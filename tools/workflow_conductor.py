@@ -10776,9 +10776,18 @@ clean:
         # profile hash (`run_policy`). Until R4-a PR-2 the class came off the IR and the
         # thread count was a literal 1 here, while the runner's perf record reported the IR's
         # `backend_overrides.openmp.num_threads` — a count nothing ran with.
+        #
+        # HOW the binary is launched is the target's too, and backend knowledge: the parallel
+        # model's environment and the site come from `tools/host_execution.py` (issue #289,
+        # R4-b PR-1), which refuses a class this host cannot run on. Until then `run_program`
+        # was handed the class and the thread count and set the OpenMP variables itself, for
+        # `cpu` alone — a `gpu` target ran here with no word.
+        from tools.host_execution import launch_shape
+
         target = self.target
         target_class = target.hardware_class
         threads = target.threads_per_rank
+        launch = launch_shape(target)
         self._require_make_build_system(
             self._read_toolchain(refs)["build_system"], "validate.execute")
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
@@ -10828,9 +10837,8 @@ clean:
         # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
         res_run = tool_run_program({
             "project_dir": str(run_tmp),
-            "command": [str(binary), "--cases", str(ir_spec), *case_ids],
-            "target": {"class": target_class},
-            "threads_per_rank": threads,
+            "command": launch.command([str(binary), "--cases", str(ir_spec), *case_ids]),
+            "env": dict(launch.env),
             "command_log_path": str(cmd_log),
             "capture_limit": _FULL_CAPTURE_LIMIT,
             **gate_args,
@@ -10927,11 +10935,16 @@ clean:
                 # the fallback whatever the node declared.
                 "backend": target.parallel_backend,
                 "threads_per_rank": threads,
-                "openmp_env": {"OMP_NUM_THREADS": str(threads), "OMP_THREAD_LIMIT": str(threads)},
+                # What the binary was launched with (issue #289): the argv prefix and the
+                # environment `tools/host_execution.py` composed — the record `openmp_env`
+                # was, for every parallel model rather than one, and read off the shape that
+                # ran rather than restated beside it.
+                "launch": launch.record(),
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.
-                "platform": _host_platform_record(),
+                # `site` says where it ran; a remote site will write its own record here.
+                "platform": {**_host_platform_record(), "site": launch.site},
             },
             "status": "pass" if qc_status == "pass" else "fail",
         }

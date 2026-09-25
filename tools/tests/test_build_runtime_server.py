@@ -620,7 +620,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
 
     def test_server_injected_env_is_not_subject_to_the_denylist(self) -> None:
         # The check sits where the caller's argument is read, so the server's own
-        # additions still happen. PYTHONPATH for the pytest preset...
+        # addition still happens: PYTHONPATH for the pytest preset.
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
                 {"project_dir": str(self.project_dir), "preset": "pytest"})
@@ -629,12 +629,22 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(
             run_command.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0],
             str(self.project_dir.resolve()))
-        # ...and OMP_* for a CPU run_program.
+
+    def test_the_conductor_launch_env_reaches_run_program_unmodified(self) -> None:
+        # Since issue #289 a parallel runtime's thread variables are the CALLER's, composed by
+        # `tools/host_execution.py` and passed as `env` — so they cross the denylist, and must
+        # arrive exactly as sent: no name dropped, no value rewritten, nothing added.
+        from tools.host_execution import launch_shape
+        from tools.tests.target_fixtures import FORTRAN_CPU
+
+        payload = dict(launch_shape(FORTRAN_CPU).env)
+        self.assertTrue(payload, "the fixture profile launches with no environment, so this "
+                                 "row would observe nothing")
         with self._spy_run_command() as run_command:
             self.mod.tool_run_program({
                 "project_dir": str(self.project_dir), "command": ["true"],
-                "target": {"class": "cpu"}, "threads_per_rank": 4})
-        self.assertEqual(run_command.call_args.kwargs["env"]["OMP_NUM_THREADS"], "4")
+                "env": dict(payload)})
+        self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
 
 class BuildArgvOverrideTests(unittest.TestCase):
@@ -1017,6 +1027,65 @@ class RetiredArgumentTests(unittest.TestCase):
                 self.assertIn("capability_token", str(ctx.exception))
                 self.assertIn("#171", str(ctx.exception))
                 run_command.assert_not_called()
+
+    def test_run_program_refuses_each_retired_target_argument(self) -> None:
+        """Issue #289: the four arguments `run_program` derived an OpenMP environment from.
+
+        One row per argument, so a member dropped from the set is a red row naming it rather
+        than a set that silently shrank; each refusal must happen BEFORE anything runs, and
+        must name the argument and where the environment comes from now."""
+        for key, value in (("target_class", "cpu"), ("target.class", "cpu"),
+                           ("target", {"class": "cpu"}), ("threads_per_rank", 4)):
+            with self.subTest(argument=key):
+                args = {"project_dir": str(self.project_dir), "command": ["true"], key: value}
+                with mock.patch.object(self.mod, "_run_command") as run_command:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.mod.tool_run_program(args)
+                run_command.assert_not_called()
+                self.assertIn(key, str(ctx.exception))
+                self.assertIn("#289", str(ctx.exception))
+                self.assertIn("pass it as env", str(ctx.exception))
+                # Only the retirement the call hit is answered (round 3).
+                self.assertNotIn("#171", str(ctx.exception))
+        # A retired token alone gets its own remedy, not the launch-env one; both together get
+        # both.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_run_program({"project_dir": str(self.project_dir),
+                                       "command": ["true"], "capability_token": "x"})
+        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
+        self.assertNotIn("pass it as env", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_run_program({"project_dir": str(self.project_dir),
+                                       "command": ["true"], "capability_token": "x",
+                                       "threads_per_rank": 1})
+        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
+        self.assertIn("pass it as env", str(ctx.exception))
+
+    def test_the_served_schema_does_not_advertise_a_retired_argument(self) -> None:
+        # A schema that lists an argument the handler refuses tells every MCP client to send
+        # it. Pinned against the refusal set itself, so the two cannot drift apart.
+        tool = self.mod.TOOLS["run_program"]
+        retired = set(self.mod._RETIRED_ARGUMENTS_BY_TOOL["run_program"])
+        self.assertEqual(retired, {"target_class", "target.class", "target", "threads_per_rank"})
+        self.assertEqual(set(tool.input_schema["properties"]) & retired, set())
+        self.assertNotIn("threads_per_rank is specified", tool.description)
+        # Each name as a WORD: `target` is a substring of `target_class` (round 3).
+        for name in retired:
+            self.assertRegex(tool.description, rf"(?<![\w.]){re.escape(name)}(?![\w.])",
+                             f"the description omits refused {name}")
+        self.assertIn("env", tool.input_schema["properties"])
+
+    def test_the_retired_target_arguments_are_refused_on_run_program_alone(self) -> None:
+        # The over-refusal side: `target` is `compile_project`'s build goal, and the retirement
+        # is scoped to the one tool that read the old meaning.
+        with mock.patch.object(
+                self.mod, "_run_command",
+                return_value={"ok": True, "return_code": 0}) as run_command:
+            self.mod.tool_compile_project({
+                "project_dir": str(self.project_dir), "build_system": "make",
+                "target": "all"})
+        run_command.assert_called_once()
+        self.assertIn("all", run_command.call_args.kwargs["command"])
 
     def test_the_attribution_arguments_are_not_refused(self) -> None:
         # The negative control: the two ids that REPLACED the token must be served.

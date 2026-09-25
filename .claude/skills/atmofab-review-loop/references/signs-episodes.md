@@ -240,7 +240,7 @@ the case history that tells you how it closed.
   narrowing usually has a middle, and "whole document" versus "one column" was a false choice.
 
 - **Your change REMOVES something from the default run, and you then write a witness for it** →
-  issue #182 / PR #187, found in round 5 of five by BOTH reviewers of that round, independently,
+  PR #187 (the ratchet freeze), found in round 5 of five by BOTH reviewers of that round, independently,
   and by nothing else in four rounds before them.
 
   The branch froze a tree-versus-baseline comparison out of `pytest tools/tests/`: the token

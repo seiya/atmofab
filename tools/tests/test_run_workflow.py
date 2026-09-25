@@ -82,11 +82,14 @@ def _checkout_harness_node_key_for_target(repo_root: Path, profile: tp.TargetPro
 
 
 def _checkout_resolve_run_target(repo_root: Path, requested: str | None, *,
-                                 node_key: str | None = None) -> tp.TargetProfile:
+                                 node_key: str | None = None,
+                                 until_phase: str | None = None) -> tp.TargetProfile:
     # `node_key` is dropped: the scratch closures here stand on a scratch harness, which is not
     # this checkout's profile's harness, so the `infrastructure`-target gate would refuse every
     # scratch harness member. That gate is exercised under `_real_target_resolution`.
-    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested)
+    # `until_phase` is passed through (issue #289): same signature as the real one, so a caller
+    # that stops passing it, or passes a wrong one, is observed here too.
+    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested, until_phase=until_phase)
 
 
 @contextmanager
@@ -4119,13 +4122,16 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_the_host_probes_are_asked_about_the_invocations_target(self) -> None:
         """Issue #284: the launch's host probes answer for `--target`'s profile. The presence
-        probe, the `required` list of its refusal and the version probe each take it."""
+        probe, the `required` list of its refusal and the version probe each take it — and,
+        since issue #289, the invocation's `until_phase` as typed, which the launch gate reads
+        (a run that stops before Validate is probed for a class this host cannot execute on)."""
         from unittest import mock
 
         from tools.host_prerequisites import resolve_launch_axis_selection
         seen: list[object] = []
         with mock.patch.object(run_workflow, "_check_required_host_tools",
-                               side_effect=lambda requested=None: seen.append(requested) or ["x"]), \
+                               side_effect=lambda requested=None, until_phase=None:
+                               seen.append((requested, until_phase)) or ["x"]), \
                 mock.patch.object(run_workflow, "_host_probe_selection",
                                   wraps=run_workflow._host_probe_selection) as selection, \
                 mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
@@ -4134,16 +4140,16 @@ class RunWorkflowTests(unittest.TestCase):
                 "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
                 "--target", _TP_RW.target_id])
         self.assertEqual(code, 2)
-        self.assertEqual(seen, [_TP_RW.target_id])
-        selection.assert_called_with(_TP_RW.target_id)
+        self.assertEqual(seen, [(_TP_RW.target_id, "Compile")])
+        selection.assert_called_with(_TP_RW.target_id, "Compile")
 
         class _Stop(Exception):
             pass
 
         asked: list[object] = []
 
-        def versions_probe(requested=None):
-            asked.append(requested)
+        def versions_probe(requested=None, until_phase=None):
+            asked.append((requested, until_phase))
             raise _Stop
         with mock.patch.object(run_workflow, "_check_required_host_tools", return_value=[]), \
                 mock.patch.object(run_workflow, "_check_host_tool_versions",
@@ -4152,7 +4158,7 @@ class RunWorkflowTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()), self.assertRaises(_Stop):
             run_workflow.main(["spec/problem/dummy.md", "Compile", "--stdout-format",
                                "jsonl", "--target", _TP_RW.target_id])
-        self.assertEqual(asked, [_TP_RW.target_id])
+        self.assertEqual(asked, [(_TP_RW.target_id, "Compile")])
         # The version probe, driven directly: it asks the registry about that selection.
         with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
                         autospec=True, return_value=[]) as versions:
@@ -4185,6 +4191,34 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIsNone(run_workflow._host_probe_selection(None))
             self.assertEqual(run_workflow._check_required_host_tools(None), [])
             self.assertEqual(run_workflow._check_host_tool_versions(None), [])
+
+    def test_the_probe_answers_a_build_run_on_a_class_this_host_cannot_execute_on(self) -> None:
+        """Issue #289: the probe asks the launch gate with the invocation's `until_phase`, so a
+        run that stops before Validate on a `gpu` target is still probed for the tools it builds
+        with, and a run that reaches Validate defers to the gate's own refusal."""
+        from unittest import mock
+
+        from tools.tests.target_fixtures import profile_with
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
+        with mock.patch.object(run_workflow, "load_target_profile", return_value=gpu):
+            self.assertIsNotNone(run_workflow._host_probe_selection(None, "build"))
+            self.assertIsNone(run_workflow._host_probe_selection(None, "validate"))
+            self.assertIsNone(run_workflow._host_probe_selection(None))
+            # Both probes carry the phase to the selection, not only the presence one.
+            with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
+                            autospec=True, return_value=[]) as versions, \
+                    mock.patch("tools.host_prerequisites.missing_host_executables",
+                               autospec=True, return_value=[]) as missing:
+                run_workflow._check_host_tool_versions(None, "build")
+                run_workflow._check_required_host_tools(None, "build")
+                versions.assert_called_once()
+                missing.assert_called_once()
+                versions.reset_mock()
+                missing.reset_mock()
+                run_workflow._check_host_tool_versions(None, "validate")
+                run_workflow._check_required_host_tools(None, "validate")
+                versions.assert_not_called()
+                missing.assert_not_called()
 
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
@@ -4405,7 +4439,8 @@ _HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
 
 def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu",
                               harness_id: str = _HARNESS_ID,
-                              constraint: str = ">=0.3.0 <1.0.0") -> Path:
+                              constraint: str = ">=0.3.0 <1.0.0",
+                              hardware: dict | None = None) -> Path:
     """Give a scratch tree its OWN target profile (issue #284): the checkout's `fortran_cpu`
     profile with its id and harness replaced. For the tests that run the real script in a
     subprocess, where the module's target redirect does not reach, and for the tests of the
@@ -4416,6 +4451,8 @@ def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu"
         encoding="utf-8"))
     doc["target_id"] = target_id
     doc["harness"] = {"infrastructure_id": harness_id, "version_constraint": constraint}
+    if hardware is not None:
+        doc["hardware"] = dict(hardware)
     path = repo_root / "spec" / "targets" / f"{target_id}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
@@ -9484,12 +9521,52 @@ class TargetProfileLaunchTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         _load_spec_catalog.cache_clear()
 
-    def _main(self, repo_root: Path, *extra: str) -> tuple[int, list[dict], list[list[str]]]:
+    def _main(self, repo_root: Path, *extra: str,
+              until: str = "validate") -> tuple[int, list[dict], list[list[str]]]:
         with _real_target_resolution():
             code, _out, calls = RunWorkflowTests._run_main_with_fake_runtime(  # type: ignore[arg-type]
-                self, ["spec/problem/test.md", "validate", "--repo-root", str(repo_root),
+                self, ["spec/problem/test.md", until, "--repo-root", str(repo_root),
                        "--no-run-conductor", *extra])
         return code, self._last_events, calls  # type: ignore[attr-defined]
+
+    def test_a_class_this_host_cannot_execute_on_is_built_for_and_not_run(self) -> None:
+        """Issue #289: the launch gate asks a hardware class for `execution` only when the run
+        reaches Validate, and the invocation's `until_phase` is what decides it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _seed_target_profile_into(repo_root, target_id="t_g", harness_id="harness_a",
+                                      hardware={"class": "gpu", "architecture": "sm_90"})
+            code, events, calls = self._main(repo_root, "--target", "t_g", until="validate")
+            self.assertEqual(code, 2)
+            self.assertEqual(events[-1]["reason"], "target_profile_invalid")
+            self.assertIn("hardware.class", events[-1]["detail"])
+            self.assertIn("'execution'", events[-1]["detail"])
+            self.assertEqual(calls, [], "refused before any orchestration state is touched")
+            code, events, _calls = self._main(repo_root, "--target", "t_g", until="build")
+            self.assertEqual(code, 0, events)
+            self.assertEqual(events[-1]["target_id"], "t_g")
+
+    def test_every_target_resolution_in_the_driver_passes_its_run_phase(self) -> None:
+        """The production CALLERS bind the new argument (issue #289). Each resolution call in
+        `run_workflow` must pass `until_phase=` by keyword, and the closure-member one must pass
+        the MEMBERS' phase (`dep_until_phase`) — a member of a Build run is driven to Validate,
+        so gating it with the target's phase would admit a member this host cannot run."""
+        import ast
+        src = Path(run_workflow.__file__).read_text(encoding="utf-8")
+        found: dict[str, list[str]] = {}
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
+                    node.func.id in ("_resolve_launch_target", "resolve_run_target"):
+                kw = {k.arg: k.value for k in node.keywords}
+                self.assertIn("until_phase", kw, f"line {node.lineno}: {node.func.id} without "
+                                                 f"until_phase")
+                value = kw["until_phase"]
+                found.setdefault(node.func.id, []).append(
+                    value.id if isinstance(value, ast.Name) else ast.dump(value))
+        self.assertEqual(sorted(found["_resolve_launch_target"]),
+                         ["dep_until_phase", "until_phase"])
+        self.assertEqual(found["resolve_run_target"], ["until_phase", "until_phase"])
 
     def test_the_chosen_target_is_recorded_and_announced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -15515,7 +15515,26 @@ class DeterministicBuildTest(unittest.TestCase):
     def test_execute_inproc_records_the_host_platform_in_trial_meta(self) -> None:
         """`trial_meta.json#environment.platform` (issue #250): the machine the evidence was
         produced on — RECORDED, not keyed; the validate derivation inputs carry no host
-        identity, and the record is what the day a perf predicate keys on it reads."""
+        identity, and the record is what the day a perf predicate keys on it reads.
+
+        And the LAUNCH (issue #289): `run_program` is handed the command and the `env`
+        `tools/host_execution.py` composed from the target — never the hardware class or a
+        thread count — and `environment.launch` records exactly what it was handed."""
+        from tools.host_execution import launch_shape
+        from tools.tests.target_fixtures import profile_with
+        # The thread count differs from the literal execute used before issue #284 (one) and
+        # the backend is varied across two targets, so each is observed as READ. The loader
+        # refuses threads_per_rank != 1 today (the quality check's serial reference), so the
+        # profile is handed to the conductor rather than loaded: this row pins the READ, which
+        # a future parallel reference run will keep. The class stays `cpu`: it is the only one
+        # this host executes on, and the refusal of another is its own row below.
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                target = profile_with(parallel={"backend": backend},
+                                      execution={"threads_per_rank": 3})
+                self._assert_execute_records_the_launch(target, launch_shape(target))
+
+    def _assert_execute_records_the_launch(self, target, shape) -> None:
         import platform as _platform
         import sys
         import tempfile
@@ -15523,14 +15542,6 @@ class DeterministicBuildTest(unittest.TestCase):
         sys.path.insert(0, str(Path("mcp_servers").resolve()))
         import build_runtime_server  # type: ignore
 
-        from tools.tests.target_fixtures import profile_with
-        # Every value differs from the literals execute used before issue #284 (class `cpu`,
-        # backend `openmp`, one thread), and from the IR below, so each is observed. The
-        # loader refuses threads_per_rank != 1 today (the quality check's serial reference),
-        # so the profile is handed to the conductor rather than loaded: this row pins the
-        # READ, which a future parallel reference run will keep.
-        target = profile_with(hardware={"class": "gpu"}, parallel={"backend": "serial"},
-                              execution={"threads_per_rank": 3})
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             c = _TargetedConductor(repo_root=repo, orchestration_id="t",
@@ -15543,16 +15554,12 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n"
-                "  toolchain:\n    language: fortran\n    standard: f2008\n"
-                "    build_system: make\n"
-                "  target:\n    class: cpu\n    backend: openmp\n"
                 "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
-            run_envs: list[dict] = []
+            run_calls: list[dict] = []
 
             def fake_run_program(args):
-                run_envs.append(dict(args))
+                run_calls.append(dict(args))
                 run_tmp = Path(args["project_dir"])
                 (run_tmp / "diagnostics.json").write_text(
                     json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
@@ -15575,21 +15582,65 @@ class DeterministicBuildTest(unittest.TestCase):
             trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
             env = trial["environment"]
             self.assertEqual(set(env), {"target_id", "target_class", "backend",
-                                        "threads_per_rank", "openmp_env", "platform"})
+                                        "threads_per_rank", "launch", "platform"})
             # The target's, not the IR's (issue #284) — `backend` read a key the IR never had
             # until then, so every record said the fallback.
             self.assertEqual(
                 (env["target_id"], env["target_class"], env["backend"], env["threads_per_rank"]),
-                (target.target_id, "gpu", "serial", 3))
-            self.assertEqual(run_envs[0]["threads_per_rank"], 3)
-            self.assertEqual(env["openmp_env"], {"OMP_NUM_THREADS": "3", "OMP_THREAD_LIMIT": "3"})
+                (target.target_id, target.hardware_class, target.parallel_backend, 3))
+            # What `run_program` was handed: the composed env, the command through the shape,
+            # and none of the arguments the server now refuses.
+            self.assertEqual(len(run_calls), 1)
+            call = run_calls[0]
+            self.assertEqual(call["env"], shape.env)
+            # And not merely whatever the seam returned: the openmp target's thread count must
+            # arrive as the value the runtime reads (a seam returning `{}` agrees with itself).
+            if target.parallel_backend == "openmp":
+                self.assertEqual(call["env"], {"OMP_NUM_THREADS": "3", "OMP_THREAD_LIMIT": "3"})
+            prefix = len(shape.argv_prefix)
+            self.assertEqual(call["command"][:prefix], list(shape.argv_prefix))
+            self.assertEqual(call["command"][prefix + 1], "--cases")
+            for retired in ("target", "target_class", "target.class", "threads_per_rank"):
+                self.assertNotIn(retired, call)
+            self.assertEqual(env["launch"], shape.record())
             qc = json.loads((repo / refs.run_node_dir() / "quality_check.json").read_text("utf-8"))
             self.assertEqual(qc["comparison"]["reference"]["threads_per_rank"], 3)
             self.assertIn("threads_per_rank=3", qc["notes"])
-            self.assertEqual(env["platform"], wc._host_platform_record())
+            self.assertEqual(env["platform"], {**wc._host_platform_record(), "site": shape.site})
+            self.assertEqual(env["platform"]["site"], "local")
             self.assertEqual(env["platform"]["machine"], _platform.machine())
             self.assertEqual(env["platform"]["node"], _platform.node())
             self.assertIn("cpu_model", env["platform"])
+
+    def test_execute_inproc_refuses_a_class_this_host_cannot_run_on_before_running(
+            self) -> None:
+        """Issue #289: a `gpu` target reached a CPU run silently until R4-b PR-1. The launch
+        gate refuses it before anything runs; this is the backstop behind it, and it must fire
+        before `run_program` — surfaced by `_run_deterministic_substep` as a transport
+        fail_closed, since no leaf can repair where the binary runs."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        from tools.tests.target_fixtures import profile_with
+        target = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={},
+                             target_profile=target)
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            with mock.patch.object(build_runtime_server, "tool_run_program") as run_program:
+                result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
+            run_program.assert_not_called()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("deterministic_validate_error", result.stderr)
+            self.assertIn("'execution'", result.stderr)
 
     def test_host_platform_record_survives_an_unreadable_cpuinfo(self) -> None:
         with mock.patch.object(Path, "read_text", side_effect=OSError("no proc")):

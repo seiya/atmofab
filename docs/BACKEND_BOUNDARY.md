@@ -48,7 +48,7 @@ Out of scope, each for a stated reason:
 
 ## Definitions
 - **target-stack axis** (**axis**): one dimension of the technology choice a run makes. The
-  declared axes are `language`, `build_system`, `compiler`, `linter`, and `parallel`. Each axis
+  declared axes are `language`, `build_system`, `compiler`, `linter`, `parallel`, and `hardware`. Each axis
   and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
   is the source of truth; this sentence is the only place the list is written out, and
   `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` and fails on any
@@ -160,6 +160,11 @@ together with the bundle's `target_lowering_plan.parallelization`.
     neutral core (`core_provides`) or in the record's own package (`backend_provides`); declaring
     one is how a new backend's host-side work is admitted, and the declaration is the thing to
     review.
+  - The same gate's `hardware` half (issue #289) asks a class for `execution` only when the run
+    reaches `Validate`, and asks the parallel backend for `execution_env` then too; the launch
+    itself goes through `tools/host_execution.py`, which asks the same two. So a registered
+    hardware class with no `execution` is admitted for a run that stops at `Build` and refused
+    for one that runs the binary — building for a class needs no machine of that class.
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
     allowlist, the compiler-driver families and the identifier bound are read from the language
     backend through the registry. The bundle SCHEMA (`spec/schema/generate/`) still carries its
@@ -219,10 +224,10 @@ together with the bundle's `target_lowering_plan.parallelization`.
 - **Migrating an area** moves knowledge into a backend location from the placement table. Two
   consequences are expected and are not violations: the sampled counts of the *citing* documents
   rise, because a path naming a backend id is naming, not knowing (§Decision Criteria); and the
-  moved file leaves the scanned set, which `--check-baseline` reports as a stale baseline until
-  the baseline is regenerated (the comparison is frozen out of the suite, issue #182,
-  §Enforcement). Regeneration rewrites the sampled half only — the direct-import allowlist lives in
-  its own file and is edited by hand, so a migration cannot absorb a new bypass.
+  moved file leaves the scanned set, which the suite reports as a stale baseline until the
+  baseline is regenerated in the same pull request (§Enforcement). Regeneration rewrites the
+  sampled half only — the direct-import allowlist lives in its own file and is edited by hand, so
+  a migration cannot absorb a new bypass.
 - **Changing a rule stated here** requires washing every document that cites it. The citations are
   found with `grep -rn "BACKEND_BOUNDARY" docs skills tools mcp_servers *.md` from the repository
   root — the root `*.md` is load-bearing, since `TODO.md` carries the migration ledger and its
@@ -260,18 +265,23 @@ compliance.
     by a reviewed hand edit, so narrowing the instrument is not something a regeneration can
     bless.
   - The **token ratchet** counts, per neutral file and per token class, the occurrences of a fixed
-    list of technology-specific tokens, and reports both when a count exceeds the frozen baseline in
+    list of technology-specific tokens, and reports both when a count exceeds the recorded baseline in
     `tools/tests/data/backend_boundary_baseline.json` and when it falls below it (a stale
-    baseline). Run, it bounds growth and it forces the recorded debt down as areas migrate; it is
-    frozen out of the suite (issue #182, below), so nothing runs it unless someone does. It is a
-    **sample, not a pin**: a token list is an enumeration, backend knowledge with no token in the
+    baseline). It runs in the suite (`TokenRatchetTests`), so it bounds growth and forces the
+    recorded debt down as areas migrate. It is a **sample, not a pin**: a token list is an enumeration, backend knowledge with no token in the
     list is invisible to it, and a file that removes one occurrence and adds another of the same
     class keeps its count. Do not read a passing ratchet as an absence of violations, and do not
     read a falling count as migration — only a count falling because knowledge moved *into a
     backend* is migration.
 
-The two commands. Their behaviour here is permanent and independent of anything recorded
-further down this section. They are refused in one invocation (exit 2), because the judgement between them is the step and an invocation asking for
+A pull request the ratchet reports on judges every entry by §Decision Criteria: growth that is
+backend knowledge is moved into a backend, never blessed; growth that is a token in a neutral
+role, and staleness, are recorded by regenerating the baseline in that pull request, with the
+check's output and the judgement stated there. The comparison also runs on request,
+`python3 -m tools.tests.test_backend_boundary --check-baseline`, which exits 1 naming every grown
+or stale entry and 0 when the tree matches the baseline; `--write-baseline` regenerates it.
+
+The two commands are refused in one invocation (exit 2), because the judgement between them is the step and an invocation asking for
 both would report a regeneration as a check that passed; an unrecognised argument beside either
 is refused for the same reason, since a mistyped second flag would otherwise run one command
 silently. `--write-baseline` prints the grown and stale entries it is about to bless, under
@@ -280,21 +290,6 @@ that skipped the check still puts the material in front of whoever typed it. Tha
 disclosure and not a substitute for `--check-baseline`, which is a separate invocation with its
 own exit code.
 
-The token ratchet is frozen until the second `(language, hardware)` target starts (issue #182).
-While frozen, the suite does not compare the tree against the baseline; the comparison runs on
-explicit request, `python3 -m tools.tests.test_backend_boundary --check-baseline`, which exits 1
-naming every grown or stale entry and 0 when the tree matches the baseline. Nothing in the suite
-and nothing in CI runs either command. The direct-import pin, the registry checks, the pins on
-the instrument's reach (scanned set, token classes, root-file coverage), and the synthetic
-witnesses of the comparison run by default and are unchanged. A pull request that migrates an
-area of the ledger in `TODO.md` runs `--check-baseline`, judges each finding by §Decision
-Criteria, regenerates the baseline with `--write-baseline` in the same pull request, and records
-the check's output there; no other pull request regenerates the baseline. The freeze ends with
-the first pull request of the second `(language, hardware)` target: that pull request restores
-the comparison to the suite and regenerates the baseline once, and deletes this paragraph and
-nothing else in this section. `TODO.md` carries the removal procedure beside the migration
-ledger.
-
 The current baseline is not zero. The per-area migration plan that reduces it is the ledger in
 `TODO.md`; the measured debt at the time this rule was written is recorded in
-[a comment on issue #182](https://github.com/seiya/atmofab/issues/182#issuecomment-5559624872).
+[a comment on the ratchet's issue](https://github.com/seiya/atmofab/issues/182#issuecomment-5559624872).

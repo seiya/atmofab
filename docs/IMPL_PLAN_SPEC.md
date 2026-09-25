@@ -22,8 +22,8 @@ In the core workflow the target profile is a fixed input of every stage from `Ge
 ## 2. Required items (target profile)
 A target profile requires the following fields. `spec/schema/targets/target_profile.schema.json` is a declarative copy of the shape; the canonical validator is `tools/target_profile.py:load_target_profile`.
 
-- `hardware.class` (`cpu` / `gpu`).
-- `hardware.architecture` (e.g. `x86_64`).
+- `hardware.class` (the `hardware` axis value, `docs/BACKEND_BOUNDARY.md` §Definitions; the backend registry says which classes exist and which this host can execute a run on).
+- `hardware.architecture` (e.g. `x86_64`; held at launch to the class's `perf_facts` when the class states them).
 - `toolchain.language` (the `language` axis value).
 - `toolchain.standard` (the language standard spelled the way the compiler names it; it is passed verbatim to the compiler driver, so an elided spelling is rejected by the driver).
 - `toolchain.build_system` (the `build_system` axis value).

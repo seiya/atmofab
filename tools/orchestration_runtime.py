@@ -2607,9 +2607,9 @@ def phase_derivation_inputs(
             repo_root, repo_root / binary / "binary_meta.json", what=f"{node_key} build"),
         "ir": ir_hash,
         "spec": {"tests": _spec_file_hash(repo_root, spec, "tests.md")},
-        # The execution policy `_execute_inproc` imposes: the target it runs for (the
-        # profile's hardware class and threads per rank are what it passes `run_program`,
-        # and the profile hash binds them), and the `make_test` quality-check preset.
+        # The execution policy `_execute_inproc` imposes: the target it runs for (the launch
+        # shape it hands `run_program` is composed from the profile, `tools/host_execution.py`,
+        # and the profile hash binds it), and the `make_test` quality-check preset.
         "run_policy": {
             "target_id": target.target_id,
             "profile": target.sha256,

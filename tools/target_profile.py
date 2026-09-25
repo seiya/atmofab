@@ -17,10 +17,12 @@ by ``tools/tests/test_target_profile.py``).
 Both layers are fail-closed. The loader (``load_target_profile``) refuses an unknown key, a
 missing key, a wrongly typed value and a ``target_id`` that is not the file's stem; it does NOT
 resolve the harness or ask the registry. The launch gate (``target_profile_violations``, run by
-``resolve_run_target``) refuses a harness the catalog cannot resolve and a language, build
-system, parallel backend or pinned compiler the host does not implement — and nothing else:
-``hardware.*``, ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens it does not
-check. A profile the host would have to guess about is a run nobody can reproduce.
+``resolve_run_target``) refuses a harness the catalog cannot resolve and a hardware class,
+language, build system, parallel backend or pinned compiler the host does not implement; a
+``hardware.architecture`` its class's ``perf_facts`` does not admit; and, for a run that reaches
+``Validate``, a hardware class this host cannot launch on or a parallel backend it has no launch
+environment for (issue #289). ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens
+it does not check. A profile the host would have to guess about is a run nobody can reproduce.
 """
 
 from __future__ import annotations
@@ -54,8 +56,12 @@ PIPELINES_ROOT = "workspace/pipelines"
 #: An axis value: an opaque token, lowercase so no reader has to normalize case.
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*")
 
-#: The hardware classes the host's execution path distinguishes today.
-HARDWARE_CLASSES: tuple[str, ...] = ("cpu", "gpu")
+#: The phases a run can stop at WITHOUT executing the binary, compared case-insensitively. A
+#: run ending at one of them is not asked the execution half of the launch gate, because building
+#: for a class needs no machine of that class (issue #289, R4-b PR-1); every other `until_phase`,
+#: an unstated or misspelled one included, is — the set names what is EXEMPT, so a spelling
+#: nobody listed lands on the refusing side.
+NON_EXECUTING_PHASES = frozenset({"compile", "generate", "build"})
 
 #: The closed document shape: for each object, `(required keys, optional keys)`. The top level is
 #: keyed by `""`. `tools/tests/test_target_profile.py` pins this table against the schema.
@@ -276,11 +282,6 @@ def _shape_violations(doc: Any) -> list[str]:
                          ("toolchain", "linker"), ("parallel", "backend"),
                          ("harness", "infrastructure_id")):
         token(obj_key, key)
-    hardware = doc.get("hardware")
-    if isinstance(hardware, dict) and isinstance(hardware.get("class"), str) \
-            and hardware["class"] not in HARDWARE_CLASSES:
-        out.append(f"hardware.class: {hardware['class']!r} is not one of "
-                   f"{', '.join(HARDWARE_CLASSES)}")
     execution = doc.get("execution")
     if isinstance(execution, dict) and "threads_per_rank" in execution:
         threads = execution["threads_per_rank"]
@@ -417,15 +418,61 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
     return reasons
 
 
-def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
-                              node_key: str | None = None) -> list[str]:
-    """The launch gate over a loaded profile: every axis value is one this repository
-    implements, the toolchain is servable for a node of `node_key`'s kind (a non-infrastructure
-    node when `node_key` is None — the stricter question), and the harness resolves. An
-    `infrastructure` node run for a target must BE that target's harness."""
+def hardware_violations(profile: TargetProfile, *, until_phase: str | None = None) -> list[str]:
+    """The `hardware` half of the launch gate (issue #289, R4-b PR-1).
+
+    The class must be one this repository implements, and its `architecture` must satisfy the
+    class's `perf_facts` when the class states them (a class that states none leaves it a
+    recorded token, as every class did before the `hardware` axis existed).
+
+    The EXECUTION half is asked of every run except one whose `until_phase` is in
+    `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
+    requires the class to declare `execution` and the parallel backend to declare
+    `execution_env`: the two questions `tools/host_execution.launch_shape` asks when
+    `Validate.execute` launches the binary, asked here first so a run that would be refused
+    there is refused before anything is billed. A run that stops earlier is not asked, because
+    building for a class needs no machine of that class (the `gpu` record declares no
+    `execution`). That admits the run, not its dependencies: a closure member is driven to
+    Validate (`run_workflow`'s `dep_until_phase`) and asked there, and a node whose dependencies
+    are not certified through Validate stops at the dependency-readiness gate — so today only a
+    harness, which has none, can be built for such a class."""
     from tools.backends import registry as backend_registry
 
     out: list[str] = []
+    hardware_class = profile.hardware_class
+    reason = backend_registry.unimplemented_reason("hardware", hardware_class)
+    if reason is not None:
+        return [f"hardware.class: {reason}"]
+    record = backend_registry.get("hardware", hardware_class)
+    if "perf_facts" in record.backend_provides:
+        facts = backend_registry.capability_module("hardware", hardware_class, "perf_facts")
+        architecture = str(profile.doc["hardware"]["architecture"])
+        if not facts.ARCHITECTURE_PATTERN.fullmatch(architecture):
+            out.append(f"hardware.architecture: {architecture!r} is not a {hardware_class} "
+                       f"architecture (pattern {facts.ARCHITECTURE_PATTERN.pattern})")
+    if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:
+        for axis, value, capability, where in (
+                ("hardware", hardware_class, "execution", "hardware.class"),
+                ("parallel", profile.parallel_backend, "execution_env", "parallel.backend")):
+            reason = backend_registry.missing_capability_reason(axis, value, capability)
+            if reason is not None:
+                out.append(f"{where}: a run that reaches Validate launches the binary, and "
+                           f"{reason}")
+    return out
+
+
+def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
+                              node_key: str | None = None,
+                              until_phase: str | None = None) -> list[str]:
+    """The launch gate over a loaded profile: every axis value is one this repository
+    implements, the toolchain is servable for a node of `node_key`'s kind (a non-infrastructure
+    node when `node_key` is None — the stricter question), the hardware half holds for a run
+    ending at `until_phase` (`hardware_violations`; None is the stricter question again), and
+    the harness resolves. An `infrastructure` node run for a target must BE that target's
+    harness."""
+    from tools.backends import registry as backend_registry
+
+    out: list[str] = hardware_violations(profile, until_phase=until_phase)
     tc = profile.toolchain
     infrastructure = bool(node_key) and node_key.split("/", 1)[0] == "infrastructure"
     out += [f"toolchain: {r}" for r in toolchain_servable_reasons(
@@ -451,11 +498,14 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
 
 
 def resolve_run_target(repo_root: Path, requested: str | None, *,
-                       node_key: str | None = None) -> TargetProfile:
-    """Select, load and gate the target of one run. Raises `TargetProfileError`."""
+                       node_key: str | None = None,
+                       until_phase: str | None = None) -> TargetProfile:
+    """Select, load and gate the target of one run ending at `until_phase`. Raises
+    `TargetProfileError`."""
     target_id = select_target_id(repo_root, requested)
     profile = load_target_profile(repo_root, target_id)
-    violations = target_profile_violations(repo_root, profile, node_key=node_key)
+    violations = target_profile_violations(repo_root, profile, node_key=node_key,
+                                           until_phase=until_phase)
     if violations:
         reason = ("target_harness_mismatch"
                   if violations[0].startswith("target_harness_mismatch")

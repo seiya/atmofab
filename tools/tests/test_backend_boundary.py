@@ -3,9 +3,7 @@
 
 The rule is `docs/BACKEND_BOUNDARY.md`. This module measures two consequences of it and freezes
 both against a recorded baseline, so that the debt this repository already carries is visible and
-bounded while it is being paid down. The sampled half of that comparison does not run in the
-suite: it is frozen until the second target starts (issue #182) and runs on request, through
-`--check-baseline`.
+bounded while it is being paid down.
 
 WHAT IS PINNED, AND WHAT IS ONLY SAMPLED. Stating this precisely matters more here than usual,
 because a green boundary check reads as "the boundary holds" whether or not it can see the
@@ -50,7 +48,7 @@ than left to read as covered.
   hard-codes a two-space indent because one compiler's diagnostics count columns, a Makefile rule
   spelled without the word `makefile`, an argv assembled from fragments. And the counts are per
   token class, so a file that deletes one occurrence and adds another of the same class holds its
-  count. What the counts DO give, under `--check-baseline`, is a monotone bound with a direction:
+  count. What the counts DO give (`TokenRatchetTests`) is a monotone bound with a direction:
   no file may grow, and a file that shrinks forces the baseline down (a stale-baseline finding),
   so the measure cannot drift upward and cannot silently stop tightening.
 
@@ -60,7 +58,8 @@ here and was false three times over: the scope, the class list and the allowlist
 narrowed and then blessed by one regeneration. Those three are hand-pinned now; the sampled
 counts remain a sample.
 
-Running the sampled comparison and regenerating the baseline are both deliberate, not automatic:
+The sampled comparison runs in the suite (`TokenRatchetTests`) and on request; regenerating the
+baseline is deliberate, not automatic:
 
     python3 -m tools.tests.test_backend_boundary --check-baseline
     python3 -m tools.tests.test_backend_boundary --write-baseline
@@ -102,13 +101,8 @@ BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_basel
 #: The PINNED half, in its own file that no command writes: the direct-import allowlist, the
 #: scanned file set, and the token-class list. The allowlist lived in the regenerable file for
 #: four review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes
-#: for the sample laundered the pin. The file was rewritten in 37 commits over the whole of its
-#: life, 2026-08-14 to 2026-09-06, and of the 70 pull requests merged in that window, 14 touched
-#: it (20%) and 4 touched it and no other backend-boundary artifact, on work whose subject was
-#: not the boundary (5.7%; all measured at `c131639`, issue #182 — TODO.md's freeze bullet
-#: carries the same figures and why the denominator is 70 rather than every merge since
-#: 2026-07-08). That is why the comparison is an explicit command rather than a suite test until
-#: the second target starts. A change here is a hand edit, reviewed as the boundary decision it is.
+#: for the sample laundered the pin. A change here is a hand edit, reviewed as the boundary
+#: decision it is.
 ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
@@ -576,21 +570,19 @@ def _load_allowlist() -> dict[str, list[str]]:
 CHECK_FLAG = "--check-baseline"
 WRITE_FLAG = "--write-baseline"
 
-#: The prohibition every finding ends with, and the reason it is one constant. Ordered by
-#: reachability, most reachable first: while the ratchet is frozen (issue #182) the common case
-#: by far is an unrelated pull request that ran the command and got a finding, and for that case
-#: the answer is NOT to regenerate — the pre-freeze messages said "regenerate" unconditionally,
-#: which is the gate satisfied by editing what judges it, and `docs/BACKEND_BOUNDARY.md`
-#: §Enforcement now forbids it for every pull request but the ledger's. `MessageContentTests`
-#: pins the property rather than the wording: an `assertIn(GROWTH_MESSAGE, out)` compares the
-#: constant with itself, so every edit to these strings — the pre-freeze wording restored
-#: included — survived it.
-_FROZEN_REMEDY_CLAUSE = (
-    "Do NOT regenerate the baseline unless this is the pull request that migrates an area of the "
-    "ledger in TODO.md: while the ratchet is frozen (issue #182, docs/BACKEND_BOUNDARY.md "
-    "§Enforcement) every other pull request records the finding and leaves the baseline alone. "
-    "In a ledger pull request, judge every entry by §Decision Criteria first, then run "
-    f"`python3 -m tools.tests.test_backend_boundary {WRITE_FLAG}` and record both outputs.")
+#: The condition every finding ends with, and the reason it is one constant. A regeneration
+#: that nobody judged is the gate satisfied by editing what judges it — the messages before the
+#: ratchet's 2026-09 freeze said "regenerate" unconditionally — so the only instruction to
+#: regenerate is this one, and it names the judgement first. `test_the_findings_never_tell_a_
+#: reader_to_regenerate_before_saying_when` pins the property rather than the wording: an
+#: `assertIn(GROWTH_MESSAGE, out)` compares the constant with itself, so every edit to these
+#: strings survived it.
+_REMEDY_CLAUSE = (
+    "Regenerate the baseline only after judging every entry by docs/BACKEND_BOUNDARY.md "
+    "§Decision Criteria: growth that is backend knowledge is moved, never blessed; growth that is "
+    "a token in a neutral role, and staleness, are recorded by running "
+    f"`python3 -m tools.tests.test_backend_boundary {WRITE_FLAG}` in the same pull request, "
+    f"with the {CHECK_FLAG} output and the judgement stated there.")
 
 #: The two findings the sampled comparison can produce. The head of each says WHAT was measured
 #: and the tail is the prohibition above, in that order, so that no instruction to regenerate can
@@ -599,13 +591,13 @@ GROWTH_MESSAGE = (
     "backend knowledge grew in the neutral core (docs/BACKEND_BOUNDARY.md). Move it into "
     "tools/backends/<axis>/<backend_id>/ and reach it through tools/backends/registry.py. "
     "If the growth is a token appearing in a NEUTRAL role (naming an axis value, quoting a "
-    "path), say so in the commit message. " + _FROZEN_REMEDY_CLAUSE)
+    "path), say so in the commit message. " + _REMEDY_CLAUSE)
 
 STALE_MESSAGE = (
     "the baseline is looser than the tree, which is what a migration looks like, and it is the "
     "opposite finding from growth: growth is withdrawn, staleness is what the ledger records. " +
-    _FROZEN_REMEDY_CLAUSE + " In that pull request the measured debt in TODO.md is updated "
-    "with it, so the ledger and the baseline cannot disagree and the ratchet keeps "
+    _REMEDY_CLAUSE + " A migration updates the measured debt in TODO.md in the same pull "
+    "request, so the ledger and the baseline cannot disagree and the ratchet keeps "
     "tightening.")
 
 
@@ -650,7 +642,7 @@ def stale_entries(baseline: dict[str, dict[str, int]],
 
 
 def _check_baseline(root: Path | None = None, baseline_path: Path | None = None) -> int:
-    """The frozen sampled half (issue #182), on request.
+    """The sampled half, on request — the comparison `TokenRatchetTests` runs in the suite.
 
     Prints every finding under its message and returns 1; with no finding prints one summary line
     and returns 0. Writes nothing. `root` and `baseline_path` are both injectable because a
@@ -687,14 +679,34 @@ def _synthetic_tree(tmp: Path, *relatives: str) -> None:
         path.write_text("subroutine placeholder\n", encoding="utf-8")
 
 
-class BaselineComparisonTests(unittest.TestCase):
-    """The frozen sampled half (issue #182), witnessed on synthetic inputs and never on this tree.
+class TokenRatchetTests(unittest.TestCase):
+    """The sampled measure over THIS tree: no neutral-core file carries more backend spelling
+    than recorded, and none carries less (a stale baseline). Written over the two module
+    functions `BaselineComparisonTests` witnesses on synthetic inputs — on a green tree these two
+    rows run over empty findings, so they observe the tree's compliance and nothing about the
+    comparison, which is why both classes exist."""
 
-    The comparison used to run as two suite tests over the real baseline. On a green tree those
-    loops ran over empty findings, so `return []` in either of them survived — the assertion
-    observed the tree's compliance, not the comparison. Freezing the comparison out of the suite
-    does not lose that coverage; these witnesses are what it gains, and they are what tells a
-    maintainer the explicit command still reports what it claims to.
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.baseline = _load_baseline()["token_counts"]
+        cls.measured = token_counts()
+        cls.scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
+
+    def test_no_file_exceeds_its_recorded_count(self) -> None:
+        self.assertEqual(grown_entries(self.baseline, self.measured), [], GROWTH_MESSAGE)
+
+    def test_the_baseline_is_not_stale(self) -> None:
+        self.assertEqual(stale_entries(self.baseline, self.measured, self.scanned), [],
+                         STALE_MESSAGE)
+
+
+class BaselineComparisonTests(unittest.TestCase):
+    """The sampled comparison, witnessed on synthetic inputs rather than on this tree.
+
+    The comparison over the real baseline (`TokenRatchetTests`) runs over empty findings on a
+    green tree, so `return []` in either module function survives it — the assertion observes
+    the tree's compliance, not the comparison. These witnesses are what tells a maintainer the
+    comparison reports what it claims to.
     """
 
     def test_the_absent_file_message_names_the_right_cause(self) -> None:
@@ -823,8 +835,8 @@ class BaselineComparisonTests(unittest.TestCase):
 
         The tree and the baseline are both synthetic ON PURPOSE. A row that drove the real
         `_write_baseline` and asserted what its preview printed compared this tree against the
-        recorded baseline on every `pytest tools/tests/` — the frozen comparison, back in the
-        suite and in CI, red on any pull request that moved one sampled token.
+        recorded baseline on every `pytest tools/tests/` — a second copy of
+        `TokenRatchetTests`, and one whose assertions are about the preview rather than the tree.
         """
         # `enterContext` is 3.11+; this repository's floor is lower, so the cleanup is
         # registered by hand.
@@ -910,11 +922,11 @@ class BaselineComparisonTests(unittest.TestCase):
         """A SAMPLE over the prescriptive strings, not a set identity — read the second paragraph.
 
         Every other row here asserts `assertIn(GROWTH_MESSAGE, out)` — the constant compared with
-        itself — so restoring the pre-freeze "regenerate the baseline with --write-baseline"
-        anywhere in either message left the whole file green, which is the round-2 fix reverting
-        undetected. What is checked here is that the only instruction to regenerate in either
-        message is the conditional one: the message OUTSIDE `_FROZEN_REMEDY_CLAUSE` names neither
-        the write command nor any of a few spellings of blessing the tree.
+        itself — so restoring an unconditional "regenerate the baseline with --write-baseline"
+        anywhere in either message left the whole file green. What is checked here is that the
+        only instruction to regenerate in either message is the conditional one: the message
+        OUTSIDE `_REMEDY_CLAUSE` names neither the write command nor any of a few spellings of
+        blessing the tree.
 
         WHAT IS SAMPLED: the spellings. A first version looked only at the text BEFORE the clause,
         and appending "In practice: regenerate now with --write-baseline" to the tail — the last
@@ -926,18 +938,19 @@ class BaselineComparisonTests(unittest.TestCase):
         forbidden = (WRITE_FLAG, "regenerate", "rewrite", "bless", "raise the ceiling")
         for name, message in (("GROWTH_MESSAGE", GROWTH_MESSAGE), ("STALE_MESSAGE", STALE_MESSAGE)):
             with self.subTest(message=name):
-                self.assertIn(_FROZEN_REMEDY_CLAUSE, message)
-                outside = "".join(message.split(_FROZEN_REMEDY_CLAUSE)).lower()
+                self.assertIn(_REMEDY_CLAUSE, message)
+                outside = "".join(message.split(_REMEDY_CLAUSE)).lower()
                 for spelling in forbidden:
                     self.assertNotIn(spelling.lower(), outside,
                                      f"{name} tells the reader to {spelling!r} outside the one "
                                      f"clause that says when regenerating is allowed")
-        # The condition itself: a prohibition, its exception, and the judgement in between.
-        self.assertTrue(_FROZEN_REMEDY_CLAUSE.startswith("Do NOT regenerate"))
-        self.assertIn("unless this is the pull request that migrates", _FROZEN_REMEDY_CLAUSE)
-        self.assertIn("§Decision Criteria", _FROZEN_REMEDY_CLAUSE)
-        self.assertLess(_FROZEN_REMEDY_CLAUSE.index("§Decision Criteria"),
-                        _FROZEN_REMEDY_CLAUSE.index(WRITE_FLAG),
+        # The condition itself: regeneration is conditional, knowledge is never blessed, and the
+        # judgement comes before the command.
+        self.assertTrue(_REMEDY_CLAUSE.startswith("Regenerate the baseline only after judging"))
+        self.assertIn("is moved, never blessed", _REMEDY_CLAUSE)
+        self.assertIn("§Decision Criteria", _REMEDY_CLAUSE)
+        self.assertLess(_REMEDY_CLAUSE.index("§Decision Criteria"),
+                        _REMEDY_CLAUSE.index(WRITE_FLAG),
                         "the clause names the command before the judgement it is conditional on")
 
     def test_the_refusal_message_names_both_commands_and_what_sits_between_them(self) -> None:
@@ -1012,9 +1025,8 @@ class BaselineComparisonTests(unittest.TestCase):
         self.assertIn(BOTH_COMMANDS_MESSAGE, proc.stderr)
 
     def test_check_baseline_is_dispatched_by_the_module_command(self) -> None:
-        # The dispatch, not the tree's freshness: while frozen (issue #182) the real baseline
-        # is expected to
-        # drift, so either verdict is a pass here. Without the branch the argument reaches
+        # The dispatch, not the tree's freshness (`TokenRatchetTests` owns that), so either
+        # verdict is a pass here. Without the branch the argument reaches
         # `unittest.main`, which exits 2 having printed its own usage to stderr.
         proc = subprocess.run(
             [sys.executable, "-m", "tools.tests.test_backend_boundary", "--check-baseline"],
@@ -1297,15 +1309,13 @@ class DirectImportPinTests(unittest.TestCase):
 
         Dropping `BASELINE_PATH.write_text(...)` from `_write_baseline`, writing to another path,
         or writing an EMPTY or an inflated measurement each left the whole file green — measured
-        at `c131639` too, so the gap predates the freeze. What the freeze changed is the recovery:
-        while the comparison ran in the suite, a baseline written wrong turned the next run red,
-        and now nothing reads it back until someone types `--check-baseline`. The summary line is
-        no witness either — `_write_baseline` prints it from a re-read of the file, so on a clean
-        tree it prints the right numbers whether or not the write happened.
+        at `c131639`. `TokenRatchetTests` turns the NEXT run red on a baseline written wrong; this
+        row catches it in the run that writes it. The summary line is no witness either —
+        `_write_baseline` prints it from a re-read of the file, so on a clean tree it prints the
+        right numbers whether or not the write happened.
 
         Both sides are measured from the SAME tree, so this row says nothing about whether the
-        tree matches the recorded baseline: while the comparison is frozen out of the suite
-        (issue #182) it must not, or that comparison is back in the suite. The rows that observe the PREVIEW use a synthetic tree for that reason.
+        tree matches the recorded baseline — `TokenRatchetTests` does, once.
         """
         before = BASELINE_PATH.read_bytes()
         allowlist_before = ALLOWLIST_PATH.read_bytes()
@@ -2151,7 +2161,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         caller fails here until it is declared declaration-only; and none of it constrains what
         anyone registers.
         """
-        dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules"}
+        dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
+                      "execution", "execution_env", "perf_facts"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2167,6 +2178,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         # split is the point — every registered linter RUNS, so `lint` would have answered for
         # all of them and left the dispatch to a `getattr`, which is what this registry's
         # `capability_module` exists to prevent. Only `fortitude` declares it today.
+        #
+        # `execution`, `execution_env` and `perf_facts` joined them with issue #289 (R4-b PR-1):
+        # the launch gate (`target_profile.hardware_violations`) asks all three, and
+        # `tools/host_execution.launch_shape` asks the first two when `Validate.execute` launches
+        # the binary.
         #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
         # and they gain a dispatch when their ledger area lands (the compiler adapters and the
@@ -3121,18 +3137,17 @@ def _print_what_is_about_to_be_blessed(root: Path | None = None,
                                        baseline_path: Path | None = None) -> None:
     """What `--write-baseline` is about to absorb, printed before it absorbs it.
 
-    PERMANENT, and deliberately carrying no issue marker: everything marked with the freeze's
-    issue number is unwritten when the freeze ends, and this is not. It exists because freezing
-    the comparison out of the suite demoted "check first, judge, then write" from a red test to
-    prose — history that stays true afterwards — and prose is followable by half: `--write-baseline` alone succeeded with no diff, no entries, and no word
+    PERMANENT: it outlived the ratchet's 2026-09 freeze, which is why it was written with no
+    issue marker. It exists because "check first, judge, then write" is prose, and prose is
+    followable by half: `--write-baseline` alone succeeded with no diff, no entries, and no word
     about having skipped the check, so an unjudged regeneration and a judged one printed the same
     thing. This does not move the judgement into the argv — the pair is still refused — it puts
     the material in front of whoever typed the command.
 
     `root` and `baseline_path` exist so a witness can drive this on a SYNTHETIC tree, and that is
     not a convenience: a row that drives it on the REAL tree and asserts what it prints is a
-    tree-versus-baseline comparison running in the default suite — the comparison the freeze
-    removed. One was written here and shipped for one commit, and turned `pytest tools/tests/`
+    second tree-versus-baseline comparison, one whose assertions are about the preview. One was
+    written here during the freeze and shipped for one commit, and turned `pytest tools/tests/`
     red on any pull request that moved a sampled token.
     """
     root = root or REPO_ROOT

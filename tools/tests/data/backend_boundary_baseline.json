@@ -31,13 +31,12 @@
       "fortran": 7
     },
     "docs/BWRAP_ENABLEMENT.md": {
-      "fortran-module-file": 2,
-      "make-variable": 1
+      "fortran-module-file": 2
     },
     "docs/CLI_REFERENCE.md": {
-      "fortran": 3,
+      "fortran": 2,
       "fortran-suffix": 1,
-      "make-control-file": 8
+      "make-control-file": 4
     },
     "docs/CONTROLLED_SPEC.md": {
       "fortran": 7,
@@ -51,22 +50,14 @@
       "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
-      "fortran": 4
-    },
-    "docs/IMPL_PLAN_SPEC.md": {
-      "compiler-driver": 6,
-      "compiler-syntax-only": 1,
-      "fortran": 10,
-      "fortran-standard": 1,
-      "make-control-file": 3,
-      "parallel-directive": 1
+      "fortran": 5
     },
     "docs/ORCHESTRATION.md": {
       "compiler-driver": 1,
       "compiler-syntax-only": 1,
-      "fortran": 5,
-      "fortran-suffix": 3,
-      "make-control-file": 9,
+      "fortran": 1,
+      "fortran-suffix": 2,
+      "make-control-file": 1,
       "make-variable": 2
     },
     "docs/PERFORMANCE_DIAGNOSTICS.md": {
@@ -81,7 +72,7 @@
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3,
-      "make-control-file": 2
+      "make-control-file": 1
     },
     "docs/SPEC.md": {
       "fortran": 1,
@@ -91,11 +82,11 @@
     "docs/workflow/CHECKS_MODULE_CONTRACT.md": {
       "compiler-driver": 1,
       "fortran": 12,
-      "fortran-allocatable": 6,
+      "fortran-allocatable": 5,
       "fortran-implicit-none": 1,
-      "fortran-intent": 28,
+      "fortran-intent": 22,
       "fortran-standard": 3,
-      "fortran-subroutine": 14,
+      "fortran-subroutine": 10,
       "fortran-suffix": 7,
       "linter-fortitude": 1,
       "make-control-file": 2,
@@ -103,7 +94,7 @@
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
       "compiler-driver": 8,
-      "fortran": 22,
+      "fortran": 21,
       "fortran-intent": 1,
       "fortran-kind": 2,
       "fortran-module-file": 2,
@@ -117,9 +108,9 @@
       "parallel-directive": 1
     },
     "docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md": {
-      "fortran": 6,
+      "fortran": 5,
       "fortran-module-file": 1,
-      "make-control-file": 11,
+      "make-control-file": 7,
       "make-variable": 3
     },
     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": {
@@ -131,17 +122,16 @@
     "docs/workflow/WORKFLOW_CORE.md": {
       "compiler-driver": 3,
       "compiler-syntax-only": 2,
-      "fortran": 8,
+      "fortran": 7,
       "fortran-suffix": 1,
       "make-control-file": 2
     },
     "docs/workflow/phases/phase_01_compile.md": {
       "compiler-driver": 1,
-      "fortran": 13,
-      "fortran-standard": 2,
+      "fortran": 6,
+      "fortran-standard": 1,
       "fortran-subroutine": 2,
-      "fortran-suffix": 2,
-      "make-control-file": 2
+      "fortran-suffix": 1
     },
     "docs/workflow/phases/phase_02_generate.md": {
       "compiler-driver": 11,
@@ -183,8 +173,7 @@
       "linter-cppcheck": 4,
       "linter-fortitude": 5,
       "linter-ruff": 2,
-      "make-control-file": 6,
-      "make-variable": 2,
+      "make-control-file": 3,
       "parallel-directive": 1
     },
     "mcp_servers/build_runtime_server.py": {
@@ -200,7 +189,7 @@
       "linter-fortitude": 7,
       "linter-ruff": 4,
       "make-control-file": 16,
-      "make-variable": 8
+      "make-variable": 1
     },
     "mcp_servers/tools/run_linter.json": {
       "linter-cppcheck": 2,
@@ -247,27 +236,19 @@
     "tools/dependency_graph.py": {
       "make-control-file": 3
     },
-    "tools/hooks/common.py": {
-      "c-suffix": 5,
-      "fortran": 1,
-      "fortran-module-file": 2,
-      "fortran-standard": 1,
-      "fortran-suffix": 5,
-      "make-control-file": 3
-    },
     "tools/hooks/syntax_evidence.py": {
       "compiler-driver": 3,
       "compiler-syntax-only": 1,
       "fortran": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 80,
+      "fortran": 64,
       "fortran-intent": 1,
       "fortran-standard": 3,
-      "fortran-subroutine": 41,
-      "fortran-suffix": 19,
+      "fortran-subroutine": 37,
+      "fortran-suffix": 17,
       "linter-fortitude": 1,
-      "make-control-file": 34
+      "make-control-file": 8
     },
     "tools/prompt_templates/pure_generate_generate.txt": {
       "compiler-driver": 2,
@@ -302,37 +283,34 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 36,
       "compiler-syntax-only": 8,
-      "fortran": 380,
+      "fortran": 358,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 42,
       "fortran-kind": 4,
       "fortran-module-file": 8,
       "fortran-module-procedure": 3,
-      "fortran-standard": 30,
+      "fortran-standard": 28,
       "fortran-subroutine": 76,
-      "fortran-suffix": 36,
+      "fortran-suffix": 34,
       "linter-cppcheck": 7,
       "linter-fortitude": 6,
       "linter-ruff": 3,
-      "make-control-file": 110,
+      "make-control-file": 95,
       "make-variable": 25,
       "parallel-construct": 10,
-      "parallel-directive": 9
-    },
-    "tools/verdict_evaluator.py": {
-      "fortran": 1
+      "parallel-directive": 8
     },
     "tools/workflow_conductor.py": {
-      "compiler-driver": 20,
+      "compiler-driver": 19,
       "compiler-syntax-only": 2,
-      "fortran": 70,
+      "fortran": 66,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,
-      "fortran-standard": 3,
-      "fortran-suffix": 52,
-      "make-control-file": 110,
+      "fortran-standard": 2,
+      "fortran-suffix": 49,
+      "make-control-file": 98,
       "make-variable": 61
     }
   }
