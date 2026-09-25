@@ -303,7 +303,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `select case` / `error stop`, which the target-free Compile leaf read; it now says
     # "the host-rendered runner's case dispatch". What a valid IR is did not change (the
     # distinctness, length and character rules are word for word the same).
-    "compile-docs-6": "a42516f0d5f55c5313c27198f41243a0cbaa48ec8a66db21970aa254d53a69c3",
+    # Re-pinned again by R4-b PR-4 (issue #289), without a bump, on the same ground: four
+    # Fortran spellings the target-free Compile leaf read became neutral — the `operations`
+    # rule's "subroutine" (now "operation"), V4c-i's "`use`/`call`" (now "the import and the
+    # call"), the snapshot-variable rule's `sb_<name> => <name>` (now "binds under the alias
+    # `sb_<name>`", the case-insensitivity reason now attributed to a bound target language),
+    # and the spec_id rule's "f2008 63-character limit" (now the shortest identifier bound an
+    # implemented language backend declares, still 63). No rule's bound or character set moved.
+    "compile-docs-6": "853ccc0b0fb4f0a2fdf756fc113f59cfe36f2487c673b75804d289bf436d1c63",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

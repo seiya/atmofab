@@ -27384,7 +27384,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph)",
-        "docs/workflow/phases/phase_01_compile.md:e7d6a51c219d48e3":
+        "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
         "docs/GLOSSARY.md:c8caff67ee1d6529":

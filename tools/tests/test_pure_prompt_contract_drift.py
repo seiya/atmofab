@@ -621,7 +621,12 @@ PINNED: dict[str, str] = {
     # producer template's abstract-interface / host-association / implicit-typing sentence
     # became `{{language:interface_prototypes}}` (a new Fortran fragment file carries it), and
     # the composed prompt is again byte-identical — measured for all 12 launch templates.
-    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",
+    # Re-pinned in place a third time by R4-b PR-4 (issue #289), on the same ground: the
+    # `harness` producer template's "nothing else may `use` it" became
+    # `{{language:runner_import}}` (the Fortran fragment carries "`use`"), and every
+    # `pure_*.txt` composed for `fortran` is byte-identical to origin/main 94faa816's (measured
+    # by composing each through `_compose_language_fragments` in both trees).
+    "pure-50": "6da5e2bf6a21dd6836a9829c81f726a53ee1a70eb9bf0a4811002a6345490834",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
