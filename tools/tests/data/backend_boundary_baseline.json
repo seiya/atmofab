@@ -27,7 +27,7 @@
       "fortran": 1
     },
     "docs/BACKEND_BOUNDARY.md": {
-      "fortran": 6
+      "fortran": 7
     },
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran-module-file": 2
@@ -213,7 +213,7 @@
       "fortran-suffix": 4,
       "linter-cppcheck": 3,
       "linter-fortitude": 3,
-      "make-control-file": 4,
+      "make-control-file": 2,
       "parallel-directive": 1
     },
     "tools/workflow_conductor.py": {
@@ -224,7 +224,7 @@
       "fortran-module-file": 1,
       "fortran-standard": 1,
       "fortran-suffix": 30,
-      "make-control-file": 96,
+      "make-control-file": 97,
       "make-variable": 16
     }
   }

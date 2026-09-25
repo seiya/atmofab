@@ -79,13 +79,15 @@ the earlier**. The duplicate `_split_top_level_commas` closed by TODO L118 (the 
 1,500 lines below, and my definitions were never used at runtime. I only noticed when a test
 failed in a way I could not explain.
 
-- `tools/validate_pipeline_semantics.py` is over 14,000 lines. **Look the name up before adding a
+- `tools/validate_pipeline_semantics.py` is over 10,000 lines, and since issue #289's R4-b PR-3 the
+  Fortran reading constants (`_FORTRAN_*`, the loop and scanner regexes) live in
+  `tools/backends/language/fortran/source.py` instead. **Look the name up in both before adding a
   new module constant**
 - Use the existing constant if it fits. If the meaning differs, **put the difference in the name**
   (`_FORTRAN_UNIT_OPEN` also covers `subroutine`, so a constant for host units only would be named
   something like `_FORTRAN_HOST_UNIT_OPEN` — a name that does not exist today)
 - Symptoms: "I fixed the pattern and nothing changed", "I reverted the mutation and no test
-  failed" → **print the compiled value and look** (`print(vps._FOO.pattern)`)
+  failed" → **print the compiled value and look** (`print(<module>._FOO.pattern)`)
 
 ## How to look
 
@@ -98,5 +100,5 @@ rg -n "toolchain.*language|_read_toolchain|_pipeline_target_toolchain|_conductor
 rg -n "splitlines\(\)" tools/orchestration_runtime.py
 # does the name you are adding already exist / is it defined twice
 rg -n "^_FORTRAN_MY_NEW_NAME\b" tools/
-python3 -c "import tools.validate_pipeline_semantics as m; print(m._FORTRAN_UNIT_OPEN.pattern)"
+python3 -c "import tools.backends.language.fortran.source as m; print(m._FORTRAN_UNIT_OPEN.pattern)"
 ```

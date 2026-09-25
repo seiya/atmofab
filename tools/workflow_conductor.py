@@ -9316,7 +9316,9 @@ class Conductor:
         failure routed to transport fail_closed (operator --resume), NOT a content failure
         the generate retry loop could fix.
 
-        No-op (returns []) unless the node is make ∧ fortran — staging is paired with the
+        No-op (returns []) unless the host authors the node's control file (`_conductor_authors_
+        makefile`: the target's build system and language both declare `control_file` — today
+        make ∧ fortran) — staging is paired with the
         conductor-authored Fortran Makefile (`_write_makefile` non-leaf branch), which is the
         only consumer of the staged `<dep>_model.f90`. For a c/cpp/mixed dependency node the
         Generate child still owns the (LLM-authored) Makefile and its own dependency build, so

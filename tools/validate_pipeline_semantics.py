@@ -1978,9 +1978,10 @@ def _validate_generate_outputs(
     ``_validate_generate_outputs_for_generation`` resolves its own from a ``source_id``.
 
     Scoped claim: "single definition" covers the model scans and the ``problem`` gates. The
-    Makefile trio at the end is ALSO invoked independently by ``_validate_post_build_stage_impl``
-    for the ``post_build`` stage, on a ``src_dir`` it resolves itself — a Makefile rule change has
-    to be made in both places, or ``post_build`` keeps enforcing the old one.
+    control-file gates at the end are ALSO run by ``_validate_post_build_stage_impl`` for the
+    ``post_build`` stage, on a ``src_dir`` it resolves itself — both through the one dispatch
+    ``_validate_control_file`` (issue #289, R4-b PR-3), so a rule lives in the build system's
+    backend once.
 
     Returns the scanned ``(model_files, dep_spec_ids, language)`` for a caller that continues with further
     checks over the same source (the post_generate sibling list does), or ``None`` when the model

@@ -190,7 +190,8 @@ together with the bundle's `target_lowering_plan.parallelization`.
     and dependency-use gates through `source_reading`; the §5.1 signature gates through
     `signatures` — at `Generate.static` in the pipeline's target language, and at the
     target-free `Compile.static` in EVERY language that declares it; the dependency facts a
-    consumer is shown through the consumer language's `signatures`; the file names the gates and
+    consumer is shown through the consumer language's `signatures` (their RENDERED wording is
+    still Fortran's — a recorded precondition of R4-b PR-4, `TODO.md`); the file names the gates and
     `phase_required_outputs` read through `bundle_facts`. A language that does not declare the
     capability a gate needs is refused there (`validate_pipeline_semantics._language_module`),
     never read as another language — until that PR these gates imported one language backend by

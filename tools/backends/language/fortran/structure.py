@@ -7,7 +7,8 @@ after a keyword, a variable named after a keyword, an `interface` body's own `en
 The set of such spellings is not closed by enumeration, which is why this asks a parser instead.
 
 WHAT THIS PARSES IS A VIEW, NOT SOURCE. Callers hand over
-`validate_pipeline_semantics._joined_masked_fortran_view` output: lower-cased, `&` continuations
+`source.joined_masked_view` output (the view moved there from the validator in issue #289's
+R4-b PR-3): lower-cased, `&` continuations
 joined, one statement per line, comment and literal CONTENT blanked length-preservingly. Two
 properties of that view are load-bearing here:
 
