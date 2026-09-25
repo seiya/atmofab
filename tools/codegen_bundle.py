@@ -1004,7 +1004,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"{prefix}defined_in {defined_in!r} has role {role!r}, which cannot define an "
                 f"entrypoint (only {' / '.join(sorted(set(ROLE_FOR_ENTRYPOINT_KIND.values())))} "
                 "may: helper / internal_module are private by role, and a runner is the unit's "
-                "executable entry, which nothing may `use`)")
+                "executable entry, which nothing may import)")
             continue
         expected_role = ROLE_FOR_ENTRYPOINT_KIND.get(entry.get("kind"))
         if expected_role is not None and role != expected_role:
@@ -1650,13 +1650,13 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
                       if str(e.get("logical_path", "")) == want_path), None)
         if match is None:
             return (f"the {role}-role file must be named {want_path!r} exactly (the host-rendered "
-                    f"runner `use`s module {want_module!r} by fixed name, and the deterministic "
+                    f"runner imports module {want_module!r} by fixed name, and the deterministic "
                     f"gate opens that filename verbatim); got "
                     f"{[e.get('logical_path') for e in candidates]}")
         modules = {str(m).casefold() for m in (match.get("modules") or []) if isinstance(m, str)}
         if want_module.casefold() not in modules:
             return (f"{want_path} must declare module {want_module!r} (the host-rendered "
-                    f"runner `use`s it); its modules are {sorted(match.get('modules') or [])}")
+                    f"runner imports it); its modules are {sorted(match.get('modules') or [])}")
     return None
 
 
@@ -1715,7 +1715,9 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     source publishes. (A second implementation is exactly how this layer came to accept output
     `Generate.gate` static check rejected.)"""
     from tools.host_render import (
+        bound_state_publication_violation,
         checks_abi_dummy_violation,
+        checks_abi_publication_violation,
         checks_public_names,
         runner_render_refusal,
     )
@@ -1777,20 +1779,17 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     wrong_kind = [n for n in CHECKS_PUBLIC_NAMES
                   if n not in unpublished and n in defined and n not in subroutines]
     if unpublished or wrong_kind:
-        parts = []
-        if unpublished:
-            parts.append(
-                f"not published by module {spec_id}_checks: {', '.join(unpublished)} (define it "
-                f"there and, under a bare `private` default, name it in a `public ::` statement)")
-        if wrong_kind:
-            parts.append(
-                f"defined here as a FUNCTION: {', '.join(wrong_kind)} (every ABI name is a "
-                f"subroutine by contract, and the runner reaches the ones it imports with a "
-                f"`call`, so a function of that name cannot satisfy it)")
-        return (f"module {spec_id}_checks must define and publish the fixed checks ABI as "
-                f"subroutines — " + "; ".join(parts)
-                + f". The full required set is {', '.join(CHECKS_PUBLIC_NAMES)} for EVERY M3c "
-                f"node, whatever subset this node's runner imports.")
+        # The wording names the language's publication statements and procedure kinds, so the
+        # backend that renders the runner states it (issue #289, R4-b PR-4). A backend that
+        # raises while STATING it still refuses: the finding is decided above, and only its
+        # wording is the backend's.
+        try:
+            return checks_abi_publication_violation(
+                match.get("language"), spec_id, unpublished, wrong_kind)
+        except Exception as exc:  # noqa: BLE001
+            return (f"module {spec_id}_checks does not publish the fixed checks ABI "
+                    f"(unpublished: {unpublished}; wrong kind: {wrong_kind}), and the "
+                    f"language's remedy could not be stated ({exc!r})")
     # The dummy declaration the compiler cannot check (issue #261): the runner backend states
     # it, this gate applies it. Positive evidence only, like the clause above — a module that
     # does not DEFINE the procedure here is not judged on it.
@@ -1809,14 +1808,13 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
              if isinstance(b, dict) and isinstance(b.get("storage_symbol"), str)]
     unpublished_state = unpublished_bound_state(str(match.get("content") or ""), spec_id, bound)
     if unpublished_state:
-        return (f"module {spec_id}_checks must publish every bound state variable — the "
-                f"host-rendered runner imports each one by name (`sb_<var> => <var>`) and "
-                f"serializes it at the two capture points — but the module hides these "
-                f"(a bare `private` default with no `public ::` naming them, or a "
-                f"`private ::` naming them): {', '.join(unpublished_state)}. Declare each as a "
-                f"module-level `real(dp)` variable (an array of the declared rank, allocated by "
-                f"`case_setup`) "
-                f"and list it in a `public ::` statement in the specification part.")
+        try:
+            return bound_state_publication_violation(match.get("language"), spec_id,
+                                                     unpublished_state)
+        except Exception as exc:  # noqa: BLE001
+            return (f"module {spec_id}_checks does not publish the bound state variables "
+                    f"{unpublished_state}, and the language's remedy could not be stated "
+                    f"({exc!r})")
     return None
 
 
@@ -1959,7 +1957,8 @@ L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infr
 
 
 def _m3c_state_binding_mismatch(
-    bindings: list[Mapping[str, Any]], snapshot_vars: list[str], spec_id: str,
+    bindings: list[Mapping[str, Any]], snapshot_vars: list[str], spec_id: str, *,
+    language: str,
 ) -> str | None:
     """The `bundle_state_binding_mismatch` clause of an M3c bundle, or None.
 
@@ -1969,7 +1968,9 @@ def _m3c_state_binding_mismatch(
     and each binding must state the convention the runner is rendered against. The schema
     layer already guaranteed each entry's keys and identifier grammar, and the invariant layer
     the capture/capability coupling and the module's ownership; what is left is the CONVENTION,
-    which only a caller holding the IR and the spec_id can check."""
+    which only a caller holding the IR and the spec_id can check. Why each convention holds is
+    stated in `language`'s words by the backend that renders the runner (issue #289, R4-b
+    PR-4): the runner's import spelling is that backend's."""
     if not bindings:
         return (f"an M3c bundle must bind every snapshot variable: state_bindings is missing or "
                 f"empty, but the IR snapshot schema declares {snapshot_vars} — add one entry per "
@@ -1990,6 +1991,18 @@ def _m3c_state_binding_mismatch(
         return ("state_bindings must bind EXACTLY the IR snapshot variables "
                 f"(raw_requirements.required_evidence[state_snapshots].schema.variables[] = "
                 f"{snapshot_vars}) — " + "; ".join(parts))
+    from tools.host_render import state_binding_module_reason, state_binding_storage_reason
+
+    def reason(state: Callable[[str, str], str], value: str) -> str:
+        # The reason is prose; a backend that cannot be LOADED to state it must not turn a
+        # convention violation into an exception that escapes the acceptance layer (the same
+        # conversion `m3c_checks_abi_violation` makes at its seam entry).
+        try:
+            return state(language, value)
+        except Exception as exc:  # noqa: BLE001
+            return (f"the runner's reason cannot be stated for language {language!r} "
+                    f"({exc!r})")
+
     want_module = f"{spec_id}_checks"
     for idx, b in enumerate(bindings):
         prefix = f"state_bindings[{idx}]"
@@ -2002,13 +2015,12 @@ def _m3c_state_binding_mismatch(
                     f"{b.get('capability')!r}")
         module = b.get("module")
         if not isinstance(module, str) or module.casefold() != want_module.casefold():
-            return (f"{prefix}.module must be {want_module!r} — the host-rendered runner reads "
-                    f"the bound storage with `use {want_module}, only: ...`; got {module!r}")
+            return (f"{prefix}.module must be {want_module!r} — "
+                    f"{reason(state_binding_module_reason, want_module)}; got {module!r}")
         storage = b.get("storage_symbol")
         if not isinstance(storage, str) or storage.casefold() != sv.casefold():
-            return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — the "
-                    f"runner imports the module-level variable of THAT name (`sb_{sv} => {sv}`); "
-                    f"got {storage!r}")
+            return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — "
+                    f"{reason(state_binding_storage_reason, sv)}; got {storage!r}")
     return None
 
 
@@ -2127,7 +2139,8 @@ def pure_bundle_contract_violation(
                     "authors its own runner and has no checks module to bind, so there is no "
                     f"storage the host reads; got {len(bindings)} binding(s)")
     else:
-        mismatch = _m3c_state_binding_mismatch(bindings, snapshot_vars, spec_id)
+        mismatch = _m3c_state_binding_mismatch(bindings, snapshot_vars, spec_id,
+                                               language=language)
         if mismatch is not None:
             return ("bundle_state_binding_mismatch", mismatch)
     if shape == "harness":

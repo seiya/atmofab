@@ -2264,11 +2264,19 @@ def _validate_checks_source_files(
             f"{list(checks_public_names)}; missing {missing}")
     hidden = source_reading.unpublished_bound_state(text, spec_id, bound_state)
     if hidden:
-        violations.append(
-            f"{checks_path}: checks module must publish every bound state variable (the "
-            f"host-rendered runner imports each IR snapshot variable as `sb_<var> => <var>` and "
-            f"serializes it at the two capture points); hidden by a bare `private` default "
-            f"with no `public ::` naming it, or by a `private ::` naming it: {hidden}")
+        # The remedy spells the runner's import of the variable, so the backend that renders
+        # the runner states it (issue #289, R4-b PR-4). When that backend could not be reached
+        # the refusal above already names why, and the finding is stated without a remedy
+        # rather than asked of a backend that raised.
+        remedy = f"checks module must publish every bound state variable: {hidden}"
+        if abi_refusal is None:
+            try:
+                remedy = host_render.hidden_bound_state_remedy(language, hidden)
+            except Exception as exc:  # noqa: BLE001
+                # Only the WORDING is the backend's; the finding stands without it, and an
+                # exception here would discard every violation the sibling gates collected.
+                remedy += f" (the language's remedy could not be stated: {exc!r})"
+        violations.append(f"{checks_path}: {remedy}")
 
     violations.extend(source_reading.checks_harness_isolation_violations(
         checks_path, text, model_files))
@@ -2461,17 +2469,12 @@ def _validate_component_generated_surface(
     gen_cf = {g.casefold() for g in generated}
     pub_cf = {p.casefold() for p in published}
     target = model_files[0]
+    # The remedies name how the language declares a procedure, so its reader states them.
     for missing in sorted(p for p in published if p.casefold() not in gen_cf):
-        violations.append(
-            f"{target}: generated model source does not publish component public_api operation "
-            f"'{missing}' — declare `subroutine {missing}(...)` (the IR public_api pins it as a "
-            "published operation)")
+        violations.append(f"{target}: {source_reading.published_operation_missing(missing)}")
     for extra in sorted(g for g in generated if g.casefold() not in pub_cf):
         violations.append(
-            f"{target}: generated model source publishes `{spec_id}__` subroutine '{extra}' that "
-            "is NOT in the IR public_api.published_operations — a component's published surface "
-            "must match its IR public_api exactly (rename an internal helper without the "
-            f"`{spec_id}__` prefix, or add it to the published operations)")
+            f"{target}: {source_reading.published_operation_extra(spec_id, extra)}")
 
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
@@ -8055,13 +8058,16 @@ def _validate_component_dep_operations(
         else:
             detail = (
                 f"has `operations` entries that are not non-empty strings ({invalid_ops!r}); "
-                "every entry must name a `<dep_spec_id>__*` subroutine"
+                "every entry must name a `<dep_spec_id>__*` operation"
             )
+        # Compile is target-free (issue #284), so this remedy names no language's statements:
+        # the generate gate's requirement is stated as what it is, not as a spelling of it
+        # (issue #289, R4-b PR-4; it said `use <dep>_model` + `call <dep>__*` until then).
         violations.append(
             f"{derived_path}: component dependency {node_key!r} {detail}; a component "
             "dependency must author a non-empty `operations` list naming the "
-            "`<dep_spec_id>__*` subroutines this node calls. The generate gate requires "
-            "the model to `use <dep>_model` + `call <dep>__*`, and the host injects those "
+            "`<dep_spec_id>__*` operations this node calls. The generate gate requires "
+            "the model to import `<dep>_model` and invoke `<dep>__*`, and the host injects those "
             "call-site interfaces from `operations`; an empty list starves the injected "
             "<dependency_facts> while the calls are still required, so the leaf cannot "
             "converge (its retry budget exhausts)"

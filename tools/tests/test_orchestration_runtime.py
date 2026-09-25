@@ -12636,6 +12636,9 @@ class DependencyFactsRenderTests(unittest.TestCase):
     DEP = {
         "node_key": "component/demo_dep_base@0.1.0",
         "pipeline_ref": "workspace/pipelines/component__demo_dep_base__0.1.0/p1",
+        # What `_resolve_dependency_facts` stamps beside any interface fact it reads (inert on
+        # a fact that carries none).
+        "interface_language": "fortran",
         "run_id": "run_b_001",
         "aggregate_verdict_ref":
             "workspace/pipelines/component__demo_dep_base__0.1.0/p1/runs/run_b_001/"
@@ -12927,6 +12930,126 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn(self.DEP["aggregate_verdict_ref"], with_dep)
         self.assertIn("Dependency facts", with_dep)
         self.assertEqual(_build_dependency_facts(dict(self.BASE)), "")
+
+
+class DependencyFactsLanguageTests(unittest.TestCase):
+    """The dependency-fact and exemplar guidance is the LANGUAGE's words (issue #289, R4-b PR-4).
+
+    The call-site guidance around a published interface (argument passing, intents, ranks and
+    slices, how a procedure argument is written) and the exemplar's unreferenced-dummy idiom are
+    spellings. Before this change the neutral renderer spelled them in Fortran for every consumer
+    whose language declared `signatures`, so a second language's leaf would have been told to
+    write Fortran. A synthetic second language makes the two answers distinguishable: with it,
+    the renderer must show ITS text and none of Fortran's.
+    """
+
+    _FACT = {
+        "node_key": "component/dep@0.1.0", "pipeline_ref": "p", "run_id": "r",
+        "aggregate_verdict_ref": "v",
+        "published_operations": [
+            {"operation": "dep__op", "interface": "void dep__op(a, f)",
+             "arguments": [{"name": "a", "rank": 1, "type": "float*"},
+                           {"name": "f", "rank": 0, "type": "fn", "procedure_interface": "cb"}],
+             "procedure_interfaces": {"cb": ["void cb(float x)"]}}],
+    }
+
+    @contextmanager
+    def _second_language(self):
+        import types
+
+        from tools.backends import registry
+        package = types.ModuleType("zz_dep_lang")
+        sig = types.ModuleType("zz_dep_lang.signatures")
+        sig.procedure_interface = lambda arg: arg.get("procedure_interface")
+        sig.dependency_operations_header = (
+            lambda *, detailed, procedure_argument:
+            f"ZZ HEADER detailed={detailed} procedure={procedure_argument}")
+        sig.prototype_heading = lambda name: f"    ZZ PROTOTYPE {name}"
+        sig.argument_detail_lines = (
+            lambda arguments, *, carried_prototypes:
+            [f"    ZZ ARG {a['name']} carried={sorted(carried_prototypes)}" for a in arguments])
+        prompts = types.ModuleType("zz_dep_lang.prompts")
+        prompts.EXEMPLAR_GATE_DRIFT_NOTE = "ZZ-GATE-NOTE."
+        package.signatures = sig
+        package.prompts = prompts
+        record = registry.Backend(
+            "language", "zz_dep", "zz_dep_lang", core_provides=frozenset(),
+            backend_provides=frozenset({"signatures", "prompt_fragments"}))
+        with mock.patch.dict(sys.modules, {"zz_dep_lang": package}), \
+                mock.patch.dict(registry._BACKENDS, {("language", "zz_dep"): record}):
+            yield
+
+    def test_the_operations_block_is_rendered_in_the_facts_language(self) -> None:
+        from tools.orchestration_runtime import _published_operations_lines
+        with self._second_language():
+            lines = _published_operations_lines([dict(self._FACT, interface_language="zz_dep")])
+        self.assertEqual(lines, [
+            "ZZ HEADER detailed=True procedure=True",
+            "- component/dep@0.1.0 :: void dep__op(a, f)",
+            "    ZZ ARG a carried=['cb']",
+            "    ZZ ARG f carried=['cb']",
+            "    ZZ PROTOTYPE cb",
+            "      void cb(float x)",
+        ])
+        # ...and in Fortran's for a Fortran fact, which is what the corpus renders.
+        fortran = "\n".join(_published_operations_lines(
+            [dict(self._FACT, interface_language="fortran")]))
+        self.assertIn("Fortran arguments are positional", fortran)
+        self.assertIn("prototype `cb`", fortran)
+
+    def test_facts_without_one_renderable_language_are_refused(self) -> None:
+        from tools.orchestration_runtime import _published_operations_lines
+        cases = {
+            "absent": [dict(self._FACT)],
+            "blank": [dict(self._FACT, interface_language="  ")],
+            "two": [dict(self._FACT, interface_language="fortran"),
+                    dict(self._FACT, node_key="component/other@0.1.0",
+                         interface_language="zz_dep")],
+            "undeclared": [dict(self._FACT, interface_language="no_such_language")],
+            # declared, but without the capability that renders it
+            "no signatures": [dict(self._FACT, interface_language="c")],
+        }
+        for label, deps in cases.items():
+            with self.subTest(label), self._second_language():
+                with self.assertRaises(ValueError) as caught:
+                    _published_operations_lines(deps)
+                self.assertIn("dependency facts", str(caught.exception))
+                # Named for what is wrong: no single language, or one that cannot render. A
+                # blank language refused only by the registry ("language ''") named neither.
+                self.assertIn(
+                    "without one `interface_language`"
+                    if label in ("absent", "blank", "two") else "cannot render them",
+                    str(caught.exception))
+        # An unresolved-name warning alone is an interface fact too: it needs the header.
+        with self.assertRaises(ValueError):
+            _published_operations_lines([{"node_key": "component/dep@0.1.0",
+                                          "declared_operations_unresolved": ["dep__gone"]}])
+        # A dependency with no interface facts needs no language.
+        self.assertEqual(_published_operations_lines([{"node_key": "component/dep@0.1.0"}]), [])
+
+    def test_the_exemplar_idiom_is_the_request_language(self) -> None:
+        from tools.orchestration_runtime import _build_exemplar
+        request = {"step": "generate", "substep": "generate",
+                   "exemplar": {"node_key": "component/sib@0.1.0",
+                                "sources": [{"filename": "sib_checks.zz", "text": "x"}]}}
+        with self._second_language():
+            block = _build_exemplar(dict(request, pure_language="zz_dep"))
+        self.assertIn("the contract wins. ZZ-GATE-NOTE.", block)
+        self.assertNotIn("-Werror", block)
+        self.assertNotIn("associate", block)
+        self.assertIn("`associate (unused_<name> => <name>); end associate`",
+                      _build_exemplar(dict(request, pure_language="fortran")))
+        for label, language in {"absent": None, "undeclared": "no_such_language",
+                                "no prompt_fragments": "c"}.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                _build_exemplar(dict(request, pure_language=language))
+        # A language that declares `prompt_fragments` but states no note is refused by name,
+        # not left to raise an unnamed AttributeError out of the render.
+        with self._second_language():
+            del sys.modules["zz_dep_lang"].prompts.EXEMPLAR_GATE_DRIFT_NOTE
+            with self.assertRaises(ValueError) as caught:
+                _build_exemplar(dict(request, pure_language="zz_dep"))
+        self.assertIn("cannot be composed for language 'zz_dep'", str(caught.exception))
 
 
 class SignatureDriftCanaryTests(unittest.TestCase):
@@ -13330,6 +13453,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
             self.assertEqual(len(facts), 1)
             pub = facts[0]["published_operations"]
+            # The language the renderer shows these in: the consumer's (issue #289, R4-b PR-4).
+            self.assertEqual(facts[0]["interface_language"], "fortran")
             self.assertEqual(len(pub), 1)
             self.assertEqual(pub[0]["operation"], "dep_base__scale")
             self.assertEqual(pub[0]["argument_order"], ["x", "n", "y"])
@@ -13501,7 +13626,46 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=c_target)
             self.assertEqual(len(facts), 1)
             self.assertNotIn("published_operations", facts[0])
+            # ...and no language to render interface facts in, since there are none.
+            self.assertNotIn("interface_language", facts[0])
             self.assertTrue(facts[0]["aggregate_verdict_ref"])
+
+    def test_the_stamp_is_the_consumer_language_not_a_constant(self) -> None:
+        # Issue #289 (R4-b PR-4 preconditions): the renderer shows the facts in the stamped
+        # language's words, so the stamp must be the CONSUMER's language. Observable only with a
+        # second language that reads interfaces; this one borrows Fortran's readers so the
+        # certified source below is read, and states its own name.
+        import types
+
+        from tools.backends import registry
+        from tools.backends.language.fortran import bundle as fortran_bundle
+        from tools.backends.language.fortran import signatures as fortran_signatures
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        from tools.tests.target_fixtures import profile_with
+        package = types.ModuleType("zz_reader_lang")
+        package.bundle = fortran_bundle
+        package.signatures = fortran_signatures
+        record = registry.Backend(
+            "language", "zz_reader", "zz_reader_lang", core_provides=frozenset(),
+            backend_provides=frozenset({"bundle_facts", "signatures"}))
+        with mock.patch.dict(sys.modules, {"zz_reader_lang": package}), \
+                mock.patch.dict(registry._BACKENDS, {("language", "zz_reader"): record}), \
+                tempfile.TemporaryDirectory() as tmp:
+            target = profile_with(toolchain={"language": "zz_reader", "compiler": "gfortran"})
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__dep_base__0.1.0", "p_20260601_002",
+                "bin_20260601_002", "run_20260601_002", source_id="src_20260601_001",
+                spec_id="dep_base", model_text=self._SCALE_MODEL, target=target)
+            self._write_ir(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
+                [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+                  "operations": ["dep_base__scale"]}],
+                impl_defaults={"toolchain": {"language": "zz_reader"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=target)
+        self.assertTrue(facts[0].get("published_operations"), facts)
+        self.assertEqual(facts[0]["interface_language"], "zz_reader")
 
     def test_unresolvable_op_omits_published_but_keeps_fact(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts
@@ -13751,6 +13915,35 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("dep_base__apply", ops)
             self.assertEqual(
                 facts[0]["declared_operations_unresolved"], ["dep_base__apply"])
+
+    def test_an_unresolved_name_alone_is_stamped_with_its_language(self) -> None:
+        # Issue #289, R4-b PR-4: the renderer shows an unresolved-name WARNING under the
+        # language's header, so a fact carrying ONLY `declared_operations_unresolved` (the
+        # certified source publishes no `<dep>__` surface to replace it with) needs the stamp
+        # too — without it the launch is refused rather than warned.
+        from tools.orchestration_runtime import (
+            _published_operations_lines,
+            _resolve_dependency_facts,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__dep_base__0.1.0",
+                "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                source_id="src_20260601_001", spec_id="dep_base",
+                model_text="module dep_base_model\ncontains\n  subroutine helper()\n"
+                           "  end subroutine\nend module\n")
+            self._write_ir(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
+                [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+                  "operations": ["dep_base__apply"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
+        self.assertNotIn("published_operations", facts[0])
+        self.assertEqual(facts[0]["declared_operations_unresolved"], ["dep_base__apply"])
+        self.assertEqual(facts[0]["interface_language"], "fortran")
+        self.assertIn("WARNING", "\n".join(_published_operations_lines(facts)))
 
     def test_partial_wrong_name_replaces_whole_surface_not_union(self) -> None:
         # L4 union guard: one valid + one invented name. ANY unresolved name forfeits the
@@ -21913,7 +22106,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         from tools.orchestration_runtime import _build_exemplar
         exemplar = {"node_key": "component/adv_bndry@0.1.0", "spec_id": "adv_bndry",
                     "sources": [{"filename": "adv_bndry_model.f90", "text": "module x\nend"}]}
-        gen = {"step": "generate", "substep": "generate", "exemplar": exemplar}
+        gen = {"step": "generate", "substep": "generate", "exemplar": exemplar,
+               "pure_language": "fortran"}
         out = _build_exemplar(gen)
         self.assertIn("Certified exemplar", out)
         self.assertIn("component/adv_bndry@0.1.0", out)
@@ -21937,7 +22131,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         # contract wins, and name the binding that replaces it.
         from tools.orchestration_runtime import _build_exemplar
         out = _build_exemplar({
-            "step": "generate", "substep": "generate",
+            "step": "generate", "substep": "generate", "pure_language": "fortran",
             "exemplar": {"node_key": "component/sib@0.1.0", "spec_id": "sib",
                          "sources": [{"filename": "sib_checks.f90", "text": "module x\nend"}]},
         })

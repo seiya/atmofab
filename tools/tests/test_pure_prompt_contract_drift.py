@@ -608,7 +608,26 @@ PINNED: dict[str, str] = {
     # `pure-50` has not shipped; round 1 of its review renumbered the Fortran binding so its
     # §1-§4 correspond section for section to the neutral contract's (the bound state is §1-b,
     # and §2 spells the neutral §2's values), which is part of the same contract change.
-    "pure-50": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
+    # Re-pinned in place for the R4-b PR-4 preconditions (issue #289), after pure-50 shipped:
+    # three Fortran spellings left in the NEUTRAL `pure_generate_verify.txt` (the gate-checked
+    # classes' `intent(out)`, G4's `associate` binding, G7's `call` / slice clause) became
+    # language markers whose Fortran fragments carry the same words. The prompt a leaf
+    # receives, composed for `fortran`, is byte-identical to the one this version shipped
+    # (measured: `_compose_language_fragments` over origin/main 3c117410's template and over
+    # this one are equal), so the CONTRACT is unchanged and a bump — which stops
+    # `_resolve_exemplar_source` offering every pure-50 exemplar and refuses `--resume` across
+    # it — would cost the corpus for no change in what any leaf reads.
+    # Re-pinned in place again in that change's round 2, on the same ground: the `harness`
+    # producer template's abstract-interface / host-association / implicit-typing sentence
+    # became `{{language:interface_prototypes}}` (a new Fortran fragment file carries it), and
+    # the composed prompt is again byte-identical — measured for all 12 launch templates.
+    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",
+    # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
+    # of its own so the in-place re-pins above do not cost this file its revert check: a later
+    # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
+    # exactly as it would have with the entry unedited. Round 3 of that change's review
+    # measured the loss without it (restoring main's templates under a new version passed).
+    "pure-50@3c117410": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
 
 
 def _contract_tuple() -> dict[str, object]:

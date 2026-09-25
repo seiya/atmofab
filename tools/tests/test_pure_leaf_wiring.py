@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -1379,6 +1380,8 @@ class PureRenderTests(unittest.TestCase):
         # in the template did.
         ("tools/prompt_templates/backends/language/fortran/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify.txt", None, None),
+        ("tools/prompt_templates/backends/language/fortran/generate_generate_harness.txt",
+         None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
         # Issue #289 (R4-b PR-2): the Fortran spelling of the checks ABI and the gate guards,
         # and the runner JSON writer rules, moved out of the two contracts above into language
@@ -1486,8 +1489,12 @@ class PureRenderTests(unittest.TestCase):
         # marker `{{language:host_rendered_runner_file}}` (the name is the language backend's);
         # composed, the line is byte-identical to the one approved above. READ: the same
         # pointer to the rubric's `major` bullet, nothing assigned.
+        # Re-taken again for the R4-b PR-4 preconditions (issue #289): the gate-checked classes
+        # the line names (`unused dummies, `intent(out)` dataflow`) became the marker
+        # `{{language:gate_checked_classes}}`; composed for `fortran` the line is byte-identical
+        # again. READ: unchanged pointer, nothing assigned.
         "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
-        "to judge the bundle aga #743f958977ae",
+        "to judge the bundle aga #e27e39f5e316",
         # `pure-37` (issue #169): the same input-side clause on the `harness` shape's reviewer
         # template, where it stands as its own paragraph rather than inside the checklist
         # sentence. Same judgment as the line above — it POINTS at the rubric's `major` bullet
@@ -1803,6 +1810,7 @@ class PureRenderTests(unittest.TestCase):
     # (a) resolved with per-argument detail — the ordinary certified lineage.
     _RENDER_DEP: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
+        "interface_language": "fortran",
         "published_operations": [
             {"operation": "bc__apply", "interface": "subroutine bc__apply(U)",
              "argument_order": ["U"],
@@ -1818,6 +1826,7 @@ class PureRenderTests(unittest.TestCase):
     # paragraph a severity can be written into unswept.
     _RENDER_DEP_NO_DETAIL: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
+        "interface_language": "fortran",
         "declared_operations_unresolved": ["demo_dep_base__vanished"],
         "published_operations": [
             {"operation": "bc__apply", "interface": "subroutine bc__apply(U)",
@@ -1831,6 +1840,7 @@ class PureRenderTests(unittest.TestCase):
     # a scalar. Drives the "(rank/shape not resolved …)" line and `rank-0 (scalar)`.
     _RENDER_DEP_PARTIAL: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
+        "interface_language": "fortran",
         "published_operations": [
             {"operation": "bc__scale", "interface": "subroutine bc__scale(U, f)",
              "argument_order": ["U", "f"],
@@ -1842,6 +1852,7 @@ class PureRenderTests(unittest.TestCase):
     # PROCEDURE-argument line, the prototype rows, and the header's procedure sentence.
     _RENDER_DEP_PROCEDURE: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
+        "interface_language": "fortran",
         "published_operations": [
             {"operation": "bc__advance", "interface": "subroutine bc__advance(U, rhs)",
              "argument_order": ["U", "rhs"],
@@ -1859,6 +1870,7 @@ class PureRenderTests(unittest.TestCase):
     # issue #266 PR-2: the argument line must not promise a listing that does not follow).
     _RENDER_DEP_PROCEDURE_UNREAD: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
+        "interface_language": "fortran",
         "published_operations": [
             {"operation": "bc__advance", "interface": "subroutine bc__advance(U, rhs)",
              "argument_order": ["U", "rhs"],
@@ -2194,7 +2206,8 @@ class PureRenderTests(unittest.TestCase):
         "_substitute_pure_placeholders",     # `<key>` substitution, adds no text of its own
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
-        "_argument_procedure_interface",     # returns a prototype NAME read off a fact
+        "_dependency_signatures",            # resolves the facts' language BACKEND module
+        "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
         "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)
@@ -2384,6 +2397,22 @@ class PureRenderTests(unittest.TestCase):
     # polarity: a newly undriven paragraph is red until someone reads it.
     _UNDRIVEN_PROSE_STATEMENTS: ClassVar[tuple[str, ...]] = ()
 
+    #: The prose builders that live in a language BACKEND and are reached from a pinned builder
+    #: through the resolved facts' `signatures` module (issue #289, R4-b PR-4 moved the
+    #: dependency-operation guidance there). Their statements are held to the same "driven"
+    #: bound as the pinned builders': moving a paragraph out of `orchestration_runtime` must not
+    #: move it out of this check. Completeness is pinned below against the `signatures.<name>`
+    #: calls the pinned builders make.
+    _BACKEND_PROMPT_BUILDERS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("tools.backends.language.fortran.interface", "dependency_operations_header"),
+        ("tools.backends.language.fortran.interface", "prototype_heading"),
+        ("tools.backends.language.fortran.interface", "argument_detail_lines"),
+    )
+    #: `signatures.<name>` calls of the pinned builders that return no prose.
+    _BACKEND_NON_PROSE_CALLS: ClassVar[frozenset[str]] = frozenset({
+        "procedure_interface",   # returns a prototype NAME read off a fact
+    })
+
     def test_every_prose_statement_of_a_pinned_builder_is_driven(self) -> None:
         """Every paragraph a pinned builder can emit is rendered by the table above.
 
@@ -2407,19 +2436,43 @@ class PureRenderTests(unittest.TestCase):
         """
         by_name = self._module_level_functions()
         expected: dict[str, str] = {}
-        line_to_key: dict[int, str] = {}
+        line_to_key: dict[tuple[str, int], str] = {}
+        module_file = str(Path(ort.__file__).resolve())
         for builder in self._HOST_BUILT_PROMPT_BUILDERS:
             for key, lineno in self._prose_statements(by_name[builder]).items():
                 expected[key] = builder
-                line_to_key[lineno] = key
+                line_to_key[(module_file, lineno)] = key
+        # ...and the backend builders those reach, each in its own file.
+        called = {
+            node.func.attr
+            for builder in self._HOST_BUILT_PROMPT_BUILDERS
+            for node in ast.walk(by_name[builder])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "signatures"}
+        self.assertEqual(
+            called - self._BACKEND_NON_PROSE_CALLS,
+            {name for _, name in self._BACKEND_PROMPT_BUILDERS},
+            "a pinned builder calls a `signatures.<name>` the backend-builder list does not "
+            "name (or the list names one nothing calls). READ it: if it returns text a leaf "
+            "reads, add it to `_BACKEND_PROMPT_BUILDERS`; otherwise to "
+            "`_BACKEND_NON_PROSE_CALLS` with the reason.")
+        for module_name, function in self._BACKEND_PROMPT_BUILDERS:
+            module = importlib.import_module(module_name)
+            path = str(Path(module.__file__).resolve())
+            tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+            node = next(n for n in tree.body
+                        if isinstance(n, ast.FunctionDef) and n.name == function)
+            for key, lineno in self._prose_statements(node).items():
+                expected[key] = f"{module_name}.{function}"
+                line_to_key[(path, lineno)] = key
         self.assertTrue(expected, "no prose statement found; this test reads nothing")
-        module_file = Path(ort.__file__).resolve()
-        executed: set[int] = set()
+        traced = {file for file, _ in line_to_key}
+        executed: set[tuple[str, int]] = set()
 
         def tracer(frame, event, _arg):
-            if frame.f_code.co_filename == str(module_file):
+            if frame.f_code.co_filename in traced:
                 if event == "line":
-                    executed.add(frame.f_lineno)
+                    executed.add((frame.f_code.co_filename, frame.f_lineno))
                 return tracer
             return tracer
 
@@ -2432,7 +2485,7 @@ class PureRenderTests(unittest.TestCase):
         self.assertTrue(executed & set(line_to_key),
                         "the tracer recorded no line of any pinned builder; it is measuring the "
                         "wrong file and every result below would be meaningless")
-        undriven = {key for lineno, key in line_to_key.items() if lineno not in executed}
+        undriven = {key for where, key in line_to_key.items() if where not in executed}
         self.assertEqual(
             sorted(undriven), sorted(self._UNDRIVEN_PROSE_STATEMENTS),
             "a paragraph a leaf can be handed is emitted by no configuration in "

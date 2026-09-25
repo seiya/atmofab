@@ -180,6 +180,38 @@ def checks_abi_dummy_violation(language: Any, text: str, spec_id: str) -> str | 
     return _module(language).checks_abi_dummy_violation(text, spec_id)
 
 
+def checks_abi_publication_violation(language: Any, spec_id: str, unpublished: list[str],
+                                     wrong_kind: list[str]) -> str:
+    """The bundle acceptance layer's refusal of a checks module that does not publish the ABI
+    `unpublished` names, or defines the `wrong_kind` ones as the wrong kind of callable, in
+    `language`'s words. The neutral gate decides WHETHER (`codegen_bundle.m3c_checks_abi_violation`);
+    how the leaf is told to publish a name is the language's (issue #289, R4-b PR-4)."""
+    return _module(language).checks_abi_publication_violation(spec_id, unpublished, wrong_kind)
+
+
+def bound_state_publication_violation(language: Any, spec_id: str, hidden: list[str]) -> str:
+    """The bundle acceptance layer's refusal of a checks module that hides `hidden` bound state
+    variables from the runner, in `language`'s words."""
+    return _module(language).bound_state_publication_violation(spec_id, hidden)
+
+
+def hidden_bound_state_remedy(language: Any, hidden: list[str]) -> str:
+    """The `Generate.gate` static check's statement of the same defect, after the file path."""
+    return _module(language).hidden_bound_state_remedy(hidden)
+
+
+def state_binding_module_reason(language: Any, module: str) -> str:
+    """Why a state binding's `module` must be the checks module: how `language`'s runner
+    reads the bound storage."""
+    return _module(language).state_binding_module_reason(module)
+
+
+def state_binding_storage_reason(language: Any, variable: str) -> str:
+    """Why a state binding's `storage_symbol` must equal its variable: how `language`'s runner
+    imports it."""
+    return _module(language).state_binding_storage_reason(variable)
+
+
 def checks_public_names(language: Any) -> tuple[str, ...]:
     """The fixed public names of the leaf-authored checks module for `language`.
 

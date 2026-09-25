@@ -13,6 +13,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -20362,6 +20363,29 @@ class ChecksSourceGateTests(unittest.TestCase):
                     "    & with open(unit=...), never here'\n")
                 self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
 
+    def test_hidden_bound_state_is_still_reported_when_the_runner_backend_is_down(self) -> None:
+        # Issue #289 (R4-b PR-4 preconditions): the remedy is the runner backend's words, so
+        # when that backend cannot be reached the finding is stated without one — beside the
+        # ABI refusal that names why — and the backend is not asked (it would raise).
+        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
+        with unittest.mock.patch.object(vps.host_render, "runner_render_refusal",
+                                        return_value="backend down"), \
+                unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
+                                           side_effect=AssertionError("asked a down backend")):
+            v = self._run(hidden, bound_state=("q",))
+        self.assertTrue(any("backend down" in x for x in v), v)
+        self.assertTrue(any(x.endswith("checks module must publish every bound state "
+                                       "variable: ['q']") for x in v), v)
+
+    def test_a_bound_state_remedy_that_cannot_be_stated_still_reports_the_finding(self) -> None:
+        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
+        with unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
+                                        side_effect=RuntimeError("no words")):
+            v = self._run(hidden, bound_state=("q",))
+        self.assertTrue(any("must publish every bound state variable: ['q'] (the language's "
+                            "remedy could not be stated: RuntimeError('no words'))" in x
+                            for x in v), v)
+
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
                              exec_dir=tmp, pipeline_dir=tmp)
@@ -20972,6 +20996,14 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
         v = self._run([self._dep(operations="dep_base__scale")])
         self.assertEqual(len(v), 1, v)
         self.assertIn("non-list `operations`", v[0])
+
+    def test_the_remedy_names_no_language_statement(self) -> None:
+        # Compile is target-free (issue #284), so this remedy must not spell any language's
+        # statements (issue #289, R4-b PR-4: it said `use <dep>_model` + `call <dep>__*`).
+        for deps in ([self._dep(operations=[])], [self._dep(operations=["x", 3])]):
+            (v,) = self._run(deps)
+            for spelling in ("`use ", "`call ", "subroutine"):
+                self.assertNotIn(spelling, v)
 
     def test_operations_with_no_valid_strings_flagged(self) -> None:
         v = self._run([self._dep(operations=["", "   ", 3])])
@@ -21803,7 +21835,8 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
 
     def _run(self, *, public_api: object, model_text: str,
              spec_kind: str = "component",
-             node_key: str = "component/dep_base@0.1.0") -> list[str]:
+             node_key: str = "component/dep_base@0.1.0",
+             source_reading: object = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
@@ -21825,8 +21858,28 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             model.write_text(model_text, encoding="utf-8")
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            _validate_component_generated_surface(repo_root, execution, [model], v)
+            if source_reading is None:
+                _validate_component_generated_surface(repo_root, execution, [model], v)
+            else:
+                vps._validate_component_generated_surface(
+                    repo_root, execution, [model], v, source_reading=source_reading)
             return v
+
+    def test_the_remedies_are_the_source_reader_s_words(self) -> None:
+        # Issue #289, R4-b PR-4: how a published operation is DECLARED is the language's to say,
+        # so both remedies come from the reader the gate was handed, never a Fortran spelling
+        # of the gate's own.
+        reader = SimpleNamespace(
+            published_subroutines=fortran_source.published_subroutines,
+            published_operation_missing=lambda name: f"ZZ declare {name}",
+            published_operation_extra=lambda spec_id, name: f"ZZ drop {spec_id}/{name}")
+        model = self._GOOD_MODEL.replace(
+            "end module\n", "  subroutine dep_base__extra(y)\n  end subroutine\nend module\n")
+        v = self._run(public_api={"published_operations": [
+            {"operation_id": "dep_base__scale"}, {"operation_id": "dep_base__shift"}]},
+            model_text=model, source_reading=reader)
+        self.assertEqual([x.split(": ", 1)[1] for x in v],
+                         ["ZZ declare dep_base__shift", "ZZ drop dep_base/dep_base__extra"])
 
     _GOOD_MODEL = (
         "module dep_base_model\ncontains\n"

@@ -27,7 +27,7 @@
       "fortran": 1
     },
     "docs/BACKEND_BOUNDARY.md": {
-      "fortran": 7
+      "fortran": 6
     },
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran-module-file": 2
@@ -178,7 +178,7 @@
       "compiler-driver": 2,
       "fortran": 13,
       "fortran-kind": 1,
-      "fortran-subroutine": 8,
+      "fortran-subroutine": 6,
       "fortran-suffix": 1,
       "make-control-file": 6
     },
@@ -186,14 +186,12 @@
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 12,
-      "fortran-intent": 1,
+      "fortran": 10,
       "fortran-subroutine": 5,
       "fortran-suffix": 10,
       "make-control-file": 8
     },
     "tools/prompt_templates/pure_generate_verify.txt": {
-      "fortran-intent": 1,
       "make-control-file": 1
     },
     "tools/pure_leaf.py": {
@@ -209,7 +207,7 @@
       "compiler-driver": 1,
       "fortran": 13,
       "fortran-module-file": 1,
-      "fortran-subroutine": 8,
+      "fortran-subroutine": 4,
       "fortran-suffix": 4,
       "linter-cppcheck": 3,
       "linter-fortitude": 3,

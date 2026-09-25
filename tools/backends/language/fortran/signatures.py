@@ -1259,6 +1259,34 @@ def prefixed_procedures(source_text: str, prefix: str) -> list[str]:
     return interface._list_prefixed_subroutines(source_text, prefix)
 
 
+def _interface_module():
+    from tools.backends.language.fortran import interface
+    return interface
+
+
+def procedure_interface(arg: dict[str, Any]) -> str | None:
+    """The prototype a procedure-typed dummy of a resolved fact references (`interface.py`)."""
+    return _interface_module().procedure_interface(arg)
+
+
+def dependency_operations_header(*, detailed: bool, procedure_argument: bool) -> str:
+    """The paragraph heading a consumer's published-dependency-operation lines (`interface.py`)."""
+    return _interface_module().dependency_operations_header(
+        detailed=detailed, procedure_argument=procedure_argument)
+
+
+def prototype_heading(name: str) -> str:
+    """The line above a procedure argument's prototype listing (`interface.py`)."""
+    return _interface_module().prototype_heading(name)
+
+
+def argument_detail_lines(arguments: Any, *,
+                          carried_prototypes: frozenset[str] = frozenset()) -> list[str]:
+    """The per-dummy-argument lines of one published operation (`interface.py`)."""
+    return _interface_module().argument_detail_lines(
+        arguments, carried_prototypes=carried_prototypes)
+
+
 def generated_source_violations(
     *,
     model_files: list[Path],

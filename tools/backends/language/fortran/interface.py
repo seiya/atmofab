@@ -241,7 +241,7 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
                 proto_name = _procedure_interface_name(arg.get("type"))
                 if proto_name:
                     # Stated on the argument, so a renderer of these facts need not parse the
-                    # type text (`orchestration_runtime._argument_procedure_interface`).
+                    # type text (`procedure_interface` below).
                     arg["procedure_interface"] = proto_name
                 if proto_name and proto_name not in prototypes:
                     lines = _extract_interface_prototype(logical, proto_name)
@@ -626,3 +626,134 @@ def _procedure_interface_name(type_text: Any) -> str | None:
         return None
     m = re.fullmatch(r"procedure\s*\(\s*([A-Za-z]\w*)\s*\)", type_text.strip(), re.IGNORECASE)
     return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------------------------------------
+# How a consumer's leaf is SHOWN the interface read above (issue #289, R4-b PR-4 precondition).
+# The neutral renderer (`orchestration_runtime._published_operations_lines`) walks the resolved
+# dependency facts and states what is language-free — the dependency, the operation's header,
+# the unresolved-name and signature-drift warnings. The call-site guidance around them names
+# this language's argument passing, intents, array ranks and slices, and how a procedure
+# argument is written; that is this module's, and it reaches the leaf only when the consumer's
+# language is Fortran. Moved verbatim: the rendered block is byte-identical.
+# ---------------------------------------------------------------------------------------------
+
+
+def procedure_interface(arg: dict[str, Any]) -> str | None:
+    """The prototype a procedure-typed dummy references, as `_extract_subroutine_interface`
+    stated it on the argument (`procedure_interface`), else None."""
+    name = arg.get("procedure_interface")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def dependency_operations_header(*, detailed: bool, procedure_argument: bool) -> str:
+    """The paragraph that heads the published-operation lines. `detailed` when per-argument
+    lines follow (the rank/shape guidance promises them); `procedure_argument` when one of
+    those arguments takes a procedure."""
+    if not detailed:
+        return (
+            "**Published dependency operations (conductor-resolved from each dependency's "
+            "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
+            "are positional; call each operation with EXACTLY this argument order. A wrong "
+            "order builds against a type/rank mismatch and fails the build (routed back to "
+            "Generate). For generate.generate this is authoring-binding; for verify/validate "
+            "it is the authoritative order to check the emitted `call` against."
+        )
+    header = (
+        "**Published dependency operations (conductor-resolved from each dependency's "
+        "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
+        "are positional; call each operation with EXACTLY this argument order. Each dummy "
+        "argument's declared type, intent, and rank/shape is listed under its header — the "
+        "actual argument you pass must MATCH the dummy's rank and shape. When a dummy is "
+        "lower-rank than your full state array (e.g. a rank-2 `(:,:)` dummy vs. your rank-3 "
+        "`(ncomp,:,:)` state), LOOP over the extra component/dimension and pass lower-rank "
+        "slices; do NOT pass the whole higher-rank array. A wrong order OR a rank/shape "
+        "mismatch builds against a type/rank mismatch and fails the build (routed back to "
+        "Generate). For generate.generate this is authoring-binding; for verify/validate "
+        "it is the authoritative order to check the emitted `call` against."
+    )
+    if procedure_argument:
+        header += (
+            " An argument marked as a PROCEDURE argument takes a procedure, not data: "
+            "write one (an internal procedure of the calling routine, or a module "
+            "procedure) with exactly the prototype the argument line names and pass "
+            "its NAME as the actual; the compiler checks the shape, and a mismatch fails "
+            "the build the same way."
+        )
+    return header
+
+
+def prototype_heading(name: str) -> str:
+    """The line above a procedure argument's prototype, listed verbatim from the source."""
+    return (
+        f"    prototype `{name}` — the procedure you pass for the "
+        "argument above must declare EXACTLY these dummies (names may differ; "
+        "type, kind, rank and intent may not; write it as an ordinary "
+        "procedure of yours, with these declarations and nothing an interface "
+        "body needs):")
+
+
+def argument_detail_lines(
+    arguments: Any, *, carried_prototypes: frozenset[str] = frozenset()
+) -> list[str]:
+    """Render indented per-dummy-argument ``type / intent / rank-N (shape)`` lines for one
+    published operation, or ``[]`` when `arguments` is absent or every entry is unresolved
+    (fully backward-compatible header-only fallback). Orientation-only: an unresolved rank is
+    marked explicitly and NEVER implied as a number. A procedure-typed dummy names its
+    prototype; ``carried_prototypes`` says which prototypes the caller renders under the
+    operation, so the line promises a listing only when one follows.
+    """
+    if not isinstance(arguments, list) or not arguments:
+        return []
+    # A resolved rank is a plain int (bool excluded); anything else is treated as unknown so a
+    # malformed/hand-edited entry can never render a garbage `rank-<x>` line.
+    def _known_rank(a: Any) -> bool:
+        return isinstance(a, dict) and isinstance(a.get("rank"), int) and not isinstance(
+            a.get("rank"), bool)
+
+    if not any(_known_rank(a) for a in arguments):
+        return []
+    lines: list[str] = []
+    for arg in arguments:
+        if not isinstance(arg, dict):
+            continue
+        name = str(arg.get("name", "")).strip()
+        if not name:
+            continue
+        proto_name = procedure_interface(arg)
+        if proto_name:
+            where = ("listed under this operation" if proto_name in carried_prototypes else
+                     "the dependency declares (it could not be read host-side, so match the "
+                     "argument's role and let Build verify the shape)")
+            lines.append(
+                f"    {name}: {str(arg.get('type')).strip()} — a PROCEDURE argument: pass a "
+                f"procedure whose interface is EXACTLY the prototype `{proto_name}` {where} "
+                "(your own module or internal procedure; it may reach your grid, parameters "
+                "and fields by host association)")
+            continue
+        if not _known_rank(arg):
+            # Rank could not be resolved host-side. Do NOT tell the leaf to read the
+            # dependency source — a pure leaf reads nothing but its launch prompt, and the
+            # dependency's source is not inlined there. Give an actionable fallback instead:
+            # pass the argument per the operation's role and let Build's compiler verify the
+            # final rank.
+            lines.append(
+                f"    {name}: (rank/shape not resolved — pass this argument per the "
+                "operation's role; Build verifies the final rank)"
+            )
+            continue
+        rank = arg.get("rank")
+        parts: list[str] = []
+        atype = str(arg.get("type") or "").strip()
+        if atype:
+            parts.append(atype)
+        intent = arg.get("intent")
+        if intent:
+            parts.append(f"intent({intent})")
+        if rank == 0:
+            parts.append("rank-0 (scalar)")
+        else:
+            dim = str(arg.get("dimension") or "").strip()
+            parts.append(f"rank-{rank} ({dim})" if dim else f"rank-{rank}")
+        lines.append(f"    {name}: " + ", ".join(parts))
+    return lines

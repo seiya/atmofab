@@ -1516,3 +1516,66 @@ def assert_harness_pin(
             raise RenderError(
                 f"certified harness model source signature for {symbol!r} differs from the "
                 f"pinned interface: {_PIN_DRIFT_HINT}")
+
+
+# ---------------------------------------------------------------------------------------------
+# The leaf-facing remedies of the checks ABI (issue #289, R4-b PR-4 precondition). The neutral
+# gates decide WHETHER the checks module publishes the ABI and the bound state
+# (`codegen_bundle.m3c_checks_abi_violation`, `_m3c_state_binding_mismatch`, the validator's
+# `_validate_checks_source_files`); HOW the leaf is told to fix it names this language's
+# publication statements, procedure kinds and the runner's import spelling, so the sentence is
+# this backend's. Moved verbatim: the messages are byte-identical to the neutral copies they
+# replace.
+# ---------------------------------------------------------------------------------------------
+
+
+def checks_abi_publication_violation(spec_id: str, unpublished: list[str],
+                                     wrong_kind: list[str]) -> str:
+    """The acceptance layer's refusal of a checks module that leaves an ABI name unpublished
+    (`unpublished`) or defines one as a callable of the wrong kind (`wrong_kind`)."""
+    parts = []
+    if unpublished:
+        parts.append(
+            f"not published by module {spec_id}_checks: {', '.join(unpublished)} (define it "
+            f"there and, under a bare `private` default, name it in a `public ::` statement)")
+    if wrong_kind:
+        parts.append(
+            f"defined here as a FUNCTION: {', '.join(wrong_kind)} (every ABI name is a "
+            f"subroutine by contract, and the runner reaches the ones it imports with a "
+            f"`call`, so a function of that name cannot satisfy it)")
+    return (f"module {spec_id}_checks must define and publish the fixed checks ABI as "
+            f"subroutines — " + "; ".join(parts)
+            + f". The full required set is {', '.join(CHECKS_PUBLIC_NAMES)} for EVERY M3c "
+            f"node, whatever subset this node's runner imports.")
+
+
+def bound_state_publication_violation(spec_id: str, hidden: list[str]) -> str:
+    """The acceptance layer's refusal of a checks module that hides bound state variables."""
+    return (f"module {spec_id}_checks must publish every bound state variable — the "
+            f"host-rendered runner imports each one by name (`{STATE_BINDING_PREFIX}<var> => "
+            f"<var>`) and serializes it at the two capture points — but the module hides these "
+            f"(a bare `private` default with no `public ::` naming them, or a "
+            f"`private ::` naming them): {', '.join(hidden)}. Declare each as a "
+            f"module-level `real(dp)` variable (an array of the declared rank, allocated by "
+            f"`case_setup`) "
+            f"and list it in a `public ::` statement in the specification part.")
+
+
+def hidden_bound_state_remedy(hidden: list[str]) -> str:
+    """The `Generate.gate` static check's statement of the same defect, after the file path."""
+    return (f"checks module must publish every bound state variable (the "
+            f"host-rendered runner imports each IR snapshot variable as "
+            f"`{STATE_BINDING_PREFIX}<var> => <var>` and "
+            f"serializes it at the two capture points); hidden by a bare `private` default "
+            f"with no `public ::` naming it, or by a `private ::` naming it: {hidden}")
+
+
+def state_binding_module_reason(module: str) -> str:
+    """Why a binding's `module` must be the checks module: how the runner reads the storage."""
+    return f"the host-rendered runner reads the bound storage with `use {module}, only: ...`"
+
+
+def state_binding_storage_reason(variable: str) -> str:
+    """Why a binding's `storage_symbol` must equal its variable: the runner's import of it."""
+    return (f"the runner imports the module-level variable of THAT name "
+            f"(`{STATE_BINDING_PREFIX}{variable} => {variable}`)")

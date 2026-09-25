@@ -2514,10 +2514,16 @@ class RegistryConsistencyTests(unittest.TestCase):
                          "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
                          "COMPILED", "model_basename", "checks_basename", "runner_basename"),
         "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
-        "prompt_fragments": ("fragments", "runner_output_document"),
+        "prompt_fragments": ("fragments", "runner_output_document",
+                             "EXEMPLAR_GATE_DRIFT_NOTE"),
         "checks_abi": ("document",),
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
-                          "CHECKS_PUBLIC_NAMES"),
+                          "CHECKS_PUBLIC_NAMES", "checks_abi_dummy_violation",
+                          # Issue #289, R4-b PR-4: the checks-ABI remedies the bundle layer and
+                          # the validator show a leaf, in the runner language's words.
+                          "checks_abi_publication_violation",
+                          "bound_state_publication_violation", "hidden_bound_state_remedy",
+                          "state_binding_module_reason", "state_binding_storage_reason"),
         # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
         # and the make control-file gate take off a language's source reader; what the §5.1
         # gates and the dependency-fact resolver take off its signature module; and what the
@@ -2528,13 +2534,18 @@ class RegistryConsistencyTests(unittest.TestCase):
             "unpublished_bound_state", "checks_harness_isolation_violations",
             "validate_dependency_operations", "validate_runner_json_serialization",
             "validate_runner_snapshot_filenames", "published_subroutines", "counted_loops",
-            "source_module_deps", "MODULE_SOURCE_SUFFIXES", "MODULE_ARTIFACT_SUFFIX"),
+            "source_module_deps", "MODULE_SOURCE_SUFFIXES", "MODULE_ARTIFACT_SUFFIX",
+            # R4-b PR-4: the component-surface gate's remedies.
+            "published_operation_missing", "published_operation_extra"),
         "signatures": (
             "LANGUAGE_DISPLAY_NAME", "SignatureParseError", "load_structured_signatures",
             "render_signatures", "render_symbol", "render_interface", "render_module_parameter",
             "validate_module_parameter", "parse_interface_stanzas", "stanza_line_list",
             "stanza_line_set", "generated_source_violations", "published_interface",
-            "prefixed_procedures"),
+            "prefixed_procedures",
+            # R4-b PR-4: how the dependency-fact renderer shows a consumer those interfaces.
+            "procedure_interface", "dependency_operations_header", "prototype_heading",
+            "argument_detail_lines"),
         "control_file": ("rules",),
     }
 
@@ -2958,6 +2969,16 @@ class CapabilityOwnershipTests(unittest.TestCase):
         runner.CHECKS_PUBLIC_NAMES = ("zz_only_abi_name",)
         runner.render_runner = lambda ir, spec_id, harness, target: "! zz_second\n"
         runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
+        # The checks-ABI remedies are the runner backend's words (issue #289, R4-b PR-4), so a
+        # second language states its own, and the gates below must show THOSE.
+        runner.checks_abi_publication_violation = (
+            lambda spec_id, unpublished, wrong_kind: f"zz_second publishes {unpublished}")
+        runner.bound_state_publication_violation = (
+            lambda spec_id, hidden: f"zz_second hides {hidden}")
+        runner.hidden_bound_state_remedy = lambda hidden: f"zz_second hides {hidden}"
+        runner.state_binding_module_reason = lambda module: f"zz_second reads {module}"
+        runner.state_binding_storage_reason = lambda variable: f"zz_second imports {variable}"
+        runner.checks_abi_dummy_violation = lambda text, spec_id: None
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
         other.bundle.SOURCE_EXTENSIONS = (".zz",)
@@ -3026,6 +3047,50 @@ class CapabilityOwnershipTests(unittest.TestCase):
             violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
             self.assertIsNotNone(violation)
             self.assertIn("zz_only_abi_name", violation)
+            # ...and so is the remedy's wording: the FILE's language states how to publish it.
+            self.assertEqual("zz_second publishes ['zz_only_abi_name']", violation)
+
+            # (5) the bound-state remedies are the runner language's words too (issue #289,
+            # R4-b PR-4): the bundle layer's, the validator's, and the two binding reasons.
+            published_abi = ("module bx_checks\n  private\n  real :: q\n"
+                             "  public :: zz_only_abi_name\ncontains\n"
+                             "  subroutine zz_only_abi_name()\n  end subroutine\n"
+                             "end module bx_checks\n")
+            bundle["files"][0]["content"] = published_abi
+            bundle["state_bindings"] = [{"state_variable": "q", "storage_symbol": "q"}]
+            self.assertEqual("zz_second hides ['q']", codegen_bundle.m3c_checks_abi_violation(
+                bundle, "bx", language="fortran"))
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(published_abi, encoding="utf-8")
+                violations = []
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", src, [],
+                    violations, bound_state=["q"])
+            self.assertIn(f"{src / 'bx_checks.f90'}: zz_second hides ['q']", violations)
+            binding = {"state_variable": "q", "capture": "harness_registration",
+                       "capability": "state_registration@1"}
+            self.assertEqual(
+                "state_bindings[0].module must be 'bx_checks' — zz_second reads bx_checks; "
+                "got 'elsewhere'",
+                codegen_bundle._m3c_state_binding_mismatch(
+                    [dict(binding, module="elsewhere", storage_symbol="q")], ["q"], "bx",
+                    language="zz_second"))
+            self.assertEqual(
+                "state_bindings[0].storage_symbol must equal its state_variable 'q' — "
+                "zz_second imports q; got 'r'",
+                codegen_bundle._m3c_state_binding_mismatch(
+                    [dict(binding, module="bx_checks", storage_symbol="r")], ["q"], "bx",
+                    language="zz_second"))
+            # A runner backend that cannot be LOADED to state the reason still yields the
+            # finding, never an exception out of the acceptance layer.
+            with mock.patch.object(host_render, "_module", side_effect=ImportError("boom")):
+                reason = codegen_bundle._m3c_state_binding_mismatch(
+                    [dict(binding, module="elsewhere", storage_symbol="q")], ["q"], "bx",
+                    language="zz_second")
+            self.assertIn("state_bindings[0].module must be 'bx_checks'", reason)
+            self.assertIn("cannot be stated for language 'zz_second'", reason)
 
     @staticmethod
     def _unreachable_package_capabilities(

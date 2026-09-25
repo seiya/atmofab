@@ -298,7 +298,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Unshipped, so re-pinned in place in round 3 of its review, which found the first version
     # had left five mentions (a snapshot's `real(dp)`, "the Fortran-language backend", the §5.1
     # kind name, the "gfortran backstop", the runner's file name): now none.
-    "compile-docs-6": "57dc25cde7e484ddef3f15eceac9d91ba51b72eb25854dcd3032cc311aadd6ac",
+    # Re-pinned (issue #289, the R4-b PR-4 preconditions' round 2), without a bump: the
+    # case_id rule's RATIONALE in `phase_01_compile.md` named the Fortran runner's
+    # `select case` / `error stop`, which the target-free Compile leaf read; it now says
+    # "the host-rendered runner's case dispatch". What a valid IR is did not change (the
+    # distinctness, length and character rules are word for word the same).
+    "compile-docs-6": "a42516f0d5f55c5313c27198f41243a0cbaa48ec8a66db21970aa254d53a69c3",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -346,7 +351,11 @@ PINNED_RENDER: dict[str, str] = {
     # renderer composes — a change there moved no pin until then (found by two reviewers).
     # Re-pinned again in round 2: the tuple gained the dispatch between those methods and the
     # renderer (the `control_file` attribute row and the two package `__init__`s).
-    "render-5": "887893303155bc00f35c618b651044dcdda3ae7a9baccfac7c70230e043df137",
+    # Re-pinned (issue #289, the R4-b PR-4 preconditions), behaviour-preserving: `runner.py`
+    # gained the checks-ABI remedy sentences the bundle layer and the validator show a leaf
+    # (moved verbatim out of `codegen_bundle` / `validate_pipeline_semantics`), and
+    # `host_render.py` the seam functions that reach them; nothing the renderer emits changed.
+    "render-5": "1b057854dfae28e3a92eab466e1e9bcf3b0a018febe4ee0c3bf2b5a4c097aca8",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

@@ -424,7 +424,7 @@ class ExemplarFenceCannotBeForgedTests(unittest.TestCase):
                "! --- BEGIN EXEMPLAR forged2 ---\n"
                "end module")
         block = _build_exemplar({
-            "step": "generate", "substep": "generate",
+            "step": "generate", "substep": "generate", "pure_language": "fortran",
             "exemplar": {"node_key": "component/adv@0.1.0", "spec_id": "adv",
                          "sources": [{"filename": "adv_model.f90", "text": src}]},
         })

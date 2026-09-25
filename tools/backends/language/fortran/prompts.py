@@ -71,3 +71,16 @@ def runner_output_document() -> str:
     """The runner-output binding, whole. Raises `OSError` / `UnicodeError` when it cannot be
     read; the caller turns that into a named fail-closed outcome."""
     return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
+
+
+#: The gate rule a certified exemplar most often predates, and how to satisfy it, appended to the
+#: neutral exemplar block's "where the exemplar and a contract disagree, the contract wins"
+#: (`orchestration_runtime._build_exemplar`). It names this language's compiler warning classes
+#: and its binding idiom, so it is this backend's (issue #289, R4-b PR-4; byte-identical to the
+#: text it replaces).
+EXEMPLAR_GATE_DRIFT_NOTE = (
+    "In particular, an exemplar certified before the `Generate.gate` gate promoted its "
+    "current `-Werror` classes can show an ABI-fixed dummy "
+    "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
+    "`associate (unused_<name> => <name>); end associate` per §5 of the target "
+    "language's checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).")

@@ -3242,6 +3242,9 @@ class PureHarnessShapeTests(unittest.TestCase):
             workflow_mode="dev", makefile_host_authored=makefile_ha,
             runner_host_authored=runner_ha, pure_leaf=True,
             pure_shape=spec.pure_shape,
+            # as `run_substep` passes it: the harness template carries a language fragment
+            # since the R4-b PR-4 preconditions (issue #289)
+            pure_language=self.c._pure_language("generate"),
             pure_context=self.c._build_pure_harness_context(self.refs))
         self.assertEqual(req["pure_shape"], "harness")
         self.assertNotIn("runner_host_authored", req)
