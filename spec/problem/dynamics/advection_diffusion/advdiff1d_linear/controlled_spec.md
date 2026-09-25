@@ -34,7 +34,7 @@ No `component` is declared directly here: a `component` has exactly one source, 
 
 ## 5. Integration algorithm
 The update step is fixed to the following order. Each step consumes, by name, the field output of the step before it.
-1. Update the ghost region with `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`, with `ng = 1`. This `problem` `node` places the interior of $u^n$ at elements `ng + 1 … ng + nx` of a ghost-extended array of `nx + 2*ng` elements, passes it as `u_in`, and receives `u_out` as the ghost-extended field $u^n_{-1}\dots u^n_{nx}$.
+1. Update the ghost region with `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`, with `ng = 1`. This `problem` `node` places the interior of $u^n$ at elements `ng + 1 … ng + nx` of a ghost-extended array of `nx + 2*ng` elements, passes it as `u_in` together with `nx` and `ng`, and receives `u_out` as the ghost-extended field $u^n_{-1}\dots u^n_{nx}$.
 2. Compute the advection/diffusion flux with `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`, passing the `u_out` of step 1 as its `u` together with `nx`, `ng`, the constants `a` and `nu` of §6, $dx=L/nx$, and the `dt` of the current step. It returns `flux_adv` and `flux_dif` at all `nx + 1` faces, and the total face flux is
 $$
 F_{j+1/2}=F^{adv}_{j+1/2}+F^{dif}_{j+1/2},\quad j=-1,\dots,nx-1
@@ -44,7 +44,7 @@ $$
 L_i=-\frac{F_{i+1/2}-F_{i-1/2}}{\Delta x},\quad i=0,\dots,nx-1
 $$
 In the flux arrays, $F_{i+1/2}$ is element `i + 2` and $F_{i-1/2}$ is element `i + 1`; $L_i$ is element `i + 1` of the tendency array.
-4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing the interior $u^n$ (`nx` values) as its `u_n` and the $L$ of step 3 as its `L_flux`. Its `u_np1` is $u^{n+1}$.
+4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing `nx`, this `node`'s own interior state $u^n$ (`nx` values) as its `u_n`, the $L$ of step 3 as its `L_flux`, and the `dt` of the current step. Its `u_np1` is $u^{n+1}$.
 
 The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule.
 
