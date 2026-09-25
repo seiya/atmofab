@@ -13014,6 +13014,12 @@ class DependencyFactsLanguageTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     _published_operations_lines(deps)
                 self.assertIn("dependency facts", str(caught.exception))
+                # Named for what is wrong: no single language, or one that cannot render. A
+                # blank language refused only by the registry ("language ''") named neither.
+                self.assertIn(
+                    "without one `interface_language`"
+                    if label in ("absent", "blank", "two") else "cannot render them",
+                    str(caught.exception))
         # An unresolved-name warning alone is an interface fact too: it needs the header.
         with self.assertRaises(ValueError):
             _published_operations_lines([{"node_key": "component/dep@0.1.0",
@@ -13864,6 +13870,35 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("dep_base__apply", ops)
             self.assertEqual(
                 facts[0]["declared_operations_unresolved"], ["dep_base__apply"])
+
+    def test_an_unresolved_name_alone_is_stamped_with_its_language(self) -> None:
+        # Issue #289, R4-b PR-4: the renderer shows an unresolved-name WARNING under the
+        # language's header, so a fact carrying ONLY `declared_operations_unresolved` (the
+        # certified source publishes no `<dep>__` surface to replace it with) needs the stamp
+        # too — without it the launch is refused rather than warned.
+        from tools.orchestration_runtime import (
+            _published_operations_lines,
+            _resolve_dependency_facts,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__dep_base__0.1.0",
+                "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                source_id="src_20260601_001", spec_id="dep_base",
+                model_text="module dep_base_model\ncontains\n  subroutine helper()\n"
+                           "  end subroutine\nend module\n")
+            self._write_ir(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
+                [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+                  "operations": ["dep_base__apply"]}],
+                impl_defaults={"toolchain": {"language": "fortran"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=_TP)
+        self.assertNotIn("published_operations", facts[0])
+        self.assertEqual(facts[0]["declared_operations_unresolved"], ["dep_base__apply"])
+        self.assertEqual(facts[0]["interface_language"], "fortran")
+        self.assertIn("WARNING", "\n".join(_published_operations_lines(facts)))
 
     def test_partial_wrong_name_replaces_whole_surface_not_union(self) -> None:
         # L4 union guard: one valid + one invented name. ANY unresolved name forfeits the
