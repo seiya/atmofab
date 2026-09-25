@@ -3214,6 +3214,12 @@ def _resolve_dependency_facts(
                             fact["published_operations"] = published
                         if declared_unresolved:
                             fact["declared_operations_unresolved"] = declared_unresolved
+                        if published or declared_unresolved:
+                            # The language whose reader produced these facts, and so the one
+                            # whose words the renderer shows them in (issue #289, R4-b PR-4):
+                            # the renderer runs from the request alone, and a `validate`
+                            # request names no language of its own.
+                            fact["interface_language"] = consumer_language
             facts.append(fact)
     except Exception:
         return facts
@@ -9356,6 +9362,25 @@ def _sanitize_exemplar_body(text: str) -> str:
                 .replace(_EXEMPLAR_END_PREFIX, "--- END-EXEMPLAR "))
 
 
+def _exemplar_unreferenced_dummy_binding(request_payload: dict[str, Any]) -> str:
+    """How the request's target language binds an unreferenced ABI-fixed dummy
+    (`prompt_fragments.EXEMPLAR_UNREFERENCED_DUMMY_BINDING`) — the one clause of the exemplar
+    block that is a spelling (issue #289, R4-b PR-4). RAISES a named `ValueError` when the
+    request names no language or its language cannot state it, as `_compose_language_fragments`
+    does: the alternative is a leaf told another language's idiom."""
+    language = str(request_payload.get("pure_language") or "").strip().lower()
+    if not language:
+        raise ValueError("an exemplar block is rendered for a request that names no "
+                         "`pure_language`; the host must name the target language")
+    try:
+        module = backend_registry.capability_module("language", language, "prompt_fragments")
+        return str(module.EXEMPLAR_UNREFERENCED_DUMMY_BINDING)
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+            AttributeError) as exc:
+        raise ValueError(
+            f"the exemplar block cannot be composed for language {language!r}: {exc}") from None
+
+
 def _build_exemplar(request_payload: dict[str, Any]) -> str:
     """R5: render a conductor-injected "Certified exemplar" block — a previously-certified
     SIBLING node's source (model + runner) resolved host-side by ``_resolve_exemplar_source``
@@ -9392,8 +9417,8 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted its "
         "current `-Werror` classes can show an ABI-fixed dummy "
         "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
-        "`associate (unused_<name> => <name>); end associate` per §5 of the target language's "
-        "checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).",
+        f"{_exemplar_unreferenced_dummy_binding(request_payload)} per §5 of the target "
+        "language's checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).",
     ]
     for src in sources:
         if not isinstance(src, dict):
@@ -9411,14 +9436,34 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _argument_procedure_interface(arg: dict[str, Any]) -> str | None:
-    """The prototype a procedure-typed dummy of a resolved dependency fact references, else
-    None. The certified source's own reader states it on the argument
-    (`signatures.published_interface`, `procedure_interface`) — the language's spelling of a
-    procedure-typed dummy is that reader's to parse, not this renderer's (issue #289, R4-b
-    PR-3; until then this module matched the type text itself)."""
-    name = arg.get("procedure_interface")
-    return name.strip() if isinstance(name, str) and name.strip() else None
+def _dependency_signatures(deps: list[Any]) -> Any:
+    """The `signatures` module of the language the resolved interface facts in `deps` were read
+    in (`interface_language`, stamped by `_resolve_dependency_facts`), or None when no dependency
+    carries any. The call-site guidance around those facts is that language's
+    (issue #289, R4-b PR-4), so it is asked here rather than spelled.
+
+    RAISES a named `ValueError` when facts are present and their language is absent, several,
+    or has no `signatures` backend: the alternative is a leaf shown another language's
+    guidance, which is the defect this resolves. `_compose_language_fragments` refuses the same
+    way, and a launch whose prompt cannot be rendered is refused, not sent."""
+    carriers = [dep for dep in deps if isinstance(dep, dict)
+                and str(dep.get("node_key", "")).strip()
+                and (dep.get("published_operations") or dep.get("declared_operations_unresolved"))]
+    if not carriers:
+        return None
+    languages = {str(dep.get("interface_language") or "").strip() for dep in carriers}
+    if len(languages) != 1 or "" in languages:
+        raise ValueError(
+            "resolved dependency facts carry published-interface facts without one "
+            f"`interface_language` to render them in (got {sorted(languages)}); "
+            "`_resolve_dependency_facts` stamps it on every fact it reads an interface for")
+    (language,) = languages
+    try:
+        return backend_registry.capability_module("language", language, "signatures")
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted) as exc:
+        raise ValueError(
+            f"resolved dependency facts were read in language {language!r}, which cannot "
+            f"render them: {exc}") from None
 
 
 def _published_operations_lines(deps: list[Any]) -> list[str]:
@@ -9431,6 +9476,7 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
     fails on a type/rank mismatch and is routed back to Generate. It is still
     conductor-resolved orientation, never itself a gate.
     """
+    signatures = _dependency_signatures(deps)
     rows: list[str] = []
     any_detail = False
     any_procedure_arg = False  # the header's procedure sentence keys on the ARGUMENT, not on
@@ -9485,12 +9531,12 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
                     )
             prototypes = op.get("procedure_interfaces")
             detail = _argument_detail_lines(
-                op.get("arguments"),
+                op.get("arguments"), signatures,
                 carried_prototypes=frozenset(prototypes) if isinstance(prototypes, dict) else frozenset())
             if detail:
                 any_detail = True
                 rows.extend(detail)
-                if any(_argument_procedure_interface(a) for a in op.get("arguments")
+                if any(signatures.procedure_interface(a) for a in op.get("arguments")
                        if isinstance(a, dict)):
                     any_procedure_arg = True
             # The prototype each procedure-typed argument references (issue #266), verbatim
@@ -9503,116 +9549,29 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
                         if isinstance(proto_lines, list) else []
                     if not isinstance(proto_name, str) or not proto_name.strip() or not spelled:
                         continue
-                    rows.append(
-                        f"    prototype `{proto_name.strip()}` — the procedure you pass for the "
-                        "argument above must declare EXACTLY these dummies (names may differ; "
-                        "type, kind, rank and intent may not; write it as an ordinary "
-                        "procedure of yours, with these declarations and nothing an interface "
-                        "body needs):")
+                    rows.append(signatures.prototype_heading(proto_name.strip()))
                     rows.extend(f"      {line}" for line in spelled)
     if not rows:
         return []
     # The rank/shape guidance is only added when per-argument detail lines are actually
     # rendered — otherwise (older lineage without `arguments`, or all-unresolved ops) the
-    # header would promise a per-argument list that does not follow.
-    if any_detail:
-        header = (
-            "**Published dependency operations (conductor-resolved from each dependency's "
-            "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
-            "are positional; call each operation with EXACTLY this argument order. Each dummy "
-            "argument's declared type, intent, and rank/shape is listed under its header — the "
-            "actual argument you pass must MATCH the dummy's rank and shape. When a dummy is "
-            "lower-rank than your full state array (e.g. a rank-2 `(:,:)` dummy vs. your rank-3 "
-            "`(ncomp,:,:)` state), LOOP over the extra component/dimension and pass lower-rank "
-            "slices; do NOT pass the whole higher-rank array. A wrong order OR a rank/shape "
-            "mismatch builds against a type/rank mismatch and fails the build (routed back to "
-            "Generate). For generate.generate this is authoring-binding; for verify/validate "
-            "it is the authoritative order to check the emitted `call` against."
-        )
-        if any_procedure_arg:
-            header += (
-                " An argument marked as a PROCEDURE argument takes a procedure, not data: "
-                "write one (an internal procedure of the calling routine, or a module "
-                "procedure) with exactly the prototype the argument line names and pass "
-                "its NAME as the actual; the compiler checks the shape, and a mismatch fails "
-                "the build the same way."
-            )
-    else:
-        header = (
-            "**Published dependency operations (conductor-resolved from each dependency's "
-            "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
-            "are positional; call each operation with EXACTLY this argument order. A wrong "
-            "order builds against a type/rank mismatch and fails the build (routed back to "
-            "Generate). For generate.generate this is authoring-binding; for verify/validate "
-            "it is the authoritative order to check the emitted `call` against."
-        )
+    # header would promise a per-argument list that does not follow. The paragraph itself names
+    # the language's argument passing, so the language states it.
+    header = signatures.dependency_operations_header(
+        detailed=any_detail, procedure_argument=any_procedure_arg)
     return [header, *rows]
 
 
 def _argument_detail_lines(
-    arguments: Any, *, carried_prototypes: frozenset[str] = frozenset()
+    arguments: Any, signatures: Any, *, carried_prototypes: frozenset[str] = frozenset()
 ) -> list[str]:
-    """Render indented per-dummy-argument ``type / intent / rank-N (shape)`` lines for one
-    published operation, or ``[]`` when `arguments` is absent or every entry is unresolved
-    (fully backward-compatible header-only fallback). Orientation-only: an unresolved rank is
-    marked explicitly and NEVER implied as a number. A procedure-typed dummy names its
-    prototype; ``carried_prototypes`` says which prototypes the caller renders under the
-    operation, so the line promises a listing only when one follows.
-    """
-    if not isinstance(arguments, list) or not arguments:
+    """The indented per-dummy-argument lines of one published operation, in the words of the
+    language the facts were read in (`signatures.argument_detail_lines`), or ``[]``. Kept as
+    this module's function so the launch-render sweep (`test_pure_leaf_wiring`) wraps it as the
+    prose builder it is; the prose is the backend's since issue #289 (R4-b PR-4)."""
+    if signatures is None:
         return []
-    # A resolved rank is a plain int (bool excluded); anything else is treated as unknown so a
-    # malformed/hand-edited entry can never render a garbage `rank-<x>` line.
-    def _known_rank(a: Any) -> bool:
-        return isinstance(a, dict) and isinstance(a.get("rank"), int) and not isinstance(
-            a.get("rank"), bool)
-
-    if not any(_known_rank(a) for a in arguments):
-        return []
-    lines: list[str] = []
-    for arg in arguments:
-        if not isinstance(arg, dict):
-            continue
-        name = str(arg.get("name", "")).strip()
-        if not name:
-            continue
-        proto_name = _argument_procedure_interface(arg)
-        if proto_name:
-            where = ("listed under this operation" if proto_name in carried_prototypes else
-                     "the dependency declares (it could not be read host-side, so match the "
-                     "argument's role and let Build verify the shape)")
-            lines.append(
-                f"    {name}: {str(arg.get('type')).strip()} — a PROCEDURE argument: pass a "
-                f"procedure whose interface is EXACTLY the prototype `{proto_name}` {where} "
-                "(your own module or internal procedure; it may reach your grid, parameters "
-                "and fields by host association)")
-            continue
-        if not _known_rank(arg):
-            # Rank could not be resolved host-side. Do NOT tell the leaf to read the
-            # dependency source — a dependency's pipeline is outside a leaf's read scope
-            # (allowed_read_roots covers only its own ir_ref/pipeline_ref). Give an
-            # actionable fallback instead: pass the argument per the operation's role and
-            # let Build's compiler verify the final rank.
-            lines.append(
-                f"    {name}: (rank/shape not resolved — pass this argument per the "
-                "operation's role; Build verifies the final rank)"
-            )
-            continue
-        rank = arg.get("rank")
-        parts: list[str] = []
-        atype = str(arg.get("type") or "").strip()
-        if atype:
-            parts.append(atype)
-        intent = arg.get("intent")
-        if intent:
-            parts.append(f"intent({intent})")
-        if rank == 0:
-            parts.append("rank-0 (scalar)")
-        else:
-            dim = str(arg.get("dimension") or "").strip()
-            parts.append(f"rank-{rank} ({dim})" if dim else f"rank-{rank}")
-        lines.append(f"    {name}: " + ", ".join(parts))
-    return lines
+    return list(signatures.argument_detail_lines(arguments, carried_prototypes=carried_prototypes))
 
 
 DETERMINISTIC_PROMPT_SENTINEL = "Conductor-executed deterministic step"

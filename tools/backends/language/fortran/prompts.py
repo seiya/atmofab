@@ -71,3 +71,10 @@ def runner_output_document() -> str:
     """The runner-output binding, whole. Raises `OSError` / `UnicodeError` when it cannot be
     read; the caller turns that into a named fail-closed outcome."""
     return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
+
+
+#: How an exemplar's ABI-fixed dummy left unreferenced is bound so the promoted `-Werror`
+#: unused-dummy class passes (§5 of this language's checks-ABI binding). Spliced into the
+#: neutral exemplar block (`orchestration_runtime._build_exemplar`) as the one clause of it that
+#: is a spelling (issue #289, R4-b PR-4; byte-identical to the text it replaces).
+EXEMPLAR_UNREFERENCED_DUMMY_BINDING = "`associate (unused_<name> => <name>); end associate`"
