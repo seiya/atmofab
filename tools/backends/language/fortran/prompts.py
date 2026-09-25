@@ -13,7 +13,7 @@ Stdlib only.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 #: Where this language's fragment files live — the placement `docs/BACKEND_BOUNDARY.md` gives a
@@ -43,12 +43,11 @@ def parse_fragments(text: str, *, source: str = "<fragments>") -> dict[str, str]
             current.append(line)
     out: dict[str, str] = {}
     for name, body in sections.items():
-        joined = "\n".join(body)
-        out[name] = joined[:-1] if joined.endswith("\n") else joined
+        out[name] = "\n".join(body).removesuffix("\n")
     return out
 
 
-@lru_cache(maxsize=None)
+@cache
 def fragments(template: str) -> dict[str, str]:
     """The fragments for the neutral template `template` (its file stem without `pure_`, e.g.
     `generate_generate`). A template this language has no fragment file for raises: the

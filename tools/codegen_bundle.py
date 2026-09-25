@@ -146,7 +146,7 @@ def _bundle_identifier_pattern() -> str:
     cross-field layer then holds each identifier to the grammar of the language of the file
     that declares it (`_identifier_language_violations`). With one language the union IS that
     language's pattern, byte for byte. Each member is a whole-string pattern (`^` …
-    `(?![\s\S])`), so an alternation of them is one too, in Python and in ECMA-262 alike."""
+    `(?![\\s\\S])`), so an alternation of them is one too, in Python and in ECMA-262 alike."""
     if not LANGUAGES:
         raise ValueError(_no_bundle_language_reason())
     patterns = sorted({_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES})
@@ -156,7 +156,7 @@ def _bundle_identifier_pattern() -> str:
 
 
 @lru_cache(maxsize=8)
-def _language_identifier_re(language: str) -> "re.Pattern[str] | None":
+def _language_identifier_re(language: str) -> re.Pattern[str] | None:
     facts = _language_bundle(language)
     return None if facts is None else re.compile(facts.IDENTIFIER_PATTERN)
 
