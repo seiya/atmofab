@@ -10,12 +10,12 @@
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_center2__compute_flux` at `L0`: the advective/diffusive flux consistency for a constant field, the uniformity of the diffusive flux for a linear field, the face-by-face agreement with the §3 formulas for a non-constant field, the agreement of the two periodic seam faces, and the input guard for an invalid advection velocity (`a<=0`).
+This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_center2__compute_flux` at `L0`: the advective/diffusive flux consistency for a constant field, the uniformity of the diffusive flux for a linear field, the face-by-face agreement with the §3 formulas for a non-constant field, the agreement of the two periodic seam faces, and the input guard for an invalid advection velocity (`a<=0`) and for invalid grid sizes (`ng<1`, `nx<2`).
 
 ## 2. Input-defaulting rules
 - The normal case uses `nx>=2`, `ng=1` (unless a test states another `ng`), `a>0`, `nu>=0`, `dx>0`, `dt>0`.
 - The input field is supplied directly as the ghost-extended array of `nx + 2*ng` values in the layout of `controlled_spec.md` §2; the `L0` suite does not call the boundary `component`.
-- The abnormal case uses `a<=0`.
+- The abnormal cases use `a<=0`, `ng<1`, or `nx<2`, one condition per test with every other input normal.
 
 ## 3. Execution-control rules
 `N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control is the responsibility of the time-update `component` and the `problem` runner.
@@ -52,6 +52,18 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `a<=0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+- `test_id`: `l0_invalid_ng_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `ng<1`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+- `test_id`: `l0_invalid_nx_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `nx<2`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
 
 ## 7. Pass/fail aggregation rules
