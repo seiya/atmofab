@@ -378,10 +378,15 @@ def site_violations(config: SitesConfig, profile: Any, *,
     if hardware_class in site.executes:
         return []
     local = config.sites[LOCAL_SITE]
-    if site.is_local:
-        mapping = f"sites.yaml maps target {profile.target_id} to no site, so it runs locally"
+    if config.path is None:
+        mapping = f"there is no {DEFAULT_SITES_PATH}, so target {profile.target_id} runs locally"
+    elif profile.target_id in config.targets and site.is_local:
+        mapping = f"{config.path.name} maps target {profile.target_id} to {LOCAL_SITE}"
+    elif site.is_local:
+        mapping = (f"{config.path.name} maps target {profile.target_id} to no site, so it runs "
+                   f"locally")
     else:
-        mapping = (f"sites.yaml maps target {profile.target_id} to {site.site_id} "
+        mapping = (f"{config.path.name} maps target {profile.target_id} to {site.site_id} "
                    f"(executes {', '.join(site.executes)})")
     return [(f"hardware.class: {hardware_class} is executed by no site: {mapping}; the local "
              f"site executes {', '.join(local.executes)}")]

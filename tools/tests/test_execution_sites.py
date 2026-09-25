@@ -388,6 +388,8 @@ class SiteViolationTests(unittest.TestCase):
             repo = _Repo(tmp)
             cfg = repo.load(_BASE.replace("[cpu]", "[gpu]") + "targets:\n  t_gpu: box\n")
             local_only = repo.load("sites_version: 1\n")
+            (repo.root / es.DEFAULT_SITES_PATH).unlink()
+            no_file = es.load_sites(repo.root)
         gpu = _profile("t_gpu", "gpu")
         for until in ("Compile", "Generate", "Build", "build", " BUILD "):
             with self.subTest(until_phase=until):
@@ -400,12 +402,24 @@ class SiteViolationTests(unittest.TestCase):
                     "hardware.class: gpu is executed by no site"), violations)
                 self.assertIn("maps target t_gpu to no site, so it runs locally", violations[0])
                 self.assertIn("the local site executes cpu", violations[0])
+                self.assertEqual(es.site_violations(no_file, gpu, until_phase=until),
+                                 ["hardware.class: gpu is executed by no site: there is no "
+                                  "sites.yaml, so target t_gpu runs locally; the local site "
+                                  "executes cpu"])
                 # The site that WOULD run it is the answer.
                 self.assertEqual(es.site_violations(cfg, gpu, until_phase=until), [])
         # This host's own class runs locally at every end.
         for until in ("Build", "Validate", None):
             self.assertEqual(es.site_violations(local_only, _profile("t_cpu", "cpu"),
                                                 until_phase=until), [])
+
+    def test_an_explicit_local_mapping_and_an_overridden_local_are_named(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _Repo(tmp).load("sites_version: 1\nsites:\n  local:\n    executes: [gpu]\n"
+                                  "targets:\n  t_cpu: local\n")
+        violations = es.site_violations(cfg, _profile("t_cpu", "cpu"), until_phase="Validate")
+        self.assertEqual(violations, ["hardware.class: cpu is executed by no site: sites.yaml "
+                                      "maps target t_cpu to local; the local site executes gpu"])
 
     def test_a_mapped_site_that_does_not_execute_the_class_is_named(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
