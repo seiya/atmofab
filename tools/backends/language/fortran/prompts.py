@@ -73,8 +73,14 @@ def runner_output_document() -> str:
     return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
 
 
-#: How an exemplar's ABI-fixed dummy left unreferenced is bound so the promoted `-Werror`
-#: unused-dummy class passes (§5 of this language's checks-ABI binding). Spliced into the
-#: neutral exemplar block (`orchestration_runtime._build_exemplar`) as the one clause of it that
-#: is a spelling (issue #289, R4-b PR-4; byte-identical to the text it replaces).
-EXEMPLAR_UNREFERENCED_DUMMY_BINDING = "`associate (unused_<name> => <name>); end associate`"
+#: The gate rule a certified exemplar most often predates, and how to satisfy it, appended to the
+#: neutral exemplar block's "where the exemplar and a contract disagree, the contract wins"
+#: (`orchestration_runtime._build_exemplar`). It names this language's compiler warning classes
+#: and its binding idiom, so it is this backend's (issue #289, R4-b PR-4; byte-identical to the
+#: text it replaces).
+EXEMPLAR_GATE_DRIFT_NOTE = (
+    "In particular, an exemplar certified before the `Generate.gate` gate promoted its "
+    "current `-Werror` classes can show an ABI-fixed dummy "
+    "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
+    "`associate (unused_<name> => <name>); end associate` per §5 of the target "
+    "language's checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).")

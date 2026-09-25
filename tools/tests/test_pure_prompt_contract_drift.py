@@ -617,7 +617,11 @@ PINNED: dict[str, str] = {
     # this one are equal), so the CONTRACT is unchanged and a bump — which stops
     # `_resolve_exemplar_source` offering every pure-50 exemplar and refuses `--resume` across
     # it — would cost the corpus for no change in what any leaf reads.
-    "pure-50": "727a6a318c001564af87eb687b53bcb9c82ecd1a3a792367bd0099177aecd350",}
+    # Re-pinned in place again in that change's round 2, on the same ground: the `harness`
+    # producer template's abstract-interface / host-association / implicit-typing sentence
+    # became `{{language:interface_prototypes}}` (a new Fortran fragment file carries it), and
+    # the composed prompt is again byte-identical — measured for all 12 launch templates.
+    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",}
 
 
 def _contract_tuple() -> dict[str, object]:

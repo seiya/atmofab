@@ -1,0 +1,7 @@
+# The Fortran language fragments of `tools/prompt_templates/pure_generate_generate_harness.txt`.
+# Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/language/fortran/prompts.py`; lines before the first header are comments.
+
+@@ interface_prototypes
+lower every `interfaces` entry into one abstract-interface block as a prototype only — a declared shape, never a definition — with the language's host-association statement and then its implicit-typing statement inside it, in that order

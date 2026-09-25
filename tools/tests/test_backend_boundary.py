@@ -2515,7 +2515,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                          "COMPILED", "model_basename", "checks_basename", "runner_basename"),
         "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
         "prompt_fragments": ("fragments", "runner_output_document",
-                             "EXEMPLAR_UNREFERENCED_DUMMY_BINDING"),
+                             "EXEMPLAR_GATE_DRIFT_NOTE"),
         "checks_abi": ("document",),
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
                           "CHECKS_PUBLIC_NAMES", "checks_abi_dummy_violation",

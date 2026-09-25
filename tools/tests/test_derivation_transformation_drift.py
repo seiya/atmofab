@@ -298,7 +298,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Unshipped, so re-pinned in place in round 3 of its review, which found the first version
     # had left five mentions (a snapshot's `real(dp)`, "the Fortran-language backend", the §5.1
     # kind name, the "gfortran backstop", the runner's file name): now none.
-    "compile-docs-6": "57dc25cde7e484ddef3f15eceac9d91ba51b72eb25854dcd3032cc311aadd6ac",
+    # Re-pinned (issue #289, the R4-b PR-4 preconditions' round 2), without a bump: the
+    # case_id rule's RATIONALE in `phase_01_compile.md` named the Fortran runner's
+    # `select case` / `error stop`, which the target-free Compile leaf read; it now says
+    # "the host-rendered runner's case dispatch". What a valid IR is did not change (the
+    # distinctness, length and character rules are word for word the same).
+    "compile-docs-6": "a42516f0d5f55c5313c27198f41243a0cbaa48ec8a66db21970aa254d53a69c3",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

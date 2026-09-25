@@ -12969,7 +12969,7 @@ class DependencyFactsLanguageTests(unittest.TestCase):
             lambda arguments, *, carried_prototypes:
             [f"    ZZ ARG {a['name']} carried={sorted(carried_prototypes)}" for a in arguments])
         prompts = types.ModuleType("zz_dep_lang.prompts")
-        prompts.EXEMPLAR_UNREFERENCED_DUMMY_BINDING = "ZZ-UNUSED-IDIOM"
+        prompts.EXEMPLAR_GATE_DRIFT_NOTE = "ZZ-GATE-NOTE."
         package.signatures = sig
         package.prompts = prompts
         record = registry.Backend(
@@ -13034,7 +13034,8 @@ class DependencyFactsLanguageTests(unittest.TestCase):
                                 "sources": [{"filename": "sib_checks.zz", "text": "x"}]}}
         with self._second_language():
             block = _build_exemplar(dict(request, pure_language="zz_dep"))
-        self.assertIn("bind it with ZZ-UNUSED-IDIOM per §5", block)
+        self.assertIn("the contract wins. ZZ-GATE-NOTE.", block)
+        self.assertNotIn("-Werror", block)
         self.assertNotIn("associate", block)
         self.assertIn("`associate (unused_<name> => <name>); end associate`",
                       _build_exemplar(dict(request, pure_language="fortran")))
@@ -13042,6 +13043,13 @@ class DependencyFactsLanguageTests(unittest.TestCase):
                                 "no prompt_fragments": "c"}.items():
             with self.subTest(label), self.assertRaises(ValueError):
                 _build_exemplar(dict(request, pure_language=language))
+        # A language that declares `prompt_fragments` but states no note is refused by name,
+        # not left to raise an unnamed AttributeError out of the render.
+        with self._second_language():
+            del sys.modules["zz_dep_lang"].prompts.EXEMPLAR_GATE_DRIFT_NOTE
+            with self.assertRaises(ValueError) as caught:
+                _build_exemplar(dict(request, pure_language="zz_dep"))
+        self.assertIn("cannot be composed for language 'zz_dep'", str(caught.exception))
 
 
 class SignatureDriftCanaryTests(unittest.TestCase):
@@ -13621,6 +13629,43 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             # ...and no language to render interface facts in, since there are none.
             self.assertNotIn("interface_language", facts[0])
             self.assertTrue(facts[0]["aggregate_verdict_ref"])
+
+    def test_the_stamp_is_the_consumer_language_not_a_constant(self) -> None:
+        # Issue #289 (R4-b PR-4 preconditions): the renderer shows the facts in the stamped
+        # language's words, so the stamp must be the CONSUMER's language. Observable only with a
+        # second language that reads interfaces; this one borrows Fortran's readers so the
+        # certified source below is read, and states its own name.
+        import types
+
+        from tools.backends import registry
+        from tools.backends.language.fortran import bundle as fortran_bundle
+        from tools.backends.language.fortran import signatures as fortran_signatures
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        from tools.tests.target_fixtures import profile_with
+        package = types.ModuleType("zz_reader_lang")
+        package.bundle = fortran_bundle
+        package.signatures = fortran_signatures
+        record = registry.Backend(
+            "language", "zz_reader", "zz_reader_lang", core_provides=frozenset(),
+            backend_provides=frozenset({"bundle_facts", "signatures"}))
+        with mock.patch.dict(sys.modules, {"zz_reader_lang": package}), \
+                mock.patch.dict(registry._BACKENDS, {("language", "zz_reader"): record}), \
+                tempfile.TemporaryDirectory() as tmp:
+            target = profile_with(toolchain={"language": "zz_reader", "compiler": "gfortran"})
+            repo_root = Path(tmp)
+            self._write_dep_pipeline(
+                repo_root, "component__dep_base__0.1.0", "p_20260601_002",
+                "bin_20260601_002", "run_20260601_002", source_id="src_20260601_001",
+                spec_id="dep_base", model_text=self._SCALE_MODEL, target=target)
+            self._write_ir(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001",
+                [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+                  "operations": ["dep_base__scale"]}],
+                impl_defaults={"toolchain": {"language": "zz_reader"}})
+            facts = _resolve_dependency_facts(
+                repo_root, "workspace/ir/component__dep_top__0.1.0/top_001", target=target)
+        self.assertTrue(facts[0].get("published_operations"), facts)
+        self.assertEqual(facts[0]["interface_language"], "zz_reader")
 
     def test_unresolvable_op_omits_published_but_keeps_fact(self) -> None:
         from tools.orchestration_runtime import _resolve_dependency_facts

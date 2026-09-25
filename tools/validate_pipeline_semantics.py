@@ -2268,9 +2268,14 @@ def _validate_checks_source_files(
         # the runner states it (issue #289, R4-b PR-4). When that backend could not be reached
         # the refusal above already names why, and the finding is stated without a remedy
         # rather than asked of a backend that raised.
-        remedy = (host_render.hidden_bound_state_remedy(language, hidden)
-                  if abi_refusal is None else
-                  f"checks module must publish every bound state variable: {hidden}")
+        remedy = f"checks module must publish every bound state variable: {hidden}"
+        if abi_refusal is None:
+            try:
+                remedy = host_render.hidden_bound_state_remedy(language, hidden)
+            except Exception as exc:  # noqa: BLE001
+                # Only the WORDING is the backend's; the finding stands without it, and an
+                # exception here would discard every violation the sibling gates collected.
+                remedy += f" (the language's remedy could not be stated: {exc!r})"
         violations.append(f"{checks_path}: {remedy}")
 
     violations.extend(source_reading.checks_harness_isolation_violations(

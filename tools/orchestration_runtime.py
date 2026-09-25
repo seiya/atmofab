@@ -9362,19 +9362,20 @@ def _sanitize_exemplar_body(text: str) -> str:
                 .replace(_EXEMPLAR_END_PREFIX, "--- END-EXEMPLAR "))
 
 
-def _exemplar_unreferenced_dummy_binding(request_payload: dict[str, Any]) -> str:
-    """How the request's target language binds an unreferenced ABI-fixed dummy
-    (`prompt_fragments.EXEMPLAR_UNREFERENCED_DUMMY_BINDING`) — the one clause of the exemplar
-    block that is a spelling (issue #289, R4-b PR-4). RAISES a named `ValueError` when the
-    request names no language or its language cannot state it, as `_compose_language_fragments`
-    does: the alternative is a leaf told another language's idiom."""
+def _exemplar_gate_drift_note(request_payload: dict[str, Any]) -> str:
+    """The request's target language's example of a gate rule an exemplar may predate
+    (`prompt_fragments.EXEMPLAR_GATE_DRIFT_NOTE`) — the part of the exemplar block that names
+    a compiler's warning classes and a binding idiom (issue #289, R4-b PR-4). RAISES a named
+    `ValueError` when the request names no language or its language cannot state it, as
+    `_compose_language_fragments` does: the alternative is a leaf told another language's
+    idiom."""
     language = str(request_payload.get("pure_language") or "").strip().lower()
     if not language:
         raise ValueError("an exemplar block is rendered for a request that names no "
                          "`pure_language`; the host must name the target language")
     try:
         module = backend_registry.capability_module("language", language, "prompt_fragments")
-        return str(module.EXEMPLAR_UNREFERENCED_DUMMY_BINDING)
+        return str(module.EXEMPLAR_GATE_DRIFT_NOTE)
     except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
             AttributeError) as exc:
         raise ValueError(
@@ -9414,11 +9415,7 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "copy the exemplar's physics or checks. It is orientation, never a gate and never this "
         "node's spec. It was certified under the gates in force AT ITS TIME, so it may predate "
         "a rule now in your contracts: where the exemplar and a contract disagree, the contract "
-        "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted its "
-        "current `-Werror` classes can show an ABI-fixed dummy "
-        "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
-        f"{_exemplar_unreferenced_dummy_binding(request_payload)} per §5 of the target "
-        "language's checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).",
+        "wins. " + _exemplar_gate_drift_note(request_payload),
     ]
     for src in sources:
         if not isinstance(src, dict):

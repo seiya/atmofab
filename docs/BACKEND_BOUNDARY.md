@@ -204,8 +204,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
     that language's backend**, whichever neutral gate decides the finding (issue #289, the R4-b
     PR-4 preconditions): the checks-ABI and bound-state remedies by the runner backend through
     `host_render`, the component-surface remedies by `source_reading`, the dependency-operation
-    guidance by `signatures`, the exemplar's unreferenced-dummy idiom by `prompt_fragments`. A
-    target-free message (Compile's) names no language's statements at all.
+    guidance by `signatures`, the exemplar's gate-drift caveat and the neutral templates'
+    language-shaped clauses by `prompt_fragments`. A target-free message (Compile's, and the
+    phase document the Compile prompts inline) names no language's statements at all.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

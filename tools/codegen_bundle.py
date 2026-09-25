@@ -1004,7 +1004,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"{prefix}defined_in {defined_in!r} has role {role!r}, which cannot define an "
                 f"entrypoint (only {' / '.join(sorted(set(ROLE_FOR_ENTRYPOINT_KIND.values())))} "
                 "may: helper / internal_module are private by role, and a runner is the unit's "
-                "executable entry, which nothing may `use`)")
+                "executable entry, which nothing may import)")
             continue
         expected_role = ROLE_FOR_ENTRYPOINT_KIND.get(entry.get("kind"))
         if expected_role is not None and role != expected_role:
@@ -1650,13 +1650,13 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
                       if str(e.get("logical_path", "")) == want_path), None)
         if match is None:
             return (f"the {role}-role file must be named {want_path!r} exactly (the host-rendered "
-                    f"runner `use`s module {want_module!r} by fixed name, and the deterministic "
+                    f"runner imports module {want_module!r} by fixed name, and the deterministic "
                     f"gate opens that filename verbatim); got "
                     f"{[e.get('logical_path') for e in candidates]}")
         modules = {str(m).casefold() for m in (match.get("modules") or []) if isinstance(m, str)}
         if want_module.casefold() not in modules:
             return (f"{want_path} must declare module {want_module!r} (the host-rendered "
-                    f"runner `use`s it); its modules are {sorted(match.get('modules') or [])}")
+                    f"runner imports it); its modules are {sorted(match.get('modules') or [])}")
     return None
 
 

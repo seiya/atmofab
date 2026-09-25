@@ -1380,6 +1380,8 @@ class PureRenderTests(unittest.TestCase):
         # in the template did.
         ("tools/prompt_templates/backends/language/fortran/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify.txt", None, None),
+        ("tools/prompt_templates/backends/language/fortran/generate_generate_harness.txt",
+         None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
         # Issue #289 (R4-b PR-2): the Fortran spelling of the checks ABI and the gate guards,
         # and the runner JSON writer rules, moved out of the two contracts above into language
@@ -2205,7 +2207,7 @@ class PureRenderTests(unittest.TestCase):
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
-        "_exemplar_unreferenced_dummy_binding",  # returns the language's clause verbatim
+        "_exemplar_gate_drift_note",         # returns the language's note verbatim
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
         "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)

@@ -3062,6 +3062,21 @@ class PureStateBindingLayerTests(unittest.TestCase):
             harness_provided={"sync_single_case@1", "state_registration@1"},
             build_graph=lambda d: None, ir_published_operations=None)
 
+    def test_the_binding_layer_is_given_the_target_language(self) -> None:
+        # Its reasons are the runner language's words (issue #289, R4-b PR-4), so the layer
+        # must be handed the TARGET's language, not a fixed one — observable only with a
+        # language other than the one every fixture uses.
+        doc = self._bundle([self._binding("q")])
+        with mock.patch.object(cb, "_m3c_state_binding_mismatch",
+                               return_value="stop here") as layer:
+            r = cb.pure_bundle_contract_violation(
+                doc, node_key=self._NK, spec_id="bx", shape="m3c", language="zz_target",
+                runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+                harness_provided={"sync_single_case@1", "state_registration@1"},
+                build_graph=lambda d: None, ir_published_operations=None)
+        self.assertEqual(r, ("bundle_state_binding_mismatch", "stop here"))
+        self.assertEqual(layer.call_args.kwargs, {"language": "zz_target"})
+
     def test_the_convention_is_accepted(self) -> None:
         self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
         # the IR's object form is projected the same way
@@ -3153,6 +3168,19 @@ class PureStateBindingLayerTests(unittest.TestCase):
                                     ["q"]))
         upper = self._CHECKS.replace("  public :: q\n", "  public :: Q\n")
         self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=upper), ["q"]))
+
+    def test_a_wrong_kind_alone_is_named_as_such(self) -> None:
+        # The remedy distinguishes a name defined as the wrong kind from an unpublished one: the
+        # two lists reach the backend separately, so a leaf told "publish it" for a name it
+        # already published is not sent round an extra repair (issue #289, round 2).
+        as_function = self._CHECKS.replace(
+            "  subroutine case_setup(case_id, ok)\n", "  function case_setup(case_id) result(ok)\n"
+        ).replace("  end subroutine case_setup\n", "  end function case_setup\n")
+        self.assertNotEqual(as_function, self._CHECKS)
+        r = self._run(self._bundle([self._binding("q")], checks=as_function), ["q"])
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("defined here as a FUNCTION: case_setup", r[1])
+        self.assertNotIn("not published by module", r[1])
 
     def test_a_remedy_that_cannot_be_stated_still_refuses(self) -> None:
         # Issue #289 (R4-b PR-4 preconditions): the checks-ABI and bound-state remedies are the

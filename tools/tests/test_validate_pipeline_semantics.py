@@ -20377,6 +20377,15 @@ class ChecksSourceGateTests(unittest.TestCase):
         self.assertTrue(any(x.endswith("checks module must publish every bound state "
                                        "variable: ['q']") for x in v), v)
 
+    def test_a_bound_state_remedy_that_cannot_be_stated_still_reports_the_finding(self) -> None:
+        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
+        with unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
+                                        side_effect=RuntimeError("no words")):
+            v = self._run(hidden, bound_state=("q",))
+        self.assertTrue(any("must publish every bound state variable: ['q'] (the language's "
+                            "remedy could not be stated: RuntimeError('no words'))" in x
+                            for x in v), v)
+
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
                              exec_dir=tmp, pipeline_dir=tmp)
