@@ -28,6 +28,7 @@ request of issue #293, and until then this module changes no run.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,6 +75,12 @@ _REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec"})
 #: The fields that only mean something to a batch scheduler; a `none` site may not carry them.
 _SCHEDULER_ONLY = ("scheduler_directives", "queue_timeout_sec")
 _LOCAL_KEYS = frozenset({"executes"})
+#: An ssh destination the host hands to ssh AND scp unchanged: `[user@]name`. `:` and `/` are
+#: refused because scp reads `host:path` at the first `:` and treats a `/` before it as a local
+#: path — `scp f 'a/b:/x'` is a local copy — so ssh and scp would reach different places; a
+#: leading `-` is an ssh option, and one of those runs a command. A destination this refuses
+#: (an IPv6 literal, a port) is written as an ssh alias in ssh's own configuration.
+HOST_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._@-]*")
 
 
 class SitesConfigError(ValueError):
@@ -168,16 +175,19 @@ def _string(value: Any, where: str) -> str:
 
 
 def _remote_safe(value: str, where: str, *, spaces: bool) -> str:
-    """Refuse a value a remote shell would act on. `spaces` says whether a plain space is
-    admissible (it is inside a directive, never inside a host or a path)."""
+    """Refuse a value a remote shell would act on or misread: a character in the server's
+    shell-active set, anything that is not printable ASCII (a NUL ends an argv element, a
+    non-breaking space reads as a space to a person and not to a shell), and a plain space
+    where `spaces` is False (it is admissible inside a directive, never in a host or a path)."""
     bad = sorted(set(value) & _shell_active_chars())
+    bad += sorted({c for c in value if not (c.isascii() and c.isprintable())})
     if not spaces and " " in value:
         bad.append(" ")
     if bad:
         raise SitesConfigError(
             "sites_config_shell_active_value",
             f"{value!r} carries {', '.join(repr(c) for c in bad)}, which a remote shell would "
-            f"act on", where=where)
+            f"act on or misread", where=where)
     return value
 
 
@@ -219,11 +229,13 @@ def _executes(value: Any, where: str) -> tuple[str, ...]:
 def _remote_site(site_id: str, body: dict, where: str) -> Site:
     _check_keys(body, _REMOTE_REQUIRED, _REMOTE_OPTIONAL, where)
     host = _remote_safe(_string(body["host"], f"{where}.host"), f"{where}.host", spaces=False)
-    if host.startswith("-"):
-        # `ssh <host>` would read it as an option, and one of those options runs a command.
-        raise SitesConfigError("sites_config_invalid_field",
-                               f"{host!r} begins with '-', which ssh reads as an option",
-                               where=f"{where}.host")
+    if not HOST_PATTERN.fullmatch(host):
+        raise SitesConfigError(
+            "sites_config_invalid_field",
+            f"{host!r} is not an ssh destination ssh and scp both read unchanged "
+            f"({HOST_PATTERN.pattern}): ':' and '/' change what scp reads as the host, and a "
+            f"leading '-' is an ssh option; name anything else as an ssh alias",
+            where=f"{where}.host")
     workdir = _remote_safe(_string(body["workdir"], f"{where}.workdir"), f"{where}.workdir",
                            spaces=False)
     segments = [seg for seg in workdir.split("/") if seg not in ("", ".")]

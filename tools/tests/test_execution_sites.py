@@ -214,10 +214,43 @@ class RefusalTests(unittest.TestCase):
             exc = self._refuse(_BASE.replace("host: box", "host: 'b%x'"))
         self.assertEqual(exc.rule, "sites_config_shell_active_value")
 
-    def test_a_host_ssh_would_read_as_an_option_is_refused(self) -> None:
-        exc = self._refuse(_BASE.replace("host: box", "host: -oX=y"))
-        self.assertEqual(exc.rule, "sites_config_invalid_field")
-        self.assertEqual(exc.where, "sites.box.host")
+    def test_a_host_ssh_and_scp_would_read_differently_is_refused(self) -> None:
+        """`:` and `/` move scp's idea of the host (`scp f 'a/b:/x'` is a local copy), and a
+        leading `-` is an ssh option; each is refused, and a plain destination is not."""
+        for host in ("-oX=y", "a:b", "2001:db8::1", "foo/bar", "ssh://u@h:2222", "@h"):
+            with self.subTest(host=host):
+                exc = self._refuse(_BASE.replace("host: box", f"host: {host!r}"))
+                self.assertEqual(exc.rule, "sites_config_invalid_field", str(exc))
+                self.assertEqual(exc.where, "sites.box.host")
+        for host in ("user@host", "login.example.org", "user.name@node-1", "h_1", "gpu1"):
+            with self.subTest(accepted=host), tempfile.TemporaryDirectory() as tmp:
+                cfg = _Repo(tmp).load(_BASE.replace("host: box", f"host: {host!r}"))
+                self.assertEqual(cfg.sites["box"].host, host)
+
+    def test_a_character_that_is_not_printable_ascii_is_refused_in_every_remote_value(
+            self) -> None:
+        import yaml
+
+        for escaped in ("\\0", "\\v", "\\x7f", "\\xa0", "\\u00e9"):
+            # The probe must reach the loader as ONE decoded character, not as a backslash —
+            # a backslash is shell-active on its own and would be refused for that instead.
+            decoded = yaml.safe_load(f'"{escaped}"')
+            self.assertEqual(len(decoded), 1, escaped)
+            self.assertNotEqual(decoded, "\\")
+            with _with_batch_scheduler():
+                cases = {
+                    "sites.box.host": _BASE.replace("host: box", f'host: "b{escaped}x"'),
+                    "sites.box.workdir": _BASE.replace("workdir: /scratch/jobs",
+                                                       f'workdir: "/s{escaped}x"'),
+                    "sites.box.scheduler_directives[0]": (
+                        _BASE.replace("scheduler: none", "scheduler: zz_batch")
+                        + f'    scheduler_directives: ["--a{escaped}"]\n'),
+                }
+                for where, text in cases.items():
+                    with self.subTest(char=escaped, where=where):
+                        exc = self._refuse(text)
+                        self.assertEqual(exc.rule, "sites_config_shell_active_value", str(exc))
+                        self.assertEqual(exc.where, where)
 
     def test_a_workdir_must_be_absolute_below_root_without_dotdot(self) -> None:
         for workdir in ("scratch/jobs", "/", "//", "/./", "/scratch/../jobs", "/scratch/.."):
