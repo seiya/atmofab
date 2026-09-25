@@ -187,8 +187,17 @@ together with the bundle's `target_lowering_plan.parallelization`.
     pipeline's target language) takes its refusal clause from the registry, but its
     §5.1 helpers import one concrete backend by name and take no `language` argument, so it
     additionally refuses any language those helpers are not wired to
-    (`_signature_backend_refusal`). This is the one gate family the procedure above is still not
-    sufficient for; it migrates with the `validate_pipeline_semantics.py` source-reading area.
+    (`_signature_backend_refusal`). It migrates with the `validate_pipeline_semantics.py`
+    source-reading area.
+  - **The validator and the conductor still spell one language's file names**, and for the
+    validator that is FAIL-OPEN, not a refusal (measured on issue #289's R4-b PR-2 review): its
+    runner-output gates find the runner by a suffix glob, so a runner under another language's
+    suffix is not seen and adds no violation — a forbidden judge-artifact write in it passes
+    `post_generate`. The same spellings sit in `_expected_runner_name`, the checks / model source
+    readers, and the conductor's `phase_required_outputs`. They migrate with the source-reading
+    area (R4-b PR-3), and that migration is a precondition of running a second language: until
+    it lands, registering one and declaring its capabilities is NOT sufficient, whatever the gates
+    above answer.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

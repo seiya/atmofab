@@ -83,6 +83,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2461,6 +2462,43 @@ class RegistryConsistencyTests(unittest.TestCase):
                 facts = registry.capability_module("language", module.LANGUAGE,
                                                    "syntax_promotions")
                 self.assertTrue(module.CANARY_FILENAME.endswith(tuple(facts.SOURCE_SUFFIXES)))
+
+    #: What each LANGUAGE capability's readers take off its module (issue #289, R4-b PR-2;
+    #: round 3 found `prompt_fragments.runner_output_document` stated nowhere and checked by
+    #: nothing — a second language missing it passes the launch gate, which asks `provides`
+    #: only, and dies unnamed at the harness producer's context assembly).
+    _LANGUAGE_CAPABILITY_CONTRACT: ClassVar[dict[str, tuple[str, ...]]] = {
+        "bundle_facts": ("SOURCE_EXTENSIONS", "COMPILER_SELECTOR_FAMILIES", "IDENTIFIER_MAX",
+                         "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
+                         "COMPILED", "model_basename", "checks_basename", "runner_basename"),
+        "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
+        "prompt_fragments": ("fragments", "runner_output_document"),
+        "checks_abi": ("document",),
+        "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
+                          "CHECKS_PUBLIC_NAMES"),
+    }
+
+    def test_every_language_capability_carries_the_contract_its_readers_use(self) -> None:
+        for capability, names in self._LANGUAGE_CAPABILITY_CONTRACT.items():
+            languages = [lang for lang in registry.backend_ids("language")
+                         if capability in registry.get("language", lang).backend_provides]
+            self.assertTrue(languages, capability)
+            for language in languages:
+                with self.subTest(capability=capability, language=language):
+                    module = registry.capability_module("language", language, capability)
+                    self.assertEqual([n for n in names if not hasattr(module, n)], [])
+        # and every language capability the launch gate requires has a contract row
+        from tools.target_profile import LANGUAGE_CAPABILITIES_EVERY_NODE
+        self.assertEqual(set(LANGUAGE_CAPABILITIES_EVERY_NODE) - set(
+            self._LANGUAGE_CAPABILITY_CONTRACT), set())
+        # the documents a language serves are readable and non-empty
+        for language in registry.backend_ids("language"):
+            if registry.provides("language", language, "checks_abi"):
+                self.assertTrue(registry.capability_module(
+                    "language", language, "checks_abi").document().strip())
+            if registry.provides("language", language, "prompt_fragments"):
+                self.assertTrue(registry.capability_module(
+                    "language", language, "prompt_fragments").runner_output_document().strip())
 
     def test_a_language_two_linters_declare_is_refused_not_resolved_by_order(self) -> None:
         import types

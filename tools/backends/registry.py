@@ -196,8 +196,10 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         ("language",),
         "The pure `generate` prompts have this value's authoring and review rules to carry: the "
         "neutral templates mark where a language's rules go (`{{language:<name>}}`), and the "
-        "backend supplies the text. Without it those templates cannot be composed for a node "
-        "of this value, and its launch is refused rather than sent another language's rules.",
+        "backend supplies the text (`fragments(<template>)`), plus the runner-output binding "
+        "inlined after the runner-output contract (`runner_output_document()`). Without it "
+        "those templates cannot be composed for a node of this value, and its launch is "
+        "refused rather than sent another language's rules.",
     ),
     "syntax_promotions": (
         ("language",),
@@ -208,7 +210,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "syntax_check": (
         ("compiler",),
-        "The syntax-only gate has an argv adapter and a diagnostic reader for this value.",
+        "The syntax-only gate has an adapter for this value: its argv, its executable, a version "
+        "probe and a canary source (a failing stage is attributed by re-running the adapter, "
+        "never by reading its diagnostics).",
     ),
     "lint": (
         ("linter",),
