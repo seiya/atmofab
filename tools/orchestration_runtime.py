@@ -4623,8 +4623,9 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
 # (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`
-# leaf INLINED, each half to the leaf it binds — §1-4 to the `m3c` reviewer, §5 to the
-# `harness` producer; it was a force-read must-read whose SKILL branched on the node kind
+# leaf INLINED: §1-4 to the `m3c` reviewer (followed by the target language's binding of them)
+# and to the compile producer; the `harness` producer's gate guards are the BINDING's §5 since
+# issue #289. It was a force-read must-read whose SKILL branched on the node kind
 # until Z4 (issue #171). NOT given to validate.judge (it never sees the checks source).
 CHECKS_MODULE_CONTRACT_REF = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
 # Canonical step -> phase-doc map. Of these, only `compile` reaches a leaf — inlined whole

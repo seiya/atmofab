@@ -3001,8 +3001,9 @@ def _validate_makefile_test_invokes_cases(
     (b) a run that hardcodes ``--cases <spec> <ids>`` instead of referencing the
     ``$(SPEC)``/``$(CASES)`` variables — the env override has no effect and make
     test runs a different spec/case set than ``run_program`` (wrong-evidence
-    comparison). The conductor-authored fortran Makefile already satisfies this;
-    the check guards the LLM-authored c/cpp/mixed path. Best-effort static parse —
+    comparison). The conductor-authored Makefile already satisfies this; the check
+    guards a control file a LEAF would author for a compiled language the conductor
+    writes none for (none is registered today). Best-effort static parse —
     the runtime ``quality_check`` is the deterministic backstop. Scoped to the
     make-based quality-check toolchains (same as the no-relink check)."""
     if not _make_quality_check_applies(build_system, language):
@@ -9410,8 +9411,11 @@ def _expected_runner_name(spec_id: str) -> str:
     `bundle_facts.runner_basename`, while this module still spells that language's name: it is
     part of this module's source-reading debt (the runner glob beside its reader included;
     `TODO.md`, the `validate_pipeline_semantics.py` source-reading area), which migrates with that
-    issue's PR-3. Until then a second language's runner is misnamed here — a refusal of a correct
-    bundle, not a pass.
+    issue's PR-3, and that migration is a PRECONDITION of running a second language. Until then
+    such a runner is misread here in two directions (round 2 measured the second): an m3c node's
+    host glue is refused as undeclared, and a harness self-test runner under another suffix is
+    not SEEN by this module's runner-output gates at all — the glob returns nothing and they add
+    no violation, so a forbidden judge-artifact write in it would pass post_generate.
     """
     return f"{spec_id}_runner.f90"
 
