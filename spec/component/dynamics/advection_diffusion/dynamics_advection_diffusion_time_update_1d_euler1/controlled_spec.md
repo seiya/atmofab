@@ -2,34 +2,31 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.3.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
 - `family`: `advection_diffusion`
 
 ## 1. Responsibility and scope
-This `component` is responsible for executing the time update of the 1D advection-diffusion problem.
+This `component` is responsible for executing one forward Euler step of the 1D advection-diffusion problem for a tendency field the caller supplies. It holds no spatial stencil, no flux, and no boundary treatment: the fluxes belong to the flux `component`, the ghost cells to the boundary `component`, and the tendency built from the flux difference to the `problem` `node` that composes them.
 
 ## 2. input/output contract
-The input is `u^n(i)`, `a`, `nu`, `dx`, `dt`, and the boundary-applied neighboring cell values. The output is `u^{n+1}(i)`.
+The inputs are the state `u^n(i)`, the tendency field `L_flux(i)` (the caller's $L_i=-\left(F_{i+1/2}-F_{i-1/2}\right)/\Delta x$, built from the flux `component`'s output), and `dt`. The output is `u^{n+1}(i)`. Every input and output array holds the `nx` interior cells only; there are no ghost cells.
 
-**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are the cell count `nx` and `u_n` (`nx` values) with `a`, `nu`, `dx`, `dt` as inputs; `u_np1` (`nx` values) and the input guard `guard_pass` (§4) as outputs. `nx` and `guard_pass` are part of the published contract even though the physics above does not name them.
+**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are the cell count `nx`, `u_n` and `L_flux` (`nx` values each) and `dt` as inputs; `u_np1` (`nx` values) and the input guard `guard_pass` (§4) as outputs. `nx` and `guard_pass` are part of the published contract even though the physics above does not name them.
+
+`L_flux` is supplied as a **fixed field** by the caller; this component does **not** recompute it internally.
 
 ## 3. Operation definition
-The published `operation` is `dynamics_advection_diffusion_time_update_1d_euler1__advance`. The update expression is
+The published `operation` is `dynamics_advection_diffusion_time_update_1d_euler1__advance`. The update expression is, for every cell $i=0,\dots,nx-1$,
 $$
-u_i^{n+1}
-= u_i^n
-- C\left(u_i^n-u_{i-1}^n\right)
-+ D\left(u_{i+1}^n-2u_i^n+u_{i-1}^n\right)
+u_i^{n+1}=u_i^n+\Delta t\,L_i
 $$
-$$
-C=a\frac{\Delta t}{\Delta x},\quad D=\nu\frac{\Delta t}{\Delta x^2}
-$$
+where $L_i$ is element $i+1$ of `L_flux`. Each cell's update reads only that cell's own `u_n` and `L_flux` values.
 
 ## 4. Failure conditions and constraints
-Treat `dx<=0` and `dt<=0` as invalid input and an error.
+Treat `dt<=0` as invalid input and an error.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_advection_diffusion_time_update_1d_euler1__advance`.
@@ -63,24 +60,14 @@ procedures:
       kind: dp
     dims:
     - nx
-  - name: a
-    rank: 0
+  - name: L_flux
+    rank: 1
     intent: in
     spec:
       type: real
       kind: dp
-  - name: nu
-    rank: 0
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  - name: dx
-    rank: 0
-    intent: in
-    spec:
-      type: real
-      kind: dp
+    dims:
+    - nx
   - name: dt
     rank: 0
     intent: in
@@ -109,7 +96,7 @@ Forbid automatic switching of the time-integration method.
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
-`ad_readiness.enabled` is `true`. `ceil` (when used in the `dt` rule) is made explicit as a non-differentiable operation.
+`ad_readiness.enabled` is `true`. It includes no non-differentiable operations.

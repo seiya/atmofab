@@ -2,18 +2,18 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_advection_diffusion_time_update_1d_euler1_l0`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
-- `spec_ref.spec_version`: `0.2.0`
+- `spec_ref.spec_version`: `0.3.0`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` `dynamics_advection_diffusion_time_update_1d_euler1__advance` at `L0`: the zero-gradient (uniform field) invariance, the single-step update-formula consistency, and the input guard for an invalid time step (`dt<=0`).
+This suite verifies the published `operation` `dynamics_advection_diffusion_time_update_1d_euler1__advance` at `L0`: the zero-tendency invariance, the single-step update-formula consistency, and the input guard for an invalid time step (`dt<=0`).
 
 ## 2. Input-defaulting rules
-- The normal case uses `dx>0`, `dt>0`.
+- The normal case uses `nx>=1`, `dt>0`, and a finite `L_flux`.
 - The abnormal case uses `dt<=0`.
 
 ## 3. Execution-control rules
@@ -23,19 +23,19 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_time
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 
 ## 5. Diagnostics contract
-- Require outputting `checks.zero_gradient_invariance`, `checks.formula_consistency`, and `checks.input_guard` in `diagnostics.json`.
+- Require outputting `checks.zero_tendency_invariance`, `checks.formula_consistency`, and `checks.input_guard` in `diagnostics.json`.
 
 ## 6. Test definitions
-- `test_id`: `l0_zero_gradient_invariance_pass`
+- `test_id`: `l0_zero_tendency_invariance_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with a uniform-field input, satisfy `u^{n+1}=u^n`.
+  - `judgment`: with `L_flux = 0` and a non-uniform `u_n`, satisfy `u^{n+1}=u^n` exactly (difference `== 0`): $u+\Delta t\cdot 0$ is $u$ itself.
 - `test_id`: `l0_single_step_formula_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: the computation result for a known input matches the update expression within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`).
+  - `judgment`: for known `u_n`, `L_flux` and `dt`, the result matches `u_n + dt*L_flux` within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`).
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`

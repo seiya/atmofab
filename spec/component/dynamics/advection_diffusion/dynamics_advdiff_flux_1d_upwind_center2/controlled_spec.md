@@ -2,31 +2,34 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advdiff_flux_1d_upwind_center2`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.3.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
 - `family`: `advection_diffusion`
 
 ## 1. Responsibility and scope
-This `component` is responsible for computing the interface flux of the 1D advection-diffusion problem. It does not handle the state update itself.
+This `component` is responsible for computing the interface flux of the 1D advection-diffusion problem at every one of the `nx + 1` faces of the domain, the periodic seam face included. It does not handle the state update itself, and it does not fill the ghost cells: filling them is the responsibility of the boundary `component`, and this `component` receives a field whose ghost cells are already filled.
 
 ## 2. input/output contract
-The input is `u(i)`, `a`, `nu`, `dx`, and `dt`. The output is `flux_adv(i+1/2)` and `flux_dif(i+1/2)`. `u` is assumed to be cell-centered values.
+The inputs are `nx`, `ng`, the ghost-extended field `u` (rank 1, holding `nx + 2*ng` cell-centered values — the interior `nx` cells plus `ng` ghost cells at each end, the same layout as the boundary `component`'s `u_out`), `a`, `nu`, `dx`, and `dt`. The outputs are `flux_adv(j+1/2)` and `flux_dif(j+1/2)` at each of the `nx + 1` faces, and `guard_pass`, which reports whether the inputs are valid (§4).
 
-**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are the cell count `nx` and the field `u` (`nx` values) with `a`, `nu`, `dx`, `dt` as inputs; `flux_adv` and `flux_dif` (`nx - 1` face values each) and the input guard `guard_pass` (§4) as outputs. `nx` and `guard_pass` are part of the published contract even though the physics above does not name them.
+**Index origin.** §3 and `tests.md` state the field in its own index convention `u_{-ng} … u_{nx-1+ng}`, where `u_0 … u_{nx-1}` are the interior cells. The published arrays carry no lower bound of their own — §5.1 pins `u` as rank-1 with no `dims`, so the callee sees position `1` first — and the correspondence is positional: `u_j` is element `j + ng + 1`. The faces are $j+1/2$ for $j=-1,\dots,nx-1$, and $F_{j+1/2}$ is element `j + 2` of `flux_adv` and of `flux_dif`. So the left seam face $F_{-1/2}$ is element `1`, and the right seam face $F_{nx-1/2}$ is element `nx + 1`.
+
+**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are the cell count `nx`, the ghost width `ng`, and the field `u` (`nx + 2*ng` values) with `a`, `nu`, `dx`, `dt` as inputs; `flux_adv` and `flux_dif` (`nx + 1` face values each) and the input guard `guard_pass` (§4) as outputs. `nx`, `ng` and `guard_pass` are part of the published contract even though the physics above does not name them.
 
 ## 3. Operation definition
-The published `operation` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. The advection flux is defined by first-order upwind, and the diffusion flux by second-order central.
+The published `operation` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. The advection flux is defined by first-order upwind, and the diffusion flux by second-order central, at every face $j+1/2$, $j=-1,\dots,nx-1$:
 $$
-F^{adv}_{i+1/2}=a\,u_i\quad(a>0)
+F^{adv}_{j+1/2}=a\,u_j\quad(a>0)
 $$
 $$
-F^{dif}_{i+1/2}=-\nu\frac{u_{i+1}-u_i}{dx}
+F^{dif}_{j+1/2}=-\nu\frac{u_{j+1}-u_j}{dx}
 $$
+The cells read are $u_{-1}\dots u_{nx}$, so `ng>=1` suffices.
 
 ## 4. Failure conditions and constraints
-Treat `a<=0`, `dx<=0`, and `dt<=0` as invalid input and an error.
+Treat `a<=0`, `dx<=0`, `dt<=0`, `nx<2`, and `ng<1` as invalid input and an error.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. On a `major` compatibility break, separate the `spec_id`.
@@ -52,14 +55,17 @@ procedures:
     intent: in
     spec:
       type: integer
+  - name: ng
+    rank: 0
+    intent: in
+    spec:
+      type: integer
   - name: u
     rank: 1
     intent: in
     spec:
       type: real
       kind: dp
-    dims:
-    - nx
   - name: a
     rank: 0
     intent: in
@@ -91,7 +97,7 @@ procedures:
       type: real
       kind: dp
     dims:
-    - nx - 1
+    - nx + 1
   - name: flux_dif
     rank: 1
     intent: out
@@ -99,7 +105,7 @@ procedures:
       type: real
       kind: dp
     dims:
-    - nx - 1
+    - nx + 1
   - name: guard_pass
     rank: 0
     intent: out
@@ -114,7 +120,7 @@ The discretization order must not be changed automatically. Forbid implicit comp
 This `operation_id` requires registration in `component_catalog.yaml`. `case.resolved.yaml` requires recording the adopted `component_id@version`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. It includes no non-differentiable operations.
