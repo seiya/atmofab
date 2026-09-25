@@ -9,7 +9,7 @@
 - `family`: `advection_diffusion`
 
 ## 1. Responsibility and scope
-This `component` is responsible for computing the interface flux of the 1D advection-diffusion problem at every one of the `nx + 1` faces of the domain, the periodic seam face included. It does not handle the state update itself, and it does not fill the ghost cells: filling them is the responsibility of the boundary `component`, and this `component` receives a field whose ghost cells are already filled.
+This `component` is responsible for computing the interface flux of the 1D advection-diffusion problem at every one of the `nx + 1` faces of the domain, the two end faces included. It does not handle the state update itself, and it does not fill the ghost cells: filling them is the responsibility of the boundary `component`, and this `component` receives a field whose ghost cells are already filled.
 
 ## 2. input/output contract
 The inputs are `nx`, `ng`, the ghost-extended field `u` (rank 1, holding `nx + 2*ng` cell-centered values — the interior `nx` cells plus `ng` ghost cells at each end, the same layout as the boundary `component`'s `u_out`), `a`, `nu`, `dx`, and `dt`. The outputs are `flux_adv(j+1/2)` and `flux_dif(j+1/2)` at each of the `nx + 1` faces, and `guard_pass`, which reports whether the inputs are valid (§4).
