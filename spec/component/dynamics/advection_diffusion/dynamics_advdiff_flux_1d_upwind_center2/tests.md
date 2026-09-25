@@ -41,7 +41,7 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with `ng=2` and a non-constant, non-linear ghost-extended field (so $u_j$ is element `j + 3`, not the face position `j + 2`), for every face $j=-1,\dots,nx-1$, element `j + 2` of `flux_adv` equals $a\,u_j$ and element `j + 2` of `flux_dif` equals $-\nu\,(u_{j+1}-u_j)/dx$, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`), with `a`, `nu`, `dx` and `nu/dx` each different from `1`, so that omitting any factor changes the result. The expected values are computed by the test from the input field, not by the operation under test.
+  - `judgment`: with `ng=2` and a non-constant, non-linear ghost-extended field (so $u_j$ is element `j + 3`, not the face position `j + 2`), for every face $j=-1,\dots,nx-1$, element `j + 2` of `flux_adv` equals $a\,u_j$ and element `j + 2` of `flux_dif` equals $-\nu\,(u_{j+1}-u_j)/dx$, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`), with `nu > 0`, and with `a`, `nu`, `dx` and `nu/dx` each different from `1`, so that omitting any factor changes the result. The expected values are computed by the test from the input field, not by the operation under test.
 - `test_id`: `l0_periodic_seam_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
