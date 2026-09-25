@@ -2430,6 +2430,38 @@ class RegistryConsistencyTests(unittest.TestCase):
         self.assertEqual({}, {k: v for k, v in declared.items() if len(v) > 1})
         self.assertIn(registry.linter_for_language("mixed"), implemented)
 
+    def test_compiled_is_the_backends_declaration(self) -> None:
+        """`registry.is_compiled_language` answers the language backend's `COMPILED`, not the
+        presence of bundle facts (round 2, issue #289: ignoring the flag survived — no backend
+        declared `COMPILED = False`). A value with no bundle facts is not compiled either."""
+        from tools.backends.language.fortran import bundle
+        self.assertTrue(registry.is_compiled_language("fortran"))
+        with mock.patch.object(bundle, "COMPILED", False):
+            self.assertFalse(registry.is_compiled_language("fortran"))
+        self.assertFalse(registry.is_compiled_language("c"))
+
+    def test_every_syntax_adapter_carries_the_contract_its_readers_use(self) -> None:
+        """The `syntax_check` adapter contract is what `run_syntax_check`, the gate and the
+        post_generate certification read off the module (round 2, issue #289: it was written
+        down nowhere, and an adapter missing `STANDARD_SPELLING_EXAMPLE` would pass every row and
+        turn the canary's fail_closed remedy into an AttributeError). Asked of every compiler
+        that declares the capability, and the language it names must declare
+        `syntax_promotions`."""
+        required = ("EXECUTABLE", "LANGUAGE", "VERSION_ARGV", "CANARY_SOURCE",
+                    "CANARY_FILENAME", "STANDARD_SPELLING_EXAMPLE", "argv")
+        compilers = [c for c in registry.backend_ids("compiler")
+                     if registry.provides("compiler", c, "syntax_check")]
+        self.assertTrue(compilers)
+        for compiler in compilers:
+            with self.subTest(compiler=compiler):
+                module = registry.capability_module("compiler", compiler, "syntax_check")
+                self.assertEqual([a for a in required if not hasattr(module, a)], [])
+                self.assertTrue(registry.provides("language", module.LANGUAGE,
+                                                  "syntax_promotions"))
+                facts = registry.capability_module("language", module.LANGUAGE,
+                                                   "syntax_promotions")
+                self.assertTrue(module.CANARY_FILENAME.endswith(tuple(facts.SOURCE_SUFFIXES)))
+
     def test_a_language_two_linters_declare_is_refused_not_resolved_by_order(self) -> None:
         import types
         pkg = types.ModuleType("zz_second_fortran_linter")

@@ -877,7 +877,10 @@ class FieldGrammarTest(unittest.TestCase):
             self.assertFalse(union.fullmatch("1abc"))    # neither does
             files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"]},
                      {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"]}]
-            entrypoints = [{"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"}]
+            # The second entrypoint is defined in the SECOND file: an owner resolved by position
+            # rather than by `defined_in` would hold `_zz` to Fortran's grammar (round 2, #289).
+            entrypoints = [{"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"},
+                           {"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"}]
             owner = {"_ok": files[1]}
             bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok"}]
             found = cb._identifier_language_violations(files, entrypoints, bindings, owner)
