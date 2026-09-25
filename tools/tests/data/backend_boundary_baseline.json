@@ -178,7 +178,7 @@
       "compiler-driver": 2,
       "fortran": 13,
       "fortran-kind": 1,
-      "fortran-subroutine": 8,
+      "fortran-subroutine": 6,
       "fortran-suffix": 1,
       "make-control-file": 6
     },
@@ -208,7 +208,7 @@
       "compiler-driver": 1,
       "fortran": 13,
       "fortran-module-file": 1,
-      "fortran-subroutine": 8,
+      "fortran-subroutine": 4,
       "fortran-suffix": 4,
       "linter-cppcheck": 3,
       "linter-fortitude": 3,

@@ -2166,6 +2166,24 @@ def published_subroutines(text: str, spec_id: str) -> list[str]:
 
 
 
+
+def published_operation_missing(name: str) -> str:
+    """The component-surface gate's remedy for an IR-pinned operation the model does not
+    publish, after the file path. The neutral gate compares the sets
+    (`_validate_component_generated_surface`); how a published operation is DECLARED is this
+    language's to say (issue #289, R4-b PR-4). Byte-identical to the neutral copy it replaces."""
+    return (f"generated model source does not publish component public_api operation "
+            f"'{name}' — declare `subroutine {name}(...)` (the IR public_api pins it as a "
+            "published operation)")
+
+
+def published_operation_extra(spec_id: str, name: str) -> str:
+    """The same gate's remedy for a `<spec_id>__` procedure the IR does not pin."""
+    return (f"generated model source publishes `{spec_id}__` subroutine '{name}' that "
+            "is NOT in the IR public_api.published_operations — a component's published surface "
+            "must match its IR public_api exactly (rename an internal helper without the "
+            f"`{spec_id}__` prefix, or add it to the published operations)")
+
 def mask_string_contents(line: str) -> str:
     """Replace the CONTENTS of every quoted string with spaces, keeping the quote delimiters and
     every character's position.

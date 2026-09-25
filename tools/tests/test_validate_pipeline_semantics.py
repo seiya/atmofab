@@ -13,6 +13,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -21803,7 +21804,8 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
 
     def _run(self, *, public_api: object, model_text: str,
              spec_kind: str = "component",
-             node_key: str = "component/dep_base@0.1.0") -> list[str]:
+             node_key: str = "component/dep_base@0.1.0",
+             source_reading: object = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
@@ -21825,8 +21827,28 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             model.write_text(model_text, encoding="utf-8")
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            _validate_component_generated_surface(repo_root, execution, [model], v)
+            if source_reading is None:
+                _validate_component_generated_surface(repo_root, execution, [model], v)
+            else:
+                vps._validate_component_generated_surface(
+                    repo_root, execution, [model], v, source_reading=source_reading)
             return v
+
+    def test_the_remedies_are_the_source_reader_s_words(self) -> None:
+        # Issue #289, R4-b PR-4: how a published operation is DECLARED is the language's to say,
+        # so both remedies come from the reader the gate was handed, never a Fortran spelling
+        # of the gate's own.
+        reader = SimpleNamespace(
+            published_subroutines=fortran_source.published_subroutines,
+            published_operation_missing=lambda name: f"ZZ declare {name}",
+            published_operation_extra=lambda spec_id, name: f"ZZ drop {spec_id}/{name}")
+        model = self._GOOD_MODEL.replace(
+            "end module\n", "  subroutine dep_base__extra(y)\n  end subroutine\nend module\n")
+        v = self._run(public_api={"published_operations": [
+            {"operation_id": "dep_base__scale"}, {"operation_id": "dep_base__shift"}]},
+            model_text=model, source_reading=reader)
+        self.assertEqual([x.split(": ", 1)[1] for x in v],
+                         ["ZZ declare dep_base__shift", "ZZ drop dep_base/dep_base__extra"])
 
     _GOOD_MODEL = (
         "module dep_base_model\ncontains\n"

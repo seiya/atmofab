@@ -3128,7 +3128,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
         self.assertEqual(r[0], "bundle_schema_violation")
         self.assertIn("capture must be one of harness_registration", r[1])
         self.assertIn("checks_getter", cb._m3c_state_binding_mismatch(
-            [self._binding("q", capture="checks_getter")], ["q"], "bx"))
+            [self._binding("q", capture="checks_getter")], ["q"], "bx", language="fortran"))
 
     def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
         # The ABI layer: a binding whose storage the module does not `public ::` is a `use`
