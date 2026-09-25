@@ -35,7 +35,7 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_time
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: for known `u_n`, `L_flux` and `dt`, the result matches `u_n + dt*L_flux` within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`).
+  - `judgment`: with the fixed inputs `nx=4`, `u_n = [0.3, 1.7, 0.2, 2.9]`, `L_flux = [1.1, -0.4, 3.6, -2.2]`, `dt=0.1`, the output equals `u_np1 = [0.41, 1.66, 0.56, 2.68]` (`u_n + dt*L_flux`) within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`). On these values an update that drops `dt`, reverses the sign of `L_flux`, uses `dt^2`, ignores `L_flux`, or reads `L_flux` or `u_n` one cell shifted deviates by at least `0.3` at some cell.
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
