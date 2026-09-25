@@ -29,7 +29,7 @@ $$
 The cells read are $u_{-1}\dots u_{nx}$, so `ng>=1` suffices.
 
 ## 4. Failure conditions and constraints
-Treat `a<=0`, `dx<=0`, `dt<=0`, `nx<2`, and `ng<1` as invalid input and an error.
+Treat `a<=0`, `dx<=0`, `dt<=0`, `nx<2`, and `ng<1` as invalid input and an error. The guard is evaluated before any element of `u` is read: when a condition holds, the operation sets `guard_pass` to false and returns without reading `u` and without computing a face flux; `flux_adv` and `flux_dif` are then undefined and the caller must not use them. When no condition holds, `guard_pass` is true.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. On a `major` compatibility break, separate the `spec_id`.
