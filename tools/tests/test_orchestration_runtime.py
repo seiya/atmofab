@@ -14117,6 +14117,32 @@ class CertifiedModelSourceTests(unittest.TestCase):
                 _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP),
                 repo_root / refs["model_ref"])
 
+    def test_the_file_name_is_the_target_languages(self) -> None:
+        """The source is found under the name the TARGET language gives a model source
+        (`bundle_facts.model_basename`, issue #289), not a spelling of this module's. Driven by
+        giving the language another name for it: the file under the old name is then not the
+        source, and the one under the new name is."""
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        from tools.orchestration_runtime import _certified_model_source
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            refs = certify_node(
+                repo_root, "orch_dep", "component/dep_base@0.1.0", through="generate",
+                ir_id="dep-base_20260601_001", pipeline_id="p_20260601_002",
+                source_id="src_20260601_001",
+                model_text="subroutine dep_base__scale(x, n, y)\nend subroutine\n")
+            model = repo_root / refs["model_ref"]
+            renamed = model.with_name("dep_base_model.zz")
+            renamed.write_text(model.read_text(encoding="utf-8"), encoding="utf-8")
+            with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"):
+                self.assertEqual(
+                    _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP),
+                    renamed)
+                renamed.unlink()
+                self.assertIsNone(
+                    _certified_model_source(repo_root, "component/dep_base@0.1.0", target=_TP))
+
     def test_returns_none_on_missing_artifacts(self) -> None:
         from tools.orchestration_runtime import _certified_model_source
         with tempfile.TemporaryDirectory() as tmp:

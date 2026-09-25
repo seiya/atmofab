@@ -794,6 +794,21 @@ class PureVerifySubstepTests(unittest.TestCase):
     _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
 
+    def test_every_reviewer_launch_names_the_target_language(self) -> None:
+        """The generate reviewer's template carries `{{language:<name>}}` markers, and the
+        request must name the language they are composed for (issue #289): a launch without
+        `pure_language` is refused at render. Driven through the real reviewer loop, cold launch
+        and repair turn both — the render in the unit tests builds its own requests."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope("nope"), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertGreaterEqual(len(c.requests), 2)
+        import tools.orchestration_runtime as ort
+        for request in c.requests:
+            self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
+            ort._pure_launch_template(request)  # composes, i.e. does not raise
+
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
         classifier tags `llm_usage_limit` is waited out in place on the fixed schedule and

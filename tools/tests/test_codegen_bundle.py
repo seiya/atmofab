@@ -1169,6 +1169,38 @@ class NullValueTest(unittest.TestCase):
                 self.assertTrue(any(v.startswith(clause) for v in cb.validate_bundle(doc)))
 
 
+class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
+    """The names the bundle contract requires or derives for host-given files are the target
+    language's `bundle_facts` (issue #289), not spellings of this module's. Driven by giving
+    the language other names: every reader follows."""
+
+    def test_the_staged_source_and_the_m3c_names_follow_the_language(self) -> None:
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"), \
+                mock.patch.object(bundle, "checks_basename", lambda sid: f"{sid}_checks.zz"):
+            graph = cb.derive_build_graph(
+                _minimal_bundle(), dependency_closure=("component/diffuse@0.1.0",),
+                toolchain={"language": "fortran"})
+            self.assertIn("staged:diffuse_model.zz",
+                          [u["source"] for u in graph["compile_units"]])
+            violation = cb.m3c_literal_name_violation(
+                {"files": [{"logical_path": "bx_model.f90", "role": "model",
+                            "modules": ["bx_model"]}]}, "bx", language="fortran")
+            self.assertIn("bx_model.zz", violation)
+            violation = cb.m3c_checks_abi_violation({"files": []}, "bx", language="fortran")
+            self.assertIn("bx_checks.zz", violation)
+
+    def test_a_language_with_no_bundle_facts_is_refused_not_defaulted(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            cb.derive_build_graph(_minimal_bundle(),
+                                  dependency_closure=("component/diffuse@0.1.0",),
+                                  toolchain={"language": "cpp"})
+        self.assertIn("no bundle facts", str(ctx.exception))
+        with self.assertRaises(ValueError):
+            cb.m3c_literal_name_violation({"files": []}, "bx", language="cpp")
+
+
 class ObjectNameCollisionTest(unittest.TestCase):
     """Two sources deriving one object name would compile as one unit and drop the other
     from the link. Within the bundle that is a validation violation; across origins it is

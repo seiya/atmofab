@@ -3165,6 +3165,11 @@ class PureHarnessShapeTests(unittest.TestCase):
 
     def test_the_verify_context_carries_the_output_contract_not_the_checks_abi(self) -> None:
         ctx = self.c._build_pure_harness_verify_context(self.refs)
+        # The reviewer is shown the same runner-output document the producer wrote against:
+        # the neutral contract followed by the target language's binding (issue #289).
+        from tools.backends.language.fortran import prompts as fortran_prompts
+        self.assertTrue(ctx["runner_output_contract_document"].endswith(
+            fortran_prompts.runner_output_document()))
         self.assertEqual(
             sorted(ctx),
             sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("generate", "verify", "harness")]))

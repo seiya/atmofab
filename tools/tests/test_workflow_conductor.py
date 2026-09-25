@@ -17788,6 +17788,49 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertFalse(ev["ok"])
             self.assertEqual(ev["stages"][0]["status"], "fail")
 
+    def test_the_host_given_file_names_are_the_target_languages(self) -> None:
+        """`_runner_basename` / `_model_basename` answer the target language's
+        `bundle_facts` (issue #289). Driven by renaming both in the language. What this does NOT
+        pin: each call site's use of them — they are read at the method, and a site that
+        re-spelled a name would pass this row."""
+        import tempfile
+        from unittest import mock
+        from tools.backends.language.fortran import bundle
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            c = self._conductor(repo)
+            with mock.patch.object(bundle, "runner_basename", lambda sid: f"{sid}_runner.zz"), \
+                    mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"):
+                self.assertEqual(c._runner_basename(refs), f"{refs.spec_id}_runner.zz")
+                self.assertEqual(c._model_basename(refs), f"{refs.spec_id}_model.zz")
+
+    def test_every_syntax_run_is_handed_the_target_architecture(self) -> None:
+        """The adapter takes the target profile's `hardware.architecture` (issue #289: a device
+        compiler needs it; a CPU front end accepts it and does not read it). Every run the gate
+        makes — the stage itself and the canary / closure probes of a failing one — is handed the
+        profile's value, so an adapter that reads it never syntax-checks for another device."""
+        import tempfile
+        seen: list[str | None] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def fake(args):
+                seen.append(args.get("architecture"))
+                if self._call_kind(args) in ("canary", "probe"):
+                    return {"ok": True, "skipped": False, "command_id": "x"}
+                return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
+                        "stderr": "Error: boom"}
+
+            with self._patch_syntax(fake):
+                c._gate_syntax_check(refs, "child-1")
+            expected = c.target.doc["hardware"]["architecture"]
+        self.assertGreaterEqual(len(seen), 2)   # the stage and at least its canary
+        self.assertEqual(set(seen), {expected})
+
     def test_gate_syntax_check_refuses_a_language_with_no_syntax_stage(self) -> None:
         """A language that declares no `syntax_promotions` has no stage to run, and the gate
         fails CLOSED on it (issue #289, R4-b PR-2). Until then every language but Fortran
