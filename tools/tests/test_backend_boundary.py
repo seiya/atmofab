@@ -3136,6 +3136,13 @@ class CapabilityOwnershipTests(unittest.TestCase):
         self.assertIn("whose sources this repository cannot read", violation)
         self.assertIn(str(registry.missing_capability_reason(
             "language", "zz_no_reader", "source_reading")), violation)
+        # ... and a declared reader whose package does not carry it: a refusal, not an exception.
+        record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
+                                  backend_provides=frozenset({"runner_render", "source_reading"}))
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
+        self.assertIsNotNone(violation)
+        self.assertIn("whose source reader could not be loaded", violation)
 
     def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
         """The seam lets a broken import escape as itself — the GATES must not.

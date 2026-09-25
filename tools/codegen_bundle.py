@@ -1753,8 +1753,14 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
         return (f"{want_path} declares language {match.get('language')!r}, whose sources this "
                 "repository cannot read: "
                 f"{backend_registry.missing_capability_reason('language', str(match.get('language') or ''), 'source_reading')}")
-    source_reading = backend_registry.capability_module(
-        "language", str(match.get("language")), "source_reading")
+    try:
+        source_reading = backend_registry.capability_module(
+            "language", str(match.get("language")), "source_reading")
+    except Exception as exc:  # noqa: BLE001
+        # A declared reader whose package cannot be loaded is a host fault; like the runner seam
+        # above, it becomes a refusal rather than an exception that escapes the acceptance layer.
+        return (f"{want_path} declares language {match.get('language')!r}, whose source reader "
+                f"could not be loaded ({exc!r})")
     checks_module_abi_facts = source_reading.checks_module_abi_facts
     unpublished_bound_state = source_reading.unpublished_bound_state
     CHECKS_PUBLIC_NAMES = checks_public_names(match.get("language"))

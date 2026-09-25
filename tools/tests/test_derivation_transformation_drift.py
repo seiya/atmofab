@@ -145,6 +145,15 @@ def build_tuple() -> dict[str, str]:
             _file_digest("tools/backends/build_system/make/failure.py"),
         "Conductor._classify_build_failure_category":
             _source_digest(wc.Conductor._classify_build_failure_category),
+        # ... and the dispatch between that method and `failure.py`: the attribute row, the
+        # package `__init__` and the capability module that re-exports the classifier (round 3
+        # of R4-b PR-3 rewired that re-export and moved only render-5).
+        "Conductor._control_file_module": _source_digest(wc.Conductor._control_file_module),
+        "registry control_file attr": registry_attr("control_file"),
+        "tools/backends/build_system/make/__init__.py":
+            _file_digest("tools/backends/build_system/make/__init__.py"),
+        "tools/backends/build_system/make/control_file.py":
+            _file_digest("tools/backends/build_system/make/control_file.py"),
     }
 
 
@@ -361,8 +370,9 @@ PINNED_BUILD: dict[str, str] = {
     # its patterns and categories unchanged), and `_build_inproc` asks the registry's
     # `build_execute` where it compared the build system against `make` — the same answer for
     # every profile the launch gate admits. Re-pinned again in that PR's round 2: the tuple
-    # gained `Conductor._classify_build_failure_category`, the dispatch into `failure.py`.
-    "build-1": "deed750d54e3323e38f1c2a4c6c68aa232e8c68d06b2ebab2ba1853ed474c6f5",
+    # gained `Conductor._classify_build_failure_category`, and in round 3 the rest of the dispatch
+    # into `failure.py` (the attribute row, the make package `__init__` and `control_file.py`).
+    "build-1": "a52500a00c4b3e14d7097e91b7ac591d4c8f51a6704ad18d6fe20a83cbf17a39",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
