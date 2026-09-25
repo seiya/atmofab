@@ -20987,8 +20987,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
     #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
     #                                 producer and reviewer, whole; the pure judge, sliced)
     #   - CHECKS_MODULE_CONTRACT.md  (§1-4 as `checks_module_contract_document` to the `m3c`
-    #                                 reviewer and the compile producer's ABI slice; §5 as
+    #                                 reviewer and the compile producer's ABI slice)
+    #   - backends/language/fortran/CHECKS_ABI.md (issue #289: its §1-4 after the contract's in
+    #                                 the `m3c` reviewer's document; its §5 as
     #                                 `gate_guards_document` to the `harness` producer)
+    #   - backends/language/fortran/RUNNER_OUTPUT.md (issue #289: after RUNNER_OUTPUT_CONTRACT.md
+    #                                 in the `harness` shape's two prompts)
     #   - phase_01_compile.md        (`phase_contract_document`: both compile leaves, whole)
     # The five phase `SKILL`s were guarded here and are deleted: no leaf reads one.
     # `AGENT_CONTRACT.md` was the every-leaf entry and is deleted with them — it was the
@@ -21023,7 +21027,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 11000->11500 (Z6, issue #255): §3 gains the `raw/state_snapshots/initial/
         # <case_id>.json` bullet — the host-rendered runner's second capture, which the judge's
         # inlined slice must name because `post_execute` shape-checks it. Measured 11431.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11500,
+        # Lowered 11500->10800 (issue #289, R4-b PR-2): the Fortran descriptor rules of §4 moved
+        # to the Fortran binding. Measured 10410 at 33dacd5c.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 10800,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
@@ -21092,7 +21098,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # refuses a non-allocatable one — the one §1 declaration no compiler check sees.
         # Measured 18464 at ee09daf6; 18571 after the round-1 and round-3 rewordings of that
         # bullet.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 18600,
+        # Lowered 18600->13600 (issue #289, R4-b PR-2): §1-4 became language-neutral and §5 moved
+        # to the Fortran binding below. Measured 13223 at 33dacd5c.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13600,
+        # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
+        # 11479 and 4418 at 33dacd5c.
+        "docs/backends/language/fortran/CHECKS_ABI.md": 11900,
+        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 4800,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
