@@ -197,9 +197,10 @@ supported version — disabling the directives did not take their own diagnostic
   redirect (measured: `S051` resolves to `MOD021`). Both are caught by comparing the RESOLVED
   set against `RULE_CODES` rather than by reading the spelling.
 - **The leaf-facing documents** state individual rules of this set to the agent that must satisfy
-  them (`docs/workflow/phases/phase_02_generate.md` §2-1,
-  `tools/prompt_templates/pure_generate_generate.txt`,
-  `docs/workflow/CHECKS_MODULE_CONTRACT.md` §5). Each names a subset and cites this set. A code
+  them (`docs/backends/language/fortran/GENERATE_RULES.md` §1, the Fortran prompt fragments
+  `tools/prompt_templates/backends/language/fortran/generate_generate.txt` the host composes
+  into `tools/prompt_templates/pure_generate_generate.txt`, and
+  `docs/backends/language/fortran/CHECKS_ABI.md` §5). Each names a subset and cites this set. A code
   named there that this repository has no position on — neither in `RULE_CODES` nor in
   `EXCLUDED_RULE_CODES` — is a test failure, not a documentation nuance; so is a copyable
   `! allow(<code>)` directive anywhere in one of those files, whatever the surrounding prose says
