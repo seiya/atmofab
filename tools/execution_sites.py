@@ -88,9 +88,10 @@ HOST_PATTERN = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9_][A-Za-z
 
 class SitesConfigError(ValueError):
     """A named `sites.yaml` rejection. `rule` is one of `SITES_CONFIG_RULES`; `where` is a dotted
-    path into the document, empty for a whole-document failure — except for
-    `sites_config_duplicate_key`, raised while YAML is still being parsed, where it is the
-    repeated key alone."""
+    path into the document, empty for a whole-document failure — except for the two refusals raised
+    while YAML is still being parsed: `sites_config_duplicate_key`, where it is the repeated key
+    alone, and an unhashable key (`sites_config_unknown_key`), where it is empty and the message
+    gives the line."""
 
     def __init__(self, rule: str, message: str, *, where: str = "") -> None:
         assert rule in SITES_CONFIG_RULES, rule
@@ -113,8 +114,9 @@ def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bo
         except TypeError:
             raise SitesConfigError(
                 "sites_config_unknown_key",
-                f"mapping key {key!r} is a {type(key).__name__}; only scalar keys are "
-                f"meaningful in this document") from None
+                f"the mapping key at line {key_node.start_mark.line + 1} is a "
+                f"{type(key).__name__}; only scalar keys are meaningful in this document"
+                ) from None
         if key in seen:
             raise SitesConfigError(
                 "sites_config_duplicate_key",

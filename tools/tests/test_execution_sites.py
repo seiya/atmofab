@@ -346,6 +346,24 @@ class RefusalTests(unittest.TestCase):
             exc = self._refuse(_BASE.replace("scheduler: none", "scheduler: zz_named"))
         self.assertEqual(exc.rule, "sites_config_scheduler_unknown")
 
+    def test_an_unhashable_key_is_refused_by_name_with_its_line(self) -> None:
+        exc = self._refuse(_BASE + "? [a, b]\n: 1\n")
+        self.assertEqual(exc.rule, "sites_config_unknown_key", str(exc))
+        self.assertEqual(exc.where, "")
+        self.assertIn("at line 8 is a list", str(exc))
+
+    def test_a_remote_site_body_that_is_not_a_mapping_is_refused(self) -> None:
+        for body in ("[x]", "box", "3", "null"):
+            with self.subTest(body=body):
+                exc = self._refuse(f"sites_version: 1\nsites:\n  box: {body}\n")
+                self.assertEqual(exc.rule, "sites_config_invalid_field", str(exc))
+                self.assertEqual(exc.where, "sites.box")
+
+    def test_an_unknown_top_level_key_is_named_at_its_own_path(self) -> None:
+        exc = self._refuse(_BASE + "extra: 1\n")
+        self.assertEqual(exc.rule, "sites_config_unknown_key")
+        self.assertEqual(exc.where, "extra")
+
     def test_a_nested_duplicate_key_is_refused(self) -> None:
         exc = self._refuse(_BASE + "    host: other\n")
         self.assertEqual(exc.rule, "sites_config_duplicate_key")
