@@ -192,7 +192,6 @@
       "make-control-file": 8
     },
     "tools/prompt_templates/pure_generate_verify.txt": {
-      "fortran-intent": 1,
       "make-control-file": 1
     },
     "tools/pure_leaf.py": {

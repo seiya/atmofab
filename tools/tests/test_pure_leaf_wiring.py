@@ -1487,8 +1487,12 @@ class PureRenderTests(unittest.TestCase):
         # marker `{{language:host_rendered_runner_file}}` (the name is the language backend's);
         # composed, the line is byte-identical to the one approved above. READ: the same
         # pointer to the rubric's `major` bullet, nothing assigned.
+        # Re-taken again for the R4-b PR-4 preconditions (issue #289): the gate-checked classes
+        # the line names (`unused dummies, `intent(out)` dataflow`) became the marker
+        # `{{language:gate_checked_classes}}`; composed for `fortran` the line is byte-identical
+        # again. READ: unchanged pointer, nothing assigned.
         "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
-        "to judge the bundle aga #743f958977ae",
+        "to judge the bundle aga #e27e39f5e316",
         # `pure-37` (issue #169): the same input-side clause on the `harness` shape's reviewer
         # template, where it stands as its own paragraph rather than inside the checklist
         # sentence. Same judgment as the line above — it POINTS at the rubric's `major` bullet
