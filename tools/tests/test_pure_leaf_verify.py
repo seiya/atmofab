@@ -157,6 +157,36 @@ class PureVerifyContextTests(unittest.TestCase):
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
+    def test_the_language_binding_fails_closed_three_ways(self) -> None:
+        """The binding appended to the neutral §1-§4 (issue #289) raises a NAMED refusal when the
+        target language declares none, when it cannot be read, and when its section anchors are
+        gone — never a shorter document with the header still promising the binding (round 2:
+        replacing the unsliceable raise with an empty binding survived every test file)."""
+        from unittest import mock
+        from tools.backends import registry as backend_registry
+        from tools.backends.language.fortran import checks_abi
+        body = checks_abi.document()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            c = _conductor(repo)
+            with mock.patch.object(checks_abi, "document",
+                                   lambda: body.replace("## 1. ", "## One ", 1)):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
+            self.assertIn("checks-ABI binding", str(cm.exception))
+            with mock.patch.object(checks_abi, "document", side_effect=OSError("gone")):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_abi_binding_missing", str(cm.exception))
+            record = backend_registry.get("language", "fortran")
+            with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
+                    backend_provides=record.backend_provides - {"checks_abi"})}):
+                with self.assertRaises(RuntimeError) as cm:
+                    c._build_pure_verify_context(refs)
+            self.assertIn("pure_checks_abi_binding_unavailable", str(cm.exception))
+
     def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
         # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
         # the operator's repair is the document's section numbering, not a missing file.
