@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_center2__compute_flux` at `L0`: the advective/diffusive flux consistency for a constant field, the uniformity of the diffusive flux for a linear field, the agreement of the two periodic seam faces, and the input guard for an invalid advection velocity (`a<=0`).
+This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_center2__compute_flux` at `L0`: the advective/diffusive flux consistency for a constant field, the uniformity of the diffusive flux for a linear field, the face-by-face agreement with the §3 formulas for a non-constant field, the agreement of the two periodic seam faces, and the input guard for an invalid advection velocity (`a<=0`).
 
 ## 2. Input-defaulting rules
 - The normal case uses `nx>=2`, `ng=1`, `a>0`, `nu>=0`, `dx>0`, `dt>0`.
@@ -37,6 +37,11 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
   - `judgment`: with a linear-field input (ghost cells included, so the field needs no periodicity), `flux_dif` is uniform over all `nx + 1` faces: `max(flux_dif) - min(flux_dif) <= 1e-12`.
+- `test_id`: `l0_face_formula_flux_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
+  - `expected_outcome`: `pass`
+  - `judgment`: with a non-constant, non-linear ghost-extended field, for every face $j=-1,\dots,nx-1$, element `j + 2` of `flux_adv` equals $a\,u_j$ and element `j + 2` of `flux_dif` equals $-\nu\,(u_{j+1}-u_j)/dx$, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`), with `nu > 0` and `dx != 1`. The expected values are computed by the test from the input field, not by the operation under test.
 - `test_id`: `l0_periodic_seam_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
