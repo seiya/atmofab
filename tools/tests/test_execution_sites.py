@@ -113,6 +113,29 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(ctx.exception.rule, "sites_config_unknown_key")
             self.assertEqual(ctx.exception.where, "sites.local.host")
 
+    def test_empty_sections_and_an_empty_local_say_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            for text in ("sites_version: 1\nsites:\ntargets:\n",
+                         "sites_version: 1\nsites:\n  local:\n"):
+                with self.subTest(text=text):
+                    cfg = repo.load(text)
+                    self.assertEqual(set(cfg.sites), {"local"})
+                    self.assertEqual(cfg.targets, {})
+                    self.assertEqual(cfg.sites["local"].executes, es.LOCAL_DEFAULT_EXECUTES)
+            # A null body is admissible for `local` only.
+            with self.assertRaises(es.SitesConfigError) as ctx:
+                repo.load("sites_version: 1\nsites:\n  box:\n")
+            self.assertEqual(ctx.exception.where, "sites.box")
+
+    def test_a_relative_path_is_resolved_against_the_repo_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            (repo.root / "alt.yaml").write_text(_BASE, encoding="utf-8")
+            cfg = es.load_sites(repo.root, path="alt.yaml")
+        self.assertEqual(cfg.path, repo.root / "alt.yaml")
+        self.assertIn("box", cfg.sites)
+
     def test_the_sha_ignores_comments_and_key_order_and_follows_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _Repo(tmp)
@@ -300,6 +323,54 @@ class RefusalTests(unittest.TestCase):
         exc = self._refuse(_BASE + "    host: other\n")
         self.assertEqual(exc.rule, "sites_config_duplicate_key")
         self.assertEqual(exc.where, "host")
+
+    def test_the_version_is_the_integer_one(self) -> None:
+        for version in ("true", "1.0", "'1'", "2", "0"):
+            with self.subTest(version=version):
+                exc = self._refuse(f"sites_version: {version}\n")
+                self.assertEqual(exc.rule, "sites_config_version", str(exc))
+
+    def test_a_target_mapped_to_a_value_that_is_not_a_site_id_is_named(self) -> None:
+        for value in ("[box]", "{a: b}", "3", "null"):
+            with self.subTest(value=value):
+                exc = self._refuse(_BASE + f"targets:\n  t_cpu: {value}\n")
+                self.assertEqual(exc.rule, "sites_config_unknown_site", str(exc))
+                self.assertEqual(exc.where, "targets.t_cpu")
+
+    def test_a_hardware_class_the_registry_declares_but_nothing_implements_is_refused(
+            self) -> None:
+        """The `hardware` twin of the scheduler row below: `executes` asks whether the class is
+        implemented, not merely declared."""
+        named_only = registry.Backend("hardware", "zz_named", None)
+        with mock.patch.dict(registry._BACKENDS, {("hardware", "zz_named"): named_only}):
+            self.assertIsNone(registry.unsupported_reason("hardware", "zz_named"))
+            exc = self._refuse(_BASE.replace("[cpu]", "[cpu, zz_named]"))
+        self.assertEqual(exc.rule, "sites_config_executes_unknown_class")
+        self.assertEqual(exc.where, "sites.box.executes[1]")
+
+    def test_a_blank_directive_is_refused(self) -> None:
+        with _with_batch_scheduler():
+            for blank in ("''", "'   '"):
+                with self.subTest(directive=blank):
+                    exc = self._refuse(_BASE.replace("scheduler: none", "scheduler: zz_batch")
+                                       + f"    scheduler_directives: [{blank}]\n")
+                    self.assertEqual(exc.rule, "sites_config_invalid_field")
+                    self.assertEqual(exc.where, "sites.box.scheduler_directives[0]")
+
+    def test_a_path_that_exists_but_is_not_a_readable_file_is_refused_not_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Repo(tmp)
+            target = repo.root / es.DEFAULT_SITES_PATH
+            target.mkdir()
+            with self.assertRaises(es.SitesConfigError) as ctx:
+                es.load_sites(repo.root)
+            self.assertEqual(ctx.exception.rule, "sites_config_unreadable")
+            target.rmdir()
+            target.symlink_to(repo.root / "no_such_file.yaml")
+            self.assertFalse(target.exists())
+            with self.assertRaises(es.SitesConfigError) as ctx:
+                es.load_sites(repo.root)
+            self.assertEqual(ctx.exception.rule, "sites_config_unreadable")
 
     def test_a_target_may_map_to_local(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

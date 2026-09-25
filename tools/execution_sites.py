@@ -28,6 +28,7 @@ request of issue #293, and until then this module changes no run.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -85,7 +86,9 @@ HOST_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._@-]*")
 
 class SitesConfigError(ValueError):
     """A named `sites.yaml` rejection. `rule` is one of `SITES_CONFIG_RULES`; `where` is a dotted
-    path into the document, empty for a whole-document failure."""
+    path into the document, empty for a whole-document failure — except for
+    `sites_config_duplicate_key`, raised while YAML is still being parsed, where it is the
+    repeated key alone."""
 
     def __init__(self, rule: str, message: str, *, where: str = "") -> None:
         assert rule in SITES_CONFIG_RULES, rule
@@ -287,7 +290,7 @@ def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
                                f"the document must be a mapping, got {type(doc).__name__}")
     _check_keys(doc, frozenset({"sites_version"}), _TOP_KEYS - {"sites_version"}, "")
     version = doc["sites_version"]
-    if isinstance(version, bool) or version != SITES_VERSION:
+    if type(version) is not int or version != SITES_VERSION:
         raise SitesConfigError("sites_config_version",
                                f"must be {SITES_VERSION}, got {version!r}", where="sites_version")
     sites: dict[str, Site] = {LOCAL_SITE: Site(site_id=LOCAL_SITE, executes=LOCAL_DEFAULT_EXECUTES)}
@@ -301,6 +304,9 @@ def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
     for site_id, body in raw_sites.items():
         where = f"sites.{site_id}"
         _token(site_id, where)
+        if site_id == LOCAL_SITE and body is None:
+            # `local:` with nothing under it says nothing, and the default stands.
+            continue
         if not isinstance(body, dict):
             raise SitesConfigError("sites_config_invalid_field",
                                    f"must be a mapping, got {body!r}", where=where)
@@ -338,13 +344,15 @@ def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
 
 def load_sites(repo_root: Path, *, path: str | Path | None = None) -> SitesConfig:
     """Load the operator's site configuration, `<repo_root>/sites.yaml` unless `path` says
-    otherwise. A missing file is the configuration with the local site only; anything else the
-    loader cannot read or does not admit raises `SitesConfigError`."""
+    otherwise. A missing file is the configuration with the local site only; a path that exists
+    and cannot be read as a file — a directory, a dangling symlink — is not missing, and anything
+    the loader cannot read or does not admit raises `SitesConfigError`. A `targets:` mapping reads
+    `spec/targets/`, whose own malformation raises `target_profile.TargetProfileError`."""
     repo_root = Path(repo_root)
     p = Path(path) if path is not None else repo_root / DEFAULT_SITES_PATH
     if not p.is_absolute():
         p = repo_root / p
-    if not p.exists():
+    if not os.path.lexists(p):
         return SitesConfig(
             sites={LOCAL_SITE: Site(site_id=LOCAL_SITE, executes=LOCAL_DEFAULT_EXECUTES)})
     try:
