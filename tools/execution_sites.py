@@ -76,12 +76,14 @@ _REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec"})
 #: The fields that only mean something to a batch scheduler; a `none` site may not carry them.
 _SCHEDULER_ONLY = ("scheduler_directives", "queue_timeout_sec")
 _LOCAL_KEYS = frozenset({"executes"})
-#: An ssh destination the host hands to ssh AND scp unchanged: `[user@]name`. `:` and `/` are
-#: refused because scp reads `host:path` at the first `:` and treats a `/` before it as a local
-#: path — `scp f 'a/b:/x'` is a local copy — so ssh and scp would reach different places; a
-#: leading `-` is an ssh option, and one of those runs a command. A destination this refuses
-#: (an IPv6 literal, a port) is written as an ssh alias in ssh's own configuration.
-HOST_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._@-]*")
+#: An ssh destination the host hands to ssh AND scp unchanged: `[user@]name`, each part a word
+#: that starts with a letter, digit or `_`. `:` and `/` are refused because scp reads
+#: `host:path` at the first `:` and treats a `/` before it as a local path — `scp f 'a/b:/x'` is
+#: a local copy — so ssh and scp would reach different places; a part starting with `-` is an
+#: ssh option (`-v`, `-Jhost`), and one of those runs a command; an empty or dot-led part, or a
+#: second `@`, names nothing a person meant. A destination this refuses (an IPv6 literal, a
+#: port) is written as an ssh alias in ssh's own configuration.
+HOST_PATTERN = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9_][A-Za-z0-9._-]*")
 
 
 class SitesConfigError(ValueError):

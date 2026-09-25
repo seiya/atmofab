@@ -263,12 +263,16 @@ class RefusalTests(unittest.TestCase):
     def test_a_host_ssh_and_scp_would_read_differently_is_refused(self) -> None:
         """`:` and `/` move scp's idea of the host (`scp f 'a/b:/x'` is a local copy), and a
         leading `-` is an ssh option; each is refused, and a plain destination is not."""
-        for host in ("-oX=y", "a:b", "2001:db8::1", "foo/bar", "ssh://u@h:2222", "@h"):
+        # `-v` and `-Jx` carry no character outside the word class, so they fail on the
+        # leading `-` alone (`-oX=y` would also fail on its `=`).
+        for host in ("-v", "-Jx", "u@-v", "-u@h", "-oX=y", "a:b", "2001:db8::1", "foo/bar",
+                     "ssh://u@h:2222", "@h", "u@", "x@.", ".h", "a@b@c", "a%b"):
             with self.subTest(host=host):
                 exc = self._refuse(_BASE.replace("host: box", f"host: {host!r}"))
                 self.assertEqual(exc.rule, "sites_config_invalid_field", str(exc))
                 self.assertEqual(exc.where, "sites.box.host")
-        for host in ("user@host", "login.example.org", "user.name@node-1", "h_1", "gpu1"):
+        for host in ("user@host", "login.example.org", "user.name@node-1", "h_1", "gpu1",
+                     "9host", "U@Host.Example.COM", "10.0.0.1"):
             with self.subTest(accepted=host), tempfile.TemporaryDirectory() as tmp:
                 cfg = _Repo(tmp).load(_BASE.replace("host: box", f"host: {host!r}"))
                 self.assertEqual(cfg.sites["box"].host, host)
