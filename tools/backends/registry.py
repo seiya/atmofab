@@ -151,7 +151,7 @@ AXES: dict[str, Axis] = {
         source="target profile hardware.class (spec/targets/<target_id>.yaml)",
         description=(
             "The class of machine a run executes on: whether this host can launch a binary "
-            "built for it, and the parallelism facts a runner records about the run."
+            "built for it, and the facts a profile naming it must satisfy."
         ),
     ),
 }
@@ -217,8 +217,8 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "perf_facts": (
         ("hardware",),
-        "This hardware class states the facts a profile's `hardware.architecture` must satisfy "
-        "and the parallelism a runner records for a run on it.",
+        "This hardware class states the grammar a profile's `hardware.architecture` must "
+        "satisfy (asked at launch).",
     ),
 }
 

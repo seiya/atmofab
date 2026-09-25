@@ -109,26 +109,40 @@ def build_tuple() -> dict[str, str]:
     }
 
 
-#: The capabilities whose DECLARATION decides a launch environment (issue #289, round 1): which
-#: parallel value gets a package environment and which gets the empty one, and which hardware
-#: class runs at all, are read off the registry records by `tools/host_execution.py` — so moving
-#: `execution_env` between `backend_provides` and `core_provides` changes what a binary is
-#: launched with while both digested files stay byte-identical.
+#: The capabilities whose DECLARATION decides a launch environment (issue #289): which parallel
+#: value gets a package environment and which gets the empty one, and which hardware class runs
+#: at all, are read off the registry records by `tools/host_execution.py`.
 _LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env"})
 
 
-def launch_declarations_digest() -> str:
-    """Every `parallel` / `hardware` record's module and where it declares a launch capability."""
+def launch_declarations() -> dict[str, str]:
+    """What `tools/host_execution.launch_shape` actually resolves, digested per record.
+
+    Round 1 digested the records' declarations and one named module, and round 2 changed the
+    re-export attribute (`CAPABILITY_MODULE_ATTR`) and the package `__init__` to route openmp's
+    environment through a new module with every pin green. So this reads what the dispatch
+    READS: each parallel / hardware record's module and where it declares a launch capability,
+    the attribute row the dispatch resolves by, and — for every capability a package implements
+    — the file of the package and of the module `registry.capability_module` returns. A new
+    record, a moved declaration, a renamed row or a rewired re-export each move it."""
     from tools.backends import registry
 
-    rows = [
-        [axis, backend_id, record.module,
-         sorted(record.core_provides & _LAUNCH_CAPABILITIES),
-         sorted(record.backend_provides & _LAUNCH_CAPABILITIES)]
-        for (axis, backend_id), record in sorted(registry._BACKENDS.items())
-        if axis in ("parallel", "hardware")
-    ]
-    return hashlib.sha256(json.dumps(rows).encode("utf-8")).hexdigest()
+    members: dict[str, str] = {}
+    for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+        if axis not in ("parallel", "hardware"):
+            continue
+        key = f"{axis}/{backend_id}"
+        members[f"{key} record"] = json.dumps(
+            [record.module, sorted(record.core_provides & _LAUNCH_CAPABILITIES),
+             sorted(record.backend_provides & _LAUNCH_CAPABILITIES)])
+        for capability in sorted(record.backend_provides & _LAUNCH_CAPABILITIES):
+            package = registry.load(axis, backend_id)
+            module = registry.capability_module(axis, backend_id, capability)
+            members[f"{key} {capability} attr"] = registry.CAPABILITY_MODULE_ATTR[capability]
+            for label, loaded in (("package", package), ("module", module)):
+                rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+                members[f"{key} {capability} {label} {rel}"] = _file_digest(rel)
+    return members
 
 
 def execute_tuple() -> dict[str, str]:
@@ -144,9 +158,9 @@ def execute_tuple() -> dict[str, str]:
         # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam
         # and the one parallel backend whose package composes an environment today.
         "tools/host_execution.py": _file_digest("tools/host_execution.py"),
-        "tools/backends/parallel/openmp/execution.py":
-            _file_digest("tools/backends/parallel/openmp/execution.py"),
-        "registry launch declarations": launch_declarations_digest(),
+        # And every launch capability a registry record resolves to: the declaration, the
+        # attribute row, the package and the module (`launch_declarations`).
+        **{f"registry launch: {k}": v for k, v in launch_declarations().items()},
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
@@ -292,9 +306,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # parallel model's environment as `env` instead of a hardware class and a thread count, a
     # class this host cannot run on is refused, and `trial_meta.json#environment` records
     # `launch` and `platform.site` in place of `openmp_env`. Re-pinned within PR-1's review
-    # (round 1), before any run was stamped execute-4: the tuple gained the registry's launch
-    # declarations, and the docstrings the env's override semantics.
-    "execute-4": "ac13567875380ee59b21cc6971098ce0fec2950eb1c0b130696a1c6e1a2d3f95",
+    # (rounds 1 and 2), before any run was stamped execute-4: the tuple gained what the launch
+    # seam resolves through the registry (`launch_declarations`), and the docstrings the env's
+    # override semantics.
+    "execute-4": "0952b393330f5f4356e0ad02a923aabd13520fba05c8e5787a45d6b74266b0d9",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

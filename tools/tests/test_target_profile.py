@@ -360,7 +360,10 @@ class LaunchGateTests(unittest.TestCase):
                         repo.root, self._profile(repo, hardware__class="gpu",
                                                  hardware__architecture=arch),
                         until_phase="Build"), [])
-            for arch in ("x86_64", "sm90", "gfx90a", "sm_"):
+            # A trailing surplus and a non-numeric version too: `match` in place of `fullmatch`,
+            # or a widened character class, admits them (round 2).
+            for arch in ("x86_64", "sm90", "gfx90a", "sm_", "sm_90ab", "sm_abc", "sm_90_x",
+                         "xsm_90"):
                 with self.subTest(gpu_architecture=arch):
                     violations = tp.target_profile_violations(
                         repo.root, self._profile(repo, hardware__class="gpu",

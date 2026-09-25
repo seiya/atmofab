@@ -1054,6 +1054,8 @@ class RetiredArgumentTests(unittest.TestCase):
         self.assertEqual(retired, {"target_class", "target.class", "target", "threads_per_rank"})
         self.assertEqual(set(tool.input_schema["properties"]) & retired, set())
         self.assertNotIn("threads_per_rank is specified", tool.description)
+        for name in retired:
+            self.assertIn(name, tool.description, f"the description omits refused {name}")
         self.assertIn("env", tool.input_schema["properties"])
 
     def test_the_retired_target_arguments_are_refused_on_run_program_alone(self) -> None:

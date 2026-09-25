@@ -5035,7 +5035,9 @@ def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
 
     Compile is target-free: one IR serves every target, so "the IR renders" means it renders for
     each target a run could be launched for, not for one run's. A profile that does not load, or
-    whose harness the catalog does not resolve, is skipped rather than reported: the launch gate
+    whose harness the catalog does not resolve, or whose hardware class the registry does not
+    implement (the loader refused that until issue #289 moved the question to the registry), is
+    skipped rather than reported: the launch gate
     (``target_profile.resolve_run_target``) refuses a run for it, so no Generate can reach its
     render, and a repository defect must not be routed to ``compile.generate`` as an IR defect.
     Sorted by target id, so a node's violations are deterministic."""
@@ -5055,6 +5057,8 @@ def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
             profile = load_target_profile(repo_root, target_id)
             harness_nk = harness_node_key_for_target(repo_root, profile)
         except TargetProfileError:
+            continue
+        if backend_registry.unimplemented_reason("hardware", profile.hardware_class) is not None:
             continue
         tc = profile.toolchain
         if not all(backend_registry.provides(axis, value, capability)
