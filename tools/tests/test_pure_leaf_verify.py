@@ -114,7 +114,9 @@ class PureVerifyContextTests(unittest.TestCase):
                             "`ok` false",
                             "runner always captures the case's state"):
                 self.assertIn(present, doc[:neutral_end])
-            for present in ("## 2. The bound state in Fortran", "## 4. Prohibitions in Fortran",
+            for present in ("### 1-b. The bound state in Fortran",
+                            "## 2. The semantics, spelled in Fortran",
+                            "## 4. Prohibitions in Fortran",
                             "ok = .false.", "character(len=4), intent(out) :: status"):
                 self.assertIn(present, doc[neutral_end:])
             # Every literal here must occur in the REAL documents, or the assertion is true of

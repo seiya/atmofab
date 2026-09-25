@@ -23,7 +23,7 @@ neutral §1 (module scope makes them collision-free — the harness's symbols ar
 `harness_fortran_cpu__*` and the model's are `<spec_id>__*`, so a bare `case_run` cannot clash;
 non-prefixed names keep every identifier under the f2008 63-character limit, which a
 `<spec_id>__checks_compute` would exceed for a long `spec_id`) plus the bound state variables of
-§2. Each is a SUBROUTINE, because the runner reaches it with a `call`; a FUNCTION of any of these
+§1-b. Each is a SUBROUTINE, because the runner reaches it with a `call`; a FUNCTION of any of these
 names cannot satisfy the ABI. Author them verbatim:
 
 ```fortran
@@ -95,7 +95,7 @@ and fails. Where the fallback applies, a name that is only prototyped in an
 `interface` block, defined as an internal procedure of another procedure, or defined
 in a submodule / a second module / after `end module` does not count as defined.
 
-## 2. The bound state in Fortran
+### 1-b. The bound state in Fortran
 
 Every snapshot variable of the neutral §1-b is a **module-level `real(dp)` variable of
 `<spec_id>_checks`, named exactly as the IR names it** (Fortran identifiers are
@@ -111,9 +111,18 @@ Publication is checked under the same scan as the ABI names: under a bare `priva
 published unless a `private ::` names it. A rejected case (`case_setup` returning
 `ok = .false.`) still leaves every bound array allocated to its declared shape.
 
+## 2. The semantics, spelled in Fortran
+
+The neutral §2 is procedure semantics; what it leaves to the language is the spelling of its
+values. A rejected guard / xfail case returns `ok = .false.` from `case_setup`; `status` is
+`'pass'`, `'fail'` or `'na  '` (width 4, right-padded); an honestly unavailable metric sets
+`found = .true.`, `is_na = .true.` and `reason_na` (deferred-length, allocated by the
+assignment), and a metric that does not apply to the case sets `found = .false.`; a rejected
+case's bound arrays are still allocated, e.g. filled with `0.0_dp`.
+
 ## 3. Module-level state in Fortran
 
-The current case's state lives in the bound module-level variables of §2, and a cross-case
+The current case's state lives in the bound module-level variables of §1-b, and a cross-case
 accumulator in other module-level variables of `<spec_id>_checks`. Nothing else is
 language-specific here.
 

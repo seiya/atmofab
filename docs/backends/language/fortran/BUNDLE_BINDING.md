@@ -28,7 +28,7 @@
   compares both case-folded.
 - **Imports.** The host renders an entrypoint's or a binding's import as
   `use <module>, only: <symbol>` (for a bound state variable, `use <spec_id>_checks, only:
-  sb_<name> => <name>` — `docs/backends/language/fortran/CHECKS_ABI.md` §2).
+  sb_<name> => <name>` — `docs/backends/language/fortran/CHECKS_ABI.md` §1-b).
 
 ## 3. Build graph
 

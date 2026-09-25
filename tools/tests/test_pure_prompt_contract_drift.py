@@ -605,7 +605,10 @@ PINNED: dict[str, str] = {
     # inlined after it in the `harness` prompts. Known side effects, as for every bump:
     # `_resolve_exemplar_source` stops offering exemplars certified at pure-49 or earlier, and
     # an orchestration whose `generate` ran under pure-49 cannot be `--resume`d across it.
-    "pure-50": "053962135f30a3a0e4b7001749dbac4564bb728fa0a9f1f0b404ff1c616d8673",}
+    # `pure-50` has not shipped; round 1 of its review renumbered the Fortran binding so its
+    # §1-§4 correspond section for section to the neutral contract's (the bound state is §1-b,
+    # and §2 spells the neutral §2's values), which is part of the same contract change.
+    "pure-50": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
 
 
 def _contract_tuple() -> dict[str, object]:
