@@ -25,6 +25,7 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
 
 ## 5. Diagnostics contract
 - Require outputting `checks.flux_adv_consistency`, `checks.flux_dif_consistency`, `checks.seam_consistency`, and `checks.input_guard` in `diagnostics.json`.
+- When `guard_pass` is false, `flux_adv` and `flux_dif` are undefined (`controlled_spec.md` §4): only `checks.input_guard` is evaluated, and no consistency check is computed from those outputs.
 
 ## 6. Test definitions
 - `test_id`: `l0_constant_state_flux_pass`
