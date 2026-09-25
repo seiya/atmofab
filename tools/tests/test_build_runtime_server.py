@@ -2431,6 +2431,40 @@ class ToolSchemaDocumentParityTests(unittest.TestCase):
                 self.assertEqual(
                     set(doc["arguments"]["properties"]), set(served[name]),
                     f"{path.name} and the served schema declare different arguments")
+                # ... and the same REQUIRED set (issue #289: `run_syntax_check` gained two).
+                self.assertEqual(
+                    set(doc["arguments"].get("required", [])),
+                    set(self.mod.TOOLS[name].input_schema.get("required", [])),
+                    f"{path.name} and the served schema require different arguments")
+
+    def test_the_served_required_set_is_what_the_handler_refuses_without(self) -> None:
+        """Driven, for the two tools whose required set issue #289 widened: dropping any
+        argument the served schema says is required is a refusal naming it, and a call with
+        all of them reaches the tool. A schema that under-declares (a client omitting the
+        argument would be refused with no warning) or over-declares is red."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
+        full = {
+            "run_syntax_check": {"project_dir": str(d), "compiler": "gfortran", "std": "f2008"},
+            "run_linter": {"project_dir": str(d), "preset": "fortitude"},
+        }
+        for tool, args in full.items():
+            required = set(self.mod.TOOLS[tool].input_schema["required"])
+            with self.subTest(tool=tool):
+                self.assertEqual(required, set(args), "the probe must carry exactly the "
+                                 "required set, or the rows below observe something else")
+                handler = getattr(self.mod, f"tool_{tool}")
+                with mock.patch.object(self.mod, "_run_command",
+                                       return_value={"ok": True, "return_code": 0,
+                                                     "stdout": "", "stderr": ""}), \
+                        mock.patch.object(self.mod.shutil, "which", return_value="/bin/true"):
+                    handler(dict(args))
+                    for name in sorted(required - {"project_dir"}):
+                        partial = {k: v for k, v in args.items() if k != name}
+                        with self.assertRaises(ValueError) as ctx:
+                            handler(partial)
+                        self.assertIn(name, str(ctx.exception))
 
 
 if __name__ == "__main__":  # pragma: no cover
