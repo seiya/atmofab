@@ -1,9 +1,9 @@
 catalog_version: 0.2.0
-updated_at: 2026-09-23
+updated_at: 2026-09-25
 specs:
   - spec_kind: problem
     spec_id: advdiff1d_linear
-    spec_version: 0.3.1
+    spec_version: 0.4.0
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
@@ -36,7 +36,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_advdiff_flux_1d_upwind_center2
-    spec_version: 0.2.0
+    spec_version: 0.3.0
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
@@ -58,7 +58,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_advection_diffusion_time_update_1d_euler1
-    spec_version: 0.2.0
+    spec_version: 0.3.0
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
@@ -69,7 +69,7 @@ specs:
 
   - spec_kind: profile
     spec_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
-    spec_version: 0.1.1
+    spec_version: 0.2.0
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion

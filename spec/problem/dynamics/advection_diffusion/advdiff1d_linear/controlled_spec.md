@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.3.1`
+- `spec_version`: `0.4.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -33,10 +33,29 @@ The adopted `profile` is `dynamics_advdiff_profile_1d_upwind_center2_euler1`, an
 No `component` is declared directly here: a `component` has exactly one source, so a `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml`. A `component` no adopted `profile` selects would be declared there directly, together with its compatibility constraint.
 
 ## 5. Integration algorithm
-The update step is fixed to the following order.
-1. Update the ghost region with `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`.
-2. Compute the advection/diffusion flux with `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`.
-3. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`.
+The update step is fixed to the following order. Each step consumes, by name, the field output of the step before it.
+1. Update the ghost region with `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`, with `ng = 1`. This `problem` `node` places the interior of $u^n$ at elements `ng + 1 … ng + nx` of a ghost-extended array of `nx + 2*ng` elements, passes it as `u_in` together with `nx` and `ng`, and receives `u_out` as the ghost-extended field $u^n_{-1}\dots u^n_{nx}$.
+2. Compute the advection/diffusion flux with `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`, passing the `u_out` of step 1 as its `u` together with `nx`, `ng`, the constants `a` and `nu` of §6, $dx=L/nx$, and the `dt` of the current step. It returns `flux_adv` and `flux_dif` at all `nx + 1` faces, and the total face flux is
+$$
+F_{j+1/2}=F^{adv}_{j+1/2}+F^{dif}_{j+1/2},\quad j=-1,\dots,nx-1
+$$
+3. This `problem` `node` builds the tendency from the flux difference of step 2:
+$$
+L_i=-\frac{F_{i+1/2}-F_{i-1/2}}{\Delta x},\quad i=0,\dots,nx-1
+$$
+In the flux arrays, $F_{i+1/2}$ is element `i + 2` and $F_{i-1/2}$ is element `i + 1`; $L_i$ is element `i + 1` of the tendency array.
+4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing `nx`, this `node`'s own interior state $u^n$ (`nx` values) as its `u_n`, the $L$ of step 3 as its `L_flux`, and the `dt` of the current step. Its `u_np1` is $u^{n+1}$.
+
+The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. The inputs §6 admits satisfy every `component` guard (`ng = 1`, `nx>=2`, `a>0`, `dt>0`). A caller treats the other outputs of a `component` that returns `guard_pass` false as undefined, and no later step consumes them.
+
+The composition is equivalent to the discrete update
+$$
+u^{n+1}_i=u^n_i-C\left(u^n_i-u^n_{i-1}\right)+D\left(u^n_{i+1}-2u^n_i+u^n_{i-1}\right)
+$$
+with the periodic images $u^n_{-1}=u^n_{nx-1}$ and $u^n_{nx}=u^n_0$, and with $C$ and $D$ as defined below. `tests.md` 5-4 derives its amplification rate $G_{num}$ from this update.
+
+The discretization holds the following invariant.
+- **Mass conservation.** $\sum_i L_i\,\Delta x=-\left(F_{nx-1/2}-F_{-1/2}\right)=0$: under the periodic ghost cells of step 1 the two seam faces are the same expression applied to the same values, so $\sum_i u_i$ is conserved up to round-off.
 
 The stability index is defined as
 $$
@@ -54,7 +73,7 @@ The runtime input requires the following.
 - `dt_rule`
 - `output_schedule`
 
-`a<=0` is not allowed. An undefined parameter is an error without implicit completion.
+`a<=0` and `nx<2` are not allowed. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme.

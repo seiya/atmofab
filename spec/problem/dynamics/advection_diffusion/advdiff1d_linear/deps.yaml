@@ -9,4 +9,4 @@ dependencies:
   components: []
   profiles:
     - profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
-      version_constraint: ">=0.1.0 <1.0.0"
+      version_constraint: ">=0.2.0 <1.0.0"
