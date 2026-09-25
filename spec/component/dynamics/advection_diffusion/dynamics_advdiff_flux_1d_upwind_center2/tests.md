@@ -15,7 +15,7 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
 ## 2. Input-defaulting rules
 - The normal case uses `nx>=2`, `ng=1` (unless a test states another `ng`), `a>0`, `nu>=0`, `dx>0`, `dt>0`.
 - The input field is supplied directly as the ghost-extended array of `nx + 2*ng` values in the layout of `controlled_spec.md` §2; the `L0` suite does not call the boundary `component`.
-- The abnormal cases use `a<=0`, `ng<1`, or `nx<2`, one condition per test with every other input normal.
+- The abnormal cases use `a<=0`, `ng=0` (with `nx=4`), or `nx=1` (with `ng=1`), one condition per test with every other input normal.
 
 ## 3. Execution-control rules
 `N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control is the responsibility of the time-update `component` and the `problem` runner.
@@ -41,7 +41,7 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with `ng=2` and a non-constant, non-linear ghost-extended field (so $u_j$ is element `j + 3`, not the face position `j + 2`), for every face $j=-1,\dots,nx-1$, element `j + 2` of `flux_adv` equals $a\,u_j$ and element `j + 2` of `flux_dif` equals $-\nu\,(u_{j+1}-u_j)/dx$, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`), with `nu > 0`, and with `a`, `nu`, `dx` and `nu/dx` each different from `1`, so that omitting any factor changes the result. The expected values are computed by the test from the input field, not by the operation under test.
+  - `judgment`: with the fixed inputs `nx=4`, `ng=2`, `a=2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, and the ghost-extended field `u = [0.3, 1.7, 0.2, 2.9, 1.1, 0.4, 3.6, 2.2]` (elements `1 … 8`, i.e. $u_{-2}\dots u_{5}$; $u_j$ is element `j + 3`), the outputs equal `flux_adv = [3.4, 0.4, 5.8, 2.2, 0.8]` and `flux_dif = [0.9, -1.62, 1.08, 0.42, -1.92]` (element `j + 2` is face $j+1/2$, $j=-1,\dots,3$, from the §3 formulas) within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). The inputs are fixed rather than chosen by the test author because a chosen field can make a wrong formula coincide with the right one (a constant read window, an alternating or geometric field, a factor equal to `1`). On these values every omission of `a`, `nu`, or `1/dx`, a reversed sign, a face shifted by one or two cells, an ignored `ng`, and every pairwise combination of these deviates by at least `0.9` at some face.
 - `test_id`: `l0_periodic_seam_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
@@ -57,13 +57,13 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `xfail`
-  - `xfail_condition`: `ng<1`
+  - `xfail_condition`: `ng=0` with `nx=4` (input size `nx + 2*ng = 4`)
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
 - `test_id`: `l0_invalid_nx_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `xfail`
-  - `xfail_condition`: `nx<2`
+  - `xfail_condition`: `nx=1` with `ng=1` (input size `3`, output size `2`)
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
 
 ## 7. Pass/fail aggregation rules
