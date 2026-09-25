@@ -106,12 +106,10 @@
       "fortran-subroutine": 2
     },
     "docs/workflow/phases/phase_02_generate.md": {
-      "fortran": 23,
-      "fortran-intent": 10,
+      "fortran": 25,
+      "fortran-intent": 1,
       "fortran-kind": 2,
-      "fortran-module-procedure": 1,
-      "fortran-standard": 1,
-      "fortran-subroutine": 7,
+      "fortran-subroutine": 4,
       "fortran-suffix": 8,
       "make-control-file": 4,
       "make-variable": 1,

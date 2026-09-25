@@ -156,8 +156,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
     it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`,
     `source_reading`, `signatures` (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue #289) — and, for a
     non-`infrastructure` node,
-    `control_file` and `runner_render`. It, together with the `make`-quality-check gates in
-    `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
+    `control_file` and `runner_render`. It, together with the validator's dispatch into the
+    control-file gates (`_validate_control_file`, whose gates are the build system backend's since
+    issue #289's R4-b PR-3), and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
     need and carry the registry's clause. They widen when the CAPABILITY is declared, which
     asserts that code in this repository already does that job for the value — inlined in the
