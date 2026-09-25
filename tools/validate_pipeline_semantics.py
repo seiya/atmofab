@@ -9405,13 +9405,13 @@ def _expected_runner_name(spec_id: str) -> str:
     have to agree — a split that disagreed with the name gate would attribute that gate's own
     finding to the wrong author, which is the defect the split was written to repair.
 
-    Mirrors `workflow_conductor.Conductor._runner_basename` FOR THE `fortran` TARGET ONLY. Since
-    issue #289 (R4-b PR-2) the conductor asks the target language's
-    `bundle_facts.runner_basename`, while this module still spells the Fortran name: it is part of
-    this module's Fortran source-reading debt (the `*_runner.f90` glob beside its reader included;
+    Mirrors `workflow_conductor.Conductor._runner_basename` FOR THE ONE LANGUAGE THE REGISTRY
+    HOLDS TODAY. Since issue #289 (R4-b PR-2) the conductor asks the target language's
+    `bundle_facts.runner_basename`, while this module still spells that language's name: it is
+    part of this module's source-reading debt (the runner glob beside its reader included;
     `TODO.md`, the `validate_pipeline_semantics.py` source-reading area), which migrates with that
     issue's PR-3. Until then a second language's runner is misnamed here — a refusal of a correct
-    bundle, not a pass — and the two agree for every node the registry can run today.
+    bundle, not a pass.
     """
     return f"{spec_id}_runner.f90"
 

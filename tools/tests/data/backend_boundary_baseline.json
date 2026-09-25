@@ -12,7 +12,7 @@
     },
     "AGENTS.md": {
       "compiler-driver": 4,
-      "fortran": 3
+      "fortran": 2
     },
     "README.md": {
       "compiler-driver": 3,
@@ -49,7 +49,7 @@
       "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
-      "fortran": 5
+      "fortran": 4
     },
     "docs/ORCHESTRATION.md": {
       "compiler-driver": 1,
@@ -97,7 +97,7 @@
       "make-control-file": 1
     },
     "docs/workflow/WORKFLOW_CORE.md": {
-      "fortran": 3,
+      "fortran": 1,
       "fortran-suffix": 1,
       "make-control-file": 2
     },
@@ -110,7 +110,7 @@
     },
     "docs/workflow/phases/phase_02_generate.md": {
       "compiler-driver": 2,
-      "fortran": 31,
+      "fortran": 30,
       "fortran-intent": 10,
       "fortran-kind": 2,
       "fortran-module-file": 2,
@@ -124,14 +124,13 @@
       "parallel-directive": 5
     },
     "docs/workflow/phases/phase_03_build.md": {
-      "fortran": 1,
       "fortran-module-file": 2,
       "fortran-subroutine": 1,
       "make-control-file": 4,
       "make-variable": 3
     },
     "docs/workflow/phases/phase_04_validate.md": {
-      "fortran": 2,
+      "fortran": 1,
       "make-control-file": 3,
       "make-variable": 1
     },
