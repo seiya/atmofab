@@ -877,15 +877,16 @@ class FieldGrammarTest(unittest.TestCase):
             self.assertFalse(union.fullmatch("1abc"))    # neither does
             files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"]},
                      {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"]}]
-            # The second entrypoint is defined in the SECOND file: an owner resolved by position
-            # rather than by `defined_in` would hold `_zz` to Fortran's grammar (round 2, #289).
-            entrypoints = [{"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"},
-                           {"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"}]
+            # The entrypoints are listed in the OPPOSITE order to their files: an owner resolved
+            # by any position — the first file (round 2, #289) or the file at the entrypoint's
+            # own index (round 3) — holds one of them to the other file's grammar.
+            entrypoints = [{"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"},
+                           {"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"}]
             owner = {"_ok": files[1]}
             bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok"}]
             found = cb._identifier_language_violations(files, entrypoints, bindings, owner)
             self.assertEqual(sorted(v.split(" ", 1)[0] for v in found), [
-                "entrypoints[0].module", "entrypoints[0].symbol", "files[0].modules[0]",
+                "entrypoints[1].module", "entrypoints[1].symbol", "files[0].modules[0]",
                 "files[1].modules[1]", "state_bindings[0].state_variable",
                 "state_bindings[0].storage_symbol"])
             # ... and the layer is WIRED into the contract, not only callable (round 1, issue
