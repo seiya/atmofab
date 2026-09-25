@@ -378,7 +378,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         # gfortran EXTENDS the standard by accepting a continued character literal whose
         # resume line carries no leading `&`. Left a warning, that shape put a counted-`do`
         # spelling written inside a string at a PHYSICAL line start, where the fail_closed
-        # OpenMP presence floor (`_validate_openmp_presence_floor`, anchored and stateless)
+        # OpenMP presence floor (`_validate_parallel_presence_floor`, anchored and stateless)
         # counted it — a false REJECT on a source this gate had passed. Issue #25 promotes
         # the class so the shape never reaches the floor; the conforming `&`-led resume
         # below (`test_conforming_continued_literal_passes`) is unaffected.

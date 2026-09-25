@@ -1376,7 +1376,7 @@ def iter_logical_lines(text: str) -> list[tuple[int, str]]:
 
     The scanning itself is ``fortran_lines.fortran_logical_lines`` (issue #23) — one
     implementation shared with ``fortran_lines.fortran_logical_line_texts`` (the §5.1 view) and
-    with ``orchestration_runtime``, so a comment, a continuation or a character literal can no
+    with the dependency-fact reader (``interface.py``), so a comment, a continuation or a character literal can no
     longer be read one way here and another way there. This adapter adds only the ``;`` split.
     """
     logical: list[tuple[int, str]] = []
@@ -2086,8 +2086,8 @@ def checks_module_accessibility_scan(
 
 
 
-# `subroutine` declaration opener mirroring orchestration_runtime._FORTRAN_SUBROUTINE_RE (the
-# published-surface scanner the resolver uses): optional pure/impure/elemental/recursive/module
+# `subroutine` declaration opener mirroring `interface._FORTRAN_SUBROUTINE_RE` (the
+# published-surface scanner the dependency-fact reader uses): optional pure/impure/elemental/recursive/module
 # prefixes, then `subroutine <name>`. `^\s*` anchors at the (comment-stripped, continuation-
 # joined) logical-line start, so `end subroutine` / `call` lines never match. Kept in lock-step
 # with the runtime regex by the cross-scanner parity test (ComponentGeneratedSurfaceGateTests).
@@ -2121,10 +2121,10 @@ def published_subroutines(text: str, spec_id: str) -> list[str]:
     (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. A
     header inside an ``abstract interface`` block is a prototype and is not counted (issue
     #266); one inside a plain ``interface`` body is an external the module may re-export and
-    counts, as before. The
-    validator may NOT import ``orchestration_runtime`` (module-boundary rule), so this is a
-    separate mirror of ``interface._list_prefixed_subroutines`` (the dependency-fact reader); the cross-scanner parity
-    test pins the two implementations to the same result.
+    counts, as before. It is a separate mirror of ``interface._list_prefixed_subroutines``
+    (the dependency-fact reader) — two readers of one surface since the validator could not
+    import the runtime; both live in this package since issue #289 (R4-b PR-3), and the
+    cross-scanner parity test pins them to the same result.
 
     The two used to be pinned only over the domain a code generator emits, because their
     hand-rolled scanners joined continuations with different whitespace and so resolved a

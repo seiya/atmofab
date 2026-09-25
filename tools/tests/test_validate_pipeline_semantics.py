@@ -22135,7 +22135,7 @@ class RegistryClauseReadersTests(unittest.TestCase):
             self.assertFalse(any("signature pinning needs a language backend" in x for x in v), v)
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
-    """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
+    """`_validate_parallel_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
     node built for an OpenMP-on-CPU Fortran TARGET (the pipeline's profile, issue #284) whose
     bundle's `target_lowering_plan` names OpenMP as its parallelization model, a model source with
     counted `do` loops must carry at least one `!$omp` directive. Presence floor only — which loops

@@ -34,8 +34,9 @@ _FORTRAN_SUBROUTINE_RE = re.compile(
 
 
 # An `interface` block's span (issue #266). The ABSTRACT opener is mirrored VERBATIM from
-# `validate_pipeline_semantics._ABSTRACT_INTERFACE_SPAN_OPEN_RE` / `_INTERFACE_SPAN_END_RE`
-# (that module may not be imported here); the cross-scanner parity test pins the two. The
+# `source._ABSTRACT_INTERFACE_SPAN_OPEN_RE` / `_INTERFACE_SPAN_END_RE` (the validator's
+# published-surface scanner, in this package since issue #289's R4-b PR-3; before that the two
+# lived in modules that could not import each other); the cross-scanner parity test pins them. The
 # prefixed-name scanner skips abstract spans only (a plain interface body declares an external
 # the module may re-export, which is an entry point); the prototype reader opens on either
 # form. Each opener is the whole statement, so a variable named `interface` opens nothing.
