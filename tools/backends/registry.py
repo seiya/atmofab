@@ -179,6 +179,19 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "The host renders the runner glue over the certified harness for this value, rather "
         "than a leaf authoring it.",
     ),
+    "bundle_facts": (
+        ("language",),
+        "The `CodegenBundle` contract has this value's file facts to apply (source extensions, "
+        "the identifier grammar, compiler-driver families), and the host knows the compiler it "
+        "defaults to for it — which is also the syntax stage `Generate.gate` must pass.",
+    ),
+    "syntax_promotions": (
+        ("language",),
+        "The `Generate.gate` syntax-only stage knows which files of this value are sources, the "
+        "order they are handed to the compiler in, and which warning classes it promotes to "
+        "errors. Without it the stage has nothing to check, and a node of this value is refused "
+        "rather than passed through unchecked.",
+    ),
     "syntax_check": (
         ("compiler",),
         "The syntax-only gate has an argv adapter and a diagnostic reader for this value.",
@@ -246,6 +259,11 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "lint_rules": "lint",
     "execution_env": "execution",
     "perf_facts": "perf",
+    "bundle_facts": "bundle",
+    # `syntax` on both axes, a different job on each: the compiler's package builds the command
+    # line, the language's says what it is run over.
+    "syntax_check": "syntax",
+    "syntax_promotions": "syntax",
 }
 
 
@@ -296,18 +314,24 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
     for b in (
         # This record is extracted AND still carries a `core_provides` capability, because
         # extraction and capability are independent: the neutral core still holds this value's
-        # control-file compile rules (an open ledger area), while its runner render has moved
-        # into the package and is dispatched through `capability_module`.
+        # control-file compile rules (an open ledger area), while its runner render, its bundle
+        # facts and its syntax-stage facts have moved into the package and are dispatched
+        # through `capability_module`.
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}),
+            backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions"}),
         ),
         Backend(
             "build_system", "make", None,
             core_provides=frozenset({"control_file", "build_execute"}),
         ),
-        Backend("compiler", "gfortran", None, core_provides=frozenset({"syntax_check"})),
+        # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
+        # the version probe `run_syntax_check` used to hold inline.
+        Backend(
+            "compiler", "gfortran", "tools.backends.compiler.gfortran",
+            backend_provides=frozenset({"syntax_check"}),
+        ),
         # The linter members ARE the presets the `Generate` lint evidence gate accepts: that gate
         # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the
         # only place the accepted presets are written. Listing only `fortitude` here would

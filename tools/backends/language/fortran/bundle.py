@@ -41,3 +41,17 @@ IDENTIFIER_MAX = 63
 #: a trailing newline while `\A`/`\Z` are invalid in ECMA-262. The negative lookahead means "no
 #: character follows" and is identical in both.
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
+
+#: The compiler the host uses for this language when the target profile pins no
+#: `toolchain.compiler`. It is BOTH the compiler the build control file pins and the mandatory
+#: `Generate.gate` syntax stage, and it has to be one value for the two: the syntax gate
+#: certifies that stage and the build then runs this one, so a divergence would certify one
+#: compiler and build with another. The equality is also what lets the launch-time host probe
+#: (`tools/host_prerequisites.py`) cover the BUILD compiler by probing the mandatory SYNTAX stage.
+DEFAULT_COMPILER = "gfortran"
+
+#: The syntax-only stage `Generate.gate` must run, and pass, for this language whatever
+#: `ATMOFAB_SYNTAX_COMPILERS` lists; the post_generate certification requires its stage. Named
+#: separately from `DEFAULT_COMPILER` because the readers ask different questions, and bound to
+#: it because the answers must not differ (see above).
+MANDATORY_SYNTAX_COMPILER = DEFAULT_COMPILER

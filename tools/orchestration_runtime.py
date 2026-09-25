@@ -2330,15 +2330,15 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     and the compiler with the first line of its `--version` (issue #284; before R4-a PR-2 the
     same fields were read off the IR's `impl_defaults`).
 
-    The compiler is the profile's pin, else the build-runtime server's
-    `MANDATORY_SYNTAX_COMPILER` — asked of the server, which owns the compiler adapters and
-    whose value the conductor's `DEFAULT_COMPILER` is pinned equal to
-    (`tools/tests/test_host_prerequisites.py`). The VERSION is probed from the executable,
+    The compiler is the profile's pin, else the language backend's `DEFAULT_COMPILER`
+    (`bundle_facts`) — the compiler the conductor's control-file writer pins in the same case,
+    and the one the mandatory syntax stage runs. The VERSION is probed from the executable,
     because a profile names a compiler and not the build of it on this machine;
     `compiler_version` is `None` when it cannot be probed (recorded, not refused)."""
     tc = target.toolchain
     server = _build_runtime_server_module()
-    compiler = str(tc.get("compiler") or "") or str(server.MANDATORY_SYNTAX_COMPILER)
+    compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
+        "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
     return {
         "target_id": target.target_id,
         "language": tc["language"],

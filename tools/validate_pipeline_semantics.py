@@ -7259,9 +7259,10 @@ def _validate_generate_syntax_command_logs(
     The syntax gate is the deterministic `generate.gate` substep run in-process by the
     conductor (Conductor._gate_syntax_check -> MCP run_syntax_check). Mirrors
     `_validate_generate_lint_command_logs`: the certificate cannot be forged by the leaf
-    (the pipeline root is read-only inside the sandbox). Required only for
-    toolchain.language=fortran (the only language with a syntax-check adapter); the
-    MANDATORY stage is gfortran and must have passed. Optional additional stages (the
+    (the pipeline root is read-only inside the sandbox). Required for every language: the
+    language backend names the MANDATORY stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`),
+    and it must have passed; a language that declares no syntax stage
+    (`syntax_promotions`) cannot be certified at all. Optional additional stages (the
     ATMOFAB_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
     their compiler has no registered adapter or no installed binary, or when the stage
     refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
@@ -7270,10 +7271,11 @@ def _validate_generate_syntax_command_logs(
     pipeline_root = meta_path.parents[2]
     from tools.hooks.syntax_evidence import read_syntax_evidence, syntax_evidence_path
 
-    # fortran is the only language the gate runs for; other languages pass through the
-    # generate.gate syntax check without evidence, so there is nothing to certify.
-    if not impl_language or impl_language.strip().lower() != "fortran":
+    # A missing language is the caller's to report (the lint certification beside this one
+    # does); the question here is only what the syntax stage of a named one must show.
+    if not impl_language:
         return
+    language = impl_language.strip().lower()
 
     # Same trigger rule as the lint certification: certify whenever the conductor-run
     # evidence exists (the static-stage flow) OR the leaf is claiming pass; skip only when
@@ -7317,7 +7319,24 @@ def _validate_generate_syntax_command_logs(
         )
         return
 
-    gfortran_passed = False
+    if not backend_registry.provides("language", language, "syntax_promotions"):
+        violations.append(
+            f"{meta_path}: toolchain.language={language!r} has no syntax stage to certify — "
+            + str(backend_registry.missing_capability_reason(
+                "language", language, "syntax_promotions")))
+        return
+    mandatory = str(backend_registry.capability_module(
+        "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
+
+    def _stage_executable(compiler: str) -> str:
+        # What a registered adapter launches; an unregistered id (a forged or a future stage)
+        # is held to its own spelling, as every stage was before the adapters moved.
+        if compiler and backend_registry.provides("compiler", compiler, "syntax_check"):
+            return str(backend_registry.capability_module(
+                "compiler", compiler, "syntax_check").EXECUTABLE).lower()
+        return compiler
+
+    mandatory_passed = False
     for idx, entry in enumerate(stages):
         if not isinstance(entry, dict):
             violations.append(
@@ -7333,9 +7352,9 @@ def _validate_generate_syntax_command_logs(
             )
             continue
         if stage_status == "skipped":
-            if compiler == "gfortran":
+            if compiler == mandatory:
                 violations.append(
-                    f"{meta_path}: syntax evidence stages[{idx}]: the mandatory gfortran "
+                    f"{meta_path}: syntax evidence stages[{idx}]: the mandatory {mandatory} "
                     "stage must not be skipped"
                 )
             continue
@@ -7366,19 +7385,19 @@ def _validate_generate_syntax_command_logs(
         if command is None:
             continue
         exe_basename = Path(str(command[0])).name.strip().lower()
-        if exe_basename != compiler:
+        if exe_basename != _stage_executable(compiler):
             violations.append(
                 f"{meta_path}: syntax evidence stages[{idx}]: logged command does not "
                 f"match compiler {compiler!r} (argv[0] is {command[0]!r})"
             )
             continue
-        if compiler == "gfortran":
-            gfortran_passed = True
+        if compiler == mandatory:
+            mandatory_passed = True
 
-    if not gfortran_passed:
+    if not mandatory_passed:
         violations.append(
-            f"{meta_path}: syntax evidence must record a passing gfortran stage "
-            "(the mandatory syntax gate for toolchain.language=fortran)"
+            f"{meta_path}: syntax evidence must record a passing {mandatory} stage "
+            f"(the mandatory syntax gate for toolchain.language={language})"
         )
 
 

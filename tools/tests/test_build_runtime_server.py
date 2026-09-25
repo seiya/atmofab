@@ -41,6 +41,18 @@ def _load_server_module():
     return mod
 
 
+def _gfortran_syntax():
+    """The gfortran `syntax_check` module, reached the way the server reaches it."""
+    from tools.backends import registry
+    return registry.capability_module("compiler", "gfortran", "syntax_check")
+
+
+def _fortran_syntax():
+    """The Fortran `syntax_promotions` module, reached the way the server reaches it."""
+    from tools.backends import registry
+    return registry.capability_module("language", "fortran", "syntax_promotions")
+
+
 class DisableBytecodeWritesTests(unittest.TestCase):
     def test_disable_sets_interpreter_flag_and_env(self) -> None:
         mod = _load_server_module()
@@ -105,21 +117,55 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         return d
 
     def test_gfortran_adapter_argv_shape(self) -> None:
-        argv = self.mod._gfortran_syntax_argv("f2008", ".mods", False, ["a.f90", "b.f90"])
+        # The argv moved to the compiler backend and the promoted classes to the language
+        # backend (issue #289, R4-b PR-2); `run_syntax_check` composes the two. The composed
+        # line is the one the gate has always run.
+        adapter = _gfortran_syntax()
+        promotions = tuple(_fortran_syntax().PROMOTED_WARNINGS)
+        argv = adapter.argv(standard="f2008", scratch_dir=".mods", openmp=False,
+                            promotions=promotions, architecture=None,
+                            sources=["a.f90", "b.f90"])
         self.assertEqual(
             argv,
             ["gfortran", "-fsyntax-only", "-std=f2008",
              "-Werror=unused-dummy-argument", "-Werror=unused-variable", "-Werror=ampersand",
              "-J", ".mods", "-I", ".mods",
              "a.f90", "b.f90"])
-        argv = self.mod._gfortran_syntax_argv("f2018", ".mods", True, ["x.f90"])
+        argv = adapter.argv(standard="f2018", scratch_dir=".mods", openmp=True,
+                            promotions=promotions, architecture="x86_64", sources=["x.f90"])
         self.assertIn("-fopenmp", argv)
         self.assertIn("-std=f2018", argv)
         self.assertIn("-Werror=unused-dummy-argument", argv)
         self.assertIn("-Werror=unused-variable", argv)
         self.assertIn("-Werror=ampersand", argv)
+        # an architecture is accepted and not read by a CPU front end
+        self.assertNotIn("x86_64", " ".join(argv))
         # sources stay last so the compiler reads them after the mod-dir flags
         self.assertEqual(argv[-1], "x.f90")
+
+    def test_compiler_and_std_are_required(self) -> None:
+        # Both used to default to one language's spelling (`gfortran`, `f2008`) in a tool
+        # that serves every language; the caller names its target's values.
+        d = self._src_dir({"a.f90": "program p\nend program p\n"})
+        for args in ({"project_dir": str(d)},
+                     {"project_dir": str(d), "compiler": "gfortran"},
+                     {"project_dir": str(d), "std": "f2008"},
+                     {"project_dir": str(d), "compiler": " ", "std": "f2008"}):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod.tool_run_syntax_check(args)
+                self.assertIn("requires a non-empty string", str(ctx.exception))
+
+    def test_a_compiler_that_declares_no_syntax_check_is_refused(self) -> None:
+        # A registered compiler record is not an adapter: only `syntax_check` makes one.
+        from tools.backends import registry
+        d = self._src_dir({})
+        with mock.patch.dict(registry._BACKENDS, {
+                ("compiler", "frt"): registry.Backend("compiler", "frt", None)}):
+            with self.assertRaises(ValueError) as ctx:
+                self.mod.tool_run_syntax_check(
+                    {"project_dir": str(d), "compiler": "frt", "std": "f2008"})
+        self.assertIn("supported=gfortran", str(ctx.exception))
 
     def test_source_order_topological_by_module_use(self) -> None:
         d = self._src_dir({
@@ -129,7 +175,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
             "z_model.f90": "module z_model\n  integer :: x\nend module z_model\n",
         })
         self.assertEqual(
-            self.mod._fortran_syntax_source_order(d),
+            _fortran_syntax().compile_order(d),
             ["z_model.f90", "a_runner.f90", "m_checks.f90"])
 
     def test_source_order_ignores_identifier_starting_with_use(self) -> None:
@@ -144,14 +190,14 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # `use user`, ordering could shuffle. With the fix a.f90 has no real `use`, so the
         # order is a plain name-sort and no spurious dependency is introduced.
         self.assertEqual(
-            self.mod._fortran_syntax_source_order(d), ["a.f90", "user.f90"])
+            _fortran_syntax().compile_order(d), ["a.f90", "user.f90"])
 
     def test_source_order_ignores_unknown_and_intrinsic_modules(self) -> None:
         d = self._src_dir({
             "a.f90": "program p\n  use, intrinsic :: iso_fortran_env, only: int64\n"
                      "  use some_external_lib\nend program p\n",
         })
-        self.assertEqual(self.mod._fortran_syntax_source_order(d), ["a.f90"])
+        self.assertEqual(_fortran_syntax().compile_order(d), ["a.f90"])
 
     def test_source_order_module_procedure_not_a_definition(self) -> None:
         d = self._src_dir({
@@ -160,7 +206,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
             "b.f90": "module b_mod\nend module b_mod\n",
         })
         # `module procedure` must not register a module named "procedure"/f.
-        self.assertEqual(self.mod._fortran_syntax_source_order(d), ["a.f90", "b.f90"])
+        self.assertEqual(_fortran_syntax().compile_order(d), ["a.f90", "b.f90"])
 
     def test_rejects_custom_command(self) -> None:
         d = self._src_dir({})
@@ -171,13 +217,13 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
     def test_rejects_unknown_compiler(self) -> None:
         d = self._src_dir({})
         with self.assertRaises(ValueError) as ctx:
-            self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "frt"})
+            self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "frt", "std": "f2008"})
         self.assertIn("supported=gfortran", str(ctx.exception))
 
     def test_missing_compiler_returns_skipped(self) -> None:
         d = self._src_dir({"a.f90": "program p\nend program p\n"})
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
-            result = self.mod.tool_run_syntax_check({"project_dir": str(d)})
+            result = self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": "f2008"})
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
         self.assertIn("compiler not available", result["reason"])
@@ -185,7 +231,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
     def test_no_sources_returns_skipped(self) -> None:
         d = self._src_dir({"notes.txt": "not fortran"})
         with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"):
-            result = self.mod.tool_run_syntax_check({"project_dir": str(d)})
+            result = self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": "f2008"})
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
         self.assertIn("no fortran sources", result["reason"])
@@ -200,7 +246,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
                 mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run_mock:
             result = self.mod.tool_run_syntax_check(
-                {"project_dir": str(d), "std": "f2008", "openmp": True})
+                {"project_dir": str(d), "compiler": "gfortran", "std": "f2008", "openmp": True})
         # first call = the syntax check itself; a later call probes --version
         argv = run_mock.call_args_list[0].args[0]
         self.assertEqual(argv[:3], ["gfortran", "-fsyntax-only", "-std=f2008"])
@@ -228,7 +274,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
             stderr="Error: Fortran 2018: IMPLICIT NONE with spec list")
         with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
                 mock.patch.object(self.mod.subprocess, "run", return_value=fake):
-            result = self.mod.tool_run_syntax_check({"project_dir": str(d)})
+            result = self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": "f2008"})
         self.assertFalse(result["ok"])
         self.assertFalse(result["skipped"])
         self.assertIn("IMPLICIT NONE with spec list", result["stderr"])
@@ -253,7 +299,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         for name, text in files.items():
             (d / name).write_text(text, encoding="utf-8")
-        return self.mod.tool_run_syntax_check({"project_dir": str(d), "std": "f2008"})
+        return self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": "f2008"})
 
     def test_valid_module_dependency_passes(self) -> None:
         result = self._check({
@@ -308,7 +354,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         self.assertIn("unused-variable", result["stderr"])
 
     def test_canary_source_is_valid_under_every_standard_and_detects_a_bad_std(self) -> None:
-        # The conductor compiles SYNTAX_CANARY_SOURCE with the failing stage's own argv to
+        # The conductor compiles the adapter's CANARY_SOURCE with the failing stage's own argv to
         # tell a broken INVOCATION (an `-std=` value the driver rejects, so no source is ever
         # parsed) apart from broken sources. Both halves of that must hold against the real
         # compiler: the canary passes under each standard a node may target — were it invalid
@@ -317,14 +363,14 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         # knows, which is the signal the attribution keys on.
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        (d / "atmofab_syntax_canary.f90").write_text(
-            self.mod.SYNTAX_CANARY_SOURCE, encoding="utf-8")
+        (d / _gfortran_syntax().CANARY_FILENAME).write_text(
+            _gfortran_syntax().CANARY_SOURCE, encoding="utf-8")
         # every standard a node may declare — a canary that failed any one of these would
         # fail_closed every ordinary syntax finding on a node targeting it
         for std in ("f95", "f2003", "f2008", "f2018", "gnu", "legacy"):
-            result = self.mod.tool_run_syntax_check({"project_dir": str(d), "std": std})
+            result = self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": std})
             self.assertTrue(result["ok"], msg=f"{std}: {result.get('stderr')}")
-        bad = self.mod.tool_run_syntax_check({"project_dir": str(d), "std": "2008"})
+        bad = self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran", "std": "2008"})
         self.assertFalse(bad["ok"])
         self.assertFalse(bad["skipped"])
 
@@ -1120,7 +1166,8 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
 
     def _call(self, sources: list) -> dict:
         return self.mod.tool_run_syntax_check(
-            {"project_dir": str(self.project_dir), "sources": sources})
+            {"project_dir": str(self.project_dir), "sources": sources,
+             "compiler": "gfortran", "std": "f2008"})
 
     def test_an_explicit_source_is_refused_without_a_compiler_too(self) -> None:
         # The skip for an uninstalled compiler used to return first, so `/etc/passwd`
@@ -1128,11 +1175,11 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
             with self.assertRaises(ValueError) as ctx:
                 self._call(["/etc/passwd"])
-        self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+        self.assertIn("fortran source files in project_dir", str(ctx.exception))
 
     def test_a_clean_tree_still_skips_when_the_compiler_is_absent(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
-            result = self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
+            result = self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir), "compiler": "gfortran", "std": "f2008"})
         self.assertTrue(result["skipped"])
         self.assertIn("compiler not available", result["reason"])
 
@@ -1155,7 +1202,7 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
             with self.subTest(sources=bad):
                 with self.assertRaises(ValueError) as ctx:
                     self._call(bad)
-                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+                self.assertIn("fortran source files in project_dir", str(ctx.exception))
 
     def test_a_staged_file_whose_NAME_is_an_option_is_still_refused(self) -> None:
         # The leaf writes its own src/, so it can stage a file called `@resp.f90` — a
@@ -1169,15 +1216,16 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
                 self.assertTrue((self.project_dir / name).is_file())
                 with self.assertRaises(ValueError) as ctx:
                     self._call([name])
-                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+                self.assertIn("fortran source files in project_dir", str(ctx.exception))
 
     def test_the_source_suffixes_are_the_tool_s_own(self) -> None:
         # The name rule is built from the same tuple auto-discovery uses, so an added
         # suffix cannot make an explicit `sources` list refuse a file the tool would
         # otherwise have found itself.
-        for suffix in self.mod._FORTRAN_SYNTAX_SOURCE_SUFFIXES:
+        suffixes = tuple(_fortran_syntax().SOURCE_SUFFIXES)
+        for suffix in suffixes:
             with self.subTest(suffix=suffix):
-                self.assertTrue(self.mod._build_syntax_source_re().match(f"a{suffix}"))
+                self.assertTrue(self.mod._build_syntax_source_re(suffixes).match(f"a{suffix}"))
 
     def test_auto_discovery_is_held_to_the_same_rule(self) -> None:
         # The workflow never passes `sources`, so this is the reading that actually
@@ -1192,8 +1240,8 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
             with self.subTest(compiler_installed=which is not None):
                 with mock.patch.object(self.mod.shutil, "which", return_value=which), \
                         self.assertRaises(ValueError) as ctx:
-                    self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
-                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+                    self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir), "compiler": "gfortran", "std": "f2008"})
+                self.assertIn("fortran source files in project_dir", str(ctx.exception))
 
     def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
@@ -2204,6 +2252,8 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
             args["build_system"] = "make"
         if tool == "run_linter":
             args["preset"] = "fortitude"
+        if tool == "run_syntax_check":
+            args.update(compiler="gfortran", std="f2008")
         return args
 
     def _bounded_properties(self) -> list[tuple[str, str, int]]:

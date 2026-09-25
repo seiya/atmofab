@@ -168,10 +168,11 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     # one attempt per class:
     #   - lint   (Conductor._gate_lint_check):   runs run_linter. Always runs.
     #   - syntax (Conductor._gate_syntax_check): runs the MCP run_syntax_check compiler
-    #     front-end gate (gfortran -fsyntax-only, plus optional target-compiler stages from
-    #     ATMOFAB_SYNTAX_COMPILERS) over the staged node + dependency-closure sources, so the
-    #     whole class of syntax / standard-conformance compile_errors surfaces here instead
-    #     of at Build (fortran-language nodes only; non-fortran passes through). Always runs
+    #     front-end gate (the language's mandatory syntax-only stage, plus optional
+    #     target-compiler stages from ATMOFAB_SYNTAX_COMPILERS) over the staged node +
+    #     dependency-closure sources, so the whole class of syntax / standard-conformance
+    #     compile_errors surfaces here instead of at Build (a language that declares no
+    #     `syntax_promotions` is a transport fail_closed, not a pass-through). Always runs
     #     (independent of lint); an unfixable-by-leaf attribution (canary / dependency-closure)
     #     raises and surfaces as a transport fail_closed, suppressing gate_meta (fail_closed
     #     dominates a co-occurring lint content-fail — the same order as today, only sooner).
@@ -3424,20 +3425,16 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
-#: The compiler the host uses when the target profile pins no `toolchain.compiler`. It is BOTH
-#: the `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage,
-#: and it has to
-#: be one value for the two: the syntax gate certifies that stage and the build then runs this
-#: one, so a divergence would certify one compiler and build with another. It was seven
-#: independent spellings in this file.
-#:
-#: It must also equal `mcp_servers/build_runtime_server.MANDATORY_SYNTAX_COMPILER`, which is that
-#: module's own default for the same reason. The two are separate constants rather than one
-#: import because the server is standalone-runnable and does not import `tools/`, and this file
-#: reaches the server only lazily from inside the in-process gate bodies. The equality is pinned
-#: by `tools/tests/test_host_prerequisites.py` -- and it is what lets the launch-time host probe
-#: cover the BUILD compiler by probing the mandatory SYNTAX stage.
-DEFAULT_COMPILER = "gfortran"
+def default_compiler(language: str) -> str:
+    """The compiler the host uses for `language` when the target profile pins no
+    `toolchain.compiler`: the language backend's `bundle_facts.DEFAULT_COMPILER`. It is BOTH the
+    `FC` the build control-file writer pins and the mandatory `Generate.gate` syntax stage (the
+    backend binds `MANDATORY_SYNTAX_COMPILER` to it), so the syntax gate certifies the compiler
+    the build then runs, and the launch-time host probe covers the BUILD compiler by probing the
+    mandatory SYNTAX stage. It was one module constant, spelled for one language, until issue
+    #289 (R4-b PR-2); the registry refuses a language that declares no `bundle_facts`."""
+    return str(backend_registry.capability_module(
+        "language", language, "bundle_facts").DEFAULT_COMPILER)
 
 
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
@@ -5319,7 +5316,7 @@ class Conductor:
     def _read_toolchain(self, refs: NodeRefs) -> dict[str, str]:
         """The target's toolchain fields every host-side author shares: `language`,
         `standard`, `build_system`, `compiler` (the profile's OPTIONAL pin, `""` when it pins
-        none — the environment default, `DEFAULT_COMPILER`, is then used) and `backend` (the
+        none — the language's `default_compiler` is then used) and `backend` (the
         parallel backend). ONE read, so the control-file FC/FFLAGS derivation, the lint preset
         pick and the syntax gate's std/openmp flags cannot diverge from each other.
 
@@ -5798,9 +5795,9 @@ class Conductor:
             # strip — which the predicate relies on, so do not normalize again here.
             return
         backend = tc["backend"]
-        # The optional toolchain.compiler pins FC (a Fujitsu frt build only needs this IR
-        # field plus a run_syntax_check adapter); unset keeps the gfortran default.
-        fc = tc["compiler"] or DEFAULT_COMPILER
+        # The optional toolchain.compiler pins FC (another compiler's build only needs this
+        # profile field plus a run_syntax_check adapter); unset keeps the language's default.
+        fc = tc["compiler"] or default_compiler(tc["language"])
 
         model = f"{refs.spec_id}_model"
         runner = f"{refs.spec_id}_runner"
@@ -6253,7 +6250,7 @@ clean:
         before make), a `bundle:` / `glue:` source is a filename in the src/ cwd. Objects live
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
         tc = self._read_toolchain(refs)
-        fc = tc["compiler"] or DEFAULT_COMPILER
+        fc = tc["compiler"] or default_compiler(tc["language"])
         flags = f"-std={tc['standard']} -O2"
         if tc["backend"] == "openmp":
             flags += " -fopenmp"
@@ -10004,13 +10001,13 @@ clean:
 
     def _gate_syntax_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate syntax checker: in-process run_syntax_check (a real compiler
-        front-end, gfortran -fsyntax-only) over the staged node + dependency-closure
-        sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
+        front-end in syntax-only mode, the language's mandatory syntax compiler) over the staged
+        node + dependency-closure sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
         `syntax` section of gate_meta (status / language / stages / skipped_reason /
         failure_category / failure_excerpt); `_gate_inproc` composes the single gate_meta.json
         verdict. This catches the whole class of syntax / standard-conformance compile_errors
         BEFORE Build (where they would force the expensive regenerate->rebuild loop) — replacing
-        the retired post_generate text heuristics that could only mimic gfortran one observed
+        the retired post_generate text heuristics that could only mimic a compiler one observed
         failure at a time.
 
         Compiler findings are a CONTENT failure (status="fail") the gate routes to
@@ -10022,39 +10019,52 @@ clean:
         dependency closure alone (fails => the closure is at fault — either a defective
         certified source or a node standard too narrow for it). Both are a transport
         fail_closed naming what to fix, since the leaf authors neither the IR nor a
-        dependency's certified source. A missing MANDATORY gfortran (or a genuine tool/infra
-        error) raises and surfaces as a transport fail_closed likewise — an environment
-        problem, not something the generate retry loop could fix. Optional additional stages
-        from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
+        dependency's certified source. A missing MANDATORY stage compiler (or a genuine
+        tool/infra error) raises and surfaces as a transport fail_closed likewise — an
+        environment problem, not something the generate retry loop could fix. Optional
+        additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
-        registered adapter or its binary is not installed, so one configuration runs on
-        machines with and without the target compiler.
+        registered adapter, reads another language's sources, or its binary is not installed,
+        so one configuration runs on machines with and without the target compiler.
+
+        Which files are sources, the mandatory stage, the canary and the argv are the
+        registry's answers (`syntax_promotions` / `bundle_facts` of the language, `syntax_check`
+        of the compiler). A language that declares no `syntax_promotions` has no stage to run,
+        and is a transport fail_closed rather than a pass-through: until issue #289 (R4-b PR-2)
+        every language but one passed this checker unchecked.
 
         Staging: each compiler stage gets its own throwaway dir under
-        workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src *.f90 plus
-        the certified dependency-closure `<dep>_model.f90` (`_stage_dependency_sources`).
+        workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src sources plus
+        the certified dependency-closure model sources (`_stage_dependency_sources`).
         Module files are compiler-/version-specific, so stages never share a dir and
-        never touch Build's $(OBJDIR). Non-fortran languages (c/cpp/mixed/cuda_*) pass
-        through: gfortran cannot check them, Build stays their backstop."""
+        never touch Build's object directory."""
         import sys as _sys
         mcp_dir = str(self.repo_root / "mcp_servers")
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
         from build_runtime_server import (
-            _FORTRAN_SYNTAX_SOURCE_SUFFIXES,
-            _SYNTAX_COMPILER_ADAPTERS,
-            SYNTAX_CANARY_SOURCE,
             SyntaxSourceNameError,
+            syntax_adapter,
             tool_run_syntax_check,
         )
         from tools.hooks.syntax_evidence import write_syntax_evidence
 
-        # Single source of truth for the free-form Fortran suffix set: the tool that owns
-        # source discovery. The conductor's "no source to check" test and the tool's
-        # discover-and-order set must not drift.
-        suffixes = _FORTRAN_SYNTAX_SOURCE_SUFFIXES
         tc = self._read_toolchain(refs)
         language = tc["language"]
+        if not backend_registry.provides("language", language, "syntax_promotions"):
+            raise RuntimeError(
+                f"generate.gate syntax check: toolchain.language={language!r} has no syntax "
+                f"stage — "
+                + str(backend_registry.missing_capability_reason(
+                    "language", language, "syntax_promotions")))
+        # Single source of truth for the source suffix set: the language backend the tool also
+        # discovers and orders by. The conductor's "no source to check" test and the tool's
+        # discover-and-order set must not drift.
+        suffixes = tuple(backend_registry.capability_module(
+            "language", language, "syntax_promotions").SOURCE_SUFFIXES)
+        mandatory = str(backend_registry.capability_module(
+            "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
+        architecture = str(self.target.doc["hardware"]["architecture"])
         src_dir = self.repo_root / refs.source_dir() / "src"
         command_log_ref = self._rel(src_dir / "command_log.jsonl")
 
@@ -10073,13 +10083,11 @@ clean:
             if p.is_file() and p.suffix.lower() in suffixes
         ) if src_dir.is_dir() else []
 
-        if language != "fortran":
-            skipped_reason = f"language={language}: no syntax-check adapter (fortran only)"
-        elif not node_sources:
+        if not node_sources:
             ok = False
             failure_category = "syntax_error"
             failure_excerpt = (
-                f"{self._rel(src_dir)}: no free-form Fortran source "
+                f"{self._rel(src_dir)}: no {language} source "
                 f"({'/'.join(suffixes)}) to syntax-check"
             )
         else:
@@ -10110,30 +10118,47 @@ clean:
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
-            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", DEFAULT_COMPILER)
+            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", mandatory)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
             # The mandatory stage runs regardless of the env list's content/order: it is the one
             # stage post_generate certification requires to have passed. Its identity is the
-            # module constant the build `FC` default above shares -- so the launch-time host
-            # probe covers both by probing one.
-            if DEFAULT_COMPILER in compilers:
-                compilers.remove(DEFAULT_COMPILER)
-            compilers.insert(0, DEFAULT_COMPILER)
+            # language backend's, bound to the build `FC` default above -- so the launch-time
+            # host probe covers both by probing one.
+            if mandatory in compilers:
+                compilers.remove(mandatory)
+            compilers.insert(0, mandatory)
             for compiler in compilers:
-                # An entry with no registered adapter (e.g. a future `frt` listed before its
-                # adapter ships) is recorded skipped, not crashed: the tool would raise
-                # ValueError for an unknown compiler, which — unlike the "binary not
-                # installed" skip — would propagate as a transport fail_closed even though
-                # the mandatory gfortran stage passed. gfortran must always be registered.
-                if compiler not in _SYNTAX_COMPILER_ADAPTERS:
-                    if compiler == DEFAULT_COMPILER:
+                # An entry with no registered adapter (e.g. a future target compiler listed
+                # before its adapter ships), or whose adapter reads another language's sources,
+                # is recorded skipped, not crashed: the tool would raise ValueError for an
+                # unknown compiler, which — unlike the "binary not installed" skip — would
+                # propagate as a transport fail_closed even though the mandatory stage passed.
+                # The mandatory compiler must always be registered, for this language.
+                try:
+                    adapter = syntax_adapter(compiler)
+                except ValueError as exc:
+                    if compiler == mandatory:
                         raise RuntimeError(
-                            "generate.gate syntax check: gfortran has no registered syntax-check "
-                            "adapter (build-tooling bug)")
+                            f"generate.gate syntax check: the mandatory {compiler} stage has no "
+                            f"registered syntax-check adapter (build-tooling bug): {exc}"
+                        ) from None
                     stages.append({
                         "compiler": compiler,
                         "status": "skipped",
                         "reason": f"no registered syntax-check adapter for {compiler}",
+                    })
+                    continue
+                if str(adapter.LANGUAGE) != language:
+                    if compiler == mandatory:
+                        raise RuntimeError(
+                            f"generate.gate syntax check: the mandatory {compiler} stage reads "
+                            f"{adapter.LANGUAGE} sources, not {language} (build-tooling bug in "
+                            f"tools/backends/)")
+                    stages.append({
+                        "compiler": compiler,
+                        "status": "skipped",
+                        "reason": (f"the {compiler} syntax-check adapter reads "
+                                   f"{adapter.LANGUAGE} sources, not {language}"),
                     })
                     continue
                 stage_dir = (self.repo_root / "workspace" / "tmp" / child_arid
@@ -10148,6 +10173,7 @@ clean:
                         "compiler": compiler,
                         "std": tc["standard"],
                         "openmp": tc["backend"] == "openmp",
+                        "architecture": architecture,
                         "project_dir": str(stage_dir),
                         "repo_root": str(self.repo_root),
                         "command_log_path": str(src_dir / "command_log.jsonl"),
@@ -10195,9 +10221,9 @@ clean:
                         "failure_excerpt": str(exc),
                     }
                 if result.get("skipped"):
-                    if compiler == DEFAULT_COMPILER:
+                    if compiler == mandatory:
                         raise RuntimeError(
-                            f"generate.gate syntax check: mandatory gfortran stage unavailable "
+                            f"generate.gate syntax check: mandatory {compiler} stage unavailable "
                             f"({result.get('reason')})")
                     stages.append({
                         "compiler": compiler,
@@ -10227,6 +10253,7 @@ clean:
                             "compiler": compiler,
                             "std": tc["standard"],
                             "openmp": tc["backend"] == "openmp",
+                            "architecture": architecture,
                             "project_dir": str(sub_dir),
                             "repo_root": str(self.repo_root),
                             "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -10249,8 +10276,8 @@ clean:
                     canary_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                   / "syntax" / f"{compiler}_canary")
                     canary_dir.mkdir(parents=True, exist_ok=True)
-                    (canary_dir / "atmofab_syntax_canary.f90").write_text(
-                        SYNTAX_CANARY_SOURCE, encoding="utf-8")
+                    (canary_dir / adapter.CANARY_FILENAME).write_text(
+                        adapter.CANARY_SOURCE, encoding="utf-8")
                     canary = _sub_check(canary_dir)
                     if not canary.get("skipped") and not canary.get("ok"):
                         canary_excerpt = ((canary.get("stdout", "") or "")
@@ -10261,8 +10288,8 @@ clean:
                             f"failure is the invocation, not the sources. Check the target "
                             f"profile's toolchain.standard={tc['standard']!r} (spec/targets/"
                             f"{self.target.target_id}.yaml; it is passed "
-                            f"verbatim as -std=<value>; spell it the way the compiler names it, "
-                            f"e.g. `f2008`, not `2008`) and the compiler installation. The leaf "
+                            f"verbatim as the compiler's standard argument; spell it the way the "
+                            f"compiler names it) and the compiler installation. The leaf "
                             f"does not author the profile, so no retry of this node can clear it.\n"
                             + "\n".join(canary_excerpt.splitlines()[-20:]))
 
@@ -10406,9 +10433,10 @@ clean:
                         + f"\n[{compiler} {tc['standard']} syntax check fail]\n{tail}")
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
-        # against (mirrors write_lint_evidence). Only written when the gate actually ran
-        # stages (fortran nodes); certification requires it for language=fortran only.
-        if language == "fortran" and stages:
+        # against (mirrors write_lint_evidence). Written whenever the gate recorded a stage:
+        # every language reaching this line has one (a language with no syntax stage raised
+        # above), and certification requires it for every language.
+        if stages:
             write_syntax_evidence(
                 pipeline_root=self.repo_root / refs.pipeline_ref,
                 source_id=refs.source_id or "",

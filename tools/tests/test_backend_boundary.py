@@ -2162,7 +2162,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         anyone registers.
         """
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
-                      "execution", "execution_env", "perf_facts"}
+                      "execution", "execution_env", "perf_facts", "bundle_facts",
+                      "syntax_check", "syntax_promotions"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2184,9 +2185,15 @@ class RegistryConsistencyTests(unittest.TestCase):
         # `tools/host_execution.launch_shape` asks the first two when `Validate.execute` launches
         # the binary.
         #
+        # `syntax_check`, `syntax_promotions` and `bundle_facts` joined them with issue #289
+        # (R4-b PR-2): the syntax-only adapter moved out of the build-runtime server into the
+        # compiler's package and the language's, and the conductor's `Generate.gate`, the
+        # server's `run_syntax_check`, the post_generate certification and the default-compiler
+        # readers ask the registry for them.
+        #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands (the compiler adapters and the
-        # parallel knobs are still inlined in the neutral core).
+        # and they gain a dispatch when their ledger area lands (the parallel knobs are still
+        # inlined in the neutral core).
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()

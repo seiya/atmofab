@@ -36,7 +36,8 @@ class LaunchSelectionTests(unittest.TestCase):
         selection = hp.resolve_launch_axis_selection()
         self.assertEqual(selection["language"], FORTRAN_CPU.toolchain["language"])
         self.assertEqual(selection["build_system"], FORTRAN_CPU.toolchain["build_system"])
-        self.assertEqual(selection["compiler"], conductor.DEFAULT_COMPILER)
+        self.assertEqual(selection["compiler"], conductor.default_compiler(
+            FORTRAN_CPU.toolchain["language"]))
         # And an explicit target is read, not the default: its own values come back.
         other = second_target()
         other.doc["toolchain"] = {**other.doc["toolchain"], "build_system": "no_such_bs"}
@@ -109,20 +110,32 @@ class NoDriftFromWhatActuallyRunsTests(unittest.TestCase):
             )
 
     def test_the_compiler_executable_is_the_registered_adapters_own_exe(self) -> None:
-        """The same `exe` `tool_run_syntax_check` probes before it runs a stage."""
-        for compiler, adapter in server._SYNTAX_COMPILER_ADAPTERS.items():
-            self.assertEqual(
-                server.syntax_compiler_executable(compiler), str(adapter["exe"])
-            )
+        """The same executable `tool_run_syntax_check` probes before it runs a stage: the
+        adapter module's own, for every compiler that declares one."""
+        compilers = server.syntax_check_compilers()
+        self.assertTrue(compilers)
+        for compiler in compilers:
+            adapter = backend_registry.capability_module("compiler", compiler, "syntax_check")
+            self.assertEqual(server.syntax_compiler_executable(compiler), str(adapter.EXECUTABLE))
 
     def test_the_build_compiler_default_equals_the_mandatory_syntax_stage(self) -> None:
-        """These are two constants in two modules — the server is standalone-runnable and does
-        not import `tools/`, and the conductor reaches the server only lazily. They must be the
-        same value: the syntax gate CERTIFIES that stage and the build then RUNS this one, so a
-        divergence would certify one compiler and build with another. It is also what lets the
-        probe cover the build compiler by probing the mandatory syntax stage."""
-        self.assertEqual(conductor.DEFAULT_COMPILER, server.MANDATORY_SYNTAX_COMPILER)
-        self.assertIn(conductor.DEFAULT_COMPILER, server._SYNTAX_COMPILER_ADAPTERS)
+        """Two readers, one language backend: the conductor's control-file `FC` default and the
+        mandatory `Generate.gate` syntax stage. They must be the same value — the syntax gate
+        CERTIFIES that stage and the build then RUNS this one, so a divergence would certify one
+        compiler and build with another. It is also what lets the probe cover the build
+        compiler by probing the mandatory syntax stage. Asked of every language that declares
+        `bundle_facts`, and the stage must have an adapter that reads that language."""
+        languages = [lang for lang in backend_registry.backend_ids("language")
+                     if backend_registry.provides("language", lang, "bundle_facts")]
+        self.assertTrue(languages)
+        for language in languages:
+            with self.subTest(language=language):
+                facts = backend_registry.capability_module("language", language, "bundle_facts")
+                self.assertEqual(conductor.default_compiler(language),
+                                 facts.MANDATORY_SYNTAX_COMPILER)
+                self.assertIn(facts.MANDATORY_SYNTAX_COMPILER, server.syntax_check_compilers())
+                self.assertEqual(
+                    server.syntax_adapter(facts.MANDATORY_SYNTAX_COMPILER).LANGUAGE, language)
 
     def test_the_default_lint_preset_is_a_row_of_the_table_that_runs_it(self) -> None:
         self.assertIn(server.DEFAULT_LINT_PRESET, server._LINT_PRESET_COMMANDS)

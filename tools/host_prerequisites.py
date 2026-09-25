@@ -30,9 +30,9 @@ target, and a `--with-deps` closure inherits it, so the target's selection stand
 member. One LIMIT, stated rather than implied:
 
 - A profile that pins `toolchain.compiler` has its BUILD compiler unprobed. Its mandatory syntax
-  stage is still covered, since that stage is the conductor's `DEFAULT_COMPILER` whatever the
-  profile says, and a skipped mandatory stage is a `Generate.gate` fail_closed rather than a
-  silent pass.
+  stage is still covered, since that stage is the language backend's
+  `MANDATORY_SYNTAX_COMPILER` whatever the profile says, and a skipped mandatory stage is a
+  `Generate.gate` fail_closed rather than a silent pass.
 
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
@@ -107,8 +107,8 @@ def resolve_launch_axis_selection(target=None) -> dict[str, str]:
     # The language -> linter mapping, from the module that owns it. The conductor's
     # `_gate_lint_check` reaches the same private name for the same reason: a second copy is a
     # drift pair, and this one would send the probe after a linter the gate never runs.
+    from tools.backends import registry as backend_registry
     from tools.validate_pipeline_semantics import _LINT_PRESET_FOR_LANGUAGE
-    from tools.workflow_conductor import DEFAULT_COMPILER
 
     if target is None:
         from tools.target_profile import load_target_profile, select_target_id
@@ -123,13 +123,15 @@ def resolve_launch_axis_selection(target=None) -> dict[str, str]:
             f"launch host prerequisite probe: toolchain.language={language!r} has no static lint "
             f"preset mapping (expected one of {sorted(_LINT_PRESET_FOR_LANGUAGE)})"
         )
+    _require_implemented("language", language)
     return {
         "language": language,
         "build_system": build_system,
         "linter": preset,
         # The build control file's `FC` default and the mandatory syntax stage are this one
-        # value; see the constant's own comment for why it is not the server's.
-        "compiler": DEFAULT_COMPILER,
+        # value, and it is the language backend's (`bundle_facts`); see the constant's comment.
+        "compiler": str(backend_registry.capability_module(
+            "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER),
     }
 
 

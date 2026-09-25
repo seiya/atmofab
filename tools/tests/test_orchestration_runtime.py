@@ -13471,7 +13471,9 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
         # The consumer's language is the TARGET's (issue #284): a target whose language is
         # not Fortran, with the dependency certified for that same target.
-        c_target = profile_with(toolchain={"language": "c"})
+        # The profile pins the compiler: `c` states no `bundle_facts`, so it has no default
+        # for the build identity to fall back on (issue #289).
+        c_target = profile_with(toolchain={"language": "c", "compiler": "gcc"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             safe = "component__dep_base__0.1.0"
@@ -13607,7 +13609,9 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
         # The consumer's language is the TARGET's (issue #284): a target whose language is
         # not Fortran, with the dependency certified for that same target.
-        c_target = profile_with(toolchain={"language": "c"})
+        # The profile pins the compiler: `c` states no `bundle_facts`, so it has no default
+        # for the build identity to fall back on (issue #289).
+        c_target = profile_with(toolchain={"language": "c", "compiler": "gcc"})
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_multi_op_pipeline(repo_root, target=c_target)
@@ -24254,7 +24258,8 @@ class DerivationInputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             other = second_target(profile_with(
-                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake"},
+                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake",
+                           "compiler": "g++"},
                 parallel={"backend": "cuda"}, hardware={"class": "gpu"},
                 execution={"threads_per_rank": 3}))
             refs = self._seed(repo, also_for=(other,))
@@ -24272,15 +24277,17 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual((self._inputs(repo, refs, "build")["toolchain"],
                               self._inputs(repo, refs, "validate")["run_policy"]), before)
 
-    def test_build_toolchain_takes_the_profile_pin_else_the_server_default(self) -> None:
+    def test_build_toolchain_takes_the_profile_pin_else_the_language_default(self) -> None:
         from tools.tests.target_fixtures import FORTRAN_CPU, profile_with, second_target
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             pinned = second_target(profile_with(toolchain={"compiler": "no_such_fc_x"}))
             refs = self._seed(repo, also_for=(pinned,))
+            from tools.backends import registry as backend_registry
             server = ort._build_runtime_server_module()
             tc = self._inputs(repo, refs, "build")["toolchain"]
-            self.assertEqual(tc["compiler"], server.MANDATORY_SYNTAX_COMPILER)
+            self.assertEqual(tc["compiler"], backend_registry.capability_module(
+                "language", FORTRAN_CPU.toolchain["language"], "bundle_facts").DEFAULT_COMPILER)
             self.assertEqual(tc["compiler_version"],
                              server._syntax_compiler_version((tc["compiler"], "--version")))
             self.assertEqual(

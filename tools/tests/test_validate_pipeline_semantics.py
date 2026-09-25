@@ -13602,16 +13602,22 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             self.assertTrue(
                 any("missing conductor syntax evidence" in v for v in violations), violations)
 
-    def test_validate_generate_syntax_skips_for_non_fortran_language(self) -> None:
-        # cpp has no syntax-check adapter: the gate passes through with no evidence, so
-        # certification must not demand it even when verify claims pass.
+    def test_validate_generate_syntax_refuses_a_language_with_no_syntax_stage(self) -> None:
+        # cpp declares no `syntax_promotions`: until issue #289 (R4-b PR-2) the gate passed it
+        # through with no evidence and this certification demanded none. Now neither half
+        # passes it — there is no stage whose pass could certify the source.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, None)
+            meta_path = self._syntax_evidence_fixture(repo_root, {
+                "checked_at": "t", "source_id": "src_x", "ok": True,
+                "stages": [{"compiler": "gfortran", "status": "pass", "command_id": "a",
+                            "command_log_ref": "workspace/x/command_log.jsonl"}],
+            })
             violations: list[str] = []
             vps._validate_generate_syntax_command_logs(
                 repo_root, meta_path, {"verification_status": "pass"}, "cpp", violations)
-            self.assertEqual(violations, [])
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("toolchain.language='cpp' has no syntax stage", violations[0])
 
     def test_validate_generate_syntax_rejects_evidence_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
