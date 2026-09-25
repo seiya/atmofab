@@ -241,7 +241,7 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
                 proto_name = _procedure_interface_name(arg.get("type"))
                 if proto_name:
                     # Stated on the argument, so a renderer of these facts need not parse the
-                    # type text (`orchestration_runtime._argument_procedure_interface`).
+                    # type text (`procedure_interface` below).
                     arg["procedure_interface"] = proto_name
                 if proto_name and proto_name not in prototypes:
                     lines = _extract_interface_prototype(logical, proto_name)

@@ -3154,6 +3154,22 @@ class PureStateBindingLayerTests(unittest.TestCase):
         upper = self._CHECKS.replace("  public :: q\n", "  public :: Q\n")
         self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=upper), ["q"]))
 
+    def test_a_remedy_that_cannot_be_stated_still_refuses(self) -> None:
+        # Issue #289 (R4-b PR-4 preconditions): the checks-ABI and bound-state remedies are the
+        # runner backend's words. A backend that raises while stating one must not turn the
+        # finding the neutral layer already decided into an acceptance, nor escape the layer.
+        import tools.host_render as host_render
+        unpublished = self._CHECKS.replace("  public :: q\n", "")
+        for name, checks in (("bound_state_publication_violation", unpublished),
+                             ("checks_abi_publication_violation",
+                              self._CHECKS.replace("  public :: ", "  !public :: "))):
+            with self.subTest(name), mock.patch.object(
+                    host_render, name, side_effect=RuntimeError("no words")):
+                r = self._run(self._bundle([self._binding("q")], checks=checks), ["q"])
+            self.assertIsNotNone(r)
+            self.assertEqual(r[0], "bundle_checks_abi_violation")
+            self.assertIn("could not be stated (RuntimeError('no words'))", r[1])
+
     def test_metric_compute_dummy_declaration_is_judged_at_the_handler(self) -> None:
         """Issue #261: the backend's `checks_abi_dummy_violation` runs inside the ABI layer, after
         the procedure clause and before the bound-state clause. Pinned here through

@@ -1780,9 +1780,16 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
                   if n not in unpublished and n in defined and n not in subroutines]
     if unpublished or wrong_kind:
         # The wording names the language's publication statements and procedure kinds, so the
-        # backend that renders the runner states it (issue #289, R4-b PR-4).
-        return checks_abi_publication_violation(
-            match.get("language"), spec_id, unpublished, wrong_kind)
+        # backend that renders the runner states it (issue #289, R4-b PR-4). A backend that
+        # raises while STATING it still refuses: the finding is decided above, and only its
+        # wording is the backend's.
+        try:
+            return checks_abi_publication_violation(
+                match.get("language"), spec_id, unpublished, wrong_kind)
+        except Exception as exc:  # noqa: BLE001
+            return (f"module {spec_id}_checks does not publish the fixed checks ABI "
+                    f"(unpublished: {unpublished}; wrong kind: {wrong_kind}), and the "
+                    f"language's remedy could not be stated ({exc!r})")
     # The dummy declaration the compiler cannot check (issue #261): the runner backend states
     # it, this gate applies it. Positive evidence only, like the clause above — a module that
     # does not DEFINE the procedure here is not judged on it.
@@ -1801,8 +1808,13 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
              if isinstance(b, dict) and isinstance(b.get("storage_symbol"), str)]
     unpublished_state = unpublished_bound_state(str(match.get("content") or ""), spec_id, bound)
     if unpublished_state:
-        return bound_state_publication_violation(match.get("language"), spec_id,
-                                                 unpublished_state)
+        try:
+            return bound_state_publication_violation(match.get("language"), spec_id,
+                                                     unpublished_state)
+        except Exception as exc:  # noqa: BLE001
+            return (f"module {spec_id}_checks does not publish the bound state variables "
+                    f"{unpublished_state}, and the language's remedy could not be stated "
+                    f"({exc!r})")
     return None
 
 

@@ -20363,6 +20363,20 @@ class ChecksSourceGateTests(unittest.TestCase):
                     "    & with open(unit=...), never here'\n")
                 self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
 
+    def test_hidden_bound_state_is_still_reported_when_the_runner_backend_is_down(self) -> None:
+        # Issue #289 (R4-b PR-4 preconditions): the remedy is the runner backend's words, so
+        # when that backend cannot be reached the finding is stated without one — beside the
+        # ABI refusal that names why — and the backend is not asked (it would raise).
+        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
+        with unittest.mock.patch.object(vps.host_render, "runner_render_refusal",
+                                        return_value="backend down"), \
+                unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
+                                           side_effect=AssertionError("asked a down backend")):
+            v = self._run(hidden, bound_state=("q",))
+        self.assertTrue(any("backend down" in x for x in v), v)
+        self.assertTrue(any(x.endswith("checks module must publish every bound state "
+                                       "variable: ['q']") for x in v), v)
+
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
                              exec_dir=tmp, pipeline_dir=tmp)
@@ -20973,6 +20987,14 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
         v = self._run([self._dep(operations="dep_base__scale")])
         self.assertEqual(len(v), 1, v)
         self.assertIn("non-list `operations`", v[0])
+
+    def test_the_remedy_names_no_language_statement(self) -> None:
+        # Compile is target-free (issue #284), so this remedy must not spell any language's
+        # statements (issue #289, R4-b PR-4: it said `use <dep>_model` + `call <dep>__*`).
+        for deps in ([self._dep(operations=[])], [self._dep(operations=["x", 3])]):
+            (v,) = self._run(deps)
+            for spelling in ("`use ", "`call ", "subroutine"):
+                self.assertNotIn(spelling, v)
 
     def test_operations_with_no_valid_strings_flagged(self) -> None:
         v = self._run([self._dep(operations=["", "   ", 3])])
