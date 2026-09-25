@@ -336,9 +336,10 @@ chunk size, collapse, layout, fusion, tiling, vectorization); the IR carries non
 (until R4-a PR-3, issue #284, they were the IR's `impl_defaults` knob layer).
 `parallelization`, when present, is an object whose `model` member names the parallel model,
 `"none"` when nothing is parallelized. Two readers act on the plan: the `Generate.gate`
-parallel-directive floor (`_validate_openmp_presence_floor`) runs on a `cpu` + `openmp` target
-unless the plan's `parallelization` explicitly declines OpenMP (`_lowering_plan_declines_openmp`
-reads the members `model` / `method` / `scheme` / `kind`; an absent model declines nothing), and
+parallel-directive floor (`_validate_parallel_presence_floor`) runs where the target's parallel
+backend states a floor (today `openmp` on a `cpu` target) unless the plan's `parallelization`
+explicitly declines that model (the backend's `lowering_plan_declines` reads the members `model` /
+`method` / `scheme` / `kind`; an absent model declines nothing), and
 `Generate.verify` G6 judges the plan and the source against the whole target profile
 (`docs/workflow/phases/phase_02_generate.md`).
 

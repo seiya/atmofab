@@ -153,8 +153,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
   - The launch gate `tools/target_profile.py:target_profile_violations` (its toolchain half is
     `toolchain_servable_reasons`; until R4-a PR-3, issue #284, the question was asked of the
     IR at `Compile.static`) requires a language to declare every capability `Generate` reads of
-    it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`
-    (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue #289) — and, for a non-`infrastructure` node,
+    it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`,
+    `source_reading`, `signatures` (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue #289) — and, for a
+    non-`infrastructure` node,
     `control_file` and `runner_render`. It, together with the `make`-quality-check gates in
     `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
@@ -183,21 +184,20 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `pure_language`; the checks-module contract is neutral and its binding is the language's
     `checks_abi`. Which linter a language is linted with is each linter backend's `LANGUAGES`
     (`registry.linter_for_language`).
-  - The signature gate (`_validate_generated_signatures`, `Generate.static`, asked of the
-    pipeline's target language) takes its refusal clause from the registry, but its
-    §5.1 helpers import one concrete backend by name and take no `language` argument, so it
-    additionally refuses any language those helpers are not wired to
-    (`_signature_backend_refusal`). It migrates with the `validate_pipeline_semantics.py`
-    source-reading area.
-  - **The validator and the conductor still spell one language's file names**, and for the
-    validator that is FAIL-OPEN, not a refusal (measured on issue #289's R4-b PR-2 review): its
-    runner-output gates find the runner by a suffix glob, so a runner under another language's
-    suffix is not seen and adds no violation — a forbidden judge-artifact write in it passes
-    `post_generate`. The same spellings sit in `_expected_runner_name`, the checks / model source
-    readers, and the conductor's `phase_required_outputs`. They migrate with the source-reading
-    area (R4-b PR-3), and that migration is a precondition of running a second language: until
-    it lands, registering one and declaring its capabilities is NOT sufficient, whatever the gates
-    above answer.
+  - **Every deterministic gate that READS a node's source reads it through the target
+    language's backend** (issue #289, R4-b PR-3): the model-source, checks-source, runner-output
+    and dependency-use gates through `source_reading`; the §5.1 signature gates through
+    `signatures` — at `Generate.static` in the pipeline's target language, and at the
+    target-free `Compile.static` in EVERY language that declares it; the dependency facts a
+    consumer is shown through the consumer language's `signatures`; the file names the gates and
+    `phase_required_outputs` read through `bundle_facts`. A language that does not declare the
+    capability a gate needs is refused there (`validate_pipeline_semantics._language_module`),
+    never read as another language — until that PR these gates imported one language backend by
+    name, and a runner under another language's suffix was not SEEN by the runner-output gates
+    at all (fail-open). The build control file's gates and renderers are the build system's
+    `control_file` (`tools/backends/build_system/make/`), with the language's compile rules as
+    its `control_file` half; the Generate presence floor is the parallel backend's
+    `parallel_directives`.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

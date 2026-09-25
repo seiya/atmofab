@@ -106,19 +106,17 @@
       "fortran-subroutine": 2
     },
     "docs/workflow/phases/phase_02_generate.md": {
-      "compiler-driver": 2,
-      "fortran": 30,
+      "fortran": 23,
       "fortran-intent": 10,
       "fortran-kind": 2,
-      "fortran-module-file": 2,
       "fortran-module-procedure": 1,
-      "fortran-standard": 2,
-      "fortran-subroutine": 10,
-      "fortran-suffix": 12,
-      "make-control-file": 12,
-      "make-variable": 10,
-      "parallel-construct": 4,
-      "parallel-directive": 5
+      "fortran-standard": 1,
+      "fortran-subroutine": 7,
+      "fortran-suffix": 8,
+      "make-control-file": 4,
+      "make-variable": 1,
+      "parallel-construct": 3,
+      "parallel-directive": 3
     },
     "docs/workflow/phases/phase_03_build.md": {
       "fortran-module-file": 2,
@@ -190,12 +188,10 @@
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 63,
+      "fortran": 12,
       "fortran-intent": 1,
-      "fortran-standard": 3,
-      "fortran-subroutine": 37,
-      "fortran-suffix": 11,
-      "linter-fortitude": 1,
+      "fortran-subroutine": 5,
+      "fortran-suffix": 10,
       "make-control-file": 8
     },
     "tools/prompt_templates/pure_generate_verify.txt": {
@@ -212,35 +208,26 @@
       "fortran": 1
     },
     "tools/validate_pipeline_semantics.py": {
-      "compiler-driver": 31,
-      "compiler-syntax-only": 8,
-      "fortran": 341,
-      "fortran-allocatable": 2,
-      "fortran-implicit-none": 3,
-      "fortran-intent": 42,
-      "fortran-kind": 4,
-      "fortran-module-file": 8,
-      "fortran-module-procedure": 3,
-      "fortran-standard": 28,
-      "fortran-subroutine": 76,
-      "fortran-suffix": 34,
+      "compiler-driver": 1,
+      "fortran": 13,
+      "fortran-module-file": 1,
+      "fortran-subroutine": 8,
+      "fortran-suffix": 4,
       "linter-cppcheck": 3,
-      "linter-fortitude": 4,
-      "make-control-file": 95,
-      "make-variable": 25,
-      "parallel-construct": 10,
-      "parallel-directive": 8
+      "linter-fortitude": 3,
+      "make-control-file": 4,
+      "parallel-directive": 1
     },
     "tools/workflow_conductor.py": {
-      "compiler-driver": 7,
-      "fortran": 43,
+      "compiler-driver": 5,
+      "fortran": 33,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
-      "fortran-module-file": 4,
+      "fortran-module-file": 1,
       "fortran-standard": 1,
-      "fortran-suffix": 40,
-      "make-control-file": 98,
-      "make-variable": 60
+      "fortran-suffix": 30,
+      "make-control-file": 96,
+      "make-variable": 16
     }
   }
 }
