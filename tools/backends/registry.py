@@ -338,7 +338,6 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "source_reading": "source",
     "signatures": "signatures",
     "interface_header": "header",
-    "job_submit": "submit",
 }
 
 
