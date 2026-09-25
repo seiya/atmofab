@@ -26,7 +26,7 @@ $$
 where $L_i$ is element $i+1$ of `L_flux`. Each cell's update reads only that cell's own `u_n` and `L_flux` values.
 
 ## 4. Failure conditions and constraints
-Treat `dt<=0` as invalid input and an error.
+Treat `dt<=0` as invalid input and an error. The guard is evaluated before any element of `u_n` or `L_flux` is read: when it fails, the operation sets `guard_pass` to false and returns; `u_np1` is then undefined and the caller must not use it. When the guard passes, `guard_pass` is true.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_advection_diffusion_time_update_1d_euler1__advance`.

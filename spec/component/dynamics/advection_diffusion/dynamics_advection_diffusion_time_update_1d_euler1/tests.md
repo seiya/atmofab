@@ -24,6 +24,7 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_time
 
 ## 5. Diagnostics contract
 - Require outputting `checks.zero_tendency_invariance`, `checks.formula_consistency`, and `checks.input_guard` in `diagnostics.json`.
+- When `guard_pass` is false, `u_np1` is undefined (`controlled_spec.md` §4): only `checks.input_guard` is evaluated, and every other check reports status `na` without reading `u_np1`.
 
 ## 6. Test definitions
 - `test_id`: `l0_zero_tendency_invariance_pass`
