@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import bisect
 import hashlib
 import json
 import re
@@ -15,27 +14,15 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 try:
-    # The Fortran logical-line scanner is IMPORTED, not copy-pasted: three hand-rolled
-    # copies mis-read six inputs (issue #23), each one a false `Generate fail` on a
-    # source gfortran accepts. `fortran_lines` is stdlib-only, so importing it here introduces
-    # no cycle — and it is not `orchestration_runtime`, which this module may not import.
+    # The registry is the ONLY way this module reaches a language or build-system backend
+    # (issue #289, R4-b PR-3): every gate that reads a source or a control file asks it for the
+    # capability module of the pipeline's TARGET (`_language_module`, `_validate_control_file`).
+    # Until that PR this block imported one language backend's line, signature and structure
+    # modules by name, and every gate read every node as that language.
     from tools.backends import registry as backend_registry
-    from tools.backends.language.fortran import lines as fortran_lines
-    # The §5.1 stanza layer — splitting a canonical interface block into per-symbol stanzas and
-    # reducing a stanza to its comparison atoms. Language knowledge, so it lives in the backend;
-    # the gates below that compare the atoms are neutral. Importable at module level because
-    # `signatures` imports nothing from the neutral core (it used to import three helpers back out
-    # of THIS module, which is what kept this import function-local).
-    from tools.backends.language.fortran import signatures as fortran_signatures
-    # The Fortran STRUCTURE front end, for the same reason and with one more: it is the single
-    # place that knows how this repository reads Fortran's keyword structure, and it fails closed
-    # when its parser is absent rather than reading less. Importing the module is cheap — the
-    # tree-sitter packages themselves are imported lazily, inside `parse_view`, so a stage that
-    # never reaches a Fortran gate never needs them installed.
-    from tools.backends.language.fortran import structure as fortran_structure
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
@@ -81,9 +68,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     from tools.backends import registry as backend_registry
-    from tools.backends.language.fortran import lines as fortran_lines
-    from tools.backends.language.fortran import signatures as fortran_signatures
-    from tools.backends.language.fortran import structure as fortran_structure
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
@@ -132,7 +116,6 @@ FORBIDDEN_RUNNER_OUTPUTS = (
     "trial_meta.json",
 )
 LLM_REVIEW_FILENAME = "semantic_review.json"
-FORTRAN_IDENTIFIER_PATTERN = re.compile(r"[a-z_][a-z0-9_]*")
 RAW_EVIDENCE_ARTIFACTS = {
     "metrics_basis.json",
     "state_snapshots",
@@ -212,33 +195,6 @@ ALGORITHM_STEP_KINDS = {
     "reduction",
     "diagnostic",
 }
-FORTRAN_KEYWORDS = {
-    "if",
-    "then",
-    "else",
-    "endif",
-    "do",
-    "enddo",
-    "call",
-    "subroutine",
-    "module",
-    "contains",
-    "intent",
-    "in",
-    "out",
-    "inout",
-    "real",
-    "integer",
-    "logical",
-    "character",
-    "type",
-    "public",
-    "private",
-    "use",
-    "only",
-    "true",
-    "false",
-}
 QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
 
@@ -249,7 +205,8 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     The three gates that check it — the no-relink rule, the `make test` invocation rule, and the
     `run_quality_checks` command rule — read the control file's grammar and require its
     `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
-    registry which value the neutral core carries it for instead of naming one. The language half
+    registry which value declares it (the `make` backend's package since issue #289's R4-b PR-3,
+    where the first two gates now live) instead of naming one. The language half
     is the policy "a compiled language's quality check runs through the build system's test
     target rather than a script", and which languages are compiled is the language backend's
     declaration (`registry.is_compiled_language`); it was a set of language tokens here until
@@ -300,7 +257,6 @@ _active_repo_root_for_schema: ContextVar["Path | None"] = ContextVar(
 # the active schema's list-form regex — this split is just a syntactic
 # extractor for downstream binding/equality logic.
 _SHAPE_EXPR_DIM_SPLIT = re.compile(r"^[\[\(]\s*(.+?)\s*[\]\)]$")
-
 
 
 @contextmanager
@@ -532,20 +488,6 @@ SUBSTEP_WORKFLOW_STEPS = frozenset({"compile", "generate", "validate"})
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
 # Generate-stage static lint (MCP run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
-#: The `language` backend id that the §5.1 signature helpers in this module import BY NAME
-#: (`_section51_module_parameters`, `_section51_parameter_lines`,
-#: `_parse_canonical_interface_from_controlled_spec`, `_validate_ir_signatures_against_section51`,
-#: `_validate_ir_module_parameters_against_section51`,
-#: `_validate_generated_signatures`). None of them takes a `language` argument, so
-#: none of them dispatches: they render and compare through one concrete backend whatever the IR
-#: says. Until they resolve their backend through `tools/backends/registry.py`, the two
-#: infrastructure signature gates must refuse any OTHER language — a registry answer of "this
-#: language has an extracted backend" is not the same claim as "these helpers will use it".
-#: Asking the registry alone was a fail-open twice in review: first for a member declared with
-#: `module=None`, then for a member with a real module that these helpers still ignore.
-#: `test_backend_boundary.RegistryConsistencyTests` pins this constant against the set of backend
-#: modules this file actually imports, so the two cannot drift.
-_SIGNATURE_HELPERS_BACKEND_ID = "fortran"
 
 # NOTE: there is deliberately no lint-preset SET here. Which presets are accepted is asked of
 # `backend_registry.unimplemented_reason` per value rather than held as a copy — the copy was a
@@ -864,1071 +806,6 @@ def _agent_role(item: dict[str, Any]) -> str | None:
     return None
 
 
-def _joined_masked_fortran_view(lowered: str) -> str:
-    """``lowered`` as ONE STATEMENT PER LINE, `&` continuations joined and code-lookalikes masked.
-
-    The view every rule in this module that matches Fortran's KEYWORD STRUCTURE over multi-line
-    source must read. `fortran_lines.mask_code_lookalikes` alone cannot serve them: it preserves
-    line structure by design, so a legally wrapped statement still reaches a `[^\\n]`-bounded or
-    `re.MULTILINE`-anchored pattern as fragments. `fortran_lines.fortran_logical_lines` joins, and
-    composing the two is what closes that whole class at once — the wrapped `intent(out)` entity
-    list, the wrapped `call` actual list, the wrapped `use` / `module` statement.
-
-    One property of the composition is load-bearing and one is merely conventional:
-
-    * **The `;` split is required, not cosmetic.** `fortran_logical_lines` deliberately does not
-      split on `;`, so joining ALONE would create a defect that does not exist on unjoined text:
-      `real :: tmp; tmp = 0.0` becomes one line, `_assignment_records`' `^\\s*` MULTILINE anchor
-      stops seeing `tmp = 0.0`, and its `([^\\n!]+)` right-hand side swallows a following
-      `; call dep__op(...)` into the identifier set — a phantom producer, fail-open at exactly the
-      `isdisjoint` test of the dependency-dataflow gate. Emitting one statement per line restores
-      the invariant all three consumers' patterns already assume.
-    * **Join first, mask second** — for the reason, not the effect. `fortran_logical_lines` does
-      its own comment, quote and continuation tracking over RAW text, and the mask is
-      length-preserving, so the two in fact COMMUTE: a reviewer brute-forced 2940 inputs
-      (comments, unterminated literals, `;`/`&`/quotes inside comments, labels) and found no
-      input where the orders differ. An earlier draft of this note called the ordering
-      load-bearing; it is not, and it is kept only because masking last is the order in which the
-      result's offsets are obviously comparable.
-
-    Each emitted statement is right-stripped and empty statements are dropped. That is not
-    cosmetic: without it the result is NOT a fixed point, and the fixed point is what lets a
-    consumer re-apply the view to a fragment of a view — which is what keeps `_split_fortran_names`
-    total with respect to both its raw and its joined callers. Four inputs proved it, and the
-    fixed-point test uses all four rather than a well-formed one, which does not distinguish them.
-    Only the first is legal Fortran: a trailing `;` (`x = 1;`) emits an empty statement a second
-    pass would drop. The other three are robustness against text the `Generate.gate` syntax check
-    rejects before this one runs — a lone-`&` line and text ending mid-continuation each leave the
-    blank that preceded the consumed marker, and an unterminated literal leaves the blanks the
-    mask wrote over its contents.
-
-    INVARIANT, and the price of this view: offsets into the result no longer index the ORIGINAL
-    file. Comment-only and blank lines are gone and each `&` has collapsed. Offsets remain
-    comparable with EACH OTHER as long as both come from the same view — which is what the
-    dependency-dataflow gate's `call_pos` / assignment `pos` comparison relies on, and every gate
-    here reports `{model_file}: subroutine {name}` with no line number. Any future rule that wants
-    to REPORT a line must take it from `fortran_lines.fortran_logical_lines`' `start_lineno`, not
-    from an offset into this string."""
-    masked = fortran_lines.mask_code_lookalikes(
-        "\n".join(
-            _FORTRAN_STATEMENT_LABEL.sub("", statement.lstrip(), count=1)
-            for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
-            for statement in fortran_lines.split_fortran_statements(line)
-        )
-    )
-    return "\n".join(
-        stripped for stripped in (line.rstrip() for line in masked.split("\n")) if stripped
-    )
-
-
-# A declaration whose `::` is optional because it carries no attribute and no initializer, plus
-# the `::`-less `enumerator` list. The type-spec's own parenthesised selector (`character(len=3)`,
-# `type(t)`) is stepped over by `_extract_balanced_parens`, not by a regex, so a comma or `=`
-# inside it cannot be read as an entity separator.
-# Every `use` that NAMES a local entity — an `only:` list, a rename list, or both, with or
-# without the `, non_intrinsic ::` module-nature prefix. An earlier form keyed on the word
-# `only` and could not cross the comma that follows `use`, so a bare rename
-# (`use m, ncomp => slot`) and the prefixed spelling both went unseen.
-_FORTRAN_USE_LOCAL_NAMES = re.compile(
-    r"^use\b\s*(?:,\s*(?:non_)?intrinsic\s*)?(?:::)?\s*[a-z_][a-z0-9_]*\s*,\s*"
-    r"(?:only\s*:)?"
-)
-_FORTRAN_ASSOCIATE_OPEN = re.compile(
-    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:associate|select\s*type)\s*\("
-)
-# A `block` / `associate` / `select type` / `interface` body is a scope of its own. A named
-# constant declared inside one is NOT visible to the statements around it, and treating it as if
-# it were exempted an actual passed at an earlier call in the enclosing body. Names such a
-# construct declares still land in the "other" set, where they can only SUBTRACT — the direction
-# that costs a false violation rather than an exemption.
-_FORTRAN_CONSTRUCT_OPEN = re.compile(
-    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:block\b|associate\s*\(|select\s*type\s*\(|select\s*case\s*\()"
-    r"|^(?:abstract\s+)?interface\b"
-)
-_FORTRAN_CONSTRUCT_END = re.compile(r"^end\s*(?:block|associate|select|interface)\b")
-# Every statement that ATTACHES something to a name. The list of keywords is closed in F2008 and
-# short; the SYNTAX behind each of them is neither, so this does not parse them — any statement
-# opening with one of these contributes every identifier it mentions to the disqualifying set.
-#
-# That inversion is the point. Eighteen `::`-less specification statements (`common /blk/ x`,
-# `dimension x(3)`, `equivalence (x, y)`, `data x /3/`, `namelist /nl/ x`, `pointer`, `target`,
-# `save`, `allocatable`, `external`, `intent`, `volatile`, `asynchronous`, `codimension`,
-# `protected`, `value`, `optional`, and the bare `common x`) were each invisible, and each was a
-# name made definable while still looking like a pure constant. Enumerating their eighteen
-# grammars is the same losing move this rule was adopted to stop making; over-collecting from
-# them costs a false violation, which is the direction that may be wrong.
-_FORTRAN_ATTRIBUTE_STATEMENT = re.compile(
-    r"^(?:common|dimension|equivalence|data|namelist|pointer|target|save|allocatable|external"
-    r"|intent|volatile|asynchronous|codimension|contiguous|protected|value|optional|intrinsic"
-    r"|bind|sequence|generic|procedure|entry)\b"
-)
-# `public` and `private` are deliberately absent from that list. They declare nothing — they set
-# the accessibility of an entity declared elsewhere — and F2008 R518 makes the `::` optional, so
-# leaving them in disqualified `public ncomp` while the `::` branch was skipping
-# `public :: ncomp`. The two spellings of one statement must agree, and they agree on the reading
-# that matches what the statement does.
-
-
-_FORTRAN_BARE_DECLARATION = re.compile(
-    r"^(integer|real|complex|logical|character|doubleprecision|double\s+precision"
-    r"|type|class|enumerator)\b"
-)
-
-
-# Only up to the OPENING paren: the group is delimited by `_extract_balanced_parens`, not by a
-# greedy `(.*)\)$` — see `_fortran_parameter_names`.
-_FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\(")
-# A statement LABEL may precede any statement, including a structural one. Every rule below
-# anchors on the keyword, so the label has to come off first — a labelled `10 contains` that went
-# unrecognized left the module specification part open across every procedure that followed it.
-_FORTRAN_STATEMENT_LABEL = re.compile(r"^\d+\s+")
-
-
-def _fortran_statement_body(line: str) -> str:
-    # The strip is still applied here, not only in the view: this is also reached with RAW
-    # fragments (`_fortran_declared_names` is called on a subroutine body carved out by regex,
-    # and on single statements by tests), where no view has run.
-    return _FORTRAN_STATEMENT_LABEL.sub("", line.strip().lower(), count=1)
-
-
-def _fortran_parameter_names(joined_masked: str) -> set[str]:
-    """The names declared as NAMED CONSTANTS in ``joined_masked``.
-
-    ``joined_masked`` must be a `_joined_masked_fortran_view` — one statement per line. Reading
-    physical lines instead would miss a wrapped declaration, which is the defect class this helper
-    was written alongside.
-
-    Two forms are recognised:
-
-    * the attribute form, `integer, parameter, public :: ncomp = 3` — the left of the first `::`
-      is split on top-level commas and some token must be EXACTLY ``parameter``. An equality test,
-      not `\\bparameter\\b`: the word occurs inside `dimension(nparameter)` and inside an
-      initializer, and either would otherwise mint a constant that does not exist. The right side
-      is split the same way and each item contributes its leading identifier, which drops array
-      specs and initializer text.
-    * the statement form, `parameter (nlev = 4, mm = 2)` — the parenthesis group is matched by
-      `_extract_balanced_parens` and NOTHING may follow its close, and every item must carry a
-      top-level `=`. A greedy `^parameter\\s*\\((.*)\\)$` was not enough: `parameter` is not a
-      reserved word, so `parameter(scratch) = u_in(1)` — an ordinary assignment into an array a
-      leaf happened to name `parameter`, which `gfortran -std=f2008` accepts — matched with the
-      group `scratch) = u_in(1`, and `scratch` was minted as a constant. That exempted a real
-      discarded dependency output. Fail-open, and reachable by naming one array.
-
-    The unparenthesized F77 form (`PARAMETER x = 1`) is deliberately NOT recognised: it is a
-    `-std=legacy` gfortran extension, and `Generate.gate`'s syntax check runs `-std=f2008`, so no
-    source that reaches these gates can carry one.
-
-    The caller decides SCOPE. This helper reports what the text it is given declares, and a whole
-    file is the wrong text to give it: a name that is a constant in one procedure and a live
-    variable in another would be reported for both, and the dependency-dataflow gate would then
-    exempt a genuinely discarded output — fail-open."""
-    return _fortran_declared_names(joined_masked)[0]
-
-
-def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
-    """``(named constants, every other declared entity)`` of ``joined_masked``.
-
-    One parser, two answers, because the dependency-dataflow gate needs both and they must agree
-    on what a declaration IS. The gate exempts `constants - others` over the WHOLE FILE, so the
-    second set carries all of the safety: anything that makes a name definable somewhere must land
-    in it. That includes shapes that are not declarations at all — an `associate` / `select type`
-    rebinding, and a `use ..., only:` import, since use association overrides host association and
-    the imported entity is whatever the other module says it is.
-
-    Constants declared inside a `block` / `associate` / `select type` / `interface` construct go
-    to the SECOND set, not the first: such a constant is not visible to the statements around the
-    construct, and treating it as if it were exempted a name at a call that preceded it.
-
-    Nothing is ever REMOVED from the second set, and that monotonicity is load-bearing rather than
-    tidy. It was briefly broken to pair `integer :: nlev` with a following `parameter (nlev = 4)`
-    — one declaration in two statements — and the pairing had no way to be per-declaration in a
-    file-wide rule, so it globally re-exempted any name that was a constant in one procedure and
-    an ordinary variable in another. That is the very shape this rule exists to refuse, and it
-    reappeared within one commit of the redesign. The consequence of not pairing them is that the
-    F77 statement form never yields an exemption at all — under the `implicit none` these models
-    must declare, `parameter (x = 1)` always follows a type declaration of `x`, which disqualifies
-    it. A false violation, and the direction that is allowed to be wrong.
-
-    ``enumerator`` counts as a constant for the same reason ``parameter`` does: an enumerator is
-    not definable, so it can never be an output argument. Both of its spellings are read — the
-    entity list of an ``enumerator`` statement may omit the ``::``.
-
-    ``import`` is the one ``::`` statement deliberately kept OUT of both sets. It does not declare
-    anything: it names an entity of the HOST so an interface body can see it. Counting it as a
-    redeclaration made an `import :: ncomp` inside an interface body subtract the very host
-    constant it imports, turning a correct silence into a false violation. Subtraction is only
-    safe where a statement really does shadow — that is the whole content of the second set."""
-    constants: set[str] = set()
-    others: set[str] = set()
-    construct_depth = 0
-    for line in joined_masked.split("\n"):
-        statement = _fortran_statement_body(line)
-        if not statement:
-            continue
-        if _FORTRAN_CONSTRUCT_END.match(statement):
-            construct_depth = max(0, construct_depth - 1)
-            continue
-        if _FORTRAN_CONSTRUCT_OPEN.match(statement):
-            construct_depth += 1
-            # An `associate` header is also a construct opening, and its rebinding is read below
-            # before the depth takes effect for the statements inside it.
-            if not _FORTRAN_ASSOCIATE_OPEN.match(statement):
-                continue
-        only_match = _FORTRAN_USE_LOCAL_NAMES.match(statement)
-        if only_match is not None:
-            # Use association overrides host association, so a name imported here is whatever the
-            # other module says it is — not this file's constant. Naming it disqualifies it.
-            for item in fortran_lines.split_top_level_commas(statement[only_match.end() :]):
-                local, sep, _remote = item.partition("=>")
-                match = FORTRAN_IDENTIFIER_PATTERN.match(local.strip())
-                if match is not None:
-                    others.add(match.group(0))
-            continue
-        if "::" in statement:
-            attributes, _, entities = statement.partition("::")
-            attribute_tokens = {
-                token.strip() for token in fortran_lines.split_top_level_commas(attributes)
-            }
-            # `import` and a bare accessibility statement (`public :: ncomp`) declare
-            # nothing — they name an entity declared elsewhere. Treating them as
-            # redeclarations stripped the exemption from any module that lists its
-            # constants in a separate `public ::` statement. RE-MEASURED (the earlier
-            # figure here, "eight in-tree models, one of them `problem/`-domain", counted
-            # distinct lost-name SETS and got the domain count wrong): removing this skip
-            # changes the exempt set of 33 of the 365 `*_model.f90` — SEVEN of those FILES
-            # under a `problem/` pipeline, the ones this gate reads — falling into eight
-            # distinct lost-name sets, three of which include a `problem/` file. (The first
-            # correction wrote "eight distinct sets, seven of them problem/-domain", which
-            # attaches a file count to sets; per set the figure is three. Re-measured both
-            # ways rather than re-worded.) Names lost include `dp`, `ncomp` and
-            # `shallow_water2d__g_const`. Skipping a
-            # statement KIND is not the forbidden operation: nothing is removed from the
-            # disqualifying set, and a name genuinely declared elsewhere still reaches it
-            # from its own declaration.
-            if "import" in attribute_tokens or attribute_tokens <= {"public", "private"}:
-                continue
-            target = (
-                constants
-                if attribute_tokens & {"parameter", "enumerator"} and not construct_depth
-                else others
-            )
-            for item in fortran_lines.split_top_level_commas(entities):
-                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
-                if match is not None:
-                    target.add(match.group(0))
-            continue
-        if _FORTRAN_ATTRIBUTE_STATEMENT.match(statement):
-            others.update(_extract_identifiers(statement))
-            continue
-        # `associate (c0 => scratch)` and `select type (c0 => x)` REBIND a name to a definable
-        # variable for the length of the construct, so the name is shadowed exactly as a local
-        # declaration shadows — and nothing declares it, so only this reaches it.
-        associate_match = _FORTRAN_ASSOCIATE_OPEN.match(statement)
-        if associate_match is not None:
-            inner = _extract_balanced_parens(statement, statement.index("(", associate_match.end() - 1))
-            for item in fortran_lines.split_top_level_commas(inner):
-                name, sep, _target = item.partition("=>")
-                if not sep:
-                    continue
-                match = FORTRAN_IDENTIFIER_PATTERN.match(name.strip())
-                if match is not None:
-                    others.add(match.group(0))
-            continue
-        # The `::` is optional when a declaration carries no attribute and no initializer, and
-        # `integer ncomp` shadows a host constant exactly as `integer :: ncomp` does — missing it
-        # left the subtraction one spelling away from the hole it exists to close. `enumerator
-        # red, green` is the same omission on the constant side.
-        entity_match = _FORTRAN_BARE_DECLARATION.match(statement)
-        if entity_match is not None:
-            target = (
-                constants
-                if entity_match.group(1) == "enumerator" and not construct_depth
-                else others
-            )
-            tail = statement[entity_match.end() :].lstrip()
-            if tail.startswith("("):
-                tail = tail[len(_extract_balanced_parens(tail, 0)) + 2 :]
-            elif tail.startswith("*"):
-                # `character*3 tag` — the obsolescent length selector. `-std=f2008` rejects
-                # `integer*4` but accepts this one, and leaving it unparsed meant the declaration
-                # did not disqualify the name.
-                tail = tail[1:].lstrip()
-                length = re.match(r"\(|\d+", tail)
-                if length is None:
-                    continue
-                tail = (
-                    tail[len(_extract_balanced_parens(tail, 0)) + 2 :]
-                    if length.group(0) == "("
-                    else tail[length.end() :]
-                )
-            # `integer function f(x)` IS a declaration — of the function result, which is
-            # definable inside the function. Skipping the statement let a file that declares
-            # `parameter :: ncomp` in one place and `integer function ncomp(x)` in another exempt
-            # a definable name; gfortran accepts that, the two being different scoping units.
-            # The result name is taken from the header, and from a `result(...)` clause when one
-            # renames it. (The test is `function` followed by a SPACE: `real function_tmp` is an
-            # ordinary declaration, and matching by prefix discarded the whole statement — losing
-            # every other name on it too.)
-            if re.match(r"function\s", tail):
-                for pattern in (r"function\s+([a-z_][a-z0-9_]*)", r"result\s*\(\s*([a-z_][a-z0-9_]*)"):
-                    header_match = re.search(pattern, tail)
-                    if header_match is not None:
-                        others.add(header_match.group(1))
-                continue
-            for item in fortran_lines.split_top_level_commas(tail):
-                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
-                if match is not None:
-                    target.add(match.group(0))
-            continue
-        statement_match = _FORTRAN_PARAMETER_STATEMENT_PATTERN.match(statement)
-        if statement_match is None:
-            continue
-        open_index = statement_match.end() - 1
-        inner = _extract_balanced_parens(statement, open_index)
-        # Nothing may follow the closing paren — which is what rejects `parameter(scratch) =
-        # u_in(1)`, an assignment into an array a leaf named `parameter`, since `parameter` is not
-        # reserved. A second requirement stood here (every item must carry an `=`); it was removed
-        # once a mutation run showed EITHER check alone rejects that case and no legal Fortran
-        # exists that only the second catches. Two guards where one suffices is a defence that
-        # cannot fail, which is indistinguishable from a defence that does not work.
-        if statement[open_index + len(inner) + 2 :].strip():
-            continue
-        items = fortran_lines.split_top_level_commas(inner)
-        if not items:
-            continue
-        for item in items:
-            match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
-            if match is not None:
-                constants.add(match.group(0))
-    return constants, others
-
-
-
-
-def _split_fortran_names(raw: str) -> list[str]:
-    """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
-    entity list, call actuals) — non-identifier items are dropped, not reported.
-
-    Three `Generate.static` gates consume it: `_validate_problem_model_literal_outputs`,
-    `_validate_problem_model_dependency_dataflow` and `_validate_problem_metric_only_scalar_kernel`.
-    The reproducers below are all at the dataflow gate, which is the one that reads `call`
-    actuals and so sees the widest input.
-
-    Unlike this module's other splitter callers, `raw` may arrive as RAW source text: the
-    enclosing regexes are `re.DOTALL` over the whole file, so a continued argument list can reach
-    here with its `&`, its newlines and its `!` comments intact. It is therefore reduced first by
-    `_joined_masked_fortran_view` — the shared view, not a private copy — and only then split by
-    `fortran_lines.split_top_level_commas`. Applying the view here is redundant for the three
-    gates below, which now hand over fragments of a view they already built, and the view is a
-    fixed point so that costs nothing; it is kept because making this helper's correctness depend
-    on the caller having remembered is the exact coupling that produced this defect class. The
-    mask half of the view answers three defects:
-
-    * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
-      `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
-      `dep_output_candidates`, meets the backward assignment closure, and the `isdisjoint` test
-      stops firing — a real "dependency output never reaches intent(out)" violation suppressed
-      by the text of a comment. Fail-open.
-    * **Character literals (the same phantom by another route).** `call flux__log('recompute a,
-      mid, now')` yielded `mid`, back when this function hand-rolled a quote-blind fourth copy
-      of the splitter. Fail-open.
-    * **Apostrophes in comments.** Once the split became quote-aware, a `! it's` in a continued
-      argument list opened a literal that no newline closed, swallowing every later item — the
-      dependency-call output lost (fail-open) or a dummy lost out of `arg_names` (fail-closed),
-      depending on which list carried the comment. Masking removes the apostrophe with its
-      comment before the splitter can see it.
-
-    All three are one root cause: raw multi-line text fed to a single-logical-line helper.
-
-    `&` continuations are the fourth instance of that same root cause, and the view closes them
-    too. A mask that blanks in place cannot: the first name after each `&` still carries the
-    marker and the newline, is not an identifier, and was dropped — a wrapped argument list lost
-    one name per continuation, from EVERY feed at once (a lost dummy wrongly became a
-    dependency-output candidate, a lost actual lost a real candidate, a lost `intent(out)` name
-    shrank the closure seed). Recovering them is the correct parse, and it was measured on every
-    `*_model.f90` in the tree before being taken — dependency ids read from each file's own
-    `use <spec_id>_model` lines and `node_key` forced to `problem/`, without which the absolute
-    figures are not reproducible: 29 violations before, 27 after. Recovering the names is
-    safe only together with the candidate rule's named-constant clause, which had to land in the
-    same change: joined WITHOUT that clause the count goes to 31, because the byte-identical
-    `shallow_water2d` pair under `workspace_20260706` was passing on two errors CANCELLING — a
-    lost `u_np1` made an `intent(out)` dummy its own candidate, so the disjoint test could not
-    fire, while a lost `ncomp` hid the constant that now clears it.
-
-    The end-to-end movement, before to after, is elsewhere and `TODO.md` lists it: two
-    `workspace_20260319` artifacts lose a FALSE `initialize_state` violation whose only candidate
-    is a module `parameter`; one 20260712 model keeps firing with two names recovered from behind
-    a `&`; and two `profile/`-domain files move in opposite directions, neither of which any gate
-    here reaches."""
-    parts = fortran_lines.split_top_level_commas(_joined_masked_fortran_view(raw))
-
-    names: list[str] = []
-    for token in parts:
-        part = token.strip().lower()
-        if not part:
-            continue
-        part = re.sub(r"\(.*\)", "", part).strip()
-        if FORTRAN_IDENTIFIER_PATTERN.fullmatch(part):
-            names.append(part)
-    return names
-
-
-def _is_literal_like_expr(expr: str) -> bool:
-    lowered = expr.strip().lower()
-    if not lowered:
-        return False
-    if lowered in {".true.", ".false.", "true", "false"}:
-        return True
-    return bool(re.fullmatch(r"[0-9dDeE\.\+\-\*\/\(\)\s,_]+", lowered))
-
-
-# The `problem` model gates below match Fortran's KEYWORD STRUCTURE, so the text they read is
-# reduced by `_joined_masked_fortran_view` — inside `_structure_reading`, which
-# `_fortran_procedure_envelopes` calls and where every one of them now gets its bodies from. (Two of the three called the view themselves
-# as well until review pointed out that the walk had made those calls no-ops, while the comments
-# beside them still called them load-bearing. The dependency-dataflow gate's own call stayed: it
-# feeds `_fortran_declared_names` directly.) Without the mask half, body selection stops at the
-# first TEXTUAL `end subroutine`: one comment naming it truncates the body, every gate that reads
-# the body goes silent, and a legal model passes — fail-open from a comment. The mirror is a
-# commented-out procedure minting a phantom match, which fails closed. Without the join half, a
-# wrapped `intent(out)` list or `call` actual list is read as fragments.
-#
-# `call` positions stay comparable with assignment positions because BOTH are offsets into the
-# same view, not because the view preserves the file's offsets — it does not (see the view's
-# docstring). Nothing here reports a line number; anything that ever does must take it from
-# `fortran_lines.fortran_logical_lines`' `start_lineno`.
-
-
-# The `intent(out)` declarations of one scope. ONE definition: the three `problem` model gates
-# each carried their own copy of this pattern, and each recomputed the same set from the same
-# text. The set is computed once, in the envelope, and every gate reads `envelope.out_vars`.
-_FORTRAN_INTENT_OUT_PATTERN = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
-
-
-class _FortranSourceStructureError(Exception):
-    """The front end could not resolve the structure of this model source.
-
-    A CONTENT failure, not a transport one: every measured carrier is a legal program written in
-    a form the parser lexes differently from the compiler (a variable NAMED `endsubroutine`), and
-    a leaf can rewrite it. It is deliberately NOT a fall-back to a looser reading — a structure
-    nothing could resolve is exactly the input a silent gate is made of.
-    """
-
-    def __init__(self, errors: tuple[Any, ...]) -> None:
-        super().__init__("fortran structure could not be resolved")
-        self.errors = errors
-
-
-@dataclass(frozen=True)
-class _FortranProcedureEnvelope:
-    """One procedure definition, as the three `problem` model gates read it.
-
-    ``body`` is everything between the header and the terminator, CONTAINED PROCEDURES INCLUDED.
-    ``out_scope`` is the part of it before the subroutine's own `contains`, and is where
-    ``out_vars`` — the `intent(out)` dummies, the definable outputs every gate keys on — is read
-    from: a contained procedure's dummies are its own, not its host's.
-
-    Splitting body from out_scope is what lets a gate answer the question it is actually asking.
-    An earlier draft CUT the body at `contains` instead, and that cut was wrong in both directions
-    at once, each reproduced against origin/main, which flags neither way because its flat span
-    ran through the contained procedure:
-
-    * a `call` inside a contained procedure, with the `intent(out)` in the host, landed in an
-      envelope with no `intent(out)` at all, so every gate returned at its empty out-set check —
-      fail-OPEN;
-    * a dependency result propagated to the host's `intent(out)` INSIDE a contained procedure, by
-      host association, was invisible to the host's envelope — a false violation.
-
-    Neither is reachable in this tree today (0 of the 365 `*_model.f90` define a contained
-    procedure), which is exactly why the tree differential could not see them.
-
-    ``out_vars`` IS THE DEFINABLE-OUTPUT SET, and what belongs in it depends on ``kind``:
-
-    * a `subroutine`'s outputs are its `intent(out)` dummies, and nothing else;
-    * a `function`'s outputs are those PLUS its result variable — `result(y)` names it `y`, and
-      without a `result(...)` it is the function's own name. That is Fortran's rule and it was
-      re-checked against the compiler rather than the standard: with `result(y)` present,
-      `gfortran -fsyntax-only -std=f2008` rejects an assignment to the function name with "'f' at
-      (1) is not a variable", and accepts one to `y`; with no `result(...)` it accepts the
-      assignment to the function name (both executed).
-
-    Every gate keys on this ONE set rather than re-deriving "what counts as an output" three
-    times, which is how a function stayed invisible to all three of them for as long as it did.
-
-    ``intent_out_vars`` is the `intent(out)` dummies ALONE — the same set minus the result
-    variable. The distinction is not a nicety: `_validate_problem_model_literal_outputs` reads
-    ONLY this set, because a result variable in its conjunction is wrong in both directions — as
-    a trigger it produced ten false violations against this tree and caught nothing, and as a
-    member it EXEMPTED any function whose result happened to be input-dependent, which turned
-    rewriting a subroutine as a function into a way to launder a fabricated `intent(out)`.
-
-    HOW FAR THE FUNCTION WIDENING ACTUALLY REACHES IN THIS TREE, measured rather than implied,
-    and corrected once by review after a first version overstated it: of the 422 function
-    envelopes in the 365 in-tree `*_model.f90`, **0 declare an `intent(out)` dummy**, **none
-    carries five outputs**, and **none contains a dependency-operation call** (87 of them live in
-    files that have dependencies at all; the 124 procedures that do call one are all subroutines).
-    So the corpus COVERAGE added by this widening is zero in all three gates, not two — the +422
-    is a visibility number, and the only exercise of the new path is the synthetic reproduction
-    and the tests. The widening is prospective: it closes a shape a future model can take, and it
-    is the shape this item's own reproduction used. What it is NOT is a claim that anything in the
-    tree today is newly checked.
-    """
-
-    kind: str
-    name: str
-    dummy_args: str
-    body: str
-    out_scope: str
-    result_name: str | None
-    intent_out_vars: frozenset[str]
-    out_vars: frozenset[str]
-
-
-
-def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
-    """The gate view and a LABEL-PRESERVING twin of it, line for line.
-
-    `_joined_masked_fortran_view` strips a leading statement label, because every rule that reads
-    the view anchors on the statement's own keyword and a label sitting in front of it would have
-    to be guarded for in each rule. That is right for the RULES and wrong for a PARSER: in F2008's
-    obsolescent labelled `DO`, the label IS the loop's terminator, so stripping it leaves
-    `do 100 i = 1, 4` with nothing closing it. tree-sitter then reports ERROR and the source is
-    refused — a source `gfortran -fsyntax-only -std=f2008 -Wall` accepts with no diagnostic at
-    all, and one `origin/main`'s regex walk analysed correctly. Found by review; 0 of the 365
-    in-tree `*_model.f90` carry a statement label of any kind, which is why no differential could
-    see it.
-
-    Both strings are built from ONE pass over the same statements, so line i of one is line i of
-    the other by construction rather than by a length coincidence. Every offset this module hands
-    a gate is a LINE START, so the parse offsets are translated by line index and stay exact.
-    """
-    raw_statements = [
-        statement.lstrip()
-        for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
-        for statement in fortran_lines.split_fortran_statements(line)
-    ]
-    stripped_lines = [
-        _FORTRAN_STATEMENT_LABEL.sub("", statement, count=1) for statement in raw_statements
-    ]
-    # EVERY label is kept in the twin. WHICH reading to parse is not decided here at all — see
-    # `_structure_reading`, which asks the parser both ways (it was
-    # `_fortran_procedure_envelopes` until that decision was extracted so a second structural
-    # question could share it; this pointer went one frame stale in the same commit). Three versions of a rule
-    # that tried to decide it HERE were each defeated by a legal program, in three consecutive
-    # review rounds: keep every label (breaks `10 contains` / `20 subroutine helper(v)`, which
-    # tree-sitter cannot parse and gfortran accepts); keep any label a `do` names file-wide (a
-    # label is unique only within a scoping unit, so `do 100` in one procedure resurrected the
-    # label onto a `100 contains` in another); keep the label terminating an OPEN `do`, matched by
-    # value (misses a labelled `FORMAT` in the specification part, which needs its label and has
-    # no `do` naming it). The set of constructs whose label a parser needs is not closed by
-    # enumeration — which is the same argument this module makes for replacing the regex walk, and
-    # it applies to the rule standing in front of the parser too.
-    labelled_lines = raw_statements
-
-    def finish(lines: list[str], keep: list[bool] | None) -> tuple[str, list[bool]]:
-        masked = fortran_lines.mask_code_lookalikes("\n".join(lines)).split("\n")
-        rstripped = [line.rstrip() for line in masked]
-        if keep is None:
-            keep = [bool(line) for line in rstripped]
-        return "\n".join(line for line, wanted in zip(rstripped, keep) if wanted), keep
-
-    # The KEEP decision is the stripped view's, applied to both: dropping a line from one and not
-    # the other is the only way this pairing can come apart, and a label-only "statement" (which
-    # is not legal Fortran anyway) is exactly the input that would do it.
-    view, keep = finish(stripped_lines, None)
-    labelled_view, _ = finish(labelled_lines, keep)
-    return view, labelled_view, _line_starts(view), _line_starts(labelled_view)
-
-
-def _line_starts(text: str) -> list[int]:
-    starts = [0]
-    for index, character in enumerate(text):
-        if character == "\n":
-            starts.append(index + 1)
-    return starts
-
-
-def _structure_reading(
-    lowered: str,
-) -> tuple[str, fortran_structure.StructureTree, Callable[[int], int]]:
-    """The ONE structural reading of a source: `(view, tree, to_view)`.
-
-    Extracted from `_fortran_procedure_envelopes` when `_validate_generated_signatures` needed a
-    second structural question answered (`_module_level_procedure_names`). It is shared rather
-    than copied because the reading below is not a rule anyone should re-derive: a second reading
-    that chose differently would answer the two questions about DIFFERENT programs, and this
-    module's whole reason for asking a parser is that hand-written agreement about source
-    structure does not hold.
-
-    TWO READINGS OF ONE PROGRAM, and the PARSER picks. A statement label is inert to every rule in
-    this module — which is why the view strips labels, so each rule can anchor on the statement's
-    own keyword — but it is not inert to a parser. Neither reading parses everything, and both
-    shapes that defeat one are accepted by the compiler (executed). So the reading is not chosen
-    by a rule about labels: three such rules were written and each was defeated by a legal program
-    in the next review round. The stripped view is tried first because it is the common case (365
-    of the 365 in-tree models carry no label at all, and it needs no offset translation); the
-    label-preserving twin is tried only when that fails. A source is refused only when NEITHER
-    reading resolves, which is strictly weaker than either rule and needs no enumeration to stay
-    true.
-
-    Raises `_FortranSourceStructureError` when neither reading resolves. A
-    `FortranStructureUnavailableError` from the front end itself propagates untouched — it is the
-    operator's failure, and `main` answers it with a dedicated exit code."""
-    view, labelled_view, view_starts, labelled_starts = _fortran_view_pair(lowered)
-    tree = fortran_structure.parse_view(view)
-    translate = False
-    if tree.errors:
-        labelled_tree = fortran_structure.parse_view(labelled_view)
-        if labelled_tree.errors:
-            # The STRIPPED reading's errors are reported: it is the canonical view, the one whose
-            # line numbers the rest of this module speaks in.
-            raise _FortranSourceStructureError(tree.errors)
-        tree, translate = labelled_tree, True
-
-    def to_view(offset: int) -> int:
-        if not translate:
-            return offset
-        # END OF INPUT IS NOT A LINE START, and it is the one offset that is not: the view never
-        # ends in a newline, so `fortran_structure._next_line_start` answers `len(text)` for a
-        # span reaching EOF. Mapping that by line index would silently shrink it to the start of
-        # the last line. Reachability today is zero — every other offset is a line start, checked
-        # over all 365 in-tree models and the hand-built shapes — so this is a guard on the
-        # premise, not a fix for an observed defect (review).
-        if offset >= len(labelled_view):
-            return len(view)
-        index = bisect.bisect_right(labelled_starts, offset) - 1
-        if index >= len(view_starts):
-            return len(view)
-        return view_starts[index]
-
-    return view, tree, to_view
-
-
-def _module_level_procedure_names(
-    lowered: str, unit_name: str | None = None
-) -> frozenset[str]:
-    """The names ``lowered`` DEFINES at the top level of the program unit ``unit_name`` — the
-    definedness half of the published surface, asked of the language backend.
-
-    The rule this serves is neutral: a published operation must be IMPLEMENTED BY THE UNIT THAT
-    PUBLISHES IT, not merely declared, and not implemented by some other unit that happens to
-    share the file. Which spellings declare without implementing, which unit counts as the same
-    publisher, and why a caller must not decide either itself, belong to the backend —
-    `structure.module_level_procedure_names` is canonical for all three.
-
-    ``unit_name`` is the published unit's own name, which this repository fixes by convention as
-    the model source's basename with its extension dropped. Measured over the 30 certified
-    `component` / `infrastructure` sources in `workspace/pipelines` (2026-09-05): every one
-    declares exactly one program unit, and its name is exactly that.
-    Passing None asks the unscoped question and is answered by the backend, not here.
-
-    Raises the same two errors as `_structure_reading`."""
-    _view, tree, _to_view = _structure_reading(lowered)
-    return fortran_structure.module_level_procedure_names(tree, unit_name)
-
-
-def _module_level_definition_headers(
-    lowered: str, unit_name: str
-) -> dict[str, tuple[str, ...] | None]:
-    """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name``, read
-    from the definition the structure reader found — the header the §5.1 comparison must read.
-
-    The reading is this module's (`_structure_reading`, which picks the stripped or the
-    label-preserving view); what counts as a definition's header and specification part is the
-    backend's, and `structure.module_level_definition_stanzas` is canonical for it and for why
-    the whole-file stanza splitter's answer is the wrong one. Raises the same two errors as
-    `_structure_reading`."""
-    view, tree, to_view = _structure_reading(lowered)
-    return fortran_structure.module_level_definition_stanzas(
-        tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
-
-
-def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
-    """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
-
-    The structure comes from `tools/backends/language/fortran/structure.parse_view` (tree-sitter-fortran), NOT from
-    a hand-rolled scan of Fortran's keyword structure. The scan this replaces was rewritten four
-    times and broken sixteen, always the same way: a spelling the language allows and the rules
-    did not enumerate — the one-word `endsubroutine`, a bare `end`, a construct NAMED after a
-    keyword, a VARIABLE named after a keyword, an `interface` body's own `end subroutine`. Each
-    was fail-OPEN and silenced all three gates for a whole file. That set is not closed by
-    enumeration, so the enumeration is gone.
-
-    What is handed to the parser is `_joined_masked_fortran_view(lowered)` — applied here, not by
-    the caller, because the view is a fixed point, so a gate that has already reduced its text
-    pays one idempotent pass and a test may hand over raw source (the argument
-    `_split_fortran_names` already makes).
-
-    THE ONE INVARIANT A REWRITE MUST NOT BREAK: `body` is ONE CONTIGUOUS SLICE of a
-    length-preserving transform of the view, so a position inside it is a position inside the
-    view. `_validate_problem_model_dependency_dataflow` decides "was this actual assigned BEFORE
-    the call" by comparing an `_assignment_records` position with an `_iter_fortran_calls`
-    position, both taken inside `body`, and `_joined_masked_fortran_view`'s own contract is that
-    offsets are comparable only when both come from the same view. An interface span is therefore
-    BLANKED IN PLACE rather than deleted, by `fortran_structure.blank_interface_spans`, after the
-    parse — deletion also preserves the ORDER of what remains, but not the offsets.
-
-    A parse carrying an ERROR or MISSING node RAISES `_FortranSourceStructureError` instead of
-    returning a partial list, and the caller turns that into a content violation. There is no
-    looser second reading to fall back to, by design. Measured (2026-08-13, tree-sitter 0.26.0 /
-    tree-sitter-fortran 0.6.0): over the views of the 365 in-tree `*_model.f90` the parse carries
-    no ERROR node at all and this function's output is BYTE-IDENTICAL to the scan it replaces on
-    365/365 files and all 894 envelopes; over the 58 inline test fixtures `gfortran -fsyntax-only
-    -std=f2008` accepts, 1 carries an ERROR node and 0 disagree.
-
-    A `function` IS emitted, with its result variable in `out_vars` — 92 of the 365 in-tree
-    `*_model.f90` define one, and every gate was blind to all of them for the whole procedure.
-
-    An abbreviated `module procedure solve` is emitted too, and is ALWAYS refused by the caller
-    rather than analysed. The reason is not that its body is hard to find — the parser reports it
-    exactly — but that F2008 forbids such a body from redeclaring its dummies (`gfortran
-    -fsyntax-only -std=f2008`: "is a redefinition of the declaration in the corresponding
-    interface"), so no `intent(out)` ever appears in it and every gate would return at its empty
-    out-set check. Emitting it and letting it through would be a SILENT gate; refusing it asks
-    the leaf for the full form (`module subroutine s(u, v)` / `module function f(x) result(y)`),
-    which every gate reads. The alternative — resolving the dummies across the
-    interface/implementation boundary via the gfortran dump — was measured and dropped: the three
-    dump markers that are stable across compiler versions carry neither the result name nor the
-    function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
-    of which this tree has none. See `TODO.md`.
-    """
-    # The label reading — two readings of one program, chosen by the PARSER — belongs to
-    # `_structure_reading` and is stated in its docstring, once. It was duplicated here verbatim
-    # when that function was extracted, which is two copies of one rationale that can drift.
-    view, tree, to_view = _structure_reading(lowered)
-
-    spans = tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans)
-    blanked = fortran_structure.blank_interface_spans(view, spans)
-    envelopes: list[_FortranProcedureEnvelope] = []
-    for procedure in tree.procedures:
-        body_end = to_view(procedure.body_end)
-        body_start = to_view(procedure.body_start)
-        out_end = body_end if procedure.contains_at is None else min(
-            to_view(procedure.contains_at), body_end
-        )
-        out_scope = blanked[body_start : max(out_end, body_start)]
-        out_vars: set[str] = set()
-        for match in _FORTRAN_INTENT_OUT_PATTERN.finditer(out_scope):
-            out_vars.update(_split_fortran_names(match.group(1)))
-        # The result variable is definable and is the whole point of a function, so it joins the
-        # out-set — see the envelope's docstring for the compiler check that says WHICH name it is.
-        intent_out_vars = frozenset(out_vars)
-        if procedure.kind == "function" and procedure.result_name:
-            out_vars.add(procedure.result_name)
-        envelopes.append(
-            _FortranProcedureEnvelope(
-                kind=procedure.kind,
-                name=procedure.name,
-                dummy_args=procedure.dummy_args_text,
-                body=blanked[body_start:body_end],
-                out_scope=out_scope,
-                result_name=procedure.result_name,
-                intent_out_vars=intent_out_vars,
-                out_vars=frozenset(out_vars),
-            )
-        )
-    return envelopes
-
-
-def _validate_problem_model_literal_outputs(
-    execution: NodeExecution,
-    model_file: Path,
-    envelopes: list[_FortranProcedureEnvelope],
-    violations: list[str],
-) -> None:
-    if not execution.node_key.startswith("problem/"):
-        return
-
-    for envelope in envelopes:
-        sub_name = envelope.name
-        arg_names = set(_split_fortran_names(envelope.dummy_args))
-        body = envelope.body
-
-        # THIS GATE READS THE `intent(out)` DUMMIES AND NOTHING ELSE — not `out_vars`, which for
-        # a function also holds its result variable. Both halves of that are measurements.
-        #
-        # It must not FIRE on a result: "every output is a literal and none depends on an input"
-        # is evidence of fabrication for a subroutine, but for a function it is the normal shape
-        # of a constant accessor (`ghost_width() result(ng); ng = 1`) and of a predicate whose
-        # input dependence lives in its BRANCH CONDITIONS rather than in the assigned expression
-        # (`res = .false.` … `if (lhs(k) < rhs(k)) res = .true.`), which this gate's
-        # flow-insensitive `input_dependent` test cannot see. Executed against all 365 in-tree
-        # models: opening the gate on the result alone flags 10 functions, 10 of them legitimate,
-        # 0 defects.
-        #
-        # It must not be EXEMPTED by one either, which is the half review had to point out. The
-        # test is a conjunction over the whole output set, so an extra output that IS
-        # input-dependent exempts the procedure — and a function's result is an extra output every
-        # function has for free. That made rewriting a flagged subroutine as a function a way to
-        # launder it: `v = 1.0` with `intent(out) :: v` is flagged as a subroutine, and adding
-        # `r = u(1)` to the function form silenced it (both accepted by `gfortran -fsyntax-only
-        # -std=f2008`, both executed). A subroutine has to DECLARE an extra `intent(out)` to buy
-        # that exemption; a function was getting it by existing.
-        out_vars = set(envelope.intent_out_vars)
-        if not out_vars:
-            continue
-
-        assign_map: dict[str, list[str]] = {}
-        for out_var in sorted(out_vars):
-            exprs = re.findall(
-                rf"\b{re.escape(out_var)}\s*=\s*([^\n!]+)",
-                body,
-            )
-            if exprs:
-                assign_map[out_var] = [expr.strip() for expr in exprs]
-
-        if set(assign_map.keys()) != out_vars:
-            continue
-
-        all_literal = True
-        input_dependent = False
-        for out_var, exprs in assign_map.items():
-            for expr in exprs:
-                if not _is_literal_like_expr(expr):
-                    all_literal = False
-                    expr_ids = {
-                        token
-                        for token in FORTRAN_IDENTIFIER_PATTERN.findall(expr)
-                        if token not in {"d", "e", "true", "false"}
-                    }
-                    if expr_ids & (arg_names - {out_var}):
-                        input_dependent = True
-
-        if all_literal and not input_dependent:
-            # The subroutine wording is UNCHANGED, deliberately: it is what the 365-file
-            # differential compares against, so every line that moves when functions become
-            # visible is a NEW line about a function and attributable as one.
-            # One wording for both kinds, and it names `intent(out)` because that is now exactly
-            # what was judged. The subroutine text is unchanged byte for byte: it is what the
-            # 365-file differential compares against.
-            violations.append(
-                f"{model_file}: {envelope.kind} {sub_name} has literal-only assignments for "
-                f"all intent(out) vars"
-            )
-
-
-def _extract_identifiers(expr: str) -> set[str]:
-    return {
-        token
-        for token in FORTRAN_IDENTIFIER_PATTERN.findall(expr.lower())
-        if token not in FORTRAN_KEYWORDS
-    }
-
-
-def _assignment_records(body: str) -> list[tuple[str, set[str], int]]:
-    records: list[tuple[str, set[str], int]] = []
-    assign_pattern = re.compile(
-        r"^\s*([a-z_][a-z0-9_]*(?:\s*\([^\n=]*\))?)\s*=\s*([^\n!]+)",
-        re.MULTILINE,
-    )
-    for match in assign_pattern.finditer(body):
-        lhs_expr = match.group(1)
-        lhs_match = FORTRAN_IDENTIFIER_PATTERN.search(lhs_expr.lower())
-        if lhs_match is None:
-            continue
-        lhs = lhs_match.group(0)
-        rhs_ids = _extract_identifiers(match.group(2))
-        records.append((lhs, rhs_ids, match.start()))
-    return records
-
-
-def _validate_problem_model_dependency_dataflow(
-    execution: NodeExecution,
-    model_file: Path,
-    lowered: str,
-    envelopes: list[_FortranProcedureEnvelope],
-    dep_spec_ids: list[str],
-    violations: list[str],
-) -> None:
-    """`Generate.static` reachability lint: a `problem` subroutine that calls a dependency
-    operation must let that operation's RESULT flow to an `intent(out)` dummy. The check is a
-    backward ASSIGNMENT closure from the intent(out) vars: an assignment `lhs = f(rhs...)` makes
-    every `rhs` a source of `lhs`, transitively; a dependency-call output not assigned (directly or
-    through the chain) into any intent(out) is flagged (the inert-call / discarded-result defect).
-
-    Scope note — this gate does NOT deterministically check the stronger
-    ``semantic_dependency.required_sources`` reachability. That property (each intent(out)'s
-    expression tree reaches the required physical inputs) is inherently flow-sensitive and
-    argument-intent-dependent: whether a value passed to a `call` is read or written, and which of
-    several writes to a reused scratch variable reaches a use, cannot be decided from this
-    regex-level, flow-insensitive view without the callee interfaces. Every flow-insensitive
-    approximation attempted here either false-rejected physically-correct code (a dependency result
-    reaching intent(out) through a call chain) or failed open (a required source merely co-passed to
-    an unrelated call, or fed to a call whose write is later overwritten). It is therefore left to
-    ``Generate.verify`` G5, which reads ``controlled_spec.md`` and IS the semantic authority for
-    "each intent(out) reaches the required_sources", backed by the runtime. Check 1 below (a
-    dependency RESULT reaching intent(out)) is assignment-only, sound, and kept.
-
-    The candidate rule has four clauses: an actual of a dependency `call` is a candidate OUTPUT
-    unless it is a dummy of the enclosing subroutine, OR was assigned earlier in the same view, OR
-    is a NAMED CONSTANT, OR is the name of a procedure this file defines (a procedure passed as
-    the actual for a procedure-typed dummy — issue #266; a procedure name is not definable
-    either). The third clause is not a relaxation of a sound rule — it removes an
-    over-approximation the rule never intended. F2008 requires the actual associated with an
-    `intent(out)` / `intent(inout)` dummy to be definable, and a named constant is not, so a
-    `parameter` can never be a dependency-call output. Verified against the compiler rather than
-    inferred from the standard: `gfortran -fsyntax-only -std=f2008` rejects both spellings with
-    "Non-variable expression in variable definition context (actual argument to INTENT =
-    OUT/INOUT)".
-
-    The clause is deliberately FILE-WIDE AND SCOPE-FREE: a name is exempt only if this file
-    declares it as a constant and never declares it as anything else. That is not the precise
-    rule — the precise rule is Fortran's own name resolution — and it is not an approximation of
-    it either; it is the strictly weaker question that can be answered here. Six rounds of review
-    established why: a scoped version was written four times and defeated by every one of these — a
-    `parameter` inside a module `function`, a paren-less `subroutine`, an external procedure, a
-    submodule separate body, a `block`, a named `associate`, a contained procedure, a second
-    module in the same file, a derived type's own `contains`, a statement label, an obsolescent
-    `character*3` selector, three spellings of an assignment to a variable named `module`, three
-    spellings of `use` association (`only:`, a bare rename, and the `, non_intrinsic ::` prefix),
-    and the one-word `selecttype` whose blank F2008 makes optional. Every one was a way for a name
-    to be constant SOMEWHERE and definable HERE, and each
-    miss produced a SILENT gate, because this set subtracts candidates. The set of mechanisms that
-    make a Fortran name visible is not closed at this level of parsing, so a rule whose safety
-    depends on enumerating them cannot be made safe by adding cases. Note that three of the
-    sixteen were found AFTER the switch to this rule, in the recognition of "declared otherwise" —
-    the rule moves the risk from an unbounded set to a bounded one, it does not remove it.
-
-    Asking the file-wide question instead makes the failure direction structural rather than
-    hoped-for: a name used both ways anywhere in the file is simply not exempt, which costs a
-    false violation. Every one of the thirteen reproductions is still caught, because in each the
-    name is also declared as a variable, imported, or `associate`-bound somewhere.
-
-    RESIDUES, reproduced and NOT fixed. (a) A bare `use other_module` can import a VARIABLE whose
-    name this file also declares as a constant; nothing in one file can see that. (b) An
-    implicitly typed local is not declared at all, so it cannot disqualify a name. An earlier
-    version of this note called that unreachable because the lint gate (fortitude C001)
-    requires the module-level `implicit none`; a round-2 reviewer of issue #266 PR-2 measured
-    that a routine-local `implicit real(dp) (s)` under it compiles under the gate's standard
-    and passes the declared lint set, so a local named after a constant or a procedure
-    elsewhere in the file can be an undeclared, exempted, discarded output — reachable, zero
-    in the corpus, and the same class as (a). (C003 is a different rule and, since issue
-    #111, not in the gate's declared rule set.) (c) The candidate
-    rule still treats a variable written by an earlier `call` as a candidate, and the consumption
-    closure still cannot cross a call; the measured instance is the
-    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
-    `problem/` guard below. Closing (c) is the flow-sensitive pass recorded in `TODO.md`.
-
-    Residue (c) above is the one with a named instance: the
-    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
-    `candidates=['flux_ok', 'u_new', 'z_b']`. The three are NOT the same defect, and an earlier
-    draft of this note misattributed all of them to the producer side: `z_b` and `flux_ok` are the
-    producer-side residue (written by an earlier `call`, which the candidate rule does not count
-    as a producer), while `u_new` is written by the dependency call itself — a correct candidate
-    whose flag is consumption-side, because `u = u_new` then crosses a `call` the assignment-only
-    closure cannot follow. Whoever builds the flow-sensitive pass needs both halves, so `TODO.md`
-    carries the case with that split."""
-    if not execution.node_key.startswith("problem/"):
-        return
-    if not dep_spec_ids:
-        return
-
-    dep_prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
-
-    # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
-    # `_fortran_declared_names` below reads `lowered` directly. The envelopes it is handed were
-    # built from the view of this same text, and the view is a fixed point, so the two readings
-    # agree whether the caller passed raw source or a view.
-    lowered = _joined_masked_fortran_view(lowered)
-
-    # Which names are named constants EVERYWHERE they appear in this file. Deliberately a
-    # whole-file question rather than a scoped one: four rounds of review found thirteen ways to
-    # get Fortran's scoping wrong at this level — a `parameter` inside a module `function`, a
-    # paren-less `subroutine`, an external procedure, a submodule separate body, a `block`, an
-    # `associate` rebinding, a second module in the same file, a derived type's own `contains`,
-    # a statement label, and three spellings of an assignment to a variable named `module`. Every
-    # one of them was a way for a name to be constant SOMEWHERE and definable HERE.
-    #
-    # This asks the question that has no scope in it: a name is exempt only if the file declares
-    # it as a constant and NEVER declares it as anything else. Each of those thirteen
-    # reproductions is still caught, because in every one the name is also declared as a variable
-    # or bound by an `associate` — that is what made it definable at the call. What it costs is a
-    # false violation when one file legitimately uses a name as a constant in one procedure and a
-    # variable in another; that is the direction this repository accepts.
-    # Read from the view, NOT from the envelope walk's interface-blanked text. Names an interface
-    # body declares belong in `file_other_names`, where they can only SUBTRACT an exemption —
-    # fail-closed. Feeding this the blanked text would drop them and re-exempt the name, which is
-    # fail-OPEN at exactly the candidate rule below. The blanking stays inside the envelopes.
-    file_constants, file_other_names = _fortran_declared_names(lowered)
-    parameter_names = file_constants - file_other_names
-    # The name of a procedure this file DEFINES — at module level or internal to one —
-    # passed as an actual is the procedure itself (a dependency operation taking a
-    # procedure-typed dummy, issue #266: the caller hands it the tendency to integrate). Such an
-    # actual can carry nothing back, so it is not an output candidate. The envelopes are one
-    # per definition, internal ones included (see the envelope class). The SAME file-wide,
-    # scope-free rule as the constant clause above, for the same reason: a procedure name is
-    # scope-local (an internal procedure of ANOTHER routine, or a module-level procedure a local
-    # declaration shadows — both compile), so a name this file also declares as a variable
-    # anywhere is NOT exempt. Two round-1 reviewers each built a shape where the plain
-    # envelope set hid a discarded result origin/main flagged; subtracting the declared names
-    # costs a false violation on a file that uses one name both ways, the direction this
-    # gate accepts.
-    procedure_names = {envelope.name for envelope in envelopes} - file_other_names
-
-    for envelope in envelopes:
-        sub_name = envelope.name
-        arg_names = set(_split_fortran_names(envelope.dummy_args))
-        # A function's result variable belongs on the same side as its dummies for the candidate
-        # rule: it is this procedure's OWN output face, not a local scratch that a dependency call
-        # might have written. Without this, `f = ...` shaped code makes the result name a
-        # candidate output of every dependency call it is passed to — a false violation.
-        if envelope.kind == "function" and envelope.result_name:
-            arg_names.add(envelope.result_name)
-        body = envelope.body
-        assignments = _assignment_records(body)
-
-        # The closure below is SEEDED with this set, so a function's result seeds it too — which
-        # is what makes "the dependency result reaches the output" answerable for a function.
-        out_vars = set(envelope.out_vars)
-        if not out_vars:
-            continue
-
-        dep_output_candidates: set[str] = set()
-        for callee, args_raw, call_pos in _iter_fortran_calls(body):
-            if not any(callee.startswith(prefix) for prefix in dep_prefixes):
-                continue
-            call_vars = _split_fortran_names(args_raw)
-            for var in call_vars:
-                # A named constant cannot be an output: F2008 requires the actual associated with
-                # an `intent(out)`/`intent(inout)` dummy to be definable. See the docstring for
-                # the compiler diagnostic this rests on.
-                if var in arg_names or var in parameter_names or var in procedure_names:
-                    continue
-                assigned_before_call = any(
-                    lhs == var and pos < call_pos for lhs, _, pos in assignments
-                )
-                if not assigned_before_call:
-                    dep_output_candidates.add(var)
-
-        if not dep_output_candidates:
-            continue
-
-        # A dependency RESULT is consumed into output through ASSIGNMENTS (you assign the call's
-        # output argument into your state / an intent(out)). Backward-close over assignment RHS
-        # only: crossing calls here has no sound flow-insensitive form (see the function
-        # docstring) and fails open — `test_discarded_dep_result_flagged_even_when_call_shares_an_input`
-        # pins that it must not be done.
-        dependency_sources = set(out_vars)
-        changed = True
-        while changed:
-            changed = False
-            for lhs, rhs_ids, _ in assignments:
-                if lhs not in dependency_sources:
-                    continue
-                for src in rhs_ids:
-                    if src not in dependency_sources:
-                        dependency_sources.add(src)
-                        changed = True
-
-        if dep_output_candidates.isdisjoint(dependency_sources):
-            violations.append(
-                f"{model_file}: {envelope.kind} {sub_name} does not propagate dependency "
-                f"operation outputs to "
-                f"{'intent(out)' if envelope.kind == 'subroutine' else 'definable-output'} "
-                f"dataflow (candidates={sorted(dep_output_candidates)})"
-            )
-
-
 def _is_multidim_problem_node_key(node_key: str) -> bool:
     if not node_key.startswith("problem/"):
         return False
@@ -1941,47 +818,6 @@ def _is_multidim_problem_node_key(node_key: str) -> bool:
 
 def _is_multidim_problem_node(execution: NodeExecution) -> bool:
     return _is_multidim_problem_node_key(execution.node_key)
-
-
-def _validate_problem_metric_only_scalar_kernel(
-    execution: NodeExecution,
-    model_file: Path,
-    envelopes: list[_FortranProcedureEnvelope],
-    violations: list[str],
-) -> None:
-    if not _is_multidim_problem_node(execution):
-        return
-    spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
-
-    intent_in_or_inout_array_pattern = re.compile(
-        r"intent\s*\(\s*(?:in|inout)\s*\)\s*::\s*[^\n]*\([^)]+\)"
-    )
-    do_loop_pattern = re.compile(r"^\s*do\s+[a-z_][a-z0-9_]*\s*=", re.MULTILINE)
-    forall_pattern = re.compile(r"^\s*forall\s*\(", re.MULTILINE)
-
-    for envelope in envelopes:
-        sub_name = envelope.name
-        body = envelope.body
-        if len(envelope.out_vars) < 5:
-            continue
-
-        has_array_inputs = bool(intent_in_or_inout_array_pattern.search(body))
-        has_loop = bool(do_loop_pattern.search(body) or forall_pattern.search(body))
-        if has_array_inputs or has_loop:
-            continue
-
-        violations.append(
-            # The subroutine wording is unchanged byte for byte — it is what the 365-file
-            # differential compares against, and all four of the corpus's metric-only violations
-            # are subroutines. Only a function, whose count can include its result, says so.
-            f"{model_file}: {envelope.kind} {sub_name} is metric-only scalar kernel for "
-            f"{spec_id}; "
-            "2d/3d problem model must not derive many intent(out) metrics without array inputs or update loops"
-            if envelope.kind == "subroutine"
-            else f"{model_file}: function {sub_name} is metric-only scalar kernel for {spec_id}; "
-            "2d/3d problem model must not derive many definable outputs (its intent(out) metrics "
-            "and its result) without array inputs or update loops"
-        )
 
 
 def _extract_first_output_block(lowered: str, output_name: str) -> str | None:
@@ -1997,1667 +833,6 @@ def _extract_first_output_block(lowered: str, output_name: str) -> str | None:
     if close_idx < 0:
         return lowered[start:]
     return lowered[start:close_idx]
-
-
-def _iter_fortran_calls(text: str) -> list[tuple[str, str, int]]:
-    """Every `call name(...)` in ``text`` as (name, actual-argument text, offset).
-
-    The paren matching is `_extract_balanced_parens`, the quote-aware extractor in this module.
-    It used to be hand-rolled here and quote-BLIND, which made a paren inside a character-literal
-    actual move the depth: `call flux__report('rate )', tmp)` closed the group early and truncated
-    the actuals to `'rate `, while `'rate ('` never closed and swallowed the rest of the body.
-    Either way `tmp` stopped being a `dep_output_candidates` member and
-    `_validate_problem_model_dependency_dataflow` went silent on a real
-    "dependency output never reaches intent(out)" violation — fail-open, from the text of a
-    diagnostic string. Same defect class as the comma splitter, on the other half of the shape:
-    duplicated Fortran text scanning, the copy blind to quotes."""
-    calls: list[tuple[str, str, int]] = []
-    call_start_pattern = re.compile(r"\bcall\s+([a-z_][a-z0-9_]*)\s*\(")
-    for match in call_start_pattern.finditer(text):
-        name = match.group(1).lower()
-        start = match.start()
-        open_pos = match.end() - 1
-        calls.append((name, _extract_balanced_parens(text, open_pos), start))
-    return calls
-
-
-def _makefile_logical_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    buffer = ""
-    for raw_line in text.splitlines():
-        if raw_line.startswith("\t"):
-            continue
-
-        line_no_comment = raw_line.split("#", 1)[0].rstrip()
-        if not line_no_comment.strip():
-            continue
-
-        chunk = line_no_comment.strip()
-        if chunk.endswith("\\"):
-            buffer += chunk[:-1].strip() + " "
-            continue
-
-        logical = (buffer + chunk).strip()
-        buffer = ""
-        if logical:
-            lines.append(logical)
-
-    if buffer.strip():
-        lines.append(buffer.strip())
-    return lines
-
-
-def _normalize_make_token(token: str) -> str | None:
-    cleaned = token.strip().rstrip("\\")
-    if not cleaned:
-        return None
-    if "%" in cleaned:
-        return None
-
-    cleaned = re.sub(r"\$\([^)]+\)", "", cleaned)
-    cleaned = re.sub(r"\$\{[^}]+\}", "", cleaned)
-    cleaned = cleaned.strip()
-    if not cleaned:
-        return None
-    if cleaned.startswith("$"):
-        return None
-
-    name = Path(cleaned).name.lower()
-    if not name or "$" in name:
-        return None
-    return name
-
-
-_MAKE_ASSIGNMENT_PATTERN = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*)\s*([:+?]?)=\s*(.*)$"
-)
-_MAKE_VAR_REF_PATTERN = re.compile(r"\$\(([A-Za-z_][A-Za-z0-9_]*)\)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
-def _expand_make_vars(
-    expr: str,
-    var_map: dict[str, str],
-    depth: int = 8,
-    strip_unknown: bool = False,
-    preserve: set[str] | None = None,
-) -> str:
-    """Substitute ``$(NAME)`` / ``${NAME}`` for known names, bounded by depth.
-
-    By default unknown variables are left intact so `_normalize_make_token`
-    strips them, preserving behavior for genuinely unresolved references at
-    rule-expansion time. With ``strip_unknown=True`` (used for immediate ``:=``
-    expansion) any still-unresolved reference collapses to empty, matching GNU
-    make: a ``:=`` RHS that forward-references a not-yet-defined variable
-    expands to empty *now* and must not be resolved by a later definition. The
-    depth bound stops self/cyclic references from looping forever.
-
-    ``preserve`` names are never substituted nor stripped: their ``$(NAME)``
-    reference survives verbatim. This is used by the directory-prefix-aware
-    Makefile analysis to keep the ``$(OBJDIR)`` sentinel intact (so a
-    ``$(MODEL_OBJ) := $(OBJDIR)/foo.o`` definition expands to
-    ``$(OBJDIR)/foo.o`` rather than collapsing the out-of-source prefix away).
-    """
-    preserve = preserve or set()
-
-    for _ in range(depth):
-        if "$" not in expr:
-            break
-
-        def _sub(match: "re.Match[str]") -> str:
-            name = match.group(1) or match.group(2)
-            if name in preserve:
-                return match.group(0)
-            return var_map[name] if name in var_map else match.group(0)
-
-        expanded = _MAKE_VAR_REF_PATTERN.sub(_sub, expr)
-        if expanded == expr:
-            break
-        expr = expanded
-    if strip_unknown:
-
-        def _strip(match: "re.Match[str]") -> str:
-            name = match.group(1) or match.group(2)
-            return match.group(0) if name in preserve else ""
-
-        expr = _MAKE_VAR_REF_PATTERN.sub(_strip, expr)
-    return expr
-
-
-def _parse_makefile_rules(makefile_text: str) -> dict[str, set[str]]:
-    rules: dict[str, set[str]] = {}
-    # Track simple variable definitions (`=` / `:=` / `?=` / `+=`) in file
-    # order. GNU make expands a rule's targets and prerequisites immediately
-    # when it reads the rule, so only definitions that appear *before* a rule
-    # are visible to it; a forward reference expands to empty, which means the
-    # prerequisite is genuinely absent (and `make -j` can race). Building the
-    # map incrementally reproduces that: a not-yet-defined variable stays
-    # unexpanded and `_normalize_make_token` drops it. `var_flavor` records
-    # whether a variable is simply-expanded (`:=`) or recursively-expanded
-    # (`=` / `?=`), which determines how `+=` treats the appended text.
-    var_map: dict[str, str] = {}
-    var_flavor: dict[str, str] = {}
-
-    for line in _makefile_logical_lines(makefile_text):
-        assign_match = _MAKE_ASSIGNMENT_PATTERN.match(line)
-        if assign_match is not None:
-            name, op, value = (
-                assign_match.group(1),
-                assign_match.group(2),
-                assign_match.group(3).strip(),
-            )
-            if op == "?":
-                # Conditional: only sets when undefined; defines a
-                # recursively-expanded variable.
-                if name not in var_map:
-                    var_map[name] = value
-                    var_flavor[name] = "recursive"
-            elif op == ":":
-                # Simply-expanded: RHS is expanded immediately at definition
-                # time, so later redefinitions (or later first-definitions) of
-                # referenced variables do not change this value. Unresolved
-                # forward references collapse to empty, as make does now.
-                var_map[name] = _expand_make_vars(
-                    value, var_map, strip_unknown=True
-                )
-                var_flavor[name] = "simple"
-            elif op == "+":
-                if name not in var_map:
-                    # No prior definition: `+=` acts like `=` (recursive).
-                    var_map[name] = value
-                    var_flavor[name] = "recursive"
-                else:
-                    # Appended text is expanded immediately for a
-                    # simply-expanded variable, but kept raw (lazy) for a
-                    # recursively-expanded one.
-                    addition = (
-                        _expand_make_vars(value, var_map, strip_unknown=True)
-                        if var_flavor.get(name) == "simple"
-                        else value
-                    )
-                    existing = var_map[name]
-                    var_map[name] = (
-                        (existing + " " + addition).strip() if existing else addition
-                    )
-            else:
-                # Recursively-expanded (`=`): store raw, expand lazily at use.
-                var_flavor[name] = "recursive"
-                var_map[name] = value
-            continue
-        if ":" not in line:
-            continue
-
-        target_raw, prereq_raw = line.split(":", 1)
-        target_raw = _expand_make_vars(target_raw, var_map)
-        target_tokens = target_raw.split()
-        if not target_tokens:
-            continue
-
-        prereq_expr = prereq_raw.split(";", 1)[0].replace("|", " ")
-        prereq_expr = _expand_make_vars(prereq_expr, var_map)
-        prereq_tokens = prereq_expr.split()
-        prereqs = {
-            norm
-            for token in prereq_tokens
-            if (norm := _normalize_make_token(token)) is not None
-        }
-
-        for target_token in target_tokens:
-            target = _normalize_make_token(target_token)
-            if target is None:
-                continue
-            rules.setdefault(target, set()).update(prereqs)
-    return rules
-
-
-def _apply_make_assignment(
-    var_map: dict[str, str],
-    var_flavor: dict[str, str],
-    name: str,
-    op: str,
-    value: str,
-    preserve: frozenset[str] | None = None,
-) -> None:
-    """Apply one variable assignment to ``var_map`` honoring make's flavors:
-    `?=` (set if unset), `:=` (immediate expansion), `+=` (append, immediate for a
-    simply-expanded var else lazy), `=` (recursive, stored raw). ``preserve`` names
-    are kept as literal `$(NAME)` references through immediate expansion."""
-    if op == "?":
-        if name not in var_map:
-            var_map[name] = value
-            var_flavor[name] = "recursive"
-    elif op == ":":
-        var_map[name] = _expand_make_vars(
-            value, var_map, strip_unknown=True, preserve=preserve
-        )
-        var_flavor[name] = "simple"
-    elif op == "+":
-        if name not in var_map:
-            var_map[name] = value
-            var_flavor[name] = "recursive"
-        else:
-            addition = (
-                _expand_make_vars(value, var_map, strip_unknown=True, preserve=preserve)
-                if var_flavor.get(name) == "simple"
-                else value
-            )
-            existing = var_map[name]
-            var_map[name] = (
-                (existing + " " + addition).strip() if existing else addition
-            )
-    else:
-        var_map[name] = value
-        var_flavor[name] = "recursive"
-
-
-# Make's built-in tool variables (`$(MAKE)`, `$(FC)`, …). They are predefined by
-# make and usually never assigned in the Makefile, so they are absent from a map
-# built only from explicit assignments. Preserving them through `:=`/`+=`
-# expansion keeps the reference alive in an alias (`M := $(MAKE)` stores
-# `$(MAKE)`, not the empty string), so a relink reached via that alias is still
-# detected — and `$(MAKE)` matches `_RELINK_TOOL_PATTERN` literally.
-_RELINK_BUILTIN_VARS = frozenset(
-    {"MAKE", "FC", "CC", "CXX", "LD", "AR", "F90", "F95", "F77"}
-)
-
-
-def _makefile_full_var_map(makefile_text: str) -> dict[str, str]:
-    """Variable map after reading the whole Makefile (definition order honored,
-    `?=`/`:=`/`+=`/`=` flavors handled). Unlike the per-rule incremental map this
-    resolves every reference (no preserved sentinels) so a variable-named target
-    such as `$(BIN):` or `$(BINDIR)/$(BIN):` resolves to its concrete basename. The
-    relink built-in tool variables are preserved through immediate expansion so an
-    alias of `$(MAKE)`/`$(LD)`/… survives."""
-    var_map: dict[str, str] = {}
-    var_flavor: dict[str, str] = {}
-    for line in _makefile_logical_lines(makefile_text):
-        match = _MAKE_ASSIGNMENT_PATTERN.match(line)
-        if match is None:
-            continue
-        _apply_make_assignment(
-            var_map,
-            var_flavor,
-            match.group(1),
-            match.group(2),
-            match.group(3).strip(),
-            preserve=_RELINK_BUILTIN_VARS,
-        )
-    return var_map
-
-
-def _makefile_target_recipes(
-    makefile_text: str, var_map: dict[str, str]
-) -> dict[str, list[str]]:
-    """Map of resolved target basename -> its recipe lines (tab-indented and
-    inline `; …`). Target names are expanded with ``var_map`` so a variable-named
-    rule (`$(BIN):`) is keyed by its concrete basename."""
-    recipes: dict[str, list[str]] = {}
-    current_targets: list[str] = []
-    for raw_line in makefile_text.splitlines():
-        if raw_line.startswith("\t"):
-            for target in current_targets:
-                recipes.setdefault(target, []).append(raw_line)
-            continue
-        stripped = raw_line.lstrip()
-        if not stripped or stripped.startswith("#") or ":" not in raw_line:
-            current_targets = []
-            continue
-        head, rest = raw_line.split(":", 1)
-        if "=" in head:
-            current_targets = []
-            continue
-        current_targets = [
-            norm
-            for tok in _expand_make_vars(head, var_map).split()
-            if (norm := _normalize_make_token(tok)) is not None
-        ]
-        # An inline recipe (`target: prereqs ; recipe`) is part of the recipe and
-        # must be classified too, not just tab-indented lines.
-        inline_recipe = rest.partition(";")[2]
-        if inline_recipe.strip():
-            for target in current_targets:
-                recipes.setdefault(target, []).append(inline_recipe)
-    return recipes
-
-
-def _makefile_relinking_recipe_targets(
-    recipes: dict[str, list[str]], var_map: dict[str, str]
-) -> set[str]:
-    """Targets whose recipe relinks the binary — i.e. invokes a recursive make or
-    a compiler/linker. A target that only runs the (already-built) binary, mkdirs,
-    cleans up, etc. does not relink and is not included."""
-    return {
-        target
-        for target, body in recipes.items()
-        if any(_recipe_line_relinks(line, var_map) for line in body if line.strip())
-    }
-
-
-# Out-of-source directory sentinels parameterized in generated Makefiles. They
-# default to "." for in-source `make` but are overridden at Build/Validate time
-# (e.g. `OBJDIR=<per-run tmp>`), so a prerequisite's `$(OBJDIR)/` prefix is NOT
-# cosmetic: it determines which concrete target make resolves under an override.
-_MAKE_DIR_SENTINELS = frozenset({"OBJDIR", "BINDIR", "RUNDIR"})
-_OBJDIR_REF_PATTERN = re.compile(r"\$[({]OBJDIR[)}]")
-
-
-def _token_has_objdir_prefix(token: str) -> bool:
-    """True if a (sentinel-preserved) token references `$(OBJDIR)` / `${OBJDIR}`."""
-    return bool(_OBJDIR_REF_PATTERN.search(token))
-
-
-def _parse_makefile_rules_objdir_aware(
-    makefile_text: str,
-) -> tuple[dict[str, bool], dict[str, set[tuple[str, bool]]]]:
-    """Parse rules while preserving the `$(OBJDIR)` sentinel so the out-of-source
-    directory prefix survives basename normalization.
-
-    Mirrors `_parse_makefile_rules`' incremental variable tracking but (1) never
-    records the directory sentinels (`OBJDIR`/`BINDIR`/`RUNDIR`) as defined
-    variables and (2) preserves their `$(...)` references through `:=`/`+=`
-    immediate expansion. Returns:
-
-    - ``target_has_objdir``: object-rule target basename → whether the producing
-      rule writes it under `$(OBJDIR)/` (OR-ed across rules).
-    - ``prereqs_diraware``: target basename → set of
-      ``(prereq_basename, prereq_has_objdir_prefix)`` for its prerequisites.
-    """
-    var_map: dict[str, str] = {}
-    var_flavor: dict[str, str] = {}
-    target_has_objdir: dict[str, bool] = {}
-    prereqs_diraware: dict[str, set[tuple[str, bool]]] = {}
-
-    for line in _makefile_logical_lines(makefile_text):
-        assign_match = _MAKE_ASSIGNMENT_PATTERN.match(line)
-        if assign_match is not None:
-            name, op, value = (
-                assign_match.group(1),
-                assign_match.group(2),
-                assign_match.group(3).strip(),
-            )
-            # Never record the directory sentinels; their `$(...)` refs must stay
-            # literal so a `$(OBJDIR)/`-prefixed value is structurally detectable.
-            if name in _MAKE_DIR_SENTINELS:
-                continue
-            if op == "?":
-                if name not in var_map:
-                    var_map[name] = value
-                    var_flavor[name] = "recursive"
-            elif op == ":":
-                var_map[name] = _expand_make_vars(
-                    value, var_map, strip_unknown=True, preserve=_MAKE_DIR_SENTINELS
-                )
-                var_flavor[name] = "simple"
-            elif op == "+":
-                if name not in var_map:
-                    var_map[name] = value
-                    var_flavor[name] = "recursive"
-                else:
-                    addition = (
-                        _expand_make_vars(
-                            value,
-                            var_map,
-                            strip_unknown=True,
-                            preserve=_MAKE_DIR_SENTINELS,
-                        )
-                        if var_flavor.get(name) == "simple"
-                        else value
-                    )
-                    existing = var_map[name]
-                    var_map[name] = (
-                        (existing + " " + addition).strip() if existing else addition
-                    )
-            else:
-                var_flavor[name] = "recursive"
-                var_map[name] = value
-            continue
-        if ":" not in line:
-            continue
-
-        target_raw, prereq_raw = line.split(":", 1)
-        target_raw = _expand_make_vars(target_raw, var_map, preserve=_MAKE_DIR_SENTINELS)
-        target_tokens = target_raw.split()
-        if not target_tokens:
-            continue
-
-        prereq_expr = prereq_raw.split(";", 1)[0].replace("|", " ")
-        prereq_expr = _expand_make_vars(prereq_expr, var_map, preserve=_MAKE_DIR_SENTINELS)
-        prereq_pairs: set[tuple[str, bool]] = set()
-        for token in prereq_expr.split():
-            norm = _normalize_make_token(token)
-            if norm is None:
-                continue
-            prereq_pairs.add((norm, _token_has_objdir_prefix(token)))
-
-        for target_token in target_tokens:
-            target = _normalize_make_token(target_token)
-            if target is None:
-                continue
-            target_has_objdir[target] = target_has_objdir.get(
-                target, False
-            ) or _token_has_objdir_prefix(target_token)
-            prereqs_diraware.setdefault(target, set()).update(prereq_pairs)
-    return target_has_objdir, prereqs_diraware
-
-
-def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
-    """Each source read once and reduced to its `_joined_masked_fortran_view`.
-
-    The two readers below need the same view of the same files, and the view is the expensive
-    part. Sharing it HALVES the cost; it does not remove it. The multiplier over a raw
-    read-and-lower is 43x-86x per shared view across six real three-source directories (so
-    86x-172x if both readers built their own) — quoted as a RANGE because two earlier drafts of
-    this note each gave a single directory's figure and neither reproduced for the other reader.
-    The number that does not move is the absolute: 1.9s for the whole tree of 357 directories,
-    against 0.02s of raw reads. Large multiplier, small absolute — a note rather than a concern,
-    and the multiplier is what to check first if that stops being true."""
-    return {
-        src_file: _joined_masked_fortran_view(
-            src_file.read_text(encoding="utf-8", errors="ignore").lower()
-        )
-        for src_file in src_files
-    }
-
-
-def _local_fortran_module_map(src_views: dict[Path, str]) -> dict[str, str]:
-    """Which source stem provides each locally-defined module.
-
-    Reads `_joined_masked_fortran_view`s, like its consumer below, because a `module &` / `name`
-    wrap would otherwise leave the module unregistered — and an unregistered provider silently
-    deletes every dependency edge into it. Masking is not what closes that (the pattern is
-    `^`-anchored and comments are already gone by then); the reason to take the shared view rather
-    than call `fortran_logical_lines` here is that this defect class IS "N slightly different
-    Fortran views", and a fourth hand-rolled one is how it comes back."""
-    module_map: dict[str, str] = {}
-    pattern = re.compile(r"^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\b", re.MULTILINE)
-    for src_file, text in src_views.items():
-        stem = src_file.stem.lower()
-        for match in pattern.finditer(text):
-            module_name = match.group(1)
-            module_map.setdefault(module_name, stem)
-    return module_map
-
-
-def _fortran_source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
-    """The local module-dependency edges between ``src_files``, by source stem.
-
-    The `^\\s*use` pattern is anchored at a LOGICAL line start, so it must read
-    `_joined_masked_fortran_view`: a continuation placed between `use` and the module name
-    (`use &` / `dep_model`) matched nothing on physical lines, which emptied the caller's
-    `required_object_deps` — and `_validate_fortran_makefile_src_dir` returns before it can
-    require a Makefile at all when that mapping is empty. One wrapped `use` therefore switched
-    off the module-dependency build contract for the whole directory. Fail-open."""
-    src_views = _fortran_source_views(src_files)
-    module_map = _local_fortran_module_map(src_views)
-    use_pattern = re.compile(
-        r"^\s*use(?:\s*,\s*(?:intrinsic|non_intrinsic)\s*::|\s*::|\s+)?\s*([a-z_][a-z0-9_]*)\b",
-        re.MULTILINE,
-    )
-    deps_by_stem: dict[str, set[str]] = {}
-    for src_file, text in src_views.items():
-        stem = src_file.stem.lower()
-        deps: set[str] = set()
-        for match in use_pattern.finditer(text):
-            used_module = match.group(1)
-            provider_stem = module_map.get(used_module)
-            if provider_stem is None or provider_stem == stem:
-                continue
-            deps.add(provider_stem)
-        deps_by_stem[stem] = deps
-    return deps_by_stem
-
-
-# BIN assignment forms. `?=` is overridable by the make environment (the only channel
-# Validate.execute's run_quality_checks make_test has); `=`/`:=`/`+=` are not, so a
-# make-env BIN override is silently ignored and `make test` desyncs from the binary Build
-# produced with its command-line BIN override.
-# Leading whitespace is spaces only: a make variable ASSIGNMENT cannot start with a tab
-# (a tab-indented line is a recipe command, e.g. a shell `BIN=...` inside a target body),
-# so excluding a leading tab avoids a false positive on recipe lines.
-_MAKE_BIN_ASSIGN_RE = re.compile(r"^[ ]*BIN[ \t]*(\?=|:=|\+=|=)", re.MULTILINE)
-_MAKE_BIN_REF_RE = re.compile(r"\$[({]BIN[)}]")
-
-
-def _validate_makefile_bin_overridable(
-    makefile_path: Path, makefile_text: str, violations: list[str]
-) -> None:
-    """Require `BIN ?= <name>` when the Makefile builds a binary via `$(BIN)`.
-
-    The VALUE is not constrained (the conductor imposes `<spec_id>_runner`); only the
-    overridable `?=` form is required so the execute make_test environment override
-    applies. A Makefile that never references `$(BIN)` (degenerate in-source object-only)
-    is exempt.
-    """
-    ops = _MAKE_BIN_ASSIGN_RE.findall(makefile_text)
-    references_bin = bool(_MAKE_BIN_REF_RE.search(makefile_text))
-    if not ops and not references_bin:
-        return
-    has_overridable = any(op == "?=" for op in ops)
-    has_hard = any(op != "?=" for op in ops)
-    if has_hard or not has_overridable:
-        violations.append(
-            f"{makefile_path}: BIN must be declared overridable as `BIN ?= <name>` "
-            "(not `=`/`:=`/`+=`) so Build and Validate.execute can impose the canonical "
-            "<spec_id>_runner binary name (Validate.execute's make_test overrides BIN only "
-            "via the environment, which applies to `?=` assignments only)"
-        )
-
-
-def _validate_fortran_makefile_src_dir(src_dir: Path, violations: list[str]) -> None:
-    if not src_dir.is_dir():
-        return
-
-    src_files = sorted(
-        p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() == ".f90"
-    )
-    if not src_files:
-        return
-
-    deps_by_stem = _fortran_source_module_deps(src_files)
-    required_object_deps = {
-        stem: deps for stem, deps in deps_by_stem.items() if deps
-    }
-
-    makefile_path = src_dir / "Makefile"
-    if not makefile_path.exists():
-        # The module-dependency build contract requires a Makefile; the
-        # directory-prefix check below has nothing to inspect without one.
-        if required_object_deps:
-            violations.append(
-                f"{makefile_path}: missing for fortran module dependency build"
-            )
-        return
-
-    makefile_text = makefile_path.read_text(encoding="utf-8", errors="ignore")
-
-    # The execution binary basename is NOT pinned to a specific VALUE here, but BIN must
-    # be declared OVERRIDABLE (`BIN ?= <name>`). Build and Validate.execute impose the
-    # canonical `<spec_id>_runner` binary name on the SAME Makefile so they always agree:
-    # Build passes `BIN=...` on the make command line (overrides any assignment), but
-    # Validate.execute re-runs `make test` via run_quality_checks, which can only pass BIN
-    # through the environment — and a make environment value overrides a `?=` assignment
-    # only (not a plain `=`/`:=`/`+=`). A hard BIN assignment would therefore desync
-    # `make test`'s `$(BINDIR)/$(BIN)` guard from the binary Build actually produced. The
-    # default VALUE stays the generator's choice (any value; conductor overrides it), so
-    # this is a structural `?=` requirement, not the removed `BIN must be <spec_id>_runner`
-    # value gate. Mirrors the `OBJDIR/BINDIR/RUNDIR ?=` out-of-source parameterization.
-    _validate_makefile_bin_overridable(makefile_path, makefile_text, violations)
-
-    rules = _parse_makefile_rules(makefile_text)
-    # Directory-prefix-aware view: detects a prerequisite whose `$(OBJDIR)/`
-    # prefix structure disagrees with its producing object rule. The basename
-    # `rules` view above normalizes the prefix away, so a bare `foo.o`
-    # prerequisite passes there even though the only rule that produces it
-    # targets `$(OBJDIR)/foo.o` — which breaks `make -j` under an out-of-source
-    # OBJDIR override (no rule makes the bare target). See SKILL.md L42.
-    target_has_objdir, prereqs_diraware = _parse_makefile_rules_objdir_aware(
-        makefile_text
-    )
-    # Basename-level: every used-module dependency must be a prerequisite of
-    # the consuming object rule (the `.mod` or the `.o`). Gated by
-    # `required_object_deps` — only meaningful when sources have local `use`
-    # dependencies on each other.
-    for stem, deps in sorted(required_object_deps.items()):
-        object_target = f"{stem}.o"
-        prereqs = rules.get(object_target)
-        if prereqs is None:
-            violations.append(
-                f"{makefile_path}: missing explicit object dependency rule ({object_target})"
-            )
-            continue
-
-        for dep_stem in sorted(deps):
-            dep_mod = f"{dep_stem}.mod"
-            dep_obj = f"{dep_stem}.o"
-            if dep_mod not in prereqs and dep_obj not in prereqs:
-                violations.append(
-                    f"{makefile_path}: {object_target} missing prerequisite for used module ({dep_mod} or {dep_obj})"
-                )
-
-    # Out-of-source correctness (directory-prefix consistency) runs
-    # UNCONDITIONALLY — independent of `required_object_deps` and source count.
-    # A bare object prerequisite on a link rule (e.g. `$(BINDIR)/app: main.o`
-    # against `$(OBJDIR)/main.o:`) breaks the out-of-source Build even when no
-    # source has a local `use` dependency, so this pass must not be gated by the
-    # module-dependency early returns above.
-    # Checked across
-    # ALL rules — object rules AND the link/default rule. When an object (or its
-    # paired `.mod`) is produced under `$(OBJDIR)/`, every rule that consumes it
-    # must reference it with the same `$(OBJDIR)/` prefix. A bare basename
-    # prerequisite has no producing rule once OBJDIR is overridden, so
-    # `make -j` aborts with "No rule to make target" — the same prefix mismatch
-    # whether the bare name appears on the runner object rule or the link rule.
-    def _produced_under_objdir(prereq_basename: str) -> bool:
-        # The object itself is produced under $(OBJDIR)/...
-        if target_has_objdir.get(prereq_basename, False):
-            return True
-        # ...or it is a `.mod` whose sibling `.o` is produced under $(OBJDIR)/
-        # (the .mod is typically a by-product of compiling that .o and may have
-        # no explicit rule of its own).
-        if prereq_basename.endswith(".mod"):
-            sibling_obj = f"{prereq_basename[: -len('.mod')]}.o"
-            return target_has_objdir.get(sibling_obj, False)
-        return False
-
-    for consumer_target in sorted(prereqs_diraware):
-        bare = sorted(
-            {
-                prereq_basename
-                for prereq_basename, has_objdir in prereqs_diraware[consumer_target]
-                if not has_objdir and _produced_under_objdir(prereq_basename)
-            }
-        )
-        if bare:
-            violations.append(
-                f"{makefile_path}: {consumer_target} prerequisite "
-                f"({', '.join(bare)}) must carry the same $(OBJDIR)/ prefix as its "
-                f"producing rule target; a bare basename has no rule under an "
-                f"out-of-source OBJDIR override and breaks make -j (no rule to make target)"
-            )
-
-
-# A relinking command word: a recursive make or a compiler/linker/archiver, as
-# the *first* word of a shell command. Anchored at the start of an extracted
-# command word, so a tool name appearing inside an argument (e.g. an echo message)
-# is never matched. The make-variable form allows an optional second `$` so a
-# recipe-escaped `$$(MAKE)` / `$${MAKE}` is recognized too. `g++`/`c++`/`clang++`
-# need no trailing word boundary (a `+` is not a word char). The command word's
-# path basename is also tested so an absolute path (`/usr/bin/make`) is recognized.
-# Build drivers (cmake/ninja/meson/libtool) are intentionally NOT matched: in a
-# `build_system=make` Makefile they appear mostly in non-building utility modes
-# (`cmake -E`, `ninja -t`, `meson test`, `libtool --mode=execute`), so a bare
-# command-word match would be a false positive.
-_RELINK_TOOL_PATTERN = re.compile(
-    r"""^(?:
-        \$\$?[({](?:MAKE|FC|CC|CXX|LD|AR|F90|F95|F77)[)}]
-      | (?:make|gmake|mingw32-make|gfortran|gcc|clang|cc|ld|ar|nvcc|nvfortran|ifort|ifx|f90|f95|f77)\b
-      | (?:g|c|clang)\+\+
-    )""",
-    re.VERBOSE,
-)
-# The phony test entrypoints are not themselves build targets, so a `check: test`
-# alias (canonical) must not be read as a relink-triggering prerequisite.
-_PHONY_TEST_TARGETS = frozenset({"test", "check"})
-# Shell control words that introduce another command directly (no separator), so
-# the *following* token is itself a command word (e.g. `then $(MAKE)`, `if ! make`).
-_SHELL_CMD_PREFIX_KEYWORDS = frozenset(
-    {"if", "elif", "then", "else", "while", "until", "do", "time", "!"}
-)
-# Command wrappers whose *next* token is the wrapped command (`ccache gfortran …`,
-# `env FC=gfortran make …`): skip the wrapper and examine that command word. Only
-# wrappers that take no argument before the command are included — wrappers that
-# take their own options/args first (`timeout 60 make`, `nice -n10 make`,
-# `sudo -u x make`, `xargs -n1 make`) would mis-identify the arg as the command,
-# so they are intentionally omitted (a documented low-realism gap).
-_SHELL_CMD_WRAPPER_PREFIXES = frozenset(
-    {"ccache", "distcc", "sccache", "nohup", "env"}
-)
-# A leading `NAME=value` shell assignment precedes the actual command, so the
-# following token is the command word (e.g. `FC=gfortran make …`).
-_SHELL_ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-def _shell_command_words(recipe: str) -> list[str]:
-    """Extract the command word (first token) of each shell command in a recipe
-    line, honoring quotes and make's `$(...)`/`${...}` syntax. Commands are
-    delimited by unquoted `;` / `&` / `|`, and by `{` / `(` *group openers* (a `{`
-    or `(` not immediately following `$`, so `${VAR}` / `$(VAR)` stay intact).
-    Surrounding quotes are stripped from a quoted command word (`"$(MAKE)"` ->
-    `$(MAKE)`), while separators/words inside an argument's quotes are ignored."""
-    words: list[str] = []
-    word: list[str] = []
-    reading = False
-    cmd_start = True
-    quote: str | None = None
-    prev = ""
-
-    def emit() -> None:
-        nonlocal reading, word
-        if reading:
-            words.append("".join(word))
-            word = []
-            reading = False
-
-    for char in recipe:
-        if quote is not None:
-            if char == quote:
-                quote = None
-            elif reading:
-                word.append(char)
-            prev = char
-            continue
-        if char in "'\"":
-            if cmd_start:
-                reading = True  # a quoted command word; the quotes are dropped
-            quote = char
-            prev = char
-            continue
-        if char == "#" and (prev == "" or prev in " \t;&|({"):
-            # An unquoted `#` at a word boundary starts a shell comment; the rest
-            # of the line is not executed (`… $(BIN)  # build first; make all`).
-            break
-        if char in ";&|" or (char in "{(" and prev != "$"):
-            emit()
-            cmd_start = True
-            prev = char
-            continue
-        if char in " \t":
-            if reading:
-                emit()
-                # A shell control keyword (`then`/`do`/`!`/…), a command wrapper
-                # (`ccache`/`env`/…), or a leading `NAME=value` assignment is
-                # followed by another command, so the next token is also a command
-                # word.
-                cmd_start = (
-                    words[-1] in _SHELL_CMD_PREFIX_KEYWORDS
-                    or words[-1] in _SHELL_CMD_WRAPPER_PREFIXES
-                    or bool(_SHELL_ASSIGNMENT_PREFIX.match(words[-1]))
-                )
-            prev = char
-            continue
-        # Ordinary char.
-        if cmd_start and not reading and char in "@+-":
-            prev = char  # skip leading make recipe prefixes (@ silent, - ignore, + force)
-            continue
-        if cmd_start:
-            reading = True
-            word.append(char)
-        prev = char
-    emit()
-    return words
-
-
-_SHELL_DASH_C_ARG = re.compile(
-    r"""\b(?:sh|bash|dash|zsh|ksh)\s+-[A-Za-z]*c\s+   # -c, possibly with combined flags (-lc)
-        ("(?:[^"]*)"|'(?:[^']*)'|\S+)""",
-    re.VERBOSE,
-)
-_BACKTICK_SPAN = re.compile(r"`([^`]*)`")
-
-
-def _command_word_relinks(command: str, var_map: dict[str, str] | None) -> bool:
-    """True if a command word is a relink tool, after optionally resolving a
-    make-variable alias (`$(LINK)` -> `gfortran`) via ``var_map``."""
-    candidates = {command}
-    if var_map:
-        candidates.add(_expand_make_vars(command, var_map))
-    for candidate in candidates:
-        if _RELINK_TOOL_PATTERN.search(candidate) or _RELINK_TOOL_PATTERN.search(
-            candidate.rsplit("/", 1)[-1]
-        ):
-            return True
-    return False
-
-
-def _nested_command_texts(text: str) -> list[str]:
-    """Shell-command substrings nested inside a recipe line: make `$(shell …)`
-    function bodies, shell `$$(…)` command substitutions, backtick substitutions,
-    and the argument of `sh -c` / `bash -c`. Returned so the relink scan can
-    recurse into them (a relink hidden in `$(shell $(MAKE) …)` etc.)."""
-    bodies: list[str] = []
-    n = len(text)
-    i = 0
-    while i < n:
-        if text[i] == "$" and i + 1 < n:
-            j = i + 1
-            shell_subst = False
-            if text[j] == "$":  # `$$(` -> shell command substitution
-                j += 1
-                shell_subst = True
-            if j < n and text[j] == "(":
-                depth = 1
-                k = j + 1
-                start = k
-                while k < n and depth:
-                    if text[k] == "(":
-                        depth += 1
-                    elif text[k] == ")":
-                        depth -= 1
-                        if depth == 0:
-                            break
-                    k += 1
-                body = text[start:k]
-                if shell_subst:
-                    bodies.append(body)
-                else:
-                    shell_fn = re.match(r"shell\s+(.*)", body, re.S)
-                    if shell_fn:
-                        bodies.append(shell_fn.group(1))
-                i = k + 1
-                continue
-        i += 1
-    bodies.extend(m.group(1) for m in _BACKTICK_SPAN.finditer(text))
-    for match in _SHELL_DASH_C_ARG.finditer(text):
-        arg = match.group(1)
-        if len(arg) >= 2 and arg[0] in "'\"" and arg[-1] == arg[0]:
-            arg = arg[1:-1]
-        bodies.append(arg)
-    return bodies
-
-
-def _text_relinks(text: str, var_map: dict[str, str] | None, depth: int = 0) -> bool:
-    if depth > 6:  # bound pathological nesting
-        return False
-    if any(_command_word_relinks(cmd, var_map) for cmd in _shell_command_words(text)):
-        return True
-    return any(
-        _text_relinks(body, var_map, depth + 1) for body in _nested_command_texts(text)
-    )
-
-
-def _recipe_line_relinks(recipe_line: str, var_map: dict[str, str] | None = None) -> bool:
-    """True if a recipe line executes a relinking command (recursive make, a build
-    driver, or a compiler/linker) as a command word — at the top level or nested
-    in a `$(shell …)` / `$$(…)` / backtick substitution or a `sh -c` body. Command
-    words are expanded with ``var_map`` so a make-variable alias resolves first."""
-    return _text_relinks(recipe_line.lstrip("\t"), var_map)
-
-
-def _validate_makefile_test_no_relink(
-    src_dir: Path,
-    violations: list[str],
-    build_system: str | None = None,
-    language: str | None = None,
-) -> None:
-    # The non-relinking `test`/`check` contract applies only to the make-based
-    # quality-check toolchains (`Validate.execute` runs `make_test`/`make_check`
-    # only then). Skip any other toolchain — a Makefile kept for local
-    # convenience must not fail post_generate/post_build here.
-    if not _make_quality_check_applies(build_system, language):
-        return
-    if not src_dir.is_dir():
-        return
-    makefile_path = src_dir / "Makefile"
-    if not makefile_path.exists():
-        return
-
-    text = makefile_path.read_text(encoding="utf-8", errors="ignore")
-    # Whole-file variable map: resolves variable-named targets/recipes and the
-    # binary basename (`$(BIN)`). Targets/recipes are position-independent, so the
-    # final map is correct for them; `test`/`check` *prerequisites* are resolved
-    # with an incremental map below to honor make's read-time expansion order.
-    full_var_map = _makefile_full_var_map(text)
-    binary_basename = _normalize_make_token(_expand_make_vars("$(BIN)", full_var_map))
-    recipes = _makefile_target_recipes(text, full_var_map)
-    relinking_recipe_targets = _makefile_relinking_recipe_targets(recipes, full_var_map)
-
-    # Incremental pass mirroring GNU make: a rule's prerequisites are expanded
-    # immediately at read time, so only definitions seen *before* the rule are
-    # visible (a forward reference expands to empty). Records each rule target's
-    # resolved prerequisite basenames; `test`/`check` rules are captured for the
-    # verdict.
-    inc_var_map: dict[str, str] = {}
-    inc_var_flavor: dict[str, str] = {}
-    prereq_names_by_target: dict[str, set[str]] = {}
-    test_check_rules: list[tuple[frozenset[str], set[str], str]] = []
-    for line in _makefile_logical_lines(text):
-        assign_match = _MAKE_ASSIGNMENT_PATTERN.match(line)
-        if assign_match is not None:
-            _apply_make_assignment(
-                inc_var_map,
-                inc_var_flavor,
-                assign_match.group(1),
-                assign_match.group(2),
-                assign_match.group(3).strip(),
-            )
-            continue
-
-        if ":" not in line:
-            continue
-        head, rest = line.split(":", 1)
-        target_names = {
-            norm
-            for tok in _expand_make_vars(head, inc_var_map).split()
-            if (norm := _normalize_make_token(tok)) is not None
-        }
-        if not target_names:
-            continue
-
-        # Right-hand side: prerequisites (normal + order-only, both built by make)
-        # and an optional inline recipe (`target: prereqs ; recipe`).
-        prereq_part, _, inline_recipe = rest.partition(";")
-        prereq_names = {
-            norm
-            for tok in _expand_make_vars(
-                prereq_part.replace("|", " "), inc_var_map
-            ).split()
-            if (norm := _normalize_make_token(tok)) is not None
-        }
-        for target in target_names:
-            prereq_names_by_target.setdefault(target, set()).update(prereq_names)
-
-        guarded_targets = target_names & _PHONY_TEST_TARGETS
-        if guarded_targets:
-            test_check_rules.append(
-                (frozenset(guarded_targets), prereq_names, inline_recipe)
-            )
-
-    # A rule target relinks when made if its recipe builds (links) or it is the
-    # binary itself, plus any target that transitively depends on such a target.
-    # Computed as a fixpoint over the prerequisite graph; the phony test
-    # entrypoints are excluded (a `check: test` alias is not a build prerequisite).
-    relinking = set(relinking_recipe_targets)
-    if binary_basename is not None:
-        relinking.add(binary_basename)
-    relinking -= _PHONY_TEST_TARGETS
-    changed = True
-    while changed:
-        changed = False
-        for target in set(prereq_names_by_target) - relinking - _PHONY_TEST_TARGETS:
-            if prereq_names_by_target[target] & relinking:
-                relinking.add(target)
-                changed = True
-
-    for guarded_targets, prereq_names, inline_recipe in test_check_rules:
-        target_label = "/".join(sorted(guarded_targets))
-
-        # Prerequisite relink: a prerequisite (normal or order-only) that is the
-        # binary or a target that relinks when built.
-        if prereq_names & relinking:
-            violations.append(
-                f"{makefile_path}: {target_label} target has a build prerequisite "
-                f"that relinks the binary; the target must reference the existing "
-                f"binary via a non-relinking recipe guard "
-                f"'test -x $(BINDIR)/$(BIN) || {{ echo \"error: ...\" >&2; exit 1; }}' "
-                f"with no build prerequisite, so Validate.execute does not write into "
-                f"the read-only-bound binary/ (EROFS -> the phase fails)"
-            )
-
-        # Recipe relink: an inline (`; ...`) or tab-indented recipe line that
-        # rebuilds the binary (recursive make or a compiler/linker invocation).
-        recipe_lines: list[str] = []
-        if inline_recipe.strip():
-            recipe_lines.append(inline_recipe)
-        for tgt in guarded_targets:
-            recipe_lines.extend(recipes.get(tgt, []))
-        for recipe_line in recipe_lines:
-            if _recipe_line_relinks(recipe_line, full_var_map):
-                violations.append(
-                    f"{makefile_path}: {target_label} target recipe relinks the binary "
-                    f"(recursive make or compiler/linker invocation); use a non-relinking "
-                    f"fail-closed guard "
-                    f"'test -x $(BINDIR)/$(BIN) || {{ echo \"error: ...\" >&2; exit 1; }}' "
-                    f"so Validate.execute does not write into the read-only-bound "
-                    f"binary/ (EROFS -> the phase fails)"
-                )
-                break
-
-
-def _validate_makefile_test_invokes_cases(
-    src_dir: Path,
-    violations: list[str],
-    build_system: str | None = None,
-    language: str | None = None,
-) -> None:
-    """Flag a ``test``/``check`` target whose recipe runs the runner binary but
-    does NOT forward ``--cases $(SPEC) $(CASES)``.
-
-    ``Validate.execute`` runs the binary two ways and compares them for value
-    equality (``quality_check.json``): ``run_program`` invokes it as
-    ``--cases <spec.ir.yaml> <case_id>...`` and ``make test`` must invoke it the
-    same way. The conductor injects ``SPEC``/``CASES`` via the make-test env so
-    the canonical recipe ``$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`` is
-    byte-identical to ``run_program``. Two recipes desync the two invocations and
-    are flagged: (a) a bare run (no ``--cases``) — the runner aborts, the
-    candidate emits no ``diagnostics.json`` (``verdict_available=false``); and
-    (b) a run that hardcodes ``--cases <spec> <ids>`` instead of referencing the
-    ``$(SPEC)``/``$(CASES)`` variables — the env override has no effect and make
-    test runs a different spec/case set than ``run_program`` (wrong-evidence
-    comparison). The conductor-authored Makefile already satisfies this; the check
-    guards a control file a LEAF would author for a compiled language the conductor
-    writes none for (none is registered today). Best-effort static parse —
-    the runtime ``quality_check`` is the deterministic backstop. Scoped to the
-    make-based quality-check toolchains (same as the no-relink check)."""
-    if not _make_quality_check_applies(build_system, language):
-        return
-    if not src_dir.is_dir():
-        return
-    makefile_path = src_dir / "Makefile"
-    if not makefile_path.exists():
-        return
-
-    text = makefile_path.read_text(encoding="utf-8", errors="ignore")
-    full_var_map = _makefile_full_var_map(text)
-    recipes = _makefile_target_recipes(text, full_var_map)
-    binary_basename = _normalize_make_token(_expand_make_vars("$(BIN)", full_var_map))
-
-    # `make test` also runs the recipes of `test`/`check`'s prerequisite targets, so
-    # a recipe that delegates the run to a helper (`test: run-qc`, run in `run-qc`)
-    # must be traced. Build/relink targets (the binary itself + any compile/link
-    # recipe) are EXCLUDED from the trace so a `$(FC) … -o $(BINDIR)/$(BIN)` line is
-    # not misread as a runner invocation (their no-build-prerequisite contract is the
-    # separate `_validate_makefile_test_no_relink` gate's concern).
-    rules = _parse_makefile_rules(text)
-    build_targets = set(_makefile_relinking_recipe_targets(recipes, full_var_map))
-    if binary_basename:
-        build_targets.add(binary_basename)
-
-    def _run_recipe_lines(entrypoint: str) -> list[str]:
-        seen: set[str] = set()
-        stack = [entrypoint]
-        collected: list[str] = []
-        while stack:
-            t = stack.pop()
-            if t in seen or t in build_targets:
-                continue
-            seen.add(t)
-            collected.extend(recipes.get(t, []))
-            stack.extend(rules.get(t, ()))
-        return collected
-
-    def _logical_recipe_lines(lines: list[str]) -> list[str]:
-        # Fold trailing-`\` continuations so an invocation wrapped across physical
-        # lines (`… $(BIN) \` / `  --cases …`) is scanned as one logical command.
-        logical: list[str] = []
-        buf = ""
-        for raw in lines:
-            chunk = raw.lstrip("\t")
-            if chunk.rstrip().endswith("\\"):
-                buf += chunk.rstrip()[:-1] + " "
-                continue
-            logical.append((buf + chunk).strip())
-            buf = ""
-        if buf.strip():
-            logical.append(buf.strip())
-        return logical
-
-    def _segment_is_noise(seg: str) -> bool:
-        # A segment that does not RUN the binary: the `test -x`/`[ -x ]` existence
-        # guard or an `echo`/`printf` message (which may mention `$(BIN)` in its text,
-        # e.g. the fail-closed guard's error string). Make recipe prefixes (`@`/`-`/
-        # `+`) and a leading `{` (from `|| { echo … }`) are trimmed first.
-        s = seg.strip().lower().lstrip("@-+{ \t")
-        return (s.startswith("test ") or s.startswith("test\t") or s.startswith("[")
-                or s.startswith("echo ") or s.startswith("echo\t") or s == "echo"
-                or s.startswith("printf"))
-
-    # Expand make variables (so a runner aliased via `RUNNER = $(BINDIR)/$(BIN)` is
-    # still detected as a run) but PRESERVE `SPEC`/`CASES`: their `$(SPEC)`/`$(CASES)`
-    # references must survive verbatim so the compliance check can confirm the recipe
-    # forwards the env-injected values rather than hardcoding a spec/case list.
-    for tgt in _PHONY_TEST_TARGETS:
-        if tgt not in recipes and tgt not in rules:
-            continue
-        recipe_lines = _run_recipe_lines(tgt)
-        if not recipe_lines:
-            continue
-        runs_binary = False
-        noncompliant_run = False
-        for line in _logical_recipe_lines(recipe_lines):
-            expanded = _expand_make_vars(
-                line, full_var_map, preserve={"SPEC", "CASES"})
-            # Remove quote CHARACTERS (keep the content) so a shell-quoted forward
-            # `--cases "$(SPEC)" "$(CASES)"` still exposes the `$(SPEC)`/`$(CASES)`
-            # tokens, while a `;`/`|` inside a (now-unquoted) echo message that splits
-            # a segment is harmless because echo segments are classified as noise.
-            cleaned = expanded.replace('"', "").replace("'", "").replace("`", "").lower()
-            # Split into shell command segments; compliance is checked on the SEGMENT
-            # that runs the binary (not the whole line) so an echo mentioning `--cases`
-            # elsewhere does not mask a bare run.
-            for seg in re.split(r"&&|\|\||;|\|", cleaned):
-                invokes = "$(bin)" in seg or "$(bindir)" in seg
-                if not invokes and binary_basename:
-                    invokes = re.search(
-                        rf"\b{re.escape(binary_basename)}\b", seg) is not None
-                if not invokes or _segment_is_noise(seg):
-                    continue
-                runs_binary = True
-                # Compliant iff the run forwards the env-injected SPEC/CASES vars; a
-                # bare run (no `--cases`) OR a hardcoded `--cases spec.ir.yaml c_old`
-                # that ignores the env override both desync make test from run_program.
-                forwards_spec = "$(spec)" in seg or "${spec}" in seg
-                forwards_cases = "$(cases)" in seg or "${cases}" in seg
-                if not ("--cases" in seg and forwards_spec and forwards_cases):
-                    noncompliant_run = True
-        if runs_binary and noncompliant_run:
-            violations.append(
-                f"{makefile_path}: {tgt} target does not invoke the runner as "
-                "`$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)` — the recipe must forward "
-                "the `$(SPEC)`/`$(CASES)` make variables (a bare run, or a hardcoded "
-                "`--cases <spec> <ids>` that ignores them, desyncs make test from "
-                "run_program: the runner requires `--cases`, and Validate.execute "
-                "injects the authoritative SPEC/CASES via the env, which override the "
-                "`?=` defaults kept for local use) "
-                "(docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1)"
-            )
-
-
-# Edit descriptors may carry a leading repeat count (e.g. ``2l1`` / ``3f0.6``);
-# the negative lookbehind excludes letters so multi-letter descriptors such as
-# ``tl`` (tab-left) are not mistaken for an ``L`` (logical) descriptor.
-_RUNNER_FORMAT_LOGICAL_DESC = re.compile(r"(?<![a-z])l\d*(?![a-z])")
-# ``f0`` is the F descriptor with width 0; it may be preceded by a repeat count
-# (``2f0.6``) or a ``P`` scale factor (``1pf0.6``). The lookbehind excludes every
-# letter *except* ``p`` so a ``P`` scale factor is allowed while ``f0`` embedded
-# in a word (e.g. ``leaf0``) is not matched.
-_RUNNER_FORMAT_F0_DESC = re.compile(r"(?<![a-oq-z])f0(?:\.\d+)?")
-# Statement recognizers (operate on lowercased logical lines). ``write`` must be a
-# statement keyword followed by ``(`` (not a substring of an identifier such as
-# ``write_flag`` / ``rewrite``). A FORMAT statement carries a leading label.
-_RUNNER_WRITE_STMT = re.compile(r"(?<![a-z0-9_])write\s*\(")
-_RUNNER_FORMAT_STMT = re.compile(r"^\s*(\d+)\s+format\s*\(")
-_RUNNER_CHAR_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
-_RUNNER_KEYWORD_ITEM = re.compile(r"[a-z][a-z0-9_]*\s*=")
-_RUNNER_FMT_KEYWORD = re.compile(r"fmt\s*=\s*(.*)", re.DOTALL)
-_RUNNER_NAME_TOKEN = re.compile(r"[a-z][a-z0-9_]*\Z")
-# Fortran scoping-unit boundaries. Statement labels, FORMAT statements, and local
-# variables are scoped to their program unit, so resolution must not cross units.
-_FORTRAN_UNIT_END = re.compile(
-    r"^\s*end\s*$|^\s*end\s*(?:program|module|submodule|subroutine|function|blockdata)\b"
-)
-_FORTRAN_UNIT_OPEN = re.compile(
-    r"^\s*(?:(?:pure|elemental|impure|recursive)\s+)*(?:program|subroutine|module|submodule)\b"
-)
-_FORTRAN_FUNCTION_OPEN = re.compile(r"(?<![a-z0-9_])function\s+[a-z][a-z0-9_]*\s*\(")
-
-
-def _iter_fortran_logical_lines(text: str) -> list[tuple[int, str]]:
-    """Merge free-form continuation lines and split ``;``-separated statements.
-
-    Returns ``(start_lineno, statement)`` pairs, where ``start_lineno`` is the physical line on
-    which the statement began. A logical line carrying multiple ``;``-joined statements is
-    expanded into one entry per statement, all sharing that line, in source order — the
-    reaching-definition index and the scope assignment both walk this list positionally.
-    Indentation is left on: what keeps a ``call`` or ``end subroutine`` line from matching is
-    that ``_COMPONENT_PUBLISHED_SUB_RE`` and friends anchor at the START of a whole logical
-    line, and the ``\\s*`` in that anchor is there to tolerate the indentation this preserves.
-
-    The scanning itself is ``fortran_lines.fortran_logical_lines`` (issue #23) — one
-    implementation shared with ``fortran_lines.fortran_logical_line_texts`` (the §5.1 view) and
-    with ``orchestration_runtime``, so a comment, a continuation or a character literal can no
-    longer be read one way here and another way there. This adapter adds only the ``;`` split.
-    """
-    logical: list[tuple[int, str]] = []
-    for lineno, joined in fortran_lines.fortran_logical_lines(text):
-        for statement in fortran_lines.split_fortran_statements(joined):
-            if statement.strip():
-                logical.append((lineno, statement))
-    return logical
-
-
-def _extract_balanced_parens(text: str, open_index: int) -> str:
-    """Return the substring inside the parentheses opening at ``open_index``.
-
-    Parentheses appearing inside single/double quoted strings are ignored so a
-    format literal such as ``'(a,l1,a)'`` does not prematurely close the group.
-
-    A newline closes an open literal unless the line continues it, per
-    `fortran_lines.continuation_state_after_line` (the shared decision — do not re-derive it
-    here; it is a forward fold, so the state is threaded rather than searched for).
-    This matters only for `_iter_fortran_calls`, the one caller that hands over multi-line text;
-    the others pass a joined logical line. That text is masked before it gets here, so a
-    comment-only line inside a continued literal is visible as one and the skip applies. Both errors were observed silencing the
-    dependency-dataflow gate: without the reset an apostrophe in a comment (`! it's`) opens a
-    literal nothing closes, and with an unconditional reset a legally continued literal
-    (`'rate &` / `&more'`) is cut in half so its closing quote reads as an opening one.
-    """
-    depth = 0
-    in_single = False
-    in_double = False
-    i = open_index
-    n = len(text)
-    line_start = text.rfind("\n", 0, open_index) + 1
-    continues = False
-    while i < n:
-        ch = text[i]
-        if ch == "\n":
-            continues = fortran_lines.continuation_state_after_line(
-                text[line_start:i], continues)
-            line_start = i + 1
-            if not continues:
-                in_single = False
-                in_double = False
-        elif in_single:
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-        elif ch == '"':
-            in_double = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return text[open_index + 1 : i]
-        i += 1
-    return text[open_index + 1 :]
-
-
-def _fortran_literal_value(token: str) -> str:
-    """Return the character value of a quoted Fortran literal token.
-
-    Strips the outer quotes and collapses the doubled outer quote escape
-    (``''`` -> ``'`` / ``""`` -> ``"``) so embedded string descriptors are left
-    with single delimiters.
-    """
-    quote = token[0]
-    inner = token[1:-1]
-    return inner.replace(quote * 2, quote)
-
-
-def _strip_format_char_literals(fmt_value: str) -> str:
-    """Remove embedded character-string edit descriptors from a format value.
-
-    A Fortran format may embed literal text via ``'...'`` or ``"..."`` (with the
-    delimiter doubled to escape). Such text is *data*, not descriptor codes, so
-    substrings like ``L1`` or ``F0`` inside it must not be scanned. Returns the
-    format with all embedded character literals removed.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(fmt_value)
-    while i < n:
-        ch = fmt_value[i]
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            while i < n:
-                if fmt_value[i] == quote:
-                    if i + 1 < n and fmt_value[i + 1] == quote:
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out)
-
-
-def _scan_runner_format_text(
-    runner_file: Path, lineno: int, fmt_value: str, violations: list[str]
-) -> None:
-    # Blanks are insignificant in a Fortran format spec (outside character
-    # literals, already stripped), so remove them before matching ``f 0.6`` etc.
-    descriptor_stream = re.sub(r"\s+", "", _strip_format_char_literals(fmt_value))
-    if _RUNNER_FORMAT_LOGICAL_DESC.search(descriptor_stream):
-        violations.append(
-            f"{runner_file}:{lineno}: runner write uses Fortran L edit descriptor "
-            f"(emits T/F); JSON boolean must be literal true/false"
-        )
-    if _RUNNER_FORMAT_F0_DESC.search(descriptor_stream):
-        violations.append(
-            f"{runner_file}:{lineno}: runner write uses Fortran F0/F0.d descriptor in a "
-            f"JSON numeric write; forbidden regardless of runtime fixup — use ES/EN "
-            f"(e.g. ES24.16E3) or an explicit-width Fw.d with trim(adjustl()) instead"
-        )
-
-
-_RUNNER_UNIT_KEYWORD = re.compile(r"unit\s*=\s*(.*)", re.DOTALL)
-# Unit designators that are never a JSON artifact (stdout / stderr); formatted
-# writes to them are debug/log output and must not be scanned for JSON safety.
-_NON_JSON_WRITE_UNITS = {"*", "output_unit", "error_unit"}
-
-
-def _runner_write_unit(io_control: str) -> str | None:
-    """Return the unit designator of a ``write`` control list (``*`` / name / id)."""
-    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
-    for item in items:
-        keyword = _RUNNER_UNIT_KEYWORD.match(item)
-        if keyword:
-            return keyword.group(1).strip()
-    if items and not _RUNNER_KEYWORD_ITEM.match(items[0]):
-        return items[0].strip()
-    return None
-
-
-def _runner_write_format_token(io_control: str) -> str | None:
-    """Return the format spec token referenced by a ``write`` control list.
-
-    Handles ``fmt=`` keyword form and the positional form (unit first, format
-    second). Returns the raw token (a quoted literal, an integer label, or a
-    name); ``None`` when there is no format (e.g. list-directed ``write(u, *)``
-    is returned as ``*`` and filtered by the caller).
-    """
-    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
-    for item in items:
-        keyword = _RUNNER_FMT_KEYWORD.match(item)
-        if keyword:
-            return keyword.group(1).strip()
-    positional = [item for item in items if not _RUNNER_KEYWORD_ITEM.match(item)]
-    if len(positional) >= 2:
-        return positional[1].strip()
-    return None
-
-
-def _depth0_assignment_rhs(line: str, name: str) -> str | None:
-    """Return the RHS of a top-level assignment ``name = rhs`` on ``line``.
-
-    Quote- and paren-aware so an I/O keyword argument (``fmt=`` inside
-    ``write(...)``), an equality test (``==``), and other relational operators
-    (``/=`` / ``>=`` / ``<=``) are not mistaken for a variable assignment, and an
-    array-element target (``a(i) = ...``) does not match a scalar ``name``.
-    Returns ``None`` when the line is not such an assignment.
-    """
-    depth = 0
-    in_single = False
-    in_double = False
-    i = 0
-    n = len(line)
-    while i < n:
-        ch = line[i]
-        if in_single:
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-        elif ch == '"':
-            in_double = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "=" and depth == 0:
-            if i + 1 < n and line[i + 1] == "=":
-                i += 2
-                continue
-            if i > 0 and line[i - 1] in "<>/=":
-                i += 1
-                continue
-            j = i - 1
-            while j >= 0 and line[j] == " ":
-                j -= 1
-            end = j
-            while j >= 0 and (line[j].isalnum() or line[j] == "_"):
-                j -= 1
-            lhs = line[j + 1 : end + 1]
-            if lhs == name and not (j >= 0 and line[j] == ")"):
-                # Stop at the next top-level comma so a sibling initializer in a
-                # multi-name declaration (``:: a = '(...)', b = '(...)'``) is not
-                # folded into this name's RHS.
-                return fortran_lines.split_top_level_commas(line[i + 1 :])[0].strip()
-        i += 1
-    return None
-
-
-def _split_top_level_concat(expr: str) -> list[str]:
-    """Split ``expr`` on the Fortran ``//`` concatenation operator at top level.
-
-    ``//`` inside quotes or parentheses is ignored, so only operands joined at the
-    expression's top level are separated.
-    """
-    parts: list[str] = []
-    current: list[str] = []
-    depth = 0
-    in_single = False
-    in_double = False
-    i = 0
-    n = len(expr)
-    while i < n:
-        ch = expr[i]
-        if in_single:
-            current.append(ch)
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            current.append(ch)
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-            current.append(ch)
-        elif ch == '"':
-            in_double = True
-            current.append(ch)
-        elif ch == "(":
-            depth += 1
-            current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            current.append(ch)
-        elif ch == "/" and depth == 0 and i + 1 < n and expr[i + 1] == "/":
-            parts.append("".join(current))
-            current = []
-            i += 2
-            continue
-        else:
-            current.append(ch)
-        i += 1
-    parts.append("".join(current))
-    return parts
-
-
-def _resolve_format_expr(expr: str) -> str | None:
-    """Resolve a format-spec expression to its constant value, or ``None``.
-
-    Handles a single character literal and a constant concatenation of character
-    literals (``'(a,' // 'l1,a)'``). Any non-literal operand (variable / function
-    call) makes the expression unresolvable, returning ``None`` so a partial
-    literal is never scanned. The resolved value must look like a Fortran format
-    spec (parenthesized).
-    """
-    pieces: list[str] = []
-    for operand in _split_top_level_concat(expr):
-        operand = operand.strip()
-        literal = _RUNNER_CHAR_LITERAL.fullmatch(operand)
-        if not literal:
-            return None
-        pieces.append(_fortran_literal_value(operand))
-    value = "".join(pieces)
-    return value if value.lstrip().startswith("(") else None
-
-
-def _assign_fortran_scopes(
-    logical_lines: list[tuple[int, str]],
-) -> tuple[list[int], dict[int, int | None]]:
-    """Return a scope id per logical line plus a ``scope -> parent scope`` map.
-
-    A ``program`` / ``subroutine`` / ``function`` / ``(sub)module`` header opens a
-    new scope nested in the current one; the matching ``end`` (or ``end <kind>``)
-    closes it. Construct ends (``end do`` / ``end if`` / ...) are not unit ends and
-    do not close a scope. The parent map enables host-association lookups for
-    names declared in an enclosing unit.
-    """
-    scopes: list[int] = []
-    parents: dict[int, int | None] = {0: None}
-    stack = [0]
-    next_id = 1
-    for _lineno, line in logical_lines:
-        lowered = line.lower()
-        if _FORTRAN_UNIT_END.match(lowered):
-            scopes.append(stack[-1])
-            if len(stack) > 1:
-                stack.pop()
-            continue
-        opens_unit = bool(_FORTRAN_UNIT_OPEN.match(lowered)) and not re.match(
-            r"^\s*module\s+procedure\b", lowered
-        )
-        if not opens_unit and _FORTRAN_FUNCTION_OPEN.search(lowered):
-            opens_unit = True
-        if opens_unit:
-            next_id += 1
-            parents[next_id] = stack[-1]
-            stack.append(next_id)
-            scopes.append(next_id)
-        else:
-            scopes.append(stack[-1])
-    return scopes, parents
-
-
-def _validate_runner_json_serialization(
-    runner_file: Path,
-    text: str,
-    violations: list[str],
-) -> None:
-    """Flag JSON-incompatible Fortran edit descriptors in runner write statements.
-
-    The ``runner`` emits only JSON artifacts (``diagnostics.json`` / ``perf.json``
-    / ``raw/metrics_basis.json`` / ``raw/state_snapshots/*.json``). Two descriptor
-    classes in a ``write`` format spec break standard JSON parsing and must never
-    reach a JSON token:
-
-      * ``L`` / ``L<n>`` logical edit descriptor emits the bare tokens ``T`` / ``F``
-        instead of JSON ``true`` / ``false`` (booleans must be literal strings).
-      * ``F0`` / ``F0.d`` numeric edit descriptor can emit leading-zero-less floats
-        like ``.5`` that violate RFC 8259.
-
-    The source is scanned as *logical* lines (free-form ``&`` continuations are
-    merged, inline comments stripped). Only genuine ``write(...)`` statements are
-    inspected — the keyword must be followed by ``(`` so an identifier such as
-    ``write_flag`` on a ``read`` line is not mistaken for output. For each write
-    the format spec it actually references is resolved and scanned, whether it is
-    an inline literal (``write(u, '(...)')`` / ``write(u, fmt='(...)')``), an
-    integer label bound to a ``FORMAT`` statement (``write(u, 100)`` +
-    ``100 format(...)``), or a named character constant/variable
-    (``write(u, fmt)`` + ``fmt = '(...)'``). Statement labels and local variables
-    are resolved within the write's own Fortran scoping unit, so a label/name
-    reused in another program unit is not confused. For a named format the most
-    recent literal assignment at or before the write (its reaching definition) is
-    scanned; a non-literal reassignment (``fmt=fmt`` / computed) does not clear a
-    prior unsafe literal. ``read`` statements and read-only format definitions are
-    never scanned, since logical/numeric input parsing legitimately uses these
-    descriptors.
-    """
-    logical_lines = _iter_fortran_logical_lines(text)
-    scopes, scope_parents = _assign_fortran_scopes(logical_lines)
-
-    def scope_chain(scope: int) -> list[int]:
-        chain: list[int] = []
-        current: int | None = scope
-        while current is not None:
-            chain.append(current)
-            current = scope_parents.get(current)
-        return chain
-
-    # First pass: collect per-scope label-bound formats and every write statement
-    # with the format token it references; record which names are used so only
-    # their assignments need tracking.
-    # ``order`` is the logical-statement sequence index (monotonic across the
-    # whole file), used for reaching analysis instead of the physical line number
-    # because ``;``-separated statements share one physical line.
-    label_formats: dict[tuple[int, str], str] = {}
-    writes: list[tuple[int, int, int, str]] = []  # (scope, order, lineno, token)
-    used_names: set[str] = set()
-    for order, (scope, (lineno, line)) in enumerate(zip(scopes, logical_lines)):
-        lowered = line.lower()
-        label_match = _RUNNER_FORMAT_STMT.match(lowered)
-        if label_match:
-            label_formats[(scope, label_match.group(1))] = _extract_balanced_parens(
-                lowered, label_match.end() - 1
-            )
-        for write_match in _RUNNER_WRITE_STMT.finditer(lowered):
-            io_control = _extract_balanced_parens(lowered, write_match.end() - 1)
-            unit = _runner_write_unit(io_control)
-            if unit is not None and unit in _NON_JSON_WRITE_UNITS:
-                continue
-            token = _runner_write_format_token(io_control)
-            if not token:
-                continue
-            writes.append((scope, order, lineno, token))
-            if (
-                token[0] not in "'\""
-                and not token.isdigit()
-                and _RUNNER_NAME_TOKEN.match(token)
-            ):
-                used_names.add(token)
-
-    # Collect literal assignments per (scope, name) keyed by statement order. Only
-    # resolvable format literals are recorded; a non-literal assignment is
-    # intentionally not recorded so it neither resolves nor erases a prior literal.
-    name_assignments: dict[tuple[int, str], list[tuple[int, str]]] = {}
-    if used_names:
-        for order, (scope, (lineno, line)) in enumerate(zip(scopes, logical_lines)):
-            lowered = line.lower()
-            for name in used_names:
-                rhs = _depth0_assignment_rhs(lowered, name)
-                if rhs is None:
-                    continue
-                value = _resolve_format_expr(rhs)
-                if value is not None:
-                    name_assignments.setdefault((scope, name), []).append(
-                        (order, value)
-                    )
-
-    # Second pass: scan each write's resolved format spec. Labels are strictly
-    # local to their unit; named formats follow host association (the write's
-    # scope and its enclosing scopes) and use the latest assignment strictly
-    # before the write in statement order.
-    for scope, order, lineno, token in writes:
-        if token[0] in "'\"":
-            value = _resolve_format_expr(token)
-            if value is not None:
-                _scan_runner_format_text(runner_file, lineno, value, violations)
-        elif token.isdigit():
-            content = label_formats.get((scope, token))
-            if content is not None:
-                _scan_runner_format_text(runner_file, lineno, content, violations)
-        elif _RUNNER_NAME_TOKEN.match(token):
-            candidates: list[tuple[int, str]] = []
-            for ancestor in scope_chain(scope):
-                candidates.extend(name_assignments.get((ancestor, token), ()))
-            reaching: str | None = None
-            for assign_order, value in sorted(candidates):
-                if assign_order < order:
-                    reaching = value
-                else:
-                    break
-            if reaching is not None:
-                _scan_runner_format_text(runner_file, lineno, reaching, violations)
-
-
-# A whole-path snapshot data filename embedded in a single string literal:
-# ``state_snapshots/<name>.json``. The per-case contract requires the runner to
-# BUILD the name from the case_id it receives on argv (e.g.
-# ``'raw/state_snapshots/'//trim(case_id)//'.json'``), which keeps ``.json`` in a
-# SEPARATE literal so this pattern does not match. A fixed/sequential literal
-# (``snapshot_0001.json``, a combined file) does match. The character class
-# excludes quotes so a match never crosses a string-literal boundary.
-_RUNNER_SNAPSHOT_LITERAL = re.compile(r"state_snapshots/([^/'\"]+)\.json")
-
-
-def _validate_runner_snapshot_filenames(
-    runner_file: Path,
-    text: str,
-    violations: list[str],
-    known_case_ids: set[str] | None = None,
-) -> None:
-    """Flag a hardcoded ``raw/state_snapshots/<name>.json`` filename in the runner.
-
-    ``Validate.execute``'s deliverable gate requires exactly one
-    ``raw/state_snapshots/<case_id>.json`` per ``case.test_case_set[].case_id``
-    (``workflow_conductor.build_launch_request``), so the runner must build the
-    snapshot path from the ``case_id`` it receives on argv (``--cases <spec>
-    <case_id>...``) rather than emitting a fixed/sequential name. This best-effort
-    static check catches the common failure: a whole-path string literal carrying
-    ``state_snapshots/<name>.json`` with no per-case concatenation — e.g.
-    ``snapshot_0001.json``. A correctly-built name (``trim(case_id)//'.json'``)
-    keeps ``.json`` in a separate literal and is not flagged; the runtime
-    deliverable gate is the deterministic backstop for constructions this static
-    parse cannot resolve. ``snapshot_schema.json`` (conductor-authored metadata)
-    is exempt. When ``known_case_ids`` is given, a hardcoded literal whose stem IS
-    a declared case_id is NOT flagged — it satisfies the deliverable gate, so
-    flagging it would be a false positive (case-insensitive: ``text`` is the
-    already-lowercased runner source and case_ids are lowercase by convention).
-    """
-    case_id_stems = (
-        {cid.lower() for cid in known_case_ids} if known_case_ids else set()
-    )
-    for lineno, line in _iter_fortran_logical_lines(text):
-        if "state_snapshots/" not in line:
-            continue
-        # Scope to file-opening statements so a snapshot path written as JSON
-        # *content* (not an output target) is never mistaken for a filename.
-        if "file=" not in line and not re.search(r"\bopen\s*\(", line):
-            continue
-        for match in _RUNNER_SNAPSHOT_LITERAL.finditer(line):
-            name = match.group(1)
-            if name == "snapshot_schema" or name in case_id_stems:
-                continue
-            violations.append(
-                f"{runner_file}:{lineno}: hardcoded snapshot filename "
-                f"'state_snapshots/{name}.json' — write one "
-                "raw/state_snapshots/<case_id>.json per case, building the name "
-                "from the case_id received on argv (e.g. trim(case_id)//'.json'); "
-                "a fixed/sequential name fails Validate.execute's per-case "
-                "deliverable gate (phase_02_generate.md / phase_04_validate.md §43)"
-            )
 
 
 @dataclass
@@ -4791,122 +1966,9 @@ def _execution_in_scope_src_dir(
     return src_dir
 
 
-def _run_problem_model_gates(
-    execution: NodeExecution,
-    model_file: Path,
-    lowered: str,
-    dep_spec_ids: list[str],
-    violations: list[str],
-) -> None:
-    """Read one model source once and run the three `problem` model gates over it.
-
-    ONE parse per file, for all three. They each used to call `_fortran_procedure_envelopes`
-    themselves, which parsed the same text three times and gave a refusal three chances to be
-    reported — or, worse, to be reported differently. Both failure directions are answered here,
-    once, and both stop the gates for this file rather than letting them run on a structure
-    nothing resolved.
-
-    A FUNCTION, not a block inside the caller's loop, so that every early return below stops the
-    GATES and nothing else. Written as a `continue` first, which would have skipped any check a
-    later change appends after the gates in that loop — the silent-skip shape this file keeps
-    having to remove.
-
-    Scoped to `problem/`, which is where each of the three gates returns early anyway. Hoisting
-    the parse out of the gates quietly widened who it applies to: a `component` or
-    `infrastructure` node has no gate reading its Fortran, so refusing its source bought nothing
-    and cost a legal F2008 form (measured against origin/main: a component model carrying
-    `real :: endsubroutine` / `endsubroutine = 1.0` went from 0 violations to 4). The refusal's
-    own justification — that every gate would otherwise pass the file in silence — is vacuous
-    where no gate runs. Found in review; 0 of the 365 in-tree models are affected either way.
-    """
-    if not execution.node_key.startswith("problem/"):
-        return
-
-    try:
-        envelopes = _fortran_procedure_envelopes(lowered)
-    # `FortranStructureUnavailableError` is deliberately NOT caught here. It is the OPERATOR's
-    # failure — an uninstalled package — and no edit to this source can clear it, so it propagates
-    # to `main`, which answers with a dedicated EXIT CODE. It used to be turned into a violation
-    # string carrying a marker for the conductor to scan for, and a leaf-chosen filename defeated
-    # that scan three times running; see the handler in `main`.
-    except _FortranSourceStructureError as exc:
-        for structure_error in exc.errors:
-            violations.append(
-                f"{model_file}: the Fortran structure front end could not resolve this "
-                f"source at statement {structure_error.line} of its joined view "
-                f"({'missing token' if structure_error.missing else 'parse error'}): "
-                f"{structure_error.snippet!r}. The `problem` model gates cannot read a "
-                f"source whose procedure structure is ambiguous, so this is a Generate "
-                f"failure. Two causes have been observed, and the reported statement may be "
-                f"the module header rather than either of them, because that is where the "
-                f"parser gives up. (1) A VARIABLE or construct NAMED after a keyword — "
-                f"`endsubroutine`, `interface`, `contains` and friends are legal names and "
-                f"are read here as the statements they spell; rename it (e.g. "
-                f"`end_subroutine_flag`). (2) STATEMENT LABELS that are needed in one place "
-                f"and in the way in another — a labelled `DO` or a `FORMAT` alongside a "
-                f"labelled `contains` or procedure header; give the loop an `end do` and "
-                f"drop the label from the specification statement. Neither list is closed: "
-                f"the shape to look for is an identifier or a label sitting where this "
-                f"parser expects structure."
-            )
-        return
-
-    # An abbreviated separate module subprogram is REFUSED, always, and this is the only
-    # place that decides it. F2008 forbids such a body from redeclaring its dummies —
-    # `gfortran -fsyntax-only -std=f2008` answers "is a redefinition of the declaration in the
-    # corresponding interface" — so no `intent(out)` can appear in it and all three gates
-    # would return at their empty out-set check while looking like they had run. That is a
-    # silent gate, which is the exact defect class this whole area exists to remove, so the
-    # leaf is asked for the full form instead. 0 of the 365 in-tree models use the short form
-    # today, so this refuses nothing that exists; it closes the shape before it appears.
-    abbreviated = [e.name for e in envelopes if e.kind == "module_procedure"]
-    if abbreviated:
-        for name in abbreviated:
-            violations.append(
-                f"{model_file}: `module procedure {name}` (the abbreviated separate module "
-                f"subprogram) cannot be checked: F2008 forbids its body from redeclaring its "
-                f"dummies, so the intent(out) declarations the `problem` model gates read "
-                f"never appear in it and every gate would pass it in silence. Write the full "
-                f"form instead — `module subroutine {name}(...)` with its "
-                f"`intent(in)`/`intent(out)` declarations, or `module function {name}(...) "
-                f"result(...)` — which is checked normally."
-            )
-    # ... and then the gates run ANYWAY, on the procedures in this file that ARE readable.
-    # An earlier version stopped here, on the parse-error case's symmetry; the two are not
-    # symmetric. A parse error leaves no usable envelope at all, while an abbreviated
-    # `module procedure` leaves every OTHER procedure in the file perfectly readable, so
-    # stopping here silenced their real violations and handed the leaf one instruction where
-    # it needed two. The abbreviated envelope itself carries an empty out-set, so every gate
-    # skips it — which is the silence being refused on its behalf above, not a second chance
-    # for it to pass.
-
-    _validate_problem_model_literal_outputs(
-        execution=execution,
-        model_file=model_file,
-        envelopes=envelopes,
-        violations=violations,
-    )
-
-    _validate_problem_model_dependency_dataflow(
-        execution=execution,
-        model_file=model_file,
-        lowered=lowered,
-        envelopes=envelopes,
-        dep_spec_ids=dep_spec_ids,
-        violations=violations,
-    )
-    _validate_problem_metric_only_scalar_kernel(
-        execution=execution,
-        model_file=model_file,
-        envelopes=envelopes,
-        violations=violations,
-    )
-
-
-
 def _validate_generate_outputs(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
-) -> tuple[list[Path], list[str]] | None:
+) -> tuple[list[Path], list[str], str] | None:
     """Run the structural source gates over one ``src/`` directory.
 
     The single definition of the scan-and-gate sequence: the model-file lookup, the
@@ -4916,87 +1978,54 @@ def _validate_generate_outputs(
     ``_validate_generate_outputs_for_generation`` resolves its own from a ``source_id``.
 
     Scoped claim: "single definition" covers the model scans and the ``problem`` gates. The
-    Makefile trio at the end is ALSO invoked independently by ``_validate_post_build_stage_impl``
-    for the ``post_build`` stage, on a ``src_dir`` it resolves itself — a Makefile rule change has
-    to be made in both places, or ``post_build`` keeps enforcing the old one.
+    control-file gates at the end are ALSO run by ``_validate_post_build_stage_impl`` for the
+    ``post_build`` stage, on a ``src_dir`` it resolves itself — both through the one dispatch
+    ``_validate_control_file`` (issue #289, R4-b PR-3), so a rule lives in the build system's
+    backend once.
 
-    Returns the scanned ``(model_files, dep_spec_ids)`` for a caller that continues with further
+    Returns the scanned ``(model_files, dep_spec_ids, language)`` for a caller that continues with further
     checks over the same source (the post_generate sibling list does), or ``None`` when the model
     source was absent/mis-named — already reported here via
-    ``_model_source_not_found_violation``, so such a caller stops rather than proceeding with
+    the language's ``model_source_not_found_violation``, so such a caller stops rather than proceeding with
     nothing to scan. Callers with nothing further to do ignore the return.
+
+    Every file name and every source rule here is the TARGET language's (issue #289, R4-b
+    PR-3): its `bundle_facts` name the model source, its `source_reading` reads it. A pipeline
+    whose target does not resolve answers ``None`` with nothing appended — the pipeline is
+    already reported by ``_validate_pipeline_targets_resolve`` — and a language missing either
+    capability is refused (``_language_module``).
     """
-    model_files, expected_model_name = _model_files_in_src_dir(src_dir, execution)
-    if not model_files:
-        violations.append(
-            _model_source_not_found_violation(src_dir, expected_model_name)
-        )
-        return
-
-    dep_spec_ids = _component_dep_spec_ids(repo_root, execution)
-
-    for model_file in model_files:
-        text = model_file.read_text(encoding="utf-8", errors="ignore")
-        lowered = text.lower()
-        # The metric scans below are the same shape as the `problem` model gates — a regex over
-        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
-        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
-        # carries no digit and so never counted as literal-like: the literal-metric floor was
-        # escapable by wrapping the assignments. The gates below re-derive this view themselves
-        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
-        joined = _joined_masked_fortran_view(lowered)
-
-        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", joined
-        ):
-            violations.append(
-                f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
-            )
-
-        assignments = re.findall(
-            r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            joined,
-            flags=re.MULTILINE,
-        )
-        literal_like = 0
-        for rhs in assignments:
-            if re.search(r"[-+]?\d+(?:\.\d+)?(?:d|e)?[-+]?\d*", rhs):
-                literal_like += 1
-        if len(assignments) >= 6 and literal_like >= 6:
-            violations.append(
-                f"{model_file}: many literal metric assignments detected ({literal_like}/{len(assignments)})"
-            )
-
-        _run_problem_model_gates(
-            execution=execution,
-            model_file=model_file,
-            lowered=lowered,
-            dep_spec_ids=dep_spec_ids,
-            violations=violations,
-        )
-
-    _validate_fortran_makefile_src_dir(src_dir, violations)
     _build_system, _language = _target_toolchain_from_pipeline_dir(
         repo_root, execution.pipeline_dir
     )
-    _validate_makefile_test_no_relink(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
-    _validate_makefile_test_invokes_cases(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
-    return model_files, dep_spec_ids
+    bundle = _language_module(_language, "bundle_facts", src_dir, violations)
+    source_reading = _language_source_reading(_language, src_dir, violations)
+    if bundle is None or source_reading is None:
+        return None
+    model_files, expected_model_name = _model_files_in_src_dir(src_dir, execution, bundle)
+    if not model_files:
+        violations.append(
+            source_reading.model_source_not_found_violation(
+                src_dir, expected_model_name, bundle.model_basename("*"))
+        )
+        return None
 
+    dep_spec_ids = _component_dep_spec_ids(repo_root, execution)
+    multidim_spec_id = (
+        (_spec_id_from_node_key(execution.node_key) or execution.node_key)
+        if _is_multidim_problem_node(execution) else None)
+    for model_file in model_files:
+        source_reading.model_source_gates(
+            node_key=execution.node_key,
+            model_file=model_file,
+            text=model_file.read_text(encoding="utf-8", errors="ignore"),
+            dep_spec_ids=dep_spec_ids,
+            violations=violations,
+            multidim_spec_id=multidim_spec_id,
+        )
 
-# Fortran 2008 (and the earlier standards the generated code targets) limit a
-# name (identifier) to 63 characters. Used by the module-name check below to fail an
-# over-limit `<spec_id>_model` as a spec-level problem (the spec_id is too long) at
-# post_generate. General over-limit identifiers in the generated source are caught by
-# the real compiler front-end in the deterministic `generate.gate` substep
-# (gfortran -fsyntax-only via MCP run_syntax_check), which replaced the retired
-# post_generate text heuristics (identifier length / `implicit none` spec-list /
-# non-constant STOP code) that could only mimic gfortran one observed failure at a time.
-_FORTRAN_NAME_LIMIT = 63
+    _validate_control_file(src_dir, violations, build_system=_build_system, language=_language)
+    return model_files, dep_spec_ids, _language
 
 
 # R1/M3c-β: the fixed public ABI of a physics node's checks module
@@ -5168,22 +2197,25 @@ def _validate_checks_source_files(
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is None:
         return
-    checks_path = src_dir / f"{spec_id}_checks.f90"
+    # `language` is `_m3c_language`'s answer, which required `runner_render`; the two readers
+    # below are asked separately, because declaring one job does not declare the others.
+    bundle = _language_module(language, "bundle_facts", src_dir, violations)
+    source_reading = _language_source_reading(language, src_dir, violations)
+    if bundle is None or source_reading is None:
+        return
+    checks_name = bundle.checks_basename(spec_id)
+    checks_path = src_dir / checks_name
     if not checks_path.is_file():
         violations.append(
-            f"{checks_path}: an M3c physics node must author {spec_id}_checks.f90 (the "
+            f"{checks_path}: an M3c physics node must author {checks_name} (the "
             "fixed-ABI checks module the host-rendered runner drives) — see "
             "docs/workflow/CHECKS_MODULE_CONTRACT.md")
         return
     text = checks_path.read_text(encoding="utf-8", errors="ignore")
-    logical = fortran_lines.fortran_logical_line_texts(text)
+    violations.extend(source_reading.checks_module_declaration_violations(
+        checks_path, text, spec_id))
 
-    if not any(re.match(rf"(?i)^\s*module\s+{re.escape(spec_id)}_checks\b", ln)
-               for ln in logical):
-        violations.append(
-            f"{checks_path}: must declare `module {spec_id}_checks` (the fixed ABI module)")
-
-    published, _, _ = checks_module_abi_facts(text, spec_id)
+    published, _, _ = source_reading.checks_module_abi_facts(text, spec_id)
     # The ABI is the renderer's, so it is read per node from the backend that renders THIS
     # node's runner — not from a module-level constant, because module scope has no language.
     # A refusal becomes a violation and NEVER an exception: this runs inside
@@ -5230,7 +2262,7 @@ def _validate_checks_source_files(
         violations.append(
             f"{checks_path}: checks module must publish the fixed ABI names "
             f"{list(checks_public_names)}; missing {missing}")
-    hidden = unpublished_bound_state(text, spec_id, bound_state)
+    hidden = source_reading.unpublished_bound_state(text, spec_id, bound_state)
     if hidden:
         violations.append(
             f"{checks_path}: checks module must publish every bound state variable (the "
@@ -5238,240 +2270,8 @@ def _validate_checks_source_files(
             f"serializes it at the two capture points); hidden by a bare `private` default "
             f"with no `public ::` naming it, or by a `private ::` naming it: {hidden}")
 
-    _validate_checks_source_harness_isolation(execution, src_dir, model_files, violations)
-
-
-def _fortran_statements(text: str) -> list[str]:
-    """Fortran source as one STATEMENT per entry: comments stripped, `&` continuations joined,
-    and `;`-joined statements split apart.
-
-    Every rule written against "a line" is really written against a statement, so this is what
-    such a rule must iterate. `fortran_logical_line_texts` alone does only the first two steps, and
-    the omission is invisible until someone writes `use a; use b` — at which point an anchored
-    `^\\s*use\\b` rule silently sees one statement and misses the other. Both halves of the M3c
-    checks gate go through here so they cannot drift apart on that."""
-    return [stmt for line in fortran_lines.fortran_logical_line_texts(text)
-            for stmt in fortran_lines.split_fortran_statements(line)]
-
-
-def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
-    """`(published, defined_subroutines, defined_procs)` for `module <spec_id>_checks` in `text`,
-    lowercased. The 3-tuple projection of `checks_module_accessibility_scan` (below), kept as
-    the two ABI gates' entry point.
-
-    THE single parser for the checks-module ABI surface, shared by the deterministic
-    `Generate.static` gate (`_validate_checks_source_files`, which reads the staged file) and the
-    Z2 bundle acceptance gate (`codegen_bundle.m3c_checks_abi_violation`, which reads the
-    producer's in-memory bundle before anything is written). They MUST agree: a second
-    implementation is how the bundle gate came to accept output that `Generate.static` then
-    rejected, reopening the phase — the drift this function exists to make impossible.
-
-    `published` is what `use <spec_id>_checks, only:` can resolve: Fortran's module default is
-    PUBLIC, so a name is published iff it is defined and not `private ::`'d, unless a bare
-    `private` statement flips the default, in which case it must be `public ::`'d.
-
-    `defined_procs` are the module-level procedure definitions written HERE, and
-    `defined_subroutines` the subset of those spelled `subroutine`. Callers must read them as
-    positive evidence only, never as "everything callable": a name can be published and callable
-    without appearing in either — `use`-associated from another module, declared through an
-    `interface` / generic block, or implemented in a submodule. So `n in defined_procs and n not
-    in defined_subroutines` proves n is a FUNCTION here, while `n not in defined_procs` proves
-    nothing at all (and rejecting on it fails a legal module).
-
-    Iterates `_fortran_statements`, not raw lines: left unsplit, `public :: a; public :: b` read
-    as a single `public` statement whose list was `a; public :: b`, losing `a` (whose token was
-    `a;`) and inventing a name `public` — legal Fortran (gfortran rc=0) reported unpublished by
-    BOTH gates."""
-    return checks_module_accessibility_scan(text, spec_id)[:3]
-
-
-def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> list[str]:
-    """The `bound` module-level variable names `use <spec_id>_checks, only: <name>` cannot
-    resolve, by the same scan and the same notion of "published" the ABI gates use (Z6, issue
-    #255): under a bare module-level `private` a variable is published iff a `public ::`
-    statement names it; under the language's default-public accessibility it is published unless a
-    `private ::` statement names it. A variable is never DEFINED in the sense a procedure is
-    (the scan reads no declarations — that is the source-text surface the gates refuse to
-    parse), so the default-public branch cannot tell an undeclared name from a declared one and
-    accepts both; the `Generate.gate` syntax check then owns the undeclared case (`Symbol not
-    found in module`), exactly as it owns a `use`-associated ABI procedure. Case-insensitive."""
-    _, _, _, public_ids, private_ids, default_private = \
-        checks_module_accessibility_scan(text, spec_id)
-    out: list[str] = []
-    for name in bound:
-        key = name.casefold()
-        if key in private_ids or (default_private and key not in public_ids):
-            out.append(name)
-    return out
-
-
-def checks_module_accessibility_scan(
-    text: str, spec_id: str,
-) -> tuple[set[str], set[str], set[str], set[str], set[str], bool]:
-    """The three sets of `checks_module_abi_facts` followed by `(public_ids, private_ids,
-    module_default_private)` for `module <spec_id>_checks` in `text`, lowercased — the one scan
-    behind `checks_module_abi_facts` (its first three) and `unpublished_bound_state` (its last
-    three). See the former's docstring for what each set does and does not prove."""
-    logical = _fortran_statements(text)
-    public_ids: set[str] = set()
-    private_ids: set[str] = set()
-    defined_procs: set[str] = set()
-    defined_subroutines: set[str] = set()
-    module_default_private = False  # a bare module-level `private` flips the default
-    type_depth = 0  # a bare `private` inside a derived-type def is a component attr, not the module default
-    in_interface = False  # a subroutine/function header inside an interface block is a proto, not a def
-    proc_depth = 0  # nesting of procedure defs; only depth-0 (module-level) procs are published
-    in_target_module = False  # only defs INSIDE `module <spec_id>_checks` are its published ABI
-    target_module = f"{spec_id}_checks".lower()
-    # A subroutine/function definition header. `function` may carry a type-spec prefix; the
-    # `end <proc>` case is handled before this so the leading-token alternation can't match it.
-    # The type-spec `[^!]*` is greedy, so it is matched against a STRING-MASKED copy of the line
-    # (below): unmasked it ran from a declaration's type keyword into a string literal —
-    # `character(len=*), parameter :: note = 'run subroutine case_setup first'` registered a
-    # phantom definition and suppressed every later `public ::`. Masking rather than excluding
-    # quotes fixes that WITHOUT rejecting a legal quote inside the type-spec itself
-    # (`character(kind=kind('a')) function metric_compute()`), which the exclusion turned into a
-    # published-but-undefined function the gate then accepted — a fail-open both gate authors
-    # missed until a Codex review, since the runner `call`s it and Generate.syntax fails later.
-    proc_start = re.compile(
-        r"(?i)^\s*(?:(?:module|pure|impure|elemental|recursive|non_recursive)\s+)*"
-        r"(?:(?:integer|real|double\s+precision|complex|logical|character|type|class)\b"
-        r"[^!]*\s+)?"
-        r"(subroutine|function)\s+([A-Za-z]\w*)")
-    for ln in logical:
-        s = ln.strip()
-        # Enter/leave the TARGET checks module. A `module <name>` statement (not `module
-        # subroutine/function/procedure`, which carry more tokens) opens a module; only
-        # definitions/accessibility INSIDE `module <spec_id>_checks` are importable via
-        # `use <spec_id>_checks` — procs after `end module` or in a second module are not.
-        mo = re.match(r"(?i)^\s*module\s+([A-Za-z]\w*)\s*$", s)
-        if mo:
-            in_target_module = mo.group(1).lower() == target_module
-            proc_depth, type_depth, in_interface = 0, 0, False
-            continue
-        if re.match(r"(?i)^\s*end\s*module\b", s):
-            in_target_module = False
-            proc_depth, type_depth, in_interface = 0, 0, False
-            continue
-        # An `interface` / `abstract interface` block declares procedure PROTOTYPES, not
-        # definitions — its subroutine/function headers must not count as `defined_procs`
-        # (else a module could publish an ABI name it only prototypes but never defines).
-        if not in_interface and re.match(r"(?i)^\s*(?:abstract\s+)?interface\b", s):
-            in_interface = True
-            continue
-        if in_interface:
-            if re.match(r"(?i)^\s*end\s*interface\b", s):
-                in_interface = False
-            continue
-        # Track derived-type nesting so a component-level bare `private` isn't mistaken
-        # for the module default. `type :: name` / `type name` / `type, attrs :: name`
-        # open a def; `type(...)` decls and `type is (...)` guards do not.
-        if type_depth == 0 and re.match(r"(?i)^\s*type\b", s) \
-                and not re.match(r"(?i)^\s*type\s*\(", s) \
-                and not re.match(r"(?i)^\s*type\s+is\b", s):
-            type_depth = 1
-            continue
-        if type_depth > 0:
-            if re.match(r"(?i)^\s*end\s*type\b", s):
-                type_depth = 0
-            continue
-        # `end subroutine/function/procedure` closes a proc scope. A bare `end` closes the
-        # innermost program unit: a procedure when we are inside one, else the module itself.
-        # (`end module` is handled above; construct ends `end do`/`end if`/… fall through.)
-        if re.match(r"(?i)^\s*end\s*(?:subroutine|function|procedure)\b", s):
-            if proc_depth > 0:
-                proc_depth -= 1
-            continue
-        if re.match(r"(?i)^\s*end\s*$", s):
-            if proc_depth > 0:
-                proc_depth -= 1
-            else:
-                in_target_module = False  # bare `end` at unit level closes the (target) module
-            continue
-        # A subroutine/function definition. Only a MODULE-LEVEL (depth-0) definition INSIDE the
-        # target checks module is a published entity the runner can `use ... only:`; a nested
-        # internal procedure, or one in another module / after `end module`, is not. Matched on a
-        # string-masked copy so the greedy type-spec neither crosses INTO a string literal nor is
-        # blocked by a legal quote WITHIN the type-spec.
-        pm2 = proc_start.match(_mask_fortran_string_contents(s))
-        if pm2:
-            if in_target_module and proc_depth == 0:
-                defined_procs.add(pm2.group(2).lower())
-                if pm2.group(1).lower() == "subroutine":
-                    defined_subroutines.add(pm2.group(2).lower())
-            proc_depth += 1
-            continue
-        # `public` / `private` statements only publish/hide the target module's own entities,
-        # and only in its specification part (depth 0, not inside a procedure body).
-        if proc_depth > 0 or not in_target_module:
-            continue
-        m = re.match(r"(?i)^\s*public\b\s*(::)?\s*(.*)$", s)
-        if m:
-            for tok in re.split(r"[,\s]+", m.group(2).strip()):
-                if re.fullmatch(r"[A-Za-z]\w*", tok):
-                    public_ids.add(tok.lower())
-            continue
-        pm = re.match(r"(?i)^\s*private\b\s*(::)?\s*(.*)$", s)
-        if pm:
-            body = pm.group(2).strip()
-            if not body:  # a bare module-level `private` makes the default accessibility private
-                module_default_private = True
-            else:
-                for tok in re.split(r"[,\s]+", body):
-                    if re.fullmatch(r"[A-Za-z]\w*", tok):
-                        private_ids.add(tok.lower())
-            continue
-    # Fortran module default accessibility is PUBLIC unless a bare `private` statement flips
-    # it. Under the (default) public module, a name is published iff it is DEFINED and not
-    # explicitly `private ::`'d; under a bare-`private` module, iff it is `public ::`'d.
-    if module_default_private:
-        published = public_ids - private_ids
-    else:
-        published = (public_ids | defined_procs) - private_ids
-    return (published, defined_subroutines, defined_procs,
-            public_ids, private_ids, module_default_private)
-
-
-def _validate_checks_source_harness_isolation(
-    execution: NodeExecution, src_dir: Path, model_files: list[Path], violations: list[str]
-) -> None:
-    """The rest of the M3c checks-source gate (see `_validate_checks_source_files`)."""
-    spec_id = _spec_id_from_node_key(execution.node_key)
-    if spec_id is None:
-        return
-    checks_path = src_dir / f"{spec_id}_checks.f90"
-    if not checks_path.is_file():
-        return
-    text = checks_path.read_text(encoding="utf-8", errors="ignore")
-    logical = fortran_lines.fortran_logical_line_texts(text)
-
-    # Neither the checks nor the model source may `use` the harness module. Tolerate the
-    # optional `, <attr>` (e.g. `, intrinsic`) and `::` forms — `use harness_x`,
-    # `use :: harness_x`, and `use, non_intrinsic :: harness_x` must all be caught. The scan is
-    # per STATEMENT, not per line: the regex is anchored, so a harness `use` written as the second
-    # statement of a `;`-joined line (`use, intrinsic :: iso_fortran_env, only: dp => real64;
-    # use harness_fortran_cpu_model, only: ...`, legal and rc=0) would otherwise be invisible —
-    # a fail-OPEN on the isolation invariant that nothing downstream catches, since the harness is
-    # staged for `Generate.syntax` and the bundle contract has no isolation layer.
-    use_harness_re = re.compile(r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?harness_")
-    for f in [checks_path, *model_files]:
-        ftext = f.read_text(encoding="utf-8", errors="ignore")
-        if any(use_harness_re.match(stmt.strip())
-               for stmt in _fortran_statements(ftext)):
-            violations.append(
-                f"{f}: a physics source must not `use` the harness module — the physics "
-                "node never depends on the harness at the source level (the host-rendered "
-                "runner is the sole `use harness_*` site)")
-
-    # The checks module does no file I/O (emission is the harness/runner's exclusive job). Scan
-    # string-masked statements: an `open(` call is code, so a quoted `'open('` in a message string
-    # is not one — matching it would fail-close a legal module. (The forbidden-filename scan below
-    # is deliberately the opposite: it inspects string CONTENT, so it runs on the raw text.)
-    if any(re.search(r"(?i)\bopen\s*\(", _mask_fortran_string_contents(ln)) for ln in logical):
-        violations.append(
-            f"{checks_path}: checks module must not do file I/O (`open(`) — emission is the "
-            "harness's job; the checks module only computes state/checks/metrics")
-
+    violations.extend(source_reading.checks_harness_isolation_violations(
+        checks_path, text, model_files))
     lowered = text.lower()
     for output_name in FORBIDDEN_RUNNER_OUTPUTS:
         if output_name in lowered:
@@ -5499,7 +2299,10 @@ def _validate_generate_outputs_for_generation(
     scanned = _validate_generate_outputs(repo_root, execution, src_dir, violations)
     if scanned is None:
         return
-    model_files, dep_spec_ids = scanned
+    model_files, dep_spec_ids, language = scanned
+    # `_validate_generate_outputs` answered, so the target language declares both readers.
+    bundle = backend_registry.capability_module("language", language, "bundle_facts")
+    source_reading = backend_registry.capability_module("language", language, "source_reading")
 
     # The cheap deterministic runner backstops (name / forbidden-output / json-serialization
     # / snapshot-filename) run against every runner — leaf-authored (the `infrastructure`
@@ -5523,14 +2326,14 @@ def _validate_generate_outputs_for_generation(
     # docstring).
     m3c_language = _execution_m3c_language(repo_root, execution)
     is_m3c = m3c_language is not None
-    runner_files = sorted(src_dir.glob("*_runner.f90"))
+    runner_files = sorted(src_dir.glob(bundle.runner_basename("*")))
     # ATTRIBUTION IS POSITIONAL: `_validate_runner_source_files` is handed nothing but the file
     # list it is called with, so every string it appends is about a member of that list. The sink
     # it writes into therefore carries the attribution, and no violation string is inspected to
     # decide it.
     #
     # THE LIST MUST BE THE HOST-RENDERED FILE, NOT THE GLOB. `_write_runner` renders exactly the
-    # basename `_expected_runner_name` gives; the glob above is deliberately wider, because the
+    # basename `bundle.runner_basename` gives; the glob above is deliberately wider, because the
     # NAME GATE inside `_validate_runner_source_files` exists to catch a leaf that wrote a runner
     # under some other name. Wrapping the whole glob therefore took that gate's own finding — a
     # leaf naming mistake, warm-repairable, and the one thing the gate is for — and reported it
@@ -5546,7 +2349,7 @@ def _validate_generate_outputs_for_generation(
     if is_m3c:
         runner_spec_id = _spec_id_from_node_key(execution.node_key)
         if runner_spec_id is not None:
-            expected_runner = _expected_runner_name(runner_spec_id)
+            expected_runner = bundle.runner_basename(runner_spec_id)
     host_runner_files = [p for p in runner_files if p.name == expected_runner]
     leaf_runner_files = [p for p in runner_files if p.name != expected_runner]
     known_case_ids = _case_ids_for_execution(repo_root, execution)
@@ -5554,7 +2357,7 @@ def _validate_generate_outputs_for_generation(
         host_runner_violations: list[str] = []
         _validate_runner_source_files(
             execution, host_runner_files, host_runner_violations,
-            known_case_ids=known_case_ids,
+            known_case_ids=known_case_ids, bundle=bundle, source_reading=source_reading,
         )
         violations.extend(
             _as_host_authored(v, "tools/host_render.render_runner, via "
@@ -5563,6 +2366,7 @@ def _validate_generate_outputs_for_generation(
     if leaf_runner_files:
         _validate_runner_source_files(
             execution, leaf_runner_files, violations, known_case_ids=known_case_ids,
+            bundle=bundle, source_reading=source_reading,
         )
     if is_m3c:
         _validate_checks_source_files(
@@ -5570,7 +2374,7 @@ def _validate_generate_outputs_for_generation(
             bound_state=_state_snapshot_requirement_details(repo_root, execution)[0])
 
     if dep_spec_ids:
-        _validate_dependency_operation_on_model_files(
+        source_reading.validate_dependency_operations(
             model_files, dep_spec_ids, violations
         )
 
@@ -5584,87 +2388,15 @@ def _validate_generate_outputs_for_generation(
     # L1b: a component node's generated model must publish EXACTLY its IR public_api op NAMES
     # (inert on a legacy IR that carries no public_api pin; no-op for non-component nodes).
     _validate_component_generated_surface(
-        repo_root, execution, model_files, violations
+        repo_root, execution, model_files, violations, source_reading=source_reading
     )
     # Issue #22: a presence floor for the target-lowering rule — an OpenMP-on-CPU Fortran target
     # whose bundle's lowering plan names OpenMP, with counted `do` loops and zero `!$omp`
     # directives. Everything above that floor (which loops, which schedule) stays with
     # Generate.verify G6.
-    _validate_openmp_presence_floor(
+    _validate_parallel_presence_floor(
         repo_root, execution, src_dir, model_files, violations
     )
-
-
-# `subroutine` declaration opener mirroring orchestration_runtime._FORTRAN_SUBROUTINE_RE (the
-# published-surface scanner the resolver uses): optional pure/impure/elemental/recursive/module
-# prefixes, then `subroutine <name>`. `^\s*` anchors at the (comment-stripped, continuation-
-# joined) logical-line start, so `end subroutine` / `call` lines never match. Kept in lock-step
-# with the runtime regex by the cross-scanner parity test (ComponentGeneratedSurfaceGateTests).
-_COMPONENT_PUBLISHED_SUB_RE = re.compile(
-    r"^\s*(?:(?:pure|impure|elemental|recursive|module)\s+)*"
-    r"subroutine\s+(?P<name>[A-Za-z]\w*)",
-    re.IGNORECASE,
-)
-# An ABSTRACT interface block's span. A procedure header inside one is a PROTOTYPE (issue
-# #266: the shape of a procedure a caller passes), not a published operation, whatever its
-# name begins with — so the scan below skips the span. A NON-abstract interface body is
-# different: it declares an external procedure the module can re-export, which is a callable
-# a consumer links, so the scan counts it exactly as it did before this rule (a round-2
-# reviewer measured the wider skip letting a module publish an extra `<spec_id>__` external
-# through a sibling file). The opener is the whole statement, so a variable named
-# `interface` opens nothing. Mirrored VERBATIM in the runtime's prefixed-name scanner, which
-# the parity test pins.
-_ABSTRACT_INTERFACE_SPAN_OPEN_RE = re.compile(r"^\s*abstract\s+interface\s*$", re.IGNORECASE)
-_INTERFACE_SPAN_END_RE = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
-
-
-def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
-    """Distinct, first-appearance-ordered ``subroutine`` names in ``text`` whose name begins
-    (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. A
-    header inside an ``abstract interface`` block is a prototype and is not counted (issue
-    #266); one inside a plain ``interface`` body is an external the module may re-export and
-    counts, as before. The
-    validator may NOT import ``orchestration_runtime`` (module-boundary rule), so this is a
-    separate mirror of that module's ``_list_prefixed_subroutines``; the cross-scanner parity
-    test pins the two implementations to the same result.
-
-    The two used to be pinned only over the domain a code generator emits, because their
-    hand-rolled scanners joined continuations with different whitespace and so resolved a
-    pathological split THROUGH the ``subroutine`` keyword or through the name identifier
-    (``pure&`` / ``dep__fo&``/``&o``) differently. That divergence is gone: both now scan with
-    ``fortran_lines.fortran_logical_lines`` (issue #23), the single shared implementation, so the
-    parity test runs over the FULL domain — mid-token splits, exotic line separators, a ``!``
-    inside a continued literal, a lone-``&`` wrap line. What remains local to each side is only
-    the composition (this one keeps leading whitespace for the ``^\\s*`` anchor above; the runtime
-    strips). NEVER raises."""
-    try:
-        prefix = f"{spec_id}__".lower()
-        out: list[str] = []
-        seen: set[str] = set()
-        in_interface = 0
-        for _lineno, stmt in _iter_fortran_logical_lines(text):
-            if _INTERFACE_SPAN_END_RE.match(stmt):
-                in_interface = max(0, in_interface - 1)
-                continue
-            if _ABSTRACT_INTERFACE_SPAN_OPEN_RE.match(stmt):
-                in_interface += 1
-                continue
-            if in_interface:
-                continue
-            m = _COMPONENT_PUBLISHED_SUB_RE.match(stmt)
-            if m is None:
-                continue
-            name = m.group("name")
-            if not name.lower().startswith(prefix):
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(name)
-        return out
-    except Exception:
-        return []
 
 
 def _validate_component_generated_surface(
@@ -5672,6 +2404,8 @@ def _validate_component_generated_surface(
     execution: NodeExecution,
     model_files: list[Path],
     violations: list[str],
+    *,
+    source_reading: Any,
 ) -> None:
     """L1b deterministic generated-source gate (``component`` nodes with a pinned public_api):
     the generated model source must publish EXACTLY the ``<spec_id>__`` public subroutine set the
@@ -5723,7 +2457,7 @@ def _validate_component_generated_surface(
 
     combined = "\n".join(
         f.read_text(encoding="utf-8", errors="ignore") for f in model_files)
-    generated = _list_component_published_subroutines(combined, spec_id)
+    generated = source_reading.published_subroutines(combined, spec_id)
     gen_cf = {g.casefold() for g in generated}
     pub_cf = {p.casefold() for p in published}
     target = model_files[0]
@@ -5740,111 +2474,6 @@ def _validate_component_generated_surface(
             f"`{spec_id}__` prefix, or add it to the published operations)")
 
 
-# The floor's whole Fortran surface: four anchored patterns over PHYSICAL lines, no state.
-#
-# Rounds of review found six defects in a previous, cleverer scanner that joined `&` continuations,
-# tracked character-literal state across lines, and split statements on `;`. Each fix introduced the
-# next defect, and four of the six were FALSE POSITIVES on a `fail_closed` gate. Measured over every
-# `.f90` file in the tree, that machinery produced verdicts identical to these four patterns — it was
-# priced entirely for inputs that have never occurred (the corpus contains no continued `do` header,
-# no `do concurrent`, no labelled or named `do`, and no `do` after a `;`).
-#
-# The insight that makes the state unnecessary: anchoring at a PHYSICAL line start puts comments and
-# almost all string literals out of reach. A comment line begins with `!`, so an `!$omp` inside one
-# is never at a line start; and a continued character literal resumes with `&`, so its content is not
-# either. The earlier comment-mention and literal-mention evasions are closed by the anchor rather
-# than by parsing.
-#
-# That second half needed a qualifier — "a CONFORMING literal" — until issue #25 removed it. gfortran
-# ALSO accepts a literal resumed with no `&` at all, and `'start&` / `do i = 1, n suffix'` then does
-# put a counted-`do` spelling at a physical line start, inside a string; the floor would have counted
-# it, a false REJECT on a source the syntax gate passed. Issue #23 measured that and accepted it;
-# issue #25 closed it at the root instead, by promoting `-Werror=ampersand` in the `Generate.gate`
-# syntax check (`mcp_servers/build_runtime_server.py:_gfortran_syntax_argv`). Such a source is now
-# rejected before any source reaches this gate, so the anchor holds over every literal that gets
-# here, with no state and no qualifier.
-#
-# That joining scanner does live in the tree again, as `tools/backends/language/fortran/lines` (issue #23) — but for
-# consumers this floor is not: they read the JOINED logical line and compare it against a declared
-# surface, so they cannot anchor their way out of the state. A presence check can, so this one still
-# must not take the dependency. The two answers are not in conflict; the question differs.
-#
-# `[ \t\f]` is gfortran's blank set: a form feed is a blank it accepts, both before a `do` and as a
-# token separator (verified against the compiler, and the reason the previous scanner leaked).
-_BLANK = r"[ \t\f]"
-# A `do` opener at a line start, with the spellings a generator plausibly emits: a statement label
-# before it (`10 do i = 1, n`), a named construct (`loop_i: do ...`).
-_DO_OPENER = rf"^{_BLANK}*(?:\d+{_BLANK}+)?(?:[a-z_]\w*{_BLANK}*:{_BLANK}*)?do"
-# The separator between `do` and its loop-control. F2008 permits a LEADING COMMA there
-# (`do , i = 1, n`), which gfortran accepts under `-std=f2008`, so a comma form must classify
-# like the plain one — otherwise `do , concurrent (...)` went unrecognized and a genuinely
-# parallel file could be flagged.
-_DO_SEP = rf"(?:{_BLANK}+|{_BLANK}*,{_BLANK}*)"
-
-# A COUNTED loop: `do <var> =`, also accepting an obsolescent branch-target label (`do 10 i = 1, n`).
-# The `=` tail is what makes it counted, so `do concurrent (...)` and `do while (...)` are excluded by
-# construction, and `do_it = 1` cannot match because `do` must be followed by a blank.
-_COUNTED_DO_RE = re.compile(
-    _DO_OPENER + rf"{_DO_SEP}(?:\d+{_BLANK}+)?[a-z_]\w*{_BLANK}*=", re.IGNORECASE | re.MULTILINE
-)
-
-# `do concurrent` anywhere in the file is a declaration of parallel intent and takes the file out of
-# the floor's reach even when counted loops sit beside it — without this, an accumulator reset beside
-# `do concurrent` work was reported as unparallelized, contradicting the floor's own message.
-_DO_CONCURRENT_RE = re.compile(
-    _DO_OPENER + rf"{_DO_SEP}concurrent\b", re.IGNORECASE | re.MULTILINE
-)
-
-# A `do` header that wraps before it can be classified (`do &`, `do i &`, `do&`). Such a header might
-# be a `do concurrent`, so its presence fails the WHOLE FILE open rather than risk the false positive.
-#
-# Two guards keep it from swallowing a file it has no business in — this pattern takes the WHOLE FILE
-# out of scope, so an over-match here does not miss a loop, it silently disables the gate.
-#
-# The lookahead belongs to THIS pattern alone: the two above are separated from their operand by
-# `{_BLANK}+`, but this one may see `do&` with nothing between, so without a boundary it matched any
-# wrapped line whose first token merely STARTS with `do` — `domain, &`, `double &`,
-# `dot_product(a,b) &`. A continued argument list is this repo's idiomatic style.
-#
-# And the wrapped token excludes `=`, because `\S*` is one blank-free token: a header whose BOUNDS
-# wrap is classifiable and must fall through to `_COUNTED_DO_RE`, but `do i=1, &` (no blanks around
-# the `=`, which is ordinary spacing) put the whole `i=1,` into that token and matched here. Only the
-# spaced spelling escaped, so the guarantee rested on a space.
-#
-# A trailing comment after the marker is allowed (`do & ! parallel loop`), which free form permits
-# and gfortran accepts: requiring only blanks after the `&` left such a header unrecognized, so a
-# counted loop beside it fired on a source whose wrapped header may well have been a `do concurrent`.
-#
-# The lookahead and the optional comma admit `_DO_SEP`'s comma form, so a `do , … &` header is
-# recognized as wrapped. Missing it was the false-positive direction: the file would stay in scope
-# and a counted loop beside it could fire, even though the wrapped header might be a `do concurrent`.
-# A 13k-combination sweep over {blanks, labels, construct names, `do`-prefixed identifiers,
-# separators, tokens, trailing blanks} now reports zero spurious matches and zero missed headers.
-_WRAPPED_DO_RE = re.compile(
-    _DO_OPENER + rf"(?={_BLANK}|&|,){_BLANK}*,?{_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*(?:!.*)?$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# The OpenMP sentinel, anchored the same way. A bare `omp` is a substring of `component` / `compute` /
-# `compile`, so `!$` is what makes it a directive; and free form requires the sentinel to be preceded
-# by blanks only, so the anchor IS the language rule. It is what keeps a doc comment reading "the
-# `!$omp parallel do` directives would go here (not added)" — a shape a real generated source
-# contains — from satisfying the floor, and likewise a commented-out `!!$omp`.
-_OMP_DIRECTIVE_RE = re.compile(rf"^{_BLANK}*!\$omp\b", re.IGNORECASE | re.MULTILINE)
-
-# Values of a parallelization model that mean "no parallelism here". Read generously — this
-# direction only ever fails the floor OPEN.
-_NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
-
-# Inside `target_lowering_plan.parallelization` (an object, `codegen_bundle`'s envelope), the
-# members that name the execution MODEL. `model` is the one the producer's template names; the other
-# three are the spellings the Compile-authored knob layer used to carry the model under (until R4-a
-# PR-3, issue #284), kept so a producer reusing them states a claim rather than dodging one. The
-# sibling members are scope / schedule / granularity prose (`apply_to`, `schedule`, `loops`, …) and
-# must not be read as a model, or a correctly serial `{model: none, apply_to: parallelizable_loops}`
-# licenses the floor to reject its own source.
-_LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "kind"})
-
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
 # parallelize (the same reason `_validate_local_operation_lowering` exempts it). Restricting to a
@@ -5854,73 +2483,40 @@ _LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
-def _lowering_plan_declines_openmp(plan: Any) -> bool:
-    """True when a bundle's ``target_lowering_plan`` EXPLICITLY declines OpenMP: a model-bearing
-    member of its ``parallelization`` object names no parallelism (``none`` / ``serial`` / …) or
-    a model other than OpenMP, and no model-bearing member names OpenMP.
-
-    This is the floor's one exemption, and it has to be a DECLARATION. On an OpenMP target the
-    target's backend is the default model: a plan with no ``parallelization`` object, with no
-    model member, or with a value that is not a string declines nothing, so the floor applies.
-    Until R4-a PR-3 (issue #284) the exemption was the IR's Compile-authored knob layer, which
-    the Generate leaf could not edit; the knob layer is now the SAME leaf's plan, so the floor
-    reading "no claim" as an exemption let the producer switch its own floor off by omission —
-    the round-1 finding this shape closes. What stays is the explicit ``"model": "none"`` for a
-    model source whose every counted loop carries a dependence — a construct the corpus does not
-    contain (measured in R4-a PR-3's round 3: the only passing counted-loop, directive-free
-    physics sources are three July 2026 ones whose IRs claimed OpenMP and which predate the
-    floor, and the five real ``none`` plans belong to the harness and two whole-array nodes);
-    whether that declaration is honest is ``Generate.verify`` G6's judgment, told in its
-    template that a ``none`` over plainly parallelizable loops, or with a reason the loops
-    contradict, is itself the finding.
-
-    OpenMP specifically: a plan naming ``mpi`` or ``cuda_streams`` declines OpenMP rather than
-    being told to add ``!$omp`` — a demand that would contradict its own plan. Substring, so
-    ``openmp+simd`` / ``openmp_tasks`` name OpenMP."""
-    if not isinstance(plan, dict):
-        return False
-    par = plan.get("parallelization")
-    if not isinstance(par, dict):
-        return False
-    declined = False
-    for key, value in par.items():
-        if str(key).strip().lower() not in _LOWERING_PARALLELIZATION_MODEL_KEYS:
-            continue
-        if not isinstance(value, str) or not value.strip():
-            continue
-        token = value.strip().lower()
-        if "openmp" in token and token not in _NO_PARALLELISM_VALUES:
-            return False
-        declined = True
-    return declined
-
-
-def _validate_openmp_presence_floor(
+def _validate_parallel_presence_floor(
     repo_root: Path,
     execution: NodeExecution,
     src_dir: Path,
     model_files: list[Path],
     violations: list[str],
 ) -> None:
-    """Issue #22 deterministic floor: on a node built for an OpenMP-on-CPU Fortran target (the
-    pipeline's target profile, issue #284) whose bundle's ``target_lowering_plan`` does not
-    explicitly decline OpenMP (``_lowering_plan_declines_openmp``), a generated model source that
-    contains counted ``do`` loops must contain at least one ``!$omp`` directive.
+    """Issue #22 deterministic floor: on a node built for a target whose parallel backend states a
+    presence floor for the target's (language, hardware class) — today OpenMP on a CPU Fortran
+    target — and whose bundle's ``target_lowering_plan`` does not explicitly decline that model,
+    a generated model source that contains counted loops must contain at least one directive of
+    the model.
+
+    The pieces are the backends' (issue #289, R4-b PR-3): the parallel backend's
+    `parallel_directives` says whether the floor applies (`presence_floor`), what a directive
+    looks like, when a plan declines the model (`lowering_plan_declines`) and what the finding
+    says; the language backend's `source_reading` counts the loops (`counted_loops`). What stays
+    here is which nodes the floor is asked of and where the plan is read from. Until that PR the
+    floor fired on `cpu ∧ openmp ∧ fortran` spelled here.
 
     This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
     schedule matches the plan, or whether the parallelization is correct. A present-but-wrong or
     present-but-partial reflection of the plan stays the province of ``Generate.verify`` G6, and
-    so does the honesty of a plan that declines. Only the unambiguous case — the target is
-    OpenMP, the plan does not say otherwise, the source has loops to parallelize, and there is
-    not one directive anywhere — is decided here, where it costs no judgment and no tokens.
+    so does the honesty of a plan that declines. Only the unambiguous case — the target's model
+    has a floor, the plan does not say otherwise, the source has loops to parallelize, and there
+    is not one directive anywhere — is decided here, where it costs no judgment and no tokens.
 
-    Fail-open in the ambiguous source shapes: whole-array sources (zero counted loops) pass,
-    non-OpenMP / non-CPU / non-Fortran targets pass, a source tree with no readable
-    ``codegen_bundle.json`` passes (the bundle tamper gate reports that), a file containing a
-    ``do concurrent`` passes, a file whose ``do`` header wraps before it can be classified
-    passes, a loop reached only through a ``;`` or a joined continuation is not counted, and
-    only `component/` / `problem/` nodes are in scope at all. The plan is NOT one of those
-    directions: an absent or model-less plan applies the floor.
+    Fail-open in the ambiguous source shapes: whole-array sources (zero counted loops) pass, a
+    target whose parallel backend states no floor for its pair passes (a backend with no package
+    of its own, `none`, states none), a source tree with no readable ``codegen_bundle.json``
+    passes (the bundle tamper gate reports that), a source the language backend reads as already
+    parallel or unclassifiable passes (`counted_loops` answers 0 — its docstring lists the
+    shapes), and only `component/` / `problem/` nodes are in scope at all. The plan is NOT one of
+    those directions: an absent or model-less plan applies the floor.
 
     The residual case is loops that cannot be parallelized (a strict recurrence). The fix is the
     producer's declaration, ``"model": "none"`` with the reason stated, which the reviewer
@@ -5935,10 +2531,21 @@ def _validate_openmp_presence_floor(
     target = _pipeline_target(repo_root, execution.pipeline_dir)
     if target is None:
         return
-    hw_class = target.hardware_class
     backend = target.parallel_backend
     language = target.toolchain["language"]
-    if hw_class != "cpu" or backend != "openmp" or language != "fortran":
+    # A model whose directive knowledge has no package of its own renders no directive (`none`
+    # carries the capability in the neutral core for exactly that reason), so it has no floor.
+    if not backend_registry.provides("parallel", backend, "parallel_directives") or (
+            "parallel_directives" not in backend_registry.get("parallel", backend).backend_provides):
+        return
+    directives = backend_registry.capability_module("parallel", backend, "parallel_directives")
+    floor = directives.presence_floor(language=language, hardware_class=target.hardware_class)
+    if floor is None:
+        return
+    # A language without a source reader has already been refused on this src_dir
+    # (`_validate_generate_outputs`), hence the discarded sink.
+    source_reading = _language_source_reading(language, src_dir, [])
+    if source_reading is None:
         return
     try:
         bundle = _read_json(src_dir.parent / "codegen_bundle.json")
@@ -5946,32 +2553,17 @@ def _validate_openmp_presence_floor(
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
     if not isinstance(bundle, dict):
         return
-    if _lowering_plan_declines_openmp(bundle.get("target_lowering_plan")):
+    if directives.lowering_plan_declines(bundle.get("target_lowering_plan")):
         return  # an explicit declaration G6 judges; the target's backend is the default
 
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
-        if _OMP_DIRECTIVE_RE.search(text):
+        if floor.directive.search(text):
             continue
-        if _DO_CONCURRENT_RE.search(text):
-            continue  # already parallel by construct, whatever else the file contains
-        if _WRAPPED_DO_RE.search(text):
-            continue  # an unclassifiable wrapped header might be a `do concurrent` — fail open
-        counted = len(_COUNTED_DO_RE.findall(text))
+        counted = source_reading.counted_loops(text)
         if counted < 1:
-            continue  # whole-array syntax: nothing to parallelize, verify G6's province
-        violations.append(
-            f"{model_file}: the target profile resolves to OpenMP on CPU "
-            "(hardware.class=cpu, parallel.backend=openmp, toolchain.language=fortran) and the "
-            "bundle's target_lowering_plan.parallelization does not decline OpenMP, but this "
-            f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
-            "directive — add `!$omp parallel do` to the parallelizable loops (a `do concurrent` "
-            "loop already counts as parallel). Only when a loop genuinely cannot be "
-            "parallelized (a carried dependence) is `\"model\": \"none\"` in the plan the "
-            "answer, with the reason stated; the independent reviewer holds that declaration to "
-            "the loops, so never force a directive you believe is wrong and never decline one "
-            "a loop can take"
-        )
+            continue  # nothing the floor may count (see `counted_loops`), verify G6's province
+        violations.append(floor.remedy(model_file, counted))
 
 
 def _read_dependency_graph_sidecar(repo_root: Path, ir_ref: str | None) -> dict[str, Any] | None:
@@ -6111,6 +2703,94 @@ def _target_toolchain_from_pipeline_dir(
     if target is None:
         return (None, None)
     return (target.toolchain["build_system"], target.toolchain["language"])
+
+
+def _language_module(
+    language: str | None, capability: str, subject: Path | str, violations: list[str]
+) -> Any | None:
+    """The target language's backend module for `capability` (issue #289, R4-b PR-3), or None.
+
+    The gates that READ a node's source — its declarations, procedures, calls, runner output
+    statements, §5.1 interface — reach the language's knowledge through the registry, asked with
+    the language of the pipeline's TARGET: a fact of the host's own coordinate for the pipeline
+    (`_pipeline_target`), never of the document under review. Two None answers, and they are
+    not alike:
+
+    * `language` is None — the pipeline names no loadable target. Nothing is appended:
+      `_validate_pipeline_targets_resolve` has already reported the pipeline in every stage that
+      reaches a gate, so the skip never passes on its own (the same rule as the make-only
+      checks, `_target_toolchain_from_pipeline_dir`).
+    * the language does not declare `capability` — REFUSED, with the registry's reason, against
+      `subject`. A gate that silently skipped here would pass a second language's source
+      unread; one that read it anyway would read it as the one language this module used to
+      import, which is the fail-open `docs/BACKEND_BOUNDARY.md` records for this area.
+    """
+    if language is None:
+        return None
+    if not backend_registry.provides("language", language, capability):
+        violations.append(
+            f"{subject}: the target language '{language}' declares no '{capability}' "
+            f"capability, so the deterministic gates cannot read this node's sources — "
+            f"{backend_registry.missing_capability_reason('language', language, capability)}"
+        )
+        return None
+    try:
+        return backend_registry.capability_module("language", language, capability)
+    except Exception as exc:  # noqa: BLE001
+        # A declared capability whose package cannot be loaded — a registry / package
+        # disagreement, or a package that fails to import — is a HOST fault, and it must land as
+        # a violation rather than escape: `_validate_compile_stage_impl` and the post_generate
+        # stage have no handler, so an escaping exception replaces every violation the sibling
+        # gates already collected with a traceback (the same conversion the checks-ABI seam's
+        # caller makes).
+        violations.append(
+            f"{subject}: the '{capability}' backend for language {language!r} could not be "
+            f"loaded ({exc!r})")
+        return None
+
+
+def _validate_control_file(
+    src_dir: Path,
+    violations: list[str],
+    *,
+    build_system: str | None,
+    language: str | None,
+    report_language_refusal: bool = False,
+) -> None:
+    """The deterministic gates over `src_dir`'s build control file, run by the TARGET's build
+    system backend (`control_file`, issue #289 R4-b PR-3): the prerequisite rule (with the
+    language's module-dependency facts), then the quality-check rules — no relink in the test
+    target, the test target invokes the runner as `run_program` does — which bind only where
+    `_make_quality_check_applies` says the quality-check contract does.
+
+    The single definition both entry points use: `_validate_generate_outputs` (post_generate,
+    and the structural scan of the full stages) and `_validate_post_build_stage_impl`. A
+    pipeline whose target does not resolve runs none of them — it is reported by
+    `_validate_pipeline_targets_resolve` — and neither does a build system whose control file
+    this repository has no gate for. A language without `source_reading` is refused where it is
+    first met: `_validate_generate_outputs` has already said so on the same `src_dir`, so only
+    the post_build entry, which runs alone, reports it here (``report_language_refusal``)."""
+    if build_system is None or language is None:
+        return
+    if not backend_registry.provides("build_system", build_system, "control_file"):
+        return
+    control_file = backend_registry.capability_module("build_system", build_system,
+                                                      "control_file")
+    source_reading = _language_source_reading(
+        language, src_dir, violations if report_language_refusal else [])
+    if source_reading is not None:
+        control_file.validate_src_dir(
+            src_dir, violations, source_reading=source_reading, language=language)
+    applies = _make_quality_check_applies(build_system, language)
+    control_file.validate_test_no_relink(src_dir, violations, applies=applies)
+    control_file.validate_test_invokes_cases(src_dir, violations, applies=applies)
+
+
+def _language_source_reading(
+    language: str | None, subject: Path | str, violations: list[str]
+) -> Any | None:
+    """`_language_module` for `source_reading`, the capability most source gates ask."""
+    return _language_module(language, "source_reading", subject, violations)
 
 
 def _validate_pipeline_targets_resolve(
@@ -6346,24 +3026,6 @@ def _path_is_same_or_under(path: Path, root: Path) -> bool:
     return True
 
 
-def _make_targets(makefile_path: Path) -> set[str]:
-    targets: set[str] = set()
-    for raw_line in makefile_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or raw_line.startswith("\t"):
-            continue
-        if ":" not in raw_line:
-            continue
-        head, _ = raw_line.split(":", 1)
-        if "=" in head:
-            continue
-        for token in head.split():
-            token_l = token.strip().lower()
-            if token_l:
-                targets.add(token_l)
-    return targets
-
-
 def _algorithm_state_contract(contract: dict[str, Any]) -> dict[str, Any] | None:
     """The state contract, read from the `algorithm:` SECTION (never the whole document)."""
     _require_ir_section(contract, "algorithm")
@@ -6566,18 +3228,18 @@ def _parse_public_api_from_controlled_spec(
 
 # --- R1/M3c-α: canonical interface block (§5.1) consumption ---
 #
-# §5.1 gives the exact published surface as a fenced Fortran interface block. Two deterministic
-# gates consume it: the ``--stage compile`` gate cross-checks its symbol set against §5, and the
-# ``Generate.static`` gate pins the generated model source against each signature's interface
-# lines. Both compare after a normalization that erases every non-semantic difference — inline
-# comments, ``&`` continuations, case, and whitespace — so a signature authored one way in §5.1
-# and formatted another way in the generated source still matches (and a genuine argument-name /
-# type / rank / intent drift still fails).
+# §5.1 gives the exact published surface as a fenced, language-neutral structured block. Two
+# deterministic gates consume it: the ``--stage compile`` gate cross-checks its symbol set against
+# §5 and pins the IR to it, and the ``Generate.static`` gate pins the generated model source
+# against each signature. Both compare after a language backend renders the neutral form into
+# its own interface stanzas and normalizes away every non-semantic difference, so a signature
+# formatted one way in §5.1 and another way in the generated source still matches (and a genuine
+# argument-name / type / rank / intent drift still fails).
 #
-# The parsing and normalization themselves are language knowledge and live in the backend
-# (`fortran_signatures.parse_interface_stanzas` / `.stanza_atoms` / `.stanza_line_list` /
-# `.stanza_line_set`, over `fortran_lines`); what stays here is the gates that compare what they
-# produce. The fence below is Markdown, not source syntax, so it stays too.
+# The rendering, the stanza splitting and the normalization are language knowledge and live in
+# the language backend's `signatures` capability (issue #289, R4-b PR-3 made every gate reach it
+# through the registry); what stays here is where §5.1 is read from and which gates compare what.
+# The fence below is Markdown, not source syntax, so it stays too.
 
 _FENCED_BLOCK_RE = re.compile(r"(?ms)^```[^\n]*\n(.*?)^```[^\n]*$")
 
@@ -6585,31 +3247,6 @@ _FENCED_BLOCK_RE = re.compile(r"(?ms)^```[^\n]*\n(.*?)^```[^\n]*$")
 def _strip_fenced_blocks(text: str) -> str:
     """Remove fenced code blocks (```...```) from Markdown text."""
     return _FENCED_BLOCK_RE.sub("", text)
-
-
-def _mask_fortran_string_contents(line: str) -> str:
-    """Replace the CONTENTS of every quoted string with spaces, keeping the quote delimiters and
-    every character's position.
-
-    For matching a statement's KEYWORD structure only: a string literal can hold text that looks
-    like Fortran (`'run subroutine x first'`), and a real type-spec can hold a quote inside its
-    parens (`character(kind=kind('a')) function f()`). Masking the contents removes the phantom
-    keyword without disturbing the parens/`::`/`,` a header match keys on. Do NOT feed a masked
-    line to a rule that inspects string CONTENT (the forbidden-filename scan deliberately catches
-    a quoted `verdict.json`)."""
-    out: list[str] = []
-    quote: str | None = None
-    for ch in line:
-        if quote is not None:
-            out.append(ch if ch == quote else " ")
-            if ch == quote:
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-            out.append(ch)
-        else:
-            out.append(ch)
-    return "".join(out)
 
 
 _SUBSECTION_51_HEADING = re.compile(r"^###\s+5\.1(?:[.\s]|$)")
@@ -6674,57 +3311,18 @@ def _section51_fence_body(controlled_spec_path: Path) -> tuple[str | None, str |
     return (blocks[0], None)
 
 
-def _signature_backend_refusal(language: str) -> str | None:
-    """Why the §5.1 signature gates cannot pin a node written in `language`, or `None`.
-
-    Two grounds, in order, each with its own message because a single sentence naming one cause
-    sends a reader to the wrong repair:
-
-    1. The registry has no usable backend for the value (`unavailable_reason` — not a member, or
-       a member whose knowledge has not been extracted).
-    2. It HAS one, but the §5.1 helpers in this module import `_SIGNATURE_HELPERS_BACKEND_ID`
-       directly and would render this node's signatures through that backend instead.
-
-    An absent `language` is not refused here: the one caller reads it off the pipeline's target
-    profile, and an unresolvable target is reported by `_validate_pipeline_targets_resolve`.
-
-    The value is normalized HERE rather than trusted from the caller. The one call site passes
-    a profile token (lowercase by the loader's grammar), so this is unreachable today — but the
-    identity comparison below is exact, and a caller that passed `Fortran` would get a false
-    refusal on a node that is perfectly valid. `registry.unavailable_reason` normalizes for its own answer,
-    which made the two halves of this predicate disagree about the same string.
-    """
-    normalized = str(language or "").strip().lower()
-    if not normalized:
-        return None
-    unavailable = backend_registry.unavailable_reason("language", normalized)
-    if unavailable:
-        return unavailable
-    if normalized != _SIGNATURE_HELPERS_BACKEND_ID:
-        return (
-            f"'{language}' has an extracted language backend, but the \u00a75.1 signature helpers "
-            f"in tools/validate_pipeline_semantics.py still import the "
-            f"'{_SIGNATURE_HELPERS_BACKEND_ID}' backend directly, so this node would be rendered "
-            f"and compared as '{_SIGNATURE_HELPERS_BACKEND_ID}'. Dispatching those helpers "
-            "through tools/backends/registry.py is the open item (TODO.md, "
-            "docs/BACKEND_BOUNDARY.md)"
-        )
-    return None
-
-
-def _section51_module_parameters(controlled_spec_path: Path) -> list[dict]:
+def _section51_module_parameters(controlled_spec_path: Path, signatures: Any) -> list[dict]:
     """The §5.1 structured ``module_parameters`` entries (each ``{name, base?, value}``). These are
     part of the published ABI a consuming node sees. Returns the well-formed entries (both ``name``
     and ``value`` present); a missing subsection / fence / non-YAML block yields ``[]`` (fail-closed
-    at the calling gate, which flags a §5.1 that cannot be parsed). Used both to render the Fortran
-    declaration lines for the Generate.static source pin and to pin the IR's ``public_api.
-    module_parameters`` at Compile."""
-    from tools.backends.language.fortran.signatures import load_structured_signatures
-
+    at the calling gate, which flags a §5.1 that cannot be parsed). Used both to render the
+    target-language declaration lines for the Generate.static source pin and to pin the IR's
+    ``public_api.module_parameters`` at Compile. ``signatures`` is a language backend's
+    `signatures` module; the structured form it loads is language-neutral."""
     body, err = _section51_fence_body(controlled_spec_path)
     if err or body is None:
         return []
-    struct, perr = load_structured_signatures(body)
+    struct, perr = signatures.load_structured_signatures(body)
     if perr:
         return []
     return [
@@ -6734,62 +3332,35 @@ def _section51_module_parameters(controlled_spec_path: Path) -> list[dict]:
     ]
 
 
-def _section51_parameter_lines(controlled_spec_path: Path) -> list[str]:
-    """The §5.1 module-level ``parameter`` declaration lines in the target language (e.g. ``integer,
-    parameter :: dp = real64``). §5.1 carries the NEUTRAL value (``dp = float64``); the Fortran
-    backend lowers it to the language the generated source is written in via the single
-    ``render_module_parameter_to_fortran`` — so the Generate.static source pin deterministically
-    demands the Fortran spelling (``dp = real64``) from a neutral §5.1 ``float64``.
-
-    ``render_module_parameter_to_fortran`` validates each parameter and can raise
-    ``SignatureParseError`` on a malformed / stale-token §5.1 value; this helper lets it propagate,
-    and the ONE gate that renders it (``_validate_generated_signatures``) both calls
-    this only AFTER ``_parse_canonical_interface_from_controlled_spec`` — which renders the whole
-    §5.1 struct first and short-circuits with a violation on any unrenderable parameter — and wraps
-    this call in ``except SignatureParseError`` as defense-in-depth, so a malformed §5.1 fails closed
-    with a clear violation, never an uncaught gate crash."""
-    from tools.backends.language.fortran.signatures import render_module_parameter_to_fortran
-
-    return [
-        render_module_parameter_to_fortran(mp)
-        for mp in _section51_module_parameters(controlled_spec_path)
-    ]
-
-
 def _parse_canonical_interface_from_controlled_spec(
-    controlled_spec_path: Path,
+    controlled_spec_path: Path, signatures: Any,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], str | None]:
-    """Extract and parse an infrastructure node's §5.1 canonical interface block.
+    """Extract and parse a node's §5.1 canonical interface block.
 
-    §5.1 is a language-neutral *structured* signature block (Objective B). The Fortran-language
-    backend loads it and renders each published symbol back to a canonical Fortran stanza, so the
-    downstream gates compare in the same Fortran currency the generated ``.f90`` is written in
-    (``fortran_signatures.parse_interface_stanzas`` on the rendered block reproduces the exact
-    stanza shape).
+    §5.1 is a language-neutral *structured* signature block (Objective B). A language backend's
+    `signatures` module (``signatures``) loads it and renders each published symbol back to a
+    canonical stanza in that language, so the downstream gates compare in the same currency the
+    generated source is written in (``signatures.parse_interface_stanzas`` on the rendered block
+    reproduces the exact stanza shape).
 
     Returns ``(op_stanzas, type_stanzas, iface_stanzas, error)`` — the published procedures,
     the published types, and the named prototypes of the ``interfaces`` section (issue #266),
     each keyed by name. ``error`` is non-``None`` when the block is missing, duplicated, not
     valid structured YAML, or renders to zero signatures — every such case is fail-closed at the
     gate (a spec that fails to pin its own surface cannot certify)."""
-    from tools.backends.language.fortran.signatures import (
-        SignatureParseError,
-        load_structured_signatures,
-        render_signatures_to_fortran,
-    )
-
     body, err = _section51_fence_body(controlled_spec_path)
     if err or body is None:
         return ({}, {}, {}, err)
-    struct, perr = load_structured_signatures(body)
+    struct, perr = signatures.load_structured_signatures(body)
     if perr:
         return ({}, {}, {}, perr)
     try:
-        rendered = render_signatures_to_fortran(struct)
-    except SignatureParseError as exc:
-        return ({}, {}, {}, f"§5.1 structured block could not render to Fortran: {exc}")
+        rendered = signatures.render_signatures(struct)
+    except signatures.SignatureParseError as exc:
+        return ({}, {}, {}, f"§5.1 structured block could not render to "
+                            f"{signatures.LANGUAGE_DISPLAY_NAME}: {exc}")
     op_stanzas, type_stanzas, iface_stanzas, errors = (
-        fortran_signatures.parse_interface_stanzas(rendered))
+        signatures.parse_interface_stanzas(rendered))
     if errors:
         return (op_stanzas, type_stanzas, iface_stanzas, "; ".join(errors))
     if not op_stanzas and not type_stanzas:
@@ -9244,98 +5815,18 @@ def _spec_id_from_node_key(node_key: str) -> str | None:
 
 
 def _model_files_in_src_dir(
-    src_dir: Path, execution: NodeExecution
+    src_dir: Path, execution: NodeExecution, bundle: Any
 ) -> tuple[list[Path], str | None]:
+    """The node's model source(s) in `src_dir`, named by the target language's `bundle_facts`
+    (`bundle`), and the name expected (None when the spec_id does not resolve)."""
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is None:
-        return sorted(p for p in src_dir.glob("*_model.f90") if p.is_file()), None
-    expected_name = f"{spec_id}_model.f90"
+        return sorted(p for p in src_dir.glob(bundle.model_basename("*")) if p.is_file()), None
+    expected_name = bundle.model_basename(spec_id)
     candidate = src_dir / expected_name
     if candidate.exists():
         return [candidate], expected_name
     return [], expected_name
-
-
-def _model_source_not_found_violation(
-    src_dir: Path, expected_model_name: str | None
-) -> str:
-    """Build the violation message for an absent node model source.
-
-    When ``expected_model_name`` is None the spec_id could not be derived, so the
-    name is unknown and the message stays generic. Otherwise, distinguish the
-    real causes: (a) the required literal module name ``<spec_id>_model`` exceeds
-    the f2008 identifier limit, so no valid literal name exists and renaming
-    cannot fix it; (b) no ``*_model.f90`` was emitted at all; (c) a model source
-    exists but under a non-literal (abbreviated/derived) name. Case (c) is the
-    common Generate mistake — the literal ``<spec_id>_model.f90`` is required (a
-    depending node resolves it via ``use <spec_id>_model``) — so the message names
-    the offending file and instructs a rename rather than the misleading
-    "not found", which reads as if no file was written.
-    """
-    if expected_model_name is None:
-        return f"{src_dir}: model source not found"
-    # The module identifier is the expected name without the ``.f90`` suffix.
-    expected_module = expected_model_name[: -len(".f90")]
-    if len(expected_module) > _FORTRAN_NAME_LIMIT:
-        # No legal literal name exists: <spec_id>_model is itself over the f2008
-        # limit. Renaming the abbreviated file would only trade one violation for
-        # another, so this is a spec-level problem (the spec_id is too long) and
-        # must stop there rather than be "fixed" at Generate's discretion.
-        return (
-            f"{src_dir}: required model module name {expected_module} "
-            f"({len(expected_module)} chars) exceeds the f2008 "
-            f"{_FORTRAN_NAME_LIMIT}-char identifier limit; the spec_id is too "
-            "long for a literal <spec_id>_model name — stop as a spec-level "
-            "problem (do not abbreviate at Generate's discretion)"
-        )
-    present = sorted(
-        p.name for p in src_dir.glob("*_model.f90") if p.is_file()
-    )
-    if present:
-        return (
-            f"{src_dir}: model source {', '.join(present)} present but must be "
-            f"named {expected_model_name} (literal spec_id prefix required; "
-            "abbreviated/derived prefix rejected) — rename to match"
-        )
-    return f"{src_dir}: node model source not found ({expected_model_name})"
-
-
-def _validate_dependency_operation_on_model_files(
-    model_files: list[Path],
-    dep_spec_ids: list[str],
-    violations: list[str],
-) -> None:
-    for model_file in model_files:
-        text = model_file.read_text(encoding="utf-8", errors="ignore")
-        # All three checks below ask whether a KEYWORD appears in code, so neither a comment nor
-        # the inside of a literal may answer. Unmasked, each was satisfiable from prose: a
-        # commented-out `! use dep_model` or `! call dep__op(...)` silenced the two presence
-        # requirements (fail-open — and the `use` one especially, since a model that host-
-        # associates instead of using the module still compiles, which is exactly what this
-        # check exists to catch), while a `write(*,*) 'calls subroutine dep__op'` or a
-        # `! subroutine dep__op is external` raised a redefinition violation against a model that
-        # defines nothing (fail-closed).
-        lowered = fortran_lines.mask_code_lookalikes(text.lower())
-
-        for spec_id in dep_spec_ids:
-            spec_id_l = spec_id.lower()
-            op_prefix = re.escape(spec_id_l + "__")
-            module_name = re.escape(spec_id_l + "_model")
-
-            if not re.search(rf"\buse\s+{module_name}\b", lowered):
-                violations.append(
-                    f"{model_file}: missing dependency module use ({spec_id}_model)"
-                )
-
-            if re.search(rf"\bsubroutine\s+{op_prefix}[a-z0-9_]*\b", lowered):
-                violations.append(
-                    f"{model_file}: dependency operation redefinition detected ({spec_id}__*)"
-                )
-
-            if not re.search(rf"\bcall\s+{op_prefix}[a-z0-9_]*\b", lowered):
-                violations.append(
-                    f"{model_file}: missing dependency operation call ({spec_id}__*)"
-                )
 
 
 def _validate_dependency_operation_usage(
@@ -9344,19 +5835,26 @@ def _validate_dependency_operation_usage(
     dep_spec_ids = _component_dep_spec_ids(repo_root, execution)
     if not dep_spec_ids:
         return
+    # A language missing either reader was already refused by `_validate_generate_outputs`,
+    # which runs on this same src_dir just before this check — hence the discarded sink.
+    language = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)[1]
+    bundle = _language_module(language, "bundle_facts", src_dir, [])
+    source_reading = _language_source_reading(language, src_dir, [])
+    if bundle is None or source_reading is None:
+        return
 
-    model_files, _expected_model_name = _model_files_in_src_dir(src_dir, execution)
+    model_files, _expected_model_name = _model_files_in_src_dir(src_dir, execution, bundle)
     if not model_files:
         # The absent / mis-named model source is already reported by
         # _validate_generate_outputs (which always runs on this same src_dir just
-        # before this check), via _model_source_not_found_violation. Re-reporting
+        # before this check), via model_source_not_found_violation. Re-reporting
         # here would emit a duplicate — and, for the abbreviated-name case, the
         # stale "node model source not found" wording alongside the clearer
         # rename instruction. Stay silent and let the generate-outputs check own
         # the diagnostic.
         return
 
-    _validate_dependency_operation_on_model_files(
+    source_reading.validate_dependency_operations(
         model_files, dep_spec_ids, violations
     )
 
@@ -9398,44 +5896,32 @@ def _exit_code_for_violations(violations: list[str]) -> int:
     return 1
 
 
-def _expected_runner_name(spec_id: str) -> str:
-    """The basename of the runner a node's `spec_id` implies. ONE spelling in this module.
-
-    Four sites derived it independently, and the attribution split added by issue #112 would have
-    been a fifth: the name gate below, the build-graph seam's host-glue source, the undeclared-
-    `.f90` carve-out, and the split that decides which runner findings are this repository's. They
-    have to agree — a split that disagreed with the name gate would attribute that gate's own
-    finding to the wrong author, which is the defect the split was written to repair.
-
-    Mirrors `workflow_conductor.Conductor._runner_basename` FOR THE ONE LANGUAGE THE REGISTRY
-    HOLDS TODAY. Since issue #289 (R4-b PR-2) the conductor asks the target language's
-    `bundle_facts.runner_basename`, while this module still spells that language's name: it is
-    part of this module's source-reading debt (the runner glob beside its reader included;
-    `TODO.md`, the `validate_pipeline_semantics.py` source-reading area), which migrates with that
-    issue's PR-3, and that migration is a PRECONDITION of running a second language. Until then
-    such a runner is misread here in two directions (round 2 measured the second): an m3c node's
-    host glue is refused as undeclared, and a harness self-test runner under another suffix is
-    not SEEN by this module's runner-output gates at all — the glob returns nothing and they add
-    no violation, so a forbidden judge-artifact write in it would pass post_generate.
-    """
-    return f"{spec_id}_runner.f90"
-
-
 def _validate_runner_source_files(
     execution: NodeExecution,
     runner_files: list[Path],
     violations: list[str],
     known_case_ids: set[str] | None = None,
+    *,
+    bundle: Any,
+    source_reading: Any,
 ) -> None:
-    # B2 (cosmetic): the runner source is found by `*_runner.f90` glob, which is
+    """The deterministic runner backstops over `runner_files`: the name, the forbidden judge
+    artifacts, and the target language's JSON-serialization and snapshot-filename scans.
+
+    The runner's name is the target language's `bundle_facts.runner_basename` — ONE spelling,
+    shared with the conductor (`Conductor._runner_basename`) and with every reader in this module
+    (the runner glob, the attribution split, the build-graph seam's host glue, the undeclared-
+    source carve-out). Until issue #289's R4-b PR-3 this module spelled one language's name
+    itself, and a runner under another suffix was not SEEN by these gates at all."""
+    # B2 (cosmetic): the runner source is found by a `*_runner.<ext>` glob, which is
     # looser than generate's write-authorization (allowed_output_paths pins exactly
-    # `<spec_id>_runner.f90`, so a leaf writing any other name already fails as an
+    # `<spec_id>_runner.<ext>`, so a leaf writing any other name already fails as an
     # unauthorized_write). Assert the basename matches so the validator's expectation
     # is explicit and consistent with the authorization — mirrors the model side
     # (_model_files_in_src_dir). No functional change: the authorization enforces it.
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is not None:
-        expected_runner_name = _expected_runner_name(spec_id)
+        expected_runner_name = bundle.runner_basename(spec_id)
         for runner_file in runner_files:
             if runner_file.name != expected_runner_name:
                 violations.append(
@@ -9450,12 +5936,12 @@ def _validate_runner_source_files(
                 violations.append(
                     f"{runner_file}: forbidden runner output write detected ({output_name})"
                 )
-        _validate_runner_json_serialization(
+        source_reading.validate_runner_json_serialization(
             runner_file=runner_file,
             text=text,
             violations=violations,
         )
-        _validate_runner_snapshot_filenames(
+        source_reading.validate_runner_snapshot_filenames(
             runner_file=runner_file,
             text=text,
             violations=violations,
@@ -9464,14 +5950,22 @@ def _validate_runner_source_files(
 
 
 def _validate_runner_outputs(
-    execution: NodeExecution, src_dir: Path, violations: list[str],
+    repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str],
     known_case_ids: set[str] | None = None,
 ) -> None:
-    runner_files = sorted(src_dir.glob("*_runner.f90"))
+    # A language missing either reader was already refused by `_validate_generate_outputs` on
+    # this same src_dir — hence the discarded sink.
+    language = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)[1]
+    bundle = _language_module(language, "bundle_facts", src_dir, [])
+    source_reading = _language_source_reading(language, src_dir, [])
+    if bundle is None or source_reading is None:
+        return
+    runner_files = sorted(src_dir.glob(bundle.runner_basename("*")))
     if not runner_files:
         return
     _validate_runner_source_files(
         execution, runner_files, violations, known_case_ids=known_case_ids,
+        bundle=bundle, source_reading=source_reading,
     )
 
 
@@ -9811,10 +6305,16 @@ def _validate_quality_check_commands(
         )
 
         if _make_quality_check_applies(build_system, language):
-            if preset not in {"make_test", "make_check"}:
+            # The target build system's quality-check presets, the control file they read and
+            # its targets are that backend's (`control_file`, issue #289 R4-b PR-3).
+            control_file = backend_registry.capability_module(
+                "build_system", str(build_system), "control_file")
+            presets = control_file.QUALITY_CHECK_PRESETS
+            if preset not in presets:
                 violations.append(
                     f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    f"must use make_test/make_check for toolchain.language={language} and toolchain.build_system=make"
+                    f"must use {'/'.join(presets)} for toolchain.language={language} and "
+                    f"toolchain.build_system={build_system}"
                 )
                 continue
 
@@ -9830,23 +6330,25 @@ def _validate_quality_check_commands(
             ):
                 violations.append(
                     f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    "must run inside source/<source_id>/src for make-based quality check"
+                    f"must run inside source/<source_id>/src for {build_system}-based quality "
+                    "check"
                 )
                 continue
 
-            makefile_path = cwd_path / "Makefile"
-            if not makefile_path.exists():
+            control_file_path = cwd_path / control_file.CONTROL_FILE_BASENAME
+            if not control_file_path.exists():
                 violations.append(
                     f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    f"requires Makefile in quality check cwd ({makefile_path})"
+                    f"requires {control_file.CONTROL_FILE_BASENAME} in quality check cwd "
+                    f"({control_file_path})"
                 )
                 continue
 
-            required_target = "test" if preset == "make_test" else "check"
-            if required_target not in _make_targets(makefile_path):
+            required_target = presets[preset]
+            if required_target not in control_file.targets(control_file_path):
                 violations.append(
-                    f"{makefile_path}: missing {required_target} target required by run_quality_checks "
-                    f"command_id={command_id}"
+                    f"{control_file_path}: missing {required_target} target required by "
+                    f"run_quality_checks command_id={command_id}"
                 )
 
 
@@ -11478,7 +7980,7 @@ def _validate_component_dep_operations(
     NON-EMPTY ``operations`` list (each entry a non-empty string).
 
     The failure this pins is a closure fail_closed with no repairable signal. The
-    generate-side gate (``_validate_dependency_operation_on_model_files``) requires a
+    generate-side gate (the language's ``validate_dependency_operations``) requires a
     component dep's model to ``use <dep>_model`` + ``call <dep>__*`` UNCONDITIONALLY, while
     the host injects that dependency's published call-site interfaces
     (``_resolve_dependency_facts``) keyed off the IR's ``operations`` list. When Compile
@@ -12271,8 +8773,63 @@ def _validate_published_surface(
     # IR's public_api.signatures AND public_api.module_parameters == §5.1 so the Generate.generate
     # leaf — walled off from controlled_spec.md — carries the exact signatures and parameter values
     # to publish in its IR.
+    #
+    # Both sides are language-NEUTRAL documents, compared through a language backend's rendering
+    # as a canonical form. Compile is target-free (issue #284), so the comparison is made in the
+    # currency of EVERY language this repository can render signatures in
+    # (`_compile_signature_languages`, issue #289 R4-b PR-3): an IR that drifts from §5.1 in a way
+    # one language's rendering happens to erase is still refused by the others. A finding a later
+    # language repeats word for word is reported once.
+    languages = _compile_signature_languages()
+    if not languages:
+        violations.append(
+            f"{derived_path}:controlled_spec ({cs_ref}) §5.1 cannot be pinned — no language "
+            "backend declares the 'signatures' capability, so there is no language to render the "
+            f"{kind} node's canonical interface in (tools/backends/registry.py)")
+        return
+    reported_by_earlier_language: set[str] = set()
+    for language in languages:
+        language_violations: list[str] = []
+        # Through `_language_module`, so a declared package that cannot be loaded lands as a
+        # violation rather than an exception that discards the sibling gates' findings.
+        signatures = _language_module(language, "signatures", derived_path, language_violations)
+        if signatures is not None:
+            _pin_public_api_against_section51(
+                derived_path, kind, cs_ref, cs_path, spec_ops, spec_types, public_api,
+                language_violations, signatures=signatures)
+        violations.extend(
+            v for v in language_violations if v not in reported_by_earlier_language)
+        reported_by_earlier_language.update(language_violations)
+
+
+def _compile_signature_languages() -> list[str]:
+    """Every language this repository can render §5.1 signatures in (declares `signatures`),
+    sorted — the currencies the target-free Compile-stage §5.1 pin is made in.
+
+    Asked of the REGISTRY, not of the declared target profiles: Compile is target-free (issue
+    #284), and the pin is a statement about two language-neutral documents, so it holds in every
+    currency a node could later be generated in, whichever targets a checkout happens to
+    declare."""
+    return [language for language in backend_registry.implemented_backend_ids("language")
+            if backend_registry.provides("language", language, "signatures")]
+
+
+def _pin_public_api_against_section51(
+    derived_path: Path,
+    kind: str,
+    cs_ref: str,
+    cs_path: Path,
+    spec_ops: set[str],
+    spec_types: set[str],
+    public_api: dict[str, Any],
+    violations: list[str],
+    *,
+    signatures: Any,
+) -> None:
+    """The §5.1 half of `_validate_published_surface`, in ONE language's currency
+    (``signatures``, that language's `signatures` module)."""
     op_stanzas, type_stanzas, proto_stanzas, iface_err = (
-        _parse_canonical_interface_from_controlled_spec(cs_path))
+        _parse_canonical_interface_from_controlled_spec(cs_path, signatures))
     if iface_err:
         violations.append(
             f"{derived_path}:controlled_spec ({cs_ref}) §5.1 {iface_err} — the canonical "
@@ -12302,9 +8859,9 @@ def _validate_published_surface(
 
     _validate_ir_signatures_against_section51(
         derived_path, kind, public_api, op_stanzas, type_stanzas, violations,
-        iface_stanzas=proto_stanzas)
+        iface_stanzas=proto_stanzas, signatures=signatures)
     _validate_ir_module_parameters_against_section51(
-        derived_path, kind, public_api, cs_path, violations)
+        derived_path, kind, public_api, cs_path, violations, signatures=signatures)
 
 
 def _validate_ir_signatures_against_section51(
@@ -12316,6 +8873,7 @@ def _validate_ir_signatures_against_section51(
     violations: list[str],
     *,
     iface_stanzas: dict[str, list[str]] | None = None,
+    signatures: Any,
 ) -> None:
     """Pin the IR's ``public_api.signatures`` == the controlled_spec §5.1 canonical interface
     block. Each entry is ``{symbol, signature}`` (``symbol`` names the published op/type;
@@ -12337,11 +8895,12 @@ def _validate_ir_signatures_against_section51(
     corpus, where no §5.1 declares one — and an IR carrying the key when §5.1 has no section
     is a drift too. Every refusal names the remedy the leaf can act on: transcribe the
     ``interfaces`` list into ``public_api.interfaces`` verbatim."""
-    from tools.backends.language.fortran.signatures import (
-        SignatureParseError, render_symbol_to_fortran,
-        render_interface_to_fortran as _render_prototype,
-        parse_interface_stanzas as _split_stanzas,
-        stanza_line_list as _atom_list, stanza_line_set as _atom_set)
+    SignatureParseError = signatures.SignatureParseError
+    render_symbol = signatures.render_symbol
+    _render_prototype = signatures.render_interface
+    _split_stanzas = signatures.parse_interface_stanzas
+    _atom_list = signatures.stanza_line_list
+    _atom_set = signatures.stanza_line_set
 
     spec51: dict[str, tuple[str, ...]] = {}
     for name, lines in {**op_stanzas, **type_stanzas}.items():
@@ -12375,12 +8934,12 @@ def _validate_ir_signatures_against_section51(
                 "(a language-neutral structured signature)")
             continue
         try:
-            interface = render_symbol_to_fortran(signature)
+            interface = render_symbol(signature)
         except SignatureParseError as exc:
             violations.append(
                 f"{derived_path}:public_api.signatures['{symbol}'] signature is not renderable: {exc}")
             continue
-        e_ops, e_types, _e_ifaces, e_errors = fortran_signatures.parse_interface_stanzas(interface)
+        e_ops, e_types, _e_ifaces, e_errors = _split_stanzas(interface)
         for err in e_errors:
             violations.append(f"{derived_path}:public_api.signatures['{symbol}'] {err}")
         # The single-symbol renderer above emits a procedure or a type, never an interface
@@ -12401,7 +8960,7 @@ def _validate_ir_signatures_against_section51(
             violations.append(
                 f"{derived_path}:public_api.signatures declares symbol '{symbol}' more than once")
             continue
-        ir_stanzas[symbol] = fortran_signatures.stanza_line_list(parsed_lines)
+        ir_stanzas[symbol] = _atom_list(parsed_lines)
 
     for missing in sorted(set(spec51) - set(ir_stanzas)):
         violations.append(
@@ -12509,6 +9068,8 @@ def _validate_ir_module_parameters_against_section51(
     public_api: dict[str, Any],
     cs_path: Path,
     violations: list[str],
+    *,
+    signatures: Any,
 ) -> None:
     """Pin the IR's ``public_api.module_parameters`` == the controlled_spec §5.1 module-level
     parameters (``dp = float64`` / ``case_id_len = 64``), by name AND value. These are part of the
@@ -12531,7 +9092,8 @@ def _validate_ir_module_parameters_against_section51(
     the Generate.static source pin), so YAML int ``64`` == string ``"64"`` and the neutral kind
     token ``float64`` == ``FLOAT64`` (both §5.1 and IR carry the neutral value); ``base`` is not
     compared (the validator constrains it to integer/absent and the renderer fixes it)."""
-    from tools.backends.language.fortran.signatures import SignatureParseError, _validate_module_parameter
+    SignatureParseError = signatures.SignatureParseError
+    _validate_module_parameter = signatures.validate_module_parameter
 
     def _norm(value: Any) -> str:
         # Case-fold (Fortran identifiers are case-insensitive, so the neutral `float64` == `FLOAT64`)
@@ -12566,7 +9128,7 @@ def _validate_ir_module_parameters_against_section51(
     # defense in depth that no row reaches through a caller today.
     spec_params: dict[str, Any] = {}
     spec_dupe_names: list[str] = []
-    for mp in _section51_module_parameters(cs_path):
+    for mp in _section51_module_parameters(cs_path, signatures):
         name = _norm_name(mp["name"])
         if name in spec_params:
             spec_dupe_names.append(name)
@@ -12633,10 +9195,11 @@ def _validate_ir_module_parameters_against_section51(
 # failure as TERMINAL (fail_closed) on `STALE_DEPENDENCY_IR_EXIT_CODE` and on nothing in the text.
 STALE_DEPENDENCY_IR_MARKER = "[stale-dependency-ir]"
 
-#: `main`'s exit code when the Fortran structure front end is unavailable — an OPERATOR problem
-#: (an uninstalled package), never a content one. Distinct from 1 (violations found) and from
+#: `main`'s exit code when a language backend's source front end is unavailable (`registry.
+#: BackendFrontendUnavailable`) — an OPERATOR problem (an uninstalled package), never a content one.
+#: Distinct from 1 (violations found) and from
 #: argparse's 2, so a caller tells the three apart without reading a line of the output.
-FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
+SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE = 3
 
 #: `main`'s exit code when a violation's SUBJECT is the node's own certified IR, which predates
 #: the current contract: a `spec.ir.yaml` that `Compile.static` — skipped on this resume — would
@@ -12823,25 +9386,21 @@ def _validate_generated_signatures(
         _fail_closed_if_pinned(f"controlled_spec ({cs_ref}) unresolvable")
         return
 
-    # The render+compare below is a hard-coded import of the Fortran backend. A node whose
-    # language has no EXTRACTED backend is fail-closed rather than pinned against the wrong
-    # language — `unavailable_reason`, not `unsupported_reason`, because a declared-but-
-    # unextracted member has no renderer of its own and would silently take Fortran's.
-    # This is the ONE place the question is asked of a node (Compile's `_validate_published_
-    # surface` asked it of the IR's toolchain until R4-a PR-3; the IR is target-free now).
-    # The language of the target the pipeline is built for (issue #284). An unresolvable
-    # target reads as "" — the documented default, as an absent key always did — and is not
-    # passed by it: `_validate_pipeline_targets_resolve` reports it in the same stage.
-    language = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)[1] or ""
-    unsupported = _signature_backend_refusal(language)
-    if unsupported:
-        loc = model_files[0] if model_files else ir_path
-        violations.append(
-            f"{loc}: this {ir_kind} node's signatures cannot be pinned — {unsupported}")
+    # The render + compare below is the TARGET language's (`signatures`, issue #289 R4-b PR-3),
+    # asked of the language of the target the pipeline is built for (issue #284). A language
+    # that does not declare the capability is refused rather than pinned in another language's
+    # currency; an unresolvable target appends nothing here, because
+    # `_validate_pipeline_targets_resolve` reports it in the same stage.
+    language = _target_toolchain_from_pipeline_dir(repo_root, execution.pipeline_dir)[1]
+    loc = model_files[0] if model_files else ir_path
+    signatures = _language_module(
+        language, "signatures", f"{loc}: this {ir_kind} node's signatures cannot be pinned",
+        violations)
+    if signatures is None:
         return
 
     op_stanzas, type_stanzas, proto_stanzas, iface_err = (
-        _parse_canonical_interface_from_controlled_spec(cs_path))
+        _parse_canonical_interface_from_controlled_spec(cs_path, signatures))
     if iface_err:
         violations.append(
             f"{cs_path}: §5.1 canonical interface block {iface_err} — cannot pin the generated "
@@ -12863,7 +9422,8 @@ def _validate_generated_signatures(
     pub = ir.get("public_api")
     stale_ir_violations: list[str] = []
     _validate_ir_module_parameters_against_section51(
-        ir_path, ir_kind, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations)
+        ir_path, ir_kind, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations,
+        signatures=signatures)
     # SIGNATURES take the same guard, and issue #153 PR-2 is why. A `component` IR certified before
     # PR-2 carries no `public_api.signatures` at all — the key was FORBIDDEN then — so on a
     # `--resume` into Generate, where Compile.static does not re-run, the leaf has no signatures to
@@ -12874,7 +9434,8 @@ def _validate_generated_signatures(
     # violation's TYPE, which `main` maps to a dedicated exit code.
     _validate_ir_signatures_against_section51(
         ir_path, ir_kind, pub if isinstance(pub, dict) else {},
-        op_stanzas, type_stanzas, stale_ir_violations, iface_stanzas=proto_stanzas)
+        op_stanzas, type_stanzas, stale_ir_violations, iface_stanzas=proto_stanzas,
+        signatures=signatures)
     if stale_ir_violations:
         loc = model_files[0] if model_files else ir_path
         violations.append(StaleDependencyIRViolation(
@@ -12889,460 +9450,16 @@ def _validate_generated_signatures(
             "dependency freshness refuses it, never for a validator rule"))
         return
 
-    target = model_files[0] if model_files else (repo_root / "<model>")
-    # Parse the generated source into per-symbol stanzas (a procedure stanza is header + its
-    # declarations + body; a type stanza is its full block) so each pinned signature is checked
-    # WITHIN its own procedure/type. A GLOBAL source line-set would let a drifted declaration in
-    # one procedure be masked by an identical (correct) declaration in another — `intent(in) :: n`
-    # is common — so the scoping is load-bearing, not cosmetic.
-    combined = "\n".join(
-        model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
+    signatures.generated_source_violations(
+        model_files=model_files,
+        target=model_files[0] if model_files else (repo_root / "<model>"),
+        ir_kind=ir_kind,
+        op_stanzas=op_stanzas,
+        type_stanzas=type_stanzas,
+        proto_stanzas=proto_stanzas,
+        module_parameters=_section51_module_parameters(cs_path, signatures),
+        violations=violations,
     )
-    # A prototype the source declares inside an `interface` block is neither a published
-    # procedure nor a type; the splitter files it separately. It is read for two purposes: a
-    # §5.1 procedure the source only prototypes is reported as undefined (the per-symbol loop),
-    # and each §5.1 `interfaces` prototype is pinned against the source's prototype of that
-    # name (after the loop; issue #266). A prototype that shares a published name with an
-    # unprefixed definition is still a `duplicate signature` error from the splitter; the
-    # prefixed variant that error never covered is closed in the per-symbol loop, which compares
-    # a defined procedure by its own definition's header.
-    src_ops, src_types, src_ifaces, src_errors = (
-        fortran_signatures.parse_interface_stanzas(combined))
-    # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
-    # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
-    # overwrite", and this caller discarded them while the §5.1 side and the IR side both honour
-    # theirs. The consequence, measured on a real component §5.1 (issue #153 PR-2 round 1): a model
-    # source publishing a DRIFTED 2-argument operation, plus a never-called private helper carrying a
-    # second declaration of the SAME published name with the pinned 5-argument shape, produced ZERO
-    # violations — the stanza dict is last-wins, so the gate compared §5.1 against the decoy. Moving
-    # the decoy earlier in the file restored all 4 violations, which is what identified the
-    # mechanism. That is a `leaf shortcut` of the exact class this gate exists to refuse: a
-    # `Generate.gate` pass while publishing an ABI §5.1 does not declare.
-    if src_errors:
-        target = model_files[0] if model_files else (repo_root / "<model>")
-        for err in src_errors:
-            violations.append(
-                f"{target}: generated model source cannot be compared with controlled_spec §5.1 "
-                f"({err}) — a published symbol must be declared exactly once in the model source, "
-                "so remove the extra declaration (an `interface` body re-declaring a symbol this "
-                "module defines is one) and re-emit")
-        return
-    src_lists: dict[str, tuple[str, ...]] = {}
-    src_proto_lists: dict[str, tuple[str, ...]] = {}  # the prototypes, kept apart (see the loop)
-    spec_proto_lists: dict[str, tuple[str, ...]] = {}  # §5.1's prototypes, same currency
-    for atom_lists, stanzas in ((src_lists, {**src_ops, **src_types}),
-                                (src_proto_lists, src_ifaces),
-                                (spec_proto_lists, proto_stanzas)):
-        for name, lines in stanzas.items():
-            atom_lists[name] = fortran_signatures.stanza_line_list(lines)
-
-    # PUBLISHING A HEADER IS NOT IMPLEMENTING IT, and everything above this line only compares
-    # HEADERS. `parse_interface_stanzas` reads a header wherever it stands, so a model that
-    # declares a §5.1 operation as a PROTOTYPE — the pinned header, verbatim, with no
-    # implementation anywhere — satisfies every comparison below. Measured (issue #153's CARRIED
-    # residue, re-run here before it was fixed): ZERO violations, the syntax stage rc=0, the
-    # node's own build rc=0, and the node links as long as nothing calls the operation. The
-    # failure lands at a CONSUMER's link, one node and one billed phase away from the leaf that
-    # caused it. It is a `leaf shortcut` by the decision criterion: a leaf that takes it is closer
-    # to reporting `Generate` done, having skipped the implementation.
-    #
-    # WHY THE CARRIED PREMISE DOES NOT APPLY HERE, which is the whole reason this could be fixed
-    # at last. `checks_module_abi_facts`' docstring names three shapes a bare "is it defined"
-    # refusal would fail — a name association, a generic block, an implementation in a separate
-    # unit — and each was run against THIS gate before the check below was added. All three are
-    # refused TODAY, before it, and for an unrelated reason: none of them puts the pinned §5.1
-    # header in the source, so each already fails the `have is None` arm above. So the
-    # over-refusal belongs to the checks-module scanner, whose question ("is this name callable")
-    # those shapes answer yes to; this gate's question is narrower and they never reach it.
-    # `PublishedProcedureDefinednessTests` pins that as a row, so a later widening of the header
-    # comparison cannot quietly inherit the over-refusal.
-    #
-    # A `component` / `infrastructure` source had no structural reader, by deliberate removal: a
-    # parse refusal "bought nothing and cost a legal form" where no gate read the file (measured,
-    # 0 -> 4 violations). That justification is now spent — this gate reads it, so the refusal
-    # buys the definedness check — and a parse the front end cannot resolve is refused rather than
-    # skipped. Skipping would put the check behind a switch the LEAF holds: one renamed variable
-    # would disable it, which is the silent-gate shape this area exists to remove.
-    #
-    # THE QUESTION IS SCOPED TO THE PUBLISHING UNIT, and the first version of this check was not.
-    # Asked over the whole file it becomes "is this name defined ANYWHERE", which a decoy answers:
-    # a round-1 reviewer measured a model whose published operation was a prototype in the
-    # published module and an empty stub in a SECOND module in the same file — gate 0 violations,
-    # the syntax stage clean, the node's own build clean, and the consumer still failing at LINK
-    # with an undefined reference. That is this check's own hole, one unit away, reproduced
-    # independently before it was fixed. The duplicate-symbol backstop that should have caught two headers of one name did
-    # not, because the decoy's header carried a prefix (`impure elemental`) or a statement label
-    # that the stanza reader does not model — so narrowing to that spelling would have closed one
-    # decoy and left the family. Scoping removes the family FOR THE DEFINEDNESS ANSWER, and only
-    # there: a decoy in the published unit itself — contained in another procedure, or a prototype
-    # in another procedure's body — still carried the header the comparison below read, until
-    # that comparison took its header from the same definition (`_module_level_definition_headers`).
-    #
-    # The unit is named by the source's own basename with its extension dropped, which is the
-    # convention this repository already relies on when it resolves the model source at all.
-    # (An earlier sentence here described the per-file UNION this replaced — "every model file
-    # contributes only the names its own unit defines" — and contradicted the rule two lines
-    # above it once the union was gone. Deleted rather than corrected: one statement of a rule.)
-    #
-    # ONE FILE, NOT A UNION. An earlier version unioned the per-file answers, and a round-2 census
-    # showed what that buys: a second model file whose OWN module carries a same-named stub credits
-    # the prototype in the published file, which is the unit-granularity hole reopened at file
-    # granularity. Its ROUTE was NOT established — `_model_files_in_src_dir` returns more than one
-    # file only when `_spec_id_from_node_key` finds no `/`, and `node_key` is read from the
-    # host-authored `lineage.json`, which no leaf write root covers — so this is defense in depth
-    # rather than a closed exploit, and it is recorded that way. The published surface belongs to
-    # ONE module either way, so a set of files this gate cannot resolve to one publisher is
-    # fail-closed rather than unioned.
-    defined_names: frozenset[str] | None = None
-    definition_lists: dict[str, tuple[str, ...] | None] = {}
-    unit_absent: str | None = None
-    if op_stanzas and len(model_files) != 1:
-        # APPENDED DIRECTLY, and NOT via `_fail_closed_if_pinned`, and NOT followed by a
-        # `return`. Both were wrong, and a round-3 disclosure reviewer measured the cost:
-        # `_fail_closed_if_pinned` appends only when the NODE_KEY's prefix is a pinned kind,
-        # while `len(model_files) != 1` can only happen when the node_key has no `/` at all —
-        # so in the one configuration this arm can fire, it appended NOTHING and returned,
-        # dropping every §5.1 header comparison with it. Against `origin/main`, which reports
-        # the drift, that is red-then-GREEN: a check this branch silently removed. Past this
-        # point `ir_kind` has already been confirmed to publish an exact surface, so the
-        # refusal needs no further condition; and the header comparison does not need the
-        # definedness answer, so it continues below with `defined_names` left None.
-        violations.append(
-            f"{target}: this {ir_kind} node's published surface cannot be pinned to one "
-            f"publisher — {len(model_files)} model source files were resolved and exactly one "
-            "is expected, so which program unit publishes the controlled_spec §5.1 surface "
-            "cannot be decided; the definedness check is skipped for this node and the "
-            "signature comparison below still applies")
-    if op_stanzas and len(model_files) == 1:
-        model_file = model_files[0]
-        try:
-            source_text = model_file.read_text(encoding="utf-8", errors="ignore").lower()
-            if not fortran_structure.publishing_unit_present(
-                    _structure_reading(source_text)[1], model_file.stem):
-                unit_absent = model_file.stem
-            defined_names = _module_level_procedure_names(source_text, model_file.stem)
-            definition_lists = _module_level_definition_headers(source_text, model_file.stem)
-        # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
-        # failure (an uninstalled package), no edit to this source can clear it, and `main`
-        # answers it with a dedicated exit code. Same rule as `_validate_problem_model_gates`.
-        except _FortranSourceStructureError as exc:
-            for structure_error in exc.errors:
-                violations.append(
-                    f"{target}: the structure front end could not resolve this source at "
-                    f"statement {structure_error.line} of its joined view "
-                    f"({'missing token' if structure_error.missing else 'parse error'}): "
-                    f"{structure_error.snippet!r}. A {ir_kind} node's published operations must be "
-                    "shown to be DEFINED and not merely declared, which needs the procedure "
-                    f"structure, so an unresolvable source is a Generate failure — "
-                    f"{fortran_structure.STRUCTURE_REFUSAL_HINT}.")
-            # NO `return`. The header comparison below does not need the parse, and discarding it
-            # would hand a leaf whose source has BOTH an unresolvable identifier and a real
-            # signature drift only the first of the two — two warm retries where one would do.
-            # `defined_names` stays None, so the definedness arm alone is skipped; the violation
-            # above already fails the node, so skipping it opens nothing.
-
-    for name in sorted({**op_stanzas, **type_stanzas}):
-        spec_lines = op_stanzas.get(name) or type_stanzas.get(name) or []
-        is_type = name in type_stanzas
-        kind = "derived type" if is_type else "procedure"
-        have = src_lists.get(name)
-        # A procedure the publishing module DEFINES is compared by ITS header, not by whichever
-        # stanza of that name the splitter met (`structure.module_level_definition_stanzas` says
-        # why). A definition whose header the splitter cannot read leaves `have` None, and the
-        # source is told so.
-        if not is_type and name.lower() in definition_lists:
-            have = definition_lists[name.lower()]
-        # A published procedure the source declares only as a PROTOTYPE inside an `interface`
-        # block. The stanza splitter files it under the prototypes, so it is not in `src_lists`;
-        # it is still the header the leaf wrote for this name, so it is compared for drift below
-        # and reported as undefined by the structural arm (an interface-body header is not a
-        # module-level procedure to the structure reader; a round-1 reviewer measured that a
-        # clause repeating that verdict here was unobservable). Setting `have` is the whole of
-        # it. What the prototype-plus-definition PAIR gets, stated by shape because a round-2
-        # reviewer found the previous sentence here claiming a defence that does not exist: an
-        # UNPREFIXED pair is the splitter's `duplicate signature` above, whichever comes first;
-        # a pair in the module's specification part is refused by the compiler ("already
-        # defined") at `Generate.syntax` whatever the prefix; a prototype inside another
-        # procedure's BODY plus a module-level definition carrying a prefix the splitter does
-        # not model (`impure elemental`) is refused by NEITHER — measured 0 violations here and
-        # rc=0 from the syntax check, at origin/main and at this revision — because this arm
-        # compared the prototype's atoms while the structural arm credited the prefixed
-        # definition. That pair, and its contained-decoy spelling, is closed by the arm above: a
-        # name the module DEFINES never falls back to a prototype's header.
-        if (not is_type and have is None and name in src_proto_lists
-                and name.lower() not in definition_lists):
-            have = src_proto_lists[name]
-        if have is None and not is_type and name.lower() in definition_lists:
-            violations.append(
-                f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
-                f"'{name}' in the pinned form — the module defines '{name}', but "
-                f"{fortran_structure.UNREAD_DEFINITION_HEADER_REMEDY}")
-            continue
-        if have is None:
-            violations.append(
-                f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
-                f"'{name}' (no {kind} of that name/header found — the published surface must match "
-                "the pinned §5.1 signature)")
-            continue
-        if not is_type and defined_names is not None and name.lower() not in defined_names:
-            # NOT `continue`. A first version reported this INSTEAD OF the stanza comparison, on
-            # the reasoning that "the header is present by construction, so every atom matches" —
-            # which is false, and a round-2 reviewer measured it: `have` is keyed on the NAME, not
-            # on the header matching §5.1, so a prototype that ALSO drifts has a non-None `have`
-            # and its drift atoms were suppressed. A source with both faults was told one per
-            # attempt, which is the second warm retry the sibling comment above refuses to pay.
-            #
-            # `unit_absent` is the other half, and it is why the two messages are not one. Scoping
-            # answers the empty set both when the published unit implements nothing and when the
-            # source declares no such unit at all, and the second is a DIFFERENT fault with a
-            # different repair: telling a leaf to "define it in the module's own `contains`" when
-            # the procedure IS defined — in a module under another name — is a remedy whose every
-            # clause is false for the source, and nothing else in this stage names the real fault.
-            # Measured on a correct model whose module name did not match its file's: three such
-            # violations, none of them actionable.
-            if unit_absent is not None:
-                violations.append(
-                    f"{target}: generated model source declares no program unit named "
-                    f"'{unit_absent}', so the surface controlled_spec §5.1 pins has no publisher "
-                    f"here — procedure '{name}' may well be defined, but not by the module a "
-                    f"consumer will `use`. Name the module '{unit_absent}', matching the source "
-                    "file, and define the published procedures inside it")
-            else:
-                violations.append(
-                    f"{target}: generated model source declares controlled_spec §5.1 procedure "
-                    f"'{name}' but never DEFINES it — "
-                    f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
-        if is_type:
-            # A derived type's WHOLE component layout — names, types, and ORDER, with nothing
-            # inserted — is part of the compatibility contract (§5), so the source type block must
-            # equal §5.1's atom list EXACTLY. Ordered-subsequence would accept an inserted extra
-            # component (widening the published layout); set equality would accept a reorder.
-            if have != fortran_signatures.stanza_line_list(spec_lines):
-                violations.append(
-                    f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — its "
-                    "published component layout (names/types/order, no extras) does not match the "
-                    "pinned definition")
-            continue
-        # A procedure's dummy-argument declarations may be in any order (Fortran-legal, and the
-        # header line already pins call order), so membership — not order — is checked here.
-        have_set = frozenset(have)
-        for orig in spec_lines:
-            missing_atoms = [a for a in fortran_signatures.stanza_atoms([orig]) if a not in have_set]
-            if missing_atoms:
-                violations.append(
-                    f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — missing the "
-                    f"pinned interface line `{orig.strip()}` (argument name/type/rank/intent/"
-                    "result drift from the published surface, OR a procedure prefix on the header "
-                    "that §5.1 does not declare — the header is compared as published, so a prefix "
-                    "is a difference even when every argument is right)")
-
-    # The §5.1 PROTOTYPES (issue #266): each `interfaces` entry must appear in the source as a
-    # prototype of the same name — inside an `interface` block, never as a definition — with
-    # the same atom SET (a prototype has no body, so the comparison is equality both ways,
-    # unlike a published procedure's membership check: an extra declaration line in a
-    # prototype is a different interface the compiler checks the passed actual against). A
-    # prototype the source declares that §5.1 does not is allowed — a module-private
-    # interface is not published surface. The "never as a definition" half asks the structure
-    # reader, like the definedness arm above, and is skipped on the same conditions (no single
-    # publisher, or a source the front end could not resolve, both already refused above).
-    # The two scope statements a source prototype must carry (host association of the kind
-    # symbol, and the implicit-typing rule the lint gate requires) are not atoms — the
-    # splitter drops them — so they cannot drift the comparison either way.
-    proto_remedy = (
-        "declare it in an abstract interface block of the model module, as a prototype only "
-        "(no body), matching the §5.1 `interfaces` entry argument for argument — every "
-        "argument name, type, kind, rank, intent and the result — carrying inside the "
-        "prototype the two scope statements authoring rule (6a) of the generate template "
-        "requires")
-    for name in sorted(spec_proto_lists):
-        want = frozenset(spec_proto_lists[name])
-        have_proto = src_proto_lists.get(name)
-        if have_proto is None:
-            violations.append(
-                f"{target}: generated model source does not declare the controlled_spec §5.1 "
-                f"prototype '{name}' (no interface block carries a prototype of that name) — "
-                f"{proto_remedy}")
-        elif frozenset(have_proto) != want:
-            missing = sorted(a for a in want if a not in have_proto)
-            extra = sorted(a for a in have_proto if a not in want)
-            violations.append(
-                f"{target}: prototype '{name}' drifts from controlled_spec §5.1's `interfaces` "
-                f"entry — missing {missing}, extra {extra} (compared as normalized "
-                f"declaration atoms; the header line is one of them) — {proto_remedy}")
-        if defined_names is not None and name.lower() in defined_names:
-            violations.append(
-                f"{target}: generated model source DEFINES '{name}', which controlled_spec §5.1 "
-                "declares as a prototype (an `interfaces` entry) — a prototype is the shape of "
-                "the procedure a CALLER passes, and the model must not implement it; remove the "
-                f"definition and {proto_remedy}")
-
-    # The §5.1 module-level `parameter` declarations (dp / case_id_len) are part of the published
-    # ABI but are not stanzas; pin their exact declaration (name AND value) against the source —
-    # a `case_id_len = 32` drift would otherwise be invisible (the symbolic decls still match). Use
-    # per-entity atoms so a combined `integer, parameter :: dp = real64, case_id_len = 64` matches.
-    all_src_atoms = fortran_signatures.source_atoms(combined)
-    # Defense-in-depth: `_parse_canonical_interface_from_controlled_spec` above already renders the
-    # whole §5.1 struct and short-circuits (iface_err → return) on any parameter the backend cannot
-    # lower, so a raise here is not reachable in the current gate order. Guard it anyway — this is
-    # the lone backend render not already inside an `except SignatureParseError`, so a future reorder
-    # or a new caller must fail closed with a clear violation, never crash the gate.
-    from tools.backends.language.fortran.signatures import SignatureParseError
-    try:
-        param_lines = _section51_parameter_lines(cs_path)
-    except SignatureParseError as exc:
-        violations.append(
-            f"{target}: controlled_spec §5.1 declares a module parameter the language backend "
-            f"cannot lower ({exc}) — re-certify the harness so §5.1 carries a neutral parameter "
-            "value the generated source can be pinned against")
-        param_lines = []
-    # The declaration must be PRESENT (below) and it must be the only binding of that name in the
-    # model source (here). Presence alone is scope-blind: `source_atoms` is a whole-file atom set, so
-    # measured on a real component §5.1 (issue #153 PR-2 round 1) a module-level ALIASING import
-    # binding the pinned kind name to a NARROWER kind — making every published argument of that kind
-    # single precision — plus a dead private helper carrying the pinned declaration, produced ZERO
-    # violations. That is precisely the narrowing the §5.1 prose of all six component specs claims
-    # this pin closes, so the claim was false as enforced.
-    #
-    # Refusing an IMPORT of the pinned name is what closes it for the `only:` forms: an ALIASING
-    # import and a plain one both bring a binding this gate cannot see the value of, and a
-    # legitimate source has no reason for either — it declares the parameter itself, which is the
-    # rule. An earlier version of this comment said it "closes the family rather than the witness",
-    # which overstated it in the direction that matters: an UNRESTRICTED `use` supplies the name
-    # with nothing here to match on, and no declaration reader can see it either. That construct is
-    # refused by the lint rule `C121` (`use-all`) in this same `Generate.gate` substep — executed,
-    # not assumed — so it is covered, by another layer and not by this one. This half alone is NOT complete, and an earlier version of this comment
-    # claimed it was: it enumerated "imported, or declared only in a dead procedure" and omitted the
-    # case where the module declares the name ITSELF with another value — which resolves, compiles,
-    # and publishes the wrong precision. The uniqueness check below is what closes that; this one
-    # remains because an import is the member uniqueness cannot see (an imported name is bound
-    # without a `parameter` declaration to compare).
-    param_names = [
-        str(mp.get("name") or "").strip()
-        for mp in _section51_module_parameters(cs_path) if isinstance(mp, dict)
-    ]
-    for name in [n for n in param_names if n]:
-        # Read the import statements out of the atom set the gate ALREADY built (`source_atoms`
-        # normalizes each entity and strips whitespace), rather than re-scanning the source through
-        # the line module — one fewer neutral-core mention of a backend module name, and one fewer
-        # place that has to agree about what a logical line is.
-        for atom in sorted(all_src_atoms):
-            # A plain import and an intrinsic-module import are both imports, and the second has NO
-            # space after the keyword — matching the keyword plus a space alone missed every
-            # intrinsic-module import, which is the only form the corpus uses. Atoms carry no
-            # whitespace, so match the keyword then any non-name character.
-            if not re.match(r"use[,:]|use\w", atom):
-                continue
-            if "only:" not in atom:
-                continue
-            imported = atom.split("only:", 1)[1]
-            # `a=>b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear on
-            # the BINDING side of an import.
-            bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
-            if name.lower() in bound:
-                violations.append(
-                    f"{target}: generated model source imports the §5.1 module parameter "
-                    f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
-                    f"come from this module's own `parameter` declaration of `{name}`, which is "
-                    "what this gate value-pins; an imported binding carries a value the pin "
-                    "cannot see")
-                break
-
-    # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
-    # `_section51_parameter_lines` maps one-to-one over the same `_section51_module_parameters`
-    # entries these names come from, so index i is the same parameter on both sides — but only while
-    # nothing is dropped from one side. `[n for n in param_names if n]` dropped exactly the
-    # empty-named entries, which would have shifted every later pair and checked one parameter's
-    # uniqueness against another's pinned line. That is unreachable today for a reason external to
-    # this loop (an empty name makes the language backend's parameter renderer raise, so
-    # `param_lines` is `[]` and a violation is already recorded) — so the `if not name` skip below is
-    # defensive and NOT pinned: deleting it keeps the suite green, which is recorded here rather than
-    # taken as grounds to remove it. Relaxing that renderer would turn
-    # a coincidence into a silent mispairing. Pairing by index cannot go wrong that way.
-    for pline, name in zip(param_lines, param_names):
-        if not name:
-            continue
-        pinned_atoms = fortran_signatures.stanza_atoms([pline])
-        missing_atoms = [a for a in pinned_atoms if a not in all_src_atoms]
-        if missing_atoms:
-            violations.append(
-                f"{target}: generated model source is missing the §5.1 module parameter "
-                f"declaration `{pline.strip()}` (a drifted parameter value silently changes the "
-                "published ABI)")
-            continue
-        # UNIQUENESS, not presence. Presence alone asks "does the pinned text occur anywhere in the
-        # file", and a declaration is not where it occurs but where the published signatures BIND.
-        # Round 1 closed one way to satisfy presence with a non-published binding (an import) and
-        # left the family open; round 2 found the next member — a module-level declaration of the
-        # SAME name with a NARROWER value, plus the pinned text inside a contained procedure, where
-        # a local `parameter` legally shadows the host one. Measured: 0 violations, the source
-        # compiles, the linter passes, and every published argument is single precision while §5.1
-        # pins double. The stanza comparison pins types only SYMBOLICALLY (`real(dp)`), so all
-        # precision information routes through this one check.
-        #
-        # So the rule is: the pinned name must have EXACTLY ONE binding in the source, and it must
-        # be the pinned one.
-        #
-        # HOW that question is asked is the part round 2 got wrong, and round 3 measured. Round 2
-        # answered it with a regex over the atom set, matching an attribute prefix with a character
-        # class before the pinned keyword. That is §1's source-text surface asked with a grammar
-        # written here, and it lost the way that always loses: the class admitted letters and
-        # parens but neither a comma nor an equals sign, so a declaration carrying a SECOND
-        # attribute — before or after the pinned keyword — and one whose type specification carries
-        # a keyword argument were both invisible, while the same declaration with a bare named type
-        # parameter was caught. The boundary tracked the character class, not the language. All
-        # three spellings are ordinary style, all compile under the standard the syntax gate
-        # enforces, and each publishes the narrower precision against a §5.1 that pins the wider.
-        # So the third patch was still a patch.
-        #
-        # The tree already owns the reader for this question — the declared-names helper this
-        # module defines above, which splits the attribute list on top-level commas and tests for
-        # the keyword EXACTLY, handles the two-statement declaration form, and reports a restricted
-        # import as a binding too, each of those behaviours having its own recorded fail-open.
-        # Asking it, per STATEMENT, "does this bind the pinned name" is the same question with no
-        # second grammar to keep correct. Statement granularity is what makes it a COUNT rather
-        # than a set: that helper's docstring says the caller decides scope, and the scope this
-        # rule needs is every binding anywhere in the file, because one local to a published
-        # procedure changes THAT procedure's dummy declarations, and so its ABI.
-        binding_statements = [
-            stmt.strip()
-            for stmt in _joined_masked_fortran_view(combined.lower()).split("\n")
-            if stmt.strip() and name.lower() in set().union(*_fortran_declared_names(stmt))
-        ]
-        # `split("\n")`, NEVER `str.splitlines()`. That is the language backend's own rule — its
-        # line module states it and three other gates already pin it — and this site was the one
-        # place on the branch that did not follow it. `splitlines()` breaks on eight separators the
-        # target language treats as ordinary content, so a narrowing declaration written with one
-        # inside it was torn into fragments that bind nothing and vanished from the count, while
-        # PRESENCE (which reads the atom set, built with the correct split) still saw the pinned
-        # text in a contained procedure. Zero violations, compiles under the standard the syntax
-        # gate enforces, every published argument at the narrower precision: round 2's hole,
-        # reopened by round 3's implementation of the fix for it and carried through round 4.
-        #
-        # A COUNT, and deliberately nothing more. Round 3's first version also subtracted the pinned
-        # line as raw text — `set(binding_statements) - {pline.strip().lower()}` — which compares
-        # SPELLING in the one check of this gate that had no business doing so: every other
-        # comparison here goes through the atom normalizer, and both the §5.1 prose and this
-        # function's docstring promise that formatting may differ. Round 4 measured the cost. A
-        # source carrying exactly ONE declaration, differing from the rendered form only by
-        # interior spacing — a space dropped after the attribute separator, or around the assignment
-        # — was told it "binds the name more than once", and the message then printed two strings a
-        # reader cannot tell apart. That refusal has NO repair: the leaf can see one declaration, is
-        # told there are two, and `Generate.gate` warm-resumes into the same wall. A single
-        # declaration binding TWO parameters was refused for both names too — the shape the presence
-        # check fifteen lines above explicitly endorses, so the function contradicted itself.
-        #
-        # The subtraction was never load-bearing. Presence is settled ABOVE: `missing_atoms`
-        # `continue`s when the pinned atom is absent, so reaching here means the pinned declaration
-        # IS in the source. Given that, "exactly one statement binds this name" already says the
-        # single binding is the pinned one, and it says it without asking how anything is spelled.
-        if len(binding_statements) > 1:
-            listed = ", ".join(f"`{s}`" for s in sorted(binding_statements))
-            violations.append(
-                f"{target}: generated model source binds the §5.1 module parameter `{name}` "
-                f"{len(binding_statements)} times — {listed} — and `{pline.strip()}` is what §5.1 "
-                "pins. A published argument's type is pinned only SYMBOLICALLY, so which binding is "
-                "in effect is what decides the published precision; keep the pinned declaration and "
-                "delete the others, including one local to a contained procedure")
 
 
 def _validate_test_predicates(
@@ -13939,10 +10056,18 @@ def _validate_post_generate_bundle(
             f"({exc.detail}), so the host acceptance contract cannot be re-checked")
         return
     provided = harness_provided_capabilities(harness_nk)
+    # The file names and source extensions are the target language's (`bundle_facts`). A
+    # language without them is refused — but AFTER the contract re-check below, which refuses
+    # such a node on its own terms first (no shape, or a language the bundle contract does not
+    # admit); asked earlier, this refusal would stand in front of that one and leave it unpinned.
+    language_refusals: list[str] = []
+    bundle = _language_module(
+        str(toolchain.get("language") or ""), "bundle_facts", bundle_path, language_refusals)
+    runner_basename = bundle.runner_basename(spec_id) if bundle is not None else ""
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
     # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
-    host_glue: tuple[str, ...] = (() if shape == "harness"
-                                  else (_expected_runner_name(spec_id),))
+    host_glue: tuple[str, ...] = (() if shape == "harness" or bundle is None
+                                  else (runner_basename,))
 
     def _build_graph(d: Any) -> Any:
         return derive_build_graph(
@@ -13953,7 +10078,7 @@ def _validate_post_generate_bundle(
     contract = pure_bundle_contract_violation(
         doc, node_key=node_key, spec_id=spec_id,
         shape=(shape or ""), language=str(toolchain.get("language") or ""),
-        runner_basename=_expected_runner_name(spec_id),
+        runner_basename=runner_basename,
         ir_snapshot_variables=snapshot_variables_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))
@@ -13961,6 +10086,14 @@ def _validate_post_generate_bundle(
         violations.append(
             f"{bundle_path}: host acceptance contract re-check failed ({contract[0]}): "
             f"{contract[1]}")
+        return
+    # DEFENSIVE and NOT PINNED (a round-0 sweep reported it surviving): the contract re-check
+    # above already refuses a node whose language the bundle contract does not admit, and the
+    # bundle contract admits exactly the languages that declare `bundle_facts`, so no input
+    # reaches here with `bundle` None today. Kept because the undeclared-source check below
+    # cannot run without the language's file facts.
+    if bundle is None:
+        violations.extend(language_refusals)
         return
     files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
     src_dir = gen_dir / "src"
@@ -13991,11 +10124,12 @@ def _validate_post_generate_bundle(
                     f"{disk}: staged content differs from codegen_bundle.files[] (post-write tamper)")
         except OSError as exc:
             violations.append(f"{disk}: unreadable ({exc})")
-    # No UNDECLARED .f90 beyond the host-rendered glue THIS shape has — one file on `m3c`,
+    # No UNDECLARED source (a file carrying one of the target language's `bundle_facts`
+    # source extensions) beyond the host-rendered glue THIS shape has — one file on `m3c`,
     # NONE on `harness`, where the runner is declared bundle content. Match the suffix
-    # case-INSENSITIVELY: `rglob("*.f90")` misses an uppercase `extra.F90` on a case-sensitive
-    # filesystem, which would let an undeclared Fortran source slip past this provenance check
-    # while the rest of the gate treats suffixes case-insensitively.
+    # case-INSENSITIVELY: a case-sensitive glob misses an uppercase `extra.F90` on a
+    # case-sensitive filesystem, which would let an undeclared source slip past this provenance
+    # check while the rest of the gate treats suffixes case-insensitively.
     # Derived from the shape's glue set so this carve-out cannot name a file the assembly does
     # not build. NOT PINNED, and deliberately so: on `harness` the set is empty, but the contract
     # layer above has already required the runner to be DECLARED (it returns on any violation),
@@ -14005,9 +10139,10 @@ def _validate_post_generate_bundle(
     # derivation and the alternative is a second place that says what the host renders.
     allowed_extra = {name.casefold() for name in host_glue}
     if src_dir.is_dir():
-        f90_paths = [p for p in src_dir.rglob("*")
-                     if p.is_file() and p.suffix.lower() == ".f90"]
-        for path in sorted(f90_paths):
+        source_extensions = tuple(e.lower() for e in bundle.SOURCE_EXTENSIONS)
+        source_paths = [p for p in src_dir.rglob("*")
+                        if p.is_file() and p.suffix.lower() in source_extensions]
+        for path in sorted(source_paths):
             try:
                 rel = str(path.relative_to(src_dir)).replace("\\", "/").casefold()
             except ValueError:
@@ -14016,7 +10151,8 @@ def _validate_post_generate_bundle(
                 continue
             if rel not in declared and rel not in allowed_extra:
                 violations.append(
-                    f"{path}: undeclared .f90 staged (not in codegen_bundle.files[] nor the "
+                    f"{path}: undeclared {'/'.join(bundle.SOURCE_EXTENSIONS)} staged (not in "
+                    "codegen_bundle.files[] nor the "
                     f"host-rendered glue {sorted(host_glue) or '(none on this shape)'})")
 
 
@@ -14158,14 +10294,9 @@ def _validate_post_build_stage_impl(
         return violations
 
     src_dir = pipeline_dir / "source" / gen_id / "src"
-    _validate_fortran_makefile_src_dir(src_dir, violations)
     _build_system, _language = _target_toolchain_from_pipeline_dir(repo_root, pipeline_dir)
-    _validate_makefile_test_no_relink(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
-    _validate_makefile_test_invokes_cases(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
+    _validate_control_file(src_dir, violations, build_system=_build_system, language=_language,
+                           report_language_refusal=True)
     return violations
 
 
@@ -14315,7 +10446,7 @@ def _validate_impl(
                 repo_root, execution, in_scope_src_dir, violations
             )
             _validate_runner_outputs(
-                execution, in_scope_src_dir, violations,
+                repo_root, execution, in_scope_src_dir, violations,
                 known_case_ids=_case_ids_for_execution(repo_root, execution),
             )
         _validate_run_program_inputs(repo_root, execution, violations)
@@ -14518,7 +10649,7 @@ def main(argv: list[str] | None = None) -> int:
             "  0  PASS\n"
             "  1  violations found (or a load/usage failure reported as a violation)\n"
             "  2  argparse usage error\n"
-            f"  {FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
+            f"  {SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
             "available on this machine — an OPERATOR problem\n"
             f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a violation reports a stale/corrupt certified "
             "IR — re-certify, do not re-author\n"
@@ -14755,7 +10886,7 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     # `--allow-missing-orchestration` silently switch off the verdict/summary pin.
                     require_verdict=True,
                 )
-    except fortran_structure.FortranStructureUnavailableError as exc:
+    except backend_registry.BackendFrontendUnavailable as exc:
         # A DEDICATED EXIT CODE, because this failure is the OPERATOR's and no edit to any source
         # can clear it. The conductor classifies on this code and on nothing in the text.
         #
@@ -14767,9 +10898,9 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
         # into it. The marker stays in the MESSAGE for a human reader and carries no decision.
         #
         # This clause must precede the `RuntimeError` one below, which would otherwise swallow it
-        # and report `schema_load_failed`: `FortranStructureUnavailableError` IS a `RuntimeError`.
+        # and report `schema_load_failed`: `BackendFrontendUnavailable` IS a `RuntimeError`.
         print(f"pipeline semantic validation: FAIL\n- {exc}")
-        return FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
+        return SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE
     except RuntimeError as exc:
         print(f"pipeline semantic validation: FAIL\n- schema_load_failed: {exc}")
         return 1

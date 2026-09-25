@@ -73,6 +73,16 @@ class BackendNotExtracted(NotImplementedError):
     """The backend is implemented, but its code has not moved out of the neutral core yet."""
 
 
+class BackendFrontendUnavailable(RuntimeError):
+    """A backend's own source reader could not be loaded on THIS machine (an absent or broken
+    parser package) — the operator's failure, which no edit to a source can clear.
+
+    The base a backend's reader raises from (a language backend's structure front end raises a
+    subclass of it), so a neutral gate can let it propagate to the
+    one handler that answers it — `validate_pipeline_semantics.main`, with its dedicated exit
+    code — without naming the backend that raised it (issue #289, R4-b PR-3)."""
+
+
 class Axis(NamedTuple):
     """One dimension of the target stack."""
 
@@ -201,6 +211,21 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "those templates cannot be composed for a node of this value, and its launch is "
         "refused rather than sent another language's rules.",
     ),
+    "source_reading": (
+        ("language",),
+        "The deterministic `Generate` gates can READ a source of this value: the "
+        "one-statement-per-line view, declarations, procedure envelopes, calls, the module "
+        "dependency map, the checks-module ABI facts, and the gates whose every rule is a "
+        "statement of this language's syntax (the `problem` model gates, the runner-output "
+        "scans). Without it those gates have nothing to read a node's source with, and the node "
+        "is refused rather than read as another language.",
+    ),
+    "signatures": (
+        ("language",),
+        "The `controlled_spec` §5.1 signature gates can render the neutral structured "
+        "signatures in this value and compare them against a generated source, and a consumer's "
+        "dependency interface can be extracted from a certified source of this value.",
+    ),
     "syntax_promotions": (
         ("language",),
         "The `Generate.gate` syntax-only stage knows which files of this value are sources, the "
@@ -270,12 +295,16 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 #: value" is a fact about the tree, per (axis, value), and no other record carries it. It is not
 #: checkable here; see `docs/BACKEND_BOUNDARY.md` §Design Policy for where it IS caught.
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
+    # `control_file` on both axes, a different half on each: the build system's package renders
+    # the file and gates it, the language's says what it must say to compile that language.
+    "control_file": "control_file",
     "runner_render": "runner",
     "lint": "lint",
     # Same submodule as `lint`, a different declared job — the case this table's docstring
     # contemplates when it says a package with two capabilities has no single "the module".
     "lint_rules": "lint",
     "execution_env": "execution",
+    "parallel_directives": "directives",
     "perf_facts": "perf",
     "bundle_facts": "bundle",
     # `syntax` on both axes, a different job on each: the compiler's package builds the command
@@ -284,6 +313,8 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "syntax_promotions": "syntax",
     "prompt_fragments": "prompts",
     "checks_abi": "checks_abi",
+    "source_reading": "source",
+    "signatures": "signatures",
 }
 
 
@@ -332,20 +363,24 @@ class Backend(NamedTuple):
 _BACKENDS: dict[tuple[str, str], Backend] = {
     (b.axis, b.backend_id): b
     for b in (
-        # This record is extracted AND still carries a `core_provides` capability, because
-        # extraction and capability are independent: the neutral core still holds this value's
-        # control-file compile rules (an open ledger area), while its runner render, its bundle
-        # facts and its syntax-stage facts have moved into the package and are dispatched
-        # through `capability_module`.
+        # Every job this value does lives in its package and is dispatched through
+        # `capability_module`; the control-file compile rules were the last to move (issue #289,
+        # R4-b PR-3), with the source reading the deterministic gates do.
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
-            core_provides=frozenset({"control_file"}),
             backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
-                                        "prompt_fragments", "checks_abi"}),
+                                        "prompt_fragments", "checks_abi", "source_reading",
+                                        "signatures", "control_file"}),
         ),
+        # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
+        # conductor held and the control-file gates the validator held. `build_execute` stays
+        # core: the in-process Build / Validate.execute path that drives make (the object /
+        # binary / run directory overrides, the `make_test` preset, the command-log placement) is
+        # still inlined in `tools/workflow_conductor.py`.
         Backend(
-            "build_system", "make", None,
-            core_provides=frozenset({"control_file", "build_execute"}),
+            "build_system", "make", "tools.backends.build_system.make",
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=frozenset({"control_file"}),
         ),
         # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
         # the version probe `run_syntax_check` used to hold inline.
@@ -383,26 +418,26 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # row is the exception to that wording, and the wording rather than the row is what was
         # wrong — the rule the migration serves is about knowing, not about naming.
         Backend("linter", "mixed", None, core_provides=frozenset({"lint"})),
-        # Extracted for its launch environment only (issue #289, R4-b PR-1): the thread-count
+        # Extracted for its launch environment (issue #289, R4-b PR-1): the thread-count
         # variables the runtime reads are this model's knowledge, and until then the build-runtime
-        # server set them itself, for `hardware.class == cpu` alone. Its directive knowledge is
-        # still inlined in the neutral core (the Generate presence floor).
+        # server set them itself, for `hardware.class == cpu` alone. Its directive knowledge — the
+        # Generate presence floor — followed in R4-b PR-3.
         Backend(
             "parallel", "openmp", "tools.backends.parallel.openmp",
-            core_provides=frozenset({"parallel_directives"}),
-            backend_provides=frozenset({"execution_env"}),
+            backend_provides=frozenset({"execution_env", "parallel_directives"}),
         ),
         # A node that declares no parallel model. It exists as a member so the axis has a
         # spelling for "serial" alongside its open vocabulary, and it carries the capability
         # because the neutral core does implement it: rendering no directive is what the
         # conductor already does for it, so a node declaring it runs today.
         #
-        # DECLARED, NOT WITNESSED, and stated rather than pretended: measured, deleting this
-        # record's capability leaves the whole suite green. Nothing dispatches on
-        # `parallel_directives` — it is one of the declaration-only capabilities
-        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` lists as such —
-        # so there is no observer to fail. It gains one when the `parallel` area of the
-        # migration ledger lands and the directive rendering moves into a backend.
+        # DECLARED, NOT WITNESSED, and stated rather than pretended. `parallel_directives` IS
+        # dispatched on since issue #289's R4-b PR-3 (the Generate presence floor,
+        # `validate_pipeline_semantics._validate_parallel_presence_floor`), but that dispatch
+        # asks for the backend's PACKAGE and answers "no floor" both for a value that declares
+        # the capability in the neutral core and for one that does not declare it at all — so
+        # deleting it from this record changes no outcome, and no row can observe it. It is the
+        # honest description of what the neutral core does for this value, not a live rule.
         #
         # `execution_env` is core for the same reason: a serial binary is launched with no
         # environment of its own, and `tools/host_execution.py` answers that as an empty mapping.

@@ -393,7 +393,8 @@ def target_harness_entries(target: TargetProfile | None,
 #: `checks_abi` (the checks-module binding and the gate guards). A capability the phase reads
 #: for one kind only belongs in `toolchain_servable_reasons`' kind-specific list instead.
 LANGUAGE_CAPABILITIES_EVERY_NODE: tuple[str, ...] = (
-    "bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi")
+    "bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi", "source_reading",
+    "signatures")
 
 
 def toolchain_servable_reasons(language: str, build_system: str, *,
@@ -406,7 +407,9 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
 
     Every node needs its build system to be executable and its language to declare what the
     `Generate` phase asks of it (issue #289, R4-b PR-2): the bundle facts, the syntax-stage
-    facts, the prompt fragments and the checks-ABI binding (`LANGUAGE_CAPABILITIES_EVERY_NODE`).
+    facts, the prompt fragments and the checks-ABI binding, and since R4-b PR-3 the source
+    reader and the signature module the deterministic gates read every node's sources and §5.1
+    surface with (`LANGUAGE_CAPABILITIES_EVERY_NODE`).
     A language missing one is refused HERE, at launch, rather than at the first dispatch that
     needs it — mid-run, after Compile has been billed — and never silently served with another
     language's rules. Every other kind than `infrastructure` also needs the host to author the

@@ -575,7 +575,7 @@ python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after 
 section:**
 
 - **A neutral-role citation → regenerate, and say so in the commit message.** Naming an existing
-  symbol the neutral core already exports (`FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE` at a new read
+  symbol the neutral core already exports (`SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE` at a new read
   site) is not new technology knowledge. `AGENTS.md` permits naming an `axis` value as an opaque
   token; the prohibition is on a file extension, keyword, grammar, compiler argument, lint rule
   id, directive spelling, control-file syntax, naming convention or diagnostic format.

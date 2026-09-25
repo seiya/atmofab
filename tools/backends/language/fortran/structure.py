@@ -7,7 +7,8 @@ after a keyword, a variable named after a keyword, an `interface` body's own `en
 The set of such spellings is not closed by enumeration, which is why this asks a parser instead.
 
 WHAT THIS PARSES IS A VIEW, NOT SOURCE. Callers hand over
-`validate_pipeline_semantics._joined_masked_fortran_view` output: lower-cased, `&` continuations
+`source.joined_masked_view` output (the view moved there from the validator in issue #289's
+R4-b PR-3): lower-cased, `&` continuations
 joined, one statement per line, comment and literal CONTENT blanked length-preservingly. Two
 properties of that view are load-bearing here:
 
@@ -60,6 +61,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from tools.backends import registry as backend_registry
 from tools.backends.language.fortran import signatures as fortran_signatures
 
 #: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
@@ -110,7 +112,7 @@ _REQUIRED_NODE_TYPES = (
 )
 
 
-class FortranStructureUnavailableError(RuntimeError):
+class FortranStructureUnavailableError(backend_registry.BackendFrontendUnavailable):
     """The front end itself could not be loaded — a machine problem, not a source problem.
 
     Raised only for an absent/broken `tree_sitter` / `tree_sitter_fortran`. A source this module

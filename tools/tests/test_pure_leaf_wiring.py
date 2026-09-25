@@ -1848,7 +1848,8 @@ class PureRenderTests(unittest.TestCase):
              "arguments": [{"name": "U", "type": "real(dp)", "intent": "inout",
                             "rank": 1, "dimension": ":"},
                            {"name": "rhs", "type": "procedure(bc_rhs_1d)", "intent": None,
-                            "rank": 0, "dimension": None}],
+                            "rank": 0, "dimension": None,
+                            "procedure_interface": "bc_rhs_1d"}],
              "procedure_interfaces": {"bc_rhs_1d": [
                  "subroutine bc_rhs_1d(u, dudt)",
                  "real(dp), intent(in) :: u(:)", "real(dp), intent(out) :: dudt(:)"]}},
@@ -1864,7 +1865,8 @@ class PureRenderTests(unittest.TestCase):
              "arguments": [{"name": "U", "type": "real(dp)", "intent": "inout",
                             "rank": 1, "dimension": ":"},
                            {"name": "rhs", "type": "procedure(bc_rhs_1d)", "intent": None,
-                            "rank": 0, "dimension": None}]},
+                            "rank": 0, "dimension": None,
+                            "procedure_interface": "bc_rhs_1d"}]},
         ],
     }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
@@ -2192,7 +2194,7 @@ class PureRenderTests(unittest.TestCase):
         "_substitute_pure_placeholders",     # `<key>` substitution, adds no text of its own
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
-        "_procedure_interface_name",         # returns a prototype NAME read from a type text
+        "_argument_procedure_interface",     # returns a prototype NAME read off a fact
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
         "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)

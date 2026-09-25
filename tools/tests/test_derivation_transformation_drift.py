@@ -74,6 +74,12 @@ def compile_documents_tuple() -> dict[str, str]:
     return {key: _file_digest(rel) for key, rel in COMPILE_INLINED_DOCUMENTS.items()}
 
 
+def registry_attr(capability: str) -> str:
+    """The `CAPABILITY_MODULE_ATTR` row a capability dispatches by (the submodule name)."""
+    from tools.backends import registry
+    return registry.CAPABILITY_MODULE_ATTR[capability]
+
+
 def render_tuple() -> dict[str, str]:
     """The host-rendered runner and control file: the language backend's runner renderer, the
     host render module, the IR-shaped and the bundle-derived control-file writers."""
@@ -86,7 +92,26 @@ def render_tuple() -> dict[str, str]:
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
         "Conductor._write_runner": _source_digest(wc.Conductor._write_runner),
+        # The control file's text is the build system's renderer composing the language's
+        # rules since issue #289 (R4-b PR-3); the two conductor writers below only call them.
+        "tools/backends/build_system/make/control_file.py":
+            _file_digest("tools/backends/build_system/make/control_file.py"),
+        "tools/backends/language/fortran/control_file.py":
+            _file_digest("tools/backends/language/fortran/control_file.py"),
         "Conductor._write_makefile": _source_digest(wc.Conductor._write_makefile),
+        # What the two writers hand the renderer, and which renderer: the language's rules are
+        # built from the target's toolchain here (the flags, `-fopenmp` among them) — logic the
+        # writers held inline until R4-b PR-3, when it left the digested sources above.
+        "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
+        "Conductor._control_file_module": _source_digest(wc.Conductor._control_file_module),
+        # ... and the dispatch between them and the renderer: the registry row naming the
+        # submodule and the two package `__init__`s re-exporting it (a re-export rewired to
+        # another module moved no pin until R4-b PR-3's round 2).
+        "registry control_file attr": registry_attr("control_file"),
+        "tools/backends/build_system/make/__init__.py":
+            _file_digest("tools/backends/build_system/make/__init__.py"),
+        "tools/backends/language/fortran/__init__.py":
+            _file_digest("tools/backends/language/fortran/__init__.py"),
         "Conductor._render_pure_makefile_from_graph":
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
         "Conductor._write_pure_bundle_artifacts":
@@ -113,6 +138,22 @@ def build_tuple() -> dict[str, str]:
         # The staged dependency's name is the language's `bundle_facts` since issue #289.
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
+        # The failed build's `failure_category` (a `binary_meta.json` field) is the build
+        # system's classification since issue #289 (R4-b PR-3); it was a conductor staticmethod
+        # `_build_inproc` called, which no member of this tuple digested.
+        "tools/backends/build_system/make/failure.py":
+            _file_digest("tools/backends/build_system/make/failure.py"),
+        "Conductor._classify_build_failure_category":
+            _source_digest(wc.Conductor._classify_build_failure_category),
+        # ... and the dispatch between that method and `failure.py`: the attribute row, the
+        # package `__init__` and the capability module that re-exports the classifier (round 3
+        # of R4-b PR-3 rewired that re-export and moved only render-5).
+        "Conductor._control_file_module": _source_digest(wc.Conductor._control_file_module),
+        "registry control_file attr": registry_attr("control_file"),
+        "tools/backends/build_system/make/__init__.py":
+            _file_digest("tools/backends/build_system/make/__init__.py"),
+        "tools/backends/build_system/make/control_file.py":
+            _file_digest("tools/backends/build_system/make/control_file.py"),
     }
 
 
@@ -292,7 +333,20 @@ PINNED_RENDER: dict[str, str] = {
     # `FC` come from the target language's `bundle_facts` (`runner_basename`,
     # `DEFAULT_COMPILER`), whose module joins the tuple. For `fortran` every emitted byte is
     # unchanged; the bump is the plan's (every Generate key moves with `pure-50` anyway).
-    "render-5": "4ac71ca1c71bd3e63eed41a34511aba5e062109fd520bf9a4a135f46f75187f3",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the two control-file templates
+    # moved out of the conductor into the `make` backend's renderer, which composes the
+    # language's `control_file` rules (both modules join the tuple). Measured byte-identical to
+    # the templates they replace over 240 parameter combinations: the IR-shaped writer over
+    # checks module present / absent (2) × parallel backend openmp / none / serial (3) × closure
+    # of 0 / 1 / 3 dependencies (3) × compiler gfortran / ifx (2) × case sets of 0 / 1 / 2 (3) ×
+    # standard f2008 / f2018 (2) = 216, and the graph writer over 3 graph shapes × 2 backends × 2
+    # compilers × 2 case sets = 24 (a scratch differential against bf2871e5's templates, not
+    # kept in the tree). Re-pinned again in round 1 of that PR's review: the tuple gained
+    # `_control_file_rules` / `_control_file_module`, the conductor methods that now build what the
+    # renderer composes — a change there moved no pin until then (found by two reviewers).
+    # Re-pinned again in round 2: the tuple gained the dispatch between those methods and the
+    # renderer (the `control_file` attribute row and the two package `__init__`s).
+    "render-5": "887893303155bc00f35c618b651044dcdda3ae7a9baccfac7c70230e043df137",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -311,7 +365,14 @@ PINNED_BUILD: dict[str, str] = {
     # language's `bundle_facts.model_basename` (the module joins the tuple) — for `fortran` the
     # same `<spec_id>_model.f90` byte for byte, so the compile invocation and the binary are
     # unchanged.
-    "build-1": "461105b20f1fb84437c093810dc58ff93b2bbcd1e536f566b14b5c7058bc9dad",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving for this transformation: the
+    # build-failure classification moved into the `make` backend (`failure.py` joins the tuple,
+    # its patterns and categories unchanged), and `_build_inproc` asks the registry's
+    # `build_execute` where it compared the build system against `make` — the same answer for
+    # every profile the launch gate admits. Re-pinned again in that PR's round 2: the tuple
+    # gained `Conductor._classify_build_failure_category`, and in round 3 the rest of the dispatch
+    # into `failure.py` (the attribute row, the make package `__init__` and `control_file.py`).
+    "build-1": "a52500a00c4b3e14d7097e91b7ac591d4c8f51a6704ad18d6fe20a83cbf17a39",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -333,7 +394,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # (rounds 1 and 2), before any run was stamped execute-4: the tuple gained what the launch
     # seam resolves through the registry (`launch_declarations`), and the docstrings the env's
     # override semantics.
-    "execute-4": "0952b393330f5f4356e0ad02a923aabd13520fba05c8e5787a45d6b74266b0d9",
+    # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the `openmp` package's
+    # `__init__` (a digested launch member) re-exports its new `directives` module beside
+    # `execution`; the environment `launch_shape` resolves is unchanged.
+    "execute-4": "e850442fd518a1e57031142090834ebae329d302ed233c8b7b967d4cd4a89eb4",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

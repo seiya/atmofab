@@ -34,7 +34,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.backends.language.fortran import structure as fs  # noqa: E402
-from tools.validate_pipeline_semantics import _joined_masked_fortran_view  # noqa: E402
+from tools.backends.language.fortran.source import (  # noqa: E402
+    joined_masked_view as _joined_masked_fortran_view,
+)
 
 
 def view_of(source: str) -> str:
@@ -264,15 +266,18 @@ class FrontEndUnavailableTests(unittest.TestCase):
             from tools.backends.language.fortran import structure as fs
             import tools.validate_pipeline_semantics as vps
 
+            from tools.tests.target_fixtures import install_target_profile, pipe_ref
             td = Path(tempfile.mkdtemp())
-            src = td / "src"
-            src.mkdir()
+            install_target_profile(td)
+            pipe = td / pipe_ref("problem__probe2d__0.1.0", "p1")
+            src = pipe / "src"
+            src.mkdir(parents=True)
             (src / "probe2d_model.f90").write_text(
                 "module probe2d_model\\ncontains\\nsubroutine solve(x, y)\\n"
                 "  real, intent(in) :: x\\n  real, intent(out) :: y\\n  y = 1.0\\n"
                 "end subroutine solve\\nend module probe2d_model\\n")
             execution = vps.NodeExecution(node_key="problem/probe2d@0.1.0", node_dir=td,
-                                          exec_dir=td, pipeline_dir=td)
+                                          exec_dir=td, pipeline_dir=pipe)
             violations = []
             try:
                 vps._validate_generate_outputs(td, execution, src, violations)
@@ -294,7 +299,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
         This drives the real CLI as a subprocess with the import really broken, and asserts
         `returncode`. The row below it does not: it observes the exception at the gate and then
         prints the module CONSTANT, so it says nothing about `main`. With no row here, mutating
-        `_main_dispatch`'s `return FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE` to `return 1` left
+        `_main_dispatch`'s `return SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE` to `return 1` left
         1555 rows green — every conductor reader keyed on rc 3, the `--help` line and the RUNBOOK
         entry all rested on a mapping nothing observed. The twin (rc 4) had this witness from the
         start; this is the missing occurrence of the same rule.
@@ -337,7 +342,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
                  "--source-id", "src_20260415_001"],
                 cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, check=False)
         import tools.validate_pipeline_semantics as vps
-        self.assertEqual(vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE, result.returncode,
+        self.assertEqual(vps.SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE, result.returncode,
                          (result.stdout, result.stderr))
         # The marker stays in the message for a human reader and carries no decision.
         self.assertIn("[fortran-structure-unavailable]", result.stdout)
@@ -352,16 +357,19 @@ class FrontEndUnavailableTests(unittest.TestCase):
             from pathlib import Path
             import tools.validate_pipeline_semantics as vps
 
+            from tools.tests.target_fixtures import install_target_profile, pipe_ref
             td = Path(tempfile.mkdtemp())
-            src = td / "src"
-            src.mkdir()
+            install_target_profile(td)
+            pipe = td / pipe_ref("problem__probe2d__0.1.0", "p1")
+            src = pipe / "src"
+            src.mkdir(parents=True)
             (src / "probe2d_model.f90").write_text("module probe2d_model\\nend module probe2d_model\\n")
             execution = vps.NodeExecution(node_key="problem/probe2d@0.1.0", node_dir=td,
-                                          exec_dir=td, pipeline_dir=td)
+                                          exec_dir=td, pipeline_dir=pipe)
             try:
                 vps._validate_generate_outputs(td, execution, src, [])
             except Exception as exc:
-                print("EXIT", vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE, type(exc).__name__)
+                print("EXIT", vps.SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE, type(exc).__name__)
         """))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("EXIT 3 FortranStructureUnavailableError", result.stdout)
@@ -376,14 +384,17 @@ class FrontEndUnavailableTests(unittest.TestCase):
         import tools.validate_pipeline_semantics as vps
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            src = root / "src"
-            src.mkdir()
+            from tools.tests.target_fixtures import install_target_profile, pipe_ref
+            install_target_profile(root)
+            pipe = root / pipe_ref("problem__probe2d__0.1.0", "p1")
+            src = pipe / "src"
+            src.mkdir(parents=True)
             (src / "probe2d_model.f90").write_text(
                 "module probe2d_model\ncontains\nsubroutine solve(x, y)\n"
                 "  real, intent(in) :: x\n  real, intent(out) :: y\n  y = 1.0\n"
                 "end subroutine solve\nend module probe2d_model\n")
             execution = vps.NodeExecution(node_key="problem/probe2d@0.1.0", node_dir=root,
-                                          exec_dir=root, pipeline_dir=root)
+                                          exec_dir=root, pipeline_dir=pipe)
             violations: list[str] = []
             vps._validate_generate_outputs(root, execution, src, violations)
         self.assertTrue(any("literal-only assignments" in v for v in violations), violations)
@@ -462,7 +473,18 @@ class ImportBootstrapTests(unittest.TestCase):
             return names
 
         self.assertEqual(imported(bootstrap.body), imported(bootstrap.handlers[0].body))
-        self.assertIn("tools.backends.language.fortran.structure", imported(bootstrap.body))
+        # Since issue #289 (R4-b PR-3) the structure front end is reached through the registry,
+        # which loads the target language's backend lazily; the bootstrap must carry the
+        # registry, and no language backend by name.
+        self.assertIn("tools.backends.registry", {
+            f"{node.module}" if node.module == "tools.backends" else ""
+            for node in ast.walk(ast.Module(body=list(bootstrap.body), type_ignores=[]))
+            if isinstance(node, ast.ImportFrom)} | {
+            f"{node.module}.{alias.name}"
+            for node in ast.walk(ast.Module(body=list(bootstrap.body), type_ignores=[]))
+            if isinstance(node, ast.ImportFrom) for alias in node.names})
+        self.assertFalse({n for n in imported(bootstrap.body)
+                          if n.startswith("tools.backends.language")})
 
 
 if __name__ == "__main__":

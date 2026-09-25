@@ -1867,9 +1867,8 @@ class RegistryConsistencyTests(unittest.TestCase):
                         registry.require_available(axis, backend_id)
 
     def test_the_signature_gates_ask_for_usability_not_membership(self) -> None:
-        # The gate-side half of the pin above: reading the module text, because the failure
-        # being prevented is a call to the WRONG registry function, which no fixture can show
-        # without a second language backend existing.
+        # Reading the module text, because the failure being prevented is a call to the WRONG
+        # registry function, which no fixture can show without a second language backend.
         source = Path(vps.__file__).read_text(encoding="utf-8")
         # An AST walk, not a substring count: the count was bound to one spelling, and a third
         # membership call written with single quotes (or `axis=`) passed the whole suite.
@@ -1882,101 +1881,118 @@ class RegistryConsistencyTests(unittest.TestCase):
         ]
         self.assertEqual(
             [], membership_calls,
-            "a signature gate guards a Fortran-only renderer on membership alone "
+            "a signature gate guards a language backend on membership alone "
             f"(line(s) {[n.lineno for n in membership_calls]})")
-        # ONE gate since R4-a PR-3 (issue #284): the Compile-stage published-surface gate asked
-        # it of the IR's `impl_defaults.toolchain.language`, and the IR is target-free now; the
-        # Generate-stage `_validate_generated_signatures` asks it of the pipeline's target.
-        self.assertEqual(
-            1, source.count("unsupported = _signature_backend_refusal(language)"),
-            "the signature gate must go through the one refusal predicate")
 
-    def test_the_signature_helper_backend_matches_what_the_module_imports(self) -> None:
-        """`_SIGNATURE_HELPERS_BACKEND_ID` must name the backend the helpers actually import.
+    # --- the §5.1 signature gates dispatch (issue #289, R4-b PR-3) ---------------------------
 
-        A SET IDENTITY, not a sample: every `tools.backends.language.<id>` module the validator
-        imports is collected from its source, and the set of `<id>`s must be exactly the one the
-        constant names. Review reached the same fail-open twice by asking the registry a question
-        whose answer did not constrain which module the helpers import — first with a member
-        declared `module=None`, then with a member carrying a real module. The constant closes
-        that only while it agrees with the imports, which is what this reads.
-        """
+    @staticmethod
+    def _patched(record: "registry.Backend"):
+        return mock.patch.dict(registry._BACKENDS, {(record.axis, record.backend_id): record})
+    #
+    # Until that PR the §5.1 helpers imported ONE language backend by name, guarded by
+    # `_signature_backend_refusal` and the `_SIGNATURE_HELPERS_BACKEND_ID` constant, whose rows
+    # pinned the constant against the imports and the refusal's two grounds. Both are deleted
+    # with the mechanism: the gates now reach the `signatures` capability of the pipeline's
+    # target language through `_language_module`. The rows below pin the SUCCESSOR's properties
+    # — no language backend is imported by name, a language without the capability is refused,
+    # a language with it is dispatched to its OWN module, and the helper's two grounds each have
+    # their own message.
+
+    def test_the_validator_imports_no_language_backend_by_name(self) -> None:
+        """A SET IDENTITY, not a sample: every `tools.backends.language.<id>` module the validator
+        imports is collected from its source, and the set must be empty — the registry is the
+        only way it reaches a language (`DirectImportPinTests` pins the whole allowlist; this is
+        the property the retired `_SIGNATURE_HELPERS_BACKEND_ID` row stood for)."""
         source = Path(vps.__file__).read_text(encoding="utf-8")
         prefix = f"{BACKEND_PACKAGE}.language."
-        imported_language_backends = {
-            name[len(prefix):].split(".")[0]
-            for name in _imported_modules(source)
-            if name.startswith(prefix)
-        }
         self.assertEqual(
-            {vps._SIGNATURE_HELPERS_BACKEND_ID}, imported_language_backends,
-            "the validator imports a language backend the signature refusal does not name")
-        # And the id it names has to be a real, extracted backend — a typo would silently refuse
-        # every language including the one that works.
-        self.assertIsNone(
-            registry.unavailable_reason("language", vps._SIGNATURE_HELPERS_BACKEND_ID))
+            set(), {name for name in _imported_modules(source) if name.startswith(prefix)})
 
-    def test_each_refusal_ground_is_reached_by_the_input_it_is_for(self) -> None:
-        """Both grounds, separately. Only the second one was observed.
+    def test_each_language_module_ground_is_reached_by_the_input_it_is_for(self) -> None:
+        """`_language_module`'s three answers, each by its own input: no language (nothing
+        appended — the unresolved target is reported elsewhere), a language without the
+        capability (the registry's reason), and a declared capability whose package cannot be
+        loaded (a violation, never an escaping exception)."""
+        sink: list[str] = []
+        self.assertIsNone(vps._language_module(None, "signatures", "subj", sink))
+        self.assertEqual([], sink)
 
-        The two grounds are coextensive while one language backend exists, so a mutation that
-        deleted the registry ground left the suite green — and made the gate answer a
-        NON-MEMBER language with the second ground's sentence, which says that language "has an
-        extracted language backend". False, and it sends a reader to thread `language` through
-        six helpers instead of to add a backend. The gate tests cannot catch this: they build
-        their expected clause by calling this predicate, so they are invariant to which ground
-        answered.
-        """
-        # The non-member is DERIVED, not the literal "c": registering a `c` language backend
-        # would have silently converted this probe from the membership ground to the extraction
-        # ground while both assertions still passed.
         non_member = next(
             c for c in ("c", "cpp", "rust", "zz_not_a_language")
             if registry.unsupported_reason("language", c) is not None)
-        member_gap = vps._signature_backend_refusal(non_member)
-        self.assertEqual(registry.unavailable_reason("language", non_member), member_gap)
-        self.assertNotIn("still import", member_gap)
-        original = vps._SIGNATURE_HELPERS_BACKEND_ID
-        try:
-            vps._SIGNATURE_HELPERS_BACKEND_ID = "some_other_language"
-            dispatch_gap = vps._signature_backend_refusal("fortran")
-        finally:
-            vps._SIGNATURE_HELPERS_BACKEND_ID = original
-        self.assertIn("still import", dispatch_gap)
-        self.assertNotEqual(member_gap, dispatch_gap)
+        self.assertIsNone(vps._language_module(non_member, "signatures", "subj", sink))
+        self.assertEqual(1, len(sink), sink)
+        self.assertIn(f"'{non_member}' declares no 'signatures' capability", sink[0])
+        self.assertIn(str(registry.missing_capability_reason(
+            "language", non_member, "signatures")), sink[0])
 
-    def test_the_refusal_normalizes_the_language_it_is_given(self) -> None:
-        # `registry.unavailable_reason` case-folds and strips; the identity comparison against
-        # `_SIGNATURE_HELPERS_BACKEND_ID` is exact. Trusting the caller made the two halves
-        # disagree about one string, and the direction is a false `Compile fail` on a valid node.
-        for spelling in ("fortran", "Fortran", "FORTRAN", "  fortran  ", "\tFortran\n"):
-            self.assertIsNone(vps._signature_backend_refusal(spelling), spelling)
-        for absent in ("", "   ", None):
-            self.assertIsNone(vps._signature_backend_refusal(absent), repr(absent))
+        record = registry.Backend(
+            "language", "zz_unloadable", "zz_module_that_does_not_exist",
+            backend_provides=frozenset({"signatures"}))
+        sink = ["a sibling gate already found this"]
+        with self._patched(record):
+            self.assertIsNone(vps._language_module("zz_unloadable", "signatures", "subj", sink))
+        self.assertEqual("a sibling gate already found this", sink[0])
+        self.assertTrue(any("could not be loaded" in v for v in sink[1:]), sink)
+        # ... and a package that loads but does not carry what its record claims: the registry
+        # raises its own typed refusal (not an ImportError), and that lands as a violation too.
+        import sys
+        import types
+        hollow = registry.Backend("language", "zz_hollow_sig", "zz_hollow_sig_pkg",
+                                  backend_provides=frozenset({"signatures"}))
+        sink = []
+        with mock.patch.dict(sys.modules, {"zz_hollow_sig_pkg": types.ModuleType("x")}), \
+                self._patched(hollow):
+            with self.assertRaises(registry.BackendNotExtracted):
+                registry.capability_module("language", "zz_hollow_sig", "signatures")
+            self.assertIsNone(vps._language_module("zz_hollow_sig", "signatures", "subj", sink))
+        self.assertTrue(any("could not be loaded" in v for v in sink), sink)
 
-    def test_a_language_the_signature_helpers_do_not_serve_is_still_refused_by_them(self) -> None:
-        """The one gate family that a registry answer cannot widen, stated as a rule.
+        # ... and the live language answers with its own module, appending nothing.
+        sink = []
+        self.assertIs(registry.capability_module("language", "fortran", "signatures"),
+                      vps._language_module("fortran", "signatures", "subj", sink))
+        self.assertEqual([], sink)
 
-        This test used to assert the language id SET was exactly the signature backend's, on the
-        grounds that `_validate_toolchain_backend_supported` also spelled `(make, fortran)`
-        itself. That gate came to dispatch on registry capabilities (and was deleted in R4-a
-        PR-3, issue #284, with the IR's toolchain), so the set equality was
-        pinning a RESULT — registering a second language backend would fail it even after the
-        gate had been migrated correctly. What survives is the actual constraint: the §5.1
-        helpers import one backend by name and take no `language` argument, so any OTHER
-        declared language must still be refused by the signature refusal, whatever the registry
-        says about it. Failing here means a language was declared without that gate migrating.
-        """
-        for backend_id in registry.backend_ids("language"):
-            refusal = vps._signature_backend_refusal(backend_id)
-            if backend_id == vps._SIGNATURE_HELPERS_BACKEND_ID:
-                self.assertIsNone(refusal, backend_id)
-            else:
-                self.assertIsNotNone(
-                    refusal,
-                    f"language '{backend_id}' is declared but the §5.1 helpers still import "
-                    f"'{vps._SIGNATURE_HELPERS_BACKEND_ID}' by name; migrate that gate "
-                    "(docs/BACKEND_BOUNDARY.md, TODO.md) in the same change")
+    def test_the_generate_signature_gate_dispatches_to_the_targets_language(self) -> None:
+        """Driven THROUGH `_validate_generated_signatures`, with the pipeline's target naming a
+        synthetic language: one that does not declare `signatures` is refused, and one that does
+        is rendered by ITS module, observed by a sentinel only that module can produce. With one
+        real language backend no other observer can tell dispatch from coincidence (the retired
+        rows asserted it by pinning a constant against the imports instead)."""
+        import sys
+        import tempfile
+        import types
+
+        from tools.tests.test_validate_pipeline_semantics import (
+            InfrastructureGeneratedSignatureGateTests as Gate,
+        )
+
+        def run(language: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                execution = Gate()._seed(tmp, source=Gate._GOOD_SOURCE, language=language)
+                violations: list[str] = []
+                vps._validate_generated_signatures(
+                    tmp, execution, [execution.pipeline_dir / "src" / "hx_model.f90"],
+                    violations)
+                return violations
+
+        refused = run("zz_no_signatures")
+        self.assertTrue(any("declares no 'signatures' capability" in v for v in refused),
+                        refused)
+
+        own = types.ModuleType("zz_sig_lang")
+        own.signatures = types.ModuleType("zz_sig_lang.signatures")
+        own.signatures.load_structured_signatures = lambda body: ({}, "ZZ_OWN_RENDERER")
+        record = registry.Backend("language", "zz_sig", "zz_sig_lang",
+                                  backend_provides=frozenset({"signatures"}))
+        with mock.patch.dict(sys.modules, {"zz_sig_lang": own}), self._patched(record):
+            dispatched = run("zz_sig")
+        self.assertTrue(any("ZZ_OWN_RENDERER" in v for v in dispatched), dispatched)
+        # ... and the incumbent still answers for itself (the fixture's source is faithful).
+        self.assertEqual([], run("fortran"))
 
     # --- the capability question ------------------------------------------------------------
 
@@ -2165,7 +2181,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
-                      "checks_abi"}
+                      "checks_abi", "source_reading", "signatures", "parallel_directives"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2193,9 +2209,14 @@ class RegistryConsistencyTests(unittest.TestCase):
         # server's `run_syntax_check`, the post_generate certification and the default-compiler
         # readers ask the registry for them.
         #
+        # `source_reading`, `signatures` and `parallel_directives` joined them with issue #289
+        # (R4-b PR-3): the validator's source gates, its §5.1 signature gates and the
+        # dependency-fact resolver ask the first two of the target language
+        # (`_language_module`, `_resolve_dependency_facts`), and the Generate presence floor
+        # asks the third of the target's parallel backend.
+        #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands (the parallel knobs are still
-        # inlined in the neutral core).
+        # and they gain a dispatch when their ledger area lands.
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()
@@ -2296,22 +2317,6 @@ class RegistryConsistencyTests(unittest.TestCase):
             self.assertTrue(axes, capability)
             self.assertTrue(set(axes) <= set(registry.AXES), capability)
             self.assertTrue(description.strip(), capability)
-
-    def test_an_extracted_but_undispatched_language_is_still_refused(self) -> None:
-        # The behavioural witness for the second ground. Simulated by moving the constant rather
-        # than by registering a second backend, because the refusal must hold for ANY language
-        # the helpers are not wired to, and that property does not depend on which one is.
-        original = vps._SIGNATURE_HELPERS_BACKEND_ID
-        try:
-            vps._SIGNATURE_HELPERS_BACKEND_ID = "some_other_language"
-            reason = vps._signature_backend_refusal("fortran")
-            self.assertIsNotNone(
-                reason, "a language the helpers do not import was accepted by the gates")
-            self.assertIn("still import", reason)
-        finally:
-            vps._SIGNATURE_HELPERS_BACKEND_ID = original
-        self.assertIsNone(vps._signature_backend_refusal("fortran"))
-        self.assertIsNone(vps._signature_backend_refusal(""))
 
     def test_an_open_vocabulary_axis_accepts_a_value_it_has_no_record_for(self) -> None:
         # `parallel` is an exploration knob whose schema says its vocabulary is deliberately not
@@ -2476,7 +2481,46 @@ class RegistryConsistencyTests(unittest.TestCase):
         "checks_abi": ("document",),
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
                           "CHECKS_PUBLIC_NAMES"),
+        # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
+        # and the make control-file gate take off a language's source reader; what the §5.1
+        # gates and the dependency-fact resolver take off its signature module; and what the
+        # build system's control-file renderer takes off its control-file rules.
+        "source_reading": (
+            "model_source_gates", "model_source_not_found_violation",
+            "checks_module_declaration_violations", "checks_module_abi_facts",
+            "unpublished_bound_state", "checks_harness_isolation_violations",
+            "validate_dependency_operations", "validate_runner_json_serialization",
+            "validate_runner_snapshot_filenames", "published_subroutines", "counted_loops",
+            "source_module_deps", "MODULE_SOURCE_SUFFIXES", "MODULE_ARTIFACT_SUFFIX"),
+        "signatures": (
+            "LANGUAGE_DISPLAY_NAME", "SignatureParseError", "load_structured_signatures",
+            "render_signatures", "render_symbol", "render_interface", "render_module_parameter",
+            "validate_module_parameter", "parse_interface_stanzas", "stanza_line_list",
+            "stanza_line_set", "generated_source_violations", "published_interface",
+            "prefixed_procedures"),
+        "control_file": ("rules",),
     }
+
+    #: The same, for the build-system and parallel capabilities a package carries (issue #289,
+    #: R4-b PR-3): the conductor's renderers and failure classifier, the validator's control-file
+    #: and quality-check gates, the runtime's in-source placement, and the presence floor.
+    _OTHER_CAPABILITY_CONTRACT: ClassVar[dict[tuple[str, str], tuple[str, ...]]] = {
+        ("build_system", "control_file"): (
+            "CONTROL_FILE_BASENAME", "BUILDS_IN_SOURCE", "QUALITY_CHECK_PRESETS", "targets",
+            "render_node", "render_from_graph", "classify_build_failure", "validate_src_dir",
+            "validate_test_no_relink", "validate_test_invokes_cases"),
+        ("parallel", "parallel_directives"): ("presence_floor", "lowering_plan_declines"),
+    }
+
+    def test_every_other_package_capability_carries_the_contract_its_readers_use(self) -> None:
+        for (axis, capability), names in self._OTHER_CAPABILITY_CONTRACT.items():
+            values = [v for v in registry.backend_ids(axis)
+                      if capability in registry.get(axis, v).backend_provides]
+            self.assertTrue(values, (axis, capability))
+            for value in values:
+                with self.subTest(axis=axis, capability=capability, value=value):
+                    module = registry.capability_module(axis, value, capability)
+                    self.assertEqual([n for n in names if not hasattr(module, n)], [])
 
     def test_every_language_capability_carries_the_contract_its_readers_use(self) -> None:
         for capability, names in self._LANGUAGE_CAPABILITY_CONTRACT.items():
@@ -2759,9 +2803,12 @@ class CapabilityOwnershipTests(unittest.TestCase):
         implements it. A comment called that clause unreachable; it is one line away. Both are
         asserted, because sending a reader to the wrong declaration is all this message does.
         """
-        # (a) the live tree: the "still inlined" diagnosis, not the "nothing implements it" one
+        # (a) the live tree: the "still inlined" diagnosis, not the "nothing implements it" one.
+        # `make`'s `build_execute` is the live instance since issue #289's R4-b PR-3 moved both
+        # halves of `control_file` into their packages (it was `language/fortran`'s
+        # `control_file` until then).
         with self.assertRaises(registry.BackendNotExtracted) as ctx:
-            registry.capability_module("language", "fortran", "control_file")
+            registry.capability_module("build_system", "make", "build_execute")
         self.assertIn("still carried by the neutral core", str(ctx.exception))
 
         # (b) a value that declares it in neither set: the other clause
@@ -2771,14 +2818,17 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 registry.capability_module("language", "zz_bare", "control_file")
         self.assertIn("nothing in this repository implements it", str(ctx.exception))
 
-        # (c) the state the ledger's next area creates: the narrow set is what refuses
-        migrated_make = registry.Backend(
-            "build_system", "make", "tools.backends.language.fortran",
-            core_provides=frozenset({"build_execute"}),
-            backend_provides=frozenset({"control_file"}))
-        with mock.patch.dict(registry.CAPABILITY_MODULE_ATTR, {"control_file": "runner"}), \
-                self._patched(migrated_make):
+        # (c) the state a two-axis migration passes through — one axis moved, the other still
+        # inlined — which is the state this tree was in until issue #289's R4-b PR-3: the narrow
+        # set is what refuses the inlined side, although the capability has a module row.
+        inlined_language = registry.Backend(
+            "language", "fortran", "tools.backends.language.fortran",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=registry.get("language", "fortran").backend_provides
+            - {"control_file"})
+        with self._patched(inlined_language):
             registry._check_declarations()
+            self.assertIn("control_file", registry.CAPABILITY_MODULE_ATTR)
             self.assertTrue(registry.provides("language", "fortran", "control_file"))
             with self.assertRaises(registry.BackendNotExtracted):
                 registry.capability_module("language", "fortran", "control_file")
@@ -2876,10 +2926,16 @@ class CapabilityOwnershipTests(unittest.TestCase):
         other.bundle.SOURCE_EXTENSIONS = (".zz",)
         other.bundle.IDENTIFIER_MAX = 63
         other.bundle.IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,62}(?![\s\S])"
+        # The checks gate names and reads the checks source through the language too (issue
+        # #289, R4-b PR-3); this language borrows Fortran's reader, and names its checks source
+        # as the fixture below writes it, so the gate reaches the ABI question this row is about.
+        from tools.backends.language.fortran import source as fortran_source
+        other.bundle.checks_basename = lambda spec_id: f"{spec_id}_checks.f90"
+        other.source = fortran_source
         record = registry.Backend(
             "language", "zz_second", "zz_second_lang",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         ir = {
             "meta": {"spec_kind": "component", "spec_id": "bx"},
             "dependency": {"direct_deps": []},
@@ -3022,11 +3078,19 @@ class CapabilityOwnershipTests(unittest.TestCase):
 
         import tools.validate_pipeline_semantics as vps
 
+        from tools.backends.language.fortran import bundle as fortran_bundle
+        from tools.backends.language.fortran import source as fortran_source
+
         empty_pkg = types.ModuleType("zz_pkg_without_runner")  # no `runner` attribute
+        # It CAN name and read its sources (since issue #289's R4-b PR-3 the checks gate asks
+        # the language for both before anything else), so what this row reaches is the gap it
+        # is about: a runner the record claims and the package does not carry.
+        empty_pkg.bundle = fortran_bundle
+        empty_pkg.source = fortran_source
         record = registry.Backend(
             "language", "zz_hollow", "zz_pkg_without_runner",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with mock.patch.dict(sys.modules, {"zz_pkg_without_runner": empty_pkg}), \
                 self._patched(record):
             registry._check_declarations()  # accepted: nothing here can see inside the package
@@ -3046,6 +3110,40 @@ class CapabilityOwnershipTests(unittest.TestCase):
                     any("cannot be stated for language 'zz_hollow'" in v for v in violations),
                     violations)
 
+    def test_the_bundle_abi_gate_refuses_a_file_language_it_cannot_read(self) -> None:
+        """`codegen_bundle.m3c_checks_abi_violation` reads the checks file with its LANGUAGE's
+        `source_reading` (issue #289, R4-b PR-3): a language that renders a runner but declares
+        no source reader is refused with the registry's reason, never read as Fortran and never
+        an escaping exception."""
+        import sys
+        import types
+
+        import tools.codegen_bundle as codegen_bundle
+
+        pkg = types.ModuleType("zz_no_reader_pkg")
+        pkg.runner = types.ModuleType("zz_no_reader_pkg.runner")
+        pkg.runner.CHECKS_PUBLIC_NAMES = ("case_setup",)
+        record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
+                                  backend_provides=frozenset({"runner_render"}))
+        bundle = {"files": [{"logical_path": "bx_checks.f90", "role": "checks",
+                             "language": "zz_no_reader",
+                             "member_node_key": "component/bx@0.1.0",
+                             "content": "module bx_checks\nend module bx_checks\n",
+                             "modules": ["bx_checks"]}]}
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
+        self.assertIsNotNone(violation)
+        self.assertIn("whose sources this repository cannot read", violation)
+        self.assertIn(str(registry.missing_capability_reason(
+            "language", "zz_no_reader", "source_reading")), violation)
+        # ... and a declared reader whose package does not carry it: a refusal, not an exception.
+        record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
+                                  backend_provides=frozenset({"runner_render", "source_reading"}))
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
+        self.assertIsNotNone(violation)
+        self.assertIn("whose source reader could not be loaded", violation)
+
     def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
         """The seam lets a broken import escape as itself — the GATES must not.
 
@@ -3058,9 +3156,18 @@ class CapabilityOwnershipTests(unittest.TestCase):
 
         import tools.validate_pipeline_semantics as vps
 
+        import sys
+        import types
+
+        from tools.backends.language.fortran import bundle as fortran_bundle
+        from tools.backends.language.fortran import source as fortran_source
+
+        # (a) a package that does not import at all. Since issue #289's R4-b PR-3 the gate's
+        # FIRST reach into the language is its `bundle_facts` / `source_reading`
+        # (`_language_module`), so that is the conversion this input meets.
         record = registry.Backend(
             "language", "zz_missing_pkg", "zz_module_that_does_not_exist",
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with self._patched(record):
             with self.assertRaises(ModuleNotFoundError):     # the seam, unchanged
                 host_render.checks_public_names("zz_missing_pkg")
@@ -3075,6 +3182,31 @@ class CapabilityOwnershipTests(unittest.TestCase):
                     violations)
         self.assertIn("a sibling gate already found this", violations)
         self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+        # (b) a package that imports and reads its sources, whose runner is broken: the ABI
+        # seam raises something other than its typed refusal, and the gate's OWN conversion is
+        # what must hold.
+        broken_runner = types.ModuleType("zz_broken_runner_pkg.runner")  # no CHECKS_PUBLIC_NAMES
+        pkg = types.ModuleType("zz_broken_runner_pkg")
+        pkg.runner, pkg.bundle, pkg.source = broken_runner, fortran_bundle, fortran_source
+        record = registry.Backend(
+            "language", "zz_broken_runner", "zz_broken_runner_pkg",
+            backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
+        with mock.patch.dict(sys.modules, {"zz_broken_runner_pkg": pkg}), self._patched(record):
+            with self.assertRaises(AttributeError):          # the seam, unchanged
+                host_render.checks_public_names("zz_broken_runner")
+            with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations = ["a sibling gate already found this"]
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_broken_runner", src,
+                    [], violations)
+        self.assertIn("a sibling gate already found this", violations)
+        self.assertTrue(any("the backend for language 'zz_broken_runner' could not be loaded"
+                            in v for v in violations), violations)
 
     def test_neither_gate_empties_its_violation_list_on_a_broken_backend(self) -> None:
         """BOTH gates, because the conversion is written twice and only one copy was driven.

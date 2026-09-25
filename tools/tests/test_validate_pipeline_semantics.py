@@ -24,19 +24,14 @@ from tools.backends.language.fortran.signatures import parse_signatures_from_for
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
     NodeExecution,
-    _validate_problem_model_dependency_dataflow,
     _diagnostics_contract_check_ids,
     _diagnostics_contract_verdict_fields,
     _node_executions,
-    _parse_makefile_rules,
     _required_raw_evidence,
     _validate_diagnostics_contract,
     _validate_diagnostics_contract_output,
-    _validate_fortran_makefile_src_dir,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
-    _validate_makefile_test_no_relink,
-    _validate_makefile_test_invokes_cases,
     _validate_source_meta_json_files,
     _validate_compile_dependency_consistency,
     _validate_published_surface,
@@ -51,6 +46,94 @@ from tools.validate_pipeline_semantics import (
     validate_post_generate_stage,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+
+# The source-reading, signature, Makefile and parallel-floor gates moved into their backends
+# (issue #289, R4-b PR-3): the Fortran source reader (`source_reading`), the Fortran signature
+# comparator (`signatures`), the make control-file gates (`control_file`) and the OpenMP floor
+# (`parallel_directives`). They take the node's key and the backend modules the validator hands
+# them rather than a `NodeExecution`. These adapters keep this file's rows reading as they did —
+# each one calls the MOVED code with what the validator would pass it.
+from tools.backends.build_system.make import gates as make_gates  # noqa: E402
+from tools.backends.build_system.make import parse as make_parse  # noqa: E402
+from tools.backends.language.fortran import bundle as fortran_bundle  # noqa: E402
+from tools.backends.language.fortran import signatures as fortran_signatures  # noqa: E402
+from tools.backends.language.fortran import source as fortran_source  # noqa: E402
+
+_parse_makefile_rules = make_parse._parse_makefile_rules
+
+
+def _targeted_pipeline(root: Path, node_key_safe: str = "node", pipeline_id: str = "p1") -> Path:
+    """A pipeline directory under the fixture repository `root` that names the checked-in target
+    (and the profile installed for it). The source gates read the pipeline's TARGET language
+    (issue #289, R4-b PR-3); a pipeline naming none has no language to be read in, and is
+    reported by `_validate_pipeline_targets_resolve` in every stage rather than read as some
+    default."""
+    from tools.tests.target_fixtures import install_target_profile, pipe_ref
+    install_target_profile(root)
+    pipe = root / pipe_ref(node_key_safe, pipeline_id)
+    pipe.mkdir(parents=True, exist_ok=True)
+    return pipe
+
+
+def _validate_fortran_makefile_src_dir(src_dir, violations):
+    make_gates.validate_src_dir(src_dir, violations, source_reading=fortran_source,
+                                language="fortran")
+
+
+def _validate_makefile_test_no_relink(src_dir, violations, build_system=None, language=None):
+    make_gates.validate_test_no_relink(
+        src_dir, violations, applies=vps._make_quality_check_applies(build_system, language))
+
+
+def _validate_makefile_test_invokes_cases(src_dir, violations, build_system=None, language=None):
+    make_gates.validate_test_invokes_cases(
+        src_dir, violations, applies=vps._make_quality_check_applies(build_system, language))
+
+
+def _validate_problem_model_dependency_dataflow(*, execution, **kwargs):
+    fortran_source._validate_problem_model_dependency_dataflow(
+        node_key=execution.node_key, **kwargs)
+
+
+def _validate_problem_model_literal_outputs(*, execution, **kwargs):
+    fortran_source._validate_problem_model_literal_outputs(node_key=execution.node_key, **kwargs)
+
+
+def _validate_problem_metric_only_scalar_kernel(*, execution, **kwargs):
+    multidim = ((vps._spec_id_from_node_key(execution.node_key) or execution.node_key)
+                if vps._is_multidim_problem_node(execution) else None)
+    fortran_source._validate_problem_metric_only_scalar_kernel(
+        multidim_spec_id=multidim, **kwargs)
+
+
+def _model_source_not_found_violation(src_dir, expected_model_name):
+    return fortran_source.model_source_not_found_violation(
+        src_dir, expected_model_name, fortran_bundle.model_basename("*"))
+
+
+def _parse_canonical_interface_from_controlled_spec(cs_path):
+    return vps._parse_canonical_interface_from_controlled_spec(cs_path, fortran_signatures)
+
+
+def _section51_parameter_lines(cs_path):
+    return [fortran_signatures.render_module_parameter_to_fortran(mp)
+            for mp in vps._section51_module_parameters(cs_path, fortran_signatures)]
+
+
+def _model_files_in_src_dir(src_dir, execution):
+    return vps._model_files_in_src_dir(src_dir, execution, fortran_bundle)
+
+
+def _validate_component_generated_surface(repo_root, execution, model_files, violations):
+    vps._validate_component_generated_surface(
+        repo_root, execution, model_files, violations, source_reading=fortran_source)
+
+
+def _validate_runner_source_files(execution, runner_files, violations, known_case_ids=None):
+    vps._validate_runner_source_files(
+        execution, runner_files, violations, known_case_ids,
+        bundle=fortran_bundle, source_reading=fortran_source)
+
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import install_target_profile
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
@@ -5365,7 +5448,7 @@ end program shallow_water2d_runner
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             dep_spec_ids=[
                 "dynamics_shallow_water_boundary_2d_periodic_copy",
                 "dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -5403,7 +5486,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_flux_2d_rusanov_p0"],
             violations=violations,
         )
@@ -5419,7 +5502,7 @@ end module shallow_water2d_model
         violations: list[str] = []
         _validate_problem_model_dependency_dataflow(
             execution=execution, model_file=Path("chan_model.f90"), lowered=source.lower(),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             dep_spec_ids=dep_spec_ids, violations=violations)
         return violations
 
@@ -5518,7 +5601,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_time_update_2d_ssprk2"],
             violations=violations,
         )
@@ -5561,7 +5644,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_procedure_envelopes(source.lower()),
+                envelopes=fortran_source.procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5603,7 +5686,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_procedure_envelopes(source.lower()),
+                envelopes=fortran_source.procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5757,7 +5840,7 @@ end module shallow_water2d_model
             ("pure function solve(x) result(y)", "endfunction", "y"),
             ("module function solve(x) result(y)", "end function", "y"),
         ):
-            envelopes = vps._fortran_procedure_envelopes(
+            envelopes = fortran_source.procedure_envelopes(
                 f"module m\ncontains\n{header}\n  real :: x\n  {expected} = x\n"
                 f"{terminator}\nend module m\n")
             self.assertEqual(1, len(envelopes), header)
@@ -5914,7 +5997,7 @@ end submodule shallow_water2d_impl
                 src.mkdir()
                 (src / "shallow_water2d_model.f90").write_text(source)
                 execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
-                                          exec_dir=root, pipeline_dir=root)
+                                          exec_dir=root, pipeline_dir=_targeted_pipeline(root))
                 violations: list[str] = []
                 vps._validate_generate_outputs(root, execution, src, violations)
                 return violations
@@ -5963,7 +6046,7 @@ end submodule comp_impl
                 src.mkdir()
                 (src / f"{spec_id}_model.f90").write_text(source)
                 execution = NodeExecution(node_key=node_key, node_dir=root,
-                                          exec_dir=root, pipeline_dir=root)
+                                          exec_dir=root, pipeline_dir=_targeted_pipeline(root))
                 violations: list[str] = []
                 vps._validate_generate_outputs(root, execution, src, violations)
                 return violations
@@ -6000,7 +6083,7 @@ end submodule shallow_water2d_impl
             src.mkdir()
             (src / "shallow_water2d_model.f90").write_text(source)
             execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
-                                      exec_dir=root, pipeline_dir=root)
+                                      exec_dir=root, pipeline_dir=_targeted_pipeline(root))
             violations: list[str] = []
             vps._validate_generate_outputs(root, execution, src, violations)
         joined = " ".join(violations)
@@ -6085,10 +6168,10 @@ end module shallow_water2d_model
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_model_literal_outputs(
+        _validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
@@ -6101,10 +6184,10 @@ end module shallow_water2d_model
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_metric_only_scalar_kernel(
+        _validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
@@ -6128,7 +6211,7 @@ end module shallow_water2d_model
             ("", "endsubroutine"),
             ("", "end"),
         ):
-            envelopes = vps._fortran_procedure_envelopes(
+            envelopes = fortran_source.procedure_envelopes(
                 f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
                 "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
             )
@@ -6144,9 +6227,9 @@ end module shallow_water2d_model
             ("block data bd\n", "end block data"),
             ("block data bd\n", "endblockdata"),
         ):
-            with self.assertRaises(vps._FortranSourceStructureError,
+            with self.assertRaises(fortran_source.SourceStructureError,
                                    msg=f"{opener.strip()} … {terminator}"):
-                vps._fortran_procedure_envelopes(
+                fortran_source.procedure_envelopes(
                     f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
                     "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
                 )
@@ -6169,8 +6252,8 @@ end module shallow_water2d_model
                       f"  {construct_end}\n"
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
-            with self.assertRaises(vps._FortranSourceStructureError, msg=construct_end):
-                vps._fortran_procedure_envelopes(source)
+            with self.assertRaises(fortran_source.SourceStructureError, msg=construct_end):
+                fortran_source.procedure_envelopes(source)
 
     def test_a_properly_opened_construct_does_not_truncate_the_body(self) -> None:
         # The legal half of the row above: the `call` sits AFTER a closed construct, so a body
@@ -6198,8 +6281,8 @@ end module shallow_water2d_model
         # survivor still answers what its own callers need, which is the FORMAT/label scope rule.
         for keyword in ("subroutine", "function", "module", "submodule", "program"):
             for statement in (f"end {keyword}", f"end{keyword}"):
-                self.assertTrue(vps._FORTRAN_UNIT_END.match(statement), statement)
-        self.assertTrue(vps._FORTRAN_UNIT_END.match("end"))
+                self.assertTrue(fortran_source._FORTRAN_UNIT_END.match(statement), statement)
+        self.assertTrue(fortran_source._FORTRAN_UNIT_END.match("end"))
 
     def test_a_derived_type_named_is_is_a_definition_not_a_select_type_guard(self) -> None:
         # `type is` reads like a SELECT TYPE guard and is also a derived type NAMED `is`, which is
@@ -6231,7 +6314,7 @@ end module m
         # And the guard is still a guard: inside SELECT TYPE it opens no type, so the HOST's own
         # `contains` still cuts. If it opened one, the cut would be suppressed and the contained
         # procedure's declarations would rejoin its host.
-        envelopes = vps._fortran_procedure_envelopes(
+        envelopes = fortran_source.procedure_envelopes(
             "subroutine host(u, y)\n"
             "  class(*), intent(in) :: u\n"
             "  select type (u)\n"
@@ -6368,7 +6451,7 @@ end module m
         # procedure's dummies are attributed to its host again. Invisible to every other test
         # here, which is why the closing keyword gets its own case rather than sharing the
         # opener's.
-        envelopes = vps._fortran_procedure_envelopes(
+        envelopes = fortran_source.procedure_envelopes(
             "subroutine host(x, y)\n"
             "  type :: holder\n"
             "    real :: v\n"
@@ -6391,7 +6474,7 @@ end module m
         # Every consumer reports `{model_file}: subroutine {name}` in the order it iterates, and a
         # violation list that reorders itself between runs of the same file is a diff no reviewer
         # can read.
-        envelopes = vps._fortran_procedure_envelopes(
+        envelopes = fortran_source.procedure_envelopes(
             "subroutine host(x, y)\n  y = x\ncontains\n"
             "  subroutine inner(z)\n    z = 2.0\n  end subroutine inner\n"
             "end subroutine host\n"
@@ -6425,8 +6508,8 @@ subroutine solve(x, y)
 end subroutine solve
 end module m2
 """
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_procedure_envelopes(source.lower())
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.procedure_envelopes(source.lower())
 
     def test_prefixed_subroutine_headers_are_all_recognized(self) -> None:
         # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
@@ -6439,7 +6522,7 @@ end module m2
         for prefix in ("", "pure ", "impure ", "elemental ", "recursive ",
                        "module ", "pure elemental ", "recursive module ",
                        "module pure recursive ", "pure recursive elemental "):
-            envelopes = vps._fortran_procedure_envelopes(
+            envelopes = fortran_source.procedure_envelopes(
                 f"{prefix}subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
             self.assertEqual([e.name for e in envelopes], ["solve"], prefix)
@@ -6449,8 +6532,8 @@ end module m2
         # rejects the prefix outright ("Expecting END PROGRAM statement", executed) and runs
         # BEFORE the static check. Pinned so the day this toolchain moves to F2018 the row fails
         # here rather than turning into a refused Generate in a billed run.
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_procedure_envelopes(
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.procedure_envelopes(
                 "non_recursive subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
 
@@ -6479,8 +6562,8 @@ end module m2
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
                 try:
-                    vps._fortran_procedure_envelopes(source)
-                except vps._FortranSourceStructureError:
+                    fortran_source.procedure_envelopes(source)
+                except fortran_source.SourceStructureError:
                     refused.add((name, assignment))
                     continue
                 self.assertIn("does not propagate dependency operation outputs",
@@ -6539,8 +6622,8 @@ end module m2
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
                 try:
-                    vps._fortran_procedure_envelopes(source)
-                except vps._FortranSourceStructureError:
+                    fortran_source.procedure_envelopes(source)
+                except fortran_source.SourceStructureError:
                     refused.add(name)
                     continue
                 self.assertIn("does not propagate dependency operation outputs",
@@ -6598,8 +6681,8 @@ end module m
                       f"  endsubroutine{operator}\n"
                       "  call dep__apply(x, scratch)\n  y = x + endsubroutine\n"
                       "end subroutine solve\nend module m\n")
-            with self.assertRaises(vps._FortranSourceStructureError, msg=operator):
-                vps._fortran_procedure_envelopes(source)
+            with self.assertRaises(fortran_source.SourceStructureError, msg=operator):
+                fortran_source.procedure_envelopes(source)
 
     def test_a_name_that_looks_like_interface_is_refused_not_read_as_a_span(self) -> None:
         # The shape this file has guarded three different ways: a variable named `interface`. The
@@ -6613,8 +6696,8 @@ end module m
                       f"  {assignment}\n"
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
-            with self.assertRaises(vps._FortranSourceStructureError, msg=assignment):
-                vps._fortran_procedure_envelopes(source)
+            with self.assertRaises(fortran_source.SourceStructureError, msg=assignment):
+                fortran_source.procedure_envelopes(source)
 
     def test_every_interface_span_spelling_is_skipped(self) -> None:
         # `abstract` and the one-word `endinterface` are each legal (verified with `gfortran
@@ -6703,7 +6786,7 @@ end module m
         # its contained procedures — a `call` in one of them, with the `intent(out)` in the host,
         # is the host's business and used to be invisible to every gate — while its out-scope stops
         # at the `contains`, because a contained procedure's dummies are its own.
-        envelopes = vps._fortran_procedure_envelopes(
+        envelopes = fortran_source.procedure_envelopes(
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
             "  real, intent(out) :: y\n"
@@ -6766,7 +6849,7 @@ end module shallow_water2d_model
         # was never matched — and its `end subroutine` then paired with the NEXT subroutine's
         # header, shifting that envelope's body. Legal F2008 (verified with `gfortran
         # -fsyntax-only -std=f2008`).
-        envelopes = vps._fortran_procedure_envelopes(
+        envelopes = fortran_source.procedure_envelopes(
             "subroutine setup\n  call init_marker()\nend subroutine setup\n"
             "subroutine solve(x, y)\n  real, intent(out) :: y\n  y = x\nend subroutine solve\n"
         )
@@ -6783,7 +6866,7 @@ end module shallow_water2d_model
         # variable is its definable output, and the neighbouring subroutines are unchanged (the
         # regression this test was originally written to catch).
         for function_end in ("end function scale_by", "endfunction", "end"):
-            envelopes = vps._fortran_procedure_envelopes(
+            envelopes = fortran_source.procedure_envelopes(
                 "module m\ncontains\n"
                 "subroutine first(x, y)\n  y = x\nend subroutine first\n"
                 f"real function scale_by(v)\n  scale_by = 2.0 * v\n{function_end}\n"
@@ -6816,8 +6899,8 @@ subroutine solve(x, y)
 end subroutine solve
 end module m
 """
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_procedure_envelopes(source.lower())
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.procedure_envelopes(source.lower())
 
     def test_an_unterminated_subroutine_body_is_refused(self) -> None:
         # Same edge, third reading. The ORIGINAL flat span emitted nothing at all here (a silent
@@ -6835,8 +6918,8 @@ subroutine solve(x, y)
   call dep__apply(x, scratch)
   y = x
 """
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_procedure_envelopes(source.lower())
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.procedure_envelopes(source.lower())
 
     def test_an_interface_span_is_blanked_in_place_not_deleted(self) -> None:
         # `body` must stay ONE CONTIGUOUS SLICE of a length-preserving transform of the view, so a
@@ -6863,9 +6946,9 @@ subroutine solve(x, y)
                       "  y = x\n"
                       "end subroutine solve\n")
             label = f"{opener} / {closer}"
-            envelopes = vps._fortran_procedure_envelopes(source)
+            envelopes = fortran_source.procedure_envelopes(source)
             self.assertEqual([e.name for e in envelopes], ["solve"], label)
-            view_lines = vps._joined_masked_fortran_view(source).split("\n")
+            view_lines = fortran_source.joined_masked_view(source).split("\n")
             # Every line between the header and the terminator, at its original width.
             self.assertEqual(
                 envelopes[0].body.split("\n"),
@@ -6881,12 +6964,12 @@ subroutine solve(x, y)
         source = ("module m\ncontains\n"
                   "subroutine solve(x, &\n    y) ! wrapped\n"
                   "  real, intent(out) :: y\n  y = x\nend subroutine solve\nend module m\n")
-        from_raw = vps._fortran_procedure_envelopes(source)
-        from_view = vps._fortran_procedure_envelopes(vps._joined_masked_fortran_view(source))
+        from_raw = fortran_source.procedure_envelopes(source)
+        from_view = fortran_source.procedure_envelopes(fortran_source.joined_masked_view(source))
         self.assertEqual(from_raw, from_view)
         # The dummy list survives the wrap; the whitespace the join leaves behind is not the
         # property under test, so it is read the way every caller reads it.
-        self.assertEqual(vps._split_fortran_names(from_raw[0].dummy_args), ["x", "y"])
+        self.assertEqual(fortran_source.split_names(from_raw[0].dummy_args), ["x", "y"])
 
     def test_dependency_presence_checks_ignore_comments_and_literals(self) -> None:
         # `_validate_dependency_operation_on_model_files` asks whether three KEYWORDS appear in
@@ -6909,7 +6992,7 @@ subroutine advance(x, y)
 end module shallow_water2d_model
 """)
             violations: list[str] = []
-            vps._validate_dependency_operation_on_model_files(
+            fortran_source.validate_dependency_operations(
                 [path], ["dynamics_shallow_water_flux_2d_rusanov_p0"], violations)
             return violations
 
@@ -6933,7 +7016,7 @@ end subroutine advance
 end module shallow_water2d_model
 """)
         violations: list[str] = []
-        vps._validate_dependency_operation_on_model_files(
+        fortran_source.validate_dependency_operations(
             [path], ["dynamics_shallow_water_flux_2d_rusanov_p0"], violations)
         self.assertTrue(any("missing dependency module use" in v for v in violations), violations)
         self.assertTrue(any("missing dependency operation call" in v for v in violations), violations)
@@ -6965,10 +7048,10 @@ end module m
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_metric_only_scalar_kernel(
+        _validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(any("metric-only scalar kernel" in v for v in violations), violations)
@@ -6997,10 +7080,10 @@ end module m
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_model_literal_outputs(
+        _validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -7017,7 +7100,7 @@ end module m
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             dep_spec_ids=["dep"],
             violations=violations,
         )
@@ -7048,10 +7131,10 @@ end module shallow_water2d_model
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_model_literal_outputs(
+        _validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -7085,10 +7168,10 @@ end module shallow_water2d_model
             pipeline_dir=Path("/nonexistent/pipeline"),
         )
         violations: list[str] = []
-        vps._validate_problem_metric_only_scalar_kernel(
+        _validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_procedure_envelopes(source.lower()),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(
@@ -7380,7 +7463,7 @@ subroutine solve(u, v, n)
 end subroutine solve
 end module shallow_water2d_model
 """
-        envelopes = vps._fortran_procedure_envelopes(source.lower())
+        envelopes = fortran_source.procedure_envelopes(source.lower())
         self.assertEqual([("subroutine", "solve")], [(e.kind, e.name) for e in envelopes])
         # ... and the body really is the body: the gate still sees the discarded dependency call.
         self.assertIn("does not propagate dependency operation outputs",
@@ -7389,7 +7472,7 @@ end module shallow_water2d_model
         # the parser, not by which statement carries the label.
         for spelling in ("100 continue", "100 v(i) = u(i)"):
             body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
-            self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
+            self.assertEqual(1, len(fortran_source.procedure_envelopes(body.lower())), spelling)
 
     def test_a_label_the_parser_needs_survives_however_it_is_spelled(self) -> None:
         # A statement label is inert to every rule in this module, which is why the view strips
@@ -7400,7 +7483,7 @@ end module shallow_water2d_model
         # counterexamples that killed them, kept as the regression set. Every row is accepted by
         # `gfortran -fsyntax-only -std=f2008` (executed).
         def envelope_names(source: str) -> list[str]:
-            return [e.name for e in vps._fortran_procedure_envelopes(source.lower())]
+            return [e.name for e in fortran_source.procedure_envelopes(source.lower())]
 
         # (a) a labelled DO, including the spellings a TEXT comparison of the label split:
         # a label is a NUMBER, so `do 0100` and `100 continue` are the same label.
@@ -7472,7 +7555,7 @@ subroutine solve(u, v, n)
 end subroutine solve
 end module shallow_water2d_model
 """
-        envelope = vps._fortran_procedure_envelopes(source.lower())[0]
+        envelope = fortran_source.procedure_envelopes(source.lower())[0]
         # The body starts after the header and ends BEFORE the terminator, with no part of
         # `end subroutine solve` inside it and nothing of the declarations lost from the front.
         self.assertTrue(envelope.body.startswith("integer, intent(in) :: n\n"), envelope.body)
@@ -7506,8 +7589,8 @@ end module shallow_water2d_model
   end subroutine solve
 end module shallow_water2d_model
 """
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_procedure_envelopes(source.lower())
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.procedure_envelopes(source.lower())
 
     def test_a_labelled_structural_statement_is_still_structural(self) -> None:
         # A statement LABEL may precede any statement. Both structural statements here are
@@ -8139,7 +8222,7 @@ end module shallow_water2d_model
         # `real :: tmp; tmp = 0.0` on one line, where `_assignment_records`' `^\s*` MULTILINE
         # anchor stops seeing the assignment and its `([^\n!]+)` RHS swallows whatever follows the
         # `;` — a phantom producer, fail-open at the dataflow gate's isdisjoint test.
-        view = vps._joined_masked_fortran_view(
+        view = fortran_source.joined_masked_view(
             "subroutine f(a, &\n   b)\n"
             "  real :: tmp; tmp = 0.0 ! note\n"
             "  ! a comment-only line inside the body\n"
@@ -8162,15 +8245,15 @@ end module shallow_water2d_model
         # lone-`&` line and text ending mid-continuation both leave the blank that preceded a
         # consumed marker, and an unterminated literal leaves the blanks the mask wrote over its
         # contents.
-        self.assertEqual(vps._joined_masked_fortran_view(view), view)
+        self.assertEqual(fortran_source.joined_masked_view(view), view)
         for label, probe in {
             "trailing semicolon": "x = 1;\n",
             "lone ampersand line": "x = 1 &\n&\ny = 2\n",
             "ends mid-continuation": "call f(a, &\n",
             "unterminated literal": "x = 'abc\ny = 1\n",
         }.items():
-            once = vps._joined_masked_fortran_view(probe)
-            self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
+            once = fortran_source.joined_masked_view(probe)
+            self.assertEqual(fortran_source.joined_masked_view(once), once, label)
 
     def test_an_accessibility_statement_does_not_revoke_the_exemption(self) -> None:
         # An accessibility statement names an entity declared elsewhere; it declares nothing
@@ -8206,7 +8289,7 @@ end module shallow_water2d_model
             ("integer function ncomp(x)", {"ncomp"}),
             ("real function f(x) result(ncomp)", {"f", "ncomp"}),
         ):
-            constants, others = vps._fortran_declared_names(header)
+            constants, others = fortran_source.declared_names(header)
             self.assertEqual(constants, set(), header)
             self.assertTrue(expected <= others, f"{header} -> {others}")
 
@@ -8227,12 +8310,12 @@ end module shallow_water2d_model
             "type(holder) ncomp",
             "class(holder) ncomp",
         ):
-            constants, others = vps._fortran_declared_names(declaration)
+            constants, others = fortran_source.declared_names(declaration)
             self.assertEqual(constants, set(), declaration)
             self.assertIn("ncomp", others, declaration)
         # `enumerator` is the one alternative that lands in the CONSTANT set, in both spellings.
         for enumerated in ("enumerator ncomp", "enumerator :: ncomp"):
-            constants, _others = vps._fortran_declared_names(enumerated)
+            constants, _others = fortran_source.declared_names(enumerated)
             self.assertIn("ncomp", constants, enumerated)
 
     def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
@@ -8260,7 +8343,7 @@ end module shallow_water2d_model
             "value ncomp",
             "optional ncomp",
         ):
-            constants, others = vps._fortran_declared_names(statement)
+            constants, others = fortran_source.declared_names(statement)
             self.assertEqual(constants, set(), statement)
             self.assertIn("ncomp", others, statement)
 
@@ -8285,13 +8368,13 @@ end module shallow_water2d_model
             "real, dimension(nparameter) :: field\n"
         )
         self.assertEqual(
-            vps._fortran_parameter_names(vps._joined_masked_fortran_view(source)),
+            fortran_source.parameter_names(fortran_source.joined_masked_view(source)),
             {"ncomp", "c", "d", "s", "wrapped", "nlev", "mm"},
         )
 
     def test_split_fortran_names_ignores_commas_inside_a_literal(self) -> None:
         # The helper-level half of the reproducer above.
-        self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
+        self.assertEqual(fortran_source.split_names("u, 'msg, done, ok', v"), ["u", "v"])
 
     def test_split_fortran_names_joins_continuations_and_masks_comments(self) -> None:
         # `_split_fortran_names` may receive RAW source text (the enclosing regexes are re.DOTALL),
@@ -8309,7 +8392,7 @@ end module shallow_water2d_model
         # derived for that sweep; TODO.md records the harness. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
-            self.assertEqual(vps._split_fortran_names(raw), ["h_in", "h_in", "tmp"], raw)
+            self.assertEqual(fortran_source.split_names(raw), ["h_in", "h_in", "tmp"], raw)
 
     def test_paren_in_a_call_string_literal_does_not_suppress_the_violation(self) -> None:
         # `_iter_fortran_calls` used to hand-roll a quote-BLIND balanced-paren scan, the other
@@ -8342,7 +8425,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_procedure_envelopes(source.lower()),
+                envelopes=fortran_source.procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -10373,7 +10456,6 @@ end program shallow_water2d_runner
         correctly-named runner is not flagged."""
         from tools.validate_pipeline_semantics import (
             NodeExecution,
-            _validate_runner_source_files,
         )
         with tempfile.TemporaryDirectory() as tmp:
             src_dir = Path(tmp)
@@ -10412,9 +10494,7 @@ end program shallow_water2d_runner
         snapshot_schema.json, and a hardcoded literal that matches a declared
         case_id are not. The runtime deliverable gate is the deterministic
         backstop, so this static check stays conservative."""
-        from tools.validate_pipeline_semantics import (
-            _validate_runner_snapshot_filenames,
-        )
+        _validate_runner_snapshot_filenames = fortran_source.validate_runner_snapshot_filenames
         runner = Path("x_runner.f90")
 
         def run(src: str, case_ids: set[str] | None = None) -> list[str]:
@@ -14523,7 +14603,7 @@ end program shallow_water2d_runner
         self.assertIn("`!$omp` presence floor", phase_02,
                       "phase_02 no longer documents the Generate.gate presence floor")
         self.assertIn(
-            "_validate_openmp_presence_floor", phase_02,
+            "_validate_parallel_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
         )
         # The PRODUCER half. The punished side is the `m3c` pure producer — the floor runs on
@@ -15000,6 +15080,143 @@ class ParseMakefileRulesTest(unittest.TestCase):
         self.assertIn("foo_model.o", prereqs)
 
 
+class ControlFileDispatchTest(unittest.TestCase):
+    """`_validate_control_file` is the validator's one dispatch into a build system's control-file
+    gates (issue #289, R4-b PR-3): it runs them only for a build system whose `control_file` the
+    registry declares, and reaches them through the registry rather than by name."""
+
+    _BAD = (
+        "BIN = x\nall: $(BIN)\n"
+        "$(OBJDIR)/a.o: a.f90\n\tgfortran -c a.f90\n"
+        "$(BINDIR)/x: a.o\n\tgfortran a.o\n"
+        "test:\n\t$(MAKE) all\n")
+
+    def _run(self, build_system: str | None, language: str | None = "fortran") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            (src / "a.f90").write_text("module a\nend module a\n", encoding="utf-8")
+            (src / "Makefile").write_text(self._BAD, encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_control_file(src, violations, build_system=build_system,
+                                       language=language, report_language_refusal=True)
+            return violations
+
+    def test_the_make_gates_run_for_make(self) -> None:
+        found = self._run("make")
+        self.assertTrue(any("BIN must be declared overridable" in v for v in found), found)
+        self.assertTrue(any("relink" in v.lower() for v in found), found)
+
+    def test_a_build_system_without_a_control_file_backend_runs_none_and_raises_nothing(self):
+        for build_system in ("cmake", "zz_no_such_build_system"):
+            self.assertEqual([], self._run(build_system), build_system)
+        # ... and an unresolved target runs none either (reported elsewhere)
+        self.assertEqual([], self._run(None))
+        self.assertEqual([], self._run("make", None))
+
+    def test_a_language_without_a_source_reader_is_refused_where_it_runs_alone(self) -> None:
+        found = self._run("make", "zz_lang")
+        self.assertTrue(any("'zz_lang' declares no 'source_reading'" in v for v in found), found)
+
+    def test_the_quality_check_rules_bind_only_a_compiled_language(self) -> None:
+        """`applies` is `_make_quality_check_applies` over the TARGET's pair: a language that
+        declares itself not compiled is held to the prerequisite rule and not to the test-target
+        rules (the relink rule here). Driven with a synthetic non-compiled language reading its
+        sources with Fortran's reader, because every registered language is compiled."""
+        import sys
+        import types
+
+        from tools.backends.language.fortran import source as fortran_source_module
+        pkg = types.ModuleType("zz_interp_pkg")
+        pkg.bundle = types.ModuleType("zz_interp_pkg.bundle")
+        pkg.bundle.COMPILED = False
+        pkg.source = fortran_source_module
+        record = backend_registry.Backend(
+            "language", "zz_interp", "zz_interp_pkg",
+            backend_provides=frozenset({"bundle_facts", "source_reading"}))
+        with unittest.mock.patch.dict(sys.modules, {"zz_interp_pkg": pkg}), \
+                unittest.mock.patch.dict(backend_registry._BACKENDS,
+                                         {("language", "zz_interp"): record}):
+            found = self._run("make", "zz_interp")
+        self.assertTrue(any("BIN must be declared overridable" in v for v in found), found)
+        self.assertFalse(any("relink" in v.lower() for v in found), found)
+        # ... and the compiled language, on the same Makefile, is held to it.
+        self.assertTrue(any("relink" in v.lower() for v in self._run("make")))
+
+
+class TargetLanguageRefusalTest(unittest.TestCase):
+    """The source gates' language refusals land where they are raised (issue #289, R4-b PR-3):
+    a target whose language declares neither `bundle_facts` nor `source_reading` is refused by
+    `_validate_generate_outputs` on the src dir, and the checks gate refuses a language without
+    `bundle_facts` — never read as Fortran, never a silent pass."""
+
+    def test_generate_outputs_refuses_a_language_it_cannot_read(self) -> None:
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            install_target_profile(root, profile_with(toolchain={"language": "zz_lang"}))
+            pipe = root / pipe_ref("problem__p__0.1.0", "p1")
+            src = pipe / "src"
+            src.mkdir(parents=True)
+            (src / "p_model.f90").write_text("module p_model\nend module p_model\n")
+            execution = NodeExecution(node_key="problem/p@0.1.0", node_dir=pipe,
+                                      exec_dir=pipe, pipeline_dir=pipe)
+            violations: list[str] = []
+            self.assertIsNone(vps._validate_generate_outputs(root, execution, src, violations))
+        for capability in ("bundle_facts", "source_reading"):
+            self.assertTrue(any(f"'zz_lang' declares no '{capability}'" in v
+                                for v in violations), (capability, violations))
+
+    def test_the_checks_gate_refuses_a_language_without_file_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t)
+            (src / "bx_checks.f90").write_text("module bx_checks\nend module bx_checks\n")
+            violations: list[str] = []
+            vps._validate_checks_source_files(
+                NodeExecution(node_key="component/bx@0.1.0", node_dir=src, exec_dir=src,
+                              pipeline_dir=src), "zz_lang", src, [], violations)
+        self.assertTrue(any("'zz_lang' declares no 'bundle_facts'" in v for v in violations),
+                        violations)
+
+
+class SourceGateDispatchTest(unittest.TestCase):
+    """The post_generate entry's dispatch into two language gates that a round-2 review of issue
+    #289's R4-b PR-3 found unobserved (deleting either call left every file green, on origin/main
+    too): the dependency-use check, and the runner's snapshot-filename scan. Driven through the
+    entry points, not the backend functions."""
+
+    def _pipeline(self, root: Path) -> tuple[NodeExecution, Path]:
+        pipe = _targeted_pipeline(root, "problem__p__0.1.0")
+        src = pipe / "source" / "src_1" / "src"
+        src.mkdir(parents=True)
+        return (NodeExecution(node_key="problem/p@0.1.0", node_dir=pipe, exec_dir=pipe,
+                              pipeline_dir=pipe), src)
+
+    def test_a_missing_dependency_call_is_reported_by_the_generation_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution, src = self._pipeline(root)
+            (src / "p_model.f90").write_text(
+                "module p_model\n  use dep_model, only: dep__op\ncontains\nend module p_model\n")
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_component_dep_spec_ids",
+                                            return_value=["dep"]):
+                vps._validate_generate_outputs_for_generation(root, execution, "src_1",
+                                                              violations)
+        self.assertTrue(any("missing dependency operation call (dep__*)" in v
+                            for v in violations), violations)
+
+    def test_a_hardcoded_snapshot_name_is_reported_through_the_runner_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution, src = self._pipeline(root)
+            (src / "p_runner.f90").write_text(
+                "program p_runner\n  open(unit=10, file='raw/state_snapshots/snap_0001.json')\n"
+                "end program p_runner\n")
+            violations: list[str] = []
+            vps._validate_runner_outputs(root, execution, src, violations)
+        self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
+
+
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
     """Out-of-source correctness: a used-module prerequisite must carry the same
     `$(OBJDIR)/` prefix as its producing object rule. A bare basename passes the
@@ -15313,7 +15530,7 @@ class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
     def test_both_copies_of_the_scan_count_a_wrapped_assignment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            pipeline_dir = repo_root / "pipeline"
+            pipeline_dir = _targeted_pipeline(repo_root)
             source_id = "src_001"
             src_dir = pipeline_dir / "source" / source_id / "src"
             src_dir.mkdir(parents=True)
@@ -16917,11 +17134,11 @@ class ModelSourceNotFoundMessageTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.src, ignore_errors=True)
 
     def test_spec_id_unknown_stays_generic(self) -> None:
-        msg = vps._model_source_not_found_violation(self.src, None)
+        msg = _model_source_not_found_violation(self.src, None)
         self.assertEqual(msg, f"{self.src}: model source not found")
 
     def test_no_model_file_emitted(self) -> None:
-        msg = vps._model_source_not_found_violation(self.src, "foo_model.f90")
+        msg = _model_source_not_found_violation(self.src, "foo_model.f90")
         self.assertEqual(
             msg, f"{self.src}: node model source not found (foo_model.f90)"
         )
@@ -16931,7 +17148,7 @@ class ModelSourceNotFoundMessageTests(unittest.TestCase):
         # message must name the offender and say "rename", not the misleading
         # "not found" that reads as if no file was written.
         (self.src / "advdiff_bndry_pcopy_model.f90").write_text("", encoding="utf-8")
-        msg = vps._model_source_not_found_violation(
+        msg = _model_source_not_found_violation(
             self.src, "dynamics_advection_diffusion_boundary_1d_periodic_copy_model.f90"
         )
         self.assertIn("advdiff_bndry_pcopy_model.f90 present", msg)
@@ -16948,7 +17165,7 @@ class ModelSourceNotFoundMessageTests(unittest.TestCase):
         spec_id = "x" * 70  # <spec_id>_model = 76 chars > 63
         expected = f"{spec_id}_model.f90"
         (self.src / "abbrev_model.f90").write_text("", encoding="utf-8")
-        msg = vps._model_source_not_found_violation(self.src, expected)
+        msg = _model_source_not_found_violation(self.src, expected)
         self.assertIn("exceeds", msg)
         self.assertIn("spec-level", msg)
         self.assertNotIn("rename", msg)
@@ -17670,6 +17887,57 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
     # `InfrastructureGeneratedSignatureGateTests::test_the_no_backend_refusal_names_the_node_kind_it_was_given`
     # is its witness for an `infrastructure` node.)
 
+    def test_a_second_signature_language_repeats_no_finding_and_adds_its_own(self) -> None:
+        """The Compile-stage §5.1 pin runs in EVERY language that declares `signatures`
+        (issue #289, R4-b PR-3), and a finding a later language repeats word for word is reported
+        once. Driven with a synthetic twin of the Fortran module (identical findings), then with a
+        twin whose loader reports a finding of its own (added, not merged away)."""
+        import sys
+        import types
+
+        def run(twin_signatures: object) -> list[str]:
+            pkg = types.ModuleType("zz_sig_twin")
+            if twin_signatures is not None:
+                pkg.signatures = twin_signatures
+            record = backend_registry.Backend(
+                "language", "zz_twin", "zz_sig_twin", backend_provides=frozenset({"signatures"}))
+            with tempfile.TemporaryDirectory() as tmp, \
+                    unittest.mock.patch.dict(sys.modules, {"zz_sig_twin": pkg}), \
+                    unittest.mock.patch.dict(backend_registry._BACKENDS,
+                                             {("language", "zz_twin"): record}):
+                api = self._full_api()
+                api["signatures"][2]["signature"]["args"][0]["spec"] = {
+                    "type": "string", "kind": None, "len": "assumed", "name": None,
+                    "alloc": False}
+                ir_dir = self._seed(Path(tmp), public_api=api)
+                self.assertEqual(["fortran", "zz_twin"], vps._compile_signature_languages())
+                violations: list[str] = []
+                _validate_published_surface(Path(tmp), ir_dir, violations)
+                return [v.replace(tmp, "<tmp>") for v in violations]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self._full_api()
+            api["signatures"][2]["signature"]["args"][0]["spec"] = {
+                "type": "string", "kind": None, "len": "assumed", "name": None, "alloc": False}
+            ir_dir = self._seed(Path(tmp), public_api=api)
+            alone: list[str] = []
+            _validate_published_surface(Path(tmp), ir_dir, alone)
+            alone = [v.replace(tmp, "<tmp>") for v in alone]
+        self.assertTrue(alone)
+        self.assertEqual(alone, run(fortran_signatures))
+
+        own = types.ModuleType("zz_sig_twin.signatures")
+        own.load_structured_signatures = lambda body: ({}, "ZZ_TWIN_FINDING")
+        mixed = run(own)
+        self.assertEqual(alone, mixed[:len(alone)])
+        self.assertTrue(any("ZZ_TWIN_FINDING" in v for v in mixed[len(alone):]), mixed)
+
+        # A declared twin whose package does not carry the module: a violation, never an
+        # exception that would discard the other languages' findings.
+        broken = run(None)
+        self.assertEqual(alone, broken[:len(alone)])
+        self.assertTrue(any("could not be loaded" in v for v in broken[len(alone):]), broken)
+
     def test_signatures_type_drift_flagged(self) -> None:
         # An IR signature that drifts from §5.1 (here: change entries' element type) is flagged —
         # it is exactly what the leaf would transcribe into the model.
@@ -18079,7 +18347,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         return tmp / "cs.md"
 
     def test_parses_op_and_type_stanzas(self) -> None:
-        ops, types, _protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(self._FENCE))
+        ops, types, _protos, err = _parse_canonical_interface_from_controlled_spec(self._cs(self._FENCE))
         self.assertIsNone(err)
         self.assertEqual(set(ops), {"hx__emit_real", "hx__emit_int", "hx__write_metrics_basis"})
         self.assertEqual(set(types), {"hx__h_named"})
@@ -18099,7 +18367,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
                  "    args:\n      - {name: u, rank: 1, intent: in, spec: {type: real, kind: dp}}\n"
                  "procedures:\n  - kind: subroutine\n    name: hx__advance\n"
                  "    args:\n      - {name: rhs, spec: {type: procedure, interface: rhs_1d}}\n```\n")
-        ops, types, protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(fence))
+        ops, types, protos, err = _parse_canonical_interface_from_controlled_spec(self._cs(fence))
         self.assertIsNone(err)
         self.assertEqual(sorted(ops), ["hx__advance"])
         self.assertEqual(types, {})
@@ -18107,36 +18375,36 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertEqual(protos["rhs_1d"][0], "subroutine rhs_1d(u)")
 
     def test_missing_fence_errors(self) -> None:
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
         self.assertIn("missing", err)
 
     def test_multiple_fences_errors(self) -> None:
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(
             self._cs(self._FENCE + "```yaml\nprocedures: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("multiple", err)
 
     def test_invalid_yaml_errors(self) -> None:
         bad = "```yaml\nprocedures: [unterminated\n```\n"
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("not valid YAML", err)
 
     def test_non_mapping_yaml_errors(self) -> None:
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\n- procedures\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("must be a YAML mapping", err)
 
     def test_unknown_top_key_errors(self) -> None:
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\nprocedurez: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("unknown key", err)
 
     def test_zero_signature_block_errors(self) -> None:
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(
             self._cs("```yaml\nmodule_parameters: []\ntypes: []\nprocedures: []\n```\n"))
         self.assertIsNotNone(err)
         self.assertIn("parsed 0 signatures", err)
@@ -18145,7 +18413,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         bad = (
             "```yaml\nprocedures:\n- kind: function\n  name: hx__bad\n"
             "  args: []\n  result:\n    name: value\n    spec:\n      type: mystery\n```\n")
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("could not render", err)
 
@@ -18160,7 +18428,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n"
             "- kind: function\n  name: hx__dup\n  args: []\n"
             "  result: {name: s, spec: {type: string, len: deferred, alloc: true}}\n```\n")
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(dup))
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(self._cs(dup))
         self.assertIsNotNone(err)
         self.assertIn("procedures[1].name 'hx__dup' collides with", err)
 
@@ -18170,7 +18438,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         bad = (
             "```yaml\nprocedures:\n- kind: function\n  name: hx__bad\n  args: []\n"
             "  result: null\n```\n")
-        _, _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(bad))
+        _, _, _, err = _parse_canonical_interface_from_controlled_spec(self._cs(bad))
         self.assertIsNotNone(err)
         self.assertIn("could not render", err)
 
@@ -18189,7 +18457,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
 end program p
 """
             violations: list[str] = []
-            vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
+            fortran_source.validate_runner_json_serialization(Path("runner.f90"), source, violations)
             self.assertTrue(any("L edit descriptor" in v for v in violations),
                             f"violation lost for {write_stmt!r}")
 
@@ -18205,19 +18473,19 @@ end program p
 end program p
 """
         violations = []
-        vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
+        fortran_source.validate_runner_json_serialization(Path("runner.f90"), source, violations)
         self.assertTrue(any("L edit descriptor" in v for v in violations), violations)
 
     def test_unrelated_fence_before_subsection_ignored(self) -> None:
         # A code fence in §5 prose BEFORE ### 5.1 must not be mistaken for the interface block.
         body = "```text\nan illustrative example\n```\n" + self._FENCE
-        ops, types, _protos, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(body))
+        ops, types, _protos, err = _parse_canonical_interface_from_controlled_spec(self._cs(body))
         self.assertIsNone(err)
         self.assertEqual(set(ops), {"hx__emit_real", "hx__emit_int", "hx__write_metrics_basis"})
         self.assertEqual(set(types), {"hx__h_named"})
 
     def test_parameter_lines_extracted(self) -> None:
-        params = vps._section51_parameter_lines(self._cs(self._FENCE))
+        params = _section51_parameter_lines(self._cs(self._FENCE))
         self.assertEqual([normalize_fortran_line(p) for p in params],
                          ["integer,parameter::dp=real64"])
 
@@ -18285,16 +18553,19 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                 "module_parameters": copy.deepcopy(
                     InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}}
         _write_json(ir_dir / "spec.ir.yaml", ir_doc)
-        pipe = tmp / "pipe"
-        if language is not None:
-            # The gate reads the language of the TARGET the pipeline path names (issue #284).
-            from tools.tests.target_fixtures import (
-                install_target_profile,
-                pipe_ref,
-                profile_with,
-            )
-            install_target_profile(tmp, profile_with(toolchain={"language": language}))
-            pipe = tmp / pipe_ref("hx", "hx_20260101_001")
+        # The gate reads the language of the TARGET the pipeline path names (issue #284), and
+        # since issue #289's R4-b PR-3 it renders and compares in that language's `signatures`
+        # backend — a pipeline naming no target has no language to pin in, so the fixture always
+        # names one (the checked-in profile, or a variant with `language` overridden).
+        from tools.tests.target_fixtures import (
+            install_target_profile,
+            pipe_ref,
+            profile_with,
+        )
+        install_target_profile(
+            tmp, profile_with(toolchain={"language": language}) if language is not None
+            else _TP)
+        pipe = tmp / pipe_ref("hx", "hx_20260101_001")
         src_dir = pipe / "src"
         src_dir.mkdir(parents=True)
         (pipe / "lineage.json").write_text(
@@ -18305,7 +18576,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             node_key=f"{spec_kind}/hx@0.2.0", node_dir=pipe, exec_dir=pipe, pipeline_dir=pipe)
 
     def _run(self, execution: NodeExecution, tmp: Path) -> list[str]:
-        model = tmp / "pipe" / "src" / "hx_model.f90"
+        model = execution.pipeline_dir / "src" / "hx_model.f90"
         violations: list[str] = []
         vps._validate_generated_signatures(
             tmp, execution, [model], violations)
@@ -19270,7 +19541,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                   "100 continue\n"
                   "  end subroutine hx__loop_helper\n")
         source = self._C._GOOD_SOURCE.replace(self._DEF, helper + self._DEF)
-        _view, tree, _to_view = vps._structure_reading(source.lower())
+        _view, tree, _to_view = fortran_source.structure_reading(source.lower())
         self.assertIn("100 continue", tree.view, "the fixture must reach the labelled reading")
         self.assertEqual(self._gate(source), [])
 
@@ -19526,7 +19797,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         # dedicated exit code. Swallowed, it becomes a content violation the leaf retries forever.
         unavailable = fortran_structure.FortranStructureUnavailableError
         with unittest.mock.patch.object(
-                vps, "_module_level_procedure_names",
+                fortran_source, "module_level_procedure_names",
                 side_effect=unavailable("no grammar")), tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             execution = self.inst._seed(tmp, source=self._C._GOOD_SOURCE)
@@ -19591,7 +19862,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 "      integer,           intent(in) :: n\n",
                 "      integer,           intent(in) :: count\n", 1)
             execution = self.inst._seed(tmp, source=source)
-            model = tmp / "pipe" / "src" / "hx_model.f90"
+            model = execution.pipeline_dir / "src" / "hx_model.f90"
             second = model.with_name("hx_helper_model.f90")
             second.write_text(
                 "module hx_helper\n"
@@ -19611,7 +19882,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             slashless = NodeExecution(
                 node_key="hx@0.2.0", node_dir=execution.node_dir,
                 exec_dir=execution.exec_dir, pipeline_dir=execution.pipeline_dir)
-            resolved, _expected = vps._model_files_in_src_dir(model.parent, slashless)
+            resolved, _expected = _model_files_in_src_dir(model.parent, slashless)
             self.assertEqual(len(resolved), 2, resolved)
             violations: list = []
             vps._validate_generated_signatures(tmp, slashless, resolved, violations)
@@ -19681,7 +19952,7 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
 
     def test_interface_body_is_not_a_definition(self) -> None:
         self.assertEqual(
-            vps._module_level_procedure_names(
+            fortran_source.module_level_procedure_names(
                 "module m\n"
                 "  interface\n"
                 "    subroutine proto(n)\n"
@@ -19697,7 +19968,7 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
 
     def test_contained_procedure_is_not_module_level(self) -> None:
         self.assertEqual(
-            vps._module_level_procedure_names(
+            fortran_source.module_level_procedure_names(
                 "module m\n"
                 "contains\n"
                 "  subroutine host(n)\n"
@@ -19717,7 +19988,7 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
         # the answer is yes. Reading the two as one rule would make a legal submodule node fail
         # the gate above with "never DEFINES it".
         self.assertEqual(
-            vps._module_level_procedure_names(
+            fortran_source.module_level_procedure_names(
                 "module m\n"
                 "  interface\n"
                 "    module subroutine solve(n)\n"
@@ -19751,9 +20022,9 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             "    integer, intent(in) :: n\n"
             "  end subroutine wmb\n"
             "end module hx_junk\n")
-        self.assertEqual(vps._module_level_procedure_names(source), frozenset({"wmb"}))
-        self.assertEqual(vps._module_level_procedure_names(source, "hx_model"), frozenset())
-        self.assertEqual(vps._module_level_procedure_names(source, "hx_junk"), frozenset({"wmb"}))
+        self.assertEqual(fortran_source.module_level_procedure_names(source), frozenset({"wmb"}))
+        self.assertEqual(fortran_source.module_level_procedure_names(source, "hx_model"), frozenset())
+        self.assertEqual(fortran_source.module_level_procedure_names(source, "hx_junk"), frozenset({"wmb"}))
 
     def test_a_submodule_counts_as_the_same_publisher(self) -> None:
         # A separate module subprogram IS the module's own implementation — a consumer links
@@ -19775,9 +20046,9 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             "  end procedure solve\n"
             "end submodule hx_model_impl\n")
         self.assertEqual(
-            vps._module_level_procedure_names(source, "hx_model"), frozenset({"solve"}))
+            fortran_source.module_level_procedure_names(source, "hx_model"), frozenset({"solve"}))
         # ...and only ONE level: the submodule is not itself a publisher a consumer names.
-        self.assertEqual(vps._module_level_procedure_names(source, "hx_other"), frozenset())
+        self.assertEqual(fortran_source.module_level_procedure_names(source, "hx_other"), frozenset())
 
     def test_an_absent_unit_yields_the_empty_set_rather_than_the_whole_file(self) -> None:
         # Fail-CLOSED, and it is the arm a decoy would aim at: if a source declaring no unit of
@@ -19790,7 +20061,7 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             "    integer, intent(in) :: n\n"
             "  end subroutine wmb\n"
             "end module something_else\n")
-        self.assertEqual(vps._module_level_procedure_names(source, "hx_model"), frozenset())
+        self.assertEqual(fortran_source.module_level_procedure_names(source, "hx_model"), frozenset())
 
     def test_a_submodule_chain_resolves_to_the_ANCESTOR_module(self) -> None:
         # `submodule (ancestor : parent) name` names the ANCESTOR MODULE first, and that is what
@@ -19816,8 +20087,8 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             "  end procedure deep_impl\n"
             "end submodule leaf\n")
         self.assertEqual(
-            vps._module_level_procedure_names(source, "hx_model"), frozenset({"deep_impl"}))
-        self.assertEqual(vps._module_level_procedure_names(source, "mid"), frozenset())
+            fortran_source.module_level_procedure_names(source, "hx_model"), frozenset({"deep_impl"}))
+        self.assertEqual(fortran_source.module_level_procedure_names(source, "mid"), frozenset())
 
     def test_the_grammar_self_check_notices_a_renamed_program_unit_type(self) -> None:
         # `_REQUIRED_NODE_TYPES` gained four entries and NOTHING observed them: the existing rows
@@ -19841,8 +20112,8 @@ class ModuleLevelProcedureNamesTests(unittest.TestCase):
             fs._load_parser()
 
     def test_unresolvable_source_raises_rather_than_returning_a_partial_set(self) -> None:
-        with self.assertRaises(vps._FortranSourceStructureError):
-            vps._module_level_procedure_names(
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.module_level_procedure_names(
                 "module m\ncontains\n  subroutine s(n)\n    integer :: n\n"
                 "    real :: endsubroutine\n    endsubroutine = 1.0\n"
                 "  end subroutine s\nend module m\n")
@@ -19964,7 +20235,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
         src = ("module demo_checks\n  private\n  public :: case_setup; public :: case_run\n"
                "contains\n  subroutine case_setup()\n  end subroutine case_setup\n"
                "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, _, _ = vps.checks_module_abi_facts(src, "demo")
+        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertIn("case_setup", published)  # was lost: its token was `case_setup;`
         self.assertIn("case_run", published)
         self.assertNotIn("public", published)  # was invented from the second statement's keyword
@@ -19974,7 +20245,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
         src = ("module demo_checks\n  private; public :: case_setup\ncontains\n"
                "  subroutine case_setup()\n  end subroutine case_setup\n"
                "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, _, _ = vps.checks_module_abi_facts(src, "demo")
+        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertEqual(published, {"case_setup"})
 
     def test_string_literal_naming_subroutine_does_not_corrupt_the_parse(self) -> None:
@@ -19987,7 +20258,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
                "  public :: case_setup, case_run\ncontains\n"
                "  subroutine case_setup()\n  end subroutine case_setup\n"
                "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, subs, defined = vps.checks_module_abi_facts(src, "demo")
+        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertEqual(published, {"case_setup", "case_run"})
         self.assertEqual(defined, {"case_setup", "case_run"})
         self.assertEqual(subs, {"case_setup", "case_run"})
@@ -20002,7 +20273,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
                "  character(kind=kind('a')) function metric_compute()\n"
                "    metric_compute = 'x'\n  end function metric_compute\n"
                "  subroutine case_setup()\n  end subroutine case_setup\nend module demo_checks\n")
-        published, subs, defined = vps.checks_module_abi_facts(src, "demo")
+        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertIn("metric_compute", defined)
         self.assertNotIn("metric_compute", subs)  # it is a function, not a subroutine
         self.assertIn("case_setup", subs)
@@ -20013,7 +20284,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
                "  real(kind(1d0)) function f(x)\n    real(kind(1d0)) :: x\n    f = x\n"
                "  end function f\n  character(len=32) function name()\n    name = 'x'\n"
                "  end function name\nend module demo_checks\n")
-        published, subs, defined = vps.checks_module_abi_facts(src, "demo")
+        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertEqual(defined, {"f", "name"})
         self.assertEqual(subs, set())
 
@@ -20021,7 +20292,7 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
         src = ("module demo_checks\n  character(len=*), parameter :: s = 'a;b'\n  private\n"
                "  public :: case_setup\ncontains\n  subroutine case_setup()\n"
                "  end subroutine case_setup\nend module demo_checks\n")
-        published, _, _ = vps.checks_module_abi_facts(src, "demo")
+        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
         self.assertEqual(published, {"case_setup"})
 
 
@@ -20850,7 +21121,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
                 ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
                 self.assertTrue(ops, f"{tag}: §5 parsed no published operation")
                 op_stanzas, type_stanzas, _protos, err = \
-                    vps._parse_canonical_interface_from_controlled_spec(cs)
+                    _parse_canonical_interface_from_controlled_spec(cs)
                 self.assertIsNone(err, f"{tag}: §5.1 {err}")
                 self.assertEqual(set(op_stanzas), ops, f"{tag}: §5.1 procedures != §5 operations")
                 self.assertEqual(set(type_stanzas), types, f"{tag}: §5.1 types != §5 types")
@@ -20899,7 +21170,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         entry = self._pinned_entries()[0]
         cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
         ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
-        op_stanzas, _t, _p, err = vps._parse_canonical_interface_from_controlled_spec(cs)
+        op_stanzas, _t, _p, err = _parse_canonical_interface_from_controlled_spec(cs)
         self.assertIsNone(err)
         # The corpus really does present a non-empty comparison on both sides.
         self.assertTrue(ops)
@@ -21554,7 +21825,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             model.write_text(model_text, encoding="utf-8")
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            vps._validate_component_generated_surface(repo_root, execution, [model], v)
+            _validate_component_generated_surface(repo_root, execution, [model], v)
             return v
 
     _GOOD_MODEL = (
@@ -21685,8 +21956,8 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertTrue(self._run(public_api=api, model_text=model))
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
-        # Drift guard: the validator's published-surface scanner must agree with
-        # orchestration_runtime._list_prefixed_subroutines (which it may not import). Both now
+        # Drift guard: the validator's published-surface scanner must agree with the dependency-
+        # fact resolver's `_list_prefixed_subroutines`. Both
         # read `fortran_lines.fortran_logical_lines` (issue #23), so this runs over the FULL
         # domain — not, as before, only the shapes a code generator emits. The pathological
         # inputs the old restriction carved out are the point of the list below: mid-token
@@ -21705,7 +21976,10 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # correctness of the shared scanner.
         # Each case carries its own spec_id: deriving it from the source text is how the real
         # certified-source case below silently degenerated to `[] == []`.
-        from tools.orchestration_runtime import _list_prefixed_subroutines
+        # Both scanners live in the Fortran backend since issue #289 (R4-b PR-3): the gate's
+        # (`source.published_subroutines`) and the dependency-fact resolver's
+        # (`interface._list_prefixed_subroutines`, reached through `signatures`).
+        from tools.backends.language.fortran.interface import _list_prefixed_subroutines
         cases = [
             ("the shared good model", "dep_base", self._GOOD_MODEL),
             # Issue #266: a prefixed PROTOTYPE inside an abstract interface block (and a
@@ -21769,7 +22043,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         ]
         for label, spec_id, src in cases:
             with self.subTest(case=label):
-                published = vps._list_component_published_subroutines(src, spec_id)
+                published = fortran_source.published_subroutines(src, spec_id)
                 self.assertEqual(
                     published,
                     _list_prefixed_subroutines(src, f"{spec_id}__"),
@@ -21907,7 +22181,7 @@ class RegistryClauseReadersTests(unittest.TestCase):
             self.assertFalse(any("signature pinning needs a language backend" in x for x in v), v)
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
-    """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
+    """`_validate_parallel_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
     node built for an OpenMP-on-CPU Fortran TARGET (the pipeline's profile, issue #284) whose
     bundle's `target_lowering_plan` names OpenMP as its parallelization model, a model source with
     counted `do` loops must carry at least one `!$omp` directive. Presence floor only — which loops
@@ -21959,7 +22233,7 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                 models.append(extra)
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            vps._validate_openmp_presence_floor(repo_root, execution, src_dir, models, v)
+            vps._validate_parallel_presence_floor(repo_root, execution, src_dir, models, v)
             return v
 
     @staticmethod
@@ -22345,6 +22619,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
 
     def test_non_openmp_backend_passes(self) -> None:
         self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
+        # `none` is a REGISTERED backend that carries `parallel_directives` in the neutral core
+        # (it renders no directive) and has no package: the floor must answer "no floor" for it
+        # and not reach `capability_module`, which refuses a core-carried capability with an
+        # exception (issue #289, R4-b PR-3; round 1 measured the raise with the second clause
+        # of the floor's guard dropped).
+        self.assertEqual(self._run(self._COUNTED, backend="none"), [])
 
     def test_non_fortran_language_passes(self) -> None:
         self.assertEqual(self._run(self._COUNTED, language="c"), [])
@@ -22379,7 +22659,7 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             execution = vps._stub_execution(Path(t), "component/dep_base@0.1.0")
             v: list[str] = []
-            vps._validate_openmp_presence_floor(Path(t), execution, Path(t) / "src", [], v)
+            vps._validate_parallel_presence_floor(Path(t), execution, Path(t) / "src", [], v)
             self.assertEqual(v, [])
 
     def test_one_violation_per_offending_file(self) -> None:
@@ -24084,10 +24364,7 @@ class IrFixtureShapeTests(unittest.TestCase):
         """The controlled_spec ref is LLM-authored too: its probe is total, but the READ can still
         fail (a file that stats but does not open). Both §5 parsers absorb it — the callers already
         report an empty parse as a fail-closed violation."""
-        from tools.validate_pipeline_semantics import (
-            _parse_canonical_interface_from_controlled_spec,
-            _parse_public_api_from_controlled_spec,
-        )
+        from tools.validate_pipeline_semantics import _parse_public_api_from_controlled_spec
 
         with tempfile.TemporaryDirectory() as tmp:
             unreadable = Path(tmp)  # a directory: stats fine, does not open
@@ -25525,7 +25802,10 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
                 "meta": {"spec_kind": "component", "spec_id": "hx",
                          "source_refs": {"controlled_spec": "cs.md"}},
                 "public_api": self._public_api() if public_api is None else public_api})
-            pipe = tmp / "pipe"
+            # The pipeline names a target: the gate compares in that target's language.
+            from tools.tests.target_fixtures import install_target_profile, pipe_ref
+            install_target_profile(tmp)
+            pipe = tmp / pipe_ref("hx", "hx_20260101_001")
             src_dir = pipe / "src"
             src_dir.mkdir(parents=True)
             (pipe / "lineage.json").write_text(json.dumps({"ir_ref": ir_ref}), encoding="utf-8")

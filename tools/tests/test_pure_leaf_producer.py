@@ -31,6 +31,12 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.backends import registry as _backend_registry
+
+#: The runner name the target language's `bundle_facts` gives a node (issue #289, R4-b PR-3: the
+#: validator's own spelling of it, `_expected_runner_name`, was retired for this one).
+_fortran_runner_basename = _backend_registry.capability_module(
+    "language", _TARGET_PROFILE.toolchain["language"], "bundle_facts").runner_basename
 
 _NODE = "problem/shallow_water2d@0.3.0"
 _SAFE = wc.node_key_safe(_NODE)
@@ -2602,7 +2608,7 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         `allowed_extra` decides which undeclared `.f90` this gate tolerates, and it is exactly
         one file: the runner the host renders. A mutation sweep found that widening it left the
         whole validator suite green — so the one function that now owns the runner's name
-        (`_expected_runner_name`) was the sole guard of a provenance check with no witness.
+        (`bundle_facts.runner_basename`) was the sole guard of a provenance check with no witness.
 
         Two rows in one, because a carve-out needs both: the exception is ACCEPTED (the clean
         bundle rows above already fail if it is not), and everything else is REFUSED. A pin on
@@ -2624,9 +2630,10 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         self.assertEqual([], [x for x in subjects if x.endswith(f"{_SPEC_ID}_runner.f90")], v)
         # The refusal NAMES the glue it admitted, so the operator reading it can tell an
         # undeclared source from a carve-out that did not fire. The name is derived from
-        # `_expected_runner_name`, the one function that says what the host renders.
+        # the target language's `bundle_facts.runner_basename`, the one function that says what
+        # the host renders.
         clause = next(x for x in v if "smuggled.f90" in x)
-        self.assertIn(vps._expected_runner_name(_SPEC_ID), clause)
+        self.assertIn(_fortran_runner_basename(_SPEC_ID), clause)
 
     def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
         """`host_glue_sources` is what makes the runner's object name a KNOWN one.
@@ -2647,7 +2654,7 @@ class PurePostGenerateBundleTests(unittest.TestCase):
             # A declared file whose logical path IS the host glue: the assembly graph must see
             # the collision.
             bundle["files"].append({
-                "logical_path": vps._expected_runner_name(spec_id),
+                "logical_path": _fortran_runner_basename(spec_id),
                 "role": "helper", "language": "fortran", "member_node_key": None,
                 "content": "module zzz_collide\nend module zzz_collide\n",
                 "modules": ["zzz_collide"],
@@ -2666,7 +2673,7 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         that survived actually produced."""
         spec_id = vps._spec_id_from_node_key(_NODE)
         self.assertIsNotNone(spec_id)
-        expected = vps._expected_runner_name(spec_id)
+        expected = _fortran_runner_basename(spec_id)
         with tempfile.TemporaryDirectory() as tmp:
             repo, gen, ir_ref = self._gen_dir(tmp)
             # A file whose name differs from the carve-out by one character must be refused.
