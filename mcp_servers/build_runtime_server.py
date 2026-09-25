@@ -1592,7 +1592,8 @@ TOOLS: dict[str, Tool] = {
         description=(
             "Run a program without shell expansion and capture stdout/stderr. "
             "The launch environment (e.g. a parallel runtime's thread count) is the "
-            "caller's, passed as env; target_class / target / threads_per_rank are refused."
+            "caller's, passed as env; target_class / target.class / target / "
+            "threads_per_rank are refused."
         ),
         input_schema={
             "type": "object",

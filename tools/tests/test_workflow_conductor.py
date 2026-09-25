@@ -15593,6 +15593,10 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(len(run_calls), 1)
             call = run_calls[0]
             self.assertEqual(call["env"], shape.env)
+            # And not merely whatever the seam returned: the openmp target's thread count must
+            # arrive as the value the runtime reads (a seam returning `{}` agrees with itself).
+            if target.parallel_backend == "openmp":
+                self.assertEqual(call["env"], {"OMP_NUM_THREADS": "3", "OMP_THREAD_LIMIT": "3"})
             prefix = len(shape.argv_prefix)
             self.assertEqual(call["command"][:prefix], list(shape.argv_prefix))
             self.assertEqual(call["command"][prefix + 1], "--cases")

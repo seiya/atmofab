@@ -43,7 +43,9 @@ class LaunchUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class LaunchShape:
     """How one binary is launched: `argv_prefix` goes in front of the binary's own argv, `env`
-    is handed to `run_program` as its `env`, and `site` names where it runs."""
+    is handed to `run_program` as its `env` — OVERRIDES, which the server merges over the host
+    process's own environment, so a variable this does not set is inherited — and `site` names
+    where it runs."""
 
     argv_prefix: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)

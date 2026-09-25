@@ -202,10 +202,11 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "execution_env": (
         ("parallel",),
-        "The host knows the process environment a binary built for this parallel model is "
-        "launched with (`tools/host_execution.py`). An empty environment is an answer, and a "
-        "value that does not declare this job has no answer: the launch shape refuses it rather "
-        "than running the binary with whatever the host process happens to carry.",
+        "The host knows the environment overrides a binary built for this parallel model is "
+        "launched with (`tools/host_execution.py`; `run_program` merges them over the host "
+        "process's own environment). An empty set is an answer — the binary inherits the host's "
+        "environment unchanged — and a value that does not declare this job has no answer: the "
+        "launch shape refuses it rather than guessing which of the two it meant.",
     ),
     "execution": (
         ("hardware",),

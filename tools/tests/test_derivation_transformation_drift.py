@@ -109,6 +109,28 @@ def build_tuple() -> dict[str, str]:
     }
 
 
+#: The capabilities whose DECLARATION decides a launch environment (issue #289, round 1): which
+#: parallel value gets a package environment and which gets the empty one, and which hardware
+#: class runs at all, are read off the registry records by `tools/host_execution.py` — so moving
+#: `execution_env` between `backend_provides` and `core_provides` changes what a binary is
+#: launched with while both digested files stay byte-identical.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env"})
+
+
+def launch_declarations_digest() -> str:
+    """Every `parallel` / `hardware` record's module and where it declares a launch capability."""
+    from tools.backends import registry
+
+    rows = [
+        [axis, backend_id, record.module,
+         sorted(record.core_provides & _LAUNCH_CAPABILITIES),
+         sorted(record.backend_provides & _LAUNCH_CAPABILITIES)]
+        for (axis, backend_id), record in sorted(registry._BACKENDS.items())
+        if axis in ("parallel", "hardware")
+    ]
+    return hashlib.sha256(json.dumps(rows).encode("utf-8")).hexdigest()
+
+
 def execute_tuple() -> dict[str, str]:
     """The in-process execute: the server's two run tools, the conductor's execute body and
     the evidence promotion / quality-check authoring it composes the run record from."""
@@ -124,6 +146,7 @@ def execute_tuple() -> dict[str, str]:
         "tools/host_execution.py": _file_digest("tools/host_execution.py"),
         "tools/backends/parallel/openmp/execution.py":
             _file_digest("tools/backends/parallel/openmp/execution.py"),
+        "registry launch declarations": launch_declarations_digest(),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
@@ -268,8 +291,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # `tools/host_execution.py` composes from the target profile — `run_program` is handed the
     # parallel model's environment as `env` instead of a hardware class and a thread count, a
     # class this host cannot run on is refused, and `trial_meta.json#environment` records
-    # `launch` and `platform.site` in place of `openmp_env`.
-    "execute-4": "83529b48a4ff24f4d21ae03aeeb7870290290eae2e614de16fc832e068418e47",
+    # `launch` and `platform.site` in place of `openmp_env`. Re-pinned within PR-1's review
+    # (round 1), before any run was stamped execute-4: the tuple gained the registry's launch
+    # declarations, and the docstrings the env's override semantics.
+    "execute-4": "ac13567875380ee59b21cc6971098ce0fec2950eb1c0b130696a1c6e1a2d3f95",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
