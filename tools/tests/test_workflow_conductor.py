@@ -17921,6 +17921,30 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frt"]["status"], "skipped")
 
+    def test_a_mandatory_stage_whose_adapter_reads_another_language_fails_closed(self) -> None:
+        """The optional-stage skip must not reach the MANDATORY stage: a language whose
+        `bundle_facts.MANDATORY_SYNTAX_COMPILER` names an adapter of another language is a
+        declaration defect in `tools/backends/`, and the gate raises (transport fail_closed)
+        rather than recording the stage skipped and leaving the refusal to certification
+        (round 1, issue #289: `if compiler == mandatory` on that branch was unpinned)."""
+        import tempfile
+        from unittest import mock
+        from tools.backends.compiler.gfortran import syntax as gfortran_syntax
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def fake(args):  # must never run: the adapter is refused before any stage
+                raise AssertionError("run_syntax_check must not run")
+
+            with mock.patch.object(gfortran_syntax, "LANGUAGE", "cpp"), \
+                    self._patch_syntax(fake), self.assertRaises(RuntimeError) as ctx:
+                c._gate_syntax_check(refs, "child-1")
+        self.assertIn("mandatory gfortran stage reads cpp sources, not fortran",
+                      str(ctx.exception))
+
     def test_an_optional_stage_for_another_language_is_skipped_not_run(self) -> None:
         """An adapter reads ITS language's sources. Listing one of another language in
         ATMOFAB_SYNTAX_COMPILERS must not hand it this node's files (it would refuse their
