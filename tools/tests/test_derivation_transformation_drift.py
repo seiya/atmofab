@@ -74,6 +74,12 @@ def compile_documents_tuple() -> dict[str, str]:
     return {key: _file_digest(rel) for key, rel in COMPILE_INLINED_DOCUMENTS.items()}
 
 
+def registry_attr(capability: str) -> str:
+    """The `CAPABILITY_MODULE_ATTR` row a capability dispatches by (the submodule name)."""
+    from tools.backends import registry
+    return registry.CAPABILITY_MODULE_ATTR[capability]
+
+
 def render_tuple() -> dict[str, str]:
     """The host-rendered runner and control file: the language backend's runner renderer, the
     host render module, the IR-shaped and the bundle-derived control-file writers."""
@@ -98,6 +104,14 @@ def render_tuple() -> dict[str, str]:
         # writers held inline until R4-b PR-3, when it left the digested sources above.
         "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
         "Conductor._control_file_module": _source_digest(wc.Conductor._control_file_module),
+        # ... and the dispatch between them and the renderer: the registry row naming the
+        # submodule and the two package `__init__`s re-exporting it (a re-export rewired to
+        # another module moved no pin until R4-b PR-3's round 2).
+        "registry control_file attr": registry_attr("control_file"),
+        "tools/backends/build_system/make/__init__.py":
+            _file_digest("tools/backends/build_system/make/__init__.py"),
+        "tools/backends/language/fortran/__init__.py":
+            _file_digest("tools/backends/language/fortran/__init__.py"),
         "Conductor._render_pure_makefile_from_graph":
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
         "Conductor._write_pure_bundle_artifacts":
@@ -129,6 +143,8 @@ def build_tuple() -> dict[str, str]:
         # `_build_inproc` called, which no member of this tuple digested.
         "tools/backends/build_system/make/failure.py":
             _file_digest("tools/backends/build_system/make/failure.py"),
+        "Conductor._classify_build_failure_category":
+            _source_digest(wc.Conductor._classify_build_failure_category),
     }
 
 
@@ -319,7 +335,9 @@ PINNED_RENDER: dict[str, str] = {
     # kept in the tree). Re-pinned again in round 1 of that PR's review: the tuple gained
     # `_control_file_rules` / `_control_file_module`, the conductor methods that now build what the
     # renderer composes — a change there moved no pin until then (found by two reviewers).
-    "render-5": "d759bac62226b5ec2c5d7f9499b1efd3a47b516c356005251dd705ade27115ab",
+    # Re-pinned again in round 2: the tuple gained the dispatch between those methods and the
+    # renderer (the `control_file` attribute row and the two package `__init__`s).
+    "render-5": "887893303155bc00f35c618b651044dcdda3ae7a9baccfac7c70230e043df137",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -342,8 +360,9 @@ PINNED_BUILD: dict[str, str] = {
     # build-failure classification moved into the `make` backend (`failure.py` joins the tuple,
     # its patterns and categories unchanged), and `_build_inproc` asks the registry's
     # `build_execute` where it compared the build system against `make` — the same answer for
-    # every profile the launch gate admits.
-    "build-1": "2af31f91909b7a20603635fb8bfb0032e9ad2b232ce37ebc6bb707eafd9194f5",
+    # every profile the launch gate admits. Re-pinned again in that PR's round 2: the tuple
+    # gained `Conductor._classify_build_failure_category`, the dispatch into `failure.py`.
+    "build-1": "deed750d54e3323e38f1c2a4c6c68aa232e8c68d06b2ebab2ba1853ed474c6f5",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

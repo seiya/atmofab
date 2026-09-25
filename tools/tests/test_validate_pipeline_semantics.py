@@ -15178,6 +15178,45 @@ class TargetLanguageRefusalTest(unittest.TestCase):
                         violations)
 
 
+class SourceGateDispatchTest(unittest.TestCase):
+    """The post_generate entry's dispatch into two language gates that a round-2 review of issue
+    #289's R4-b PR-3 found unobserved (deleting either call left every file green, on origin/main
+    too): the dependency-use check, and the runner's snapshot-filename scan. Driven through the
+    entry points, not the backend functions."""
+
+    def _pipeline(self, root: Path) -> tuple[NodeExecution, Path]:
+        pipe = _targeted_pipeline(root, "problem__p__0.1.0")
+        src = pipe / "source" / "src_1" / "src"
+        src.mkdir(parents=True)
+        return (NodeExecution(node_key="problem/p@0.1.0", node_dir=pipe, exec_dir=pipe,
+                              pipeline_dir=pipe), src)
+
+    def test_a_missing_dependency_call_is_reported_by_the_generation_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution, src = self._pipeline(root)
+            (src / "p_model.f90").write_text(
+                "module p_model\n  use dep_model, only: dep__op\ncontains\nend module p_model\n")
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_component_dep_spec_ids",
+                                            return_value=["dep"]):
+                vps._validate_generate_outputs_for_generation(root, execution, "src_1",
+                                                              violations)
+        self.assertTrue(any("missing dependency operation call (dep__*)" in v
+                            for v in violations), violations)
+
+    def test_a_hardcoded_snapshot_name_is_reported_through_the_runner_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution, src = self._pipeline(root)
+            (src / "p_runner.f90").write_text(
+                "program p_runner\n  open(unit=10, file='raw/state_snapshots/snap_0001.json')\n"
+                "end program p_runner\n")
+            violations: list[str] = []
+            vps._validate_runner_outputs(root, execution, src, violations)
+        self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
+
+
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
     """Out-of-source correctness: a used-module prerequisite must carry the same
     `$(OBJDIR)/` prefix as its producing object rule. A bare basename passes the
@@ -17858,7 +17897,8 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
 
         def run(twin_signatures: object) -> list[str]:
             pkg = types.ModuleType("zz_sig_twin")
-            pkg.signatures = twin_signatures
+            if twin_signatures is not None:
+                pkg.signatures = twin_signatures
             record = backend_registry.Backend(
                 "language", "zz_twin", "zz_sig_twin", backend_provides=frozenset({"signatures"}))
             with tempfile.TemporaryDirectory() as tmp, \
@@ -17891,6 +17931,12 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         mixed = run(own)
         self.assertEqual(alone, mixed[:len(alone)])
         self.assertTrue(any("ZZ_TWIN_FINDING" in v for v in mixed[len(alone):]), mixed)
+
+        # A declared twin whose package does not carry the module: a violation, never an
+        # exception that would discard the other languages' findings.
+        broken = run(None)
+        self.assertEqual(alone, broken[:len(alone)])
+        self.assertTrue(any("could not be loaded" in v for v in broken[len(alone):]), broken)
 
     def test_signatures_type_drift_flagged(self) -> None:
         # An IR signature that drifts from §5.1 (here: change entries' element type) is flagged —

@@ -205,7 +205,8 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     The three gates that check it — the no-relink rule, the `make test` invocation rule, and the
     `run_quality_checks` command rule — read the control file's grammar and require its
     `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
-    registry which value the neutral core carries it for instead of naming one. The language half
+    registry which value declares it (the `make` backend's package since issue #289's R4-b PR-3,
+    where the first two gates now live) instead of naming one. The language half
     is the policy "a compiled language's quality check runs through the build system's test
     target rather than a script", and which languages are compiled is the language backend's
     declaration (`registry.is_compiled_language`); it was a set of language tokens here until
@@ -8788,10 +8789,13 @@ def _validate_published_surface(
     reported_by_earlier_language: set[str] = set()
     for language in languages:
         language_violations: list[str] = []
-        _pin_public_api_against_section51(
-            derived_path, kind, cs_ref, cs_path, spec_ops, spec_types, public_api,
-            language_violations,
-            signatures=backend_registry.capability_module("language", language, "signatures"))
+        # Through `_language_module`, so a declared package that cannot be loaded lands as a
+        # violation rather than an exception that discards the sibling gates' findings.
+        signatures = _language_module(language, "signatures", derived_path, language_violations)
+        if signatures is not None:
+            _pin_public_api_against_section51(
+                derived_path, kind, cs_ref, cs_path, spec_ops, spec_types, public_api,
+                language_violations, signatures=signatures)
         violations.extend(
             v for v in language_violations if v not in reported_by_earlier_language)
         reported_by_earlier_language.update(language_violations)
