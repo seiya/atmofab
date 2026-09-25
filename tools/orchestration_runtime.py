@@ -9951,8 +9951,8 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted its "
         "current `-Werror` classes can show an ABI-fixed dummy "
         "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
-        "`associate (unused_<name> => <name>); end associate` per "
-        "`docs/workflow/CHECKS_MODULE_CONTRACT.md` §5.",
+        "`associate (unused_<name> => <name>); end associate` per §5 of the target language's "
+        "checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).",
     ]
     for src in sources:
         if not isinstance(src, dict):

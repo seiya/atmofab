@@ -23,7 +23,7 @@ G7 — dependency consistency: no reference to a node/operation outside `depende
 **Target profile (the implementation target the source was generated for — the same document the producer was shown; G6 judges against it):**
 <target_profile>
 
-**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, inlined: the fixed `<spec_id>_checks` ABI, the semantics the host-rendered runner and the certified harness rely on, the module-level-state pattern, and the prohibitions). Judge the checks module against it. It can OVERRULE a claim about what the runner does with the RESULT a callback returns; its silence overrules nothing and it narrows no checklist item:**
+**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, followed by §1-4 of the target language's binding of it, inlined: the fixed `<spec_id>_checks` ABI and how it is spelled, the semantics the host-rendered runner and the certified harness rely on, the module-level-state pattern, and the prohibitions). Judge the checks module against it. It can OVERRULE a claim about what the runner does with the RESULT a callback returns; its silence overrules nothing and it narrows no checklist item:**
 <checks_module_contract_document>
 
 **Severity rubric (`docs/workflow/phases/phase_02_generate.md` §2-2, inlined): choose `issue_severity` by it — the value names the repair the finding calls for, never the weight of its consequence:**

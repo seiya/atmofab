@@ -3001,7 +3001,16 @@ class PureHarnessShapeTests(unittest.TestCase):
         contract = (Path(wc.__file__).resolve().parents[1]
                     / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(
                         encoding="utf-8")
-        self.assertEqual(ctx["runner_output_contract_document"], contract)
+        # ... followed by the target language's runner-output binding (issue #289), whole too.
+        from tools.backends.language.fortran import prompts as fortran_prompts
+        self.assertEqual(ctx["runner_output_contract_document"],
+                         contract.rstrip() + "\n\n" + fortran_prompts.runner_output_document())
+        # A failed binding read is a named refusal, not a shorter document.
+        with mock.patch.object(fortran_prompts, "runner_output_document",
+                               side_effect=OSError("gone")):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_runner_output_binding_missing", str(caught.exception))
         # ...and the manifest it is shown is its OWN.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
@@ -3078,8 +3087,9 @@ class PureHarnessShapeTests(unittest.TestCase):
         shape has no file for and the slicer's docstring says is excluded. Nothing noticed,
         because the only assertion was that the value was non-empty."""
         ctx = self.c._build_pure_harness_context(self.refs)
-        real = (Path(wc.__file__).resolve().parents[1]
-                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        # The target language's binding (issue #289): §5 of it is the gate-guard section.
+        from tools.backends.language.fortran import checks_abi
+        real = checks_abi.document()
         self.assertEqual(ctx["gate_guards_document"],
                          wc._checks_contract_gate_guards_section(real))
         self.assertNotEqual(ctx["gate_guards_document"],
@@ -3095,8 +3105,8 @@ class PureHarnessShapeTests(unittest.TestCase):
 
         Driven on synthetic text, because the real document must not carry a §6 for this to be
         checkable, and on the real document, so the two cannot diverge."""
-        real = (Path(wc.__file__).resolve().parents[1]
-                / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")
+        from tools.backends.language.fortran import checks_abi
+        real = checks_abi.document()
         self.assertTrue(wc._checks_contract_gate_guards_section(real).startswith("## 5."))
         with self.assertRaises(ValueError) as later:
             wc._checks_contract_gate_guards_section(real + "\n## 6. Appendix\n\nbody\n")
@@ -3115,22 +3125,30 @@ class PureHarnessShapeTests(unittest.TestCase):
         """The two RAISING reads the context builder added. Same shape as the reviewer's row in
         `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
         neither was: soft-failing either one to `""` survived seven test files."""
-        target = self.repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
-        body = target.read_text(encoding="utf-8")
-        target.unlink()
-        try:
+        # The guards are the target language's binding since issue #289, read through its
+        # `checks_abi` capability; the three ways that read fails are each a named refusal.
+        from tools.backends.language.fortran import checks_abi
+        body = checks_abi.document()
+
+        def _unreadable() -> str:
+            raise OSError("gone")
+
+        with mock.patch.object(checks_abi, "document", _unreadable):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
-            self.assertIn("pure_gate_guards_document_missing", str(caught.exception))
-        finally:
-            target.write_text(body, encoding="utf-8")
-        target.write_text(body.replace("## 5. ", "## Five ", 1), encoding="utf-8")
-        try:
+        self.assertIn("pure_checks_abi_binding_missing", str(caught.exception))
+        with mock.patch.object(checks_abi, "document",
+                               lambda: body.replace("## 5. ", "## Five ", 1)):
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_pure_harness_context(self.refs)
-            self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
-        finally:
-            target.write_text(body, encoding="utf-8")
+        self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
+        from tools.backends import registry as backend_registry
+        record = backend_registry.get("language", "fortran")
+        with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
+                backend_provides=record.backend_provides - {"checks_abi"})}):
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_pure_harness_context(self.refs)
+        self.assertIn("pure_checks_abi_binding_unavailable", str(caught.exception))
 
     def test_the_producer_context_raises_when_the_contract_is_unreadable(self) -> None:
         """The disposition the m3c producer's runner read has: a document the leaf cannot repair

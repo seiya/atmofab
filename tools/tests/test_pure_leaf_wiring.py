@@ -827,7 +827,8 @@ class PureRenderTests(unittest.TestCase):
         # judges).
         prompt = ort.prepare_launch_request_payload(_pure_request("verify"))["launch_prompt_full"]
         self.assertIn(
-            "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, inlined:",
+            "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, followed "
+            "by §1-4 of the target language's binding of it, inlined:",
             prompt)
         self.assertIn("case_setup ok=.false. still proceeds", prompt)  # the slot is filled
         # Both statements of the rule are BOUNDED, and the bound is the load-bearing half: a

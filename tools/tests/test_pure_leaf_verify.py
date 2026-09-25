@@ -98,30 +98,36 @@ class PureVerifyContextTests(unittest.TestCase):
     def test_checks_contract_document_is_sections_1_to_4_of_the_real_doc(self) -> None:
         # issue #142: the reviewer receives the ABI half of the contract and nothing else. What is
         # pinned is the SPAN — §1 opens it, §4's content is inside, §5 and the preamble are out.
+        # Since issue #289 (R4-b PR-2) the span is TWO documents in order: §1-§4 of the neutral
+        # contract, then §1-§4 of the target language's binding of it — and §5 of neither.
+        from tools.backends.language.fortran import checks_abi
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             doc = _conductor(repo)._build_pure_verify_context(
                 refs)["checks_module_contract_document"]
-            self.assertTrue(doc.startswith("## 1. "), doc[:80])
+            self.assertTrue(doc.startswith("## 1. The fixed ABI\n"), doc[:80])
+            neutral_end = doc.index("## 1. The fixed ABI in Fortran")
             for present in ("## 2. Semantics the harness relies on",
                             "## 3. Module-level state is expected",
                             "## 4. Prohibitions",
-                            "ok=.false.",
+                            "`ok` false",
                             "runner always captures the case's state"):
-                self.assertIn(present, doc)
-            # Every literal here must occur in the REAL document, or the assertion is true of any
-            # slice and pins nothing — an earlier version of this test named a preamble sentence
-            # the same commit had rewritten away.
-            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8")
+                self.assertIn(present, doc[:neutral_end])
+            for present in ("## 2. The bound state in Fortran", "## 4. Prohibitions in Fortran",
+                            "ok = .false.", "character(len=4), intent(out) :: status"):
+                self.assertIn(present, doc[neutral_end:])
+            # Every literal here must occur in the REAL documents, or the assertion is true of
+            # any slice and pins nothing — an earlier version of this test named a preamble
+            # sentence the same commit had rewritten away.
+            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8") + checks_abi.document()
             for absent in ("## 5.",
                            "Fortran legality and gate guards",
+                           "## 5. Language binding",
                            "# Checks-module contract",
-                           # A banner sentence, re-pointed when Z4 (issue #171) rewrote the
-                           # previous one away — which this row caught, exactly as its comment
-                           # above says it must.
+                           "# Checks-module ABI",
                            "NO leaf reads this document from disk"):
-                self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
+                self.assertIn(absent, real, f"{absent!r} no longer occurs in the documents, so "
                                             f"asserting its absence from the slice pins nothing")
                 self.assertNotIn(absent, doc)
 

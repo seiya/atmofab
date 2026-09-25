@@ -1054,12 +1054,15 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
 
 
 def _checks_contract_abi_sections(text: str) -> str:
-    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`, by `_numbered_section_range`,
-    which owns the anchoring and fail-closed semantics.
+    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — or of a language's binding of
+    it (`docs/backends/language/<id>/CHECKS_ABI.md`, numbered section for section like it,
+    issue #289) — by `_numbered_section_range`, which owns the anchoring and fail-closed
+    semantics.
 
-    What is specific to this document: the real file holds ONE fenced block (its two markers are
-    the only ``` lines in it) and no line inside it takes the shape of a `## 1.` / `## 5.`
-    heading (measured), so the engine's fence-unawareness has nothing to catch here — but a
+    What is specific to these documents: the neutral contract holds no fenced block, and the
+    Fortran binding holds ONE (its two markers are the only ``` lines in it) with no line inside
+    it taking the shape of a `## 1.` / `## 5.` heading (measured), so the engine's
+    fence-unawareness has nothing to catch here — but a
     maintainer reading "the `## 5.` heading line" would not otherwise know that a heading QUOTED
     in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the slice is
     pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which goes red
@@ -1069,8 +1072,9 @@ def _checks_contract_abi_sections(text: str) -> str:
 
 
 def _checks_contract_gate_guards_section(text: str) -> str:
-    """Return §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality and gate-guard
-    section — from that heading to the end of the document.
+    """Return §5 of a language's checks-ABI binding (`docs/backends/language/<id>/CHECKS_ABI.md`;
+    §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289 moved it there) — its
+    legality and gate-guard section — from that heading to the end of the document.
 
     NOT `_numbered_section_range`, because §5 is the LAST section and that engine requires an
     end anchor by design (a missing one is a contract change it must stop on). The same
@@ -5393,6 +5397,43 @@ class Conductor:
         and Validate's judge reads output documents, so neither is told one."""
         return str(self.target.toolchain["language"]) if phase == "generate" else ""
 
+    def _checks_abi_binding_text(self) -> str:
+        """The target language's binding of the checks-module contract (`checks_abi`), whole.
+
+        RAISES a named `RuntimeError` on every failure — a language that declares no binding, a
+        binding document that cannot be read — for the reason the neutral contract's reader
+        does: a leaf handed half a contract is the blindness these injections remove, and the
+        caller converts the raise into a `pure_context_assembly_failed` fail_closed outcome."""
+        language = self.target.toolchain["language"]
+        try:
+            module = backend_registry.capability_module("language", language, "checks_abi")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"pure_checks_abi_binding_unavailable: {exc}") from exc
+        try:
+            return str(module.document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_checks_abi_binding_missing: language {language!r}: {exc}") from exc
+
+    def _runner_output_contract_with_binding(self, contract_text: str) -> str:
+        """`RUNNER_OUTPUT_CONTRACT.md` whole, followed by the target language's runner-output
+        binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
+        the neutral document). The binding is read through `prompt_fragments`, and every failure
+        RAISES a named `RuntimeError` for the reason `_checks_abi_binding_text` gives."""
+        language = self.target.toolchain["language"]
+        try:
+            module = backend_registry.capability_module("language", language, "prompt_fragments")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(f"pure_runner_output_binding_unavailable: {exc}") from exc
+        try:
+            binding = str(module.runner_output_document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_runner_output_binding_missing: language {language!r}: {exc}") from exc
+        return f"{contract_text.rstrip()}\n\n{binding}"
+
     def _language_facts(self) -> Any:
         """The target language's `bundle_facts` module: the names the host gives its files."""
         return backend_registry.capability_module(
@@ -6076,8 +6117,10 @@ clean:
         the answer is the placement that rule prescribes, and it means a code added to the
         declared set reaches the leaf in the same edit that starts enforcing it.
 
-        The SIXTH document is §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — its legality
-        and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
+        The SIXTH document is §5 of the target language's checks-ABI binding
+        (`docs/backends/language/<language>/CHECKS_ABI.md`, reached through the `checks_abi`
+        capability; it was §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289) —
+        its legality and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
         rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
         leaf-authored source, and it reached this leaf as a force-read must-read while the leaf
         was agentic. A pure leaf force-reads nothing, so without this it would be held to seven
@@ -6091,8 +6134,7 @@ clean:
         way the m3c producer's runner does — the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
-                                                 RUNNER_OUTPUT_CONTRACT_REF)
+        from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
         ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
         try:
             ir_text = ir_path.read_text(encoding="utf-8")
@@ -6108,17 +6150,15 @@ clean:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
-        guards_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
-        try:
-            guards_text = guards_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_gate_guards_document_missing: {guards_path}: {exc}") from exc
+        # The gate guards are the TARGET LANGUAGE's (issue #289, R4-b PR-2): §5 of its
+        # checks-ABI binding, sliced by the same engine the neutral contract's sections are.
+        guards_text = self._checks_abi_binding_text()
         try:
             gate_guards = _checks_contract_gate_guards_section(guards_text)
         except ValueError as exc:
             raise RuntimeError(
-                f"pure_gate_guards_document_unsliceable: {guards_path}: {exc}") from exc
+                f"pure_gate_guards_document_unsliceable: the "
+                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
         lint_rules = self._lint_rules_document(refs)
         return {
             "harness_capabilities": json.dumps(
@@ -6128,7 +6168,8 @@ clean:
             "target_profile": self._pure_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
-            "runner_output_contract_document": contract_text,
+            "runner_output_contract_document": self._runner_output_contract_with_binding(
+                contract_text),
             "gate_guards_document": gate_guards,
             "lint_rules_document": lint_rules,
         }
@@ -6578,10 +6619,13 @@ clean:
 
         Nothing here names a target (issue #284): Compile is target-free, so the admissible-
         toolchain document and the `impl_defaults` knob-name schema this context carried until
-        R4-a PR-3 are gone with the IR section they governed. The one target-coloured document
-        left is the checks-module contract's ABI sections, a fixed repository document (its
-        version is `COMPILE_INLINED_DOCUMENTS_VERSION`'s, not a per-node input), recorded as an
-        accepted residual for R4-b on issue #284.
+        R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
+        sections were the one target-coloured document left (R4-a's accepted residual); since
+        issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
+        only to the `generate` leaves. Being inlined into a pure leaf's prompt, the slice is
+        pinned under `PURE_PROMPT_CONTRACT_VERSION` (`test_pure_prompt_contract_drift`); it is
+        also a document this context inlines, so a change to it bumps
+        `COMPILE_INLINED_DOCUMENTS_VERSION` as well.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
@@ -7852,9 +7896,9 @@ clean:
         not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
         supplies the complete review input.
 
-        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — the same
-        contract the agentic leaf force-reads (`CHECKS_MODULE_CONTRACT_REF`), sliced by
-        `_checks_contract_abi_sections` (issue #142). Without it the reviewer judged the checks
+        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`
+        (`CHECKS_MODULE_CONTRACT_REF`), sliced by `_checks_contract_abi_sections` (issue #142),
+        followed by §1-§4 of the target language's binding of it (`checks_abi`, issue #289). Without it the reviewer judged the checks
         module's callbacks against its own guess at what the runner does with each result, and
         failed a bundle that followed the contract verbatim. §5 is excluded because it is the
         deterministic legality/gate section the template already tells the reviewer not to
@@ -7894,6 +7938,18 @@ clean:
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
+        # ... followed by the TARGET LANGUAGE's binding of the same four sections (issue #289,
+        # R4-b PR-2): the neutral contract says what each callback does, the binding says how
+        # the reviewer will see it spelled. One document, in that order, so the reviewer reads
+        # a section's meaning before its spelling.
+        binding_text = self._checks_abi_binding_text()
+        try:
+            binding_abi = _checks_contract_abi_sections(binding_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_checks_contract_document_unsliceable: the "
+                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
+        contract_abi = f"{contract_abi}\n\n{binding_abi}"
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
         try:
             phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
@@ -7962,7 +8018,8 @@ clean:
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._pure_target_profile_document(),
-            "runner_output_contract_document": contract_text,
+            "runner_output_contract_document": self._runner_output_contract_with_binding(
+                contract_text),
             "severity_rubric_document": severity_rubric,
             "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
         }

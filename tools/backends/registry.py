@@ -185,6 +185,13 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "the identifier grammar, compiler-driver families), and the host knows the compiler it "
         "defaults to for it — which is also the syntax stage `Generate.gate` must pass.",
     ),
+    "checks_abi": (
+        ("language",),
+        "This value states how the language-neutral checks-module contract "
+        "(`docs/workflow/CHECKS_MODULE_CONTRACT.md`) is spelled in it, and the legality and "
+        "gate-guard rules its leaf-authored sources are held to: the document the `Generate` "
+        "leaves are shown beside the neutral contract.",
+    ),
     "prompt_fragments": (
         ("language",),
         "The pure `generate` prompts have this value's authoring and review rules to carry: the "
@@ -272,6 +279,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "syntax_check": "syntax",
     "syntax_promotions": "syntax",
     "prompt_fragments": "prompts",
+    "checks_abi": "checks_abi",
 }
 
 
@@ -329,7 +337,7 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             "language", "fortran", "tools.backends.language.fortran",
             core_provides=frozenset({"control_file"}),
             backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
-                                        "prompt_fragments"}),
+                                        "prompt_fragments", "checks_abi"}),
         ),
         Backend(
             "build_system", "make", None,

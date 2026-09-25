@@ -2163,7 +2163,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         """
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
                       "execution", "execution_env", "perf_facts", "bundle_facts",
-                      "syntax_check", "syntax_promotions", "prompt_fragments"}
+                      "syntax_check", "syntax_promotions", "prompt_fragments",
+                      "checks_abi"}
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's

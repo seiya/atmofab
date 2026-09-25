@@ -96,6 +96,8 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
+import tools.backends.language.fortran.checks_abi as _fortran_checks_abi
+import tools.backends.language.fortran.prompts as _fortran_prompts
 import tools.backends.linter.fortitude.lint as _fortitude_lint
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
@@ -682,9 +684,16 @@ def _contract_tuple() -> dict[str, object]:
         # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
         # and has to bump the version rather than ship silently.
         "lint_rules_document": _fortitude_lint.lint_rules_document(),
+        # Since issue #289 (R4-b PR-2) §5 is the LANGUAGE's (its checks-ABI binding), and the
+        # reviewer is shown the binding's §1-§4 after the neutral ones: both slices are leaf
+        # INPUT on the same ground as the neutral slice above.
         "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
-            (Path(wc.__file__).resolve().parents[1]
-             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
+            _fortran_checks_abi.document()),
+        "checks_abi_binding_sections": wc._checks_contract_abi_sections(
+            _fortran_checks_abi.document()),
+        # ... and the runner-output binding, inlined after the whole runner-output contract in
+        # the `harness` shape's two prompts on the same ground as that document.
+        "runner_output_binding_document": _fortran_prompts.runner_output_document(),
     }
 
 

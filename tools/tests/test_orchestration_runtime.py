@@ -21898,7 +21898,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         })
         self.assertIn("the contract wins", out)
         self.assertIn("associate (unused_<name> => <name>)", out)
-        self.assertIn("CHECKS_MODULE_CONTRACT.md", out)
+        self.assertIn("CHECKS_ABI.md", out)
 
     def test_build_launch_request_attaches_exemplar_only_for_generate_generate(self) -> None:
         import tools.workflow_conductor as wc

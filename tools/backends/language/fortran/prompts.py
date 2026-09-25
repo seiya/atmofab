@@ -60,3 +60,15 @@ def fragments(template: str) -> dict[str, str]:
     except OSError as exc:
         raise ValueError(f"no fortran prompt fragments for {template!r}: {path} ({exc})") from exc
     return parse_fragments(text, source=str(path))
+
+
+#: The Fortran binding of the runner-output contract's JSON serialization rules, inlined after
+#: `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` wherever that document is inlined whole.
+RUNNER_OUTPUT_DOCUMENT = (Path(__file__).resolve().parents[4]
+                          / "docs" / "backends" / "language" / "fortran" / "RUNNER_OUTPUT.md")
+
+
+def runner_output_document() -> str:
+    """The runner-output binding, whole. Raises `OSError` / `UnicodeError` when it cannot be
+    read; the caller turns that into a named fail-closed outcome."""
+    return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
