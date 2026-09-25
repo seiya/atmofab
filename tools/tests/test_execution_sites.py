@@ -421,14 +421,14 @@ class SiteViolationTests(unittest.TestCase):
             with self.subTest(until_phase=until):
                 violations = es.site_violations(local_only, gpu, until_phase=until)
                 self.assertEqual(len(violations), 1, violations)
-                self.assertTrue(violations[0].startswith(
-                    "hardware.class: gpu is executed by no site"), violations)
-                self.assertIn("maps target t_gpu to no site, so it runs locally", violations[0])
-                self.assertIn("the local site executes cpu", violations[0])
-                self.assertEqual(es.site_violations(no_file, gpu, until_phase=until),
-                                 ["hardware.class: gpu is executed by no site: there is no "
-                                  "sites.yaml, so target t_gpu runs locally; the local site "
-                                  "executes cpu"])
+                self.assertEqual(violations, [
+                    "hardware.class: gpu is not executed at the site target t_gpu runs at: "
+                    "sites.yaml maps target t_gpu to no site, so it runs at local, which "
+                    "executes cpu; the sites that execute gpu: none"])
+                self.assertEqual(es.site_violations(no_file, gpu, until_phase=until), [
+                    "hardware.class: gpu is not executed at the site target t_gpu runs at: "
+                    "there is no sites.yaml, so target t_gpu runs at local, which executes "
+                    "cpu; the sites that execute gpu: none"])
                 # The site that WOULD run it is the answer.
                 self.assertEqual(es.site_violations(cfg, gpu, until_phase=until), [])
         # This host's own class runs locally at every end.
@@ -441,22 +441,39 @@ class SiteViolationTests(unittest.TestCase):
             cfg = _Repo(tmp).load("sites_version: 1\nsites:\n  local:\n    executes: [gpu]\n"
                                   "targets:\n  t_cpu: local\n")
         violations = es.site_violations(cfg, _profile("t_cpu", "cpu"), until_phase="Validate")
-        self.assertEqual(violations, ["hardware.class: cpu is executed by no site: sites.yaml "
-                                      "maps target t_cpu to local; the local site executes gpu"])
+        self.assertEqual(violations, [
+            "hardware.class: cpu is not executed at the site target t_cpu runs at: sites.yaml "
+            "maps target t_cpu to local, which executes gpu; the sites that execute cpu: none"])
 
     def test_a_mapped_site_that_does_not_execute_the_class_is_named(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _Repo(tmp).load(_BASE + "targets:\n  t_gpu: box\n")
         violations = es.site_violations(cfg, _profile("t_gpu", "gpu"), until_phase="Validate")
-        self.assertEqual(len(violations), 1)
-        self.assertIn("sites.yaml maps target t_gpu to box (executes cpu)", violations[0])
+        self.assertEqual(violations, [
+            "hardware.class: gpu is not executed at the site target t_gpu runs at: sites.yaml "
+            "maps target t_gpu to box, which executes cpu; the sites that execute gpu: none"])
         # A class the local site runs is still refused when the target is mapped elsewhere:
-        # the mapping is the operator's statement of where it runs.
+        # the mapping is the operator's statement of where it runs — and the sites that DO run
+        # the class are named, because the repair is usually the mapping, not a new site.
         with tempfile.TemporaryDirectory() as tmp:
             cfg = _Repo(tmp).load(_BASE.replace("[cpu]", "[gpu]") + "targets:\n  t_cpu: box\n")
         violations = es.site_violations(cfg, _profile("t_cpu", "cpu"), until_phase="Validate")
-        self.assertEqual(len(violations), 1)
-        self.assertIn("maps target t_cpu to box (executes gpu)", violations[0])
+        self.assertEqual(violations, [
+            "hardware.class: cpu is not executed at the site target t_cpu runs at: sites.yaml "
+            "maps target t_cpu to box, which executes gpu; the sites that execute cpu: local"])
+
+    def test_an_unmapped_target_is_told_which_declared_site_would_run_it(self) -> None:
+        """Round 2, both axes: an unmapped gpu target beside a declared gpu site read "gpu is
+        executed by no site" — false, and it pointed the operator at adding a site."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _Repo(tmp).load(_BASE.replace("[cpu]", "[gpu]")
+                                  + "  box2:\n    host: box2\n    workdir: /s\n"
+                                  "    executes: [cpu, gpu]\n    scheduler: none\n")
+        violations = es.site_violations(cfg, _profile("t_gpu", "gpu"), until_phase="Validate")
+        self.assertEqual(violations, [
+            "hardware.class: gpu is not executed at the site target t_gpu runs at: sites.yaml "
+            "maps target t_gpu to no site, so it runs at local, which executes cpu; the sites "
+            "that execute gpu: box, box2"])
 
 
 class DocumentTests(unittest.TestCase):
