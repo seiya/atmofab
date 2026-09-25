@@ -1380,6 +1380,12 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/backends/language/fortran/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify.txt", None, None),
         ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
+        # Issue #289 (R4-b PR-2): the Fortran spelling of the checks ABI and the gate guards,
+        # and the runner JSON writer rules, moved out of the two contracts above into language
+        # bindings the host inlines after them — surfaces of their own (round 3 found them
+        # unscanned: a hand-assigned severity planted in either was green).
+        ("docs/backends/language/fortran/CHECKS_ABI.md", None, None),
+        ("docs/backends/language/fortran/RUNNER_OUTPUT.md", None, None),
         # Round 5 found the tuple short of its own docstring twice over.
         # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
         # `docs/RUNBOOK.md` is named by `skills/workflow-generate-verify/SKILL.md:18` in the
@@ -1490,6 +1496,28 @@ class PureRenderTests(unittest.TestCase):
         "code-vs-IR and is still yours to  #18a97797a2d9",
     )
 
+    #: The conductor helpers that inline a language binding, and the capability they read it
+    #: through. A builder calling one inlines that capability's document for its target.
+    _LANGUAGE_BINDING_READERS: ClassVar[dict[str, str]] = {
+        "_checks_abi_binding_text": "checks_abi",
+        "_runner_output_contract_with_binding": "prompt_fragments",
+    }
+
+    @staticmethod
+    def _language_binding_documents(capability: str) -> set[str]:
+        from tools.backends import registry
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        out: set[str] = set()
+        for language in registry.backend_ids("language"):
+            if not registry.provides("language", language, capability):
+                continue
+            module = registry.capability_module("language", language, capability)
+            path = (module.DOCUMENT_PATH if capability == "checks_abi"
+                    else module.RUNNER_OUTPUT_DOCUMENT)
+            out.add(str(Path(path).relative_to(repo_root)))
+        assert out, f"no language declares {capability}; this reads nothing"
+        return out
+
     @classmethod
     def _inlined_repo_documents(cls) -> set[str]:
         """Every repository `.md` document a pure context builder inlines into a prompt.
@@ -1534,6 +1562,14 @@ class PureRenderTests(unittest.TestCase):
                             and sub.value.id == "WORKFLOW_PHASE_DOC_BY_STEP"
                             and isinstance(sub.slice, ast.Constant)):
                         found.add(ort.WORKFLOW_PHASE_DOC_BY_STEP[sub.slice.value])
+                    elif (isinstance(sub, ast.Attribute)
+                            and sub.attr in cls._LANGUAGE_BINDING_READERS):
+                        # The fourth spelling (issue #289, R4-b PR-2; round 3 found it
+                        # unscanned): a builder reaching a LANGUAGE binding through the
+                        # registry. Every language that declares the capability contributes
+                        # its document, since which one a run reads is the target's.
+                        found |= cls._language_binding_documents(
+                            cls._LANGUAGE_BINDING_READERS[sub.attr])
         assert builders >= 5, (
             f"only {builders} pure context builders found; the naming convention this "
             "derivation reads has moved and it is now scanning nothing")
