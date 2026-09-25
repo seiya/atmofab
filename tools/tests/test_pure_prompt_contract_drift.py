@@ -621,7 +621,13 @@ PINNED: dict[str, str] = {
     # producer template's abstract-interface / host-association / implicit-typing sentence
     # became `{{language:interface_prototypes}}` (a new Fortran fragment file carries it), and
     # the composed prompt is again byte-identical — measured for all 12 launch templates.
-    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",}
+    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",
+    # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
+    # of its own so the in-place re-pins above do not cost this file its revert check: a later
+    # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
+    # exactly as it would have with the entry unedited. Round 3 of that change's review
+    # measured the loss without it (restoring main's templates under a new version passed).
+    "pure-50@3c117410": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
 
 
 def _contract_tuple() -> dict[str, object]:

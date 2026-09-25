@@ -2207,7 +2207,7 @@ class PureRenderTests(unittest.TestCase):
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
-        "_exemplar_gate_drift_note",         # returns the language's note verbatim
+        "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
         "_render_deterministic_launch_prompt",  # a prompt NO leaf reads (asserted absent above)

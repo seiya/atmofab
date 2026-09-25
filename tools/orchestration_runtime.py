@@ -9362,24 +9362,29 @@ def _sanitize_exemplar_body(text: str) -> str:
                 .replace(_EXEMPLAR_END_PREFIX, "--- END-EXEMPLAR "))
 
 
-def _exemplar_gate_drift_note(request_payload: dict[str, Any]) -> str:
-    """The request's target language's example of a gate rule an exemplar may predate
-    (`prompt_fragments.EXEMPLAR_GATE_DRIFT_NOTE`) — the part of the exemplar block that names
-    a compiler's warning classes and a binding idiom (issue #289, R4-b PR-4). RAISES a named
-    `ValueError` when the request names no language or its language cannot state it, as
-    `_compose_language_fragments` does: the alternative is a leaf told another language's
-    idiom."""
+def _exemplar_prompt_fragments(request_payload: dict[str, Any]) -> Any:
+    """The request's target language's `prompt_fragments` module, for the exemplar block's
+    gate-drift note (`EXEMPLAR_GATE_DRIFT_NOTE`: the gate rule a certified exemplar most often
+    predates, which names a compiler's warning classes and a binding idiom — issue #289, R4-b
+    PR-4). Returns the MODULE, not text, so every sentence the block renders is written in
+    `_build_exemplar`, the builder the launch-render sweeps read (round 3 of that change found a
+    text-returning helper here classified as non-prose, where a branch added to it went unseen).
+
+    RAISES a named `ValueError` when the request names no language, or its language cannot state
+    the note, as `_compose_language_fragments` does: the alternative is a leaf told another
+    language's idiom."""
     language = str(request_payload.get("pure_language") or "").strip().lower()
     if not language:
         raise ValueError("an exemplar block is rendered for a request that names no "
                          "`pure_language`; the host must name the target language")
     try:
         module = backend_registry.capability_module("language", language, "prompt_fragments")
-        return str(module.EXEMPLAR_GATE_DRIFT_NOTE)
+        module.EXEMPLAR_GATE_DRIFT_NOTE  # noqa: B018 - asked here so a gap is named, not raised later
     except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
             AttributeError) as exc:
         raise ValueError(
             f"the exemplar block cannot be composed for language {language!r}: {exc}") from None
+    return module
 
 
 def _build_exemplar(request_payload: dict[str, Any]) -> str:
@@ -9415,7 +9420,7 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "copy the exemplar's physics or checks. It is orientation, never a gate and never this "
         "node's spec. It was certified under the gates in force AT ITS TIME, so it may predate "
         "a rule now in your contracts: where the exemplar and a contract disagree, the contract "
-        "wins. " + _exemplar_gate_drift_note(request_payload),
+        "wins. " + str(_exemplar_prompt_fragments(request_payload).EXEMPLAR_GATE_DRIFT_NOTE),
     ]
     for src in sources:
         if not isinstance(src, dict):
@@ -9450,10 +9455,13 @@ def _dependency_signatures(deps: list[Any]) -> Any:
         return None
     languages = {str(dep.get("interface_language") or "").strip() for dep in carriers}
     if len(languages) != 1 or "" in languages:
+        cause = ("some carry none" if "" in languages
+                 else "they were read in different languages")
         raise ValueError(
             "resolved dependency facts carry published-interface facts without one "
-            f"`interface_language` to render them in (got {sorted(languages)}); "
-            "`_resolve_dependency_facts` stamps it on every fact it reads an interface for")
+            f"`interface_language` to render them in ({cause}: got {sorted(languages)}); "
+            "`_resolve_dependency_facts` stamps its consumer's language on every fact it reads "
+            "an interface for, so one resolution names exactly one")
     (language,) = languages
     try:
         return backend_registry.capability_module("language", language, "signatures")

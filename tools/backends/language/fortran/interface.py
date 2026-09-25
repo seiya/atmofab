@@ -733,10 +733,10 @@ def argument_detail_lines(
             continue
         if not _known_rank(arg):
             # Rank could not be resolved host-side. Do NOT tell the leaf to read the
-            # dependency source — a dependency's pipeline is outside a leaf's read scope
-            # (allowed_read_roots covers only its own ir_ref/pipeline_ref). Give an
-            # actionable fallback instead: pass the argument per the operation's role and
-            # let Build's compiler verify the final rank.
+            # dependency source — a pure leaf reads nothing but its launch prompt, and the
+            # dependency's source is not inlined there. Give an actionable fallback instead:
+            # pass the argument per the operation's role and let Build's compiler verify the
+            # final rank.
             lines.append(
                 f"    {name}: (rank/shape not resolved — pass this argument per the "
                 "operation's role; Build verifies the final rank)"
