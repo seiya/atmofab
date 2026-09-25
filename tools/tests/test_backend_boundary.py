@@ -1935,6 +1935,19 @@ class RegistryConsistencyTests(unittest.TestCase):
             self.assertIsNone(vps._language_module("zz_unloadable", "signatures", "subj", sink))
         self.assertEqual("a sibling gate already found this", sink[0])
         self.assertTrue(any("could not be loaded" in v for v in sink[1:]), sink)
+        # ... and a package that loads but does not carry what its record claims: the registry
+        # raises its own typed refusal (not an ImportError), and that lands as a violation too.
+        import sys
+        import types
+        hollow = registry.Backend("language", "zz_hollow_sig", "zz_hollow_sig_pkg",
+                                  backend_provides=frozenset({"signatures"}))
+        sink = []
+        with mock.patch.dict(sys.modules, {"zz_hollow_sig_pkg": types.ModuleType("x")}), \
+                self._patched(hollow):
+            with self.assertRaises(registry.BackendNotExtracted):
+                registry.capability_module("language", "zz_hollow_sig", "signatures")
+            self.assertIsNone(vps._language_module("zz_hollow_sig", "signatures", "subj", sink))
+        self.assertTrue(any("could not be loaded" in v for v in sink), sink)
 
         # ... and the live language answers with its own module, appending nothing.
         sink = []

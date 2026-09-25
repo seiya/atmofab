@@ -15117,6 +15117,66 @@ class ControlFileDispatchTest(unittest.TestCase):
         found = self._run("make", "zz_lang")
         self.assertTrue(any("'zz_lang' declares no 'source_reading'" in v for v in found), found)
 
+    def test_the_quality_check_rules_bind_only_a_compiled_language(self) -> None:
+        """`applies` is `_make_quality_check_applies` over the TARGET's pair: a language that
+        declares itself not compiled is held to the prerequisite rule and not to the test-target
+        rules (the relink rule here). Driven with a synthetic non-compiled language reading its
+        sources with Fortran's reader, because every registered language is compiled."""
+        import sys
+        import types
+
+        from tools.backends.language.fortran import source as fortran_source_module
+        pkg = types.ModuleType("zz_interp_pkg")
+        pkg.bundle = types.ModuleType("zz_interp_pkg.bundle")
+        pkg.bundle.COMPILED = False
+        pkg.source = fortran_source_module
+        record = backend_registry.Backend(
+            "language", "zz_interp", "zz_interp_pkg",
+            backend_provides=frozenset({"bundle_facts", "source_reading"}))
+        with unittest.mock.patch.dict(sys.modules, {"zz_interp_pkg": pkg}), \
+                unittest.mock.patch.dict(backend_registry._BACKENDS,
+                                         {("language", "zz_interp"): record}):
+            found = self._run("make", "zz_interp")
+        self.assertTrue(any("BIN must be declared overridable" in v for v in found), found)
+        self.assertFalse(any("relink" in v.lower() for v in found), found)
+        # ... and the compiled language, on the same Makefile, is held to it.
+        self.assertTrue(any("relink" in v.lower() for v in self._run("make")))
+
+
+class TargetLanguageRefusalTest(unittest.TestCase):
+    """The source gates' language refusals land where they are raised (issue #289, R4-b PR-3):
+    a target whose language declares neither `bundle_facts` nor `source_reading` is refused by
+    `_validate_generate_outputs` on the src dir, and the checks gate refuses a language without
+    `bundle_facts` — never read as Fortran, never a silent pass."""
+
+    def test_generate_outputs_refuses_a_language_it_cannot_read(self) -> None:
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            install_target_profile(root, profile_with(toolchain={"language": "zz_lang"}))
+            pipe = root / pipe_ref("problem__p__0.1.0", "p1")
+            src = pipe / "src"
+            src.mkdir(parents=True)
+            (src / "p_model.f90").write_text("module p_model\nend module p_model\n")
+            execution = NodeExecution(node_key="problem/p@0.1.0", node_dir=pipe,
+                                      exec_dir=pipe, pipeline_dir=pipe)
+            violations: list[str] = []
+            self.assertIsNone(vps._validate_generate_outputs(root, execution, src, violations))
+        for capability in ("bundle_facts", "source_reading"):
+            self.assertTrue(any(f"'zz_lang' declares no '{capability}'" in v
+                                for v in violations), (capability, violations))
+
+    def test_the_checks_gate_refuses_a_language_without_file_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t)
+            (src / "bx_checks.f90").write_text("module bx_checks\nend module bx_checks\n")
+            violations: list[str] = []
+            vps._validate_checks_source_files(
+                NodeExecution(node_key="component/bx@0.1.0", node_dir=src, exec_dir=src,
+                              pipeline_dir=src), "zz_lang", src, [], violations)
+        self.assertTrue(any("'zz_lang' declares no 'bundle_facts'" in v for v in violations),
+                        violations)
+
 
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
     """Out-of-source correctness: a used-module prerequisite must carry the same
@@ -22513,6 +22573,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
 
     def test_non_openmp_backend_passes(self) -> None:
         self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
+        # `none` is a REGISTERED backend that carries `parallel_directives` in the neutral core
+        # (it renders no directive) and has no package: the floor must answer "no floor" for it
+        # and not reach `capability_module`, which refuses a core-carried capability with an
+        # exception (issue #289, R4-b PR-3; round 1 measured the raise with the second clause
+        # of the floor's guard dropped).
+        self.assertEqual(self._run(self._COUNTED, backend="none"), [])
 
     def test_non_fortran_language_passes(self) -> None:
         self.assertEqual(self._run(self._COUNTED, language="c"), [])
