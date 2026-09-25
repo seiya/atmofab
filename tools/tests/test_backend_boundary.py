@@ -106,6 +106,12 @@ BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_basel
 #: decision it is.
 ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
+#: How `--write-baseline`'s summary names the pinned file. Fixed at import rather than derived from
+#: `ALLOWLIST_PATH` at print time, because the rows that run `_write_baseline` point both paths at
+#: a temporary directory (so that a parallel run never reads a file another row is holding), and a
+#: temporary path is not under `REPO_ROOT`.
+ALLOWLIST_DISPLAY = ALLOWLIST_PATH.relative_to(REPO_ROOT).as_posix()
+
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
 #: allowed to import. Derived from the registry's own module paths rather than restated, so a
 #: backend registered somewhere else cannot pass unnoticed.
@@ -1012,6 +1018,9 @@ class BaselineComparisonTests(unittest.TestCase):
     def test_the_refused_pair_writes_nothing_through_the_real_command(self) -> None:
         # Through the real CLI in a real subprocess: the in-process row above mocks the writer, so
         # only this one observes that the file on disk is untouched.
+        # The one row left that can write the REAL baseline, because a subprocess cannot be
+        # patched: it writes only when `_dispatch` is broken, which is this row's failure anyway,
+        # so a parallel run is exposed to it only in a run that is already red.
         before = BASELINE_PATH.read_bytes()
         try:
             proc = subprocess.run(
@@ -1279,6 +1288,40 @@ class ScopePinTests(unittest.TestCase):
 class DirectImportPinTests(unittest.TestCase):
     """The pinned measure: which neutral-core modules bypass the registry, exactly."""
 
+    @contextlib.contextmanager
+    def _data_files_in_a_temporary_directory(self):
+        """Point `BASELINE_PATH` and `ALLOWLIST_PATH` at copies in a temporary directory.
+
+        The two rows below run the real `_write_baseline()` with its default arguments, and each
+        used to plant a sentinel in the REAL file and restore it in a `finally`. For the length of
+        that `try`, any other process reading the file read the sentinel: a parallel suite
+        (`pytest -n`) reported `TokenRatchetTests` red, and two mutants were scored killed on that
+        alone and survived a serial re-run; `-x` under `-n` then skipped the `finally` and left
+        the sentinel in the checkout. Both measured 2026-09-25. Patching the module's two names
+        keeps the default-argument path under test, since `_write_baseline` resolves them at call
+        time. The caller asserts the real files are byte-identical afterwards, which is what
+        still catches a writer that stops honouring the names.
+        """
+        module = sys.modules[__name__]
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            baseline = tmp / BASELINE_PATH.name
+            allowlist = tmp / ALLOWLIST_PATH.name
+            baseline.write_bytes(BASELINE_PATH.read_bytes())
+            allowlist.write_bytes(ALLOWLIST_PATH.read_bytes())
+            with mock.patch.object(module, "BASELINE_PATH", baseline), \
+                    mock.patch.object(module, "ALLOWLIST_PATH", allowlist):
+                # The sentinel row is only a witness while the writer sees the COPY: unpatched,
+                # it plants the sentinel where nothing writes and passes on no evidence.
+                self.assertEqual((baseline, allowlist), (module.BASELINE_PATH, module.ALLOWLIST_PATH))
+                yield baseline, allowlist
+
+    def _assert_the_real_files_are_untouched(self, baseline: bytes, allowlist: bytes) -> None:
+        self.assertEqual(baseline, BASELINE_PATH.read_bytes(),
+                         "_write_baseline wrote the real baseline, not the path it was given")
+        self.assertEqual(allowlist, ALLOWLIST_PATH.read_bytes(),
+                         "_write_baseline wrote the real allowlist")
+
     def test_write_baseline_does_not_touch_the_pinned_file(self) -> None:
         """The write set of `_write_baseline`, observed rather than described.
 
@@ -1287,23 +1330,20 @@ class DirectImportPinTests(unittest.TestCase):
         `_write_baseline` reinstated the laundering with the whole suite green. This runs the
         command and compares the pinned file's bytes.
         """
-        before = ALLOWLIST_PATH.read_bytes()
-        baseline_before = BASELINE_PATH.read_bytes()
+        real_baseline, real_allowlist = BASELINE_PATH.read_bytes(), ALLOWLIST_PATH.read_bytes()
         # A SENTINEL, not the file's own bytes. Comparing the bytes only catches a write whose
         # content differs, and the write that matters — recomputing the allowlist — produces
         # identical bytes on a clean tree and differing bytes exactly when a bypass has just been
         # added. The sentinel makes ANY write to this path visible, clean tree or not.
-        sentinel = before + b"\n"
-        try:
-            ALLOWLIST_PATH.write_bytes(sentinel)
+        sentinel = real_allowlist + b"\n"
+        with self._data_files_in_a_temporary_directory() as (_, allowlist):
+            allowlist.write_bytes(sentinel)
             with contextlib.redirect_stdout(io.StringIO()):
                 _write_baseline()
-            after = ALLOWLIST_PATH.read_bytes()
-        finally:
-            ALLOWLIST_PATH.write_bytes(before)
-            BASELINE_PATH.write_bytes(baseline_before)
+            after = allowlist.read_bytes()
         self.assertEqual(sentinel, after,
                          "--write-baseline wrote to the hand-edited pin")
+        self._assert_the_real_files_are_untouched(real_baseline, real_allowlist)
 
     def test_write_baseline_actually_writes_the_measurement(self) -> None:
         """The other direction of the sentinel above: that the command writes what it says.
@@ -1318,16 +1358,13 @@ class DirectImportPinTests(unittest.TestCase):
         Both sides are measured from the SAME tree, so this row says nothing about whether the
         tree matches the recorded baseline — `TokenRatchetTests` does, once.
         """
-        before = BASELINE_PATH.read_bytes()
-        allowlist_before = ALLOWLIST_PATH.read_bytes()
-        try:
-            BASELINE_PATH.write_bytes(b'{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}\n')
+        real_baseline, real_allowlist = BASELINE_PATH.read_bytes(), ALLOWLIST_PATH.read_bytes()
+        with self._data_files_in_a_temporary_directory() as (baseline, _):
+            baseline.write_bytes(b'{"token_counts": {"docs/sentinel.md": {"fortran": 1}}}\n')
             with contextlib.redirect_stdout(io.StringIO()):
                 _write_baseline()
-            written = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-        finally:
-            BASELINE_PATH.write_bytes(before)
-            ALLOWLIST_PATH.write_bytes(allowlist_before)
+            written = json.loads(baseline.read_text(encoding="utf-8"))
+        self._assert_the_real_files_are_untouched(real_baseline, real_allowlist)
         # Equality against a fresh measurement, not a shape check: an empty write and a write of
         # `measure()` with every count raised are both well-formed, and both are the shape that
         # blesses a tree nobody measured.
@@ -3437,7 +3474,7 @@ def _write_baseline(root: Path | None = None, baseline_path: Path | None = None)
           f"{len(data['token_counts'])} files, {total} sampled occurrences "
           f"(the direct-import allowlist is NOT written by this command; "
           f"{len(_load_allowlist())} modules recorded, edit "
-          f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)} by hand)")
+          f"{ALLOWLIST_DISPLAY} by hand)")
 
 
 #: What the two commands may not be composed into. `--check-baseline` reports; `--write-baseline`

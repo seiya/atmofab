@@ -187,8 +187,8 @@ stale `.smod` present, beside a rc=1 taken after the `rm`; `references/verificat
 §"Verification steps that silently do not run" carries the reproduction). **The contaminant need
 not be the probe's own history: a suite running CONCURRENTLY can be swapping the file the probe
 reads** — issue #180 ran `test_backend_boundary --check-baseline` while the suite was in flight
-and read the one-entry baseline `test_write_baseline_actually_writes_the_measurement` installs
-at the REAL path for the length of one `try`, getting every scanned file reported as growth from
+and read the one-entry baseline `test_write_baseline_actually_writes_the_measurement` installed
+at the REAL path for the length of one `try` (that row now writes a temporary copy; the class stays), getting every scanned file reported as growth from
 zero, with `git status` clean throughout because the test restores the bytes in its `finally`. **Run the verification set with nothing
 else in flight, and say so beside the number.** And **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
