@@ -1389,6 +1389,12 @@ class PureRenderTests(unittest.TestCase):
         # unscanned: a hand-assigned severity planted in either was green).
         ("docs/backends/language/fortran/CHECKS_ABI.md", None, None),
         ("docs/backends/language/fortran/RUNNER_OUTPUT.md", None, None),
+        # Issue #289 (R4-b PR-4): the second language's bindings and its fragment file, each a
+        # surface a `cuda_cpp` harness leaf is handed.
+        ("docs/backends/language/cuda_cpp/CHECKS_ABI.md", None, None),
+        ("docs/backends/language/cuda_cpp/RUNNER_OUTPUT.md", None, None),
+        ("tools/prompt_templates/backends/language/cuda_cpp/generate_generate_harness.txt",
+         None, None),
         # Round 5 found the tuple short of its own docstring twice over.
         # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
         # `docs/RUNBOOK.md` is named by `skills/workflow-generate-verify/SKILL.md:18` in the
@@ -1881,6 +1887,27 @@ class PureRenderTests(unittest.TestCase):
                             "procedure_interface": "bc_rhs_1d"}]},
         ],
     }
+    # (f) the same facts read in the SECOND language (issue #289, R4-b PR-4): the resolver stamps
+    # the consumer's language on a fact it reads an interface for, and the renderer asks that
+    # language's `signatures` for every sentence — so the `cuda_cpp` builders are prose a leaf
+    # reads, and this drives each of them (a scalar, a view, a function-pointer argument naming
+    # a prototype whose listing follows).
+    _RENDER_DEP_CUDA_CPP: ClassVar[dict[str, object]] = {
+        **_RENDER_DEP_BASE,
+        "interface_language": "cuda_cpp",
+        "published_operations": [
+            {"operation": "bc__advance",
+             "interface": "void bc__advance(atmofab::View<dp, 1> U, bc_rhs_1d rhs, dp t)",
+             "argument_order": ["U", "rhs", "t"],
+             "arguments": [{"name": "U", "type": "atmofab::View<dp, 1>", "rank": 1},
+                           {"name": "rhs", "type": "bc_rhs_1d", "rank": 0,
+                            "procedure_interface": "bc_rhs_1d"},
+                           {"name": "t", "type": "dp", "rank": 0}],
+             "procedure_interfaces": {"bc_rhs_1d": [
+                 "using bc_rhs_1d = void(*)(u, dudt)",
+                 "atmofab::View<const dp, 1> u", "atmofab::View<dp, 1> dudt"]}},
+        ],
+    }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
     # is required by `test_every_prose_statement_of_a_pinned_builder_is_driven`; round 1 found
     # that nothing else observed it.
@@ -1908,6 +1935,7 @@ class PureRenderTests(unittest.TestCase):
         "pure-cold-partial-arg-detail": "_RENDER_DEP_PARTIAL",
         "pure-cold-procedure-arg": "_RENDER_DEP_PROCEDURE",
         "pure-cold-procedure-arg-unread": "_RENDER_DEP_PROCEDURE_UNREAD",
+        "pure-cold-cuda-cpp-facts": "_RENDER_DEP_CUDA_CPP",
     }
 
     def _host_built_launch_requests(self) -> list[tuple[str, dict]]:
@@ -2407,6 +2435,10 @@ class PureRenderTests(unittest.TestCase):
         ("tools.backends.language.fortran.interface", "dependency_operations_header"),
         ("tools.backends.language.fortran.interface", "prototype_heading"),
         ("tools.backends.language.fortran.interface", "argument_detail_lines"),
+        # The second language's (issue #289, R4-b PR-4), driven by `_RENDER_DEP_CUDA_CPP`.
+        ("tools.backends.language.cuda_cpp.signatures", "dependency_operations_header"),
+        ("tools.backends.language.cuda_cpp.signatures", "prototype_heading"),
+        ("tools.backends.language.cuda_cpp.signatures", "argument_detail_lines"),
     )
     #: `signatures.<name>` calls of the pinned builders that return no prose.
     _BACKEND_NON_PROSE_CALLS: ClassVar[frozenset[str]] = frozenset({

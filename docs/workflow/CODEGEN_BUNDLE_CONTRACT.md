@@ -272,11 +272,13 @@ An identifier — `symbol`, `module`, and in `state_bindings` (`state_variable`,
 `tools/backends/registry.py`), not this contract's; a longer name is rejected here rather than
 deferred to the `Generate.gate` syntax-check compiler gate.
 
-The check is applied to a bundle as a whole, NOT per file: v1's `language` enum has one member,
-so the contract collapses the implemented backends' grammars to one and refuses to proceed if a
-second backend ever disagrees, rather than picking a winner. Making the check per-file-language
-is the work that unblocks a second language backend whose identifier grammar differs; it is not
-what the code does today, and an earlier version of this paragraph said otherwise.
+The check has two layers. The schema layer admits the UNION of the bundle languages' grammars,
+`^(?:<body>|<body>)(?![\s\S])` (`codegen_bundle.IDENTIFIER_PATTERN`; `IDENTIFIER_MAX` is the
+largest bound), because a schema pattern cannot know which file an identifier belongs to. The
+cross-field layer then holds each identifier to the grammar of the language of the FILE that
+declares it (`_identifier_language_violations`): a file's `modules` to its own language, an
+entrypoint's `symbol` / `module` to its `defined_in` file's, a binding's names to the file that
+defines its `module`. So a name only one language admits is refused in a file of the other.
 
 `module` exists so the host renders the boundary glue `use <module>, only: <symbol>`
 mechanically. A file may define several modules or name them freely, and the host never

@@ -196,7 +196,12 @@ class PrivateHelperTest(unittest.TestCase):
         self.assertIn("entrypoints[0].module must be an identifier", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["entrypoints"][0]["module"] = "m" + "x" * 63  # 64 chars, over the f2008 limit
-        self.assertIn("entrypoints[0].module must be an identifier", cb.validate_bundle(doc))
+        # Refused by the grammar of the language of its `defined_in` file: the schema layer admits
+        # the union of the bundle languages' grammars, which a second language widened.
+        self.assertIn(
+            f"entrypoints[0].module {doc['entrypoints'][0]['module']!r} is not a fortran "
+            f"identifier ({cb._language_bundle('fortran').IDENTIFIER_PATTERN})",
+            cb.validate_bundle(doc))
 
     def test_entrypoint_module_must_be_defined_by_defined_in(self) -> None:
         # The bypass Codex found: `defined_in` names the member's own file (ownership passes),
@@ -826,8 +831,9 @@ class FieldGrammarTest(unittest.TestCase):
             "    core_provides=frozenset({'control_file', 'runner_render'}))\n"
             "import tools.codegen_bundle as cb\n"
             "import tools.validate_pipeline_semantics\n"
-            "assert cb.LANGUAGES == ('fortran',), cb.LANGUAGES\n"
-            "assert cb.IDENTIFIER_MAX == 63, cb.IDENTIFIER_MAX\n"
+            "assert 'zz_second' not in cb.LANGUAGES and 'fortran' in cb.LANGUAGES, cb.LANGUAGES\n"
+            "assert cb.IDENTIFIER_MAX == max(cb._language_bundle(l).IDENTIFIER_MAX\n"
+            "                                for l in cb.LANGUAGES), cb.IDENTIFIER_MAX\n"
             "print('ok')\n" % str(Path(cb.__file__).resolve().parents[2])
         )
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
@@ -842,7 +848,8 @@ class FieldGrammarTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             cb.no_such_attribute
         self.assertFalse(hasattr(cb, "no_such_attribute"))
-        self.assertEqual(63, cb.IDENTIFIER_MAX)
+        self.assertEqual(max(cb._language_bundle(lang).IDENTIFIER_MAX for lang in cb.LANGUAGES),
+                         cb.IDENTIFIER_MAX)
 
     def test_two_identifier_grammars_are_a_schema_union_and_a_per_file_check(self) -> None:
         """The collapse, driven over two grammars (issue #289, R4-b PR-2).
@@ -924,8 +931,9 @@ class FieldGrammarTest(unittest.TestCase):
 
     def test_identifier_length_is_capped_at_the_fortran_limit(self) -> None:
         # A symbol longer than the f2008/f2018 63-char limit cannot pass the Generate.syntax
-        # compiler gate, so the bundle rejects it up front rather than deferring the failure.
-        self.assertEqual(cb.IDENTIFIER_MAX, 63)
+        # compiler gate, so the bundle rejects it up front rather than deferring the failure. The
+        # bound is the FORTRAN file's (the per-file-language layer), not the schema union's.
+        self.assertEqual(cb._language_bundle("fortran").IDENTIFIER_MAX, 63)
         at_limit = "a" + "x" * 62      # exactly 63
         over_limit = "a" + "x" * 63    # 64
         doc = _minimal_bundle()
@@ -938,7 +946,8 @@ class FieldGrammarTest(unittest.TestCase):
                 doc = _minimal_bundle()
                 container, index, key = path
                 doc[container][index][key] = over_limit
-                self.assertTrue(any("must be an identifier" in v for v in cb.validate_bundle(doc)),
+                self.assertTrue(any("is not a fortran identifier" in v
+                                    for v in cb.validate_bundle(doc)),
                                 f"{field} of length {len(over_limit)} must be rejected")
 
     def test_entrypoint_kind_enum(self) -> None:

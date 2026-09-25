@@ -145,14 +145,28 @@ def _bundle_identifier_pattern() -> str:
     entrypoint's `symbol` belongs to, so it admits what ANY bundle language admits; the
     cross-field layer then holds each identifier to the grammar of the language of the file
     that declares it (`_identifier_language_violations`). With one language the union IS that
-    language's pattern, byte for byte. Each member is a whole-string pattern (`^` …
-    `(?![\\s\\S])`), so an alternation of them is one too, in Python and in ECMA-262 alike."""
+    language's pattern, byte for byte.
+
+    Each member must be a whole-string pattern in the portable form (`^` BODY `(?![\\s\\S])`),
+    and the union keeps that form with the anchors OUTSIDE the alternation,
+    `^(?:BODY1|BODY2)(?![\\s\\S])`: every schema pattern is held to it
+    (`test_every_schema_pattern_uses_the_portable_anchor`), and the first version of this
+    function, which alternated the whole members, failed that the day a second language was
+    registered (issue #289, R4-b PR-4). A member in another form is refused rather than
+    alternated, because stripping anchors it does not have would widen it."""
     if not LANGUAGES:
         raise ValueError(_no_bundle_language_reason())
     patterns = sorted({_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES})
     if len(patterns) == 1:
         return patterns[0]
-    return "|".join(f"(?:{pattern})" for pattern in patterns)
+    bodies = []
+    for pattern in patterns:
+        if not (pattern.startswith("^") and pattern.endswith(_END)):
+            raise ValueError(
+                f"a language backend's IDENTIFIER_PATTERN {pattern!r} is not a whole-string "
+                f"pattern of the form '^' ... {_END!r}, so it cannot join the schema union")
+        bodies.append(pattern[1:-len(_END)])
+    return "^(?:" + "|".join(bodies) + ")" + _END
 
 
 @lru_cache(maxsize=8)

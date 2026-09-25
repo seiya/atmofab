@@ -2467,10 +2467,6 @@ class ToolSchemaDocumentParityTests(unittest.TestCase):
                         self.assertIn(name, str(ctx.exception))
 
 
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
-
-
 class RunLinterPresetDispatchTests(unittest.TestCase):
     """The preset -> argv table `tool_run_linter` runs and the launch-time host probe reads.
 
@@ -2616,3 +2612,68 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
         self.assertIn("mixed", message)
         self.assertIn("lint", message)
 
+
+class FileTakingLinterTests(unittest.TestCase):
+    """A linter that is handed its files by name rather than walking a directory (issue #289,
+    R4-b PR-4: the CUDA compiler driver). `SOURCE_SUFFIXES` on the linter's `lint` module is the
+    switch (`_lint_command_over`)."""
+
+    def setUp(self) -> None:
+        self.mod = _load_server_module()
+        self.calls: list[list[str]] = []
+
+        def fake_run_command(*, command, **kwargs):
+            self.calls.append(list(command))
+            return {"ok": True, "command_id": "cid", "return_code": 0, "stdout": "",
+                    "stderr": "", "command": list(command)}
+
+        patch = mock.patch.object(self.mod, "_run_command", fake_run_command)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_every_lint_backend_states_which_kind_it_is(self) -> None:
+        from tools.backends import registry
+        for preset in self.mod._SIMPLE_LINT_PRESETS:
+            with self.subTest(preset=preset):
+                module = registry.capability_module("linter", preset, "lint")
+                self.assertTrue(module.SOURCE_SUFFIXES is None
+                                or isinstance(module.SOURCE_SUFFIXES, tuple))
+        self.assertIsNone(registry.capability_module("linter", "fortitude", "lint").SOURCE_SUFFIXES)
+        self.assertEqual((".cu",), registry.capability_module("linter", "nvcc", "lint").SOURCE_SUFFIXES)
+
+    def test_sources_are_found_at_depth_prefixed_and_sorted_and_links_are_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sub").mkdir()
+            for name in ("b.cu", "-o.cu", "@r.cu", "sub/a.CU", "x.f90"):
+                (root / name).write_text("")
+            (root / "link.cu").symlink_to(root / "b.cu")
+            self.assertEqual(["./-o.cu", "./@r.cu", "./b.cu", "./sub/a.CU"],
+                             self.mod._lint_source_files(tmp, (".cu",)))
+            result = self.mod.tool_run_linter({"preset": "nvcc", "project_dir": tmp})
+        from tools.backends import registry
+        lint = registry.capability_module("linter", "nvcc", "lint")
+        self.assertEqual([list(lint.source_argv(["./-o.cu", "./@r.cu", "./b.cu", "./sub/a.CU"]))],
+                         self.calls)
+        self.assertEqual("nvcc", result["preset"])
+
+    def test_no_source_is_clean_and_runs_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "Makefile").write_text("")
+            result = self.mod.tool_run_linter({"preset": "nvcc", "project_dir": tmp,
+                                               "command_log_path": str(Path(tmp) / "log.jsonl")})
+            self.assertFalse((Path(tmp) / "log.jsonl").exists())
+        self.assertEqual([], self.calls)
+        self.assertTrue(result["ok"])
+        self.assertEqual(0, result["return_code"])
+        self.assertTrue(result["skipped"])
+
+    def test_a_directory_linter_is_handed_the_directory_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.cu").write_text("")
+            self.mod.tool_run_linter({"preset": "fortitude", "project_dir": tmp})
+        self.assertEqual([list(self.mod._LINT_PRESET_COMMANDS["fortitude"])], self.calls)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

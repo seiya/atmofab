@@ -206,8 +206,16 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `host_render`, the component-surface remedies by `source_reading`, the dependency-operation
     guidance by `signatures`, the exemplar's gate-drift caveat and the neutral templates'
     language-shaped clauses by `prompt_fragments`. A target-free remedy (Compile's) names no
-    language's statements. Not yet true everywhere: the leftovers of this class are listed in
-    `TODO.md` (the prompt-templates row), and PR-4 must clear them before `cuda_cpp` runs.
+    language's statements. R4-b PR-4 cleared the leftovers a `cuda_cpp` leaf would read (the Compile
+    phase contract's statement spellings, the `harness` template's import keyword); what remains is listed in
+    `TODO.md` (the prompt-templates row).
+  - **A language may declare the every-node capabilities alone.** `cuda_cpp` (issue #289, R4-b
+    PR-4) declares exactly `LANGUAGE_CAPABILITIES_EVERY_NODE` and neither `runner_render` nor the
+    language half of `control_file`, so its `infrastructure` harness — whose leaf authors the
+    model, the runner and the control file — runs, and a `component` / `problem` node of it is
+    refused at launch. Each `source_reading` gate only a physics node reaches is a REFUSAL in that
+    backend rather than a pass, so a caller that reaches one anyway is not handed a certification
+    of a source nothing read.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that
@@ -216,9 +224,11 @@ together with the bundle's `target_lowering_plan.parallelization`.
   - The `static lint` step reaches a registered linter's argv through `capability_module` only
     where that record declares `lint` in `backend_provides`. Every linter that HAS an argv does
     (issues #111 and #120), so no linter invocation is spelled in
-    `mcp_servers/build_runtime_server.py` any more. Registering a fifth linter still widens the
+    `mcp_servers/build_runtime_server.py` any more. Registering another linter still widens the
     evidence gate (which asks the registry) and not the server, which keeps its own accepted set
-    of preset NAMES. The criterion that forced each move is worth stating: the argv carries the
+    of preset NAMES. A linter's backend also says whether it walks the lint directory or is
+    handed its files by name (`SOURCE_SUFFIXES`, issue #289, R4-b PR-4), so the server lists no
+    suffix of its own either. The criterion that forced each move is worth stating: the argv carries the
     RULE SET the gate applies, or the compiler-family arguments it applies it under, and both are
     knowledge this document forbids the neutral core.
     - **One linter record still declares `lint` in `core_provides`, and it is not an exception to

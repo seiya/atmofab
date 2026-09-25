@@ -17896,6 +17896,10 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         import sys
         import types
 
+        # Every real language that declares `signatures` runs too; the twin joins them (issue
+        # #289, R4-b PR-4 registered the second real one).
+        real = vps._compile_signature_languages()
+
         def run(twin_signatures: object) -> list[str]:
             pkg = types.ModuleType("zz_sig_twin")
             if twin_signatures is not None:
@@ -17911,7 +17915,7 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                     "type": "string", "kind": None, "len": "assumed", "name": None,
                     "alloc": False}
                 ir_dir = self._seed(Path(tmp), public_api=api)
-                self.assertEqual(["fortran", "zz_twin"], vps._compile_signature_languages())
+                self.assertEqual(sorted([*real, "zz_twin"]), vps._compile_signature_languages())
                 violations: list[str] = []
                 _validate_published_surface(Path(tmp), ir_dir, violations)
                 return [v.replace(tmp, "<tmp>") for v in violations]

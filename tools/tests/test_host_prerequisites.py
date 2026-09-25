@@ -300,18 +300,26 @@ class ToolVersionArmTests(unittest.TestCase):
         self.assertEqual(seen, [None])
         self.assertEqual(found[0].version, None)
 
-    def test_the_probe_reads_the_FIRST_line_and_a_banner_does_not_hide_the_version(self) -> None:
-        """The first-line rule is a real decision with a real failure mode, and it had none.
-
-        Every fixture and the real tool print exactly one line, so last-line / whole-text /
-        stderr-first readers were all indistinguishable — corpus-dependent, measured on the
-        round-3 census. Driven here with a probe that prints a banner first: the reader must
-        return the BANNER, which the backend then refuses. Fail-closed is the right polarity —
-        an unidentified build must not decide a certification — and this pins that the polarity
-        is reached rather than accidentally skipped by a reader that scans for a version.
-        """
+    def test_the_probe_hands_over_the_whole_output(self) -> None:
+        """Which line carries the version is the BACKEND's knowledge (issue #289, R4-b PR-4: the
+        CUDA compiler driver prints it on its fourth line), so the probe returns every line."""
         probe = (sys.executable, "-c", "print('warning: config ignored'); print('probe 0.9.1')")
-        self.assertEqual(hp._tool_version_text(probe), "warning: config ignored")
+        self.assertEqual(hp._tool_version_text(probe), "warning: config ignored\nprobe 0.9.1")
+
+    def test_a_banner_before_the_version_is_refused_by_each_first_line_backend(self) -> None:
+        """The first-line rule is a real decision with a real failure mode: a version-shaped
+        number in a banner is not the build's. It moved with the line choice from the probe into
+        each backend whose program prints its version first (issue #289, R4-b PR-4), so it is
+        pinned there, one backend at a time: an in-range version AFTER a banner is refused, and
+        the same version alone is accepted (the control that the refusal is the banner's)."""
+        from tools.backends import registry
+        for preset in ("fortitude", "cppcheck", "ruff"):
+            module = registry.capability_module("linter", preset, "lint")
+            in_range = ".".join(str(part) for part in module.MIN_VERSION)
+            with self.subTest(preset=preset):
+                self.assertIsNone(module.unsupported_version_reason(f"{preset} {in_range}"))
+                self.assertIsNotNone(module.unsupported_version_reason(
+                    f"warning: config ignored\n{preset} {in_range}"))
 
     def test_a_probe_that_times_out_is_a_refusal_rather_than_a_traceback(self) -> None:
         """`subprocess.TimeoutExpired` is NOT an `OSError`, so it needs its own except arm.

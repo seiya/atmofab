@@ -1,0 +1,9 @@
+# The CUDA C++ language fragments of `tools/prompt_templates/pure_generate_generate_harness.txt`.
+# Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/language/cuda_cpp/prompts.py`; lines before the first header are comments.
+
+@@ interface_prototypes
+lower every `interfaces` entry into a function-pointer type alias in the model's namespace, `using <name> = <return type> (*)(<parameters>);`, as a prototype only — a declared shape, never a definition — with its parameters lowered exactly as a published procedure's are
+@@ runner_import
+`#include`

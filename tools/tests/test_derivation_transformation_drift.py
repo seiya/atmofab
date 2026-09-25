@@ -413,7 +413,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the `openmp` package's
     # `__init__` (a digested launch member) re-exports its new `directives` module beside
     # `execution`; the environment `launch_shape` resolves is unchanged.
-    "execute-4": "e850442fd518a1e57031142090834ebae329d302ed233c8b7b967d4cd4a89eb4",
+    # Re-pinned (issue #289, R4-b PR-4), behaviour-preserving for every existing profile: the
+    # tuple gained the new `parallel/cuda` record's `execution_env` module and package (an empty
+    # environment); what `launch_shape` resolves for an `openmp` / `none` profile is unchanged.
+    "execute-4": "caf20787a818c920fc403b29150b50b452e1b20c1848b3ba27da62b0a8a93224",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

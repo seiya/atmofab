@@ -1119,7 +1119,7 @@ def _lint_preset_command(preset: str) -> tuple[str, ...]:
 #: It is not derived from anything in this module on purpose — there is nothing here to derive it
 #: from — and a name in it whose record does not declare the `lint` capability fails at import,
 #: in the dict comprehension below, rather than at the first call.
-_SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff")
+_SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff", "nvcc")
 
 #: The argv each simple preset runs, composed once at import. The KEYS are the set above — the
 #: set every reader below iterates.
@@ -1184,6 +1184,56 @@ def lint_preset_executables(preset: str) -> tuple[str, ...]:
     return tuple(executables)
 
 
+def _lint_source_files(project_dir: str, suffixes: tuple[str, ...]) -> list[str]:
+    """Every regular file under `project_dir`, at any depth, carrying one of `suffixes`, as
+    `./<relative path>` sorted — the files a linter that takes files by name is handed. Depth,
+    because the directory linters walk it (the conductor's lint attribution partitions the whole
+    tree between two probes, and a file below the top level must be in one of them). The `./`
+    prefix is what keeps a leaf-chosen name such as `-o.cu` or `@args.cu` from reading as an
+    option or a response file; a symbolic link is not followed."""
+    root = Path(project_dir)
+    lowered = tuple(s.lower() for s in suffixes)
+    return sorted(
+        "./" + path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink() and path.suffix.lower() in lowered
+    )
+
+
+def _lint_command_over(preset: str, project_dir: str) -> list[str] | None:
+    """The argv `preset` runs over `project_dir`, or `None` when it takes files by name and the
+    directory holds none.
+
+    A linter's backend says which kind it is (`SOURCE_SUFFIXES`, part of the `lint` capability
+    contract): `None` for one that walks the directory it is pointed at, the suffixes it is
+    handed otherwise (issue #289, R4-b PR-4: the CUDA compiler driver, which walks nothing)."""
+    module = _backend_registry().capability_module("linter", preset, "lint")
+    suffixes = module.SOURCE_SUFFIXES
+    if suffixes is None:
+        return list(_LINT_PRESET_COMMANDS[preset])
+    sources = _lint_source_files(project_dir, tuple(suffixes))
+    if not sources:
+        return None
+    return list(module.source_argv(sources))
+
+
+def _no_lint_sources_result(preset: str) -> dict[str, Any]:
+    """The result of a file-taking linter over a directory with no file of its suffixes: nothing
+    was judged and nothing ran, which is CLEAN — the answer a directory-walking linter gives an
+    empty directory (0 files scanned, exit 0), so the conductor's lint attribution probes read
+    the two kinds alike. No command runs, so nothing is logged: a certification cites a logged
+    run, and a node whose lint directory holds no source has no run to cite."""
+    return {
+        "ok": True,
+        "return_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "command": list(_LINT_PRESET_COMMANDS[preset]),
+        "skipped": True,
+        "reason": f"no source file for {preset} under the lint target",
+    }
+
+
 def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     """Run static analysis linters for generated sources (Generate stage only).
 
@@ -1220,9 +1270,14 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     # The unsupported-preset refusal comes first, out of the same table the runs come from, so
     # it cannot drift from what is actually runnable.
     sub_presets = lint_preset_sub_presets(preset)
-    runs = [
-        _run_command(
-            command=list(_LINT_PRESET_COMMANDS[sub]),
+    runs = []
+    for sub in sub_presets:
+        command = _lint_command_over(sub, project_dir)
+        if command is None:
+            runs.append(_no_lint_sources_result(sub))
+            continue
+        runs.append(_run_command(
+            command=command,
             cwd=project_dir,
             tool_name="run_linter",
             timeout_sec=timeout_sec,
@@ -1230,9 +1285,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
             capture_limit=capture_limit,
             command_log_path=command_log_path,
             attribution=_attribution(args),
-        )
-        for sub in sub_presets
-    ]
+        ))
     # A simple preset keeps the FLAT result shape (the command's own keys plus `preset`); a
     # composite keeps the `runs` shape, one entry per sub-run in order. Both are what the
     # conductor's `_gate_lint_check` normalizes and what the lint evidence records.

@@ -99,7 +99,9 @@ def validate_src_dir(
         return
 
     module_suffixes = tuple(source_reading.MODULE_SOURCE_SUFFIXES)
-    artifact_suffix = str(source_reading.MODULE_ARTIFACT_SUFFIX)
+    # `None`: the language leaves no module artifact beside an object (issue #289, R4-b PR-4),
+    # so no prerequisite is ever taken for one.
+    artifact_suffix = source_reading.MODULE_ARTIFACT_SUFFIX
     src_files = sorted(
         p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in module_suffixes
     )
@@ -160,8 +162,14 @@ def validate_src_dir(
             continue
 
         for dep_stem in sorted(deps):
-            dep_mod = f"{dep_stem}{artifact_suffix}"
             dep_obj = f"{dep_stem}.o"
+            if artifact_suffix is None:
+                if dep_obj not in prereqs:
+                    violations.append(
+                        f"{makefile_path}: {object_target} missing prerequisite for used module "
+                        f"({dep_obj})")
+                continue
+            dep_mod = f"{dep_stem}{artifact_suffix}"
             if dep_mod not in prereqs and dep_obj not in prereqs:
                 violations.append(
                     f"{makefile_path}: {object_target} missing prerequisite for used module ({dep_mod} or {dep_obj})"
@@ -187,7 +195,7 @@ def validate_src_dir(
         # ...or it is a `.mod` whose sibling `.o` is produced under $(OBJDIR)/
         # (the .mod is typically a by-product of compiling that .o and may have
         # no explicit rule of its own).
-        if prereq_basename.endswith(artifact_suffix):
+        if artifact_suffix is not None and prereq_basename.endswith(artifact_suffix):
             sibling_obj = f"{prereq_basename[: -len(artifact_suffix)]}.o"
             return target_has_objdir.get(sibling_obj, False)
         return False
@@ -223,7 +231,7 @@ def validate_src_dir(
 # command-word match would be a false positive.
 _RELINK_TOOL_PATTERN = re.compile(
     r"""^(?:
-        \$\$?[({](?:MAKE|FC|CC|CXX|LD|AR|F90|F95|F77)[)}]
+        \$\$?[({](?:MAKE|FC|CC|CXX|NVCC|LD|AR|F90|F95|F77)[)}]
       | (?:make|gmake|mingw32-make|gfortran|gcc|clang|cc|ld|ar|nvcc|nvfortran|ifort|ifx|f90|f95|f77)\b
       | (?:g|c|clang)\+\+
     )""",
