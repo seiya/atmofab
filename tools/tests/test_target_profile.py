@@ -354,7 +354,7 @@ class LaunchGateTests(unittest.TestCase):
             self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
-            for arch in ("sm_90", "sm_90a", "sm_75"):
+            for arch in ("sm_90", "sm_90a", "sm_75", "sm_100", "sm_120a"):
                 with self.subTest(gpu_architecture=arch):
                     self.assertEqual(tp.target_profile_violations(
                         repo.root, self._profile(repo, hardware__class="gpu",

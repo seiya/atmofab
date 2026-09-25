@@ -99,12 +99,20 @@ def _refuse_retired_arguments(args: dict[str, Any], tool_name: str) -> None:
     would otherwise run with no thread variables at all while believing it had set them. They
     are refused on `run_program` alone — `target` is `compile_project`'s build goal.
     """
-    retired = _RETIRED_ARGUMENTS + _RETIRED_ARGUMENTS_BY_TOOL.get(tool_name, ())
-    offending = sorted(key for key in retired if key in args)
+    # One remedy per retirement the call actually hit, so each refused argument is answered
+    # with ITS replacement: a `capability_token` alone on `run_program` was once told to pass
+    # an `env` (round 3).
+    by_tool = _RETIRED_ARGUMENTS_BY_TOOL.get(tool_name, ())
+    offending = sorted(key for key in _RETIRED_ARGUMENTS + by_tool if key in args)
     if offending:
+        remedies = []
+        if any(key in args for key in _RETIRED_ARGUMENTS):
+            remedies.append(_CAPABILITY_TOKEN_REMEDY)
+        if any(key in args for key in by_tool):
+            remedies.append(_RETIRED_ARGUMENT_REMEDY[tool_name])
         raise ValueError(
             f"{tool_name} no longer accepts " + ", ".join(offending) + ": "
-            + _RETIRED_ARGUMENT_REMEDY.get(tool_name, _CAPABILITY_TOKEN_REMEDY)
+            + "; ".join(remedies)
         )
 
 
@@ -118,8 +126,7 @@ _RETIRED_ARGUMENTS_BY_TOOL: dict[str, tuple[str, ...]] = {
 _RETIRED_ARGUMENT_REMEDY: dict[str, str] = {
     "run_program": (
         "the launch environment is the caller's to compose (issue #289: the workflow builds it "
-        "from the target profile in tools/host_execution.py); pass it as env, and drop "
-        "capability_token too if you send it (retired in issue #171)"),
+        "from the target profile in tools/host_execution.py); pass it as env"),
 }
 
 

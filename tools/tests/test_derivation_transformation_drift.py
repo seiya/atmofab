@@ -155,8 +155,7 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(server.tool_run_quality_checks),
         "build_runtime_server._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
-        # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam
-        # and the one parallel backend whose package composes an environment today.
+        # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam.
         "tools/host_execution.py": _file_digest("tools/host_execution.py"),
         # And every launch capability a registry record resolves to: the declaration, the
         # attribute row, the package and the module (`launch_declarations`).

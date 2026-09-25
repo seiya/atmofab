@@ -65,8 +65,8 @@
       "fortran-intent": 2
     },
     "docs/RUNBOOK.md": {
-      "compiler-driver": 3,
-      "fortran": 15,
+      "compiler-driver": 2,
+      "fortran": 14,
       "fortran-module-file": 2,
       "fortran-suffix": 1,
       "linter-cppcheck": 3,

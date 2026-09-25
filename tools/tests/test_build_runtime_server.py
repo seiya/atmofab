@@ -1045,6 +1045,21 @@ class RetiredArgumentTests(unittest.TestCase):
                 self.assertIn(key, str(ctx.exception))
                 self.assertIn("#289", str(ctx.exception))
                 self.assertIn("pass it as env", str(ctx.exception))
+                # Only the retirement the call hit is answered (round 3).
+                self.assertNotIn("#171", str(ctx.exception))
+        # A retired token alone gets its own remedy, not the launch-env one; both together get
+        # both.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_run_program({"project_dir": str(self.project_dir),
+                                       "command": ["true"], "capability_token": "x"})
+        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
+        self.assertNotIn("pass it as env", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_run_program({"project_dir": str(self.project_dir),
+                                       "command": ["true"], "capability_token": "x",
+                                       "threads_per_rank": 1})
+        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
+        self.assertIn("pass it as env", str(ctx.exception))
 
     def test_the_served_schema_does_not_advertise_a_retired_argument(self) -> None:
         # A schema that lists an argument the handler refuses tells every MCP client to send
@@ -1054,8 +1069,10 @@ class RetiredArgumentTests(unittest.TestCase):
         self.assertEqual(retired, {"target_class", "target.class", "target", "threads_per_rank"})
         self.assertEqual(set(tool.input_schema["properties"]) & retired, set())
         self.assertNotIn("threads_per_rank is specified", tool.description)
+        # Each name as a WORD: `target` is a substring of `target_class` (round 3).
         for name in retired:
-            self.assertIn(name, tool.description, f"the description omits refused {name}")
+            self.assertRegex(tool.description, rf"(?<![\w.]){re.escape(name)}(?![\w.])",
+                             f"the description omits refused {name}")
         self.assertIn("env", tool.input_schema["properties"])
 
     def test_the_retired_target_arguments_are_refused_on_run_program_alone(self) -> None:
