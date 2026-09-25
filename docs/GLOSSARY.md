@@ -170,7 +170,7 @@ Note:
 ## 8. MCP (Model Context Protocol)
 - A protocol for standardizing tool execution.
 - In this project, `compile` / `run` / `quality check` are executed through the `MCP` server.
-- The `compile` of `fortran` / `c` / `cpp` / `mixed` families is executed via a standard build tool that can handle dependencies (default `make`).
+- The `compile` of a compiled language (its language backend declares `COMPILED`, `registry.is_compiled_language`) is executed via a standard build tool that can handle dependencies (default `make`).
 
 ## 9. Automatic Differentiation (AD)
 - A technique for mechanically obtaining derivatives (`JVP` / `VJP` / `gradient`) for a discretely implemented computation graph.

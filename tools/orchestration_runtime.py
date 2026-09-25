@@ -10260,7 +10260,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # The harness self-test producer. Same four host-resolved documents as the default generate
     # producer, with the runner-output contract in place of the host-rendered runner: on this
     # shape there is no host-rendered runner, and the leaf authors the executable entry itself.
-    # `gate_guards_document` is §5 of the checks-module contract — the deterministic gate's rule
+    # `gate_guards_document` is §5 of the target language's checks-ABI binding (of the neutral
+    # checks-module contract until issue #289) — the deterministic gate's rule
     # set for every leaf-authored source. The AGENTIC leaf force-read it; a pure leaf force-reads
     # nothing, so it is inlined here or the leaf is held to rules no document it receives states.
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
