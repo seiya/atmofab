@@ -885,6 +885,21 @@ class FieldGrammarTest(unittest.TestCase):
                 "entrypoints[0].module", "entrypoints[0].symbol", "files[0].modules[0]",
                 "files[1].modules[1]", "state_bindings[0].state_variable",
                 "state_bindings[0].storage_symbol"])
+            # ... and the layer is WIRED into the contract, not only callable (round 1, issue
+            # #289: deleting the call from `bundle_invariant_violations` left this row green
+            # while it drove the function directly). A Fortran file's entrypoint named with a
+            # spelling only the other language admits passes the schema's union and is refused
+            # by `validate_bundle` through the per-file layer.
+            cb._identifier_re.cache_clear()
+            self.addCleanup(cb._identifier_re.cache_clear)
+            doc = _minimal_bundle()
+            doc["entrypoints"][0]["symbol"] = "_adv1d__apply"
+            refused = cb.validate_bundle(doc)
+            self.assertEqual(
+                [v for v in refused if "not a fortran identifier" in v],
+                [v for v in refused if v.startswith("entrypoints[0].symbol")], refused)
+            self.assertTrue(any("entrypoints[0].symbol '_adv1d__apply' is not a fortran "
+                                "identifier" in v for v in refused), refused)
         with mock.patch.object(cb, "LANGUAGES", ()):
             for call in (cb._bundle_identifier_pattern, cb._bundle_identifier_max):
                 with self.assertRaises(ValueError) as caught:
