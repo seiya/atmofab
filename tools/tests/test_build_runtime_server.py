@@ -1046,6 +1046,16 @@ class RetiredArgumentTests(unittest.TestCase):
                 self.assertIn("#289", str(ctx.exception))
                 self.assertIn("pass it as env", str(ctx.exception))
 
+    def test_the_served_schema_does_not_advertise_a_retired_argument(self) -> None:
+        # A schema that lists an argument the handler refuses tells every MCP client to send
+        # it. Pinned against the refusal set itself, so the two cannot drift apart.
+        tool = self.mod.TOOLS["run_program"]
+        retired = set(self.mod._RETIRED_ARGUMENTS_BY_TOOL["run_program"])
+        self.assertEqual(retired, {"target_class", "target.class", "target", "threads_per_rank"})
+        self.assertEqual(set(tool.input_schema["properties"]) & retired, set())
+        self.assertNotIn("threads_per_rank is specified", tool.description)
+        self.assertIn("env", tool.input_schema["properties"])
+
     def test_the_retired_target_arguments_are_refused_on_run_program_alone(self) -> None:
         # The over-refusal side: `target` is `compile_project`'s build goal, and the retirement
         # is scoped to the one tool that read the old meaning.

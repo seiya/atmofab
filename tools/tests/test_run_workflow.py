@@ -4204,6 +4204,21 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIsNotNone(run_workflow._host_probe_selection(None, "build"))
             self.assertIsNone(run_workflow._host_probe_selection(None, "validate"))
             self.assertIsNone(run_workflow._host_probe_selection(None))
+            # Both probes carry the phase to the selection, not only the presence one.
+            with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
+                            autospec=True, return_value=[]) as versions, \
+                    mock.patch("tools.host_prerequisites.missing_host_executables",
+                               autospec=True, return_value=[]) as missing:
+                run_workflow._check_host_tool_versions(None, "build")
+                run_workflow._check_required_host_tools(None, "build")
+                versions.assert_called_once()
+                missing.assert_called_once()
+                versions.reset_mock()
+                missing.reset_mock()
+                run_workflow._check_host_tool_versions(None, "validate")
+                run_workflow._check_required_host_tools(None, "validate")
+                versions.assert_not_called()
+                missing.assert_not_called()
 
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
