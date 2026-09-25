@@ -74,7 +74,7 @@ ONE session reads configuration from this checkout: the operator's own interacti
 | `.claude/settings.local.json` | DEV | the same session, per operator | no |
 | `.claude/skills/` | DEV | the same session | yes |
 | `llm.yaml` | run input | the driver, to decide what each leaf launches | no |
-| `sites.yaml` | run input | the driver, to decide where each `Validate.execute` runs (`docs/ORCHESTRATION.md` §Execution sites) | no |
+| `sites.yaml` | run input | the driver, to decide where each `Validate.execute` runs — once issue #293 wires it in; nothing reads it yet (`docs/ORCHESTRATION.md` §Execution sites) | no |
 | the operator's own CLI configuration directories | personal | the operator's own session, and the CLI's authentication | out of tree |
 | `~/.atmofab/` | runtime state | the host, per orchestration | out of tree |
 
