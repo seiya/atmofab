@@ -10082,6 +10082,11 @@ def _validate_post_generate_bundle(
             f"{bundle_path}: host acceptance contract re-check failed ({contract[0]}): "
             f"{contract[1]}")
         return
+    # DEFENSIVE and NOT PINNED (a round-0 sweep reported it surviving): the contract re-check
+    # above already refuses a node whose language the bundle contract does not admit, and the
+    # bundle contract admits exactly the languages that declare `bundle_facts`, so no input
+    # reaches here with `bundle` None today. Kept because the undeclared-source check below
+    # cannot run without the language's file facts.
     if bundle is None:
         violations.extend(language_refusals)
         return

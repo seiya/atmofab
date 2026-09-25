@@ -3097,6 +3097,33 @@ class CapabilityOwnershipTests(unittest.TestCase):
                     any("cannot be stated for language 'zz_hollow'" in v for v in violations),
                     violations)
 
+    def test_the_bundle_abi_gate_refuses_a_file_language_it_cannot_read(self) -> None:
+        """`codegen_bundle.m3c_checks_abi_violation` reads the checks file with its LANGUAGE's
+        `source_reading` (issue #289, R4-b PR-3): a language that renders a runner but declares
+        no source reader is refused with the registry's reason, never read as Fortran and never
+        an escaping exception."""
+        import sys
+        import types
+
+        import tools.codegen_bundle as codegen_bundle
+
+        pkg = types.ModuleType("zz_no_reader_pkg")
+        pkg.runner = types.ModuleType("zz_no_reader_pkg.runner")
+        pkg.runner.CHECKS_PUBLIC_NAMES = ("case_setup",)
+        record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
+                                  backend_provides=frozenset({"runner_render"}))
+        bundle = {"files": [{"logical_path": "bx_checks.f90", "role": "checks",
+                             "language": "zz_no_reader",
+                             "member_node_key": "component/bx@0.1.0",
+                             "content": "module bx_checks\nend module bx_checks\n",
+                             "modules": ["bx_checks"]}]}
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
+        self.assertIsNotNone(violation)
+        self.assertIn("whose sources this repository cannot read", violation)
+        self.assertIn(str(registry.missing_capability_reason(
+            "language", "zz_no_reader", "source_reading")), violation)
+
     def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
         """The seam lets a broken import escape as itself — the GATES must not.
 

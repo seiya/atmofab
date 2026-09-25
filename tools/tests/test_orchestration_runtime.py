@@ -24814,6 +24814,48 @@ class DerivationRecordStampTests(unittest.TestCase):
             self.assertEqual(stripped["verification_status"], "fail")
 
 
+
+class CrossPhaseLogPlacementTests(unittest.TestCase):
+    """The one cross-phase command-log placement (a build / execute log beside the control file
+    in `source/<source_id>/src/`) is granted by the build system's `BUILDS_IN_SOURCE`, asked of
+    its `control_file` backend (issue #289, R4-b PR-3) — not by comparing the value with `make`.
+    Driven with a synthetic build system on BOTH sides of the declaration, because on the live
+    registry the new predicate and the old comparison answer alike for every value."""
+
+    PIPE = "workspace/pipelines/n/t/p"
+
+    def _paths(self, build_system: str, step: str = "build", substep: str = "") -> list[str]:
+        return ort._canonical_mcp_audit_log_paths(
+            step_token=step, pipeline_ref=self.PIPE, node_safe="n", listed_paths=[],
+            source_id="src_1", build_system=build_system, substep_token=substep)
+
+    def _synthetic(self, builds_in_source: object):
+        import types
+
+        from tools.backends import registry
+        pkg = types.ModuleType("zz_bs_pkg")
+        pkg.control_file = types.ModuleType("zz_bs_pkg.control_file")
+        pkg.control_file.BUILDS_IN_SOURCE = builds_in_source
+        record = registry.Backend("build_system", "zz_bs", "zz_bs_pkg",
+                                  backend_provides=frozenset({"control_file"}))
+        return (mock.patch.dict(sys.modules, {"zz_bs_pkg": pkg}),
+                mock.patch.dict(registry._BACKENDS, {("build_system", "zz_bs"): record}))
+
+    def test_the_grant_follows_the_backends_declaration(self) -> None:
+        cross = f"{self.PIPE}/source/src_1/src/command_log.jsonl"
+        for step, substep in (("build", ""), ("validate", "execute")):
+            with self.subTest(step=step):
+                self.assertIn(cross, self._paths("make", step, substep))
+                # a build system with no record at all, and one with no control-file backend
+                self.assertNotIn(cross, self._paths("cmake", step, substep))
+                self.assertNotIn(cross, self._paths("", step, substep))
+                for value, granted in ((True, True), (False, False), (1, False)):
+                    patches = self._synthetic(value)
+                    with patches[0], patches[1]:
+                        self.assertEqual(granted, cross in self._paths("zz_bs", step, substep),
+                                         value)
+
+
 if __name__ == "__main__":
     unittest.main()
 

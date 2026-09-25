@@ -15765,6 +15765,18 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(outcome.decision.target_phase, "generate")
             self.assertNotIn("transport", (outcome.decision.reason or ""))
 
+    def test_build_failure_classification_is_the_build_systems(self) -> None:
+        # The patterns moved into the make backend (issue #289, R4-b PR-3); each category and
+        # each alternative of the link pattern, driven through the conductor's dispatch.
+        cases = (("make: *** No rule to make target 'x.o'", "make_error"),
+                 ("a.o: undefined reference to `f_'", "link_error"),
+                 ("error LNK2019: unresolved external symbol f", "link_error"),
+                 ("Error: Symbol 'x' at (1) has no IMPLICIT type", "compile_error"))
+        for stderr, category in cases:
+            with self.subTest(stderr=stderr):
+                self.assertEqual(category, wc.Conductor._classify_build_failure_category(
+                    "make", 2, stderr))
+
     def test_require_build_execute_rejects_a_build_system_it_does_not_drive(self) -> None:
         # Asked of the registry's `build_execute` (issue #289, R4-b PR-3) rather than compared
         # against one spelling: `make` declares it, and the refusal carries the registry's reason.

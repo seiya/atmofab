@@ -15080,6 +15080,44 @@ class ParseMakefileRulesTest(unittest.TestCase):
         self.assertIn("foo_model.o", prereqs)
 
 
+class ControlFileDispatchTest(unittest.TestCase):
+    """`_validate_control_file` is the validator's one dispatch into a build system's control-file
+    gates (issue #289, R4-b PR-3): it runs them only for a build system whose `control_file` the
+    registry declares, and reaches them through the registry rather than by name."""
+
+    _BAD = (
+        "BIN = x\nall: $(BIN)\n"
+        "$(OBJDIR)/a.o: a.f90\n\tgfortran -c a.f90\n"
+        "$(BINDIR)/x: a.o\n\tgfortran a.o\n"
+        "test:\n\t$(MAKE) all\n")
+
+    def _run(self, build_system: str | None, language: str | None = "fortran") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            (src / "a.f90").write_text("module a\nend module a\n", encoding="utf-8")
+            (src / "Makefile").write_text(self._BAD, encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_control_file(src, violations, build_system=build_system,
+                                       language=language, report_language_refusal=True)
+            return violations
+
+    def test_the_make_gates_run_for_make(self) -> None:
+        found = self._run("make")
+        self.assertTrue(any("BIN must be declared overridable" in v for v in found), found)
+        self.assertTrue(any("relink" in v.lower() for v in found), found)
+
+    def test_a_build_system_without_a_control_file_backend_runs_none_and_raises_nothing(self):
+        for build_system in ("cmake", "zz_no_such_build_system"):
+            self.assertEqual([], self._run(build_system), build_system)
+        # ... and an unresolved target runs none either (reported elsewhere)
+        self.assertEqual([], self._run(None))
+        self.assertEqual([], self._run("make", None))
+
+    def test_a_language_without_a_source_reader_is_refused_where_it_runs_alone(self) -> None:
+        found = self._run("make", "zz_lang")
+        self.assertTrue(any("'zz_lang' declares no 'source_reading'" in v for v in found), found)
+
+
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
     """Out-of-source correctness: a used-module prerequisite must carry the same
     `$(OBJDIR)/` prefix as its producing object rule. A bare basename passes the
@@ -17749,6 +17787,50 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
     # asked of the pipeline TARGET's language at the generated-signature gate, and
     # `InfrastructureGeneratedSignatureGateTests::test_the_no_backend_refusal_names_the_node_kind_it_was_given`
     # is its witness for an `infrastructure` node.)
+
+    def test_a_second_signature_language_repeats_no_finding_and_adds_its_own(self) -> None:
+        """The Compile-stage §5.1 pin runs in EVERY language that declares `signatures`
+        (issue #289, R4-b PR-3), and a finding a later language repeats word for word is reported
+        once. Driven with a synthetic twin of the Fortran module (identical findings), then with a
+        twin whose loader reports a finding of its own (added, not merged away)."""
+        import sys
+        import types
+
+        def run(twin_signatures: object) -> list[str]:
+            pkg = types.ModuleType("zz_sig_twin")
+            pkg.signatures = twin_signatures
+            record = backend_registry.Backend(
+                "language", "zz_twin", "zz_sig_twin", backend_provides=frozenset({"signatures"}))
+            with tempfile.TemporaryDirectory() as tmp, \
+                    unittest.mock.patch.dict(sys.modules, {"zz_sig_twin": pkg}), \
+                    unittest.mock.patch.dict(backend_registry._BACKENDS,
+                                             {("language", "zz_twin"): record}):
+                api = self._full_api()
+                api["signatures"][2]["signature"]["args"][0]["spec"] = {
+                    "type": "string", "kind": None, "len": "assumed", "name": None,
+                    "alloc": False}
+                ir_dir = self._seed(Path(tmp), public_api=api)
+                self.assertEqual(["fortran", "zz_twin"], vps._compile_signature_languages())
+                violations: list[str] = []
+                _validate_published_surface(Path(tmp), ir_dir, violations)
+                return [v.replace(tmp, "<tmp>") for v in violations]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self._full_api()
+            api["signatures"][2]["signature"]["args"][0]["spec"] = {
+                "type": "string", "kind": None, "len": "assumed", "name": None, "alloc": False}
+            ir_dir = self._seed(Path(tmp), public_api=api)
+            alone: list[str] = []
+            _validate_published_surface(Path(tmp), ir_dir, alone)
+            alone = [v.replace(tmp, "<tmp>") for v in alone]
+        self.assertTrue(alone)
+        self.assertEqual(alone, run(fortran_signatures))
+
+        own = types.ModuleType("zz_sig_twin.signatures")
+        own.load_structured_signatures = lambda body: ({}, "ZZ_TWIN_FINDING")
+        mixed = run(own)
+        self.assertEqual(alone, mixed[:len(alone)])
+        self.assertTrue(any("ZZ_TWIN_FINDING" in v for v in mixed[len(alone):]), mixed)
 
     def test_signatures_type_drift_flagged(self) -> None:
         # An IR signature that drifts from §5.1 (here: change entries' element type) is flagged —
