@@ -2858,7 +2858,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
                            "content": "module bx_checks\nend module bx_checks\n",
                            "modules": ["bx_checks"]}],
             }
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            # `language` names the files (the target's); the ABI is still the FILE's language's
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
             self.assertIsNotNone(violation)
             self.assertIn("zz_only_abi_name", violation)
 
@@ -3072,7 +3073,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             "member_node_key": "component/bx@0.1.0",
             "content": "module bx_checks\nend module bx_checks\n", "modules": ["bx_checks"]}]}
         with self._patched(record):
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
         self.assertIsNotNone(violation)
         self.assertIn("could not be loaded", violation)
 

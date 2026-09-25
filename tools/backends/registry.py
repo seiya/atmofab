@@ -589,6 +589,18 @@ def linter_for_language(language: str) -> str | None:
     return matches[0] if matches else None
 
 
+def is_compiled_language(language: str) -> bool:
+    """Whether `language` is one whose sources are compiled — the language backend's own
+    `bundle_facts.COMPILED` declaration (issue #289, R4-b PR-2; two policy sets in the neutral
+    core used to list language tokens for it, most of them values no backend implements).
+
+    `False` for a value that declares no `bundle_facts`: this repository states nothing about
+    how it is built, so a policy keyed on "compiled" does not bind it."""
+    if not provides("language", language, "bundle_facts"):
+        return False
+    return bool(capability_module("language", language, "bundle_facts").COMPILED)
+
+
 def get(axis: str, backend_id: str) -> Backend:
     """The `Backend` record, or raise naming why there is none.
 

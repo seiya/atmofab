@@ -240,15 +240,6 @@ FORTRAN_KEYWORDS = {
 }
 QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
-# The languages whose quality check runs through the build system's test target rather than a
-# script. This is a POLICY set over language families, NOT a set of implemented backends: `c` /
-# `cpp` / `mixed` are not registry members, and a target profile naming one is refused at launch
-# (`target_profile.toolchain_servable_reasons`) before this set is consulted, for every node
-# kind — the toolchain is the pipeline TARGET's since issue #284. It is the same kind of set as
-# `mcp_servers/build_runtime_server.py`'s `FORTRAN_C_FAMILY` and migrates with it (ledger:
-# TODO.md, the compiler / linter adapters area). The BUILD-SYSTEM half of the same condition is
-# asked of the registry instead — see `_make_quality_check_applies`.
-MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES = {"fortran", "c", "cpp", "mixed"}
 
 
 def _make_quality_check_applies(build_system: str | None, language: str | None) -> bool:
@@ -258,7 +249,10 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     `run_quality_checks` command rule — read the control file's grammar and require its
     `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
     registry which value the neutral core carries it for instead of naming one. The language half
-    is `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES`, a policy set (see there).
+    is the policy "a compiled language's quality check runs through the build system's test
+    target rather than a script", and which languages are compiled is the language backend's
+    declaration (`registry.is_compiled_language`); it was a set of language tokens here until
+    issue #289 (R4-b PR-2), three of them values no backend implements.
 
     The three gates spelled the condition out rather than sharing a predicate, and the third of
     them (`_validate_quality_check_commands`) wrote it INVERTED, so any change had to be made in
@@ -273,7 +267,7 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     """
     return (
         backend_registry.provides("build_system", build_system or "", "control_file")
-        and str(language or "") in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES
+        and backend_registry.is_compiled_language(str(language or ""))
     )
 
 
@@ -13948,7 +13942,8 @@ def _validate_post_generate_bundle(
 
     contract = pure_bundle_contract_violation(
         doc, node_key=node_key, spec_id=spec_id,
-        shape=(shape or ""), runner_basename=_expected_runner_name(spec_id),
+        shape=(shape or ""), language=str(toolchain.get("language") or ""),
+        runner_basename=_expected_runner_name(spec_id),
         ir_snapshot_variables=snapshot_variables_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))

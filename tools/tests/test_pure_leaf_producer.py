@@ -417,7 +417,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         ok = _valid_bundle()
         ok["files"][1]["modules"] = [f"{_SPEC_ID}_CHECKS"]
-        self.assertIsNone(cb.m3c_literal_name_violation(ok, _SPEC_ID))
+        self.assertIsNone(cb.m3c_literal_name_violation(ok, _SPEC_ID, language="fortran"))
 
     def test_m3c_name_violation(self) -> None:
         c, refs = self._c_refs()
@@ -475,7 +475,7 @@ class PureBundleViolationsTests(unittest.TestCase):
                 {("language", "zz_bundle_only"): record}):
             self.assertFalse(
                 backend_registry.provides("language", "zz_bundle_only", "runner_render"))
-            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID)
+            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID, language="fortran")
         self.assertIsNotNone(violation, "a language with no checks ABI must not be waived")
         self.assertIn("zz_bundle_only", violation)
         # The registry's own clause, carried rather than re-worded.

@@ -286,6 +286,19 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
                    f"{step}/{substep}: builder missing fields")
 
 
+
+def _fortran_named_bundle_facts(name: str):
+    """A `bundle_facts` module for a language a test invents: the file names the host gives it
+    are the Fortran backend's, so the rest of a fixture built for Fortran stays valid."""
+    import types
+    from tools.backends.language.fortran import bundle as fortran_bundle
+    module = types.ModuleType(name)
+    for attr in ("model_basename", "checks_basename", "runner_basename", "DEFAULT_COMPILER",
+                 "MANDATORY_SYNTAX_COMPILER", "SOURCE_EXTENSIONS", "IDENTIFIER_MAX",
+                 "IDENTIFIER_PATTERN", "COMPILER_SELECTOR_FAMILIES", "COMPILED"):
+        setattr(module, attr, getattr(fortran_bundle, attr))
+    return module
+
 class BuildLaunchRequestTest(unittest.TestCase):
     """build_launch_request reproduces real request.json payloads exactly.
 
@@ -14340,10 +14353,12 @@ class WriteRunnerTest(unittest.TestCase):
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
         other.runner = runner
+        # The names the host gives this language's files are its `bundle_facts` (issue #289).
+        other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
         record = backend_registry.Backend(
             "language", "zz_wr", "zz_write_runner_lang",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts"}))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -14381,11 +14396,12 @@ class WriteRunnerTest(unittest.TestCase):
 
         from tools.backends import registry as backend_registry
 
-        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries nothing
+        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries no runner
+        hollow.bundle = _fortran_named_bundle_facts("zz_hollow_runner_pkg.bundle")
         record = backend_registry.Backend(
             "language", "zz_hollow", "zz_hollow_runner_pkg",
             core_provides=frozenset({"control_file"}),
-            backend_provides=frozenset({"runner_render"}))
+            backend_provides=frozenset({"runner_render", "bundle_facts"}))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()

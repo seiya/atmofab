@@ -2848,8 +2848,9 @@ def _certified_model_source(
     repo_root: Path, node_key: str, *, resolver: DerivationResolver | None = None,
     target: TargetProfile | None = None,
 ) -> Path | None:
-    """Resolve the certified Fortran model source of a dependency — the EXACT
-    `<spec_id>_model.f90` Build stages/links — or ``None`` if it cannot be resolved.
+    """Resolve the certified model source of a dependency — the EXACT file Build stages/links,
+    named by the target language's ``bundle_facts.model_basename`` — or ``None`` if it cannot
+    be resolved.
 
     Single-sources the load-bearing selection every reader of a dependency's source depends
     on: the orientation hint (``_resolve_dependency_facts``), the compile-time published
@@ -2873,7 +2874,11 @@ def _certified_model_source(
         stage_dir = sel.stage_dir()
         if not sel.ok or stage_dir is None:
             return None
-        model_src = stage_dir / "src" / f"{spec_id}_model.f90"
+        # Named as the target's language names a model source (issue #289): the selection above
+        # succeeded, so the resolver holds the target it selected for.
+        language = resolver.target.toolchain["language"]
+        facts = backend_registry.capability_module("language", language, "bundle_facts")
+        model_src = stage_dir / "src" / facts.model_basename(spec_id)
         return model_src if model_src.is_file() else None
     except Exception:
         return None
@@ -4120,6 +4125,7 @@ def _resolve_exemplar_source(
                 ("language", tc["language"], "control_file"),
                 ("language", tc["language"], "runner_render")))
         target_is_m3c = self_kind != "infrastructure" and host_renders
+        facts = backend_registry.capability_module("language", tc["language"], "bundle_facts")
 
         catalog = _catalog_family_index(repo_root)
         self_family = next(
@@ -4166,8 +4172,9 @@ def _resolve_exemplar_source(
                 if target_is_m3c and not _exemplar_contract_version_matches(model_src):
                     continue
                 exemplar_files = (
-                    (f"{cand_id}_model.f90", f"{cand_id}_checks.f90") if target_is_m3c
-                    else (f"{cand_id}_model.f90", f"{cand_id}_runner.f90"))
+                    (facts.model_basename(cand_id), facts.checks_basename(cand_id))
+                    if target_is_m3c
+                    else (facts.model_basename(cand_id), facts.runner_basename(cand_id)))
                 sources: list[dict[str, str]] = []
                 missing = False
                 for fname in exemplar_files:

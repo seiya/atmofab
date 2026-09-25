@@ -541,15 +541,12 @@ SERVER_VERSION = "0.1.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_COMMAND_LOG_FILE = "command_log.jsonl"
 
-FORTRAN_C_FAMILY = {
-    "fortran",
-    "c",
-    "cpp",
-    "c++",
-    "cuda_fortran",
-    "cuda_c",
-    "mixed",
-}
+def _is_compiled_language(language: str) -> bool:
+    """Whether `language` is compiled — its language backend's `bundle_facts.COMPILED`. A
+    compiled language needs a build tool that tracks dependencies between its sources; which
+    languages are compiled is the backend's fact, not a set spelled here (issue #289)."""
+    return bool(_backend_registry().is_compiled_language((language or "").strip().lower()))
+
 
 DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "make",
@@ -845,10 +842,10 @@ def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]
                 "reason": f"{marker} was detected",
             }
 
-    if lang in FORTRAN_C_FAMILY:
+    if _is_compiled_language(lang):
         return {
             "build_system": "make",
-            "reason": "for Fortran/C family, make is the default standard build tool",
+            "reason": "for a compiled language, make is the default standard build tool",
         }
 
     return {
@@ -974,14 +971,14 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     target = _validate_build_argv_overrides(
         target, extra_args, "compile_project", build_system=build_system)
 
-    if language in FORTRAN_C_FAMILY and build_system not in {
+    if _is_compiled_language(str(language or "")) and build_system not in {
         "make",
         "cmake",
         "meson",
         "ninja",
     }:
         raise ValueError(
-            "for Fortran/C family, use make/cmake/meson/ninja. make is the default."
+            "for a compiled language, use make/cmake/meson/ninja. make is the default."
         )
 
     command = _build_command(build_system, target, jobs, extra_args)
@@ -1460,7 +1457,7 @@ TOOLS: dict[str, Tool] = {
         name="compile_project",
         description=(
             "Compile using a dependency-aware standard build tool. "
-            "For Fortran/C family, make/cmake/meson/ninja are allowed, and make is default."
+            "For a compiled language, make/cmake/meson/ninja are allowed, and make is default."
         ),
         input_schema={
             "type": "object",

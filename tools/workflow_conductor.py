@@ -1657,7 +1657,9 @@ def build_launch_request(
             # the leaf — it sits at the pipeline root which must stay non-writable to the
             # sandboxed leaf. So it is NOT in the leaf's allowed_output_paths.
             req["allowed_output_paths"] = [
-                f"{src}/src/{Conductor._model_basename(refs)}",
+                # A dead list for a pure leaf (the pure override below empties it), spelled like
+                # its two siblings above; this function has no target to ask.
+                f"{src}/src/{refs.spec_id}_model.f90",
                 runner_or_checks,
                 *make_entry,
                 f"{src}/src/command_log.jsonl",
@@ -5379,22 +5381,26 @@ class Conductor:
         tc = self._read_toolchain(refs)
         return self._core_authors_control_file(tc["build_system"], tc["language"])
 
-    @staticmethod
-    def _runner_basename(refs: NodeRefs) -> str:
-        """The basename of the host-rendered runner glue for a node. ONE spelling.
+    def _language_facts(self) -> Any:
+        """The target language's `bundle_facts` module: the names the host gives its files."""
+        return backend_registry.capability_module(
+            "language", self.target.toolchain["language"], "bundle_facts")
+
+    def _runner_basename(self, refs: NodeRefs) -> str:
+        """The basename of the host-rendered runner glue for a node. ONE spelling, and the
+        target language's (`bundle_facts.runner_basename`, issue #289).
 
         Extracted so `_host_rendered_src_names` does not become a second place that says what the
         renderer's output is called; the build-graph seam reads it too."""
-        return f"{refs.spec_id}_runner.f90"
+        return str(self._language_facts().runner_basename(refs.spec_id))
 
-    @staticmethod
-    def _model_basename(refs: NodeRefs) -> str:
-        """The basename of the node's model source. ONE spelling, like the runner's above.
+    def _model_basename(self, refs: NodeRefs) -> str:
+        """The basename of the node's model source. ONE spelling, like the runner's above, and
+        the target language's (`bundle_facts.model_basename`, issue #289).
 
-        Extracted when `_semantic_review_scope` became a second reader (issue #169): the name is
-        pre-existing backend debt that `docs/BACKEND_BOUNDARY.md`'s ledger records, and the way
-        NOT to add to it is to call the one place that says it rather than to write it again."""
-        return f"{refs.spec_id}_model.f90"
+        Extracted when `_semantic_review_scope` became a second reader (issue #169); the name
+        was written here until the language backend said it."""
+        return str(self._language_facts().model_basename(refs.spec_id))
 
     #: The basename of the build control file the host writes. ONE spelling, for the same reason.
     CONTROL_FILE_BASENAME = "Makefile"
@@ -5613,7 +5619,7 @@ class Conductor:
         if model_src is None:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: cannot resolve certified "
-                f"{harness_sid}_model.f90 under "
+                f"{self._language_facts().model_basename(harness_sid)} under "
                 f"{pipelines_dir(safe, self.target.target_id)} "
                 f"({resolver.select(harness_nk, 'generate').reason}; harness not built ready — "
                 f"run_workflow.py --with-deps first)")
@@ -5630,7 +5636,8 @@ class Conductor:
             raise RuntimeError(
                 f"harness dependency {harness_nk}: no certified IR (ir_meta.json "
                 f"verification_status=pass) bound to the linked source under workspace/ir/{safe} "
-                f"to pin {refs.spec_id}_runner.f90 against — run_workflow.py --with-deps first")
+                f"to pin {self._runner_basename(refs)} against — run_workflow.py --with-deps "
+                f"first")
         harness_ir = _read_yaml(harness_ir_dir / "spec.ir.yaml") or {}
         pub = harness_ir.get("public_api") if isinstance(harness_ir, dict) else None
         harness_signatures: Any = pub.get("signatures") if isinstance(pub, dict) else None
@@ -5672,7 +5679,7 @@ class Conductor:
         # error path is worse than none: it reads as a second live guard.
         runner_text = render_runner(language, ir, refs.spec_id, harness_sid,
                                     target=self.target.doc)
-        path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
+        path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
 
@@ -6001,7 +6008,7 @@ clean:
         # way; the caller converts this into a fail_closed transport outcome (no leaf spawned),
         # and it is the four ir/tests DEGRADATIONS above whose recorded rationale this
         # measurement actually invalidates (TODO.md residual).
-        runner_path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
+        runner_path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         try:
             runner_text = runner_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -6191,6 +6198,7 @@ clean:
         return pure_bundle_contract_violation(
             doc, node_key=refs.node_key, spec_id=refs.spec_id,
             shape=(self._bundle_shape(refs) or ""),
+            language=self._read_toolchain(refs)["language"],
             runner_basename=self._runner_basename(refs),
             ir_snapshot_variables=snapshot_variables_from_ir(ir),
             harness_provided=provided, harness_label=harness_nk,
@@ -9400,7 +9408,7 @@ clean:
         staged: list[dict[str, Any]] = []
         for nk in nodes:
             binding = by_node[nk]
-            target = obj_dir / f"{spec_id_of(nk)}_model.f90"
+            target = obj_dir / self._language_facts().model_basename(spec_id_of(nk))
             shutil.copy2(self.repo_root / binding["model_source_ref"], target)
             digest = hashlib.sha256(target.read_bytes()).hexdigest()
             if digest != binding["model_source_sha256"]:

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """What the `CodegenBundle` contract has to know about Fortran.
 
-The bundle contract itself (`tools/codegen_bundle.py`) is neutral: it validates roles, logical
-paths, entrypoints and the build order without knowing any language. Four facts it applies are
-Fortran's, and they used to sit in that neutral module as per-language lookup tables — the
-`language` axis half of the migration ledger's `codegen_bundle` area (`TODO.md`,
-`docs/BACKEND_BOUNDARY.md`). They are read through `tools/backends/registry.py`.
+The `bundle_facts` capability. The bundle contract itself (`tools/codegen_bundle.py`) is
+neutral: it validates roles, logical paths, entrypoints and the build order without knowing any
+language. The facts it applies are Fortran's, and they used to sit in that neutral module as
+per-language lookup tables — the `language` axis half of the migration ledger's `codegen_bundle`
+area (`TODO.md`, `docs/BACKEND_BOUNDARY.md`). Since issue #289 (R4-b PR-2) this module also
+carries the names the host gives this language's files and the compiler it defaults to. They are
+read through `registry.capability_module("language", <id>, "bundle_facts")`.
 
 Stdlib only, and no import of the rest of this package: the neutral core loads it for every
 bundle it validates.
@@ -55,3 +57,29 @@ DEFAULT_COMPILER = "gfortran"
 #: separately from `DEFAULT_COMPILER` because the readers ask different questions, and bound to
 #: it because the answers must not differ (see above).
 MANDATORY_SYNTAX_COMPILER = DEFAULT_COMPILER
+
+#: A language whose sources are compiled, so its build needs a tool that tracks dependencies
+#: between them (`mcp_servers/build_runtime_server.py` refuses a one-off build tool for such a
+#: language). The policy is neutral; WHICH languages it applies to is this fact.
+COMPILED = True
+
+#: The extension of every source file the HOST names for this language — the staged dependency
+#: model, the host-rendered runner glue, the model and checks files the runner `use`s by fixed
+#: name. One of `SOURCE_EXTENSIONS`.
+HOST_SOURCE_EXTENSION = ".f90"
+
+
+def model_basename(spec_id: str) -> str:
+    """The node's model source, which the runner and every consumer's build `use` by name."""
+    return f"{spec_id}_model{HOST_SOURCE_EXTENSION}"
+
+
+def checks_basename(spec_id: str) -> str:
+    """The node's checks source, which the host-rendered runner `use`s by name."""
+    return f"{spec_id}_checks{HOST_SOURCE_EXTENSION}"
+
+
+def runner_basename(spec_id: str) -> str:
+    """The node's runner source: host-rendered glue on a physics node, the harness's own
+    self-test entry on a harness node."""
+    return f"{spec_id}_runner{HOST_SOURCE_EXTENSION}"

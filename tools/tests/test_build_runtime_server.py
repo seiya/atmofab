@@ -1849,7 +1849,7 @@ class BuildCommandTests(unittest.TestCase):
         empty = self._dir_with()
         family = self.mod._recommended_build_system(empty, "fortran")
         self.assertEqual(family["build_system"], "make")
-        self.assertIn("Fortran/C family", family["reason"])
+        self.assertIn("compiled language", family["reason"])
         other = self.mod._recommended_build_system(empty, "haskell")
         self.assertEqual(other["build_system"], "make")
         self.assertEqual(other["reason"], "fallback default")
