@@ -62,11 +62,9 @@ from tools.operator_private_root import operator_secret_root
 from tools.target_profile import (
     TargetProfile,
     TargetProfileError,
-    load_target_profile,
     resolve_run_target,
     select_target_id,
     target_harness_entries,
-    target_profile_violations,
 )
 
 # The environment name that relocates the start-claim locks. The RESOLVER is below;
@@ -158,48 +156,34 @@ def _check_required_cli_tools() -> list[str]:
 # launches. `docs/RUNBOOK.md` §0-1 carries the install lines.
 
 
-def _host_probe_selection(requested: str | None,
-                          until_phase: str | None = None) -> dict[str, str] | None:
-    """The axis selection the host probes are asked about: the target this invocation names
-    (`--target`), else the default one (issue #284). None when that cannot be told yet — an
-    undeclared `--target`, or several profiles and no `--target` on a resume that will recover
-    its own — or when the launch gate (`target_profile_violations`, for a run ending at
-    `until_phase`) will refuse the profile, an axis value this repository does not implement
-    included, which the probe could only answer with a traceback: then the probes do not run
-    here, the launch's target resolution refuses or resolves it with its own structured reason
-    a few steps on, and the mid-run gates stay the backstop. `until_phase` is the invocation's
-    own, so a run that stops before `Validate` on a class this host cannot execute on is still
-    probed for the tools it builds with (issue #289).
+def _host_probe_selection(target_profile: TargetProfile) -> dict[str, str]:
+    """The axis selection the host probes are asked about: that of the target this invocation
+    resolved (`_resolve_launch_target` — `--target`, else the one a resumed orchestration
+    recorded, else the only declared profile), after the launch gate has passed it for this
+    node and this `until_phase`. So a resume is probed for the target it recorded, a harness for
+    its own target, and a profile the gate refuses is never probed: its refusal is the gate's
+    structured one (issue #289, R4-b PR-5; the probe ran before target resolution until then, and
+    with two profiles declared it skipped every resume without `--target` and every `cpp_gpu`
+    run).
 
     Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
     reaches the MCP server's argv tables, and a startup path that has not yet decided it is
     going to run should not pay for them."""
     from tools.host_prerequisites import resolve_launch_axis_selection
 
-    root = Path(__file__).resolve().parent.parent
-    try:
-        profile = load_target_profile(root, select_target_id(root, requested))
-    except TargetProfileError:
-        return None
-    if target_profile_violations(root, profile, until_phase=until_phase):
-        return None
-    return resolve_launch_axis_selection(profile)
+    return resolve_launch_axis_selection(target_profile)
 
 
-def _check_required_host_tools(requested: str | None = None,
-                               until_phase: str | None = None) -> list[str]:
+def _check_required_host_tools(target_profile: TargetProfile) -> list[str]:
     """The executables of `tools/host_prerequisites` this host cannot resolve on `PATH`, for
-    the target `_host_probe_selection` resolves (none when it resolves none)."""
+    the resolved target."""
     from tools.host_prerequisites import missing_host_executables
 
-    selection = _host_probe_selection(requested, until_phase)
-    if selection is None:
-        return []
-    return [item.executable for item in missing_host_executables(selection)]
+    return [item.executable
+            for item in missing_host_executables(_host_probe_selection(target_profile))]
 
 
-def _check_host_tool_versions(requested: str | None = None,
-                              until_phase: str | None = None) -> list[Any]:
+def _check_host_tool_versions(target_profile: TargetProfile) -> list[Any]:
     """The required host tools whose installed version this repository has not measured.
 
     The second half of the check above, and it is checked SECOND for the same reason it is
@@ -214,10 +198,7 @@ def _check_host_tool_versions(requested: str | None = None,
     """
     from tools.host_prerequisites import unsupported_host_tool_versions
 
-    selection = _host_probe_selection(requested, until_phase)
-    if selection is None:
-        return []
-    return list(unsupported_host_tool_versions(selection))
+    return list(unsupported_host_tool_versions(_host_probe_selection(target_profile)))
 
 
 def _check_required_python_modules() -> list[str]:
@@ -2408,57 +2389,6 @@ def _run_main(
             args.stdout_format,
         )
         return 2
-    # The invocation's own `until_phase`, as typed (None on a resume that recovers it): the
-    # launch gate reads it case-insensitively and answers an unstated one strictly.
-    probe_until_phase = getattr(args, "until_phase", None)
-    missing_host_tools = _check_required_host_tools(
-        getattr(args, "target", None), probe_until_phase)
-    if missing_host_tools:
-        from tools.host_prerequisites import required_host_executables
-
-        _emit_unlogged_event(
-            {
-                "status": "fail",
-                "reason": "missing_required_host_tools",
-                "detail": (
-                    f"missing host tools: {','.join(missing_host_tools)} — install them and "
-                    f"re-run (see docs/RUNBOOK.md#0-1)"
-                ),
-                "missing": missing_host_tools,
-                "required": [item.executable for item in required_host_executables(
-                    _host_probe_selection(getattr(args, "target", None),
-                                          probe_until_phase))],
-                "docs_ref": "docs/RUNBOOK.md#0-1",
-            },
-            args.stdout_format,
-        )
-        return 2
-    unsupported_versions = _check_host_tool_versions(
-        getattr(args, "target", None), probe_until_phase)
-    if unsupported_versions:
-        _emit_unlogged_event(
-            {
-                "status": "fail",
-                "reason": "unsupported_required_host_tool_versions",
-                "detail": (
-                    "; ".join(item.reason for item in unsupported_versions)
-                    + " (see docs/RUNBOOK.md#0-1)"
-                ),
-                "unsupported": [
-                    {
-                        "executable": item.executable,
-                        "axis": item.axis,
-                        "backend_id": item.backend_id,
-                        "version": item.version,
-                        "reason": item.reason,
-                    }
-                    for item in unsupported_versions
-                ],
-                "docs_ref": "docs/RUNBOOK.md#0-1",
-            },
-            args.stdout_format,
-        )
-        return 2
     repo_root = Path(args.repo_root).resolve()
 
     # Redirect THIS host interpreter's bytecode cache out of the repo SOURCE tree, as early as
@@ -2890,6 +2820,53 @@ def _run_main(
     except TargetProfileError as exc:
         _emit_unlogged_event(
             {"status": "fail", "reason": exc.reason, "detail": exc.detail},
+            args.stdout_format,
+        )
+        return 2
+    # The host tools the resolved target builds with, probed after the gate passed it (see
+    # `_host_probe_selection`) and still before any orchestration state is touched.
+    missing_host_tools = _check_required_host_tools(target_profile)
+    if missing_host_tools:
+        from tools.host_prerequisites import required_host_executables
+
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_host_tools",
+                "detail": (
+                    f"missing host tools: {','.join(missing_host_tools)} — install them and "
+                    f"re-run (see docs/RUNBOOK.md#0-1)"
+                ),
+                "missing": missing_host_tools,
+                "required": [item.executable for item in required_host_executables(
+                    _host_probe_selection(target_profile))],
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
+    unsupported_versions = _check_host_tool_versions(target_profile)
+    if unsupported_versions:
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "unsupported_required_host_tool_versions",
+                "detail": (
+                    "; ".join(item.reason for item in unsupported_versions)
+                    + " (see docs/RUNBOOK.md#0-1)"
+                ),
+                "unsupported": [
+                    {
+                        "executable": item.executable,
+                        "axis": item.axis,
+                        "backend_id": item.backend_id,
+                        "version": item.version,
+                        "reason": item.reason,
+                    }
+                    for item in unsupported_versions
+                ],
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
             args.stdout_format,
         )
         return 2

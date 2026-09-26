@@ -216,3 +216,14 @@ specs:
     tests_path: spec/infrastructure/infra/harness/harness_fortran_cpu/tests.md
     deps_path: spec/infrastructure/infra/harness/harness_fortran_cpu/deps.yaml
     official_releases: []
+
+  - spec_kind: infrastructure
+    spec_id: harness_cpp_gpu
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: infra
+    family: harness
+    controlled_spec_path: spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md
+    tests_path: spec/infrastructure/infra/harness/harness_cpp_gpu/tests.md
+    deps_path: spec/infrastructure/infra/harness/harness_cpp_gpu/deps.yaml
+    official_releases: []

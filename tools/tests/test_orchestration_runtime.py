@@ -27399,7 +27399,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
-        "docs/GLOSSARY.md:c8caff67ee1d6529":
+        "docs/GLOSSARY.md:152340dedcf05c0b":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
             "the host adds it as a direct dependency after Compile (issue #284)",
         "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":

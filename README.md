@@ -6,7 +6,7 @@
 
 ## Scope
 
-- Generate the `model` (physics computation) and the `runner` (execution and judgment coordination) for a computation task defined by a `spec`, targeting `CPU` and `GPU` hardware. The material certified in this tree is Fortran on `CPU`.
+- Generate the `model` (physics computation) and the `runner` (execution and judgment coordination) for a computation task defined by a `spec`, targeting `CPU` and `GPU` hardware. The material certified in this tree is Fortran on `CPU`. A second target profile, CUDA C++ on `GPU` (`spec/targets/`), builds its harness but cannot reach `Validate` until remote execution lands ([issue #293](https://github.com/seiya/atmofab/issues/293)).
 - Manage specifications under four `spec_kind` values: `problem` (integration scenario), `component` (reusable operation), `profile` (component selection policy), and `infrastructure` (the shared runner harness, one node per `(language, hardware)` target).
 - Keep the physics definition separated from execution optimization. `spec.ir.yaml` carries physics-affecting structure in its `case` / `algorithm` / `io_contract` sections and names no implementation target; execution discretion is held in the target profile (`spec/targets/<target_id>.yaml`) and in the generated bundle's lowering plan (`docs/IMPL_PLAN_SPEC.md`).
 - Judge each `node` from its own execution evidence, and aggregate the judgment across its dependency closure.
@@ -53,16 +53,17 @@ Every `LLM` leaf is a billed provider call. One node spends at least five of the
 Start a run:
 
 ```bash
-python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm-config <path>]
+python3 tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [--llm-config <path>]
 
 # the dependency closure of one problem node, then the node itself
-python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps
+python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps --target fortran_cpu
 ```
 
 `<spec_ref>` is the `spec` directory of the target node and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
 
 | option | effect |
 |---|---|
+| `--target` | the target profile `spec/targets/<target_id>.yaml` the run builds for; required while more than one is declared (`docs/RUNBOOK.md` §1-3) |
 | `--with-deps` | resolve the transitive dependency closure and run each not-yet-ready dependency node bottom-up before the target |
 | `--resume` | continue the latest (or `--orchestration-id`) orchestration from its checkpoint, recovering `spec_ref` / `until_phase` / the launched configuration |
 | `--mode` | `dev` (default): a `major` / `critical` verify finding terminalizes the run. `prod`: it is routed to the diagnostician, which decides how far back to recover |
@@ -81,7 +82,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 | `compile_project` | build through a standard build tool that handles dependencies (`make` by default for the `fortran` / `c` families) |
 | `run_program` | run the built `runner` |
 | `run_quality_checks` | run a quality-check `preset` |
-| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `mixed`) |
+| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `nvcc` / `mixed`) |
 | `run_syntax_check` | run a compiler front end in syntax-only mode, producing no build artifacts |
 | `detect_build_system` | recommend a build system from the marker files present (standalone use only) |
 
@@ -124,7 +125,7 @@ workspace/    trial artifacts
 | `problem` | `advdiff1d_linear`, `shallow_water2d`, `shallow_water2d_channel` |
 | `component` | `dynamics_advdiff_flux_1d_upwind_center2`, `dynamics_advection_diffusion_boundary_1d_periodic_copy`, `dynamics_advection_diffusion_time_update_1d_euler1`, `dynamics_shallow_water_flux_2d_rusanov_p0`, `dynamics_shallow_water_boundary_2d_periodic_copy`, `dynamics_shallow_water_time_update_2d_ssprk2`, `dynamics_shallow_water_boundary_2d_channel_mirror`, `dynamics_shallow_water_source_2d_coriolis`, `dynamics_shallow_water_time_update_2d_rk4`, `dynamics_shallow_water_reconstruction_2d_muscl_mc`, `dynamics_shallow_water_flux_2d_rusanov`, `dynamics_shallow_water_source_2d_tc4_forcing` |
 | `profile` | `dynamics_advdiff_profile_1d_upwind_center2_euler1`, `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, `dynamics_shallow_water_profile_2d_channel_p0_rk4`, `dynamics_shallow_water_profile_2d_channel_p1_rk4` |
-| `infrastructure` | `harness_fortran_cpu` |
+| `infrastructure` | `harness_fortran_cpu`, `harness_cpp_gpu` |
 
 `spec/registry/spec_catalog.yaml` is the registry of record for placement and state.
 

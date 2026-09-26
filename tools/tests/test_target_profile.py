@@ -68,8 +68,8 @@ _DELETE = object()
 
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
-        self.assertEqual(tp.list_target_ids(REPO_ROOT), ["fortran_cpu"])
-        profile = tp.resolve_run_target(REPO_ROOT, None)
+        self.assertEqual(tp.list_target_ids(REPO_ROOT), ["cpp_gpu", "fortran_cpu"])
+        profile = tp.resolve_run_target(REPO_ROOT, "fortran_cpu")
         self.assertEqual(profile.target_id, "fortran_cpu")
         self.assertRegex(profile.sha256, r"^sha256:[0-9a-f]{64}$")
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
@@ -79,6 +79,35 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertEqual(tp.target_profile_violations(REPO_ROOT, profile, node_key=harness), [])
         self.assertEqual(profile.record(REPO_ROOT), {
             "target_id": "fortran_cpu", "sha256": profile.sha256, "harness_node_key": harness})
+
+    def test_two_checked_in_profiles_make_the_target_a_required_choice(self) -> None:
+        """Issue #289 (R4-b PR-5): with a second profile, a run that names none is refused
+        rather than defaulted — `--target` is the operator's choice every time."""
+        with self.assertRaises(tp.TargetProfileError) as cm:
+            tp.resolve_run_target(REPO_ROOT, None)
+        self.assertEqual(cm.exception.reason, "target_required")
+        self.assertIn("cpp_gpu, fortran_cpu", cm.exception.detail)
+
+    def test_the_checked_in_gpu_profile_builds_its_harness_and_stops_before_validate(self) -> None:
+        """Issue #289 (R4-b PR-5): `cpp_gpu` passes the launch gate for its own harness through
+        `build`, and a run reaching Validate is refused on the execution half (the `gpu` class
+        declares no `execution` until remote execution lands). Its profile states no
+        `architecture`, so the build takes the device compiler's default."""
+        profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        self.assertNotIn("architecture", profile.doc["hardware"])
+        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        self.assertTrue(harness.startswith("infrastructure/harness_cpp_gpu@"), harness)
+        for phase in sorted(tp.NON_EXECUTING_PHASES):
+            self.assertEqual(tp.target_profile_violations(
+                REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
+        violations = tp.target_profile_violations(
+            REPO_ROOT, profile, node_key=harness, until_phase="validate")
+        self.assertEqual(len(violations), 1, violations)
+        self.assertTrue(violations[0].startswith("hardware.class: a run that reaches Validate"),
+                        violations)
+        # A physics node of this language is refused at every phase: no runner renderer.
+        self.assertTrue(any("runner_render" in v for v in tp.target_profile_violations(
+            REPO_ROOT, profile, until_phase="build")))
 
     def test_the_hash_is_over_content_not_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,6 +405,21 @@ class LaunchGateTests(unittest.TestCase):
             self.assertEqual(tp.target_profile_violations(
                 repo.root, self._profile(repo, hardware__architecture="sm_90"),
                 until_phase="Validate"), [])
+
+    def test_an_absent_architecture_is_the_compilers_default_for_every_class(self) -> None:
+        """Issue #289 (R4-b PR-5), the operator's decision: `hardware.architecture` is optional.
+        Absent, the loader accepts the profile and the gate asks no `perf_facts` question of it
+        — the build takes the compiler's default. A present one is still held to the grammar
+        (the test above)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            for hardware_class, phase in (("gpu", "Build"), ("cpu", "Validate")):
+                with self.subTest(hardware_class=hardware_class):
+                    profile = self._profile(repo, hardware__class=hardware_class,
+                                            hardware__architecture=_DELETE)
+                    self.assertNotIn("architecture", profile.doc["hardware"])
+                    self.assertEqual(tp.target_profile_violations(
+                        repo.root, profile, until_phase=phase), [])
 
     def test_a_capability_the_node_kind_needs_is_asked_by_kind(self) -> None:
         """A non-infrastructure node needs the runner render; an infrastructure node does not.

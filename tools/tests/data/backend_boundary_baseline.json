@@ -16,7 +16,7 @@
     },
     "README.md": {
       "compiler-driver": 3,
-      "fortran": 4,
+      "fortran": 5,
       "linter-cppcheck": 1,
       "linter-fortitude": 1,
       "linter-ruff": 1
@@ -30,6 +30,7 @@
       "fortran": 6
     },
     "docs/BWRAP_ENABLEMENT.md": {
+      "fortran": 1,
       "fortran-module-file": 2
     },
     "docs/CLI_REFERENCE.md": {
@@ -61,7 +62,7 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 15,
+      "fortran": 16,
       "fortran-module-file": 2,
       "fortran-suffix": 1,
       "linter-cppcheck": 3,
@@ -77,7 +78,7 @@
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
       "fortran": 4,
       "fortran-intent": 1,
-      "fortran-kind": 2,
+      "fortran-kind": 1,
       "fortran-subroutine": 1,
       "fortran-suffix": 2,
       "make-control-file": 15,
@@ -176,7 +177,6 @@
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
       "fortran": 13,
-      "fortran-kind": 1,
       "fortran-subroutine": 6,
       "fortran-suffix": 1,
       "make-control-file": 6

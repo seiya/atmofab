@@ -99,19 +99,15 @@ def _require_implemented(axis: str, backend_id: str) -> None:
         )
 
 
-def resolve_launch_axis_selection(target=None) -> dict[str, str]:
-    """The axis values a run for `target` (a `TargetProfile`) will select. `None` resolves the
-    DEFAULT target (`select_target_id`: the only declared profile), and raises
-    `TargetProfileError` when that is ambiguous — the caller decides whether to refuse or to
-    leave the question to the launch's own target resolution."""
+def resolve_launch_axis_selection(target) -> dict[str, str]:
+    """The axis values a run for `target` (a `TargetProfile`) will select. There is no default
+    target: the checkout declares several profiles (issue #289, R4-b PR-5), and which one a run
+    builds for is the launch's own target resolution (`tools/run_workflow.py`)."""
     # The language -> linter answer is the registry's, the one the conductor's
     # `_gate_lint_check` runs and the certification expects: a second copy would be a drift
     # pair, and this one would send the probe after a linter the gate never runs.
     from tools.backends import registry as backend_registry
 
-    if target is None:
-        from tools.target_profile import load_target_profile, select_target_id
-        target = load_target_profile(_REPO_ROOT, select_target_id(_REPO_ROOT, None))
     # The values are the profile's; nothing is defaulted, so this file spells no technology.
     language = target.toolchain["language"]
     build_system = target.toolchain["build_system"]
@@ -135,11 +131,10 @@ def resolve_launch_axis_selection(target=None) -> dict[str, str]:
 
 
 def required_host_executables(
-    selection: dict[str, str] | None = None,
+    selection: dict[str, str],
 ) -> tuple[HostExecutable, ...]:
     """Every program the resolved selection needs on the host, in probe order, without repeats."""
     server = _build_runtime_server()
-    selection = selection if selection is not None else resolve_launch_axis_selection()
 
     found: list[HostExecutable] = []
     seen: set[str] = set()
@@ -249,7 +244,7 @@ def _self_check_reason(module) -> str | None:
 
 
 def unsupported_host_tool_versions(
-    selection: dict[str, str] | None = None,
+    selection: dict[str, str],
 ) -> tuple[HostToolVersion, ...]:
     """Those required programs whose installed version must not decide a certification.
 
@@ -283,7 +278,7 @@ def unsupported_host_tool_versions(
 
 
 def missing_host_executables(
-    selection: dict[str, str] | None = None,
+    selection: dict[str, str],
 ) -> tuple[HostExecutable, ...]:
     """Those of `required_host_executables` this host cannot resolve on `PATH`.
 

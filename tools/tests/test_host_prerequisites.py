@@ -24,16 +24,21 @@ import build_runtime_server as server  # noqa: E402
 from tools import host_prerequisites as hp  # noqa: E402
 from tools import workflow_conductor as conductor  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402
+from tools.tests.target_fixtures import FORTRAN_CPU  # noqa: E402
+
+#: The selection a `fortran_cpu` run probes: the checkout declares several profiles, and the probe
+#: takes no default (issue #289, R4-b PR-5).
+_SELECTION = hp.resolve_launch_axis_selection(FORTRAN_CPU)
 
 
 class LaunchSelectionTests(unittest.TestCase):
-    def test_the_selection_is_the_default_target_profiles(self) -> None:
+    def test_the_selection_is_the_target_profiles(self) -> None:
         """Not a constant restated here. `resolve_launch_axis_selection` reads the target
-        profile a run started now builds for (issue #284) — the default one when none is
-        named — which is what the conductor reads the same axes from."""
-        from tools.tests.target_fixtures import FORTRAN_CPU, second_target
+        profile the run builds for (issue #284), which is what the conductor reads the same axes
+        from; there is no default target to fall back on (issue #289, R4-b PR-5)."""
+        from tools.tests.target_fixtures import second_target
 
-        selection = hp.resolve_launch_axis_selection()
+        selection = hp.resolve_launch_axis_selection(FORTRAN_CPU)
         self.assertEqual(selection["language"], FORTRAN_CPU.toolchain["language"])
         self.assertEqual(selection["build_system"], FORTRAN_CPU.toolchain["build_system"])
         self.assertEqual(selection["compiler"], conductor.default_compiler(
@@ -47,7 +52,7 @@ class LaunchSelectionTests(unittest.TestCase):
         """The same registry answer `_gate_lint_check` reads. A second copy would send the probe
         after a linter the gate never runs, which is the whole failure mode this check exists to
         remove."""
-        selection = hp.resolve_launch_axis_selection()
+        selection = hp.resolve_launch_axis_selection(FORTRAN_CPU)
         self.assertEqual(
             selection["linter"], backend_registry.linter_for_language(selection["language"])
         )
@@ -55,7 +60,7 @@ class LaunchSelectionTests(unittest.TestCase):
     def test_every_selected_axis_value_is_a_registered_implemented_member(self) -> None:
         """The probe asks the registry the question it means (`unimplemented_reason` — is this
         value runnable), so a value nothing implements refuses rather than being probed."""
-        selection = hp.resolve_launch_axis_selection()
+        selection = hp.resolve_launch_axis_selection(FORTRAN_CPU)
         for axis in ("language", "build_system", "compiler"):
             self.assertIsNone(
                 backend_registry.unimplemented_reason(axis, selection[axis]),
@@ -72,7 +77,7 @@ class LaunchSelectionTests(unittest.TestCase):
         self.assertIsNotNone(reason)
         with self.assertRaises(RuntimeError) as caught:
             hp.required_host_executables(
-                {**hp.resolve_launch_axis_selection(), "build_system": bogus}
+                {**hp.resolve_launch_axis_selection(FORTRAN_CPU), "build_system": bogus}
             )
         self.assertIn(reason, str(caught.exception))
 
@@ -138,7 +143,7 @@ class NoDriftFromWhatActuallyRunsTests(unittest.TestCase):
 
 class ProbeShapeTests(unittest.TestCase):
     def test_the_probe_covers_all_three_axes_and_repeats_nothing(self) -> None:
-        items = hp.required_host_executables()
+        items = hp.required_host_executables(_SELECTION)
         self.assertEqual(
             {item.axis for item in items}, {"linter", "build_system", "compiler"}
         )
@@ -148,7 +153,7 @@ class ProbeShapeTests(unittest.TestCase):
     def test_a_composite_preset_attributes_each_program_to_its_sub_preset(self) -> None:
         """Not to the composite: the sub-preset is the registered `linter` member, so it is what
         the registry can be asked about and what an operator installs."""
-        selection = {**hp.resolve_launch_axis_selection(), "linter": "mixed"}
+        selection = {**hp.resolve_launch_axis_selection(FORTRAN_CPU), "linter": "mixed"}
         linter_items = [
             item for item in hp.required_host_executables(selection) if item.axis == "linter"
         ]
@@ -160,16 +165,16 @@ class ProbeShapeTests(unittest.TestCase):
     def test_missing_is_the_subset_of_required_that_is_not_on_path(self) -> None:
         import shutil
 
-        required = hp.required_host_executables()
+        required = hp.required_host_executables(_SELECTION)
         expected = tuple(
             item for item in required if shutil.which(item.executable) is None
         )
-        self.assertEqual(hp.missing_host_executables(), expected)
+        self.assertEqual(hp.missing_host_executables(_SELECTION), expected)
 
     def test_this_development_host_satisfies_the_probe(self) -> None:
         """A sanity row of the same kind as `test_check_required_cli_tools_returns_empty_when_all_present`:
         if this fails, the machine running the suite could not run a workflow."""
-        self.assertEqual(hp.missing_host_executables(), ())
+        self.assertEqual(hp.missing_host_executables(_SELECTION), ())
 
 
 class ToolVersionArmTests(unittest.TestCase):
@@ -241,7 +246,7 @@ class ToolVersionArmTests(unittest.TestCase):
         supported build and the refusal must be observable anyway.
         """
         with mock.patch.object(hp, "_tool_version_text", lambda argv: "fortitude 0.1.0"):
-            found = hp.unsupported_host_tool_versions()
+            found = hp.unsupported_host_tool_versions(_SELECTION)
         self.assertEqual([item.executable for item in found], ["fortitude"])
         self.assertIn("below the supported floor", found[0].reason)
 
@@ -266,7 +271,7 @@ class ToolVersionArmTests(unittest.TestCase):
         with mock.patch.object(hp, "required_host_executables", lambda selection=None: (item,)), \
              mock.patch.object(hp, "_version_gated_capability_modules",
                                lambda _item: iter((_Refusing,))):
-            found = hp.unsupported_host_tool_versions()
+            found = hp.unsupported_host_tool_versions(_SELECTION)
         self.assertEqual(len(found), 1)
         self.assertEqual((found[0].axis, found[0].backend_id, found[0].executable),
                          ("linter", "fortitude", "fortitude"))
@@ -296,7 +301,7 @@ class ToolVersionArmTests(unittest.TestCase):
         with mock.patch.object(hp, "required_host_executables", lambda selection=None: (item,)), \
              mock.patch.object(hp, "_version_gated_capability_modules",
                                lambda _item: iter((_Unreadable,))):
-            found = hp.unsupported_host_tool_versions()
+            found = hp.unsupported_host_tool_versions(_SELECTION)
         self.assertEqual(seen, [None])
         self.assertEqual(found[0].version, None)
 
@@ -345,7 +350,7 @@ class ToolVersionArmTests(unittest.TestCase):
         substituted here; the record, the module and the arm are production.
         """
         with mock.patch.object(hp, "_self_check_reason", lambda module: "synthetic refusal"):
-            found = hp.unsupported_host_tool_versions()
+            found = hp.unsupported_host_tool_versions(_SELECTION)
         self.assertEqual([item.reason for item in found], ["synthetic refusal"])
 
     def test_the_self_check_runs_the_backends_own_argv_over_an_empty_directory(self) -> None:
@@ -388,7 +393,7 @@ class ToolVersionArmTests(unittest.TestCase):
     def test_this_development_host_satisfies_the_version_arm(self) -> None:
         """The companion of `test_this_development_host_satisfies_the_probe`: if this fails, a
         workflow started on this machine would be refused at launch."""
-        self.assertEqual(hp.unsupported_host_tool_versions(), ())
+        self.assertEqual(hp.unsupported_host_tool_versions(_SELECTION), ())
 
 
 class RunbookVersionRangeTests(unittest.TestCase):

@@ -18,10 +18,10 @@
     "hardware": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["class", "architecture"],
+      "required": ["class"],
       "properties": {
         "class": {"$ref": "#/definitions/token", "description": "The `hardware` axis value; which classes exist, and which this host can execute on, is the backend registry's (`tools/backends/registry.py`)."},
-        "architecture": {"$ref": "#/definitions/token"}
+        "architecture": {"$ref": "#/definitions/token", "description": "Optional. The architecture the build targets, in the grammar the class's `perf_facts` states when it states one (a GPU's compute capability, passed to the device compiler). Absent, the build takes the compiler's default."}
       }
     },
     "toolchain": {
