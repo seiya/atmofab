@@ -484,8 +484,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # never prints. And once more in round 1: the tuple gained the scheduler records and the
     # `slurm` package's `job_submit` module, which the round-1 review found outside it (a change
     # to the prefix a job runs under moved no pin). None of it changes a none site's job. Then the
-    # prefix's time limit moved before the directives (a directive may shorten it).
-    "execute-5": "9e187ec10258f6832753f58e64e6019733ebfd1780cc90079f7c70df11726938",
+    # prefix's time limit moved before the directives (a directive may shorten it). And a
+    # docstring corrected in round 2 (what a process reaching the script's stdout can do).
+    "execute-5": "6cc0e8aab9187a6ca54514f37af492c46cec4669b42c3e3b1dd3eb1e41255348",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

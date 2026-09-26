@@ -36,11 +36,15 @@ Every way the evidence could be incomplete or not this job's is a refusal
   is a lost status and is refused, never read as 0; a second line for one command, a line for a
   command that should not have run (a command runs only when every earlier one exited 0), and
   a line that does not parse are refused too. A process that reaches the script's stdout
-  anyway — through `/proc/<pid>/fd/1`, which the same user can open — can add lines but cannot
-  remove the script's own: an added line is a second one, and text written without a newline
-  glues onto the script's next line, which then carries a marker somewhere other than at its
-  start and is refused. The platform facts travel the same way (`PLATFORM_MARKER`), printed
-  once each before the first command starts;
+  anyway — through `/proc/<pid>/fd/1`, which the same user can open — and opens it for WRITING
+  can add lines but cannot remove the script's own: an added line is a second one, and text
+  written without a newline glues onto the script's next line, which then carries a marker
+  somewhere other than at its start and is refused. NOT closed: opened for READING, the same
+  path hands out the pipe's read end (measured on Linux), so a process a command left running
+  could consume a later command's status line before the host reads it and print one of its
+  own. It would have to know this module's line grammar, which no leaf is shown. The platform
+  facts travel the same way (`PLATFORM_MARKER`), printed once each before the first command
+  starts;
 - a shipped file that does not come back byte-identical to its local source is refused: the
   entries name each shipped file by its local source, so one a command rewrote before a later
   command ran it (the quality check's control file) would be recorded as unchanged;
