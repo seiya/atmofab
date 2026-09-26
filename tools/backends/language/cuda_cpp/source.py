@@ -442,6 +442,30 @@ _NOT_EXTERNAL_DEFINITION = frozenset({"static", "inline", "__inline__", "__force
                                       "constexpr", "extern", "const"})
 
 
+_EAST_CONST_RE = re.compile(r"^(?P<base>[^&*]+?) const(?P<ref>[&*]?)$")
+
+
+def _canonical_type(ctype: str) -> str:
+    """A normalized parameter type with an east `const` moved west (`std::string const&` ->
+    `const std::string&`): one type, two spellings, and the ABI table spells the west one."""
+    east = _EAST_CONST_RE.match(ctype)
+    return f"const {east.group('base')}{east.group('ref')}" if east else ctype
+
+
+def _declarator_names(statement: str) -> list[str]:
+    """Every name a namespace-scope variable declaration declares (`std::vector<double> a, b`
+    declares both): the trailing identifier of each top-level declarator, its initializer — `=`,
+    a brace or a parenthesis group — removed."""
+    names: list[str] = []
+    for declarator in cpp_decls.split_top_level(statement):
+        head = cpp_decls.split_top_level(declarator, "=")[0]
+        head = re.sub(r"[({][^(){}]*[)}]\s*$", "", head.strip())
+        m = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$", head)
+        if m is not None:
+            names.append(m.group(1))
+    return names
+
+
 def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
     """`(published, defined_subroutines, defined_procs)` for namespace `<spec_id>_checks` of
     `text` — the facts the `Generate.gate` static check and the bundle acceptance gate share.
@@ -449,7 +473,8 @@ def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str]
     `defined_procs` is every name DEFINED in that namespace (a qualified definition
     `void <spec_id>_checks::f(...) {...}` included). `defined_subroutines` is the subset that is an
     ABI callback defined as the header declares it: returning `void`, with exactly the declared
-    parameter types in order (`checks_abi.CHECKS_ABI_PARAMS`, names free), and with one external
+    parameter types in order (`checks_abi.CHECKS_ABI_PARAMS`, names free; an east `const` reads as
+    the west one, `_canonical_type`), and with one external
     definition (no `static` / `inline` / `constexpr`). `published` is `defined_subroutines`: in
     C++ nothing but that definition satisfies the runner's call — a definition with other
     parameter types is an OVERLOAD the header's declaration never reaches (a link error), a
@@ -473,7 +498,8 @@ def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str]
             continue
         if set(fn.head.split(" ")) & _NOT_EXTERNAL_DEFINITION:
             continue
-        if tuple(ptype for ptype, _name in fn.params) != tuple(ptype for ptype, _n in declared):
+        if (tuple(_canonical_type(ptype) for ptype, _name in fn.params)
+                != tuple(ptype for ptype, _n in declared)):
             continue
         subroutines.add(fn.name)
     return set(subroutines), subroutines, defined
@@ -501,6 +527,7 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
         if var.namespace == namespace and not (
                 set(var.statement.split(" ")) & _NOT_EXTERNAL_DEFINITION):
             defined.add(var.name)
+            defined.update(_declarator_names(var.statement))
     for fn in decls.functions:
         if (fn.namespace == namespace and not fn.defined
                 and not (set(fn.head.split(" ")) & _NOT_EXTERNAL_DEFINITION)):

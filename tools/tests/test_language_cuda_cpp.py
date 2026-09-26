@@ -836,6 +836,16 @@ class PhysicsGateTests(unittest.TestCase):
                 published, _subs, _defined = cpp_source.checks_module_abi_facts(text, "p")
                 self.assertNotIn("get_time", published)
                 self.assertIn("case_setup", published)
+        # Round 1 of this change's review: an east `const` is the same parameter type.
+        east = _CHECKS_SOURCE.replace("void case_setup(const std::string& case_id",
+                                      "void case_setup(std::string const& case_id")
+        self.assertIn("case_setup", cpp_source.checks_module_abi_facts(east, "p")[0])
+        # A declaration without a body defines nothing (the runner's call would not link).
+        declared = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
+                                          "void get_time(double& t);")
+        facts = cpp_source.checks_module_abi_facts(declared, "p")
+        self.assertNotIn("get_time", facts[0])
+        self.assertNotIn("get_time", facts[2])
         qualified = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }", "") + (
             "void p_checks::get_time(double& when) { when = 0.0; }\n")
         self.assertIn("get_time", cpp_source.checks_module_abi_facts(qualified, "p")[0])
@@ -852,6 +862,10 @@ class PhysicsGateTests(unittest.TestCase):
                 self.assertEqual(["s"], cpp_source.unpublished_bound_state(text, "p", ["s", "u"]))
         direct = _CHECKS_SOURCE.replace("std::vector<double> u{};", "std::vector<double> u(3);")
         self.assertEqual([], cpp_source.unpublished_bound_state(direct, "p", ["u"]))
+        # Round 1 of this change's review: every declarator of one statement is defined.
+        several = _CHECKS_SOURCE.replace("double s = 0.0;", "double t0 = 1.0, s = 0.0;").replace(
+            "std::vector<double> u{};", "std::vector<double> w, u;")
+        self.assertEqual([], cpp_source.unpublished_bound_state(several, "p", ["s", "u", "a2"]))
 
     def test_isolation_refuses_the_harness_and_file_io(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
