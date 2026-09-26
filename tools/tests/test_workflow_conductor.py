@@ -17874,6 +17874,35 @@ class DeterministicSyntaxTest(unittest.TestCase):
         self.assertGreaterEqual(len(seen), 2)   # the stage and at least its canary
         self.assertEqual(set(seen), {expected})
 
+    def test_a_profile_with_no_architecture_hands_every_syntax_run_none(self) -> None:
+        """`hardware.architecture` is optional (issue #289, R4-b PR-5): a profile that states
+        none — `cpp_gpu` as checked in — reaches the gate, and every run is handed `None`, so the
+        adapter takes the compiler's default. Reading the key unconditionally raised instead."""
+        import tempfile
+        from dataclasses import replace
+        seen: list[str | None] = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            doc = {**c.target.doc, "hardware": {"class": c.target.doc["hardware"]["class"]}}
+            no_arch = replace(c.target, doc=doc)
+
+            def fake(args):
+                seen.append(args.get("architecture", "<absent>"))
+                if self._call_kind(args) in ("canary", "probe"):
+                    return {"ok": True, "skipped": False, "command_id": "x"}
+                return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
+                        "stderr": "Error: boom"}
+
+            with self._patch_syntax(fake), \
+                    mock.patch.object(type(c), "target", new_callable=mock.PropertyMock,
+                                      return_value=no_arch):
+                c._gate_syntax_check(refs, "child-1")
+        self.assertGreaterEqual(len(seen), 2)
+        self.assertEqual(set(seen), {None})
+
     def test_gate_syntax_check_refuses_a_language_with_no_syntax_stage(self) -> None:
         """A language that declares no `syntax_promotions` has no stage to run, and the gate
         fails CLOSED on it (issue #289, R4-b PR-2). Until then every language but Fortran
