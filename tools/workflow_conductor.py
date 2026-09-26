@@ -5395,7 +5395,7 @@ class Conductor:
 
     def _conductor_authors_makefile(self, refs: NodeRefs) -> bool:
         """The conductor authors `src/Makefile` iff the neutral core has a control-file writer
-        for the node's (build_system, language) — today make+fortran, asked of the registry via
+        for the node's (build_system, language) — today make with fortran or cuda_cpp, asked of the registry via
         `_core_authors_control_file`;
         exactly the scope of `_write_makefile`, for BOTH leaf and dependency nodes. The
         dependency Makefile is as deterministic as the leaf one (the closure + per-dep object
@@ -5538,7 +5538,7 @@ class Conductor:
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
         PHYSICS node whose target toolchain the neutral core both writes a control file for and
-        renders a runner for (today make+fortran — asked of the registry, see
+        renders a runner for (today make with fortran or cuda_cpp — asked of the registry, see
         `_core_authors_control_file`). On such a node the runner is glue over the plumbing of
         the TARGET's certified harness (`_pure_harness_node_key`, issue #284) + the leaf-authored
         `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness interface

@@ -21,7 +21,8 @@
   published operations, and the runner and a consumer include it and call them. A consumer's
   `src/` also holds, host-written at Generate start, each closure member's header COPIED from the
   member's certified source directory — never re-rendered, so it is the declaration the member's
-  own Build compiled — sha-checked against the consumer's generate key
+  own Build compiled — sha-checked against the binding taken when the consumer's generate key
+  was computed (the key itself binds the member's source by output hash)
   (`workflow_conductor._write_dependency_headers`); Build stages the same bytes beside each
   member's source in the object directory (`_stage_dependency_sources`), which is on the include
   path. On a physics node the host also renders `<spec_id>_checks.cuh`, the declarations of the
