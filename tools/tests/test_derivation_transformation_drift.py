@@ -436,7 +436,10 @@ PINNED_RENDER: dict[str, str] = {
     # And in round 4: the Fortran runner's import block reordered (ruff I001) and a redundant
     # `return None` dropped — the rendered Fortran runner and `ir_content_violations` are
     # byte-identical over all 148 IRs under `workspace/ir/` to origin/main 4f81d082 (re-measured).
-    "render-5": "97c84f197c8aff68b5f9dc79aba5edb50b5c528ddfae4a2a0e951443b4bba699",
+    # And in round 5: the CUDA C++ runner defers every harness write (snapshots included) to
+    # after the node's last callback. Only the `cuda_cpp` physics runner moved; the Fortran
+    # render over the same 148 IRs is byte-identical to origin/main 4f81d082 (re-measured).
+    "render-5": "2d0339a22f9318ae2cb39c2a34e54669fa7564bad3b83f0654b6a6d7ab0b6b0d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

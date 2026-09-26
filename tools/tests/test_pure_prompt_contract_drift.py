@@ -650,8 +650,10 @@ PINNED: dict[str, str] = {
     # §1-§4 (its §4, the I/O rule), which reach only a `cuda_cpp` physics producer and reviewer.
     # The same two compositions were re-measured byte-identical each time. (Round 4 of the
     # review found the first versions of these two lines naming rule 1 — changed in round 1 —
-    # and omitting §4.)
-    "pure-50": "105bd7b3e5249e4e78dd8ac360ae222e48853981b166c60ad548e20fb094c434",
+    # and omitting §4.) Round 5 moved them again — rules 4, 6a and (b) of `generate_generate.txt`
+    # and §4 of the `cuda_cpp` binding (`extern "C"`) — and the same two compositions were
+    # re-measured byte-identical to origin/main 4f81d082.
+    "pure-50": "587e7856ddb8e0cce0719a6f7e99b648c4e06d3f4139918aca5054b32edfd974",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
