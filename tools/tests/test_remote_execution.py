@@ -7,14 +7,16 @@ destination, and runs the command string with `sh -c` LOCALLY in the test's work
 a real ssh hands it to the user's login shell in the home directory, which the executor does not
 depend on (argv[0] is absolute or a PATH name, every other path absolute). The `scp` shim drops
 the options, strips `host:`, and copies with `cp`, refusing a directory without `-r` as scp
-does; like scp it keeps a file's execute bit. The site's `workdir` is a directory under the test's own temporary tree, so a job runs
-end to end on this machine. Each shim appends its argv to a log, and reads three knobs from the
+does; like scp it keeps a file's execute bit. The site's `workdir` is a directory under the
+test's own temporary tree, so a job runs end to end on this machine. Each shim appends its argv to a log, and reads these knobs from the
 environment: `SHIM_SSH_FAIL` / `SHIM_SCP_FAIL` (a substring of the command, or `up` / `down` for
 scp's direction) makes the call exit 255 or 1 without doing anything, `SHIM_SSH_POST` is a shell
 snippet run after a command that runs the job script (to plant or lose a file),
 `SHIM_SSH_SUB` is a JSON `[pattern, replacement]` applied with `re.sub` to the job script's stdout
-(to lose, forge or alter a status line), and `SHIM_SSH_DELAY` makes the job script's call wait
-that many seconds first.
+(to lose, forge or alter a status line), `SHIM_SSH_PATH` is the PATH the job script runs under
+(to take a tool away from the "site"), and `SHIM_SSH_DELAY` makes the job script's call wait
+that many seconds first. A job script killed mid-run makes the shim exit non-zero (137 for a
+SIGKILL), where a real ssh exits 255: the rows match the stage, not the number.
 """
 
 from __future__ import annotations
@@ -463,6 +465,33 @@ class EndToEndTests(unittest.TestCase):
         self.assertIsNone(result.platform["node"])
         self.assertEqual(result.platform["cpu_model"], _local_cpu_model())
 
+    def test_a_login_banner_without_a_newline_is_not_read(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps([r"\A", "Last login: x"]))
+        self.assertTrue(result.results[0]["ok"])
+        self.assertEqual(result.platform["machine"], os.uname().machine)
+
+    def test_a_probe_answer_is_recorded_as_printed(self) -> None:
+        """A backslash sequence in a device name is not interpreted (`echo` under dash would)."""
+        result = self.h.run(self.h.request(platform_probe=("printf", "%s\n", "Dev\\c X")))
+        self.assertEqual(result.platform["gpu"], "Dev\\c X")
+
+    def test_a_probe_that_hangs_answers_none_within_its_bound(self) -> None:
+        hang = ("python3", "-c", "import time; time.sleep(60)")
+        with mock.patch.object(rx, "PROBE_TIMEOUT_SEC", 1), \
+                mock.patch.object(rx, "TRANSPORT_GRACE_SEC", 20):
+            cmd = self.h.command("run", ("true",), timeout=1)
+            result = self.h.run(self.h.request(cmd, platform_probe=hang))
+        self.assertIsNone(result.platform["gpu"])
+
+    def test_attribution_records_the_two_ids_and_nothing_else(self) -> None:
+        """As the server's `_attribution` does: an attribution key cannot overwrite a field."""
+        request = self.h.request(attribution={"orchestration_id": "o", "agent_run_id": "a",
+                                              "ok": True, "return_code": 0})
+        self.h.run(request, RUNNER_RC="3")
+        (entry,) = self.h.log_entries("run")
+        self.assertEqual((entry["ok"], entry["return_code"]), (False, 3))
+        self.assertEqual((entry["orchestration_id"], entry["agent_run_id"]), ("o", "a"))
+
     def test_a_probe_answers_the_device_and_a_failing_probe_answers_none(self) -> None:
         # Only the first line is the device: a later one is never read as a platform line.
         probe = ("sh", "-c", "echo 'Device X, 1.0'; echo 'atmofab-platform gpu second'")
@@ -494,7 +523,8 @@ class RefusalTests(unittest.TestCase):
     def test_an_existing_job_directory_is_a_stale_job_and_is_refused(self) -> None:
         Path(self.h.job).mkdir(parents=True)
         (Path(self.h.job) / "stale").write_text("old")
-        self._refused("stale job")
+        self._refused(f"create the job directory: ssh exited 1 .*a stale job directory exists: "
+                      f"{self.h.job}")
         self.assertEqual((Path(self.h.job) / "stale").read_text(), "old")
 
     def test_a_lost_status_is_refused_not_read_as_zero(self) -> None:
@@ -669,7 +699,7 @@ class RefusalTests(unittest.TestCase):
                 prog.write_text(body)
                 prog.chmod(0o755)
                 with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                            rf"'run' exited {rc or '12[67]'}: the program did not start"):
+                                            rf"'run' exited {rc or '12[67]'}: at a site that is the code of a program"):
                     h.run(h.request(ship={"bin/runner": prog}))
                 self.assertEqual(h.log_entries("run"), [])
 
@@ -685,15 +715,19 @@ class RefusalTests(unittest.TestCase):
                 self.assertEqual(h.log_entries("run"), [])
 
     def test_a_connection_failure_is_refused_with_the_stage(self) -> None:
-        self._refused("create the job directory.*ssh exited 255", SHIM_SSH_FAIL="mkdir")
+        ctx = self._refused("create the job directory: ssh exited 255", SHIM_SSH_FAIL="mkdir")
         self.assertFalse(Path(self.h.job).exists())
+        # Neither a stale directory nor one left behind: none was made.
+        self.assertNotIn("stale", str(ctx.exception))
+        self.assertNotIn("left at the site", str(ctx.exception))
 
     def test_a_failure_to_ship_is_refused(self) -> None:
         self._refused("ship the job's files: scp exited 1", SHIM_SCP_FAIL="up")
 
     def test_a_failure_to_collect_leaves_the_remote_directory_and_names_it(self) -> None:
         ctx = self._refused("collect the job directory", SHIM_SCP_FAIL="down")
-        self.assertIn(self.h.job, str(ctx.exception))
+        self.assertIn(f"the job directory is left at the site for inspection — remove "
+                      f"{self.h.job} when done", str(ctx.exception))
         self.assertTrue((Path(self.h.job) / "run" / "argv.json").is_file())
 
     def test_a_directory_that_cannot_be_removed_is_refused(self) -> None:

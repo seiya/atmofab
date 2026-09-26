@@ -57,8 +57,8 @@ A refusal is a host-side failure, not the kernel's: the conductor lets it propag
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
 fail_closed). A command that RAN and exited non-zero is not a refusal; it is reported in its
 result as the local server reports it — with one difference in the value: a command killed by a
-signal N is recorded as `128 + N`, the shell's spelling, where the local server records `-N`,
-and `timeout` adds a line about it to the command's stderr. Nothing on the Validate path reads
+signal N is recorded as `128 + N`, the shell's spelling, where the local server records `-N`
+(and when the signal dumped core, `timeout` adds a line saying so to the command's stderr). Nothing on the Validate path reads
 the number beyond `ok`. No log entry is written until every status has
 been read, so a refused job leaves no evidence behind it.
 
@@ -93,6 +93,8 @@ REMOTE_EXECUTABLES: tuple[str, ...] = ("timeout",)
 #: ssh options every transport call carries: never prompt (a prompt would hang a run), and give
 #: up on a host that does not answer.
 SSH_OPTIONS: tuple[str, ...] = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=30")
+#: Seconds the device probe may take; one that hangs answers "unknown".
+PROBE_TIMEOUT_SEC = 60
 #: Seconds a command is given to exit after its timeout sends TERM, before KILL.
 KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
@@ -145,7 +147,9 @@ class CommandSpec:
     `tag` names the command's control files; `tool_name` is the tool its log entry is recorded
     under (the validator requires the names the local path records). `argv` and `cwd` are
     REMOTE paths, and `cwd` lies under the job directory. `env` is an override set, checked with
-    the server's own `_validate_env_overrides` before anything is contacted."""
+    the server's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
+    no default: the local server's are 3600 for `run_program` and 1800 for
+    `run_quality_checks`, and the same bound is kept only by passing them."""
 
     tag: str
     tool_name: str
@@ -163,7 +167,8 @@ class JobRequest:
     file copied there (the mode is kept, so an executable stays one); `dirs` are the directories,
     relative to the job directory, created before the first command. `platform_probe` is an argv
     whose first output line identifies the site's device, when the hardware class has one;
-    `attribution` is recorded in each log entry, as the server records it. `machine` is what the
+    `attribution` is recorded in each log entry exactly as the server records it: its
+    `orchestration_id` and `agent_run_id`, and nothing else. `machine` is what the
     site's `uname -m` must answer before anything runs — by default this host's own, because the
     shipped binary was built here: a binary the site's loader cannot execute is not a result of
     the kernel, and `timeout`'s `execvp` would otherwise hand it to `sh` and report the shell's
@@ -183,8 +188,10 @@ class JobRequest:
 class JobResult:
     """`results[i]` is `commands[i]`'s result in the local server's shape, or None when an
     earlier command failed and it did not run. `platform` is `{machine, node, cpu_model, gpu}`;
-    `site_record` is `{site, host, scheduler, job_id, remote_dir, queue_wait_ms}`; `collected` is
-    the local copy of the job directory."""
+    `platform` carries no `site` key — the caller adds the site id where it records one.
+    `site_record` is `{site, host, scheduler, job_id, remote_dir, queue_wait_ms}`. `collected` is
+    the local copy of the job directory itself, so a command whose cwd was `<job_dir>/run` left
+    its output under `collected/run/`."""
 
     results: tuple[dict[str, Any] | None, ...]
     platform: dict[str, str | None]
@@ -275,7 +282,10 @@ def render_job_script(request: JobRequest) -> str:
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
-    lines = ["#!/bin/sh", "set -u", "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }",
+    # The first line printed is empty, so that a login banner printed without a newline ends
+    # there rather than gluing onto the first platform line.
+    lines = ["#!/bin/sh", "set -u", "echo",
+             "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }",
              f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
              + q(f"the site machine is not {request.machine}, which the shipped files were "
                  f"built on")]
@@ -294,10 +304,11 @@ def render_job_script(request: JobRequest) -> str:
              ("cpu", "grep -m1 'model name' /proc/cpuinfo")]
     if request.platform_probe:
         # The probe's first line when it exits 0, empty otherwise.
-        lines.append(f"g=$({shlex.join(request.platform_probe)} < /dev/null 2>/dev/null) || g=")
+        lines.append(f"g=$(timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.platform_probe)}"
+                     f" < /dev/null 2>/dev/null) || g=")
         facts.append(("gpu", "printf '%s\\n' \"$g\" | sed -n 1p"))
     for key, fact in facts:
-        lines.append(f'echo "{PLATFORM_MARKER} {key} $({fact} 2>/dev/null)"')
+        lines.append(f"printf '%s %s %s\\n' {PLATFORM_MARKER} {key} \"$({fact} 2>/dev/null)\"")
     # A command's stdin is `/dev/null`, as the ssh call's own is; not pinned, because the second
     # makes the first unobservable under test.
     lines.append("rc=0")
@@ -331,7 +342,7 @@ def _transport(argv: list[str], *, stage: str, timeout: int, remote: str) -> str
     except subprocess.TimeoutExpired:
         raise RemoteExecutionError(
             f"{stage}: {argv[0]} did not finish within {timeout} sec; the job may still be "
-            f"running and its directory is left at {remote}") from None
+            f"running ({remote})") from None
     except OSError as exc:
         raise RemoteExecutionError(f"{stage}: {argv[0]} could not be started: {exc}") from exc
     if proc.returncode != 0:
@@ -454,9 +465,23 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
 
     # 1. The job directory, fresh: `mkdir` without `-p` refuses a directory that is already there.
     parent = remote.rsplit("/", 1)[0]
-    _ssh(host, f"mkdir -p {q(parent)} && mkdir {q(remote)}",
-         stage="create the job directory (an existing one is a stale job's and is refused)",
-         timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    _ssh(host, f"if [ -e {q(remote)} ]; then echo {q(f'a stale job directory exists: {remote}')}"
+               f" >&2; exit 1; fi; mkdir -p {q(parent)} && mkdir {q(remote)}",
+         stage="create the job directory", timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    try:
+        return _run_job(request, remote=remote, stage_dir=stage_dir, collected=collected)
+    except RemoteExecutionError as exc:
+        raise RemoteExecutionError(
+            f"{exc}; the job directory is left at the site for inspection — remove {remote} "
+            f"when done") from exc
+
+
+def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
+             collected: Path) -> JobResult:
+    """`execute_job` once the job directory exists."""
+    site = request.site
+    host = str(site.host)
+    q = shlex.quote
 
     # 2. Stage and ship: the files, and the script in the control directory.
     for rel, src in request.ship.items():
@@ -488,8 +513,10 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
         if status is not None and status[0] in LAUNCH_CODES:
             tail = _read_output(ctl / f"{c.tag}.stderr", 2000).strip()[-2000:]
             raise RemoteExecutionError(
-                f"command {c.tag!r} exited {status[0]}: the program did not start at the site "
-                f"({remote}): {tail}")
+                f"command {c.tag!r} exited {status[0]}: at a site that is the code of a program "
+                f"that did not start (a missing interpreter or shared library, a program that "
+                f"cannot be executed) — or of a program that exited {status[0]} itself; its "
+                f"stderr ends: {tail or '(empty)'} ({remote})")
 
     # 6. Remove the remote directory; the evidence is local now.
     _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",
@@ -539,7 +566,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
             **({"error": result["error"]} if timed_out else {}),
             "site": {"site": site.site_id, "host": host, "scheduler": site.scheduler,
                      "job_id": None, "remote_cwd": c.cwd, "remote_command": list(c.argv)},
-            **dict(request.attribution),
+            **server._attribution(dict(request.attribution)),
         }
         server._append_command_log(c.command_log_path, entry)
         result["command_id"] = command_id
