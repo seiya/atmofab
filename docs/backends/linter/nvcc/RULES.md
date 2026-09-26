@@ -16,9 +16,10 @@
 
 ## Decision Criteria
 
-- **Exit status.** A run over sources exits 0 (clean), or 1 or 2 (findings; which of the two
-  depends on the diagnostic, see §Measurements). A refused flag also exits 1; the launch self-check is what keeps a
-  build that refuses a declared flag from reaching the gate, so the gate reads 0 / 1 / 2 as a
+- **Exit status.** A run over sources exits 0 (clean), or 1, 2 or 255 (findings; which one
+  depends on the diagnostic, see §Measurements; 255 is a device-assembler error, since
+  `-Xcompiler -fsyntax-only` stops only the host compile). A refused flag also exits 1; the launch self-check is what keeps a
+  build that refuses a declared flag from reaching the gate, so the gate reads 0 / 1 / 2 / 255 as a
   verdict and any other status as an unusable invocation.
 - **Suppression.** No flag disables an in-source diagnostic pragma, so the language backend's
   static check refuses every one (`docs/backends/language/cuda_cpp/CHECKS_ABI.md` §5).
@@ -37,6 +38,7 @@ present:
 | a variable used before it is set | 2 (`#549-D`, front end) |
 | a non-`void` function that can reach its end | non-zero (`#940-D`, front end) |
 | a `switch` over an enum missing an enumerator | non-zero (`-Werror=switch`, host compiler) |
+| a kernel over the shared-memory limit | 255 (`ptxas error`, device assembler) |
 | the clean source plus an unknown flag | 1 (`nvcc fatal : Unknown option`) |
 | the declared flags over `-x cu /dev/null` | 0 |
 

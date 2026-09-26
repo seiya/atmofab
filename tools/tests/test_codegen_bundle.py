@@ -851,6 +851,16 @@ class FieldGrammarTest(unittest.TestCase):
         self.assertEqual(max(cb._language_bundle(lang).IDENTIFIER_MAX for lang in cb.LANGUAGES),
                          cb.IDENTIFIER_MAX)
 
+    def test_a_grammar_not_in_the_portable_form_cannot_join_the_union(self) -> None:
+        class _Unanchored:
+            IDENTIFIER_PATTERN = r"[a-z]+"
+        real = cb._language_bundle
+        with mock.patch.object(cb, "LANGUAGES", ("fortran", "zzlang")), \
+                mock.patch.object(cb, "_language_bundle",
+                                  lambda lang: _Unanchored if lang == "zzlang" else real(lang)), \
+                self.assertRaises(ValueError):
+            cb._bundle_identifier_pattern()
+
     def test_two_identifier_grammars_are_a_schema_union_and_a_per_file_check(self) -> None:
         """The collapse, driven over two grammars (issue #289, R4-b PR-2).
 
@@ -878,7 +888,12 @@ class FieldGrammarTest(unittest.TestCase):
         self.addCleanup(cb._language_identifier_re.cache_clear)
         with mock.patch.object(cb, "LANGUAGES", ("fortran", "zzlang")), \
                 mock.patch.object(cb, "_language_bundle", _two_languages):
-            union = re.compile(cb._bundle_identifier_pattern())
+            union_text = cb._bundle_identifier_pattern()
+            # The union keeps the portable whole-string form, anchors outside the alternation
+            # (issue #289, R4-b PR-4: alternating whole members broke that form).
+            self.assertTrue(union_text.startswith("^(?:") and union_text.endswith(r")(?![\s\S])"),
+                            union_text)
+            union = re.compile(union_text)
             self.assertTrue(union.fullmatch("abc"))      # only fortran admits it
             self.assertTrue(union.fullmatch("_abc"))     # only zzlang admits it
             self.assertFalse(union.fullmatch("1abc"))    # neither does

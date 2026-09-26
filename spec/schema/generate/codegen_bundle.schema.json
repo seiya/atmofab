@@ -83,7 +83,7 @@
             "minLength": 1
           },
           "modules": {
-            "description": "The Fortran modules this file defines. Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
+            "description": "The modules this file defines — a language's publishing units (a Fortran module, a CUDA C++ namespace). Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
             "type": "array",
             "x-non-empty-unless-role": "runner",
             "items": {"type": "string", "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"}
@@ -106,12 +106,12 @@
         "required": ["symbol", "kind", "node_key", "defined_in", "module"],
         "properties": {
           "symbol": {
-            "description": "The published identifier (Fortran identifier grammar).",
+            "description": "The published identifier: the union of the bundle languages' identifier grammars here, and the grammar of the language of its `defined_in` file at validate_bundle.",
             "type": "string",
             "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "module": {
-            "description": "The Fortran module that publishes `symbol`, so the host renders `use <module>, only: <symbol>` mechanically. A file may define several modules or name them freely; the host never parses the source to discover which, so the bundle declares it. Fortran identifier grammar (<= 63 chars).",
+            "description": "The module (a Fortran module, a CUDA C++ namespace) that publishes `symbol`, so the host renders `use <module>, only: <symbol>` mechanically. A file may define several modules or name them freely; the host never parses the source to discover which, so the bundle declares it. Fortran identifier grammar (<= 63 chars).",
             "type": "string",
             "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },

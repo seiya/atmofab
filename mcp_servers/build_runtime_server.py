@@ -1364,18 +1364,26 @@ def syntax_compiler_executable(compiler: str) -> str:
 
 @lru_cache(maxsize=8)
 def _syntax_compiler_version(version_argv: tuple[str, ...]) -> str | None:
-    """First line of `<compiler> --version`, cached per argv. A compiler's version is
-    invariant for the process lifetime, so probe it once rather than re-spawning the
-    extra subprocess on every syntax stage and every warm-resume retry (the conductor
-    runs this tool in-process across the whole orchestration)."""
+    """The first line of `<compiler> --version` that carries a dotted version number, else its
+    first line; cached per argv. A compiler's version is invariant for the process lifetime, so
+    probe it once rather than re-spawning the extra subprocess on every syntax stage and every
+    warm-resume retry (the conductor runs this tool in-process across the whole orchestration).
+
+    The first VERSIONED line, not the first line (issue #289, R4-b PR-4): the value is the
+    `compiler_version` of the build derivation key's toolchain identity
+    (`orchestration_runtime._target_toolchain_identity`), and a compiler whose first line is its
+    NAME (one supported driver prints its name first and its release on the fourth line) would leave the key unchanged across an upgrade, reusing a binary the old compiler
+    built. For a compiler whose first line carries its version the two readings are
+    the same line, so no existing key moves."""
     try:
         proc = subprocess.run(
             list(version_argv), text=True, capture_output=True, timeout=30, check=False
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    first_line = (proc.stdout or proc.stderr or "").strip().splitlines()
-    return first_line[0].strip() if first_line else None
+    lines = [line.strip() for line in (proc.stdout or proc.stderr or "").strip().splitlines()]
+    versioned = next((line for line in lines if re.search(r"\d+\.\d+", line)), None)
+    return versioned or (lines[0] if lines else None)
 
 
 def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:

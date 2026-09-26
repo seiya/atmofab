@@ -362,7 +362,11 @@ PINNED_RENDER: dict[str, str] = {
     # gained the checks-ABI remedy sentences the bundle layer and the validator show a leaf
     # (moved verbatim out of `codegen_bundle` / `validate_pipeline_semantics`), and
     # `host_render.py` the seam functions that reach them; nothing the renderer emits changed.
-    "render-5": "1b057854dfae28e3a92eab466e1e9bcf3b0a018febe4ee0c3bf2b5a4c097aca8",
+    # Re-pinned (issue #289, R4-b PR-4), behaviour-preserving for every existing target: the
+    # conductor hands a language's control-file rules the target's `hardware.architecture` (the
+    # CUDA C++ rules put it in `-arch=`); the Fortran rules accept and do not read it, and return
+    # the identical rule set (measured: equal with and without the argument).
+    "render-5": "561bfda035d81a654613e3de30e7a25e5c26c18d18bad7d18c0f73b1a2c3129e",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

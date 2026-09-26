@@ -10,10 +10,10 @@ Stdlib only, and no import of the rest of this package.
 
 from __future__ import annotations
 
-#: The source extension a bundle file of this language may carry. ONE extension, `.cu`, and no
-#: header extension: a node's sources form one translation unit by inclusion (a consumer, and the
-#: runner, `#include` a model source by its fixed name — BUNDLE_BINDING.md §1), so there is no
-#: separately compiled declaration file for a header to be.
+#: The source extension a bundle file of this language may carry. ONE extension, `.cu`: every
+#: declaration a leaf source needs of a published surface is in the header the HOST renders
+#: (`header.py`, BUNDLE_BINDING.md §1), so a leaf ships no header — and cannot ship one under the
+#: header's name.
 SOURCE_EXTENSIONS: tuple[str, ...] = (".cu",)
 
 #: Compiler-driver program names for this language, for the `toolchain.compiler` / `linker` echo
@@ -48,7 +48,7 @@ HOST_SOURCE_EXTENSION = ".cu"
 
 
 def model_basename(spec_id: str) -> str:
-    """The node's model source, which the runner and every consumer `#include` by name."""
+    """The node's model source: the definitions of its published operations."""
     return f"{spec_id}_model{HOST_SOURCE_EXTENSION}"
 
 

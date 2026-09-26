@@ -27,9 +27,11 @@ refused by the language backend's source gate instead
 leaf-authored file this lint reads.
 
 EXIT STATUS. Measured on 13.4 with this argv (`docs/backends/linter/nvcc/RULES.md` §Measurements):
-clean 0; a finding 1 or 2 (1 for an unused parameter, an unused variable (#177-D) and a
-signed/unsigned comparison; 2 for a variable used before it is set (#549-D)); an unknown flag 1
-(`nvcc fatal : Unknown option`). A refused invocation and a finding therefore SHARE status 1, and the output is not read to tell them apart (a leaf names the
+clean 0; a finding 1, 2 or 255 (1 for an unused parameter, an unused variable (#177-D) and a
+signed/unsigned comparison; 2 for a variable used before it is set (#549-D); 255 for a device
+assembler (`ptxas`) error such as a kernel's shared memory over the limit — `-Xcompiler
+-fsyntax-only` stops the HOST compile only, and the device code is still assembled); an unknown
+flag 1 (`nvcc fatal : Unknown option`). A refused invocation and a finding therefore SHARE status 1, and the output is not read to tell them apart (a leaf names the
 files in it). What makes the status a verdict is the launch self-check: the same flags are run
 over an empty translation unit before the first leaf (`self_check_argv`), so a build that
 refuses them is refused at launch and never reaches the gate. `unusable_invocation_reason` then
@@ -129,7 +131,7 @@ def unsupported_version_reason(version_text: str | None) -> str | None:
 
 
 #: The statuses a run over sources ends in (module docstring).
-VERDICT_EXIT_CODES = frozenset({0, 1, 2})
+VERDICT_EXIT_CODES = frozenset({0, 1, 2, 255})
 
 
 def unusable_invocation_reason(returncode: int, stdout: str, stderr: str) -> str | None:

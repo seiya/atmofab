@@ -4,6 +4,6 @@
 # `tools/backends/language/cuda_cpp/prompts.py`; lines before the first header are comments.
 
 @@ interface_prototypes
-lower every `interfaces` entry into a function-pointer type alias in the model's namespace, `using <name> = <return type> (*)(<parameters>);`, as a prototype only — a declared shape, never a definition — with its parameters lowered exactly as a published procedure's are
+use the function-pointer alias the host-rendered header `<spec_id>_model.cuh` declares for every `interfaces` entry — declare no alias of your own and define no function of that name
 @@ runner_import
 `#include`

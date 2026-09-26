@@ -12,10 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 #: The suffixes the stage treats as translation units — for auto-discovery, for the source-name
-#: rule an explicit list must satisfy, and for the conductor's "no source to check" test. A
-#: model source a runner or a consumer `#include`s is also a translation unit of its own
-#: (`bundle.SOURCE_EXTENSIONS`), so every staged `.cu` is checked on its own as well.
+#: rule an explicit list must satisfy, and for the conductor's "no source to check" test. Every
+#: `.cu` is compiled on its own (BUNDLE_BINDING.md §1), so every staged `.cu` is checked on its
+#: own.
 SOURCE_SUFFIXES: tuple[str, ...] = (".cu",)
+
+#: The files copied into the stage directory: the translation units AND the host-rendered
+#: headers they include (`header.basename`), which are compiled only through their includers.
+STAGED_SUFFIXES: tuple[str, ...] = (".cu", ".cuh")
 
 #: NONE, deliberately. The warning classes a CUDA C++ source is held to are the static-lint
 #: rule set (`tools/backends/linter/nvcc/lint.py`: every host-compiler warning of `-Wall -Wextra`
@@ -27,9 +31,9 @@ PROMOTED_WARNINGS: tuple[str, ...] = ()
 
 
 def compile_order(project_dir: Path) -> list[str]:
-    """The `.cu` sources in `project_dir`, name-sorted. Each is its own translation unit and a
-    unit reaches another only by `#include`, which the compiler resolves from the directory, so
-    no order between them is needed."""
+    """The `.cu` sources in `project_dir`, name-sorted. Each is its own translation unit and
+    reaches another's surface only through a header in the same directory, so no order between
+    them is needed."""
     return sorted(
         p.name for p in project_dir.iterdir()
         if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES

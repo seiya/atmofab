@@ -21,15 +21,15 @@ states which gates are refused and why).
   (`docs/backends/linter/nvcc/RULES.md`), so the idioms are those of a warning-free build under
   `-std=c++17`: no unused parameter (mark an interface-fixed one with `(void)name;`), no unused
   variable, no signed/unsigned comparison, a `return` on every path of a non-`void` function.
-- No suppression pragma: every diagnostic-control pragma is refused by the static check
-  (`CHECKS_ABI.md` §5).
+- Only `#include` and `#pragma unroll`: every other directive, `_Pragma`, `##` and every digraph
+  is refused by the static check (`CHECKS_ABI.md` §5).
 
 ## 2. The syntax stage
 
 The mandatory syntax stage for `cuda_cpp` is
 `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -odir <scratch> -c <sources>`
-over every `.cu` of the staged directory, each its own translation unit
-(`tools/backends/compiler/nvcc/syntax.py`). It promotes no warning class: the lint rule set
+over every `.cu` of the staged directory, each its own translation unit, with the host-rendered
+header staged beside them (`STAGED_SUFFIXES`; `tools/backends/compiler/nvcc/syntax.py`). It promotes no warning class: the lint rule set
 already makes every warning an error. A failing stage is attributed by re-running the same argv
 over a canary translation unit with one kernel; a canary failure is an invocation the driver
 refuses (typically a `toolchain.standard` or `hardware.architecture` it does not know) and is a
@@ -37,10 +37,11 @@ transport `fail_closed`.
 
 ## 3. Model naming and dependency use
 
-- The model source is `<spec_id>_model.cu`, it opens with `#pragma once`, and its published
-  surface sits in `namespace <spec_id>_model` (`BUNDLE_BINDING.md` §1).
-- The runner `#include`s the model source by that name. Dependency use by a consumer model is a
-  physics node's, and is not bound (Scope).
+- The model source is `<spec_id>_model.cu`: it includes the host-rendered
+  `<spec_id>_model.cuh` and defines the published operations in `namespace <spec_id>_model`
+  (`BUNDLE_BINDING.md` §1).
+- The runner includes the same header. Dependency use by a consumer model is a physics node's,
+  and is not bound (Scope).
 
 ## 4. The parallel presence floor
 

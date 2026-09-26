@@ -20,6 +20,7 @@ from tools.backends import registry
 from tools.backends.compiler.nvcc import syntax as nvcc_syntax
 from tools.backends.language.cuda_cpp import bundle as cpp_bundle
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
+from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import lines as cpp_lines
 from tools.backends.language.cuda_cpp import signatures as cs
 from tools.backends.language.cuda_cpp import source as cpp_source
@@ -233,7 +234,8 @@ class LoweringTests(unittest.TestCase):
         self.assertEqual("struct T {\n    dp v;\n    std::vector<U> xs;\n};\n", cs.render_symbol(tdef))
         self.assertEqual("using dp = double;", cs.render_module_parameter({"name": "dp", "value": "float64"}))
         self.assertEqual("using sp = float;", cs.render_module_parameter({"name": "sp", "value": "float32"}))
-        self.assertEqual("constexpr int n = 64;", cs.render_module_parameter({"name": "n", "value": 64}))
+        self.assertEqual("inline constexpr int n = 64;",
+                         cs.render_module_parameter({"name": "n", "value": 64}))
         proto = {"kind": "subroutine", "name": "rhs", "args": [_arg("t", "real", kind="dp")]}
         self.assertEqual("using rhs = void (*)(\n    dp t);\n", cs.render_interface(proto))
         with_proc = {"kind": "subroutine", "name": "d__a",
@@ -245,18 +247,39 @@ class LoweringTests(unittest.TestCase):
             {"kind": "subroutine", "name": "d__a",
              "args": [_arg("v", "string", rank=2, len="assumed")]},
             {"kind": "subroutine", "name": "d__a",
-             "args": [_arg("v", "real", rank=1, kind="dp", intent="inout", alloc=True)]},
+             "args": [_arg("v", "real", rank=2, kind="dp", intent="inout", alloc=True)]},
             {"kind": "subroutine", "name": "d__a", "args": [_arg("b", "logical", kind="k")]},
             {"kind": "subroutine", "name": "new", "args": []},
             {"kind": "subroutine", "name": "d__a", "args": [_arg("class", "integer")]},
-            {"name": "T", "components": [{"name": "a", "rank": 1,
+            {"name": "T", "components": [{"name": "a", "rank": 2,
                                           "spec": {"type": "real", "kind": "dp"}}]},
             {"kind": "function", "name": "d__r", "args": [],
-             "result": {"name": "r", "rank": 1, "spec": {"type": "real", "kind": "dp"}}},
+             "result": {"name": "r", "rank": 2, "spec": {"type": "real", "kind": "dp"}}},
         ]
         for sig in refused:
             with self.subTest(sig=sig.get("name")), self.assertRaises(cs.SignatureParseError):
                 cs.render_symbol(sig)
+
+    def test_rank_one_numeric_arrays_that_own_their_storage_lower_to_vector(self) -> None:
+        self.assertEqual("std::vector<dp>& v", self._param(
+            _arg("v", "real", rank=1, kind="dp", intent="out", alloc=True)))
+        self.assertEqual("const std::vector<dp>& v", self._param(
+            _arg("v", "real", rank=1, kind="dp", alloc=True)))
+        self.assertEqual("struct T {\n    std::vector<dp> a;\n};\n", cs.render_symbol(
+            {"name": "T", "components": [{"name": "a", "rank": 1,
+                                          "spec": {"type": "real", "kind": "dp", "alloc": True}}]}))
+
+    def test_a_kind_naming_an_integer_valued_parameter_is_refused(self) -> None:
+        """Only a float-valued module parameter lowers to a C++ TYPE (`using dp = double;`); an
+        integer-valued one is a constant, and a kind naming it is refused in the whole-block
+        render the Compile gate makes. A kind naming no parameter renders as the name."""
+        good = {"module_parameters": [{"name": "dp", "value": "float64"}], "types": [],
+                "interfaces": [], "procedures": [
+                    {"kind": "subroutine", "name": "d__a", "args": [_arg("x", "real", kind="dp")]}]}
+        self.assertIn("void d__a(", cs.render_signatures(good))
+        self.assertIn("dp x", cs.render_signatures(dict(good, module_parameters=[])))
+        with self.assertRaises(cs.SignatureParseError):
+            cs.render_signatures(dict(good, module_parameters=[{"name": "dp", "value": "8"}]))
 
 
 class CorpusRoundTripTests(unittest.TestCase):
@@ -301,30 +324,117 @@ _HARNESS_LIKE = {
     ],
 }
 
-_GOOD_MODEL = """#pragma once
-#include <string>
-namespace atmofab { template <class T, int R> struct View { T* data; long extent[R]; }; }
+def _public_api(struct: dict) -> dict:
+    """An IR `public_api` carrying `struct` (the shape the header renderer reads)."""
+    return {"signatures": [{"symbol": s["name"], "signature": s}
+                           for s in struct["types"] + struct["procedures"]],
+            "interfaces": [{"name": i["name"], "signature": i} for i in struct["interfaces"]],
+            "module_parameters": struct["module_parameters"]}
+
+
+_HEADER = cpp_header.render("h", _public_api(_HARNESS_LIKE))
+
+_GOOD_MODEL = """#include "h_model.cuh"
 namespace h_model {
-using dp = double;
-constexpr int n = 64;
-struct h__rec {
-  std::string id;
-  dp v;
-};
-using h__cb = void (*)(dp t);
 void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok) { (void)u; cb(0.0); ok = true; }
 std::string h__emit(dp x) { (void)x; return "0"; }
 }  // namespace h_model
 """
 
 
+class RoundOneWitnessTests(unittest.TestCase):
+    """Mechanisms round 1's reviewers found unpinned (a mutant of each survived)."""
+
+    def test_a_qualified_unnamed_parameter_type_keeps_its_qualification(self) -> None:
+        self.assertEqual(("ns::Type", ""), cpp_decls.parse_param("ns::Type"))
+
+    def test_force_inline_and_a_trailing_return_type(self) -> None:
+        decls = cpp_decls.read("namespace m {\n__forceinline__ int f(int a) { return a; }\n"
+                               "auto g(int a) -> double { return a; }\n}\n")
+        returns = {f.name: f.returns for f in decls.functions}
+        self.assertEqual({"f": "int", "g": "double"}, returns)
+
+    def test_a_forward_struct_declaration_is_not_a_variable(self) -> None:
+        decls = cpp_decls.read("namespace m {\nstruct Later;\nint v;\n}\n")
+        self.assertEqual(["v"], [v.name for v in decls.variables])
+
+    def test_a_prototype_declared_twice_is_an_error(self) -> None:
+        _o, _t, _i, errors = cs.parse_interface_stanzas(
+            "using p = void (*)(int a);\nusing p = void (*)(int a);\n")
+        self.assertTrue(any("prototype 'p' is declared more than once" in e for e in errors),
+                        errors)
+
+    def test_an_identifier_ending_in_R_before_a_quote_does_not_open_a_raw_string(self) -> None:
+        text = 'call(aR"(", 1); int y{0};\n'
+        masked = cpp_lines.mask(text)
+        self.assertIn("int y{0};", masked)
+        self.assertEqual('call(aR" ", 1); int y{0};\n', masked)
+
+    def test_the_case_id_floor_reads_an_inequality_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "h_model.cu"
+            model.write_text('if (case_id != "a") { metrics[0] = x; }\n')
+            out: list[str] = []
+            cpp_source.model_source_gates(node_key="infrastructure/h@0.1.0", model_file=model,
+                                          text=model.read_text(), dep_spec_ids=[],
+                                          violations=out, multidim_spec_id=None)
+        self.assertTrue(any("hardcoded case_id -> metrics" in v for v in out), out)
+
+    def test_the_snapshot_schema_name_is_exempt(self) -> None:
+        out: list[str] = []
+        cpp_source.validate_runner_snapshot_filenames(
+            Path("r.cu"), 'std::ofstream f("raw/state_snapshots/snapshot_schema.json");\n', out)
+        self.assertEqual([], out)
+
+    def test_the_compiler_version_is_the_first_versioned_line(self) -> None:
+        """The build derivation key's `compiler_version`: a driver that prints its NAME first
+        must still be keyed by its release (the server's `_syntax_compiler_version`)."""
+        import sys
+        sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
+        import build_runtime_server as server
+        banner = (sys.executable, "-c",
+                  ("print('driver: a compiler'); print('Copyright 2005-2026');"
+                   "print('tools, release 13.4, V13.4.92')"))
+        self.assertEqual("tools, release 13.4, V13.4.92", server._syntax_compiler_version(banner))
+        plain = (sys.executable, "-c", "print('GNU Fortran 11.4.0'); print('Copyright 1.2')")
+        self.assertEqual("GNU Fortran 11.4.0", server._syntax_compiler_version(plain))
+        bare = (sys.executable, "-c", "print('no version here')")
+        self.assertEqual("no version here", server._syntax_compiler_version(bare))
+
+
+class HeaderTests(unittest.TestCase):
+    def test_the_header_declares_the_whole_surface_in_the_model_namespace(self) -> None:
+        decls = cpp_decls.read(_HEADER)
+        self.assertEqual([], decls.errors)
+        ns = ("h_model",)
+        self.assertEqual({"h__run", "h__emit"},
+                         {f.name for f in decls.functions if f.namespace == ns})
+        self.assertFalse(any(f.defined for f in decls.functions))
+        self.assertEqual(["h__rec"], [s.name for s in decls.structs if s.namespace == ns])
+        self.assertEqual({"dp", "h__cb"}, {a.name for a in decls.aliases if a.namespace == ns})
+        self.assertEqual(["n"], [v.name for v in decls.variables if v.namespace == ns])
+        self.assertIn(cpp_header.VIEW_DEFINITION, _HEADER)
+        self.assertTrue(_HEADER.splitlines()[2] == "#pragma once")
+        self.assertEqual("h_model.cuh", cpp_header.basename("h"))
+
+    def test_an_unlowerable_surface_raises(self) -> None:
+        with self.assertRaises(cs.SignatureParseError):
+            cpp_header.render("h", {"signatures": [{"symbol": "new", "signature": {
+                "kind": "subroutine", "name": "new", "args": []}}]})
+        with self.assertRaises(cs.SignatureParseError):
+            cpp_header.render("h", {"signatures": [{"symbol": "x"}]})
+
+
 class GeneratedSourcePinTests(unittest.TestCase):
-    def _violations(self, model: str, name: str = "h_model.cu") -> list[str]:
+    def _violations(self, model: str, name: str = "h_model.cu",
+                    header: str | None = _HEADER) -> list[str]:
         ops, types, ifaces, errors = cs.parse_interface_stanzas(cs.render_signatures(_HARNESS_LIKE))
         self.assertEqual([], errors)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / name
             path.write_text(model, encoding="utf-8")
+            if header is not None:
+                (Path(tmp) / "h_model.cuh").write_text(header, encoding="utf-8")
             out: list[str] = []
             cs.generated_source_violations(
                 model_files=[path], target=path, ir_kind="infrastructure", op_stanzas=ops,
@@ -336,50 +446,47 @@ class GeneratedSourcePinTests(unittest.TestCase):
         self.assertEqual([], self._violations(_GOOD_MODEL))
         respaced = _GOOD_MODEL.replace("bool& ok", "bool &ok").replace(
             "atmofab::View<dp, 1> u", "atmofab::View< dp,1 >  u")
+        self.assertNotEqual(respaced, _GOOD_MODEL)
         self.assertEqual([], self._violations(respaced))
 
+    def test_a_top_level_const_and_an_unnamed_forward_declaration_are_the_same_function(self) -> None:
+        """`void f(const dp x)` declares `void f(dp)`, and a declaration may leave its
+        parameters unnamed; both are one function with the header's declaration."""
+        variant = _GOOD_MODEL.replace("std::string h__emit(dp x)", "std::string h__emit(const dp x)")
+        variant = variant.replace(
+            "namespace h_model {\n", "namespace h_model {\nvoid h__run(atmofab::View<dp, 1>, h__cb, bool&);\n")
+        self.assertNotEqual(variant, _GOOD_MODEL)
+        self.assertEqual([], self._violations(variant))
+
     def test_each_drift_is_named(self) -> None:
+        run = "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok)"
+        emit_def = 'std::string h__emit(dp x) { (void)x; return "0"; }'
         cases = {
-            "argument order": (_GOOD_MODEL.replace(
-                "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok)",
-                "void h__run(h__cb cb, atmofab::View<dp, 1> u, bool& ok)"), "drifts from"),
-            "argument type": (_GOOD_MODEL.replace("std::string h__emit(dp x)",
-                                                  "std::string h__emit(double x)"), "drifts from"),
-            "device specifier": (_GOOD_MODEL.replace("std::string h__emit",
-                                                     "__device__ std::string h__emit"),
-                                 "drifts from"),
-            "declared only": (_GOOD_MODEL.replace(
-                "std::string h__emit(dp x) { (void)x; return \"0\"; }",
-                "std::string h__emit(dp x);"), "never DEFINES"),
-            "missing": (_GOOD_MODEL.replace(
-                "std::string h__emit(dp x) { (void)x; return \"0\"; }", ""),
-                "does not declare controlled_spec §5.1 procedure 'h__emit'"),
+            "argument order": (_GOOD_MODEL.replace(run, "void h__run(h__cb cb, atmofab::View<dp, 1> u, bool& ok)"),
+                               "different signatures"),
+            "argument name": (_GOOD_MODEL.replace("h__cb cb, bool& ok) { (void)u; cb(0.0)",
+                                                  "h__cb f, bool& ok) { (void)u; f(0.0)"),
+                              "drifts from"),
+            "argument type": (_GOOD_MODEL.replace("std::string h__emit(dp x)", "std::string h__emit(double x)"),
+                              "different signatures"),
+            "device specifier": (_GOOD_MODEL.replace("std::string h__emit", "__device__ std::string h__emit"),
+                                 "different signatures"),
+            "vendor attribute": (_GOOD_MODEL.replace("std::string h__emit",
+                                                     "__attribute__((device)) std::string h__emit"),
+                                 "never DEFINED"),
+            "declared only": (_GOOD_MODEL.replace(emit_def, ""), "never DEFINED"),
             "outside the namespace": (_GOOD_MODEL.replace(
-                "std::string h__emit(dp x) { (void)x; return \"0\"; }\n}  // namespace h_model",
-                "}  // namespace h_model\nstd::string h__emit(dp x) { (void)x; return \"0\"; }"),
-                "declared outside namespace"),
-            "member order": (_GOOD_MODEL.replace("  std::string id;\n  dp v;",
-                                                 "  dp v;\n  std::string id;"), "type 'h__rec' drifts"),
-            "extra member": (_GOOD_MODEL.replace("  dp v;\n", "  dp v;\n  int extra;\n"),
-                             "type 'h__rec' drifts"),
-            "prototype drift": (_GOOD_MODEL.replace("using h__cb = void (*)(dp t);",
-                                                    "using h__cb = void (*)(double t);"),
-                                "prototype 'h__cb' drifts"),
-            "prototype missing": (_GOOD_MODEL.replace("using h__cb = void (*)(dp t);",
-                                                      "typedef int h__cb;"),
-                                  "does not declare the controlled_spec §5.1 prototype"),
+                emit_def + "\n}  // namespace h_model",
+                "}  // namespace h_model\n" + emit_def), "never DEFINED"),
             "prototype defined": (_GOOD_MODEL.replace(
                 "}  // namespace h_model", "void h__cb(dp t) { (void)t; }\n}  // namespace h_model"),
                 "DEFINES 'h__cb'"),
-            "parameter value": (_GOOD_MODEL.replace("constexpr int n = 64;", "constexpr int n = 32;"),
-                                "missing the §5.1 module parameter declaration `constexpr int n = 64;`"),
-            "parameter twice": (_GOOD_MODEL.replace("constexpr int n = 64;",
-                                                    "constexpr int n = 64;\nconst int n = 64;"),
-                                "binds the §5.1 module parameter `n` 2 times"),
-            "overload": (_GOOD_MODEL.replace("}  // namespace h_model",
-                                             "std::string h__emit(int x) { (void)x; return \"\"; }\n"
-                                             "}  // namespace h_model"),
-                         "different signatures"),
+            "parameter again": (_GOOD_MODEL.replace(
+                "namespace h_model {\n", "namespace h_model {\ninline constexpr int n = 64;\n"),
+                "is bound 2 times"),
+            "type again": (_GOOD_MODEL.replace(
+                "namespace h_model {\n", "namespace h_model {\nstruct h__rec { int x; };\n"),
+                "defined more than once"),
         }
         for label, (model, needle) in cases.items():
             with self.subTest(label=label):
@@ -387,26 +494,34 @@ class GeneratedSourcePinTests(unittest.TestCase):
                 found = self._violations(model)
                 self.assertTrue(any(needle in v for v in found), (needle, found))
 
-    def test_a_declaration_may_leave_parameters_unnamed(self) -> None:
-        """C++ lets a declaration name its parameters differently from its definition, or not
-        at all; the two are one function, compared by the DEFINITION's names."""
-        forward = _GOOD_MODEL.replace(
-            "struct h__rec {", "void h__run(atmofab::View<dp, 1>, h__cb, bool&);\nstruct h__rec {")
-        self.assertNotEqual(forward, _GOOD_MODEL)
-        self.assertEqual([], self._violations(forward))
+    def test_a_header_that_is_not_the_surface_is_named(self) -> None:
+        """What the host wrote is pinned too: a header not rendered from this node's IR drifts."""
+        cases = {
+            "parameter": (_HEADER.replace("inline constexpr int n = 64;", "inline constexpr int n = 32;"),
+                          "module parameter declaration `inline constexpr int n = 64;` is not"),
+            "member": (_HEADER.replace("    dp v;\n", "    dp v;\n    int extra;\n"),
+                       "type 'h__rec'"),
+            "prototype": (_HEADER.replace("using h__cb = void (*)(\n    dp t);",
+                                          "using h__cb = void (*)(\n    double t);"),
+                          "prototype 'h__cb'"),
+            "declaration": (_HEADER.replace("void h__run(", "void h__run_x("),
+                            "procedure 'h__run' is not declared"),
+        }
+        for label, (header, needle) in cases.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(header, _HEADER, "the fixture edit did not apply")
+                found = self._violations(_GOOD_MODEL.replace("h__run(", "h__run_x(")
+                                         if label == "declaration" else _GOOD_MODEL, header=header)
+                self.assertTrue(any(needle in v for v in found), (needle, found))
 
-    def test_the_parameter_pin_ignores_spacing(self) -> None:
-        self.assertEqual([], self._violations(_GOOD_MODEL.replace(
-            "constexpr int n = 64;", "constexpr int n=64;")))
+    def test_a_missing_header_is_named(self) -> None:
+        found = self._violations(_GOOD_MODEL, header=None)
+        self.assertTrue(any("is not beside the model source" in v for v in found), found)
 
     def test_a_type_defined_twice_is_an_error(self) -> None:
         _o, _t, _i, errors = cs.parse_interface_stanzas(
             "struct T { int a; };\nnamespace { }\nstruct T { int a; };\n")
         self.assertTrue(any("type 'T' is defined more than once" in e for e in errors), errors)
-
-    def test_no_namespace_of_the_file_stem(self) -> None:
-        found = self._violations(_GOOD_MODEL, name="other_model.cu")
-        self.assertTrue(any("opens no namespace `other_model`" in v for v in found), found)
 
     def test_one_publisher_only(self) -> None:
         ops, types, ifaces, _e = cs.parse_interface_stanzas(cs.render_signatures(_HARNESS_LIKE))
@@ -437,20 +552,51 @@ class DependencyInterfaceTests(unittest.TestCase):
 
 
 class SourceGateTests(unittest.TestCase):
-    def test_each_suppression_form_is_refused_and_a_comment_is_not(self) -> None:
-        forms = ["#pragma nv_diag_suppress 177", "  # pragma diag_suppress 550",
-                 "#pragma GCC diagnostic ignored \"-Wunused\"", "#pragma clang diagnostic push",
-                 "#pragma warning(disable: 4100)", "_Pragma(\"GCC diagnostic ignored \\\"-Wall\\\"\")",
-                 "__pragma(warning(disable:1))", "#pragma nv_diagnostic push"]
-        for form in forms:
-            with self.subTest(form=form):
-                self.assertEqual(1, len(cpp_source.suppression_violations(Path("x.cu"), form + "\n")))
-        self.assertEqual([], cpp_source.suppression_violations(
-            Path("x.cu"), "// #pragma GCC diagnostic ignored\n#pragma once\n"
-                          "const char* s = \"#pragma nv_diag_suppress\";\n"
-                          "/*\n#pragma GCC diagnostic ignored \"-Wall\"\n*/\n"
-                          "// _Pragma(\"GCC diagnostic ignored\")\n"
-                          "const char* u = \"_Pragma(\";\n"))
+    def test_the_preprocessor_allowlist(self) -> None:
+        """Each spelling round 1 of the review used to silence a lint finding past the old
+        denylist is refused, as are the conditional and the macro the §5.1 pin could not see
+        through; the two permitted directives, and every forbidden spelling inside a comment or a
+        literal, are not."""
+        refused = {
+            "diagnostic pragma": "#pragma GCC diagnostic ignored \"-Wunused-parameter\"\n",
+            "nv pragma": "#pragma nv_diag_suppress 177\n",
+            "continued pragma": "#pragma GCC diag\\\nnostic ignored \"-Wall\"\n",
+            "digraph directive": "%:pragma nv_diag_suppress 177\n",
+            "operator on two lines": "_Pragma\n(\"nv_diag_suppress 177\")\n",
+            "pasted operator": "#define CAT(a,b) a##b\nCAT(_Pra,gma)(\"nv_diag_suppress 177\")\n",
+            "linemarker": "# 1 \"/usr/include/fake.h\" 3\n",
+            "line directive": "#line 10 \"x.cu\"\n",
+            "hd warning": "#pragma hd_warning_disable\n",
+            "exec check": "#pragma nv_exec_check_disable\n",
+            "conditional": "#if 0\nint hidden();\n#endif\n",
+            "macro": "#define NS h_model\n",
+            "once": "#pragma once\n",
+            "__pragma": "__pragma(warning(disable:1))\n",
+            "brace digraph": "namespace h_model <% void f(); %>\n",
+            "bracket digraph": "int a<:2:>;\n",
+        }
+        for label, text in refused.items():
+            with self.subTest(label=label):
+                self.assertTrue(cpp_source.preprocessor_violations(Path("x.cu"), text), text)
+        self.assertEqual([], cpp_source.preprocessor_violations(
+            Path("x.cu"),
+            '#include "h_model.cuh"\n#include <cstdio>\n  #  include <vector>\n'
+            "#pragma unroll\n#pragma unroll 4\n"
+            "// #pragma GCC diagnostic ignored\n"
+            "const char* s = \"#pragma nv_diag_suppress ## %: <%\";\n"
+            "/*\n#pragma GCC diagnostic ignored \"-Wall\"\n*/\n"
+            "// _Pragma(\"GCC diagnostic ignored\")\n"
+            "std::vector<::std::string> v;\nint y = a ? b : c;\n"))
+
+    def test_every_leaf_source_at_any_depth_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sub").mkdir()
+            for name in ("h_model.cu", "sub/quiet.cu", "h_model.cuh", "notes.txt"):
+                (root / name).write_text("")
+            (root / "link.cu").symlink_to(root / "h_model.cu")
+            self.assertEqual([root / "h_model.cu", root / "sub" / "quiet.cu"],
+                             cpp_source.leaf_sources(root))
 
     def test_counted_loops_read_code_only(self) -> None:
         text = ("for (int i = 0; i < n; ++i) {}\nfor (auto& x : v) {}\n"
@@ -482,7 +628,8 @@ class SourceGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / "h_model.cu"
             model.write_text(literal + branch)
-            (Path(tmp) / "h_runner.cu").write_text("#pragma GCC diagnostic ignored \"-Wall\"\n")
+            (Path(tmp) / "sub").mkdir()
+            (Path(tmp) / "sub" / "quiet.cu").write_text("#pragma GCC diagnostic ignored \"-Wall\"\n")
             out: list[str] = []
             cpp_source.model_source_gates(node_key="infrastructure/h@0.1.0", model_file=model,
                                           text=model.read_text(), dep_spec_ids=[], violations=out,
@@ -490,7 +637,7 @@ class SourceGateTests(unittest.TestCase):
             joined = "\n".join(out)
             self.assertIn("many literal metric assignments", joined)
             self.assertIn("hardcoded case_id -> metrics", joined)
-            self.assertIn("h_runner.cu:1: in-source diagnostic suppression", joined)
+            self.assertIn("quiet.cu:1: preprocessor directive `#pragma GCC diagnostic", joined)
             self.assertNotIn("not implemented", joined)
             out = []
             cpp_source.model_source_gates(node_key="component/c@0.1.0", model_file=model,
@@ -551,7 +698,8 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertIsNotNone(nvcc_lint.unsupported_version_reason("Copyright (c) 2005-2026"))
         for rc in (0, 1, 2):
             self.assertIsNone(nvcc_lint.unusable_invocation_reason(rc, "", ""))
-        self.assertIsNotNone(nvcc_lint.unusable_invocation_reason(255, "", ""))
+        self.assertIsNone(nvcc_lint.unusable_invocation_reason(255, "", ""))  # a ptxas error
+        self.assertIsNotNone(nvcc_lint.unusable_invocation_reason(3, "", ""))
         self.assertEqual(("-x", "cu", "/dev/null"), nvcc_lint.self_check_argv("/x")[-3:])
         self.assertIsNone(nvcc_lint.self_check_reason(0, "", ""))
         self.assertIsNotNone(nvcc_lint.self_check_reason(1, "", ""))
@@ -582,8 +730,11 @@ class ToolAdapterTests(unittest.TestCase):
                            "source_reading", "signatures"):
             with self.subTest(capability=capability):
                 registry.capability_module("language", "cuda_cpp", capability)
-        for capability in ("runner_render", "control_file"):
-            self.assertFalse(registry.provides("language", "cuda_cpp", capability))
+        self.assertFalse(registry.provides("language", "cuda_cpp", "runner_render"))
+        for capability in ("control_file", "interface_header"):
+            with self.subTest(capability=capability):
+                registry.capability_module("language", "cuda_cpp", capability)
+        self.assertFalse(registry.provides("language", "fortran", "interface_header"))
         self.assertEqual("nvcc", registry.linter_for_language("cuda_cpp"))
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         self.assertEqual({"interface_prototypes", "runner_import"},
@@ -700,6 +851,87 @@ class RealDriverTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in pathlib.Path(tmp).iterdir()),
                              sorted([".m", nvcc_syntax.CANARY_FILENAME]))
 
+
+    def test_every_rendered_header_in_the_tree_is_lint_clean(self) -> None:
+        """The host-rendered header is CONTEXT to the lint (a leaf source includes it), so a
+        warning in it would be charged to the leaf: every §5.1 in spec/ renders to a header a
+        source including it lints clean under the declared rule set."""
+        specs = sorted(p for p in (REPO_ROOT / "spec").rglob("controlled_spec.md") if _section51(p))
+        for path in specs:
+            with self.subTest(spec=path.parent.name):
+                struct, _err = cs.load_structured_signatures(_section51(path))
+                spec_id = path.parent.name
+                with tempfile.TemporaryDirectory() as tmp:
+                    (Path(tmp) / cpp_header.basename(spec_id)).write_text(
+                        cpp_header.render(spec_id, _public_api(struct)))
+                    (Path(tmp) / "x.cu").write_text(f'#include "{cpp_header.basename(spec_id)}"\n')
+                    proc = subprocess.run(list(nvcc_lint.source_argv(["./x.cu"])), cwd=tmp,
+                                          capture_output=True, text=True, check=False)
+                    self.assertEqual(0, proc.returncode, proc.stderr[-2000:])
+
+    def test_a_harness_shaped_node_passes_every_gate_and_builds(self) -> None:
+        """The whole local path of a `cuda_cpp` harness, with the real driver: the host header and
+        Makefile, a leaf model and runner written to the binding, the preprocessor allowlist, the
+        §5.1 pin, the lint and the syntax stage through the build-runtime server, then `make`."""
+        import sys
+
+        from tools.backends import registry
+        from tools.codegen_bundle import derive_build_graph
+        sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
+        import build_runtime_server as server
+
+        model = ('#include <cstdio>\n#include "h_model.cuh"\nnamespace h_model {\n'
+                 "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok) {\n"
+                 "  for (long i = 0; i < u.extent[0]; ++i) { u.data[i] += 1.0; }\n"
+                 "  cb(0.0);\n  ok = true;\n}\n"
+                 "std::string h__emit(dp x) {\n  char buf[32];\n"
+                 '  std::snprintf(buf, sizeof buf, "%.16e", x);\n  return buf;\n}\n'
+                 "}  // namespace h_model\n")
+        runner = ('#include <cstdio>\n#include "h_model.cuh"\n'
+                  "static void on_step(h_model::dp t) { (void)t; }\n"
+                  "int main(int argc, char** argv) {\n  (void)argc;\n  (void)argv;\n"
+                  "  double d[2] = {0.0, 0.0};\n"
+                  "  atmofab::View<h_model::dp, 1> v{d, {2}};\n  bool ok = false;\n"
+                  "  h_model::h__run(v, on_step, ok);\n"
+                  "  std::puts(h_model::h__emit(d[0]).c_str());\n  return ok ? 0 : 1;\n}\n")
+        doc = {"optimization_unit": {"members": ["infrastructure/h@0.1.0"]}, "files": [
+            {"logical_path": "h_model.cu", "role": "model", "language": "cuda_cpp",
+             "member_node_key": "infrastructure/h@0.1.0", "content": model, "modules": ["h_model"]},
+            {"logical_path": "h_runner.cu", "role": "runner", "language": "cuda_cpp",
+             "member_node_key": "infrastructure/h@0.1.0", "content": runner, "modules": []}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            src.mkdir()
+            for entry in doc["files"]:
+                (src / entry["logical_path"]).write_text(entry["content"])
+            (src / "h_model.cuh").write_text(_HEADER)
+            for path in cpp_source.leaf_sources(src):
+                self.assertEqual([], cpp_source.preprocessor_violations(path, path.read_text()))
+            ops, types, ifaces, _e = cs.parse_interface_stanzas(cs.render_signatures(_HARNESS_LIKE))
+            pin: list[str] = []
+            cs.generated_source_violations(
+                model_files=[src / "h_model.cu"], target=src / "h_model.cu",
+                ir_kind="infrastructure", op_stanzas=ops, type_stanzas=types,
+                proto_stanzas=ifaces, module_parameters=_HARNESS_LIKE["module_parameters"],
+                violations=pin)
+            self.assertEqual([], pin)
+            lint = server.tool_run_linter({"preset": "nvcc", "project_dir": str(src)})
+            self.assertTrue(lint["ok"], lint.get("stderr"))
+            syntax = server.tool_run_syntax_check({
+                "compiler": "nvcc", "std": "c++17", "architecture": "sm_90",
+                "project_dir": str(src)})
+            self.assertTrue(syntax["ok"] and not syntax["skipped"], syntax.get("stderr"))
+            graph = derive_build_graph(doc, toolchain={"language": "cuda_cpp", "compiler": "nvcc"})
+            rules = registry.capability_module("language", "cuda_cpp", "control_file").rules(
+                standard="c++17", parallel_backend="cuda", architecture="sm_90")
+            makefile = registry.capability_module("build_system", "make", "control_file") \
+                .render_from_graph(rules=rules, compiler="nvcc", bin_name="h_runner",
+                                   cases_default="c1", graph=graph)
+            (src / "Makefile").write_text(makefile)
+            build = subprocess.run(["make", "OBJDIR=../obj", "BINDIR=../bin", "all"], cwd=src,
+                                   capture_output=True, text=True, check=False, timeout=600)
+            self.assertEqual(0, build.returncode, build.stdout[-2000:] + build.stderr[-2000:])
+            self.assertTrue((Path(tmp) / "bin" / "h_runner").is_file())
 
 if __name__ == "__main__":
     unittest.main()

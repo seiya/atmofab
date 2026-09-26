@@ -20,6 +20,10 @@ from pathlib import Path
 #: refuses.
 SOURCE_SUFFIXES: tuple[str, ...] = (".f90", ".f95", ".f03", ".f08")
 
+#: The files copied into the stage directory: the sources themselves (nothing a Fortran source
+#: needs is a separate file of another suffix — a dependency's module is its staged source).
+STAGED_SUFFIXES: tuple[str, ...] = SOURCE_SUFFIXES
+
 #: The warning classes promoted to errors over the whole staged set, spelled as the language's
 #: mandatory syntax compiler (`bundle.MANDATORY_SYNTAX_COMPILER`) takes them. `-Werror=<class>`
 #: self-enables the warning, so no companion `-W<class>` is needed.

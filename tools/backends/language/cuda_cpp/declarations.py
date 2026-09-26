@@ -145,27 +145,55 @@ _PARAM_RE = re.compile(rf"^(?P<type>.*?)(?P<name>{_IDENT})\s*(?P<arr>(?:\[[^\]]*
                        re.DOTALL)
 
 
-def parse_param(text: str) -> tuple[str, str]:
-    """One parameter as `(normalized type, name)`; `name` is "" when it is unnamed. A default
-    argument is dropped."""
+def _drop_top_level_const(ctype: str) -> str:
+    """A BY-VALUE parameter's type without a top-level `const`, which is not part of a function's
+    type (`void f(const double x)` declares `void f(double)`); a reference or a pointer keeps its
+    `const`, which is."""
+    if ctype.endswith(("&", "*")):
+        return ctype
+    if ctype.endswith("*const"):
+        return ctype[:-len("const")]  # `T* const` (normalized `T*const`): a const pointer value
+    ctype = ctype.removesuffix(" const")
+    return ctype.removeprefix("const ")
+
+
+def parse_param(text: str, *, function_parameter: bool = False) -> tuple[str, str]:
+    """One parameter (or data member) as `(normalized type, name)`; `name` is "" when it is
+    unnamed. A default argument is dropped. For a FUNCTION parameter a top-level `const` is
+    dropped too (`_drop_top_level_const`); a data member keeps it, since there it is part of the
+    member's type."""
     parts = split_top_level(text, "=")
     text = parts[0].strip()
     m = _PARAM_RE.match(text)
     if m and m.group("type").strip() and not m.group("type").rstrip().endswith("::") \
             and m.group("name") not in _TYPE_WORDS:
-        return normalize(m.group("type") + m.group("arr")), m.group("name")
-    return normalize(text), ""
+        ctype, name = normalize(m.group("type") + m.group("arr")), m.group("name")
+    else:
+        ctype, name = normalize(text), ""
+    return (_drop_top_level_const(ctype) if function_parameter else ctype), name
 
 
 def parse_params(text: str) -> tuple[tuple[str, str], ...]:
     """A parameter list's contents as `(type, name)` pairs; `()` and `(void)` are empty."""
     if not text.strip() or normalize(text) == "void":
         return ()
-    return tuple(parse_param(p) for p in split_top_level(text))
+    return tuple(parse_param(p, function_parameter=True) for p in split_top_level(text))
 
 
 def _strip_attributes(text: str) -> str:
     return _ATTRIBUTE_RE.sub(" ", text)
+
+
+#: A STANDARD attribute (`[[nodiscard]]`, `[[maybe_unused]]`): it changes neither how a function
+#: is called nor where it runs, so it is dropped before a function head is read. A vendor
+#: attribute (`__attribute__((...))`, `__declspec(...)`, `__launch_bounds__(...)`) is NOT dropped
+#: there — `__attribute__((device))` is what `__device__` expands to — so it stays in the head
+#: the §5.1 pin compares, or keeps the head from being read at all (a refusal either way).
+_STANDARD_ATTRIBUTE_RE = re.compile(r"\[\[.*?\]\]", re.DOTALL)
+
+
+def _strip_standard_attributes(text: str) -> str:
+    return _STANDARD_ATTRIBUTE_RE.sub(" ", text)
 
 
 _NAMESPACE_RE = re.compile(rf"^\s*(?:inline\s+)?namespace\s*(?P<name>{_IDENT}(?:\s*::\s*{_IDENT})*)?\s*$")
@@ -182,7 +210,7 @@ def _function_from(head_and_params: str, qualifiers: str, namespace: tuple[str, 
                    defined: bool, line: int) -> Function | None:
     """A function from the statement text up to and including its parameter list, or None when
     the statement is not a function declarator."""
-    text = _strip_attributes(head_and_params)
+    text = _strip_standard_attributes(head_and_params)
     open_at = text.find("(")
     if open_at < 0 or len(split_top_level(text[:open_at], "=")) > 1:
         return None
@@ -334,8 +362,9 @@ def read(text: str) -> Declarations:
             elif stripped.startswith("enum") or "(" not in stripped:
                 pass  # an enum, or a brace-initialized variable (read at its `;` below)
             else:
-                close = stripped.rfind(")")
-                fn = _function_from(stripped[:close + 1], stripped[close + 1:], namespace(),
+                head_text = _strip_standard_attributes(item).strip()
+                close = head_text.rfind(")")
+                fn = _function_from(head_text[:close + 1], head_text[close + 1:], namespace(),
                                     True, line)
                 if fn is not None:
                     out.functions.append(fn)
@@ -391,9 +420,10 @@ def _statement(raw: str, namespace: tuple[str, ...], line: int, out: Declaration
         return  # a forward declaration
     before_eq = split_top_level(text, "=")[0]
     if "(" in before_eq and not re.search(r"\{", before_eq):
-        close = _last_param_close(text)
+        head_text = _strip_standard_attributes(raw).strip()
+        close = _last_param_close(head_text)
         if close > 0:
-            fn = _function_from(text[:close], text[close:], namespace, False, line)
+            fn = _function_from(head_text[:close], head_text[close:], namespace, False, line)
             if fn is not None:
                 out.functions.append(fn)
                 return

@@ -8,8 +8,8 @@ WHAT IS IMPLEMENTED, AND WHAT IS REFUSED. This backend serves the node that R4-b
 The gates such a node reaches are implemented in full: the build control file's source facts
 (`MODULE_SOURCE_SUFFIXES`, `source_module_deps`), the runner scans
 (`validate_runner_json_serialization`, `validate_runner_snapshot_filenames`), the model gates
-every node gets (`model_source_gates`: the literal-metric floors and the in-source suppression
-refusal), the loop count the parallel presence floor reads (`counted_loops`), and the absent-model
+every node gets (`model_source_gates`: the literal-metric floors and the preprocessor
+allowlist), the loop count the parallel presence floor reads (`counted_loops`), and the absent-model
 remedy. The gates only a PHYSICS node reaches — the checks module's ABI facts and isolation, the
 `problem` model gates, the dependency-call gates — are a later change's (the runner this language
 renders over the harness does not exist yet, so neither does the checks ABI it would call). A
@@ -58,37 +58,70 @@ MODULE_ARTIFACT_SUFFIX: str | None = None
 
 def source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
     """The object-level dependency edges between `src_files`, by stem: NONE. A source reaches
-    another only by `#include`, which puts the included source INTO the including translation
-    unit (BUNDLE_BINDING.md §1), so no object of one is a prerequisite of another's; the compiler,
-    not the control file, tracks what an object was built from."""
+    another's surface through its host-rendered HEADER (BUNDLE_BINDING.md §1), which compiling
+    needs and no object does, so no object of one is a prerequisite of another's compile; the
+    objects meet at link."""
     return {path.stem: set() for path in src_files}
 
 
-# --- in-source suppression ----------------------------------------------------------------------
+# --- the preprocessor surface of a leaf-authored source ---------------------------------------
+#
+# An ALLOWLIST, not a list of suppression spellings. A leaf-authored source may use exactly two
+# directives — `#include "<file>"` / `#include <header>` and `#pragma unroll [<n>]` — and no
+# `_Pragma` / `__pragma` operator, no `##` token pasting and no digraph; everything else is refused
+# by presence. Round 1 of this change's review measured why a denylist of suppression pragmas
+# cannot hold: a line continuation inside the directive, the `%:` digraph for `#`, `_Pragma` with
+# its argument on the next line, a `_Pragma` built by `##` pasting, and a GNU linemarker
+# (`# 1 "f" 3`, which makes what follows a system header whose warnings are not reported) each
+# silenced a lint finding with the denylist green, and `#pragma hd_warning_disable` /
+# `nv_exec_check_disable` were two more pragmas it did not list. The same allowlist closes the §5.1
+# pin's blind spots on text the compiler never reads (`#if 0`) or reads otherwise (`#define NS
+# h_model`, `#define double float`): with no conditional and no macro, the reader and the compiler
+# see one program. No flag of the CUDA compiler driver disables an in-source diagnostic pragma,
+# which is why this is a source rule and not a lint flag.
 
-# A diagnostic-control pragma, by whichever front end reads it, and the operator form `_Pragma`.
-_SUPPRESSION_RE = re.compile(
-    r"^[ \t]*#[ \t]*pragma[ \t]+(?:GCC[ \t]+diagnostic|clang[ \t]+diagnostic|nv_diag\w*|diag_\w+"
-    r"|warning)\b|\b_Pragma[ \t]*\(|\b__pragma[ \t]*\(",
-    re.MULTILINE)
+_ALLOWED_DIRECTIVE_RE = re.compile(
+    r'^include[ \t]*(?:"[^"\n]*"|<[^>\n]*>)[ \t]*$|^pragma[ \t]+unroll(?:[ \t]+\d+)?[ \t]*$')
+_DIRECTIVE_RE = re.compile(r"^[ \t]*#(?P<body>.*)$", re.MULTILINE)
+# `<:` is a digraph except in `<::` not followed by `:` or `>` (the lexer's own special case).
+_FORBIDDEN_TOKEN_RE = re.compile(r"\b_Pragma\b|\b__pragma\b|##|%:|<%|%>|<:(?!:(?![:>]))|:>")
 
 
-def suppression_violations(path: Path, text: str) -> list[str]:
-    """A diagnostic-suppression pragma in a leaf-authored source is refused: no flag of the CUDA
-    compiler driver disables it, so the static-lint rule set (`tools/backends/linter/nvcc`) would
-    otherwise be the source's to switch off. Read over the CODE (a pragma named in a comment is
-    not one); `_Pragma("...")`'s argument is a literal, so the operator itself is what matches."""
-    code = cpp_lines.mask(text)
-    source_lines = text.split("\n")
+def splice_lines(text: str) -> str:
+    """`text` with every backslash-newline removed — the translation phase that joins a continued
+    line before any directive or token is recognized."""
+    return re.sub(r"\\\r?\n", "", text)
+
+
+def preprocessor_violations(path: Path, text: str) -> list[str]:
+    """The allowlist above, over the CODE of `text` after line splicing (a directive or a token
+    inside a comment or a literal is not one). Line numbers are those of the spliced text."""
+    code = cpp_lines.mask(splice_lines(text))
     out: list[str] = []
-    for m in _SUPPRESSION_RE.finditer(code):
-        line = cpp_lines.line_of(code, m.start())
+    for m in _DIRECTIVE_RE.finditer(code):
+        body = m.group("body").strip()
+        if not _ALLOWED_DIRECTIVE_RE.match(body):
+            out.append(
+                f"{path}:{cpp_lines.line_of(code, m.start())}: preprocessor directive "
+                f"`#{body[:60]}` is refused — a leaf-authored source may use only `#include` and "
+                "`#pragma unroll` (no macro, no conditional, no other pragma: a suppression "
+                "pragma would switch the static lint off, and a macro or a conditional would make "
+                "the §5.1 pin read another program than the compiler builds)")
+    for m in _FORBIDDEN_TOKEN_RE.finditer(code):
         out.append(
-            f"{path}:{line}: in-source diagnostic suppression `{source_lines[line - 1].strip()}` "
-            "is refused — the static lint and syntax gates judge the source as written, so fix "
-            "the finding instead (an interface-fixed parameter the body does not read is marked "
-            "with `(void)name;`)")
+            f"{path}:{cpp_lines.line_of(code, m.start())}: `{m.group(0)}` is refused — a "
+            "leaf-authored source uses no `_Pragma` / `__pragma` operator, no `##` and no "
+            "digraph (write `#pragma unroll` as a directive, and spell `#`, `{`, `}`, `[`, `]` "
+            "plainly)")
     return out
+
+
+def leaf_sources(src_dir: Path) -> list[Path]:
+    """Every regular `.cu` file under `src_dir`, at any depth (a bundle file may sit in a
+    subdirectory and be included from there), symbolic links not followed."""
+    return sorted(p for p in src_dir.rglob("*")
+                  if p.is_file() and not p.is_symlink()
+                  and p.suffix.lower() in MODULE_SOURCE_SUFFIXES)
 
 
 # --- the model gates every node gets ------------------------------------------------------------
@@ -112,9 +145,10 @@ def model_source_gates(
 
     Every node: the case-id-keyed metric floor (a `case_id` comparison beside a literal-indexed
     `metrics[...]`), the literal-metric floor (six or more `metrics[<n>] = <literal>`
-    assignments), and the in-source suppression refusal — the last over EVERY `.cu` of the model's
-    source directory, because a pragma in a file the model or runner includes reaches the gates
-    through it. A physics node's model gates are refused (module docstring)."""
+    assignments), and the preprocessor allowlist (`preprocessor_violations`) — the last over EVERY
+    `.cu` under the model's source directory at any depth (`leaf_sources`), because a directive in
+    a file the model or runner includes reaches the gates through it. A physics node's model gates
+    are refused (module docstring)."""
     del dep_spec_ids, multidim_spec_id  # read by the physics gates only
     code = cpp_lines.mask(text)
     if _CASE_BRANCH_RE.search(code) and _METRIC_INDEX_RE.search(code):
@@ -126,12 +160,10 @@ def model_source_gates(
         violations.append(
             f"{model_file}: many literal metric assignments detected "
             f"({literal_like}/{len(assignments)})")
-    sources = sorted(p for p in model_file.parent.iterdir()
-                     if p.is_file() and p.suffix.lower() in MODULE_SOURCE_SUFFIXES)
-    for source in sources:
+    for source in leaf_sources(model_file.parent):
         source_text = (text if source == model_file
                        else source.read_text(encoding="utf-8", errors="ignore"))
-        violations.extend(suppression_violations(source, source_text))
+        violations.extend(preprocessor_violations(source, source_text))
     if not node_key.startswith("infrastructure/"):
         violations.append(f"{model_file}: {_PHYSICS_REFUSAL}")
 
@@ -168,9 +200,8 @@ def validate_runner_json_serialization(
     floating-point conversion in a format literal, and the `std::hexfloat` stream manipulator.
     `text` arrives lowercased from the validator, so `%A` reads as `%a`. Descriptor-syntactic like
     the Fortran scan: a runtime fixup does not pass, and a spelling this does not list is the
-    runtime deliverable gate's (every runner document must parse as JSON). A suppression pragma
-    in the runner is refused by `model_source_gates`, which reads every source beside the
-    model."""
+    runtime deliverable gate's (every runner document must parse as JSON). A preprocessor
+    directive in the runner is judged by `model_source_gates`, which reads every leaf source."""
     for lineno, literal in cpp_lines.literals(text):
         for m in _CONVERSION_RE.finditer(literal):
             if m.group(1) == "a":

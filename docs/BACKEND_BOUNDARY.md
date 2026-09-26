@@ -209,13 +209,21 @@ together with the bundle's `target_lowering_plan.parallelization`.
     language's statements. R4-b PR-4 cleared the leftovers a `cuda_cpp` leaf would read (the Compile
     phase contract's statement spellings, the `harness` template's import keyword); what remains is listed in
     `TODO.md` (the prompt-templates row).
-  - **A language may declare the every-node capabilities alone.** `cuda_cpp` (issue #289, R4-b
-    PR-4) declares exactly `LANGUAGE_CAPABILITIES_EVERY_NODE` and neither `runner_render` nor the
-    language half of `control_file`, so its `infrastructure` harness — whose leaf authors the
-    model, the runner and the control file — runs, and a `component` / `problem` node of it is
-    refused at launch. Each `source_reading` gate only a physics node reaches is a REFUSAL in that
-    backend rather than a pass, so a caller that reaches one anyway is not handed a certification
-    of a source nothing read.
+  - **A language may omit `runner_render` alone.** `cuda_cpp` (issue #289, R4-b PR-4) declares
+    `LANGUAGE_CAPABILITIES_EVERY_NODE`, the language half of `control_file` and
+    `interface_header`, and not `runner_render`: its `infrastructure` harness — whose leaf authors
+    the model and the runner, while the host authors the build control file and the
+    published-surface header — runs, and a `component` / `problem` node of it is refused at
+    launch. The control-file half is not optional for any language a node is built in: a bundle
+    has no shape without a host-authored control file (`Conductor._bundle_shape`), and the leaf
+    may not author one. Each `source_reading` gate only a physics node reaches is a REFUSAL in
+    that backend rather than a pass, so a caller that reaches one anyway is not handed a
+    certification of a source nothing read.
+  - **`interface_header`** is the one capability a language declares when its sources are
+    compiled against another's DECLARATIONS: the host renders them from the node's IR
+    `public_api` and writes them beside the bundle's files (`Conductor._write_interface_header`),
+    names the file among those it authors, and the lint attribution treats it as context on both
+    sides when the linter is handed files by name.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

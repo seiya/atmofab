@@ -233,6 +233,14 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "errors. Without it the stage has nothing to check, and a node of this value is refused "
         "rather than passed through unchecked.",
     ),
+    "interface_header": (
+        ("language",),
+        "The host renders this language's declaration of a node's published surface from the "
+        "node's IR `public_api` (a header the node's sources and its consumers compile against), "
+        "and writes it beside the bundle's files. A language that compiles each source against "
+        "another's declarations needs it; one whose compiler reads the published surface off the "
+        "defining source does not declare it.",
+    ),
     "syntax_check": (
         ("compiler",),
         "The syntax-only gate has an adapter for this value: its argv, its executable, a version "
@@ -315,6 +323,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "checks_abi": "checks_abi",
     "source_reading": "source",
     "signatures": "signatures",
+    "interface_header": "header",
 }
 
 
@@ -373,13 +382,17 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
                                         "signatures", "control_file"}),
         ),
         # CUDA C++ (issue #289, R4-b PR-4): every capability a node of ANY kind needs
-        # (`target_profile.LANGUAGE_CAPABILITIES_EVERY_NODE`), so its `infrastructure` harness can
-        # run; NOT `runner_render` or the language half of `control_file`, so a physics node of
-        # this language is refused at launch until the host renders its runner.
+        # (`target_profile.LANGUAGE_CAPABILITIES_EVERY_NODE`), the language half of `control_file`
+        # (the host authors every node's build control file — a harness bundle has no shape without
+        # it) and
+        # `interface_header` (the host renders the published-surface header), so its
+        # `infrastructure` harness runs; NOT `runner_render`, so a physics node of this language is
+        # refused at launch until the host renders its runner.
         Backend(
             "language", "cuda_cpp", "tools.backends.language.cuda_cpp",
             backend_provides=frozenset({"bundle_facts", "syntax_promotions", "prompt_fragments",
-                                        "checks_abi", "source_reading", "signatures"}),
+                                        "checks_abi", "source_reading", "signatures",
+                                        "control_file", "interface_header"}),
         ),
         # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
         # conductor held and the control-file gates the validator held. `build_execute` stays

@@ -2,8 +2,9 @@
 
 What this module knows is how the CUDA compiler driver is asked for a syntax-only pass over CUDA
 C++: `-Xcompiler -fsyntax-only -c` has the host compiler parse and stop, while the device side is
-still read by the CUDA front end and discarded — measured on 13.4: the argv is accepted, a source
-whose kernel calls a host function fails, and no object is left beside any source (`-odir` names the scratch
+still compiled and discarded — measured on 13.4: the argv is accepted, a source whose kernel
+calls a host function fails (front end), a kernel over the shared-memory limit fails with exit
+255 (device assembler), and no object is left beside any source (`-odir` names the scratch
 directory anyway, so a driver version that did write one would write it there). The target's
 standard and GPU architecture reach it from the target profile; the language's facts (which
 suffixes are sources, their order, what is promoted) are `tools/backends/language/cuda_cpp/syntax.py`.
@@ -19,7 +20,8 @@ EXECUTABLE = "nvcc"
 #: The language whose sources this adapter reads.
 LANGUAGE = "cuda_cpp"
 
-#: First line of its output is recorded as the stage's `compiler_version`.
+#: Its first line carrying a version number is recorded as the stage's `compiler_version` (the
+#: server's `_syntax_compiler_version`: this driver prints its release on the fourth line).
 VERSION_ARGV: tuple[str, ...] = (EXECUTABLE, "--version")
 
 #: A translation unit valid under every C++ standard the driver accepts, with one kernel so the

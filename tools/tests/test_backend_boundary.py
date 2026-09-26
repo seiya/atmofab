@@ -2218,7 +2218,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
-                      "checks_abi", "source_reading", "signatures", "parallel_directives"}
+                      "checks_abi", "source_reading", "signatures", "parallel_directives",
+                      "interface_header"}
+        # `interface_header` joined them with issue #289 (R4-b PR-4): the conductor asks
+        # `provides` / `capability_module` for it when it writes a bundle's files, and when it
+        # names the files it authors (`_host_rendered_src_names`).
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's

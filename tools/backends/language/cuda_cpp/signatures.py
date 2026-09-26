@@ -1,8 +1,9 @@
 """The `signatures` capability for CUDA C++ (issue #289, R4-b PR-4).
 
 How the language-neutral structured signature form (`tools/structured_signatures.py`) LOWERS to
-CUDA C++, how a C++ text is read back into comparable stanzas, and the `Generate.static` rules
-that pin a generated model source against §5.1. The binding every rule here implements is stated
+CUDA C++ (which the host-rendered header, `header.py`, is made of), how a C++ text is read back
+into comparable stanzas, and the `Generate.static` rules that pin a node's header and model source
+against §5.1. The binding every rule here implements is stated
 for a reader in `docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §2; this module is its
 executable form, and the lowering table below is the one place it is written in code.
 
@@ -13,23 +14,27 @@ language default:
     real / integer / logical, rank 0,  in    K name              K
     ... rank 0, out / inout                  K& name             —
     real / integer / logical, rank R >= 1    atmofab::View<const K, R> (in) / View<K, R>
+                                             (rank 1 component / result: std::vector<K>)
+    ... rank 1, alloc                        const std::vector<K>& (in) / std::vector<K>&
     string, rank 0                           const std::string& (in) / std::string&   std::string
     derived T, rank 0                        const T& (in) / T&                       T
     string / derived, rank 1                 const std::vector<X>& (in) / std::vector<X>&  std::vector<X>
     procedure (an `interfaces` entry P)      P name              —
     subroutine / function                    void name(...) / <result type> name(...)
     module parameter  dp = float64           using dp = double;  (float32 -> float)
-    module parameter  n = 64                 constexpr int n = 64;
+    module parameter  n = 64                 inline constexpr int n = 64;
     interfaces entry P                       using P = <ret> (*)(<params>);
     type T                                   struct T { <component>; ... };
 
-`atmofab::View<T, R>` is the rank-R, column-major, non-owning array view the target's harness
+`atmofab::View<T, R>` is the rank-R, column-major, non-owning array view every rendered header
 defines (data pointer plus extents); the neutral `dims` of an argument are NOT part of the C++
 type, because a view's extents are run-time values, so they are not pinned here. A neutral string
 length is likewise not part of the type (`std::string` carries its own). A default kind is `float`
-for `real` and `int` for `integer`. What has no row above — a numeric array component or result, a
-string / derived array of rank > 1, an allocatable numeric array argument, a `logical` with a kind —
-has no C++ lowering and is refused (`SignatureParseError`), as is a name that is a C++ keyword.
+for `real` and `int` for `integer`, and a named kind must be a float-valued module parameter (the
+only kind that is a C++ type). What has no row above — an array component or result of rank > 1,
+a string / derived argument of rank > 1, an allocatable numeric argument of rank > 1, a `logical`
+with a kind — has no C++ lowering and is refused (`SignatureParseError`), as is a name that is a
+C++ keyword.
 
 THE STANZA a text is read into (`parse_interface_stanzas`), per symbol, is a list of canonical
 lines — the header first, then one line per parameter / data member:
@@ -119,11 +124,15 @@ def _argument_type(ent: dict[str, Any], ctx: str) -> str:
             return base if reading else f"{base}&"
         return f"const {base}&" if reading else f"{base}&"
     if t in _DEFAULT_SCALAR:
-        if spec.get("alloc"):
-            raise SignatureParseError(
-                f"{ctx}: an allocatable numeric array argument has no {LANGUAGE_DISPLAY_NAME} "
-                f"lowering (a {VIEW_TYPE} cannot be resized by the callee)")
         base = _scalar(spec, ctx)
+        if spec.get("alloc"):
+            # The callee may size an allocatable array, which a view cannot do: a rank-1 one is
+            # a `std::vector`, and no higher rank has a lowering.
+            if rank != 1:
+                raise SignatureParseError(
+                    f"{ctx}: an allocatable rank-{rank} numeric argument has no "
+                    f"{LANGUAGE_DISPLAY_NAME} lowering (only rank 1, to std::vector)")
+            return f"const std::vector<{base}>&" if reading else f"std::vector<{base}>&"
         return f"{VIEW_TYPE}<{'const ' if reading else ''}{base}, {rank}>"
     if rank == 1:
         vec = f"std::vector<{_scalar(spec, ctx)}>"
@@ -139,11 +148,11 @@ def _value_type(ent: dict[str, Any], ctx: str) -> str:
     rank = ent.get("rank", 0) or 0
     if rank == 0:
         return _scalar(spec, ctx)
-    if rank == 1 and spec["type"] in ("string", "derived"):
+    if rank == 1:
         return f"std::vector<{_scalar(spec, ctx)}>"
     raise SignatureParseError(
         f"{ctx}: a rank-{rank} `{spec['type']}` component or result has no "
-        f"{LANGUAGE_DISPLAY_NAME} lowering (only a rank-1 string or derived one, to std::vector)")
+        f"{LANGUAGE_DISPLAY_NAME} lowering (only rank 1, to std::vector)")
 
 
 def _render_params(args: list[dict[str, Any]], ctx: str) -> list[str]:
@@ -185,13 +194,49 @@ def render_module_parameter(mp: dict[str, Any]) -> str:
     value = str(mp["value"]).strip()
     if value.lower() in _NEUTRAL_KIND_TO_CPP:
         return f"using {name} = {_NEUTRAL_KIND_TO_CPP[value.lower()]};"
-    return f"constexpr int {name} = {value};"
+    # `inline`: the declaration lives in a header every file of a program includes, and an
+    # unreferenced namespace-scope `inline constexpr` draws no unused-variable diagnostic there
+    # (measured with the lint rule set; a plain `constexpr` in the including file is #177-D).
+    return f"inline constexpr int {name} = {value};"
+
+
+def _kind_symbols(spec: Any) -> set[str]:
+    return {str(spec["kind"]).strip()} if (isinstance(spec, dict) and spec.get("type") in
+                                           ("real", "integer", "logical")
+                                           and spec.get("kind") is not None) else set()
+
+
+def _require_type_kinds(struct: dict[str, Any]) -> None:
+    """A kind a spec names must not be a module parameter with an INTEGER value: a float-valued
+    one lowers to a C++ type (`using dp = double;`), an integer-valued one to a constant, which is
+    not a type. A kind that names no module parameter of the block is rendered as the name, as the
+    other languages render it (whether it resolves is the compiler's question)."""
+    integer_params = {str(mp["name"]).strip() for mp in struct.get("module_parameters") or []
+                      if str(mp.get("value")).strip().lower() not in _NEUTRAL_KIND_TO_CPP}
+    entities: list[tuple[str, Any]] = []
+    for i, tdef in enumerate(struct.get("types") or []):
+        entities += [(f"types[{i}].components[{j}]", c.get("spec"))
+                     for j, c in enumerate(tdef.get("components") or [])]
+    for key in ("interfaces", "procedures"):
+        for i, proc in enumerate(struct.get(key) or []):
+            entities += [(f"{key}[{i}].args[{j}]", a.get("spec"))
+                         for j, a in enumerate(proc.get("args") or [])]
+            if isinstance(proc.get("result"), dict):
+                entities.append((f"{key}[{i}].result", proc["result"].get("spec")))
+    for ctx, spec in entities:
+        for kind in _kind_symbols(spec):
+            if kind in integer_params:
+                raise SignatureParseError(
+                    f"{ctx}.spec.kind '{kind}' is a module parameter with an integer value, which "
+                    f"has no {LANGUAGE_DISPLAY_NAME} type (a kind lowers to `using <kind> = "
+                    "double;` / `float;`, which only a float64 / float32 value gives)")
 
 
 def render_signatures(struct: dict[str, Any]) -> str:
     """A whole structured §5.1 block as C++ declarations (module parameters, types, prototypes,
     procedures), validated first."""
     _validate_struct(struct)
+    _require_type_kinds(struct)
     out: list[str] = [render_module_parameter(mp) for mp in struct.get("module_parameters") or []]
     for i, tdef in enumerate(struct.get("types") or []):
         out += _render_type(tdef, f"types[{i}]")
@@ -323,12 +368,6 @@ def stanza_line_set(lines: list[str]) -> frozenset[str]:
 
 # --- the Generate.static source pin ------------------------------------------------------------
 
-_PROTOTYPE_REMEDY = (
-    "declare it in the model's namespace as a function-pointer alias only, `using <name> = "
-    "<return type> (*)(<parameters>);`, matching the §5.1 `interfaces` entry parameter for "
-    "parameter — every name, type and the order — and define no function of that name")
-
-
 def generated_source_violations(
     *,
     model_files: list[Path],
@@ -341,97 +380,92 @@ def generated_source_violations(
     violations: list[str],
 ) -> None:
     """The source half of the validator's `Generate.static` signature gate, in CUDA C++: pin the
-    generated model source against the §5.1 surface already rendered to C++ stanzas.
+    node's published surface against §5.1 already rendered to C++ stanzas.
 
-    The published surface is what the model's namespace `<model file stem>` declares (the
-    namespace a consumer's `#include` makes visible under that name — BUNDLE_BINDING.md §1). The
-    rules, each a refusal: exactly one model file when §5.1 publishes a procedure; every §5.1
-    type is a struct of that namespace with exactly the pinned members in order; every §5.1
-    procedure is declared there with exactly the pinned header and parameters (no more, no
-    fewer) AND defined in the file; every prototype is a function-pointer alias there with
-    exactly the pinned atoms and no function of its name is defined; every module parameter is
-    declared there exactly once, as the pinned declaration."""
-    combined = "\n".join(
-        model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files)
+    The surface is DECLARED by the host-rendered header `<model stem>.cuh` beside the model source
+    (`header.render`, from the IR `public_api`) and DEFINED by the model source, both in namespace
+    `<model stem>` (BUNDLE_BINDING.md §1). The two are read together, so the rules hold of what a
+    consumer compiles against: exactly one model file when §5.1 publishes anything; the header
+    present; every §5.1 type a struct of that namespace with exactly the pinned members in order,
+    defined once; every §5.1 procedure declared with exactly the pinned header and parameters and
+    DEFINED in the model source with the same types (a definition whose types differ from the
+    declaration is another overload, refused); every prototype a function-pointer alias with
+    exactly the pinned atoms, and no function of its name defined; every module parameter declared
+    exactly once, as rendered."""
     if (op_stanzas or type_stanzas) and len(model_files) != 1:
         violations.append(
             f"{target}: this {ir_kind} node's published surface cannot be pinned to one "
             f"publisher — {len(model_files)} model source files were resolved and exactly one "
             "is expected")
         return
-    namespace = (model_files[0].stem,) if model_files else ()
-    decls = cpp_decls.read(combined)
+    if not model_files:
+        return
+    model_file = model_files[0]
+    namespace = (model_file.stem,)
+    header_path = model_file.parent / f"{model_file.stem}.cuh"
+    try:
+        header_text = header_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        violations.append(
+            f"{target}: the host-rendered header {header_path.name} is not beside the model "
+            "source, so the published surface has no declaration to pin (a host fault: the "
+            "header is written with the bundle's files)")
+        return
+    model_text = model_file.read_text(encoding="utf-8", errors="ignore")
+    decls = cpp_decls.read(header_text + "\n" + model_text)
     src_ops, src_types, src_ifaces, src_errors = _stanzas(decls, namespace)
     for err in src_errors:
         violations.append(
-            f"{target}: generated model source cannot be compared with controlled_spec §5.1 "
-            f"({err}) — declare each published symbol once, in namespace `{namespace[0] if namespace else ''}`, "
-            "and re-emit")
+            f"{target}: the model source cannot be compared with controlled_spec §5.1 ({err}) — "
+            f"the host-rendered {header_path.name} declares the published surface; define each "
+            "published procedure once, with exactly its declared parameter types, and declare no "
+            "published type, prototype or module parameter again")
     if src_errors:
         return
-    if namespace not in decls.namespaces and (op_stanzas or type_stanzas):
-        violations.append(
-            f"{target}: generated model source opens no namespace `{namespace[0]}`, so the "
-            "surface controlled_spec §5.1 pins has no publisher here — a consumer reaches this "
-            f"model's surface as `{namespace[0]}::<name>`; put every published type, prototype, "
-            "module parameter and procedure inside `namespace "
-            f"{namespace[0]} {{ ... }}`")
-    defined = {fn.name for fn in decls.functions if fn.namespace == namespace and fn.defined}
-    elsewhere = {fn.name for fn in decls.functions if fn.namespace != namespace}
+    model_defined = {fn.name for fn in cpp_decls.read(model_text).functions
+                     if fn.namespace == namespace and fn.defined}
 
     for name in sorted(type_stanzas):
         have = src_types.get(name)
-        if have is None:
+        if have is None or stanza_line_list(have) != stanza_line_list(type_stanzas[name]):
             violations.append(
-                f"{target}: generated model source does not define controlled_spec §5.1 type "
-                f"'{name}' as a struct of namespace `{namespace[0]}`")
-        elif stanza_line_list(have) != stanza_line_list(type_stanzas[name]):
-            violations.append(
-                f"{target}: type '{name}' drifts from controlled_spec §5.1 — its data members "
-                f"(names/types/order, no extras) must be exactly: "
-                f"{'; '.join(type_stanzas[name][1:]) or '(none)'}")
+                f"{target}: type '{name}' of namespace `{namespace[0]}` does not match "
+                "controlled_spec §5.1 (the host-rendered header declares it; if it drifts, the "
+                "header was not rendered from this node's IR)")
     for name in sorted(op_stanzas):
-        want = stanza_line_set(op_stanzas[name])
         have_stanza = src_ops.get(name)
         if have_stanza is None:
-            where = (f" (a function of that name is declared outside namespace `{namespace[0]}`)"
-                     if name in elsewhere else "")
             violations.append(
-                f"{target}: generated model source does not declare controlled_spec §5.1 "
-                f"procedure '{name}' in namespace `{namespace[0]}`{where} — the published "
-                f"surface is `{' '.join(op_stanzas[name][:1])}` with parameters "
-                f"{'; '.join(op_stanzas[name][1:]) or '(none)'}")
+                f"{target}: controlled_spec §5.1 procedure '{name}' is not declared in namespace "
+                f"`{namespace[0]}` (the host-rendered header declares it)")
             continue
+        want = stanza_line_set(op_stanzas[name])
         have = stanza_line_set(have_stanza)
         if have != want:
             violations.append(
                 f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — missing "
                 f"{sorted(want - have)}, extra {sorted(have - want)} (compared with whitespace "
                 "removed; the first atom is the header, which pins the return type and the "
-                "argument ORDER, and a specifier on it such as `__device__` is a difference)")
-        if name not in defined:
+                "argument NAMES in order, and a specifier on it such as `__device__` is a "
+                "difference) — define it with exactly the declaration in "
+                f"{header_path.name}")
+        if name not in model_defined:
             violations.append(
-                f"{target}: generated model source declares controlled_spec §5.1 procedure "
-                f"'{name}' but never DEFINES it in namespace `{namespace[0]}` — give it a body "
-                "in this file")
+                f"{target}: controlled_spec §5.1 procedure '{name}' is declared but never DEFINED "
+                f"in namespace `{namespace[0]}` of the model source — give it a body there, with "
+                f"exactly the parameter types {header_path.name} declares")
     for name in sorted(proto_stanzas):
-        want = stanza_line_set(proto_stanzas[name])
         have_proto = src_ifaces.get(name)
-        if have_proto is None:
+        if have_proto is None or stanza_line_set(have_proto) != stanza_line_set(
+                proto_stanzas[name]):
             violations.append(
-                f"{target}: generated model source does not declare the controlled_spec §5.1 "
-                f"prototype '{name}' — {_PROTOTYPE_REMEDY}")
-        elif stanza_line_set(have_proto) != want:
-            got = stanza_line_set(have_proto)
+                f"{target}: prototype '{name}' of namespace `{namespace[0]}` does not match "
+                "controlled_spec §5.1's `interfaces` entry (the host-rendered header declares it)")
+        if name in model_defined:
             violations.append(
-                f"{target}: prototype '{name}' drifts from controlled_spec §5.1's `interfaces` "
-                f"entry — missing {sorted(want - got)}, extra {sorted(got - want)} — "
-                f"{_PROTOTYPE_REMEDY}")
-        if name in defined:
-            violations.append(
-                f"{target}: generated model source DEFINES '{name}', which controlled_spec §5.1 "
+                f"{target}: the model source DEFINES '{name}', which controlled_spec §5.1 "
                 "declares as a prototype (an `interfaces` entry) — a prototype is the shape of the "
-                f"function a CALLER passes, and the model must not implement it; {_PROTOTYPE_REMEDY}")
+                "function a CALLER passes, and the model must not implement it")
 
     for mp in module_parameters:
         name = str(mp.get("name") or "").strip() if isinstance(mp, dict) else ""
@@ -445,22 +479,21 @@ def generated_source_violations(
                 f"cannot lower ({exc}) — re-certify the harness so §5.1 carries a neutral "
                 "parameter value the generated source can be pinned against")
             continue
-        bindings = [a for a in decls.aliases if a.namespace == namespace and a.name == name]
-        bindings_v = [v for v in decls.variables if v.namespace == namespace and v.name == name]
-        spelled = ([f"using {a.name} = {a.target}" for a in bindings]
-                   + [v.statement for v in bindings_v])
+        spelled = ([f"using {a.name} = {a.target}" for a in decls.aliases
+                    if a.namespace == namespace and a.name == name]
+                   + [v.statement for v in decls.variables
+                      if v.namespace == namespace and v.name == name])
         pinned_atom = stanza_atoms([pinned])[0]
         if not any(stanza_atoms([s])[0] == pinned_atom for s in spelled):
             violations.append(
-                f"{target}: generated model source is missing the §5.1 module parameter "
-                f"declaration `{pinned}` in namespace `{namespace[0]}` (a drifted parameter value "
-                "silently changes the published ABI)")
+                f"{target}: the §5.1 module parameter declaration `{pinned}` is not in namespace "
+                f"`{namespace[0]}` (the host-rendered header declares it)")
         elif len(spelled) > 1:
             listed = ", ".join(f"`{s}`" for s in sorted(spelled))
             violations.append(
-                f"{target}: generated model source binds the §5.1 module parameter `{name}` "
-                f"{len(spelled)} times in namespace `{namespace[0]}` — {listed} — and `{pinned}` "
-                "is what §5.1 pins; keep the pinned declaration and delete the others")
+                f"{target}: the §5.1 module parameter `{name}` is bound {len(spelled)} times in "
+                f"namespace `{namespace[0]}` — {listed} — and `{pinned}` (in the host-rendered "
+                "header) is what §5.1 pins; delete the model source's own binding")
 
 
 # --- a certified source's published interface, as a consumer's leaf is shown it ----------------
