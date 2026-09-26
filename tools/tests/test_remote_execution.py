@@ -427,7 +427,26 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_program_the_site_cannot_find_is_the_hosts_failure(self) -> None:
         missing = self.h.command("run", ("no-such-program-zz",))
-        self._refused("run the job script: ssh exited 4", self.h.request(missing))
+        self._refused("run the job script: ssh exited 4.*no-such-program-zz is missing",
+                      self.h.request(missing))
+
+    def test_a_shipped_program_the_site_cannot_execute_is_the_hosts_failure(self) -> None:
+        """A workdir on a `noexec` mount, or a file that lost its mode: the local server raises
+        for it (`PermissionError`), so it is not the kernel's result here either."""
+        plain = self.h.local / "plain"
+        plain.write_text(_RUNNER)
+        plain.chmod(0o644)
+        self._refused("ssh exited 4.*is not an executable file",
+                      self.h.request(ship={"bin/runner": plain}))
+
+    def test_a_site_machine_other_than_the_build_hosts_is_the_hosts_failure(self) -> None:
+        """A binary built here cannot run on another machine, and `timeout`'s `execvp` would
+        hand it to `sh`, whose syntax error would otherwise read as the kernel's exit status."""
+        ctx = self._refused("ssh exited 5.*the site machine is not zz_arch",
+                            self.h.request(machine="zz_arch"))
+        self.assertFalse((Path(self.h.job) / "ctl" / "run.stdout").exists(), ctx.exception)
+        # The default is this host's own machine, which the shim's "site" is.
+        self.assertEqual(self.h.request().machine, os.uname().machine)
 
     def test_a_connection_failure_is_refused_with_the_stage(self) -> None:
         self._refused("create the job directory.*ssh exited 255", SHIM_SSH_FAIL="mkdir")
@@ -508,6 +527,8 @@ class RequestValidationTests(unittest.TestCase):
     def test_commands_are_well_formed(self) -> None:
         for kw, pattern in (({"tag": "Run"}, "lowercase token"),
                             ({"argv": ()}, "empty argv"),
+                            ({"argv": ("bin/runner",)}, "relative path"),
+                            ({"argv": ("./runner",)}, "relative path"),
                             ({"timeout_sec": 0}, "timeout_sec"),
                             ({"timeout_sec": True}, "timeout_sec")):
             with self.subTest(kw=kw):

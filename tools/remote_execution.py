@@ -31,8 +31,9 @@ Every way the evidence could be incomplete or not this job's is a refusal
   a line that does not parse are refused too, so a line forged by anything else is refused
   rather than read;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
-  script that fails outside its commands (a directory it cannot make, a program it cannot
-  find), and a job directory that cannot be removed after collection are refused, with the
+  script that fails outside its commands (a directory it cannot make, a site machine other than
+  the one the shipped files were built on, a program it cannot find or execute), and a job
+  directory that cannot be removed after collection are refused, with the
   stage and the remote path in the message.
 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
@@ -49,6 +50,7 @@ here until a scheduler backend implements `job_submit`.
 
 from __future__ import annotations
 
+import platform
 import re
 import shlex
 import shutil
@@ -134,7 +136,11 @@ class JobRequest:
     file copied there (the mode is kept, so an executable stays one); `dirs` are the directories,
     relative to the job directory, created before the first command. `platform_probe` is an argv
     whose first output line identifies the site's device, when the hardware class has one;
-    `attribution` is recorded in each log entry, as the server records it."""
+    `attribution` is recorded in each log entry, as the server records it. `machine` is what the
+    site's `uname -m` must answer before anything runs — by default this host's own, because the
+    shipped binary was built here: a binary the site's loader cannot execute is not a result of
+    the kernel, and `timeout`'s `execvp` would otherwise hand it to `sh` and report the shell's
+    syntax error as the command's own exit status."""
 
     site: Site
     job_dir: str
@@ -143,6 +149,7 @@ class JobRequest:
     dirs: tuple[str, ...] = ()
     platform_probe: tuple[str, ...] | None = None
     attribution: Mapping[str, str] = field(default_factory=dict)
+    machine: str = field(default_factory=platform.machine)
 
 
 @dataclass(frozen=True)
@@ -212,6 +219,9 @@ def _validate(request: JobRequest) -> None:
             raise ValueError(f"command tag {c.tag!r} is not a lowercase token")
         if not c.argv:
             raise ValueError(f"command {c.tag!r} has an empty argv")
+        if "/" in c.argv[0] and not c.argv[0].startswith("/"):
+            # The script checks the program from the login directory, not from `cwd`.
+            raise ValueError(f"command {c.tag!r} program {c.argv[0]!r} is a relative path")
         if isinstance(c.timeout_sec, bool) or not isinstance(c.timeout_sec, int) \
                 or c.timeout_sec < 1:
             raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
@@ -227,21 +237,25 @@ def render_job_script(request: JobRequest) -> str:
 
     Each command writes `<tag>.stdout` / `<tag>.stderr` under the control directory, runs only
     when every earlier command exited 0, and is followed by its status line on the script's
-    stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory cannot be made or a
-    program in `REMOTE_EXECUTABLES` is missing, and before a command whose program cannot be
-    found: the local server raises for a program it cannot start rather than reporting an exit
-    status, so a missing program is the host's failure here too, and a 126 or 127 a command
-    reports is its own. Every value is quoted with `shlex.quote`."""
+    stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory
+    cannot be made, a program in `REMOTE_EXECUTABLES` is missing or the machine is not `request.machine`, and before
+    a command whose program cannot be found or, named by a path, is not executable: the local
+    server raises for a program it cannot start rather than reporting an exit status, so these
+    are the host's failures here too. Each such exit names what failed on stderr. Every value is
+    quoted with `shlex.quote`."""
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
-    lines = ["#!/bin/sh", "set -u"]
+    lines = ["#!/bin/sh", "set -u", "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }",
+             f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
+             + q(f"the site machine is not {request.machine}, which the shipped files were "
+                 f"built on")]
     for prog in REMOTE_EXECUTABLES:
-        lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || exit 3")
+        lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || fail 3 {q(f'{prog} is missing')}")
     for rel in request.dirs:
-        lines.append(f"mkdir -p {q(f'{j}/{rel}')} || exit 3")
+        lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
-        lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || exit 3")
+        lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || fail 3 {q(f'cannot make {c.cwd}')}")
     lines.append(
         f"{{ uname -m; hostname; grep -m1 'model name' /proc/cpuinfo; }} > {q(ctl + '/platform')}"
         " 2>/dev/null")
@@ -258,11 +272,13 @@ def render_job_script(request: JobRequest) -> str:
         base = f"{ctl}/{c.tag}"
         lines += [
             'if [ "$rc" = 0 ]; then',
-            f"  command -v {q(c.argv[0])} >/dev/null 2>&1 || exit 4",
-            "  t0=$(date +%s) || exit 5",
+            f"  p=$(command -v {q(c.argv[0])}) || fail 4 {q(f'{c.argv[0]} is missing')}",
+            (f'  case "$p" in /*) [ -f "$p" ] && [ -x "$p" ] || fail 4 '
+             f"{q(f'{c.argv[0]} is not an executable file')};; esac"),
+            "  t0=$(date +%s) || fail 6 'date failed'",
             f"  ( {run} ) > {q(base + '.stdout')} 2> {q(base + '.stderr')} < /dev/null",
             "  rc=$?",
-            "  t1=$(date +%s) || exit 5",
+            "  t1=$(date +%s) || fail 6 'date failed'",
             f'  echo "{STATUS_MARKER} {c.tag} $rc $t0 $t1"',
             "fi",
         ]
