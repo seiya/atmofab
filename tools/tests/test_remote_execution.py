@@ -1030,7 +1030,6 @@ class ProbeSiteTests(unittest.TestCase):
             got = rx.probe_site(site, ("sh",))
         self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(), problems=(
             "the workdir cannot be made or is not writable",
-            "a program in the workdir cannot be executed (a noexec mount)",
             "its timeout does not take -k")))
         # A workdir that does not exist yet is made, as the first job would make it.
         fresh = self.h.root / "remote" / "fresh" / "jobs"
@@ -1053,7 +1052,7 @@ class ProbeSiteTests(unittest.TestCase):
                                             workdir=str(locked)), ("sh",))
         finally:
             locked.chmod(0o755)
-        self.assertIn("the workdir cannot be made or is not writable", got.problems)
+        self.assertEqual(got.problems, ("the workdir cannot be made or is not writable",))
 
     def test_a_workdir_where_nothing_runs_is_named(self) -> None:
         """A noexec mount, stood in for by a `chmod` that sets no mode: the probe's program is

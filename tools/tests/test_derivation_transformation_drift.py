@@ -467,9 +467,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # remote executor's probe and job-directory cleanup, and the `gpu` package's probe docstring.
     # The self-ssh acceptance run orch_20260926T082603Z_3dbb0c04 carries `execute-5` and ran the
     # round-0 code; execute-5 is on no branch but this one, so no other run carries it.
-    # Re-pinned again in round 2: the probe's banner line, its noexec check, and the `gpu`
-    # probe docstring's wording.
-    "execute-5": "cbbf90c34137855b724cb845edf09b498decc62e2fdc058e92dd63082d649951",
+    # Re-pinned again in round 2: the probe's banner line, its noexec check, the `gpu` probe
+    # docstring's wording, and `LaunchShape`'s docstring (where `env` is merged at a site).
+    "execute-5": "ad78d5b0f6f58178515773153810bf5474c54b1f03ce1600171cb05517140b21",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

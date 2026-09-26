@@ -159,7 +159,7 @@ the run stops at; a run with no member left to run that stops earlier contacts n
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
 | `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils) and the target's build system, read from the tables that run them (`host_prerequisites.required_site_executables`) |
-| `site_unusable` | the site's `workdir` cannot be made or written, or its `timeout` does not take `-k` (busybox builds refuse it) |
+| `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), or its `timeout` does not take `-k` (busybox builds refuse it) |
 | `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here |
 
 A site is reached with the operator's own ssh configuration, which this repository does not

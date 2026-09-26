@@ -526,7 +526,11 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
         "echo",
         *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
           for exe in executables),
-        *(f"{tests[name]} || echo {PROBE_MARKER} problem {name}" for name, _ in _PROBE_CHECKS),
+        # Whether a program runs beneath the workdir is asked only of a workdir that is there:
+        # one that cannot be made is its own problem, and the second would restate it.
+        *(f"{tests['workdir']} && {{ {tests[name]} || echo {PROBE_MARKER} problem {name}; }}"
+          if name == "workdir_exec" else f"{tests[name]} || echo {PROBE_MARKER} problem {name}"
+          for name, _ in _PROBE_CHECKS),
         f'echo "{PROBE_MARKER} machine $(uname -m)"',
     ])
     remote = f"{site.host} ({site.site_id})"
