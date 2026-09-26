@@ -171,6 +171,7 @@ def _strip_attributes(text: str) -> str:
 _NAMESPACE_RE = re.compile(rf"^\s*(?:inline\s+)?namespace\s*(?P<name>{_IDENT}(?:\s*::\s*{_IDENT})*)?\s*$")
 _EXTERN_BLOCK_RE = re.compile(r'^\s*extern\s*"\s*"\s*$')
 _RECORD_RE = re.compile(rf"^\s*(?P<kw>struct|class|union)\s+(?P<name>{_IDENT})\s*(?:final\s*)?(?::[^{{]*)?$")
+_TEMPLATE_RECORD_RE = re.compile(r"^\s*template\s*<.*>\s*(?:struct|class|union)\s", re.DOTALL)
 _USING_RE = re.compile(rf"^\s*using\s+(?P<name>{_IDENT})\s*=\s*(?P<target>.+)$", re.DOTALL)
 _TYPEDEF_FNPTR_RE = re.compile(rf"^\s*typedef\s+(?P<ret>.+?)\(\s*\*\s*(?P<name>{_IDENT})\s*\)\s*\((?P<params>.*)\)\s*$",
                                re.DOTALL)
@@ -346,13 +347,19 @@ def read(text: str) -> Declarations:
                 start = i
                 continue
             i = end
-            # A record or brace-initialized variable ends at its own `;`; keep reading to it,
-            # but a record's trailing declarators are not read.
-            if (record := _RECORD_RE.match(stripped)) is not None or stripped.startswith(
-                    ("template", "enum")):
+            if (_RECORD_RE.match(stripped) is not None or stripped.startswith("enum")
+                    or _TEMPLATE_RECORD_RE.match(stripped) is not None):
+                # A record, an enum or a class template ends at its own `;` (after any trailing
+                # declarators, which are not read): the next item starts past it.
                 semi = code.find(";", i)
                 i = n if semi < 0 else semi + 1
                 start = i
+            elif stripped.startswith("template"):
+                # A FUNCTION template's body ends the item with no `;`: the next item starts
+                # right here. Reading on to the next `;` swallowed the following statement
+                # (found by the round-0 mechanism sweep).
+                start = i
+            # Otherwise a brace-initialized variable: it continues to its `;`, where it is read.
             continue
         i += 1
     if stack:

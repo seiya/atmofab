@@ -149,6 +149,15 @@ class DeclarationReaderTests(unittest.TestCase):
         self.assertEqual([], decls.errors)
         self.assertEqual([], [f.name for f in decls.functions])
 
+    def test_the_statement_after_a_function_template_is_read(self) -> None:
+        decls = cpp_decls.read("namespace m {\ntemplate <class T> T twice(T x) { return x; }\n"
+                               "void after(int a);\n"
+                               "template <class T> struct Box { T v; };\nvoid last();\n}\n")
+        self.assertEqual(["after", "last"], [f.name for f in decls.functions])
+        braced = cpp_decls.read("namespace m {\nconstexpr int table[] = {1, 2};\nvoid g();\n}\n")
+        self.assertEqual(["table"], [v.name for v in braced.variables])
+        self.assertEqual(["g"], [f.name for f in braced.functions])
+
     def test_struct_data_members_in_order(self) -> None:
         (st,) = [s for s in self.decls.structs if s.name == "demo__h_check"]
         self.assertEqual(
