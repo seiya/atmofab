@@ -11,7 +11,7 @@
 A job runs as ONE Slurm job, in the foreground of the ssh call that runs the job script:
 
 ```
-ssh <host> -- 'echo; printf ... atmofab-submitted <epoch> && exec srun --time=<minutes> <directives> --ntasks=1 --job-name=atmofab-<agent_run_id> --immediate=<queue_timeout_sec> sh -c <job script>'
+ssh <options> -- <host> 'echo; printf ... atmofab-submitted <epoch> && exec srun --time=<minutes> <directives> --ntasks=1 --job-name=atmofab-<agent_run_id> --immediate=<queue_timeout_sec> sh -c <job script>'
 ```
 
 - `srun` waits for an allocation, runs the job script as the job's single task, relays the
@@ -46,14 +46,29 @@ refused with no log entry.
 A site entry in `./sites.yaml` (the shape is `docs/ORCHESTRATION.md` §Execution sites):
 
 ```yaml
-  cluster:
+  cluster_cpu:
     host: login-node
     workdir: /work/atmofab-jobs
-    executes: [cpu, gpu]
+    executes: [cpu]
     scheduler: slurm
-    scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=60"]
+    scheduler_directives: ["--partition=compute", "--time=120"]
+    queue_timeout_sec: 7200
+  cluster_gpu:
+    host: login-node
+    workdir: /work/atmofab-jobs
+    executes: [gpu]
+    scheduler: slurm
+    scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=120"]
     queue_timeout_sec: 7200
 ```
+
+A site's `executes` is a claim about the machines its directives select. Nothing checks it: a
+`gpu` job allocated no device runs on whatever node the directives give, its device probe
+records `null`, and the runner's failure is recorded as the kernel's — a correct kernel fails
+Validate. So a class whose device must be requested gets a site of its own whose directives
+request it (`--gres`), and `targets:` maps each target to the site for its class. A `--time`
+directive shorter than the job's bound (96-97 minutes with the server's defaults) makes a command
+that runs long a refusal rather than the command's own timeout.
 
 - `srun` on the PATH of a NON-INTERACTIVE login. Where it is added by an interactive login's
   startup files only, the launch probe refuses `missing_required_site_tools` naming it.

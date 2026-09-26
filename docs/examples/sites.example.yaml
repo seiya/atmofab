@@ -19,13 +19,17 @@ sites:
     workdir: /scratch/atmofab-jobs
     executes: [gpu]
     scheduler: none
-  cluster:                          # a site whose jobs run through a batch scheduler
+  cluster_cpu:                      # a site whose jobs run through a batch scheduler
     host: login-node                # the machine the job is asked for from
     workdir: /work/atmofab-jobs     # must be visible at this path from the machines jobs run on
-    executes: [cpu, gpu]
+    executes: [cpu]                 # a claim about the machines the directives below select
     scheduler: slurm                # docs/backends/scheduler/<scheduler>/JOB_SUBMIT.md
-    scheduler_directives: []        # words the scheduler's backend passes on as written; its JOB_SUBMIT.md shows them
+    scheduler_directives: []        # each split into words and passed to the scheduler; its JOB_SUBMIT.md shows them
     queue_timeout_sec: 7200         # the longest wait for an allocation; default 3600
+  # A class whose device must be requested gets a site of its own — directives are per site —
+  # and that site's directives request it; two sites may name the same host.
+  # cluster_gpu: {host: login-node, workdir: /work/atmofab-jobs, executes: [gpu],
+  #               scheduler: slurm, scheduler_directives: [<select a machine with the device>]}
   local:                            # optional; `executes` is the only key it takes
     executes: [cpu]
 targets:                            # target id -> site id; a target not listed runs at `local`
