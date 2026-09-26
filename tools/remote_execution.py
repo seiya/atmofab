@@ -94,7 +94,8 @@ the difference is the record's `queue_wait_ms`. A job that is not granted an all
 site's `queue_timeout_sec` (default `QUEUE_TIMEOUT_DEFAULT_SEC`) is ended by the prefix, and one
 that outlives the scheduler's time limit is killed by the scheduler: both make the ssh call exit
 non-zero, which is refused like any transport failure. A scheduler's job is not cancelled when
-the ssh call ends early; the time limit the prefix sets bounds it.
+the ssh call ends early; the time limit in force bounds it — the prefix's, or a longer one a
+directive set.
 """
 
 from __future__ import annotations
@@ -269,9 +270,11 @@ def _under(path: str, root: str, what: str) -> None:
 
 
 def _submission(scheduler: str) -> Any:
-    """The `job_submit` module of `scheduler`'s backend package, or None for a scheduler the
-    neutral core implements (`none`: the job script runs under no prefix). A scheduler that does
-    not declare `job_submit` is refused (`ValueError`)."""
+    """The `job_submit` module of `scheduler`'s backend package, or None for a scheduler whose
+    `job_submit` the neutral core implements — any such record runs the job script under no
+    prefix and records no job id (`none` is the one today; until PR-4 the executor refused every
+    scheduler but `none` by name). A scheduler that does not declare `job_submit` is refused
+    (`ValueError`)."""
     reason = registry.missing_capability_reason("scheduler", scheduler, "job_submit")
     if reason is not None:
         raise ValueError(f"scheduler: {reason}")

@@ -16,7 +16,8 @@ statuses travel on it (the executor's module docstring says what the channel mus
 
 What `srun` does NOT do (measured on Slurm 20.02): when the ssh call ends early — the executor's
 local bound, a dropped connection — `srun` gets no hangup (the call has no terminal) and the job
-runs on until it ends or reaches its `--time`, which is why this prefix always sets one. The
+runs on until it ends or reaches the `--time` in force, which is why this prefix always sets one
+(a directive may replace it, longer as well as shorter). The
 executor has refused that job by then, and a later job runs in a directory of its own.
 """
 
@@ -42,9 +43,14 @@ def foreground_argv(*, directives: Sequence[str], job_name: str, wall_clock_sec:
        maximum there. A job that reaches a shorter limit is killed and refused, never recorded;
     2. the operator's `scheduler_directives`, each split on whitespace into words, as a
        `#SBATCH` line's are;
-    3. the options a directive may not change, LAST: one task (the statuses are one task's
-       stdout), the job's name, and `--immediate`, which ends the call with a non-zero exit, and
-       the job with it, when no allocation is granted within `queue_timeout_sec`."""
+    3. the options a repeating directive does not override, LAST: one task (the statuses are
+       one task's stdout), the job's name, and `--immediate`, which ends the call with a non-zero exit, and
+       the job with it, when no allocation is granted within `queue_timeout_sec`.
+
+    A directive whose last word is an option taking a separate value swallows the first of
+    these as that value (measured): not guarded, because a flag (`--exclusive`) and a
+    value-taking option look alike here; JOB_SUBMIT.md tells the operator to write
+    `--name=value`."""
     if wall_clock_sec < 1 or queue_timeout_sec < 1:
         raise ValueError("wall_clock_sec and queue_timeout_sec must be >= 1")
     minutes = -(-wall_clock_sec // 60)

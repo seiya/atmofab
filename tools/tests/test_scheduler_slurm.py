@@ -21,8 +21,8 @@ class ForegroundArgvTests(unittest.TestCase):
         return submit.foreground_argv(**args)
 
     def test_the_time_limit_comes_before_the_directives_and_the_rest_after(self) -> None:
-        """A directive may shorten the time limit (a short partition's maximum); it may not
-        change the task count, the name or the queue bound."""
+        """A directive may shorten the time limit (a short partition's maximum); one repeating
+        the task count, the name or the queue bound loses to the executor's."""
         self.assertEqual(
             self._argv(directives=("--partition=gpu", "-p  debug", "--time=30")),
             ("srun", "--time=1", "--partition=gpu", "-p", "debug", "--time=30", "--ntasks=1",

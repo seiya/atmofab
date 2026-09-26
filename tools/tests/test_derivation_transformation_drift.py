@@ -485,8 +485,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # `slurm` package's `job_submit` module, which the round-1 review found outside it (a change
     # to the prefix a job runs under moved no pin). None of it changes a none site's job. Then the
     # prefix's time limit moved before the directives (a directive may shorten it). And a
-    # docstring corrected in round 2 (what a process reaching the script's stdout can do).
-    "execute-5": "6cc0e8aab9187a6ca54514f37af492c46cec4669b42c3e3b1dd3eb1e41255348",
+    # docstring corrected in round 2 (what a process reaching the script's stdout can do), and
+    # docstrings again in round 3. One none-site input IS read differently since PR-4, found in
+    # round 3: a platform value containing a scheduler marker (a node named `atmofab-jobs01`) is
+    # now refused as a marker off its line's start, where origin/main recorded it. It fails
+    # closed, so no certified output is wrong without a bump.
+    "execute-5": "8431b41c5312e751cbbd1581922ba0c808e0e517d27376553c56cb32142ca3fb",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

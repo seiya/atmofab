@@ -27,8 +27,12 @@ ssh <options> -- <host> 'echo; printf ... atmofab-submitted <epoch> && exec srun
   killed and refused, never recorded. Without it such a site's job pends until `--immediate`
   gives up, since the launch probe does not ask the partition's limits.
 - `scheduler_directives` come next, each split on whitespace into words (`"-p gpu"` is two
-  words), and the options no directive may change come last: `--ntasks=1` (the statuses are one
-  task's stdout), the job's name and the queue bound.
+  words), and the executor's remaining options come last: `--ntasks=1` (the statuses are one
+  task's stdout), the job's name and the queue bound. A directive that repeats one of them loses
+  to it. A directive whose LAST word is an option that takes a separate value (`"--account"`
+  with the value missing, or `"-J"`) swallows the next word — `--ntasks=1` — as that value
+  (measured: the job ran two tasks, and was refused only after the runner had run twice); write
+  a value-taking option as `--name=value` or with its value in the same directive.
 - `--immediate=<queue_timeout_sec>` ends the call with exit status 1, and cancels the job, when no
   allocation is granted in that many seconds. The site's `queue_timeout_sec`, or
   `remote_execution.QUEUE_TIMEOUT_DEFAULT_SEC` when it states none.
@@ -84,8 +88,9 @@ that runs long a refusal rather than the command's own timeout.
 - **A job is not cancelled when the ssh call ends early.** The call has no terminal, so `srun` is
   sent no hangup when the connection drops or the executor's local bound kills it (measured: the
   `srun` process was re-parented and the job kept running). The executor has refused that job,
-  and a later job runs in a directory of its own; the job runs on until its `--time`, which is
-  why the prefix always sets one. `scancel` it by hand to free the allocation sooner.
+  and a later job runs in a directory of its own; the job runs on until the `--time` in force —
+  the prefix's, or a directive's, which may be longer — which is why the prefix always sets one.
+  `scancel` it by hand (its name is `atmofab-<agent_run_id>`) to free the allocation sooner.
 - **No `sbatch`.** A batch job's stdout is a file under the operator's account, which the job's
   own commands can truncate and rewrite; the status of a command that runs after the runner would
   then be forgeable by the runner.
