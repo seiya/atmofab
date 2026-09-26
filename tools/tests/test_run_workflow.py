@@ -7991,10 +7991,8 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 15 -> 16: issue #284's target-profile refusal (`no_target_profile`, `target_required`,
         # `target_unknown`, `target_profile_invalid`, `target_harness_mismatch`,
         # `target_changed_on_resume` — one site, the reason carried by the exception).
-        # 16 -> 17: issue #293's execution-site refusal (`sites_config_invalid`, the site half of
-        # `target_profile_invalid`, `missing_required_host_tools` for the transport,
-        # `site_unreachable`, `missing_required_site_tools`, `site_machine_mismatch` — one site,
-        # the event built by `_sites_rejection`).
+        # 16 -> 17: issue #293's execution-site refusal — one site, the event built by
+        # `_sites_rejection`, whose docstring lists the reasons it carries.
         self.assertEqual(len(helper_calls), 17)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
@@ -10146,10 +10144,16 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_a_site_of_another_machine_type_is_refused(self) -> None:
+        """Before its other problems: the site also lacks the job's programs here, and the
+        remedy for those would be work on the wrong site."""
         self._remote()
         import platform
+        bare = Path(self._tmp.name) / "bare_mm"
+        bare.mkdir()
+        for tool in ("sh", "uname"):
+            (bare / tool).symlink_to(shutil.which(tool))
         with mock.patch.object(platform, "machine", return_value="zz_arch"):
-            code, events, calls = self._main()
+            code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_machine_mismatch")
         self.assertIn("zz_arch", events[-1]["detail"])
@@ -10176,7 +10180,23 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "target_profile_invalid")
         self.assertIn("sites.yaml maps target t_a to box", events[-1]["detail"])
+        self.assertIn("docs/examples/sites.example.yaml", events[-1]["detail"])
+        self.assertEqual(events[-1]["docs_ref"], "docs/ORCHESTRATION.md#execution-sites")
         self.assertEqual(self._probes(), [])
+
+    def test_a_configuration_handed_in_is_the_one_gated(self) -> None:
+        """`sites_config` is what a closure member is gated against: the configuration `main`
+        loaded, not the file as it stands now (which an operator may have edited meanwhile)."""
+        from tools.execution_sites import SitesConfig, Site
+        with _real_target_resolution():
+            profile = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        self._sites("sites_version: 1\nsites:\n  local:\n    executes: [gpu]\n")
+        handed = SitesConfig(sites={"local": Site("local", ("cpu",))})
+        self.assertIs(run_workflow._sites_rejection(self.repo_root, profile, "validate",
+                                                    sites_config=handed), handed)
+        self.assertEqual(run_workflow._sites_rejection(self.repo_root, profile,
+                                                       "validate")["reason"],
+                         "target_profile_invalid")
 
 
 if __name__ == "__main__":

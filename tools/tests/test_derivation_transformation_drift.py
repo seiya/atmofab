@@ -463,13 +463,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # quality-check argv table both paths read; the `gpu` record declares `execution` with a
     # package module, which `launch_declarations` digests. The derivation inputs are unchanged: a
     # site is a record, and a run at `local` and one at a remote site of the same tree key equal.
-    # Re-pinned within PR-3's review (round 1), before the acceptance run that stamps it: the
-    # remote executor's probe and job-directory cleanup, and the `gpu` package's probe docstring.
-    # The self-ssh acceptance run orch_20260926T082603Z_3dbb0c04 carries `execute-5` and ran the
-    # round-0 code; execute-5 is on no branch but this one, so no other run carries it.
-    # Re-pinned again in round 2: the probe's banner line, its noexec check, the `gpu` probe
-    # docstring's wording, and `LaunchShape`'s docstring (where `env` is merged at a site).
-    "execute-5": "ad78d5b0f6f58178515773153810bf5474c54b1f03ce1600171cb05517140b21",
+    # Re-pinned within PR-3's review, without a bump, three times (rounds 1, 2 and 3): the
+    # remote executor's launch-time probe (`probe_site`: a leading empty line, the workdir /
+    # noexec / `timeout -k` / startup-output checks) and its removal of an emptied orchestration
+    # directory after collection, and docstrings (`LaunchShape`, the `gpu` probe module). None of
+    # them changes what a job runs or records. Two runs carry `execute-5` from earlier digests of
+    # this branch — the self-ssh run orch_20260926T082603Z_3dbb0c04 (round-0 code) and the remote
+    # acceptance run orch_20260926T085603Z_0083aa59 (round-1 code, 24b09466) — and what they ran
+    # is the job script and the conductor wiring these re-pins leave unchanged.
+    "execute-5": "e6b9360b446f8588c3ea73a0a4a4ddfd469eaf4a807706619361c736830fa48a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

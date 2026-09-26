@@ -191,9 +191,10 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     `target_profile_invalid` (the site the target maps to does not execute its hardware class,
     for a run that reaches `Validate`); and for a remote site that the run will execute at,
     `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
-    did not come back), `missing_required_site_tools` and `site_machine_mismatch` (the shipped
-    binary is built here, so the site must be this machine type) and `site_unusable` (its
-    `workdir` cannot be made or written, or its `timeout` does not take `-k`). `sites_config`, when
+    did not come back), `site_machine_mismatch` (the shipped binary is built here, so the site
+    must be this machine type — asked first of the probe's answers, since the remedy for any
+    other is wasted on the wrong site), `missing_required_site_tools` and `site_unusable`
+    (`remote_execution.SiteProbe.problems`). `sites_config`, when
     given, is the configuration `main` already loaded: a closure member is gated against it, with
     the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
     import platform as _platform
@@ -218,7 +219,10 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     violations = site_violations(sites_config, target_profile, until_phase=until_phase)
     if violations:
         return {"status": "fail", "reason": "target_profile_invalid",
-                "detail": "; ".join(violations)}
+                "detail": ("; ".join(violations) + " — map the target to a site that executes "
+                           "it in sites.yaml (docs/examples/sites.example.yaml; "
+                           "docs/ORCHESTRATION.md §Execution sites)"),
+                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     site = sites_config.site_for(target_profile.target_id)
     if site.is_local or str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
         return sites_config
@@ -239,6 +243,16 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            f"that a non-interactive ssh to it succeeds without a prompt and that "
                            f"its login shell is a POSIX-family shell (see docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
+    # The machine first: a site of another machine type is the wrong site, and fixing its
+    # programs or its workdir first would be work thrown away.
+    if probe.machine != _platform.machine():
+        return {"status": "fail", "reason": "site_machine_mismatch", "site": site.site_id,
+                "detail": (f"site {site.site_id} is a {probe.machine} machine and this host, "
+                           f"which builds the binary it would run, is a "
+                           f"{_platform.machine()} one; map target "
+                           f"{target_profile.target_id} to a site of this machine type in "
+                           f"sites.yaml"),
+                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     if probe.missing:
         return {"status": "fail", "reason": "missing_required_site_tools",
                 "site": site.site_id, "missing": list(probe.missing), "required": list(required),
@@ -251,14 +265,6 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                 "detail": (f"site {site.site_id}: {'; '.join(probe.problems)} (see "
                            f"docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
-    if probe.machine != _platform.machine():
-        return {"status": "fail", "reason": "site_machine_mismatch", "site": site.site_id,
-                "detail": (f"site {site.site_id} is a {probe.machine} machine and this host, "
-                           f"which builds the binary it would run, is a "
-                           f"{_platform.machine()} one; map target "
-                           f"{target_profile.target_id} to a site of this machine type in "
-                           f"sites.yaml"),
-                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     return sites_config
 
 

@@ -1081,12 +1081,30 @@ class ProbeSiteTests(unittest.TestCase):
         with self.h.env(), mock.patch.object(rx, "_ssh", side_effect=banner):
             got = rx.probe_site(self.h.site, ("zz-no-such-tool", "sh"))
         self.assertEqual(got.missing, ("zz-no-such-tool",))
+        # And the banner itself is named: scp fails on a login that prints.
+        self.assertEqual(got.problems, (rx.STARTUP_OUTPUT_PROBLEM,))
 
-    def test_a_login_banner_is_not_read(self) -> None:
+    def test_startup_output_is_not_read_as_a_probe_line_and_is_named(self) -> None:
         with mock.patch.object(rx, "_ssh", return_value=(
                 f"Welcome\n{rx.PROBE_MARKER} machine x86_64\nbye\n")):
             self.assertEqual(rx.probe_site(self.h.site, ("sh",)),
-                             rx.SiteProbe(missing=(), machine="x86_64"))
+                             rx.SiteProbe(missing=(), machine="x86_64",
+                                          problems=(rx.STARTUP_OUTPUT_PROBLEM,)))
+        # Empty lines are not output: the probe prints one itself.
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"\n\n{rx.PROBE_MARKER} machine x86_64\n")):
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)).problems, ())
+
+    def test_a_login_that_prints_is_named_through_the_transport(self) -> None:
+        fake = self.h.root / "chatty"
+        fake.mkdir()
+        # A startup file's echo, stood in for by an `sh` that prints before it runs the script.
+        real_sh = shutil.which("sh")
+        (fake / "sh").write_text(f"#!{real_sh}\necho 'Welcome to the site'\nexec {real_sh} \"$@\"\n")
+        (fake / "sh").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.problems, (rx.STARTUP_OUTPUT_PROBLEM,))
 
     def test_a_malformed_request_is_refused_before_any_call(self) -> None:
         local = es.Site(site_id="local", executes=("cpu",))

@@ -487,6 +487,12 @@ _PROBE_CHECKS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: The problem `probe_site` names when the site's login prints to stdout before the probe's own
+#: lines.
+STARTUP_OUTPUT_PROBLEM = ("its login's startup files print to stdout, on which scp fails "
+                          "(a non-interactive login must print nothing)")
+
+
 @dataclass(frozen=True)
 class SiteProbe:
     """What `probe_site` found: the programs of those asked for that the site's login shell
@@ -540,9 +546,14 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     machines: list[str] = []
     problems: list[str] = []
     names = dict(_PROBE_CHECKS)
+    printed = False
     for line in out.splitlines():
         if not line.startswith(PROBE_MARKER + " "):
-            continue  # a login shell's startup files may print
+            # Output of the login's startup files. It does not hide a probe line (the script's
+            # first line is empty), and it is named: scp, which ships and collects every job,
+            # fails on a login that prints.
+            printed = printed or bool(line.strip())
+            continue
         kind, _, value = line[len(PROBE_MARKER) + 1:].partition(" ")
         if kind == "missing" and value in executables:
             missing.append(value)
@@ -555,6 +566,8 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     if len(machines) != 1:
         raise RemoteExecutionError(
             f"the probe printed {len(machines)} machine lines, not one ({remote})")
+    if printed:
+        problems.append(STARTUP_OUTPUT_PROBLEM)
     return SiteProbe(missing=tuple(missing), machine=machines[0], problems=tuple(problems))
 
 
