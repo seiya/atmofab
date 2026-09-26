@@ -2157,6 +2157,37 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(seen, [frozenset({"build", "compile"}), frozenset()])
         self.assertIsInstance(seen[0], frozenset)
 
+    def test_run_conductor_hands_the_drivers_site_to_the_conductor(self) -> None:
+        """Issue #293: `site` reaches `Conductor.site` as the driver resolved it, and its
+        absence is the local site (None), never a site the conductor resolves itself."""
+        from unittest.mock import patch
+
+        from tools.execution_sites import Site
+        seen: list[object] = []
+        orig_init = wc.Conductor.__init__
+
+        def _capture_init(self, **kw):  # type: ignore[no-untyped-def]
+            orig_init(self, **kw)
+            seen.append(self.site)
+
+        box = Site(site_id="box", executes=("cpu",), host="box", workdir="/w")
+        common = dict(
+            repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
+            spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
+            llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+            workflow_mode="dev", env={})
+        with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
+             patch.object(wc, "prepare_node",
+                          return_value=wc.NodeRefs(target_id=_TARGET_ID, node_key="c/x@0.1.0",
+                                                   spec_path="spec/c/x", ir_id="x_1",
+                                                   pipeline_id="x_1")), \
+             patch.object(wc.Conductor, "__init__", _capture_init), \
+             patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch.object(wc, "resolve_run_target", return_value=None):
+            wc.run_conductor(**common, site=box)
+            wc.run_conductor(**common)
+        self.assertEqual(seen, [box, None])
+
     def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
         """A model-less claude entry is stamped with the SPEC-side default, and that default
         is not read out of the operator's `~/.claude`.

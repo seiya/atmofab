@@ -3307,6 +3307,10 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             self._seed_closure_target_specs(repo_root)
+            # A site configuration (issue #293), so that what reaches the closure driver is
+            # the one `main` loaded rather than a default.
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu]\n", encoding="utf-8")
             # entry orch is a dependency node carrying the closure back-link
             self._seed_resumable_orchestration(
                 repo_root, "orch_target", spec_ref="spec/component/c",
@@ -3328,6 +3332,10 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(closure_kwargs["target_orchestration_id"], "orch_target")
             self.assertEqual(closure_kwargs["target_spec_ref"], "spec/problem/a")
             self.assertEqual(closure_kwargs["until_phase"], "Validate")
+            from tools.execution_sites import load_sites
+            self.assertEqual(closure_kwargs["sites_config"].sha256,
+                             load_sites(repo_root).sha256)
+            self.assertTrue(closure_kwargs["sites_config"].sha256)
             self.assertEqual(
                 closure_kwargs["prior_orch_by_spec"],
                 {"spec/component/c": "orch_target"},
@@ -6211,11 +6219,21 @@ class ParallelClosureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
+            # The member process reads the site configuration itself (issue #293), hands it to
+            # `_run_node` and records it on its own invocation.
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu]\n", encoding="utf-8")
             code, captured, events = self._run_member(
                 repo_root, self._member_argv(repo_root), ready=False)
             self.assertEqual(code, 0)
             self.assertEqual(len(captured), 1)
             kw = captured[0]
+            from tools.execution_sites import load_sites
+            sha = load_sites(repo_root).sha256
+            self.assertTrue(sha)
+            self.assertEqual(kw["sites_config"].sha256, sha)
+            self.assertEqual(kw["invocation"]["sites_config_sha256"], sha)
+            self.assertEqual(kw["invocation"]["site"]["site_id"], "local")
             self.assertEqual(kw["orchestration_id"], "orch_c")
             self.assertEqual(kw["spec_ref"], "spec/component/c")
             self.assertEqual(kw["until_phase"], "Validate")
