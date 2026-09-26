@@ -48,7 +48,7 @@ Out of scope, each for a stated reason:
 
 ## Definitions
 - **target-stack axis** (**axis**): one dimension of the technology choice a run makes. The
-  declared axes are `language`, `build_system`, `compiler`, `linter`, `parallel`, and `hardware`. Each axis
+  declared axes are `language`, `build_system`, `compiler`, `linter`, `parallel`, `hardware`, and `scheduler`. Each axis
   and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
   is the source of truth; this sentence is the only place the list is written out, and
   `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` and fails on any
