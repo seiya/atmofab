@@ -179,8 +179,12 @@ def build_tuple() -> dict[str, str]:
 
 #: The capabilities whose DECLARATION decides a launch environment (issue #289): which parallel
 #: value gets a package environment and which gets the empty one, and which hardware class runs
-#: at all, are read off the registry records by `tools/host_execution.py`.
-_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env"})
+#: at all, are read off the registry records by `tools/host_execution.py`. And what a site's
+#: scheduler runs a job under (issue #293 PR-4), read the same way by
+#: `tools/remote_execution._submission`: the prefix decides which machine runs the commands and
+#: with what allocation, as the hardware class's module decides the device probe.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit"})
+_LAUNCH_AXES = ("parallel", "hardware", "scheduler")
 
 
 def launch_declarations() -> dict[str, str]:
@@ -189,7 +193,7 @@ def launch_declarations() -> dict[str, str]:
     Round 1 digested the records' declarations and one named module, and round 2 changed the
     re-export attribute (`CAPABILITY_MODULE_ATTR`) and the package `__init__` to route openmp's
     environment through a new module with every pin green. So this reads what the dispatch
-    READS: each parallel / hardware record's module and where it declares a launch capability,
+    READS: each parallel / hardware / scheduler record's module and where it declares a launch capability,
     the attribute row the dispatch resolves by, and — for every capability a package implements
     — the file of the package and of the module `registry.capability_module` returns. A new
     record, a moved declaration, a renamed row or a rewired re-export each move it."""
@@ -197,7 +201,7 @@ def launch_declarations() -> dict[str, str]:
 
     members: dict[str, str] = {}
     for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
-        if axis not in ("parallel", "hardware"):
+        if axis not in _LAUNCH_AXES:
             continue
         key = f"{axis}/{backend_id}"
         members[f"{key} record"] = json.dumps(
@@ -471,7 +475,22 @@ PINNED_EXECUTE: dict[str, str] = {
     # this branch — the self-ssh run orch_20260926T082603Z_3dbb0c04 (round-0 code) and the remote
     # acceptance run orch_20260926T085603Z_0083aa59 (round-1 code, 24b09466) — and what they ran
     # is the job script and the conductor wiring these re-pins leave unchanged.
-    "execute-5": "e6b9360b446f8588c3ea73a0a4a4ddfd469eaf4a807706619361c736830fa48a",
+    # Re-pinned by PR-4 (the `slurm` scheduler), without a bump: a `none` site's job runs the
+    # same script and is read the same way (no scheduler lines, `job_id` null, `queue_wait_ms`
+    # 0), and a scheduler's job runs that same script under its backend's prefix and records the
+    # job id and the queue wait — `execution_site` fields, a record of where and how, like the
+    # site itself, and in no key. Re-pinned again in PR-4's round 1: a line whose first word only
+    # BEGINS with a scheduler marker is refused rather than skipped, which a `none` site's job
+    # never prints. And once more in round 1: the tuple gained the scheduler records and the
+    # `slurm` package's `job_submit` module, which the round-1 review found outside it (a change
+    # to the prefix a job runs under moved no pin). None of it changes a none site's job. Then the
+    # prefix's time limit moved before the directives (a directive may shorten it). And a
+    # docstring corrected in round 2 (what a process reaching the script's stdout can do), and
+    # docstrings again in round 3. One none-site input IS read differently since PR-4, found in
+    # round 3: a platform value containing a scheduler marker (a node named `atmofab-jobs01`) is
+    # now refused as a marker off its line's start, where origin/main recorded it. It fails
+    # closed, so no certified output is wrong without a bump.
+    "execute-5": "8431b41c5312e751cbbd1581922ba0c808e0e517d27376553c56cb32142ca3fb",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

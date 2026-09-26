@@ -36,11 +36,15 @@ Every way the evidence could be incomplete or not this job's is a refusal
   is a lost status and is refused, never read as 0; a second line for one command, a line for a
   command that should not have run (a command runs only when every earlier one exited 0), and
   a line that does not parse are refused too. A process that reaches the script's stdout
-  anyway — through `/proc/<pid>/fd/1`, which the same user can open — can add lines but cannot
-  remove the script's own: an added line is a second one, and text written without a newline
-  glues onto the script's next line, which then carries a marker somewhere other than at its
-  start and is refused. The platform facts travel the same way (`PLATFORM_MARKER`), printed
-  once each before the first command starts;
+  anyway — through `/proc/<pid>/fd/1`, which the same user can open — and opens it for WRITING
+  can add lines but cannot remove the script's own: an added line is a second one, and text
+  written without a newline glues onto the script's next line, which then carries a marker
+  somewhere other than at its start and is refused. NOT closed: opened for READING, the same
+  path hands out the pipe's read end (measured on Linux), so a process a command left running
+  could consume a later command's status line before the host reads it and print one of its
+  own. It would have to know this module's line grammar, which no leaf is shown. The platform
+  facts travel the same way (`PLATFORM_MARKER`), printed once each before the first command
+  starts;
 - a shipped file that does not come back byte-identical to its local source is refused: the
   entries name each shipped file by its local source, so one a command rewrote before a later
   command ran it (the quality check's control file) would be recorded as unchanged;
@@ -76,9 +80,22 @@ site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` b
 will reach `Validate` runs — once at launch, and again before each dependency member of a
 `--with-deps` run — so a site that cannot be reached, lacks a program the job needs, cannot hold
 or run it, or is another machine is refused before that node is billed (`tools/run_workflow.py`
-`_sites_rejection`). Only `scheduler: none` is implemented — the job
-script runs in the foreground of the ssh call; a site whose scheduler is anything else is refused
-here until a scheduler backend implements `job_submit`.
+`_sites_rejection`).
+
+A site's `scheduler` changes one thing: the argv PREFIX the job script runs under in the same ssh
+call. A `none` site runs it under none. A batch scheduler's backend spells one through
+`job_submit` (`_submission`): a command that waits for an allocation, runs the script as the job's
+one task with the task's stdout relayed to its own — so the statuses travel on the same channel
+and every refusal above holds unchanged — and exits with the task's status. Two more lines then
+travel on that channel, each exactly once: `SUBMIT_MARKER`, printed by the login shell before the
+prefix runs, with the time the job was asked for, and `JOB_MARKER`, printed by the job before its
+first command, with its id (read from the backend's `JOB_ID_VARIABLE`) and the time it started;
+the difference is the record's `queue_wait_ms`. A job that is not granted an allocation within the
+site's `queue_timeout_sec` (default `QUEUE_TIMEOUT_DEFAULT_SEC`) is ended by the prefix, and one
+that outlives the scheduler's time limit is killed by the scheduler: both make the ssh call exit
+non-zero, which is refused like any transport failure. A scheduler's job is not cancelled when
+the ssh call ends early; the time limit in force bounds it — the prefix's, or a longer one a
+directive set.
 """
 
 from __future__ import annotations
@@ -96,7 +113,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tools.execution_sites import DIRECT_SCHEDULER, Site
+from tools.backends import registry
+from tools.execution_sites import Site
 
 #: The local programs the transport runs, in the order it runs them.
 TRANSPORT_EXECUTABLES: tuple[str, ...] = ("ssh", "scp")
@@ -113,6 +131,9 @@ KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
+#: Seconds a scheduler's job may wait for an allocation when its site states no
+#: `queue_timeout_sec`.
+QUEUE_TIMEOUT_DEFAULT_SEC = 3600
 #: Each command's output lives in this subdirectory of the job directory, which no shipped file may enter.
 CONTROL_DIR = "ctl"
 #: A path element of a job directory or a shipped file: no separator, no shell-active character,
@@ -126,9 +147,13 @@ STATUS_MARKER = "atmofab-status"
 #: `PLATFORM_KEYS`, plus `gpu` when the request carries a probe; an empty value is "unknown".
 PLATFORM_MARKER = "atmofab-platform"
 PLATFORM_KEYS = ("machine", "node", "cpu")
+#: A scheduler's job only: `<marker> <epoch>`, printed by the login shell before the job is asked
+#: for, and `<marker> <job_id> <epoch>`, printed by the job when it starts.
+SUBMIT_MARKER = "atmofab-submitted"
+JOB_MARKER = "atmofab-job"
 #: A line of the script's stdout that carries no marker — what a login shell's startup files
 #: print — is not read; one that carries a marker must carry exactly one, at its start.
-_MARKERS = (STATUS_MARKER, PLATFORM_MARKER)
+_MARKERS = (STATUS_MARKER, PLATFORM_MARKER, SUBMIT_MARKER, JOB_MARKER)
 _STATUS_LINE = re.compile(rf"{STATUS_MARKER} (\S*) (\S*) (\S*) (\S*)")
 _INT = re.compile(r"-?[0-9]+")
 #: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
@@ -244,15 +269,33 @@ def _under(path: str, root: str, what: str) -> None:
         raise ValueError(f"{what} {path!r} is not under {root} by plain path elements")
 
 
+def _submission(scheduler: str) -> Any:
+    """The `job_submit` module of `scheduler`'s backend package, or None for a scheduler whose
+    `job_submit` the neutral core implements — any such record runs the job script under no
+    prefix and records no job id (`none` is the one today; until PR-4 the executor refused every
+    scheduler but `none` by name). A scheduler that does not declare `job_submit` is refused
+    (`ValueError`)."""
+    reason = registry.missing_capability_reason("scheduler", scheduler, "job_submit")
+    if reason is not None:
+        raise ValueError(f"scheduler: {reason}")
+    if "job_submit" not in registry.get("scheduler", scheduler).backend_provides:
+        return None
+    return registry.capability_module("scheduler", scheduler, "job_submit")
+
+
+def scheduler_executables(scheduler: str) -> tuple[str, ...]:
+    """The programs a site's non-interactive login must resolve to run a job through
+    `scheduler`, beyond `REMOTE_EXECUTABLES`: its backend's, or none."""
+    module = _submission(scheduler)
+    return tuple(str(e) for e in module.REMOTE_EXECUTABLES) if module is not None else ()
+
+
 def _validate(request: JobRequest) -> None:
     """Refuse a malformed request before any transport call: a host defect, not the site's."""
     site = request.site
     if site.is_local or not site.host or not site.workdir:
         raise ValueError(f"site {site.site_id!r} is not a remote site")
-    if site.scheduler != DIRECT_SCHEDULER:
-        raise ValueError(
-            f"site {site.site_id!r} submits through scheduler {site.scheduler!r}, which this "
-            f"executor does not implement yet; only {DIRECT_SCHEDULER!r} runs")
+    _submission(site.scheduler)
     _under(request.job_dir, site.workdir.rstrip("/"), "job_dir")
     if request.job_dir == site.workdir.rstrip("/"):
         raise ValueError("job_dir is the site's workdir itself")
@@ -319,6 +362,13 @@ def render_job_script(request: JobRequest) -> str:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
         lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || fail 3 {q(f'cannot make {c.cwd}')}")
+    submission = _submission(request.site.scheduler)
+    if submission is not None:
+        # The job's id and start, before any command: an empty id is refused by the reader.
+        variable = str(submission.JOB_ID_VARIABLE)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+            raise ValueError(f"JOB_ID_VARIABLE {variable!r} is not a variable name")
+        lines.append(f"printf '%s %s %s\\n' {JOB_MARKER} \"${{{variable}-}}\" \"$(date +%s)\"")
     # The platform facts, before any command runs, each on a line of its own and always printed:
     # a site that lacks one tool prints that fact empty.
     facts = [("machine", "uname -m"), ("node", "hostname"),
@@ -389,12 +439,14 @@ def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
 
 
 def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str, str]]],
-                                                   dict[str, list[str]]]:
-    """The status lines by tag and the platform values by key, from the job script's stdout.
-    A line with no marker is skipped; a line with a marker anywhere but once at its start, or
-    that does not parse, is refused."""
+                                                   dict[str, list[str]], list[list[str]]]:
+    """The status lines by tag, the platform values by key, and the scheduler's lines (each a
+    list of words, the marker first), from the job script's stdout. A line with no marker is
+    skipped; a line with a marker anywhere but once at its start, or a status line that does not
+    parse, is refused."""
     statuses: dict[str, list[tuple[str, str, str]]] = {}
     facts: dict[str, list[str]] = {}
+    scheduled: list[list[str]] = []
     for line in stdout.splitlines():
         hits = sum(line.count(m) for m in _MARKERS)
         if not hits:
@@ -406,11 +458,39 @@ def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str,
             key, _, value = line[len(PLATFORM_MARKER) + 1:].partition(" ")
             facts.setdefault(key, []).append(value)
             continue
+        if line.startswith((SUBMIT_MARKER + " ", JOB_MARKER + " ")):
+            scheduled.append(line.split(" "))
+            continue
         m = _STATUS_LINE.fullmatch(line)
         if not m or not all(_INT.fullmatch(v) for v in m.group(2, 3, 4)):
             raise RemoteExecutionError(f"a status line does not parse: {line[:200]!r} ({remote})")
         statuses.setdefault(m.group(1), []).append(m.group(2, 3, 4))
-    return statuses, facts
+    return statuses, facts, scheduled
+
+
+def _scheduled(lines: list[list[str]], scheduler: bool, remote: str) -> tuple[str | None, int]:
+    """The job id and the queue wait in ms, from the scheduler's lines: none for a job run under
+    no scheduler, exactly one `SUBMIT_MARKER` line and one `JOB_MARKER` line, each in its shape,
+    otherwise. A wait that comes out negative — the two times are read on two machines, the login
+    node and the job's — is recorded as 0."""
+    if not scheduler:
+        if lines:
+            raise RemoteExecutionError(
+                f"scheduler lines from a job run under no scheduler: {lines} ({remote})")
+        return None, 0
+    submits = [w for w in lines if w[0] == SUBMIT_MARKER]
+    jobs = [w for w in lines if w[0] == JOB_MARKER]
+    if len(submits) != 1 or len(jobs) != 1:
+        raise RemoteExecutionError(
+            f"{len(submits)} {SUBMIT_MARKER} and {len(jobs)} {JOB_MARKER} lines, not one each "
+            f"({remote})")
+    submit, job = submits[0], jobs[0]
+    if len(submit) != 2 or not _INT.fullmatch(submit[1]) or len(job) != 3 \
+            or not _ELEMENT.fullmatch(job[1]) or not _INT.fullmatch(job[2]):
+        raise RemoteExecutionError(
+            f"a scheduler line does not parse (an empty job id is the job's variable unset): "
+            f"{' '.join(submit)!r}, {' '.join(job)!r} ({remote})")
+    return job[1], max(0, int(job[2]) - int(submit[1])) * 1000
 
 
 def _statuses(lines: dict[str, list[tuple[str, str, str]]], commands: tuple[CommandSpec, ...],
@@ -628,16 +708,31 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     #    script runs, and bash reads a script file a command at a time, so the rewritten rest is
     #    what it executes (reproduced in round 4: the second command skipped, a clean status
     #    printed in its place).
+    #    A scheduler's job runs the same script under its backend's prefix, which is given the
+    #    time the script may take and is itself bounded by the queue wait on top of it.
     bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
-    job_stdout = _ssh(host, f"sh -c {q(render_job_script(request))}",
-                      stage="run the job script", timeout=bound, remote=remote)
+    command = f"sh -c {q(render_job_script(request))}"
+    submission = _submission(site.scheduler)
+    if submission is not None:
+        queue_timeout = site.queue_timeout_sec or QUEUE_TIMEOUT_DEFAULT_SEC
+        wall_clock = bound + (PROBE_TIMEOUT_SEC if request.platform_probe else 0)
+        prefix = submission.foreground_argv(
+            directives=tuple(site.scheduler_directives),
+            job_name=f"atmofab-{remote.rsplit('/', 1)[1]}",
+            wall_clock_sec=wall_clock, queue_timeout_sec=queue_timeout)
+        # The first line printed is empty, for the reason the job script's is.
+        command = (f"echo; printf '%s %s\\n' {SUBMIT_MARKER} \"$(date +%s)\" && "
+                   f"exec {shlex.join(str(a) for a in prefix)} {command}")
+        bound = queue_timeout + wall_clock + TRANSPORT_GRACE_SEC
+    job_stdout = _ssh(host, command, stage="run the job script", timeout=bound, remote=remote)
 
     # 4. Collect. A failure here leaves the remote directory for the operator.
     _scp([f"{host}:{remote}"], str(collected), stage="collect the job directory", remote=remote)
     ctl = collected / CONTROL_DIR
 
     # 5. Read every status, and the platform, before anything is recorded.
-    status_lines, facts = _job_lines(job_stdout, remote)
+    status_lines, facts, scheduler_lines = _job_lines(job_stdout, remote)
+    job_id, queue_wait_ms = _scheduled(scheduler_lines, submission is not None, remote)
     statuses = _statuses(status_lines, request.commands, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
     # Every shipped file must come back as it was sent. The entries name each one by its local
@@ -718,7 +813,7 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             "return_code": result["return_code"],
             **({"error": result["error"]} if timed_out else {}),
             "site": {"site": site.site_id, "host": host, "scheduler": site.scheduler,
-                     "job_id": None, "remote_cwd": c.cwd, "remote_command": list(c.argv)},
+                     "job_id": job_id, "remote_cwd": c.cwd, "remote_command": list(c.argv)},
             **server._attribution(dict(request.attribution)),
         }
         server._append_command_log(c.command_log_path, entry)
@@ -733,5 +828,5 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
         results=tuple(results),
         platform=platform_record,
         site_record={"site": site.site_id, "host": host, "scheduler": site.scheduler,
-                     "job_id": None, "remote_dir": remote, "queue_wait_ms": 0},
+                     "job_id": job_id, "remote_dir": remote, "queue_wait_ms": queue_wait_ms},
         collected=collected)

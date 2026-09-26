@@ -17,10 +17,13 @@ class in its `executes`. The local site's default is `LOCAL_DEFAULT_EXECUTES`.
 
 The loader follows `tools/llm_config.py`: a closed document shape, a repeated key refused, and
 every refusal NAMED (`SitesConfigError.rule`, one of `SITES_CONFIG_RULES`), because this is a
-file an operator writes by hand. Values that reach a remote shell — `host`, `workdir`,
-`scheduler_directives` — are refused at load when they carry a character the build-runtime
-server refuses in a value for the same reason (`_SHELL_ACTIVE_CHARS`), read from the server
-rather than copied.
+file an operator writes by hand. Values that reach a remote shell — `host`, `workdir` — are
+refused at load when they carry a character the build-runtime server refuses in a value for the
+same reason (`_SHELL_ACTIVE_CHARS`), read from the server rather than copied. A
+`scheduler_directives` word reaches the remote shell only as one `shlex.quote`d argv word of the
+prefix the scheduler's backend spells (`remote_execution._run_job`), so it is refused only for a
+character that is not printable ASCII: a real directive's `|`, `[` or `'` is the scheduler's
+syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2).
 
 The driver (`tools/run_workflow.py`) calls `load_sites` once per run, refuses with
 `site_violations`, and hands the resolved `Site` to the conductor, whose `Validate.execute` runs at
@@ -182,12 +185,13 @@ def _string(value: Any, where: str) -> str:
     return value
 
 
-def _remote_safe(value: str, where: str, *, spaces: bool) -> str:
+def _remote_safe(value: str, where: str, *, spaces: bool, quoted: bool = False) -> str:
     """Refuse a value a remote shell would act on or misread: a character in the server's
-    shell-active set, anything that is not printable ASCII (a NUL ends an argv element, a
-    non-breaking space reads as a space to a person and not to a shell), and a plain space
-    where `spaces` is False (it is admissible inside a directive, never in a host or a path)."""
-    bad = sorted(set(value) & _shell_active_chars())
+    shell-active set unless the value reaches the shell `quoted` (a directive word), anything
+    that is not printable ASCII (a NUL ends an argv element, a non-breaking space reads as a
+    space to a person and not to a shell), and a plain space where `spaces` is False (it is
+    admissible inside a directive, never in a host or a path)."""
+    bad = [] if quoted else sorted(set(value) & _shell_active_chars())
     bad += sorted({c for c in value if not (c.isascii() and c.isprintable())})
     if not spaces and " " in value:
         bad.append(" ")
@@ -282,7 +286,7 @@ def _remote_site(site_id: str, body: dict, where: str) -> Site:
                                    where=f"{where}.scheduler_directives")
         directives = tuple(
             _remote_safe(_string(d, f"{where}.scheduler_directives[{i}]"),
-                         f"{where}.scheduler_directives[{i}]", spaces=True)
+                         f"{where}.scheduler_directives[{i}]", spaces=True, quoted=True)
             for i, d in enumerate(raw))
     queue_timeout: int | None = None
     if "queue_timeout_sec" in body:

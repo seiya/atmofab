@@ -166,18 +166,21 @@ def required_host_executables(
     return tuple(found)
 
 
-def required_site_executables(selection: dict[str, str]) -> tuple[str, ...]:
+def required_site_executables(selection: dict[str, str], *, scheduler: str) -> tuple[str, ...]:
     """The programs a remote execution site must have for a job of the resolved selection
     (issue #293): what the job script itself needs beyond the POSIX utilities
-    (`remote_execution.REMOTE_EXECUTABLES`), and the build system, whose test target the quality
-    check runs there. Read out of the tables that run them, like `required_host_executables`."""
-    from tools.remote_execution import REMOTE_EXECUTABLES
+    (`remote_execution.REMOTE_EXECUTABLES`), the build system, whose test target the quality
+    check runs there, and what the site's `scheduler` runs the job under
+    (`remote_execution.scheduler_executables`). Read out of the tables that run them, like
+    `required_host_executables`."""
+    from tools.remote_execution import REMOTE_EXECUTABLES, scheduler_executables
 
     server = _build_runtime_server()
     build_system = selection["build_system"]
     _require_implemented("build_system", build_system)
     found: list[str] = []
-    for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system)):
+    for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system),
+                       *scheduler_executables(scheduler)):
         if executable not in found:
             found.append(executable)
     return tuple(found)

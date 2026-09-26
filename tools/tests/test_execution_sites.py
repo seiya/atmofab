@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -49,7 +50,8 @@ def _profile(target_id: str, hardware_class: str) -> SimpleNamespace:
     return SimpleNamespace(target_id=target_id, hardware_class=hardware_class)
 
 
-#: A scheduler record standing in for a batch scheduler, which PR-1 registers none of.
+#: A scheduler record standing in for a batch scheduler: the loader asks only whether the value is
+#: implemented, so these rows do not depend on which backend packages exist.
 _BATCH = registry.Backend("scheduler", "zz_batch", None, core_provides=frozenset({"job_submit"}))
 
 
@@ -264,21 +266,25 @@ class RefusalTests(unittest.TestCase):
                     self.assertEqual(exc.rule, "sites_config_shell_active_value", str(exc))
                     self.assertEqual(exc.where, f"sites.box.{field}")
 
-    def test_a_directive_is_refused_on_a_shell_active_character_but_not_a_space(self) -> None:
-        with _with_batch_scheduler():
+    def test_a_directive_takes_every_printable_character(self) -> None:
+        """A directive word reaches the remote shell quoted, so a scheduler's own syntax — an OR
+        constraint, a node range, a quote — loads; the executor's end of it is pinned by
+        `test_remote_execution.SchedulerTests.test_a_directive_reaches_the_scheduler_as_written`."""
+        with _with_batch_scheduler(), tempfile.TemporaryDirectory() as tmp:
             base = _BASE.replace("scheduler: none", "scheduler: zz_batch")
-            for ch in sorted(es._shell_active_chars()):
-                with self.subTest(ch=ch):
-                    exc = self._refuse(base + f"    scheduler_directives: [{('--a' + ch)!r}]\n")
-                    self.assertEqual(exc.rule, "sites_config_shell_active_value")
-                    self.assertEqual(exc.where, "sites.box.scheduler_directives[0]")
+            # Every printable member (the set's control characters stay refused: not printable).
+            chars = "".join(sorted(c for c in es._shell_active_chars() if c.isprintable()))
+            directives = ["--constraint=a|b", "--nodelist=n[01-02]", f"--a{chars}", "-p gpu"]
+            cfg = _Repo(tmp).load(base + f"    scheduler_directives: {json.dumps(directives)}\n")
+        self.assertEqual(cfg.sites["box"].scheduler_directives, tuple(directives))
 
     def test_the_shell_active_set_is_the_servers_own(self) -> None:
         """Read from the server, not copied: a character the server starts refusing is refused
         here too."""
-        import build_runtime_server  # on sys.path once `_shell_active_chars` has run
+        chars = es._shell_active_chars()  # puts the server on sys.path
+        import build_runtime_server
 
-        self.assertEqual(es._shell_active_chars(), frozenset(build_runtime_server._SHELL_ACTIVE_CHARS))
+        self.assertEqual(chars, frozenset(build_runtime_server._SHELL_ACTIVE_CHARS))
         with mock.patch.object(build_runtime_server, "_SHELL_ACTIVE_CHARS",
                                set(build_runtime_server._SHELL_ACTIVE_CHARS) | {"%"}):
             exc = self._refuse(_BASE.replace("host: box", "host: 'b%x'"))
