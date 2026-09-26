@@ -86,7 +86,13 @@ value is one more output, whether or not its `return` names anything.
   `double* p = u.data();` make `u` take `v` / `p`), and — past the Fortran binding, which follows
   no call — over calls whose parameter directions the types state: a function or kernel the model
   source defines, a dependency operation, `cudaMemcpy` / `cudaMemcpyAsync` (each output actual
-  takes every input actual as a source). A call to anything else is not followed.
+  takes the input actuals its callee's BODY lets reach it — a function the model source defines
+  is summarized from its body, to a fixed point; a dependency operation from its declaration,
+  every input; a copy from its source argument alone). A view built in place carries its first
+  element only (`View<...>{p, {n}}` carries `p`, not the extent `n`). A call to anything else —
+  a template, which the declaration reader does not read, included — is not followed. The check
+  is PER CALL: each dependency call's written names must reach an output (the Fortran binding
+  pools every call's candidates).
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.

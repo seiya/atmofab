@@ -715,7 +715,13 @@ _CONST_DECLARATION_RE = re.compile(
 
 
 def is_output_parameter(ctype: str) -> bool:
-    """Whether a function can write through a parameter of (normalized) type `ctype`."""
+    """Whether a function can write through a parameter of (normalized) type `ctype`. A
+    `__restrict__` qualifier and a top-level `const` on a by-value view or pointer say nothing
+    about the pointee, and an east `const` is the west one (round 3 of this change's review: a
+    kernel's `double* __restrict__ out` was read as an input)."""
+    ctype = re.sub(r"\b__restrict__\b|\b__restrict\b", "", ctype).strip()
+    ctype = re.sub(r"(?<=[>*])\s*const$", "", ctype)
+    ctype = _canonical_type(ctype)
     if ctype.startswith(("const ", "const&")):
         return False
     view = _OUT_VIEW_RE.match(ctype)
@@ -800,40 +806,107 @@ def _storage_names(expr: str) -> set[str]:
             | set(re.findall(r"(?<![\w)\]&])&\s*([A-Za-z_]\w*)", expr)))
 
 
-#: Calls the dataflow closure follows although this file does not define them: the CUDA runtime's
-#: copies, `(destination, source, ...)`.
-_RUNTIME_COPIES: dict[str, list[bool]] = {
-    "cudaMemcpy": [True, False, False, False],
-    "cudaMemcpyAsync": [True, False, False, False, False],
+#: A callee's summary: for each output parameter position, the input positions whose data can
+#: reach it. The CUDA runtime's copies write their destination from their source alone — the
+#: byte count and the kind carry no data (round 3 of this change's review: crediting the count
+#: `flux.size() * sizeof(double)` passed a discarded result).
+Summary = dict[int, frozenset[int]]
+_RUNTIME_COPIES: dict[str, Summary] = {
+    "cudaMemcpy": {0: frozenset({1})},
+    "cudaMemcpyAsync": {0: frozenset({1})},
 }
-_CALL_RE = re.compile(r"(?<![\w.>:])(?P<name>[A-Za-z_]\w*)\s*(?:<<<.*?>>>\s*)?\(", re.DOTALL)
+# A call: an optionally qualified name (`detail::axpy`, `dep_model::dep__flux`), optional template
+# arguments and an optional kernel launch configuration, then `(`. A member call (`u.data()`,
+# `p->f()`) is not one of the callees the closure follows.
+_CALL_RE = re.compile(
+    r"(?<![\w.])(?<!->)(?:[A-Za-z_]\w*\s*::\s*)*(?P<name>[A-Za-z_]\w*)\s*"
+    r"(?:<[^<>;(){}]*>\s*)?(?:<<<.*?>>>\s*)?\(", re.DOTALL)
+_VIEW_BRACE_RE = re.compile(r"^(?:atmofab\s*::\s*)?View\s*<[^{}]*>\s*\{(?P<body>.*)\}$", re.DOTALL)
 
 
-def _call_records(body: str, signatures: dict[str, list[bool]]) -> list[
+def _payload(arg: str) -> str:
+    """The part of an actual that carries data: the first element of a view built in place
+    (`View<double, 1>{fp, {n}}` carries `fp`; its extents carry none — round 3 of this change's
+    review: the extent `n` was read as a candidate and reached the output through an index);
+    the actual itself otherwise."""
+    arg = arg.strip()
+    view = _VIEW_BRACE_RE.match(arg)
+    if view is None:
+        return arg
+    return cpp_decls.split_top_level(view.group("body"))[0].strip()
+
+
+def _call_records(body: str, summaries: dict[str, Summary]) -> list[
         tuple[str, set[str], int, str, bool]]:
-    """One data edge per output actual of each call to a callee whose parameter directions are
-    KNOWN — a function or kernel this file defines, a dependency operation (its header), a CUDA
-    runtime copy: the names the actual hands over take every identifier of the call's input
-    actuals as sources. C++ states each parameter's direction in its type (`is_output_parameter`),
-    which is what lets the C++ binding cross a call where the Fortran binding's gate does not. A
-    call to anything else — a standard-library function, a function of another file — is not
-    followed. Flagged as not an assignment statement, so a call's output is never "assigned
-    before" a later call."""
+    """One data edge per output actual of each call to a callee whose SUMMARY is known — a
+    function or kernel this file defines (summarized from its body, `_function_summaries`), a
+    dependency operation (its header: every input may reach every output), a CUDA runtime copy:
+    the names the actual hands over take the identifiers of the input actuals its summary
+    names. C++ states each parameter's direction in its type (`is_output_parameter`), which is
+    what lets the C++ binding cross a call where the Fortran binding's gate does not. A call to
+    anything else — a standard-library function, a function of another file — is not followed.
+    Flagged as not an assignment statement, so a call's output is never "assigned before" a later
+    call."""
     records: list[tuple[str, set[str], int, str, bool]] = []
     for call in _CALL_RE.finditer(body):
-        out_at = signatures.get(call.group("name"))
-        if out_at is None:
+        summary = summaries.get(call.group("name"))
+        if summary is None:
             continue
         args = _call_arguments(body, call.end() - 1)
-        inputs: set[str] = set()
-        for index, arg in enumerate(args):
-            if not (index < len(out_at) and out_at[index]):
-                inputs |= _identifiers(arg)
-        for index, arg in enumerate(args):
-            if index < len(out_at) and out_at[index]:
-                for name in _actual_names(arg):
-                    records.append((name, set(inputs), call.start(), "", True))
+        for out_index, in_indices in summary.items():
+            if out_index >= len(args):
+                continue
+            inputs: set[str] = set()
+            for index in in_indices:
+                if index < len(args):
+                    inputs |= _identifiers(_payload(args[index]))
+            for name in _actual_names(args[out_index]):
+                records.append((name, inputs, call.start(), "", True))
     return records
+
+
+def _closure(seeds: set[str], records: list[tuple[str, set[str], int, str, bool]]) -> set[str]:
+    """Every name some seed's value is computed from, backward over `records`."""
+    sources = set(seeds)
+    changed = True
+    while changed:
+        changed = False
+        for lhs, rhs_ids, _pos, _rhs, _declared in records:
+            if lhs in sources and not rhs_ids <= sources:
+                sources |= rhs_ids
+                changed = True
+    return sources
+
+
+def _function_summaries(functions: list[cpp_decls.Function],
+                        fixed: dict[str, Summary]) -> dict[str, Summary]:
+    """`fixed` plus a summary of every function `functions` defines, computed from its BODY:
+    which input parameters' data reaches each output parameter, through assignments, aliases and
+    the calls it makes (round 3 of this change's review: a kernel credited from its signature
+    passed although its body ignored the dependency's result). Computed to a fixed point from
+    empty summaries, so a function is credited only with what its body shows, and a recursion
+    terminates."""
+    summaries = {**fixed, **{fn.name: {i: frozenset() for i, (ptype, _n) in enumerate(fn.params)
+                                       if is_output_parameter(ptype)}
+                             for fn in functions}}
+    changed = True
+    while changed:
+        changed = False
+        for fn in functions:
+            records = _assignments(fn.body) + _call_records(fn.body, summaries)
+            names = [name for _ptype, name in fn.params]
+            current = summaries[fn.name]
+            updated: Summary = {}
+            for out_index in current:
+                reached = _closure({names[out_index]}, records) if names[out_index] else set()
+                updated[out_index] = frozenset(
+                    i for i, name in enumerate(names)
+                    if i != out_index and name and name in reached
+                    and not is_output_parameter(fn.params[i][0]))
+            if updated != current:
+                summaries[fn.name] = updated
+                changed = True
+    return summaries
 
 
 def _call_arguments(body: str, open_at: int) -> list[str]:
@@ -858,6 +931,10 @@ def _actual_names(arg: str) -> set[str]:
     bare = re.fullmatch(r"&?\s*([A-Za-z_]\w*)", arg)
     if bare is not None:
         return {bare.group(1)}
+    arg = _payload(arg)
+    bare = re.fullmatch(r"&?\s*([A-Za-z_]\w*)", arg)
+    if bare is not None:
+        return {bare.group(1)}
     storage = _storage_names(arg)
     if storage:
         return storage
@@ -875,6 +952,12 @@ def _dependency_out_positions(model_file: Path, spec_id: str) -> dict[str, list[
         return None
     return {fn.name: [is_output_parameter(ptype) for ptype, _n in fn.params]
             for fn in cpp_decls.read(text).functions if fn.name.startswith(f"{spec_id}__")}
+
+
+def _signature_summary(out_at: list[bool]) -> Summary:
+    """A callee known by its declaration only: every input may reach every output."""
+    inputs = frozenset(i for i, out in enumerate(out_at) if not out)
+    return {i: inputs for i, out in enumerate(out_at) if out}
 
 
 def _outputs(fn: cpp_decls.Function) -> tuple[set[str], set[str]]:
@@ -921,8 +1004,10 @@ def _validate_problem_dependency_dataflow(
     model_file: Path, functions: list[cpp_decls.Function], code: str, dep_spec_ids: list[str],
     violations: list[str],
 ) -> None:
-    """A function that calls a dependency operation must let what that operation WRITES flow to
-    one of its own outputs, through assignments (the inert-call / discarded-result defect).
+    """Every dependency call of a function must let what that call WRITES flow to one of the
+    function's outputs (the inert-call / discarded-result defect) — PER CALL, where the Fortran
+    binding pools the candidates of every call of the function (round 3 of this change's review:
+    one consumed result passed a second, discarded one, against the authoring rules).
 
     The candidate outputs of a dependency call are the names whose storage its actuals hand over,
     minus two kinds the Fortran binding's rule also drops: a parameter of the enclosing function
@@ -941,9 +1026,10 @@ def _validate_problem_dependency_dataflow(
     identifier reaches its `return`, as the Fortran binding's result variable always is. The
     closure then runs backward from the function's outputs (and every identifier it returns)
     over assignments `lhs = rhs` — each `rhs` identifier is a source of `lhs` — over view and
-    pointer aliases (`_assignments`), and over calls whose parameter directions are known
-    (`_call_records`: this file's functions and kernels, the dependency operations, the CUDA
-    runtime copies). That last is where the C++ binding goes past the Fortran one, which follows
+    pointer aliases (`_assignments`), and over calls whose callee is SUMMARIZED
+    (`_call_records`: this file's functions and kernels, from their bodies to a fixed point, not
+    their signatures; the dependency operations, from their declarations; the CUDA runtime
+    copies, from their source argument alone; a template is not read, so not followed). That last is where the C++ binding goes past the Fortran one, which follows
     no call because it cannot tell which argument a call writes; C++ states it in the type, and a
     device lowering (copy to the device, a kernel, copy back) has no assignment for the gate to
     follow otherwise (round 2 of this change's review). A call to anything else is not followed;
@@ -959,9 +1045,9 @@ def _validate_problem_dependency_dataflow(
             positions.update(read)
     constants = {m.group("name") for m in _CONST_DECLARATION_RE.finditer(code)}
     function_names = {fn.name for fn in functions}
-    signatures = {**{fn.name: [is_output_parameter(ptype) for ptype, _n in fn.params]
-                     for fn in functions},
-                  **positions, **_RUNTIME_COPIES}
+    summaries = _function_summaries(
+        functions, {**{name: _signature_summary(out_at) for name, out_at in positions.items()},
+                    **_RUNTIME_COPIES})
     call_re = re.compile(
         r"\b(?P<name>(?:" + "|".join(re.escape(s) for s in dep_spec_ids) + r")__\w+)\s*\(")
     for fn in functions:
@@ -972,11 +1058,13 @@ def _validate_problem_dependency_dataflow(
         # is always an output. Skipped only when nothing leaves the function.
         if not outs and fn.returns == "void":
             continue
-        records = _assignments(fn.body) + _call_records(fn.body, signatures)
-        candidates: set[str] = set()
+        records = _assignments(fn.body) + _call_records(fn.body, summaries)
+        sources = _closure(set(outs) | returned, records)
+        discarded: set[str] = set()
         for call in call_re.finditer(fn.body):
             args = _call_arguments(fn.body, call.end() - 1)
             out_at = positions.get(call.group("name"))
+            candidates: set[str] = set()
             for index, arg in enumerate(args):
                 if out_at is not None and not (index < len(out_at) and out_at[index]):
                     continue
@@ -988,20 +1076,16 @@ def _validate_problem_dependency_dataflow(
                     if out_at is None and (name in constants or name in function_names):
                         continue
                     candidates.add(name)
-        if not candidates:
-            continue
-        sources = set(outs) | returned
-        changed = True
-        while changed:
-            changed = False
-            for lhs, rhs_ids, _pos, _rhs, _declared in records:
-                if lhs in sources and not rhs_ids <= sources:
-                    sources |= rhs_ids
-                    changed = True
-        if candidates.isdisjoint(sources):
+            # PER CALL: what THIS call writes must reach an output. The Fortran binding pools the
+            # candidates of every call of the function, so one call's result reaching the output
+            # passes another call whose result is discarded — which contradicts what the
+            # authoring rules tell the leaf (round 3 of this change's review).
+            if candidates and candidates.isdisjoint(sources):
+                discarded |= candidates
+        if discarded:
             violations.append(
                 f"{model_file}: function {fn.name} does not propagate dependency operation "
-                f"outputs to its output dataflow (candidates={sorted(candidates)})")
+                f"outputs to its output dataflow (candidates={sorted(discarded)})")
 
 
 def _validate_problem_metric_only_scalar_kernel(

@@ -1112,6 +1112,107 @@ class PhysicsGateTests(unittest.TestCase):
             out = self._gates(self._model(tmp, kernel + dropped), ["dep"])
             self.assertTrue(any("does not propagate" in v for v in out), out)
 
+    _KERNEL = ("__global__ void upd(const double* u, const double* f, double* {restrict}out,"
+               " double dt) {{\n  const int i = threadIdx.x;\n  out[i] = u[i] + dt * {use};\n}}\n")
+    _ROUND_TRIP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                   " double dt) {{\n  std::vector<double> flux(4);\n"
+                   "  dep_model::dep__flux(u, atmofab::View<double, 1>{{flux.data(), {{4}}}}, dt);\n"
+                   "  double* du = nullptr;\n  double* df = nullptr;\n  double* dn = nullptr;\n"
+                   "  cudaMemcpy(du, u.data, 32, cudaMemcpyHostToDevice);\n"
+                   "  cudaMemcpy(df, {copied}.data(), {count}, cudaMemcpyHostToDevice);\n"
+                   "  {launch}(du, df, dn, dt);\n"
+                   "  cudaMemcpy(u_new.data, dn, 32, cudaMemcpyDeviceToHost);\n}}")
+
+    def _round_trip(self, tmp: str, *, restrict: str = "", use: str = "f[i]",
+                    copied: str = "flux", count: str = "32",
+                    launch: str = "upd<<<1, 4>>>") -> list[str]:
+        kernel = self._KERNEL.format(restrict=restrict, use=use)
+        if "<double>" in launch:
+            kernel = "template <class T>\n" + kernel.replace("const double*", "const T*").replace(
+                "double* ", "T* ", 1)
+        body = kernel + self._ROUND_TRIP.format(copied=copied, count=count, launch=launch)
+        return self._gates(self._model(tmp, body), ["dep"])
+
+    def test_the_device_round_trip_is_followed_through_what_the_kernel_body_reads(self) -> None:
+        """Round 3 of this change's review. Passes: a `__restrict__` output pointer (was read as an
+        input). Refused: a kernel whose body ignores the flux (was credited from its signature),
+        a copy whose byte COUNT is the flux's (was credited as data) — each of the latter two
+        passed while the dependency result was discarded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._round_trip(tmp))
+            self.assertEqual([], self._round_trip(tmp, restrict="__restrict__ "))
+            # A TEMPLATE kernel is not read (`declarations` skips templates), so its launch is not
+            # followed: refused even when it consumes the flux — closed, as the rules say.
+            out = self._round_trip(tmp, launch="upd<double><<<1, 4>>>")
+            self.assertTrue(any("does not propagate" in v for v in out), out)
+            for label, kwargs in (("kernel ignores f", {"use": "u[i]"}),
+                                  ("count only", {"copied": "u", "count": "flux.size() * 8"})):
+                with self.subTest(label):
+                    out = self._round_trip(tmp, **kwargs)
+                    self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_a_qualified_helper_is_followed_and_summarized_from_its_body(self) -> None:
+        helper = ("namespace detail {{\nvoid axpy(double* y, const double* x, const double* f,"
+                  " double a, long n) {{\n  for (long i = 0; i < n; ++i) {{ y[i] = x[i] + a * {use}; }}"
+                  "\n}}\n}}\n")
+        call = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n  std::vector<double> flux(4);\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  detail::axpy(u_new.data, u.data, flux.data(), dt, 4);\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, helper.format(use="f[i]") + call),
+                                             ["dep"]))
+            out = self._gates(self._model(tmp, helper.format(use="x[i]") + call), ["dep"])
+            self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_a_view_s_extent_is_not_a_candidate(self) -> None:
+        """Round 3 of this change's review: `View<...>{fp, {n}}` made `n` a candidate, and `n`
+        reached the output through an index, passing a discarded flux."""
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n  std::vector<double> flux(4);\n  long n;\n  n = u.extent[0];\n"
+                "  double* fp = flux.data();\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {n}}, dt);\n"
+                "  for (long i = 0; i < 4; ++i) {\n    long j;\n    j = (i + 1) % n;\n"
+                "    u_new.data[i] = 0.5 * (u.data[i] + u.data[j]);\n  }\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._gates(self._model(tmp, body), ["dep"])
+            self.assertTrue(any("candidates=['fp']" in v for v in out), out)
+
+    def test_each_dependency_call_s_result_must_reach_an_output(self) -> None:
+        """Round 3 of this change's review: the candidates of every call were pooled, so one
+        consumed result passed a second, discarded one — against the authoring rules."""
+        header = ("namespace dep_model {\nvoid dep__flux(atmofab::View<const double, 1> u, "
+                  "atmofab::View<double, 1> f, double dt);\nvoid dep__norm("
+                  "atmofab::View<const double, 1> u, double& m);\n}\n")
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double& m_out, double dt) {\n  std::vector<double> flux(4);\n  double m;\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__norm(u, m);\n  m_out = m;\n"
+                "  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i]{use};\n  }\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(header)
+            model = self._model(tmp, body.replace("{use}", ""), header=False)
+            self.assertEqual([f"{model}: function p__step does not propagate dependency "
+                              "operation outputs to its output dataflow (candidates=['flux'])"],
+                             self._gates(model, ["dep"]))
+            model = self._model(tmp, body.replace("{use}", " + dt * flux[static_cast<std::size_t>(i)]"),
+                                header=False)
+            self.assertEqual([], self._gates(model, ["dep"]))
+
+    def test_a_pointer_taken_by_address_aliases_the_storage(self) -> None:
+        shape = ("  double* fp = &flux[0];\n"
+                 "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._flux_model(tmp, shape, self._CONSUME), ["dep"]))
+            out = self._gates(self._flux_model(tmp, shape, self._DISCARD), ["dep"])
+            self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_output_parameter_qualifiers(self) -> None:
+        for ctype in ("double*__restrict__", "atmofab::View<double,1>const", "double*const"):
+            self.assertTrue(cpp_source.is_output_parameter(ctype), ctype)
+        for ctype in ("double const&", "const double*__restrict__"):
+            self.assertFalse(cpp_source.is_output_parameter(ctype), ctype)
+
     def test_an_address_of_actual_and_an_assignment_after_a_keyword(self) -> None:
         """`&m` hands the storage of `m` over; after `else`, `do` or a ternary `?` an assignment
         is a STATEMENT, not a declaration's initializer (each clause of `_is_declaration`)."""
