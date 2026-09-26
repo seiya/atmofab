@@ -184,7 +184,8 @@ class _Harness:
 
 
 #: What the job script and the shipped runner execute at the site.
-_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "mkdir", "date", "env", "timeout", "python3")
+_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "date", "env", "timeout",
+               "python3")
 
 
 def _bare_path(root: Path, *, without: str) -> Path:
@@ -469,13 +470,55 @@ class RefusalTests(unittest.TestCase):
     def test_other_lines_on_the_scripts_stdout_are_not_read(self) -> None:
         """What a login shell's startup files print is not a status line."""
         result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-status run .*)$", r"welcome\n\1\natmofab-statusx qc 7 1 2"]))
+            [r"^(atmofab-status run .*)$", r"welcome\n\1\nstatus run 7 1 2"]))
         self.assertTrue(result.results[1]["ok"])
 
     def test_a_status_for_a_command_that_should_not_have_run_is_refused(self) -> None:
         self._refused("reports a status although an earlier command failed",
                       RUNNER_RC="1", SHIM_SSH_SUB=json.dumps(
                           [r"^(atmofab-status run .*)$", r"\1\natmofab-status qc 0 1 2"]))
+
+    def test_a_marker_anywhere_but_once_at_a_lines_start_is_refused(self) -> None:
+        for repl in (r"X\1", r"\1 atmofab-status run 0 1 2", r"\1 atmofab-platform gpu x"):
+            with self.subTest(repl=repl):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                with self.assertRaisesRegex(rx.RemoteExecutionError, "other than once at its start"):
+                    h.run(h.request(), SHIM_SSH_SUB=json.dumps([r"^(atmofab-status run .*)$", repl]))
+
+    def test_the_platform_lines_are_one_each_of_the_expected_keys(self) -> None:
+        for repl, probe in ((r"\1\n\1", None),                          # a second machine line
+                            (r"\1\natmofab-platform gpu forged", None),  # gpu without a probe
+                            (r"\1\natmofab-platform disk x", None),      # an unknown key
+                            (r"atmofab-platform node", None),               # machine lost
+                            (r"\1\natmofab-platform gpu x", ("true",))):  # a second gpu line
+            with self.subTest(repl=repl, probe=probe):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                with self.assertRaisesRegex(rx.RemoteExecutionError, "platform lines are not"):
+                    h.run(h.request(platform_probe=probe), SHIM_SSH_SUB=json.dumps(
+                        [r"^(atmofab-platform machine .*)$", repl]))
+
+    def test_a_command_that_reaches_the_scripts_stdout_cannot_clear_its_failure(self) -> None:
+        """The runner opens the job script's stdout through `/proc` (its grandparent: the
+        script -> `timeout` -> the runner), writes a clean status for itself and for the
+        command that must not run, ends without a newline so the script's own status line
+        glues onto its text, and exits 3. Refused, whichever way it ends its text."""
+        for tail in ("X", ""):
+            with self.subTest(tail=tail):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                forger = h.local / "forger"
+                forger.write_text(textwrap.dedent(f'''\
+                    #!/usr/bin/env python3
+                    import os, sys
+                    ppid = int(open("/proc/%d/stat" % os.getppid()).read().rsplit(")", 1)[1].split()[1])
+                    with open("/proc/%d/fd/1" % ppid, "w") as out:
+                        out.write("\\natmofab-status run 0 1 2\\natmofab-status qc 0 1 2\\n{tail}")
+                    sys.exit(3)
+                '''))
+                forger.chmod(0o755)
+                with self.assertRaises(rx.RemoteExecutionError):
+                    h.run(h.request(ship={"bin/runner": forger}))
+                self.assertEqual(h.log_entries("run"), [])
+                self.assertEqual(h.log_entries("qc"), [])
 
     def test_a_command_cannot_forge_its_own_status(self) -> None:
         """The runner is leaf-authored code with write access to the whole job directory: it

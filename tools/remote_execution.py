@@ -28,8 +28,12 @@ Every way the evidence could be incomplete or not this job's is a refusal
   `/dev/null`, so it holds no descriptor of the script's stdout. A command's missing status line
   is a lost status and is refused, never read as 0; a second line for one command, a line for a
   command that should not have run (a command runs only when every earlier one exited 0), and
-  a line that does not parse are refused too, so a line forged by anything else is refused
-  rather than read;
+  a line that does not parse are refused too. A process that reaches the script's stdout
+  anyway — through `/proc/<pid>/fd/1`, which the same user can open — can add lines but cannot
+  remove the script's own: an added line is a second one, and text written without a newline
+  glues onto the script's next line, which then carries a marker somewhere other than at its
+  start and is refused. The platform facts travel the same way (`PLATFORM_MARKER`), printed
+  once each before the first command starts;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a site machine other than
   the one the shipped files were built on, a program it cannot find or execute), and a job
@@ -81,17 +85,22 @@ KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
-#: The job's control files — the script, each command's output, the platform facts — live in
-#: this subdirectory of the job directory, which no shipped file may enter.
+#: The job's control files — the script and each command's output — live in this subdirectory of the job directory, which no shipped file may enter.
 CONTROL_DIR = "ctl"
 #: A path element of a job directory or a shipped file: no separator, no shell-active character,
 #: and not led by `.` (no `..`, no hidden name) or `-` (read as an option).
 _ELEMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 _TAG = re.compile(r"[a-z][a-z0-9_]*")
 #: The first word of a status line the job script prints: `<marker> <tag> <rc> <t0> <t1>`, the
-#: exit status and the epoch seconds before and after. Any other line on the script's stdout —
-#: what a login shell's startup files print — is not read.
+#: exit status and the epoch seconds before and after.
 STATUS_MARKER = "atmofab-status"
+#: The first word of a platform line: `<marker> <key> <value>`, one for each of
+#: `PLATFORM_KEYS`, plus `gpu` when the request carries a probe; an empty value is "unknown".
+PLATFORM_MARKER = "atmofab-platform"
+PLATFORM_KEYS = ("machine", "node", "cpu")
+#: A line of the script's stdout that carries no marker — what a login shell's startup files
+#: print — is not read; one that carries a marker must carry exactly one, at its start.
+_MARKERS = (STATUS_MARKER, PLATFORM_MARKER)
 _STATUS_LINE = re.compile(rf"{STATUS_MARKER} (\S*) (\S*) (\S*) (\S*)")
 _INT = re.compile(r"-?[0-9]+")
 #: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
@@ -261,13 +270,16 @@ def render_job_script(request: JobRequest) -> str:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
         lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || fail 3 {q(f'cannot make {c.cwd}')}")
-    # One fact per file, so a site that lacks one tool loses that fact and not the next one's.
-    for name, fact in (("machine", "uname -m"), ("node", "hostname"),
-                       ("cpu", "grep -m1 'model name' /proc/cpuinfo")):
-        lines.append(f"{fact} > {q(f'{ctl}/platform.{name}')} 2>/dev/null")
+    # The platform facts, before any command runs, each on a line of its own and always printed:
+    # a site that lacks one tool prints that fact empty.
+    facts = [("machine", "uname -m"), ("node", "hostname"),
+             ("cpu", "grep -m1 'model name' /proc/cpuinfo")]
     if request.platform_probe:
-        lines.append(f"{shlex.join(request.platform_probe)} > {q(ctl + '/platform.probe')}"
-                     f" 2>/dev/null < /dev/null; echo $? > {q(ctl + '/platform.probe.rc')}")
+        # The probe's first line when it exits 0, empty otherwise.
+        lines.append(f"g=$({shlex.join(request.platform_probe)} < /dev/null 2>/dev/null) || g=")
+        facts.append(("gpu", "printf '%s\\n' \"$g\" | sed -n 1p"))
+    for key, fact in facts:
+        lines.append(f'echo "{PLATFORM_MARKER} {key} $({fact} 2>/dev/null)"')
     # A command's stdin is `/dev/null`, as the ssh call's own is; not pinned, because the second
     # makes the first unobservable under test.
     lines.append("rc=0")
@@ -321,18 +333,35 @@ def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
                stage=stage, timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
 
-def _statuses(stdout: str, commands: tuple[CommandSpec, ...],
-              remote: str) -> list[tuple[int, int, int] | None]:
-    """Each command's `(rc, t0, t1)` from the job script's status lines, or None for a command
-    that did not run; see the module docstring for what is refused."""
-    lines: dict[str, list[tuple[str, str, str]]] = {}
+def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str, str]]],
+                                                   dict[str, list[str]]]:
+    """The status lines by tag and the platform values by key, from the job script's stdout.
+    A line with no marker is skipped; a line with a marker anywhere but once at its start, or
+    that does not parse, is refused."""
+    statuses: dict[str, list[tuple[str, str, str]]] = {}
+    facts: dict[str, list[str]] = {}
     for line in stdout.splitlines():
-        if line.split(" ", 1)[0] != STATUS_MARKER:
+        hits = sum(line.count(m) for m in _MARKERS)
+        if not hits:
+            continue
+        if hits != 1 or not line.startswith(_MARKERS):
+            raise RemoteExecutionError(
+                f"a line carries a marker other than once at its start: {line[:200]!r} ({remote})")
+        if line.startswith(PLATFORM_MARKER + " "):
+            key, _, value = line[len(PLATFORM_MARKER) + 1:].partition(" ")
+            facts.setdefault(key, []).append(value)
             continue
         m = _STATUS_LINE.fullmatch(line)
         if not m or not all(_INT.fullmatch(v) for v in m.group(2, 3, 4)):
             raise RemoteExecutionError(f"a status line does not parse: {line[:200]!r} ({remote})")
-        lines.setdefault(m.group(1), []).append(m.group(2, 3, 4))
+        statuses.setdefault(m.group(1), []).append(m.group(2, 3, 4))
+    return statuses, facts
+
+
+def _statuses(lines: dict[str, list[tuple[str, str, str]]], commands: tuple[CommandSpec, ...],
+              remote: str) -> list[tuple[int, int, int] | None]:
+    """Each command's `(rc, t0, t1)` from its status line, or None for a command that did not
+    run; see the module docstring for what is refused."""
     unknown = sorted(set(lines) - {c.tag for c in commands})
     if unknown:
         raise RemoteExecutionError(f"status lines for no command of this job: {unknown} ({remote})")
@@ -359,34 +388,24 @@ def _statuses(stdout: str, commands: tuple[CommandSpec, ...],
     return out
 
 
+def _platform(facts: dict[str, list[str]], probed: bool, remote: str) -> dict[str, str | None]:
+    """The same record the local path builds, from the site's own answers: machine, node, the
+    CPU model name, and the probe's first line (None for an empty answer). Each key the script
+    prints must arrive exactly once, and no other."""
+    expected = (*PLATFORM_KEYS, "gpu") if probed else PLATFORM_KEYS
+    if set(facts) != set(expected) or any(len(v) != 1 for v in facts.values()):
+        raise RemoteExecutionError(
+            f"the platform lines are not one each of {', '.join(expected)}: "
+            f"{ {k: len(v) for k, v in facts.items()} } ({remote})")
+    value = {k: (v[0].strip() or None) for k, v in facts.items()}
+    cpu = value["cpu"]
+    cpu_model = (cpu.split(":", 1)[1].strip() or None) if cpu and ":" in cpu else None
+    return {"machine": value["machine"], "node": value["node"], "cpu_model": cpu_model,
+            "gpu": value.get("gpu")}
+
+
 def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _platform(ctl: Path, probed: bool) -> dict[str, str | None]:
-    """The same record the local path builds, from the site's own answers: machine, node, the
-    CPU model name, and the probe's first line (None when there is no probe or it failed)."""
-    def first_line(name: str) -> str | None:
-        try:
-            lines = (ctl / name).read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return None
-        return (lines[0].strip() or None) if lines else None
-
-    machine = first_line("platform.machine")
-    node = first_line("platform.node")
-    cpu = first_line("platform.cpu")
-    cpu_model = (cpu.split(":", 1)[1].strip() or None) if cpu and ":" in cpu else None
-    gpu = None
-    if probed:
-        try:
-            ok = (ctl / "platform.probe.rc").read_text(encoding="utf-8").strip() == "0"
-            first = (ctl / "platform.probe").read_text(
-                encoding="utf-8", errors="replace").splitlines()
-            gpu = (first[0].strip() or None) if ok and first else None
-        except OSError:
-            gpu = None
-    return {"machine": machine, "node": node, "cpu_model": cpu_model, "gpu": gpu}
 
 
 def _read_output(path: Path, limit: int) -> str:
@@ -441,8 +460,10 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     _scp([f"{host}:{remote}"], str(collected), stage="collect the job directory", remote=remote)
     ctl = collected / CONTROL_DIR
 
-    # 5. Read every status before anything is recorded.
-    statuses = _statuses(job_stdout, request.commands, remote)
+    # 5. Read every status, and the platform, before anything is recorded.
+    status_lines, facts = _job_lines(job_stdout, remote)
+    statuses = _statuses(status_lines, request.commands, remote)
+    platform_record = _platform(facts, bool(request.platform_probe), remote)
 
     # 6. Remove the remote directory; the evidence is local now.
     _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",
@@ -500,7 +521,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
 
     return JobResult(
         results=tuple(results),
-        platform=_platform(ctl, bool(request.platform_probe)),
+        platform=platform_record,
         site_record={"site": site.site_id, "host": host, "scheduler": site.scheduler,
                      "job_id": None, "remote_dir": remote, "queue_wait_ms": 0},
         collected=collected)
