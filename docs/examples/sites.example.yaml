@@ -23,8 +23,8 @@ sites:
     host: login-node                # the machine the job is asked for from
     workdir: /work/atmofab-jobs     # must be visible at this path from the machines jobs run on
     executes: [cpu, gpu]
-    scheduler: slurm                # docs/backends/scheduler/slurm/JOB_SUBMIT.md
-    scheduler_directives: ["--partition=gpu", "--gres=gpu:1"]  # passed to the scheduler as written
+    scheduler: slurm                # docs/backends/scheduler/<scheduler>/JOB_SUBMIT.md
+    scheduler_directives: []        # words the scheduler's backend passes on as written; its JOB_SUBMIT.md shows them
     queue_timeout_sec: 7200         # the longest wait for an allocation; default 3600
   local:                            # optional; `executes` is the only key it takes
     executes: [cpu]

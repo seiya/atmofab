@@ -37,11 +37,23 @@ ssh <host> -- 'echo; printf ... atmofab-submitted <epoch> && exec srun --time=<m
 Measured on Slurm 20.02.5 (a one-node cluster): the pipe, the argv passed through unchanged, the
 exit status passed through (3 → 3), the last repeated option winning (`--job-name`, `--ntasks`,
 `--time`), and `--immediate` ending a pending job (exit 1, `Unable to allocate resources`, the job
-gone from the queue). The whole executor path ran against that cluster with `srun` real and the
+gone from the queue), and a job cut at its time limit ending `srun` with 143. The whole executor path ran against that cluster with `srun` real and the
 ssh transport shimmed: a job recorded its id, and a job held pending by a `--begin` directive was
 refused with no log entry.
 
 ## 2. What the site must provide
+
+A site entry in `./sites.yaml` (the shape is `docs/ORCHESTRATION.md` §Execution sites):
+
+```yaml
+  cluster:
+    host: login-node
+    workdir: /work/atmofab-jobs
+    executes: [cpu, gpu]
+    scheduler: slurm
+    scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=60"]
+    queue_timeout_sec: 7200
+```
 
 - `srun` on the PATH of a NON-INTERACTIVE login. Where it is added by an interactive login's
   startup files only, the launch probe refuses `missing_required_site_tools` naming it.
@@ -64,5 +76,9 @@ refused with no log entry.
   then be forgeable by the runner.
 - **No accounting.** Nothing reads `sacct`: the job's exit is `srun`'s, and a job killed at its
   time limit exits non-zero, which the executor refuses whatever status lines had arrived.
+- **Not measured: a limit Slurm enforces on the job beyond time.** Under a task plugin that
+  enforces memory, a runner killed for exceeding it may also make `srun` exit non-zero although
+  the script finished; the job is then refused as a host-side failure rather than recorded as the
+  runner's runtime error. The cluster measured runs no such plugin.
 - **One task.** `--ntasks=1`; a launcher that runs more ranks is the `parallel` axis' `launcher`
   capability, not implemented (issue #293 §Out of scope).

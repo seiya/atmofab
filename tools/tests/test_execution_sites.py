@@ -49,7 +49,8 @@ def _profile(target_id: str, hardware_class: str) -> SimpleNamespace:
     return SimpleNamespace(target_id=target_id, hardware_class=hardware_class)
 
 
-#: A scheduler record standing in for a batch scheduler, which PR-1 registers none of.
+#: A scheduler record standing in for a batch scheduler: the loader asks only whether the value is
+#: implemented, so these rows do not depend on which backend packages exist.
 _BATCH = registry.Backend("scheduler", "zz_batch", None, core_provides=frozenset({"job_submit"}))
 
 

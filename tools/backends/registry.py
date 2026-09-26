@@ -526,8 +526,9 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it, under no
         # prefix, and the job has no id.
         Backend("scheduler", "none", None, core_provides=frozenset({"job_submit"})),
-        # Slurm (issue #293 PR-4): the job script runs as one job under `srun`, in the
-        # foreground of the same ssh call, so its statuses travel on the same channel. The
+        # Slurm (issue #293 PR-4): the job script runs as one job under the prefix the package
+        # spells, in the foreground of the same ssh call, so its statuses travel on the same
+        # channel. The
         # executor asks `capability_module` for the prefix (`remote_execution._submission`).
         Backend(
             "scheduler", "slurm", "tools.backends.scheduler.slurm",
