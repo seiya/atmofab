@@ -10030,10 +10030,10 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
     def _sites(self, text: str) -> None:
         (self.repo_root / "sites.yaml").write_text(text, encoding="utf-8")
 
-    def _remote(self) -> None:
+    def _remote(self, scheduler: str = "none") -> None:
         self._sites(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
-                    f"    workdir: {self.workdir}\n    executes: [cpu]\n    scheduler: none\n"
-                    f"targets:\n  t_a: box\n")
+                    f"    workdir: {self.workdir}\n    executes: [cpu]\n"
+                    f"    scheduler: {scheduler}\ntargets:\n  t_a: box\n")
 
     def _env(self, **knobs: str):
         env = {"PATH": f"{self.shims}{os.pathsep}{os.environ['PATH']}",
@@ -10130,6 +10130,21 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
         self.assertEqual(events[-1]["missing"], required)
         self.assertEqual(events[-1]["required"], required)
+        self.assertEqual(calls, [])
+
+    def test_a_scheduler_site_is_asked_for_the_schedulers_program(self) -> None:
+        """A `slurm` site's login must resolve the program its jobs run under; one that has
+        every other program the job needs is refused naming that one alone."""
+        self._remote(scheduler="slurm")
+        bare = Path(self._tmp.name) / "bare"
+        bare.mkdir()
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
+        self.assertEqual(events[-1]["missing"], ["srun"])
+        self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
         self.assertEqual(calls, [])
 
     def test_a_site_whose_workdir_cannot_be_made_is_refused_at_launch(self) -> None:
