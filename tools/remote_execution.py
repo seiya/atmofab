@@ -35,10 +35,21 @@ Every way the evidence could be incomplete or not this job's is a refusal
   start and is refused. The platform facts travel the same way (`PLATFORM_MARKER`), printed
   once each before the first command starts;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
-  script that fails outside its commands (a directory it cannot make, a site machine other than
-  the one the shipped files were built on, a program it cannot find or execute), and a job
-  directory that cannot be removed after collection are refused, with the
-  stage and the remote path in the message.
+  script that fails outside its commands (a directory it cannot make, a `timeout` that does not
+  take `-k`, a site machine other than the one the shipped files were built on, a program it
+  cannot find or that is not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
+  and a job directory that cannot be removed after collection are refused, with the stage and
+  the remote path in the message. A refused job's directory, when one was made, is left at the
+  site.
+
+126 and 127 are refused because at a site they are the codes of a program that did not START:
+`timeout` exits them when it cannot execute the program, a shell when the program's interpreter
+is missing, the dynamic loader when a shared library the program links is missing at the site
+(a non-interactive ssh login loads no module environment). The local server raises for the
+first two and never meets the third, because the host that runs it is the host that built the
+program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
+is a program that exits 126 or 127 on its own, which the local path records as its result; the
+runner and the quality-check command the conductor runs exit neither.
 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
@@ -105,6 +116,8 @@ _STATUS_LINE = re.compile(rf"{STATUS_MARKER} (\S*) (\S*) (\S*) (\S*)")
 _INT = re.compile(r"-?[0-9]+")
 #: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
 _TIMEOUT_CODES = frozenset({124, 137})
+#: The exit statuses of a program that did not start (see the module docstring).
+LAUNCH_CODES = frozenset({126, 127})
 
 
 class RemoteExecutionError(RuntimeError):
@@ -266,6 +279,9 @@ def render_job_script(request: JobRequest) -> str:
                  f"built on")]
     for prog in REMOTE_EXECUTABLES:
         lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || fail 3 {q(f'{prog} is missing')}")
+    # Not every `timeout` takes `-k` (older busybox builds refuse it, exit 1), and a refusal
+    # there would be recorded as the command's own failure.
+    lines.append("timeout -k 1 5 sh -c : >/dev/null 2>&1 || fail 3 'timeout does not take -k'")
     for rel in request.dirs:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
@@ -464,6 +480,12 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     status_lines, facts = _job_lines(job_stdout, remote)
     statuses = _statuses(status_lines, request.commands, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
+    for c, status in zip(request.commands, statuses):
+        if status is not None and status[0] in LAUNCH_CODES:
+            tail = _read_output(ctl / f"{c.tag}.stderr", 2000).strip()[-2000:]
+            raise RemoteExecutionError(
+                f"command {c.tag!r} exited {status[0]}: the program did not start at the site "
+                f"({remote}): {tail}")
 
     # 6. Remove the remote directory; the evidence is local now.
     _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",

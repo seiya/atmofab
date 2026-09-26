@@ -184,7 +184,7 @@ class _Harness:
 
 
 #: What the job script and the shipped runner execute at the site.
-_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "date", "env", "timeout",
+_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "date", "env", "timeout", "ls",
                "python3")
 
 
@@ -570,6 +570,31 @@ class RefusalTests(unittest.TestCase):
     def test_a_site_without_timeout_is_the_hosts_failure(self) -> None:
         bare = _bare_path(self.h.root, without="timeout")
         self._refused("(?s)ssh exited 3.*timeout is missing", SHIM_SSH_PATH=str(bare))
+
+    def test_a_timeout_that_does_not_take_kill_after_is_the_hosts_failure(self) -> None:
+        bare = _bare_path(self.h.root, without="timeout")
+        (bare / "timeout").write_text(
+            '#!/bin/sh\n[ "$1" = -k ] && { echo "timeout: invalid option -- k" >&2; exit 1; }\n'
+            'exec "$@"\n')
+        (bare / "timeout").chmod(0o755)
+        self._refused("(?s)ssh exited 3.*timeout does not take -k", SHIM_SSH_PATH=str(bare))
+
+    def test_a_program_that_did_not_start_is_the_hosts_failure(self) -> None:
+        """126 / 127: a missing interpreter, a missing shared library at the site, a program
+        `timeout` could not execute. The stderr tail is in the message."""
+        for body, rc in (("#!/nonexistent/interpreter\n", None),
+                         ("#!/bin/sh\necho 'error while loading shared libraries' >&2\nexit 127\n",
+                          127),
+                         ("#!/bin/sh\nexit 126\n", 126)):
+            with self.subTest(body=body):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                prog = h.local / "prog"
+                prog.write_text(body)
+                prog.chmod(0o755)
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            rf"'run' exited {rc or '12[67]'}: the program did not start"):
+                    h.run(h.request(ship={"bin/runner": prog}))
+                self.assertEqual(h.log_entries("run"), [])
 
     def test_a_directory_the_script_cannot_make_is_the_hosts_failure(self) -> None:
         """A shipped FILE where the job needs a directory: one of `dirs`, or a command's cwd."""
