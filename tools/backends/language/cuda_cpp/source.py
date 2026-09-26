@@ -226,7 +226,16 @@ def model_source_gates(
         violations.append(
             f"{model_file}: many literal metric assignments detected "
             f"({literal_like}/{len(assignments)})")
+    # On a physics node the runner is HOST-rendered (`runner.render_runner`) — it is not held to
+    # the leaf's allowlist, and it uses what the allowlist refuses a leaf (`std::_Exit`, a
+    # reserved name). Round 4 of this change's review found every physics node's Generate.gate
+    # refused on that host file, which no leaf can edit. On an `infrastructure` node the leaf
+    # authors the runner, and it is read like any other leaf source.
+    host_runner = (model_file.parent / (model_file.name.removesuffix("_model.cu") + "_runner.cu")
+                   if not node_key.startswith("infrastructure/") else None)
     for source in leaf_sources(model_file.parent):
+        if source == host_runner:
+            continue
         source_text = (text if source == model_file
                        else source.read_text(encoding="utf-8", errors="ignore"))
         violations.extend(preprocessor_violations(source, source_text))
@@ -293,7 +302,8 @@ def validate_runner_json_serialization(
     `text` arrives lowercased from the validator, so `%A` reads as `%a`. Descriptor-syntactic like
     the Fortran scan: a runtime fixup does not pass, and a spelling this does not list is the
     runtime deliverable gate's (every runner document must parse as JSON). A preprocessor
-    directive in the runner is judged by `model_source_gates`, which reads every leaf source."""
+    directive in a LEAF-authored runner (an `infrastructure` node's) is judged by
+    `model_source_gates`; a physics node's runner is host-rendered and not held to that allowlist."""
     code = cpp_lines.mask(text)
     spans = cpp_lines.literal_spans(text)
     formats: list[tuple[int, str]] = []

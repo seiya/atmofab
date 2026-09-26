@@ -365,6 +365,35 @@ class RenderShapeTest(unittest.TestCase):
         self.assertEqual([], out)
 
 
+class RenderedRunnerThroughTheModelGatesTest(unittest.TestCase):
+    """Round 4 of this change's review: `model_source_gates` holds every `.cu` of `src/` to the
+    leaf's preprocessor allowlist, and the host-rendered runner — which ends with `std::_Exit`, a
+    reserved name — was refused on every physics node, unrepairably. The runner is not read on a
+    physics node; on an `infrastructure` node the leaf authors it and it still is."""
+
+    def _gates(self, node_key: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / f"{RANK_SID}_runner.cu").write_text(_render(_smoke_ir(), RANK_SID))
+            model = d / f"{RANK_SID}_model.cu"
+            model.write_text(f"namespace {RANK_SID}_model {{}}\n")
+            out: list[str] = []
+            cpp_source.model_source_gates(node_key=node_key, model_file=model,
+                                          text=model.read_text(), dep_spec_ids=[],
+                                          violations=out, multidim_spec_id=None)
+            return out
+
+    def test_the_rendered_runner_passes_a_physics_node_s_model_gates(self) -> None:
+        self.assertIn("std::_Exit", _render(_smoke_ir(), RANK_SID))
+        for kind in ("problem", "component"):
+            with self.subTest(kind):
+                self.assertEqual([], self._gates(f"{kind}/{RANK_SID}@0.1.0"))
+
+    def test_a_leaf_authored_runner_is_still_read(self) -> None:
+        out = self._gates(f"infrastructure/{RANK_SID}@0.1.0")
+        self.assertTrue(any("_runner.cu" in v and "`_Exit`" in v for v in out), out)
+
+
 class MultiTargetMetricsBasisTest(unittest.TestCase):
     def test_one_entry_per_test_and_target_case(self) -> None:
         text = _render(_smoke_ir(), RANK_SID)
