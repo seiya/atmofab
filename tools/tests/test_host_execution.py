@@ -34,9 +34,63 @@ class LaunchShapeTests(unittest.TestCase):
     def test_a_serial_model_launches_with_no_environment_of_its_own(self) -> None:
         self.assertEqual(he.launch_shape(profile_with(parallel={"backend": "none"})).env, {})
 
-    def test_a_class_this_host_cannot_run_on_is_refused(self) -> None:
-        with self.assertRaises(he.LaunchUnavailable) as ctx:
-            he.launch_shape(profile_with(hardware={"class": "gpu", "architecture": "sm_90"}))
+    GPU = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
+
+    @staticmethod
+    def _site(site_id: str, *executes: str):
+        from tools.execution_sites import Site
+
+        if site_id == he.LOCAL_SITE:
+            return Site(site_id, tuple(executes))
+        return Site(site_id, tuple(executes), host="box", workdir="/w")
+
+    def test_a_class_the_site_does_not_execute_is_refused(self) -> None:
+        """Issue #293: the site half. With no site (no `sites.yaml`) the local site executes its
+        default classes, which do not include `gpu`; a site that lists only `cpu` refuses it
+        too, and names itself."""
+        for site in (None, self._site("gpu_less", "cpu"), self._site(he.LOCAL_SITE, "cpu")):
+            with self.subTest(site=site):
+                with self.assertRaises(he.LaunchUnavailable) as ctx:
+                    he.launch_shape(self.GPU, site)
+                self.assertIn("hardware.class: gpu is not executed at site", str(ctx.exception))
+                self.assertIn(site.site_id if site else he.LOCAL_SITE, str(ctx.exception))
+
+    def test_a_site_that_executes_the_class_names_itself_and_the_device_probe(self) -> None:
+        box = self._site("gpu_box", "gpu")
+        shape = he.launch_shape(self.GPU, box)
+        self.assertEqual(shape.site, "gpu_box")
+        self.assertEqual(shape.platform_probe, tuple(registry.capability_module(
+            "hardware", "gpu", "execution").PLATFORM_PROBE))
+        self.assertTrue(shape.platform_probe)
+        # A local site that lists the class runs it here, with the same probe.
+        local = he.launch_shape(self.GPU, self._site(he.LOCAL_SITE, "cpu", "gpu"))
+        self.assertEqual((local.site, local.platform_probe), (he.LOCAL_SITE, shape.platform_probe))
+        # A class the neutral core runs has no probe, at any site.
+        cpu = he.launch_shape(FORTRAN_CPU, self._site("cluster", "cpu", "gpu"))
+        self.assertEqual((cpu.site, cpu.platform_probe), ("cluster", None))
+
+    def test_the_probe_is_reached_through_capability_module(self) -> None:
+        fake = types.SimpleNamespace(PLATFORM_PROBE=["zz-probe", "--one"])
+        real = registry.capability_module
+
+        def capability_module(axis, backend_id, capability):
+            if axis == "hardware":
+                return fake
+            return real(axis, backend_id, capability)
+
+        with mock.patch.object(registry, "capability_module", side_effect=capability_module):
+            shape = he.launch_shape(self.GPU, self._site("gpu_box", "gpu"))
+        self.assertEqual(shape.platform_probe, ("zz-probe", "--one"))
+
+    def test_a_class_whose_record_does_not_declare_execution_is_refused_at_any_site(
+            self) -> None:
+        """The registry half, driven by withdrawal: every implemented class declares
+        `execution` since issue #293. A site listing the class does not open it."""
+        record = registry.get("hardware", "gpu")
+        withdrawn = record._replace(backend_provides=record.backend_provides - {"execution"})
+        with mock.patch.dict(registry._BACKENDS, {("hardware", "gpu"): withdrawn}):
+            with self.assertRaises(he.LaunchUnavailable) as ctx:
+                he.launch_shape(self.GPU, self._site("gpu_box", "gpu"))
         self.assertIn("hardware.class", str(ctx.exception))
         self.assertIn("'execution'", str(ctx.exception))
 
@@ -72,6 +126,47 @@ class LaunchShapeTests(unittest.TestCase):
         self.assertEqual(shape.record(), {"argv_prefix": ["wrap", "-n1"],
                                           "env": {"A": "1", "B": "2"}})
         self.assertEqual(list(shape.record()["env"]), ["A", "B"])
+
+
+class LocalPlatformRecordTests(unittest.TestCase):
+    """`local_platform_record` (issue #293; `workflow_conductor._host_platform_record` until
+    then): every fact that cannot be read is `None`, never a refusal."""
+
+    def test_the_host_facts_and_no_probe(self) -> None:
+        import platform
+
+        record = he.local_platform_record()
+        self.assertEqual(set(record), {"machine", "node", "cpu_model", "gpu"})
+        self.assertEqual((record["machine"], record["node"]),
+                         (platform.machine(), platform.node()))
+        self.assertIsNone(record["gpu"])
+
+    def test_an_unreadable_cpuinfo_records_none(self) -> None:
+        from pathlib import Path
+
+        with mock.patch.object(Path, "read_text", side_effect=OSError("no proc")):
+            record = he.local_platform_record()
+        self.assertIsNone(record["cpu_model"])
+        self.assertTrue(record["machine"])
+
+    def test_the_probe_records_its_first_line_when_it_exits_zero(self) -> None:
+        import sys
+
+        ok = (sys.executable, "-c", "print(' Device A, 1.0 '); print('second')")
+        self.assertEqual(he.local_platform_record(ok)["gpu"], "Device A, 1.0")
+        for probe in ((sys.executable, "-c", "print('x'); raise SystemExit(3)"),
+                      (sys.executable, "-c", "print('')"),
+                      ("zz-no-such-program-anywhere",)):
+            with self.subTest(probe=probe):
+                self.assertIsNone(he.local_platform_record(probe)["gpu"])
+
+    def test_a_probe_that_hangs_records_none(self) -> None:
+        import subprocess
+
+        with mock.patch.object(subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("p", 1)) as run:
+            self.assertIsNone(he.local_platform_record(("p",))["gpu"])
+        self.assertEqual(run.call_args.kwargs["timeout"], he.PROBE_TIMEOUT_SEC)
 
 
 class OpenmpExecutionEnvTests(unittest.TestCase):

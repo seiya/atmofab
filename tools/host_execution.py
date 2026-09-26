@@ -13,30 +13,40 @@ thread count and set the OpenMP variables itself, for `cpu` alone, and ran anyth
 no environment and no word — a `gpu` profile reached a CPU run silently. The server now refuses
 those arguments and runs the `env` it is handed; this module is what composes that `env`.
 
-`LaunchShape.site` names where the binary runs. It is `local` for every shape this module can
-produce today: a class this host can run is one whose record declares `execution`, and the only
-such record is the in-process one. A remote execution site is a separate feature that declares
-`execution` on another class and makes `site` something other than `local` (issue #289 §9);
-until it lands, a class with no `execution` is refused here, and before that at launch.
+`LaunchShape.site` names where the binary runs: the execution site the operator's `sites.yaml`
+maps the target to (`tools/execution_sites.py`, issue #293), `local` when it maps it nowhere.
+"Can this run execute a binary of this class" has two halves and this seam asks both, as the
+backstop of the launch gate: the class's record must declare `execution` (the registry half —
+there is code), and the site must list the class in its `executes` (the machine half — there is
+a machine). `LaunchShape.platform_probe` is the argv a class's package names to identify its
+device at the site, recorded as `platform.gpu`.
 """
 
 from __future__ import annotations
 
+import platform
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from tools.backends import registry
 
-#: The site this module launches every shape at: in-process, on this host.
+#: The site that runs a binary in-process, on this host; the one a target maps to when the
+#: operator's `sites.yaml` maps it nowhere.
 LOCAL_SITE = "local"
+#: Seconds the local device probe may take; one that hangs records `null`.
+PROBE_TIMEOUT_SEC = 60
 
 
 class LaunchUnavailable(RuntimeError):
-    """The target names a value this host has no launch answer for.
+    """The target names a value this host has no launch answer for, or the site it runs at does
+    not execute its hardware class.
 
-    The launch gate (`target_profile.target_profile_violations`) refuses the same profile before
-    anything runs, for any run that reaches `Validate`, so reaching this raise means the gate
-    and this seam disagreed — a host defect, not something a leaf could repair.
+    The launch gate (`target_profile.target_profile_violations` for the registry half,
+    `execution_sites.site_violations` for the site half) refuses the same run before anything
+    runs, for any run that reaches `Validate`, so reaching this raise means the gate and this
+    seam disagreed — a host defect, not something a leaf could repair.
     """
 
 
@@ -45,11 +55,13 @@ class LaunchShape:
     """How one binary is launched: `argv_prefix` goes in front of the binary's own argv, `env`
     is handed to `run_program` as its `env` — OVERRIDES, which the server merges over the host
     process's own environment, so a variable this does not set is inherited — and `site` names
-    where it runs."""
+    where it runs. `platform_probe` is the argv that identifies the class's device where it
+    runs, None for a class that names none."""
 
     argv_prefix: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     site: str = LOCAL_SITE
+    platform_probe: tuple[str, ...] | None = None
 
     def command(self, argv: list[str]) -> list[str]:
         """The full command line for a binary invoked as `argv`."""
@@ -81,16 +93,68 @@ def _execution_env(parallel_backend: str, threads_per_rank: int) -> dict[str, st
     return {str(k): str(v) for k, v in env.items()}
 
 
-def launch_shape(profile: Any) -> LaunchShape:
-    """The launch shape of a binary built for `profile` (a `target_profile.TargetProfile`).
+def _platform_probe(hardware_class: str) -> tuple[str, ...] | None:
+    """The device probe of `hardware_class`: its package's `PLATFORM_PROBE` when the record
+    declares `execution` in a package, None when the neutral core implements it (a class whose
+    device is the CPU the platform record already names)."""
+    if "execution" not in registry.get("hardware", hardware_class).backend_provides:
+        return None
+    module = registry.capability_module("hardware", hardware_class, "execution")
+    return tuple(str(a) for a in module.PLATFORM_PROBE)
+
+
+def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
+    """The launch shape of a binary built for `profile` (a `target_profile.TargetProfile`) at
+    `site` (an `execution_sites.Site`; None is the local site with its default `executes`, the
+    configuration with no `sites.yaml`).
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
-    and a parallel backend whose record does not declare `execution_env`, with the registry's own
-    wording.
+    a site whose `executes` does not list the class, and a parallel backend whose record does not
+    declare `execution_env`, with the registry's own wording for the first and the third.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")
     if reason is not None:
         raise LaunchUnavailable(f"hardware.class: {reason}")
+    if site is None:
+        # Imported here: `execution_sites` imports `LOCAL_SITE` from this module.
+        from tools.execution_sites import LOCAL_DEFAULT_EXECUTES
+
+        site_id, executes = LOCAL_SITE, LOCAL_DEFAULT_EXECUTES
+    else:
+        site_id, executes = site.site_id, tuple(site.executes)
+    if profile.hardware_class not in executes:
+        raise LaunchUnavailable(
+            f"hardware.class: {profile.hardware_class} is not executed at site {site_id}, "
+            f"which executes {', '.join(executes)}")
     env = _execution_env(profile.parallel_backend, profile.threads_per_rank)
-    return LaunchShape(argv_prefix=(), env=env, site=LOCAL_SITE)
+    return LaunchShape(argv_prefix=(), env=env, site=site_id,
+                       platform_probe=_platform_probe(profile.hardware_class))
+
+
+def local_platform_record(probe: tuple[str, ...] | None = None) -> dict[str, str | None]:
+    """The machine a local Validate run executed on, for `trial_meta.json#environment.platform`:
+    `platform.machine()`, `platform.node()`, the CPU model name from `/proc/cpuinfo`, and the
+    first line `probe` prints when it exits 0 (`gpu`). Each fact that cannot be read is `None` —
+    a record, never a refusal. The remote executor builds the same shape from the site's own
+    answers (`tools/remote_execution.py`)."""
+    cpu_model: str | None = None
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8",
+                                                    errors="replace").splitlines():
+            if line.lower().startswith("model name"):
+                cpu_model = line.split(":", 1)[1].strip() or None
+                break
+    except OSError:
+        cpu_model = None
+    gpu: str | None = None
+    if probe:
+        try:
+            proc = subprocess.run(list(probe), text=True, capture_output=True, check=False,
+                                  timeout=PROBE_TIMEOUT_SEC, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            gpu = (proc.stdout.splitlines() or [""])[0].strip() or None
+    return {"machine": platform.machine(), "node": platform.node(), "cpu_model": cpu_model,
+            "gpu": gpu}

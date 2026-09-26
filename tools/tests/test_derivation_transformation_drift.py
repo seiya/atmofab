@@ -41,6 +41,7 @@ import unittest
 from pathlib import Path
 
 import tools.derivation as d
+import tools.execution_sites as es
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 
@@ -227,6 +228,13 @@ def execute_tuple() -> dict[str, str]:
         # And every launch capability a registry record resolves to: the declaration, the
         # attribute row, the package and the module (`launch_declarations`).
         **{f"registry launch: {k}": v for k, v in launch_declarations().items()},
+        # Where it runs (issue #293): the remote executor that runs the same two commands at a
+        # site, the site resolution, and the quality-check argv table both sites read.
+        "tools/remote_execution.py": _file_digest("tools/remote_execution.py"),
+        "execution_sites.SitesConfig.site_for":
+            _source_digest(es.SitesConfig.site_for),
+        "build_runtime_server.quality_check_command":
+            _source_digest(server.quality_check_command),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
@@ -447,6 +455,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # tuple gained the new `parallel/cuda` record's `execution_env` module and package (an empty
     # environment); what `launch_shape` resolves for an `openmp` / `none` profile is unchanged.
     "execute-4": "caf20787a818c920fc403b29150b50b452e1b20c1848b3ba27da62b0a8a93224",
+    # execute-5 (issue #293, PR-3): the binary runs at the EXECUTION SITE the operator's
+    # `sites.yaml` maps the target to — in-process here, or as one job over ssh at a remote site
+    # (`tools/remote_execution.py`) whose collected output is what every later step reads — and
+    # `trial_meta.json#environment` records `platform.gpu` (the class's device probe) and
+    # `execution_site`. The tuple gained the remote executor, the site resolution and the
+    # quality-check argv table both paths read; the `gpu` record declares `execution` with a
+    # package module, which `launch_declarations` digests. The derivation inputs are unchanged: a
+    # site is a record, and a run at `local` and one at a remote site of the same tree key equal.
+    "execute-5": "2f2538b5ab332131abeb37d2c991d2c954286806c2228a3de8df4018810d2be7",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

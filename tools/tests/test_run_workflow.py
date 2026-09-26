@@ -7973,7 +7973,11 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 15 -> 16: issue #284's target-profile refusal (`no_target_profile`, `target_required`,
         # `target_unknown`, `target_profile_invalid`, `target_harness_mismatch`,
         # `target_changed_on_resume` — one site, the reason carried by the exception).
-        self.assertEqual(len(helper_calls), 16)
+        # 16 -> 17: issue #293's execution-site refusal (`sites_config_invalid`, the site half of
+        # `target_profile_invalid`, `missing_required_host_tools` for the transport,
+        # `site_unreachable`, `missing_required_site_tools`, `site_machine_mismatch` — one site,
+        # the event built by `_sites_rejection`).
+        self.assertEqual(len(helper_calls), 17)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -9269,6 +9273,11 @@ class LlmConfigStartupTests(unittest.TestCase):
             DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
             for tid in ("t_a", "t_b"):
                 _seed_target_profile_into(repo_root, target_id=tid)
+            # And the site configuration (issue #293): read once by `main`, handed to every
+            # node with the target, and recorded on each node's invocation.
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu]\n"
+                "targets:\n  t_b: local\n", encoding="utf-8")
             _load_spec_catalog.cache_clear()
             self._runtime_calls = []
             orig_ready = run_workflow._dependency_node_readiness
@@ -9276,6 +9285,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             real_run_node = run_workflow._run_node
             ran: set[str] = set()
             handed: dict[str, tuple[object, object]] = {}
+            sites_handed: dict[str, tuple[object, object]] = {}
 
             def _spy_run_node(**kw):
                 ran.add(kw["spec_ref"])
@@ -9283,6 +9293,9 @@ class LlmConfigStartupTests(unittest.TestCase):
                 profile = kw.get("target_profile")
                 handed[kw["spec_ref"]] = (getattr(profile, "target_id", None),
                                           (inv.get("target") or {}).get("target_id"))
+                sites_handed[kw["spec_ref"]] = (
+                    getattr(kw.get("sites_config"), "sha256", None),
+                    inv.get("sites_config_sha256"))
                 return real_run_node(**kw)
 
             try:
@@ -9311,6 +9324,10 @@ class LlmConfigStartupTests(unittest.TestCase):
                 "spec/component/b": ("t_b", "t_b"),
                 "spec/problem/a": ("t_b", "t_b"),
             })
+            from tools.execution_sites import load_sites
+            sha = load_sites(repo_root).sha256
+            self.assertTrue(sha)
+            self.assertEqual(sites_handed, {ref: (sha, sha) for ref in handed})
 
     def test_a_sequential_closure_gates_each_member_like_a_jobs_child(self) -> None:
         """`--with-deps` at `--jobs 1` over a harness member whose run would not be the
@@ -9539,12 +9556,22 @@ class TargetProfileLaunchTests(unittest.TestCase):
             code, events, calls = self._main(repo_root, "--target", "t_g", until="validate")
             self.assertEqual(code, 2)
             self.assertEqual(events[-1]["reason"], "target_profile_invalid")
-            self.assertIn("hardware.class", events[-1]["detail"])
-            self.assertIn("'execution'", events[-1]["detail"])
+            # Since issue #293 the class declares `execution`, and the refusal is the SITE
+            # half's: with no `sites.yaml` the target runs at the local site, which executes
+            # `cpu`.
+            self.assertIn("hardware.class: gpu is not executed at the site target t_g runs at",
+                          events[-1]["detail"])
+            self.assertIn("there is no sites.yaml", events[-1]["detail"])
             self.assertEqual(calls, [], "refused before any orchestration state is touched")
             code, events, _calls = self._main(repo_root, "--target", "t_g", until="build")
             self.assertEqual(code, 0, events)
             self.assertEqual(events[-1]["target_id"], "t_g")
+            # A local site that lists the class opens the run.
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu, gpu]\n",
+                encoding="utf-8")
+            code, events, _calls = self._main(repo_root, "--target", "t_g", until="validate")
+            self.assertEqual(code, 0, events)
 
     def test_every_target_resolution_in_the_driver_passes_its_run_phase(self) -> None:
         """The production CALLERS bind the new argument (issue #289). Each resolution call in
@@ -9862,6 +9889,165 @@ class TargetProfileLaunchTests(unittest.TestCase):
                         workflow_mode="dev", status="running", run_conductor=True,
                         wait_usage_reset=False, target_profile=profile)
                     self.assertEqual(argv[argv.index("--target") + 1], "t_a")
+
+
+class ExecutionSiteLaunchTests(unittest.TestCase):
+    """Issue #293: the driver reads `sites.yaml` once, refuses a run whose target maps to a site
+    that cannot execute it, probes a remote site it will execute at before any orchestration
+    state is touched, records the configuration and the site on the invocation, and hands the
+    site to the conductor. The remote rows reach the site through the `ssh` shim of
+    `tools/tests/test_remote_execution.py`, which runs the probe on this machine."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self._tmp.name) / "repo"
+        self.repo_root.mkdir()
+        TargetProfileLaunchTests._seed(self, self.repo_root)  # type: ignore[arg-type]
+        self.shims = Path(self._tmp.name) / "shims"
+        self.shims.mkdir()
+        from tools.tests.test_remote_execution import _SSH_SHIM
+        ssh = self.shims / "ssh"
+        ssh.write_text(_SSH_SHIM)
+        ssh.chmod(0o755)
+        self.shim_log = Path(self._tmp.name) / "shim.log"
+        self.shim_log.touch()
+        self.workdir = Path(self._tmp.name) / "remote" / "jobs"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _sites(self, text: str) -> None:
+        (self.repo_root / "sites.yaml").write_text(text, encoding="utf-8")
+
+    def _remote(self) -> None:
+        self._sites(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                    f"    workdir: {self.workdir}\n    executes: [cpu]\n    scheduler: none\n"
+                    f"targets:\n  t_a: box\n")
+
+    def _env(self, **knobs: str):
+        env = {"PATH": f"{self.shims}{os.pathsep}{os.environ['PATH']}",
+               "SHIM_LOG": str(self.shim_log)}
+        env.update(knobs)
+        return mock.patch.dict(os.environ, env)
+
+    def _main(self, *extra: str, until: str = "validate", **knobs: str):
+        with self._env(**knobs):
+            return TargetProfileLaunchTests._main(  # type: ignore[arg-type]
+                self, self.repo_root, "--target", "t_a", *extra, until=until)
+
+    def _probes(self) -> list[list[str]]:
+        return [json.loads(line) for line in self.shim_log.read_text().splitlines()]
+
+    def test_no_file_is_the_local_site_recorded_and_handed_on(self) -> None:
+        with _real_target_resolution():
+            code, kw = RunWorkflowTests._main_with_conductor_spy(  # type: ignore[arg-type]
+                self, self.repo_root, ["spec/problem/test.md", "validate", "--target", "t_a"])
+        self.assertEqual(code, 0)
+        self.assertEqual((kw["site"].site_id, kw["site"].executes), ("local", ("cpu",)))
+        code, events, calls = self._main()
+        self.assertEqual(code, 0, events)
+        inv = RunWorkflowTests._find_init_invocation(self, calls)  # type: ignore[arg-type]
+        self.assertEqual((inv["sites_config_path"], inv["sites_config_sha256"]), (None, None))
+        self.assertEqual(inv["site"], {"site_id": "local", "host": None, "scheduler": "none"})
+        self.assertEqual(self._probes(), [])
+
+    def test_a_file_that_does_not_load_is_refused_by_its_rule(self) -> None:
+        self._sites("sites_version: 1\nsitez: {}\n")
+        code, events, calls = self._main()
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "sites_config_invalid")
+        self.assertEqual(events[-1]["rule"], "sites_config_unknown_key")
+        self.assertIn("docs/ORCHESTRATION.md §Execution sites", events[-1]["detail"])
+        self.assertEqual(calls, [], "refused before any orchestration state is touched")
+        # Refused for a run that stops before Validate too: the file is read whatever the run.
+        code, events, _calls = self._main(until="build")
+        self.assertEqual(events[-1]["reason"], "sites_config_invalid")
+
+    def test_a_remote_site_is_probed_once_and_handed_to_the_conductor(self) -> None:
+        self._remote()
+        from tools.execution_sites import load_sites
+        code, events, calls = self._main()
+        self.assertEqual(code, 0, events)
+        probes = self._probes()
+        self.assertEqual(len(probes), 1, probes)
+        self.assertIn("BatchMode=yes", probes[0])
+        self.assertIn("box", probes[0])
+        inv = RunWorkflowTests._find_init_invocation(self, calls)  # type: ignore[arg-type]
+        self.assertEqual(inv["sites_config_path"], "sites.yaml")
+        self.assertEqual(inv["sites_config_sha256"], load_sites(self.repo_root).sha256)
+        self.assertEqual(inv["site"], {"site_id": "box", "host": "box", "scheduler": "none"})
+        with self._env(), _real_target_resolution():
+            code, kw = RunWorkflowTests._main_with_conductor_spy(  # type: ignore[arg-type]
+                self, self.repo_root, ["spec/problem/test.md", "validate", "--target", "t_a"])
+        self.assertEqual(code, 0)
+        self.assertEqual((kw["site"].site_id, kw["site"].host), ("box", "box"))
+
+    def test_a_run_that_stops_before_validate_contacts_no_site(self) -> None:
+        self._remote()
+        code, events, _calls = self._main(until="build", SHIM_SSH_FAIL="atmofab-probe")
+        self.assertEqual(code, 0, events)
+        self.assertEqual(self._probes(), [])
+
+    def test_a_site_that_does_not_answer_is_refused_before_anything_runs(self) -> None:
+        self._remote()
+        code, events, calls = self._main(SHIM_SSH_FAIL="atmofab-probe")
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "site_unreachable")
+        self.assertEqual(events[-1]["site"], "box")
+        self.assertIn("connection closed", events[-1]["detail"])
+        self.assertEqual(calls, [])
+
+    def test_a_site_that_lacks_a_program_the_job_runs_is_refused(self) -> None:
+        self._remote()
+        bare = Path(self._tmp.name) / "bare"
+        bare.mkdir()
+        for tool in ("sh", "uname"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        from tools.host_prerequisites import required_site_executables
+        from tools.host_prerequisites import resolve_launch_axis_selection
+        with _real_target_resolution():
+            profile = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        required = list(required_site_executables(resolve_launch_axis_selection(profile)))
+        self.assertEqual(len(required), 2, "the job script's tool and the build system")
+        code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
+        self.assertEqual(events[-1]["missing"], required)
+        self.assertEqual(events[-1]["required"], required)
+        self.assertEqual(calls, [])
+
+    def test_a_site_of_another_machine_type_is_refused(self) -> None:
+        self._remote()
+        import platform
+        with mock.patch.object(platform, "machine", return_value="zz_arch"):
+            code, events, calls = self._main()
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "site_machine_mismatch")
+        self.assertIn("zz_arch", events[-1]["detail"])
+        self.assertEqual(calls, [])
+
+    def test_a_host_without_the_transport_is_refused(self) -> None:
+        self._remote()
+        real = shutil.which
+        with mock.patch.object(shutil, "which",
+                               side_effect=lambda n, *a, **k: None if n == "scp" else
+                               real(n, *a, **k)):
+            code, events, calls = self._main()
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "missing_required_host_tools")
+        self.assertEqual(events[-1]["missing"], ["scp"])
+        self.assertEqual(self._probes(), [])
+        self.assertEqual(calls, [])
+
+    def test_a_site_that_does_not_execute_the_class_is_the_site_half_refusal(self) -> None:
+        self._sites(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                    f"    workdir: {self.workdir}\n    executes: [gpu]\n    scheduler: none\n"
+                    f"targets:\n  t_a: box\n")
+        code, events, calls = self._main()
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "target_profile_invalid")
+        self.assertIn("sites.yaml maps target t_a to box", events[-1]["detail"])
+        self.assertEqual(self._probes(), [])
 
 
 if __name__ == "__main__":

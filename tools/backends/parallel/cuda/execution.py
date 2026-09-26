@@ -2,7 +2,7 @@
 
 EMPTY, and that is an answer (`registry.CAPABILITIES["execution_env"]`): a CUDA binary reads no
 variable the host has to set for a run of the profile's shape. Which device a run uses is the
-execution site's fact, not the parallel model's (issue #289 §9 leaves it to remote execution).
+execution site's fact, not the parallel model's (`tools/execution_sites.py`, issue #293).
 """
 
 from __future__ import annotations

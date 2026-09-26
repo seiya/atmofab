@@ -71,8 +71,10 @@ the number beyond `ok`. No log entry is written until every status and every out
 been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
 behind it.
 
-Nothing calls `execute_job` yet: the conductor is wired to it in a later pull request of issue
-#293, and until then this module changes no run. Only `scheduler: none` is implemented — the job
+`Validate.execute` calls `execute_job` for a target the operator's `sites.yaml` maps to a remote
+site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` once at launch, so a
+site that cannot be reached, lacks a program the job needs or is another machine is refused before
+anything is billed (`tools/run_workflow.py`). Only `scheduler: none` is implemented — the job
 script runs in the foreground of the ssh call; a site whose scheduler is anything else is refused
 here until a scheduler backend implements `job_submit`.
 """
@@ -468,6 +470,57 @@ def _read_output(path: Path, remote: str) -> str:
         raise RemoteExecutionError(
             f"{path.name} was not collected, so the command's output is lost ({remote}): "
             f"{exc}") from None
+
+
+#: The first word of each line `probe_site`'s script prints.
+PROBE_MARKER = "atmofab-probe"
+
+
+@dataclass(frozen=True)
+class SiteProbe:
+    """What `probe_site` found: the programs of those asked for that the site's login shell
+    cannot resolve, and the site's `uname -m`."""
+
+    missing: tuple[str, ...]
+    machine: str
+
+
+def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
+    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve and
+    what machine it is — the launch-time detector of what the job script checks again before
+    its first command (a missing program, another machine). Raises `RemoteExecutionError` when
+    the site cannot be reached or does not answer in the probe's shape, and `ValueError` for a
+    site that is not remote or a program name that is not a plain element."""
+    if site.is_local or not site.host:
+        raise ValueError(f"site {site.site_id!r} is not a remote site")
+    for exe in executables:
+        if not _ELEMENT.fullmatch(exe):
+            raise ValueError(f"program {exe!r} is not a plain name")
+    q = shlex.quote
+    script = "\n".join([
+        *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
+          for exe in executables),
+        f'echo "{PROBE_MARKER} machine $(uname -m)"',
+    ])
+    remote = f"{site.host} ({site.site_id})"
+    out = _ssh(str(site.host), f"sh -c {q(script)}", stage="probe the site",
+               timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    missing: list[str] = []
+    machines: list[str] = []
+    for line in out.splitlines():
+        if not line.startswith(PROBE_MARKER + " "):
+            continue  # a login shell's startup files may print
+        kind, _, value = line[len(PROBE_MARKER) + 1:].partition(" ")
+        if kind == "missing" and value in executables:
+            missing.append(value)
+        elif kind == "machine" and value.strip():
+            machines.append(value.strip())
+        else:
+            raise RemoteExecutionError(f"a probe line does not parse: {line[:200]!r} ({remote})")
+    if len(machines) != 1:
+        raise RemoteExecutionError(
+            f"the probe printed {len(machines)} machine lines, not one ({remote})")
+    return SiteProbe(missing=tuple(missing), machine=machines[0])
 
 
 def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:

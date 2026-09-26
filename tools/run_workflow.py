@@ -51,6 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
+from tools.execution_sites import SitesConfig
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -181,6 +182,74 @@ def _check_required_host_tools(target_profile: TargetProfile) -> list[str]:
 
     return [item.executable
             for item in missing_host_executables(_host_probe_selection(target_profile))]
+
+
+def _sites_rejection(repo_root: Path, target_profile: TargetProfile,
+                     until_phase: str) -> SitesConfig | dict[str, Any]:
+    """The loaded site configuration, or the startup refusal event that stops the run (issue
+    #293). Refusals, most reachable first: `sites_config_invalid` (the file does not load);
+    `target_profile_invalid` (the site the target maps to does not execute its hardware class,
+    for a run that reaches `Validate`); and for a remote site that the run will execute at,
+    `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
+    did not come back), `missing_required_site_tools` and `site_machine_mismatch` (the shipped
+    binary is built here, so the site must be this machine type)."""
+    import platform as _platform
+
+    from tools.execution_sites import SitesConfigError, load_sites, site_violations
+    from tools.host_prerequisites import required_site_executables
+    from tools.remote_execution import (
+        TRANSPORT_EXECUTABLES,
+        RemoteExecutionError,
+        probe_site,
+    )
+    from tools.target_profile import NON_EXECUTING_PHASES
+
+    try:
+        sites_config = load_sites(repo_root)
+    except SitesConfigError as exc:
+        return {"status": "fail", "reason": "sites_config_invalid", "rule": exc.rule,
+                "detail": f"{exc} — see docs/ORCHESTRATION.md §Execution sites"}
+    except TargetProfileError as exc:
+        return {"status": "fail", "reason": exc.reason, "detail": exc.detail}
+    violations = site_violations(sites_config, target_profile, until_phase=until_phase)
+    if violations:
+        return {"status": "fail", "reason": "target_profile_invalid",
+                "detail": "; ".join(violations)}
+    site = sites_config.site_for(target_profile.target_id)
+    if site.is_local or str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
+        return sites_config
+    missing_transport = [exe for exe in TRANSPORT_EXECUTABLES if shutil.which(exe) is None]
+    if missing_transport:
+        return {"status": "fail", "reason": "missing_required_host_tools",
+                "detail": (f"missing host tools: {','.join(missing_transport)} — target "
+                           f"{target_profile.target_id} runs at site {site.site_id}, reached "
+                           f"over them (see docs/RUNBOOK.md#0-1)"),
+                "missing": missing_transport, "required": list(TRANSPORT_EXECUTABLES),
+                "docs_ref": "docs/RUNBOOK.md#0-1"}
+    required = required_site_executables(_host_probe_selection(target_profile))
+    try:
+        probe = probe_site(site, required)
+    except RemoteExecutionError as exc:
+        return {"status": "fail", "reason": "site_unreachable", "site": site.site_id,
+                "detail": (f"site {site.site_id} did not answer the launch probe: {exc} — check "
+                           f"that a non-interactive ssh to it succeeds (see "
+                           f"docs/RUNBOOK.md#0-1)"),
+                "docs_ref": "docs/RUNBOOK.md#0-1"}
+    if probe.missing:
+        return {"status": "fail", "reason": "missing_required_site_tools",
+                "site": site.site_id, "missing": list(probe.missing), "required": list(required),
+                "detail": (f"site {site.site_id} lacks {', '.join(probe.missing)} on a "
+                           f"non-interactive login's PATH (see docs/RUNBOOK.md#0-1)"),
+                "docs_ref": "docs/RUNBOOK.md#0-1"}
+    if probe.machine != _platform.machine():
+        return {"status": "fail", "reason": "site_machine_mismatch", "site": site.site_id,
+                "detail": (f"site {site.site_id} is a {probe.machine} machine and this host, "
+                           f"which builds the binary it would run, is a "
+                           f"{_platform.machine()} one; map target "
+                           f"{target_profile.target_id} to a site of this machine type in "
+                           f"sites.yaml"),
+                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
+    return sites_config
 
 
 def _check_host_tool_versions(target_profile: TargetProfile) -> list[Any]:
@@ -350,6 +419,7 @@ def _build_invocation_record(
     rederive: Sequence[str] = (),
     jobs: int | None = None,
     target_profile: TargetProfile | None = None,
+    sites_config: SitesConfig | None = None,
 ) -> dict[str, Any]:
     """Assemble the reproduction/provenance record persisted to
     `orchestration_meta.json#invocation`.
@@ -406,6 +476,18 @@ def _build_invocation_record(
         # here; the hash and the harness are provenance — a profile edited between the launch
         # and the resume is not refused here.
         record["target"] = target_profile.record(repo_root)
+    if sites_config is not None and target_profile is not None:
+        # Where `Validate.execute` runs (issue #293): the site configuration the driver read, by
+        # path and by the hash of its parsed content (both null when there is no `sites.yaml`),
+        # and the site it resolved for this target. PROVENANCE, not a key: a resume re-reads the
+        # file and is not refused when it changed, and the evidence of each run names the site it
+        # was produced at (`trial_meta.json#environment.execution_site`).
+        site = sites_config.site_for(target_profile.target_id)
+        record["sites_config_path"] = (_repo_relative(sites_config.path, repo_root)
+                                       if sites_config.path is not None else None)
+        record["sites_config_sha256"] = sites_config.sha256
+        record["site"] = {"site_id": site.site_id, "host": site.host,
+                          "scheduler": site.scheduler}
     if closure_id:
         record["closure_id"] = closure_id
         record["closure_target_spec_ref"] = closure_target_spec_ref or ""
@@ -2871,6 +2953,17 @@ def _run_main(
         )
         return 2
 
+    # Where `Validate.execute` runs (issue #293): the operator's `sites.yaml`, read once here and
+    # handed down; a missing file is the local site for every target. The site half of the
+    # "can this run execute" gate is refused as the registry half is (`target_profile_invalid`),
+    # and a remote site is asked, in one ssh call, for the programs the job needs and its
+    # machine, so an unreachable or unequipped site is refused before anything is billed.
+    sites_rejection = _sites_rejection(repo_root, target_profile, until_phase)
+    if isinstance(sites_rejection, dict):
+        _emit_unlogged_event(sites_rejection, args.stdout_format)
+        return 2
+    sites_config = sites_rejection
+
     # Base env shared by every node. ATMOFAB_ORCHESTRATION_ID / TMPDIR /
     # ORCHESTRATION_AGENT_RUN_ID are per-node and set inside _run_node so a
     # dependency-closure run (one orchestration per node) never leaks the
@@ -2930,6 +3023,7 @@ def _run_main(
             closure_until_phase=closure_member["until_phase"],
             raw_argv=raw_argv,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
     # Closure-aware resume: the resumed orchestration is a node of a `--with-deps`
@@ -2964,6 +3058,7 @@ def _run_main(
             raw_argv=raw_argv,
             rederive=rederive,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
     # `--with-deps` runs the target's transitive dependency closure bottom-up
@@ -2992,6 +3087,7 @@ def _run_main(
             raw_argv=raw_argv,
             rederive=rederive,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
     # Cold-start guard (single node): a fresh run of a spec that still has a
@@ -3040,6 +3136,7 @@ def _run_main(
                 wait_usage_reset=args.wait_usage_reset,
                 rederive=rederive,
                 target_profile=target_profile,
+                sites_config=sites_config,
             )
         )
         return _run_node(
@@ -3067,6 +3164,7 @@ def _run_main(
             orch_claim_held=resume_mode,
             rederive=rederive,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
 
@@ -3487,6 +3585,7 @@ def _run_node(
     orch_claim_held: bool = False,
     rederive: frozenset[str] = frozenset(),
     target_profile: TargetProfile | None = None,
+    sites_config: SitesConfig | None = None,
 ) -> int:
     """Run a single node's orchestration (init → preflight → prompt → launch →
     terminalize) and print its JSON result. Returns the process exit code
@@ -3877,6 +3976,8 @@ def _run_node(
                     wait_usage_reset=wait_usage_reset,
                     rederive=rederive,
                     target_profile=target_profile,
+                    site=(sites_config.site_for(target_profile.target_id)
+                          if sites_config is not None and target_profile is not None else None),
                 )
             except Exception as exc:  # noqa: BLE001 - terminalize on conductor error
                 # If the conductor/runtime already terminalized with a specific terminal
@@ -4549,6 +4650,7 @@ def _run_closure_member(
     closure_until_phase: str,
     raw_argv: list[str] | None,
     target_profile: TargetProfile | None = None,
+    sites_config: SitesConfig | None = None,
 ) -> int:
     """Run ONE member of a `--jobs` closure in this (child) process (issue #250 PR-3).
 
@@ -4620,6 +4722,7 @@ def _run_closure_member(
             closure_target_spec_ref=closure_target_spec_ref,
             closure_until_phase=closure_until_phase,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
         return _run_node(
             repo_root=repo_root,
@@ -4643,6 +4746,7 @@ def _run_closure_member(
             spec_claim_held=not resume_mode,
             orch_claim_held=resume_mode,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
 
@@ -5151,6 +5255,7 @@ def _run_with_dependency_closure(
     jobs: int = 1,
     release_preclaim: Any = None,
     target_profile: TargetProfile | None = None,
+    sites_config: SitesConfig | None = None,
 ) -> int:
     """Run the target's dependency closure bottom-up, then the target.
 
@@ -5380,6 +5485,7 @@ def _run_with_dependency_closure(
                 closure_target_spec_ref=target_spec_ref,
                 closure_until_phase=until_phase,
                 target_profile=target_profile,
+                sites_config=sites_config,
             )
             rc = _run_node(
                 repo_root=repo_root,
@@ -5406,6 +5512,7 @@ def _run_with_dependency_closure(
                 spec_claim_held=not dep_resume,
                 orch_claim_held=dep_resume,
                 target_profile=target_profile,
+                sites_config=sites_config,
             )
         dependency_runs.append(
             {
@@ -5562,6 +5669,7 @@ def _run_with_dependency_closure(
             rederive=rederive,
             jobs=jobs,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
         return _run_node(
             repo_root=repo_root,
@@ -5587,6 +5695,7 @@ def _run_with_dependency_closure(
             orch_claim_held=target_resume,
             rederive=rederive,
             target_profile=target_profile,
+            sites_config=sites_config,
         )
 
 

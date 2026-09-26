@@ -90,9 +90,18 @@ class CheckedInProfileTests(unittest.TestCase):
 
     def test_the_checked_in_gpu_profile_builds_its_harness_and_stops_before_validate(self) -> None:
         """Issue #289 (R4-b PR-5): `cpp_gpu` passes the launch gate for its own harness through
-        `build`, and a run reaching Validate is refused on the execution half (the `gpu` class
-        declares no `execution` until remote execution lands). Its profile states no
-        `architecture`, so the build takes the device compiler's default."""
+        `build`. Since issue #293 the `gpu` class declares `execution`, so the registry half
+        passes a run reaching Validate too, and what refuses it is the SITE half: with no
+        `sites.yaml` the target runs at the local site, which executes `cpu` only. Its profile
+        states no `architecture`, so the build takes the device compiler's default."""
+        from tools.execution_sites import (
+            LOCAL_DEFAULT_EXECUTES,
+            Site,
+            SitesConfig,
+            site_violations,
+        )
+        from tools.host_execution import LOCAL_SITE
+
         profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
         self.assertNotIn("architecture", profile.doc["hardware"])
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
@@ -100,11 +109,15 @@ class CheckedInProfileTests(unittest.TestCase):
         for phase in sorted(tp.NON_EXECUTING_PHASES):
             self.assertEqual(tp.target_profile_violations(
                 REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
-        violations = tp.target_profile_violations(
-            REPO_ROOT, profile, node_key=harness, until_phase="validate")
+        self.assertEqual(tp.target_profile_violations(
+            REPO_ROOT, profile, node_key=harness, until_phase="validate"), [])
+        no_file = SitesConfig(sites={LOCAL_SITE: Site(LOCAL_SITE, LOCAL_DEFAULT_EXECUTES)})
+        violations = site_violations(no_file, profile, until_phase="validate")
         self.assertEqual(len(violations), 1, violations)
-        self.assertTrue(violations[0].startswith("hardware.class: a run that reaches Validate"),
+        self.assertTrue(violations[0].startswith("hardware.class: gpu is not executed"),
                         violations)
+        for phase in sorted(tp.NON_EXECUTING_PHASES):
+            self.assertEqual(site_violations(no_file, profile, until_phase=phase), [], phase)
         # A physics node of this language is refused at every phase: no runner renderer.
         self.assertTrue(any("runner_render" in v for v in tp.target_profile_violations(
             REPO_ROOT, profile, until_phase="build")))
@@ -321,12 +334,21 @@ class LaunchGateTests(unittest.TestCase):
                         self.assertIn("is not a declared", violations[0])
 
     def test_the_execution_half_is_asked_of_a_run_that_reaches_validate_only(self) -> None:
-        """Issue #289: a class this host cannot launch on can be BUILT for, not run.
+        """Issue #289: a class this repository cannot launch can be BUILT for, not run.
 
-        `gpu` declares no `execution`, so it is the live witness: refused for a run ending at
-        Validate — and for one whose end is unstated or not a phase this module exempts, which
-        is the fail-closed direction — and accepted for a run that stops before it."""
-        with tempfile.TemporaryDirectory() as tmp:
+        Driven by withdrawal since issue #293, when every implemented class came to declare
+        `execution` (`gpu` in its package): the `gpu` record without it is the witness —
+        refused for a run ending at Validate, and for one whose end is unstated or not a phase
+        this module exempts, which is the fail-closed direction — and accepted for a run that
+        stops before it. The site half of the same question is `execution_sites.site_violations`
+        (`tools/tests/test_execution_sites.py`)."""
+        from tools.backends import registry
+
+        record = registry.get("hardware", "gpu")
+        self.assertIn("execution", record.backend_provides, "the witness withdraws a declaration")
+        withdrawn = mock.patch.dict(registry._BACKENDS, {("hardware", "gpu"): record._replace(
+            backend_provides=record.backend_provides - {"execution"})})
+        with tempfile.TemporaryDirectory() as tmp, withdrawn:
             repo = _ScratchRepo(tmp)
             gpu = self._profile(repo, hardware__class="gpu", hardware__architecture="sm_90")
             for until in ("Compile", "Generate", "Build", "build", " BUILD "):

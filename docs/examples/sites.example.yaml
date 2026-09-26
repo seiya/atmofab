@@ -1,7 +1,7 @@
 # Execution sites: where Validate.execute runs each target's binary (docs/ORCHESTRATION.md
 # §Execution sites). Copy to ./sites.yaml and edit; that file is machine-local and gitignored.
-# Without ./sites.yaml every target runs at the `local` site. Nothing reads the file until
-# issue #293 wires it into the driver; until then every run executes locally whatever it says.
+# Without ./sites.yaml every target runs at the `local` site. The driver reads it once per run,
+# and probes a remote site a run will execute at before anything is billed.
 #
 # The host names and paths below are placeholders. Authentication and port are ssh's own
 # configuration, not this file's: a site names one ssh destination ([user@]name) and nothing

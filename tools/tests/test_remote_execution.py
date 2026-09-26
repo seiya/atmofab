@@ -954,5 +954,74 @@ class ScriptTests(unittest.TestCase):
             self.assertIn(f"command -v {prog} ", script)
 
 
+class ProbeSiteTests(unittest.TestCase):
+    """`probe_site` (issue #293, PR-3): the driver's launch-time question to a remote site."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
+        with self.h.env(**knobs):
+            return rx.probe_site(self.h.site, exes)
+
+    def test_one_call_answers_the_missing_programs_and_the_machine(self) -> None:
+        import platform
+
+        got = self.probe("sh", "zz-no-such-tool", "timeout", "zz-other")
+        self.assertEqual(got, rx.SiteProbe(missing=("zz-no-such-tool", "zz-other"),
+                                           machine=platform.machine()))
+        calls = self.h.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:5], ["ssh", *rx.SSH_OPTIONS])
+        self.assertEqual(self.probe().missing, ())
+
+    def test_a_site_whose_path_lacks_a_program_reports_it(self) -> None:
+        bare = _bare_path(self.h.root, without="timeout")
+        self.assertEqual(self.probe("timeout", "sh", SHIM_SSH_PATH=str(bare)).missing,
+                         ("timeout",))
+
+    def test_a_site_that_does_not_answer_is_a_remote_execution_error(self) -> None:
+        with self.assertRaises(rx.RemoteExecutionError) as ctx:
+            self.probe("sh", SHIM_SSH_FAIL=rx.PROBE_MARKER)
+        self.assertIn("probe the site", str(ctx.exception))
+        self.assertIn("box", str(ctx.exception))
+
+    def test_an_answer_not_in_the_probes_shape_is_refused(self) -> None:
+        cases = {
+            "no machine line": "printf 'hello\\n'",
+            "two machine lines": (f"echo '{rx.PROBE_MARKER} machine a'; "
+                                  f"echo '{rx.PROBE_MARKER} machine b'"),
+            "an unknown kind": f"echo '{rx.PROBE_MARKER} weather sunny'",
+            "a program not asked about": (f"echo '{rx.PROBE_MARKER} missing zz'; "
+                                          f"echo '{rx.PROBE_MARKER} machine x'"),
+        }
+        for what, script in cases.items():
+            with self.subTest(what), mock.patch.object(
+                    rx, "_ssh", side_effect=lambda *a, _s=script, **k: subprocess.run(
+                        ["sh", "-c", _s], capture_output=True, text=True).stdout):
+                with self.assertRaises(rx.RemoteExecutionError):
+                    rx.probe_site(self.h.site, ("sh",))
+
+    def test_a_login_banner_is_not_read(self) -> None:
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"Welcome\n{rx.PROBE_MARKER} machine x86_64\nbye\n")):
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)),
+                             rx.SiteProbe(missing=(), machine="x86_64"))
+
+    def test_a_malformed_request_is_refused_before_any_call(self) -> None:
+        local = es.Site(site_id="local", executes=("cpu",))
+        with self.h.env():
+            with self.assertRaises(ValueError):
+                rx.probe_site(local, ("sh",))
+            for bad in ("a b", "$(x)", "-v", "../sh", ""):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    rx.probe_site(self.h.site, (bad,))
+        self.assertEqual(self.h.calls(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
