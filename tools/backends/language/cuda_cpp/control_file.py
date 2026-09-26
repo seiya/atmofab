@@ -5,8 +5,8 @@ system's renderer (`tools/backends/build_system/<id>/control_file.py`) takes `ru
 one compile rule per source and one link rule. A CUDA C++ source is compiled on its own against
 the host-rendered headers (BUNDLE_BINDING.md §1), so each `.cu` is one object and the objects meet
 at link — the build graph's ordinary shape. The object directory is on the include path for the
-dependency headers a physics node will have staged there; no node of this language stages any yet
-(the physics change of `TODO.md`'s prompt-templates row).
+dependency headers a physics node's Build stages there beside each dependency's source
+(`workflow_conductor._stage_dependency_sources`, issue #289 R4-b PR-6).
 
 Stdlib only; imports nothing from the neutral core.
 """

@@ -1,43 +1,119 @@
 # Checks-module ABI — the CUDA C++ binding
 
-> **Audience: the `Generate.generate` leaf of a node whose target profile names
-> `toolchain.language: cuda_cpp`, which is shown §5, and the maintainer of the binding.** No part
-> of it is inlined into the `Generate.verify` reviewer's prompt yet: the harness reviewer is told
-> what the host renders by the language's prompt fragment instead. This document binds the language-neutral
-> checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md`) to CUDA C++, section by
-> section, and its §5 is the legality and gate-guard rule set every leaf-authored CUDA C++ source
-> of a `Generate` node is held to. It is reached through the CUDA C++ language backend's
-> `checks_abi` capability (`tools/backends/language/cuda_cpp/checks_abi.py`). The host inlines §5
-> of this document into the `harness`-shape producer's prompt as `gate_guards_document`.
+> **Audience: the `Generate.generate` / `Generate.verify` leaves of a node whose target profile
+> names `toolchain.language: cuda_cpp`, and the maintainer of the binding.** This document binds
+> the language-neutral checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md`) to CUDA
+> C++, section by section: its §1-§4 here say how the neutral §1-§4 are spelled in CUDA C++, and
+> §5 is the legality and gate-guard rule set every leaf-authored CUDA C++ source of a `Generate`
+> node is held to. It is reached through the CUDA C++ language backend's `checks_abi` capability
+> (`tools/backends/language/cuda_cpp/checks_abi.py`, which also holds the declaration table
+> `CHECKS_ABI_PARAMS` the host renders and the gates compare against). The host inlines the
+> neutral §1-§4 followed by §1-§4 of this document into a physics node's `generate.verify`
+> reviewer's prompt as `checks_module_contract_document`, and §5 of this document into the
+> `harness`-shape producer's prompt as `gate_guards_document`; a physics node's
+> `generate.generate` producer is told the same rules by the language's prompt fragments
+> (`tools/prompt_templates/backends/language/cuda_cpp/generate_generate.txt`), and the
+> `harness`-shape reviewer by its own fragment.
 
 The leaf-authored source files of a node are `<spec_id>_model.cu` (the definitions of its
-published operations) and, on a harness, `<spec_id>_runner.cu` (the executable entry); the host
-renders `<spec_id>_model.cuh` (the declarations). How they form one program is
+published operations) and, on a physics node, `<spec_id>_checks.cu` (the checks callbacks and
+the bound state) — on a harness, `<spec_id>_runner.cu` (the executable entry) instead. The host
+renders `<spec_id>_model.cuh` (the published surface), and on a physics node
+`<spec_id>_runner.cu` and `<spec_id>_checks.cuh` (the declarations of this document's §1 and
+§1-b) as well as the build control file. How they form one program is
 `docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §1.
 
 ## 1. The fixed ABI in CUDA C++
 
-Not bound. The checks-module ABI is called by a runner the host renders over the target's
-harness, and the CUDA C++ backend renders no runner (it declares no `runner_render`), so no
-checks module of this language is called by anything. A node that would need one — a
-`component` or `problem` node — is refused at launch
-(`target_profile.toolchain_servable_reasons`). This section is written with the runner renderer.
+The five callbacks of the neutral §1 are functions returning `void` in `namespace
+<spec_id>_checks`, and the host DECLARES them: it renders `<spec_id>_checks.cuh` beside the
+sources (`runner.render_checks_header`), and both the host-rendered runner and the leaf's
+`<spec_id>_checks.cu` include it. The header reads, for a node whose snapshot schema declares a
+scalar `s`, a rank-1 `u` and a rank-2 `a`:
+
+```cpp
+// <spec_id>_checks.cuh: the checks ABI of <spec_id>, rendered by the host from the node's IR.
+#pragma once
+#include <string>
+#include <vector>
+// ... the guarded definitions of atmofab::View and atmofab::Array (BUNDLE_BINDING.md §1) ...
+namespace <spec_id>_checks {
+void case_setup(const std::string& case_id, bool& ok);
+void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& ok);
+void get_time(double& t);
+void checks_compute(const std::string& case_id, const std::string& check_id, std::string& status);
+void metric_compute(const std::string& case_id, const std::string& name, double& val, bool& is_na, std::string& reason_na, bool& found);
+extern double s;
+extern std::vector<double> u;
+extern atmofab::Array<double, 2> a;
+}  // namespace <spec_id>_checks
+```
+
+The neutral argument table binds as: an `in` string is `const std::string&`, an `out` string
+`std::string&`; `logical` is `bool`, `integer` `int`, `float64` `double`; every `out` argument
+is a non-const reference to an object the runner owns and passes freshly initialized.
+
+The leaf's `<spec_id>_checks.cu` begins with `#include "<spec_id>_checks.cuh"` and DEFINES each
+callback in `namespace <spec_id>_checks` (a qualified definition `void <spec_id>_checks::f(...)`
+counts) with exactly the declared return type and parameter types, in order; the parameter names
+are the leaf's. Each is one external definition: not `static`, `inline` or `constexpr`, not
+`__device__`, not in an unnamed namespace. The `Generate.gate` static check and the bundle
+acceptance gate read the definitions by one reader (`source.checks_module_abi_facts`) and treat a
+callback defined any other way as not defined: a definition with another parameter type is an
+OVERLOAD the header's declaration never reaches — the runner's call would fail at link — so it
+is refused by name before Build. All five are required on every physics node, whatever subset its
+runner calls: a node with no metrics still defines `metric_compute`.
 
 ### 1-b. The bound state in CUDA C++
 
-Not bound, for the reason §1 states.
+Every snapshot variable of the neutral §1-b is a namespace-scope variable of `<spec_id>_checks`,
+named exactly as the IR names it (C++ identifiers are case-sensitive), whose type is set by the
+rank of its `shape_expr`: `double` for a scalar, `std::vector<double>` for rank 1, and
+`atmofab::Array<double, R>` for rank R ≥ 2 — the owning column-major array whose `extent[k]` is
+the k-th dimension of the `shape_expr` and whose `data` holds their product. The header declares
+each `extern`; the leaf's source DEFINES it with that type and external linkage (not `static`,
+`const`, `constexpr` or `extern`, not in an unnamed namespace) — a definition of another type is a
+compile error against the header (nvcc 13.4: `declaration is incompatible with ...`), and a
+missing or internal one is refused by the static check (`source.unpublished_bound_state`). The
+runner reads each one as `<spec_id>_checks::<name>` and hands the harness emitters a non-owning
+`atmofab::View` over it. At each capture point a `std::vector` must be non-empty and an
+`atmofab::Array` must have every `extent[k]` positive with `data.size()` their product; otherwise
+the run stops (`bound state <name> is not allocated at capture`). A rejected case (`case_setup`
+setting `ok = false`) still leaves every bound array so sized.
 
 ## 2. The semantics, spelled in CUDA C++
 
-Not bound, for the reason §1 states.
+A rejected guard / xfail case sets `ok = false` in `case_setup`; `status` is `"pass"`, `"fail"`
+or `"na  "` — the not-applicable value is written at the contract's width 4, right-padded, and
+the certified harness trims the padding before it writes the status, so `diagnostics.json` reads
+`"na"` as on every other target; an honestly unavailable metric sets `found = true`,
+`is_na = true` and `reason_na` to a short reason, and a metric that does not apply to the case
+sets `found = false`; a rejected case's bound arrays are still sized, e.g. filled with `0.0`.
 
 ## 3. Module-level state in CUDA C++
 
-Not bound, for the reason §1 states.
+The current case's state lives in the bound namespace-scope variables of §1-b, in HOST memory: a
+model that computes on the device copies the result back into them before `case_run` returns. A
+cross-case accumulator lives in other namespace-scope variables of the checks source, which an
+unnamed namespace keeps internal to it.
 
 ## 4. Prohibitions in CUDA C++
 
-Not bound, for the reason §1 states.
+- **The harness is the runner's alone.** Neither `<spec_id>_checks.cu` nor `<spec_id>_model.cu`
+  includes a harness header (`#include "harness_..."`) or names the harness
+  (`harness_<x>_model::`, a `harness_<x>__<op>` call); the host-rendered runner is the sole
+  caller (`source.checks_harness_isolation_violations`).
+- **No file I/O, no command, nothing that runs after `main`, in ANY leaf source** — the checks
+  source, the model and every helper: no file stream or stream buffer of any kind
+  (`std::ofstream`, `std::ifstream`, `std::fstream`, `std::filebuf`, …), no C stdio or POSIX
+  opener (`fopen`, `freopen`, `open`, their `64` / `at` variants), no `std::filesystem`, no
+  `rename` / `unlink` / one-path `remove`, no `system` / `popen` / `exec*`, no `atexit` /
+  `at_quick_exit`, no `asm`, no `syscall` / `fork` / `posix_spawn`, no `extern "C"` declaration —
+  refused by NAME, called or not (`source.checks_harness_isolation_violations`,
+  `LEAF_IO_NAMES` / `LEAF_IO_CALL_NAMES`). Emission is the harness's alone, and the host-rendered
+  runner makes it so structurally: it writes EVERY output — the snapshots it serialized at the
+  capture points included — after the node's last callback has returned, and ends every exit
+  with `std::_Exit`, so no code of a leaf source runs after the harness has written anything.
 
 ## 5. CUDA C++ legality and gate guards
 

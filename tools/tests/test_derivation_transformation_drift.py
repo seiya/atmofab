@@ -136,6 +136,26 @@ def render_tuple() -> dict[str, str]:
             _source_digest(wc.Conductor._interface_header_module),
         "Conductor._write_interface_header":
             _source_digest(wc.Conductor._write_interface_header),
+        # The second language's RUNNER (issue #289, R4-b PR-6): its renderer and the checks
+        # header it renders beside the runner (the ABI table in `checks_abi`), the neutral IR
+        # readers both renderers share, the declaration reader its harness pin reads, the
+        # parallelism its perf line states (`host_execution.perf_parallelism` and the class's
+        # `perf_facts`), the dispatch row, and the conductor methods that write the checks header
+        # and copy each closure member's header into `src/`.
+        "tools/backends/language/cuda_cpp/runner.py":
+            _file_digest("tools/backends/language/cuda_cpp/runner.py"),
+        "tools/backends/language/cuda_cpp/checks_abi.py":
+            _file_digest("tools/backends/language/cuda_cpp/checks_abi.py"),
+        "tools/backends/language/cuda_cpp/declarations.py":
+            _file_digest("tools/backends/language/cuda_cpp/declarations.py"),
+        "tools/runner_ir.py": _file_digest("tools/runner_ir.py"),
+        "tools/host_execution.py": _file_digest("tools/host_execution.py"),
+        "tools/backends/hardware/gpu/perf.py": _file_digest("tools/backends/hardware/gpu/perf.py"),
+        "registry runner_render attr": registry_attr("runner_render"),
+        "Conductor._checks_header": _source_digest(wc.Conductor._checks_header),
+        "Conductor._write_dependency_headers":
+            _source_digest(wc.Conductor._write_dependency_headers),
+        "Conductor._copy_bound_file": _source_digest(wc.Conductor._copy_bound_file),
     }
 
 
@@ -154,6 +174,7 @@ def build_tuple() -> dict[str, str]:
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         "Conductor._stage_dependency_sources":
             _source_digest(wc.Conductor._stage_dependency_sources),
+        "Conductor._copy_bound_file": _source_digest(wc.Conductor._copy_bound_file),
         "codegen_bundle.derive_build_graph": _source_digest(cb.derive_build_graph),
         # The staged dependency's name is the language's `bundle_facts` since issue #289.
         "tools/backends/language/fortran/bundle.py":
@@ -401,7 +422,24 @@ PINNED_RENDER: dict[str, str] = {
     # bundle facts, the header and its lowering, the conductor's header writer), which no pin
     # watched — a change to the header or to `-O2` left every `cuda_cpp` key unmoved. No
     # `cuda_cpp` node has run, and nothing the Fortran path renders changed.
-    "render-5": "9689ccadef31c017591a0c376c689aeed534877c40d6bbbe105231169f43e7a4",
+    # Re-pinned (issue #289, R4-b PR-6), behaviour-preserving for every certified output: the
+    # Fortran runner's IR readers moved to the neutral `tools/runner_ir.py` (the rendered runner
+    # and `ir_content_violations` are byte-identical over all 148 IRs under `workspace/ir/`,
+    # measured against origin/main 4f81d082), `host_render` gained `render_checks_header`
+    # (Fortran answers None, so `_write_runner` writes nothing more for it), and the tuple gained
+    # the CUDA C++ runner, its checks header and the dependency-header copy. The certified
+    # `cuda_cpp` output (the harness) renders no runner and copies no header, and its control
+    # file and published-surface header are unchanged; no `cuda_cpp` physics node has run.
+    # Re-pinned again within the same PR's review (round 3): the CUDA C++ runner ends every exit
+    # with `std::_Exit` (`finish`). Only the `cuda_cpp` physics runner's text moved, and no such
+    # node has run; the Fortran render and the harness's control file and header are unchanged.
+    # And in round 4: the Fortran runner's import block reordered (ruff I001) and a redundant
+    # `return None` dropped — the rendered Fortran runner and `ir_content_violations` are
+    # byte-identical over all 148 IRs under `workspace/ir/` to origin/main 4f81d082 (re-measured).
+    # And in round 5: the CUDA C++ runner defers every harness write (snapshots included) to
+    # after the node's last callback. Only the `cuda_cpp` physics runner moved; the Fortran
+    # render over the same 148 IRs is byte-identical to origin/main 4f81d082 (re-measured).
+    "render-5": "2d0339a22f9318ae2cb39c2a34e54669fa7564bad3b83f0654b6a6d7ab0b6b0d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -430,7 +468,13 @@ PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #289, R4-b PR-4), comment only: `_build_inproc`'s note on the recorded
     # `compiler_version` now says it is the first VERSIONED line of `--version` (the server's
     # probe changed; for a compiler that prints its version first, the value is the same line).
-    "build-1": "2a5089ac003f7f49d37b155eac08a3ad6dfdd5afbbe221521425a11db6453be8",
+    # Re-pinned (issue #289, R4-b PR-6), behaviour-preserving for every certified output:
+    # `_stage_dependency_sources` also stages a closure member's interface header when its
+    # binding carries one, which only a language declaring `interface_header` binds (`cuda_cpp`;
+    # the Fortran binding is unchanged, so its staging is too), and the sha-checked copy moved
+    # into `_copy_bound_file` (joins the tuple). The one certified `cuda_cpp` build — the
+    # harness — has no closure to stage.
+    "build-1": "3b2650dbcdf7458db9f476f80f2edb835d88df3ade0dc1ff40ac0700719c20fa",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -490,7 +534,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # round 3: a platform value containing a scheduler marker (a node named `atmofab-jobs01`) is
     # now refused as a marker off its line's start, where origin/main recorded it. It fails
     # closed, so no certified output is wrong without a bump.
-    "execute-5": "8431b41c5312e751cbbd1581922ba0c808e0e517d27376553c56cb32142ca3fb",
+    # Re-pinned (issue #289, R4-b PR-6), behaviour-preserving: `tools/host_execution.py` gained
+    # `perf_parallelism`, which the CUDA C++ runner renderer reads for its perf line and the
+    # execute body does not call; `launch_shape` is unchanged.
+    "execute-5": "44aaabf0ccd5337cdd91dc87577891b3c9621cbf83f7e10c07fdced176ab3e7f",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

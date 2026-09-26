@@ -5395,7 +5395,7 @@ class Conductor:
 
     def _conductor_authors_makefile(self, refs: NodeRefs) -> bool:
         """The conductor authors `src/Makefile` iff the neutral core has a control-file writer
-        for the node's (build_system, language) — today make+fortran, asked of the registry via
+        for the node's (build_system, language) — today make with fortran or cuda_cpp, asked of the registry via
         `_core_authors_control_file`;
         exactly the scope of `_write_makefile`, for BOTH leaf and dependency nodes. The
         dependency Makefile is as deterministic as the leaf one (the closure + per-dep object
@@ -5512,17 +5512,33 @@ class Conductor:
         names: set[str] = set()
         if self._conductor_authors_runner(refs):
             names.add(self._runner_basename(refs))
+            checks_header = self._checks_header(refs)
+            if checks_header is not None:
+                names.add(checks_header[0])
         if self._conductor_authors_makefile(refs):
             names.add(self.CONTROL_FILE_BASENAME)
         header = self._interface_header_module(refs)
         if header is not None:
             names.add(header.basename(spec_id_of(refs.node_key)))
+            # The closure's headers, copied beside the node's sources at phase start
+            # (`_write_dependency_headers`): host files, and context the leaf's sources include.
+            names.update(header.basename(spec_id_of(nk))
+                         for nk in self._dependency_closure_nodes(refs))
         return frozenset(names)
+
+    def _checks_header(self, refs: NodeRefs) -> tuple[str, str] | None:
+        """`(basename, text)` of the checks header the host renders for a node whose runner it
+        renders (`host_render.render_checks_header`), or None for a language whose checks
+        module declares itself. Deterministic, so the name the gates attribute by and the file
+        `_write_runner` wrote are one render."""
+        from tools.host_render import render_checks_header
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        return render_checks_header(self._read_toolchain(refs)["language"], ir, refs.spec_id)
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
         PHYSICS node whose target toolchain the neutral core both writes a control file for and
-        renders a runner for (today make+fortran — asked of the registry, see
+        renders a runner for (today make with fortran or cuda_cpp — asked of the registry, see
         `_core_authors_control_file`). On such a node the runner is glue over the plumbing of
         the TARGET's certified harness (`_pure_harness_node_key`, issue #284) + the leaf-authored
         `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness interface
@@ -5650,7 +5666,9 @@ class Conductor:
         return self._bundle_shape(refs) is not None
 
     def _write_runner(self, refs: NodeRefs) -> None:
-        """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`).
+        """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`),
+        and — for a language that declares the checks ABI in a header rather than in the checks
+        source (`host_render.render_checks_header`) — that header beside it.
 
         Resolves the TARGET's CERTIFIED harness (`_pure_harness_node_key`) — the exact
         `<harness>_model.f90` Build stages/links (`_certified_model_source`, the harness's
@@ -5757,6 +5775,11 @@ class Conductor:
         path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
+        # The checks ABI's declarations, for a language whose checks source includes them rather
+        # than declaring itself (`host_render.render_checks_header`, issue #289, R4-b PR-6).
+        checks_header = self._checks_header(refs)
+        if checks_header is not None:
+            (path.parent / checks_header[0]).write_text(checks_header[1], encoding="utf-8")
 
     def _dependency_closure_nodes(self, refs: NodeRefs) -> list[str]:
         """Dependency node_keys in compile order (deepest first): the PIPELINE closure of this
@@ -9421,17 +9444,62 @@ class Conductor:
         staged: list[dict[str, Any]] = []
         for nk in nodes:
             binding = by_node[nk]
-            target = obj_dir / self._language_facts().model_basename(spec_id_of(nk))
-            shutil.copy2(self.repo_root / binding["model_source_ref"], target)
-            digest = hashlib.sha256(target.read_bytes()).hexdigest()
-            if digest != binding["model_source_sha256"]:
-                raise RuntimeError(
-                    f"dependency {nk}: the staged {binding['model_source_ref']} hashes to "
-                    f"{digest}, not the {binding['model_source_sha256']} the {phase} key of "
-                    f"{refs.node_key} bound (the certified source directory was rewritten "
-                    f"under the running attempt; refusing to compile bytes the key never saw)")
+            self._copy_bound_file(
+                refs, phase, nk, binding["model_source_ref"], binding["model_source_sha256"],
+                obj_dir / self._language_facts().model_basename(spec_id_of(nk)))
+            # The dependency's host-rendered header (a language that declares
+            # `interface_header`, issue #289, R4-b PR-6): its model source includes it, and a
+            # quoted include is resolved beside the includer, so it is staged beside the source.
+            if "interface_header_ref" in binding:
+                self._copy_bound_file(
+                    refs, phase, nk, binding["interface_header_ref"],
+                    binding["interface_header_sha256"],
+                    obj_dir / Path(binding["interface_header_ref"]).name)
             staged.append(binding)
         return staged
+
+    def _copy_bound_file(self, refs: NodeRefs, phase: str, node_key: str, ref: str,
+                         sha256: str, target: Path) -> None:
+        """Copy the bound file `ref` of closure member `node_key` to `target` and refuse the copy
+        unless it hashes to `sha256` — the bytes the `phase` key of `refs` bound. Hashed AFTER it
+        lands, so the check reads what will be compiled. Raises RuntimeError (a build
+        precondition, transport fail_closed)."""
+        shutil.copy2(self.repo_root / ref, target)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if digest != sha256:
+            raise RuntimeError(
+                f"dependency {node_key}: the staged {ref} hashes to {digest}, not the "
+                f"{sha256} the {phase} key of {refs.node_key} bound (the certified source "
+                f"directory was rewritten under the running attempt; refusing to compile bytes "
+                f"the key never saw)")
+
+    def _write_dependency_headers(self, refs: NodeRefs) -> None:
+        """Copy each closure member's host-rendered interface header into the node's `src/`, at
+        Generate start, for a language that declares `interface_header` (issue #289, R4-b PR-6).
+
+        The node's own sources include `"<dep>_model.cuh"`, and three consumers read `src/`
+        with nothing else on the include path: the `Generate.gate` lint check (which compiles
+        the files of `src/` by name), the syntax stage (which copies `src/`'s sources and headers
+        into its stage directory), and the leaf-authored sources at Build (whose object
+        directory is on the include path too, where `_stage_dependency_sources` puts the same
+        bytes). The copy is the BOUND one — the header beside the model source the generate key
+        bound, sha-checked after it lands — so the declarations the node is checked against are
+        the ones its Build links against. No-op for a language without the capability and for a
+        node without bindings (no dependency, or a control file the host does not author)."""
+        if self._interface_header_module(refs) is None:
+            return
+        bound = self._phase_closure_bindings.get((refs.node_key, "generate")) or []
+        src = self.repo_root / refs.source_dir() / "src"
+        for binding in bound:
+            if "interface_header_ref" not in binding:
+                raise RuntimeError(
+                    f"dependency {binding.get('node_key')}: the generate key of {refs.node_key} "
+                    f"bound no interface header, and this language's sources include one")
+            src.mkdir(parents=True, exist_ok=True)
+            self._copy_bound_file(
+                refs, "generate", str(binding["node_key"]), binding["interface_header_ref"],
+                binding["interface_header_sha256"],
+                src / Path(binding["interface_header_ref"]).name)
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Build: in-process compile_project + binary_meta + post_build gate."""
@@ -10455,6 +10523,19 @@ class Conductor:
                                 shutil.copy2(p, leaf_dir / p.name)
                             for p in dep_files:
                                 shutil.copy2(p, leaf_dir / p.name)
+                            # The host files the leaf's sources INCLUDE — a staged file of a
+                            # suffix the compiler is not handed (a host-rendered header) — are
+                            # CONTEXT, as in the lint partition (`_attribute_lint_findings`):
+                            # without them the leaf's own files fail to compile alone, and the
+                            # record says `leaf` where the truth may be
+                            # `unattributed_interaction` (issue #289, R4-b PR-6: the checks
+                            # header and the node's published-surface header).
+                            host_names = self._host_rendered_src_names(refs)
+                            for p in src_dir.iterdir():
+                                if (p.is_file() and p.name in host_names
+                                        and p.suffix.lower() not in suffixes
+                                        and p.suffix.lower() in staged_suffixes):
+                                    shutil.copy2(p, leaf_dir / p.name)
                             leaf_probe = _sub_check(leaf_dir)
                             if leaf_probe.get("skipped"):
                                 attribution = "unprobed"
@@ -12461,6 +12542,18 @@ class Conductor:
             return PhaseOutcome(phase, "fail", decision=RouteDecision(
                 "fail_closed", reason="derivation_inputs_unresolvable"))
         self._phase_derivations[(node_key, phase)] = derivation
+        # The closure's interface headers, beside the node's sources, from the bindings the key
+        # just bound — after the derivation, which is what binds them, and before any substep
+        # (the leaf's gates compile against them). A copy that does not hash to the binding is a
+        # precondition failure, routed like the runner render's.
+        if phase == "generate":
+            try:
+                self._write_dependency_headers(refs)
+            except RuntimeError as exc:
+                self.emit("generate_dependency_headers_failed", node_key=node_key,
+                          detail=str(exc)[:200])
+                return PhaseOutcome(phase, "fail", decision=RouteDecision(
+                    "fail_closed", reason="generate_dependency_headers_failed"))
 
         outcomes: list[SubstepOutcome] = []
         for i, substep in enumerate(SUBSTEPS[phase]):

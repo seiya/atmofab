@@ -118,9 +118,12 @@ class CheckedInProfileTests(unittest.TestCase):
                         violations)
         for phase in sorted(tp.NON_EXECUTING_PHASES):
             self.assertEqual(site_violations(no_file, profile, until_phase=phase), [], phase)
-        # A physics node of this language is refused at every phase: no runner renderer.
-        self.assertTrue(any("runner_render" in v for v in tp.target_profile_violations(
-            REPO_ROOT, profile, until_phase="build")))
+        # A physics node of this language passes too since R4-b PR-6 (the language renders its
+        # runner); until then it was refused at every phase for want of `runner_render`.
+        for phase in sorted(tp.NON_EXECUTING_PHASES):
+            self.assertEqual(tp.target_profile_violations(
+                REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
+                until_phase=phase), [], phase)
 
     def test_the_hash_is_over_content_not_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
