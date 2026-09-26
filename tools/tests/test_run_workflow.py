@@ -89,7 +89,12 @@ def _checkout_resolve_run_target(repo_root: Path, requested: str | None, *,
     # scratch harness member. That gate is exercised under `_real_target_resolution`.
     # `until_phase` is passed through (issue #289): same signature as the real one, so a caller
     # that stops passing it, or passes a wrong one, is observed here too.
-    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested, until_phase=until_phase)
+    # An argv with no `--target` runs for this checkout's `fortran_cpu`: the checkout declares
+    # two profiles since issue #289 (R4-b PR-5), so the real selection would refuse it as
+    # `target_required`, and these tests are about something else. That refusal is exercised
+    # under `_real_target_resolution`.
+    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested if requested is not None else _TARGET_ID,
+                                    until_phase=until_phase)
 
 
 @contextmanager
@@ -4078,9 +4083,10 @@ class RunWorkflowTests(unittest.TestCase):
 
         The tool name is asserted through the probe rather than spelled here: this test must not
         become the place a `neutral core` file learns a technology name either."""
-        from tools.host_prerequisites import required_host_executables
+        from tools.host_prerequisites import (required_host_executables,
+                                              resolve_launch_axis_selection)
 
-        target = required_host_executables()[0].executable
+        target = required_host_executables(resolve_launch_axis_selection(_TP_RW))[0].executable
         original_which = run_workflow.shutil.which
 
         def fake_which(name: str) -> str | None:
@@ -4105,6 +4111,8 @@ class RunWorkflowTests(unittest.TestCase):
                     "Compile",
                     "--stdout-format",
                     "jsonl",
+                    "--target",
+                    _TARGET_ID,
                 ])
         finally:
             run_workflow.shutil.which = original_which  # type: ignore[assignment]
@@ -4201,31 +4209,33 @@ class RunWorkflowTests(unittest.TestCase):
         from tools.tests.target_fixtures import profile_with
         gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
         with mock.patch.object(run_workflow, "load_target_profile", return_value=gpu):
-            self.assertIsNotNone(run_workflow._host_probe_selection(None, "build"))
-            self.assertIsNone(run_workflow._host_probe_selection(None, "validate"))
-            self.assertIsNone(run_workflow._host_probe_selection(None))
+            self.assertIsNotNone(run_workflow._host_probe_selection(_TARGET_ID, "build"))
+            self.assertIsNone(run_workflow._host_probe_selection(_TARGET_ID, "validate"))
+            self.assertIsNone(run_workflow._host_probe_selection(_TARGET_ID))
             # Both probes carry the phase to the selection, not only the presence one.
             with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
                             autospec=True, return_value=[]) as versions, \
                     mock.patch("tools.host_prerequisites.missing_host_executables",
                                autospec=True, return_value=[]) as missing:
-                run_workflow._check_host_tool_versions(None, "build")
-                run_workflow._check_required_host_tools(None, "build")
+                run_workflow._check_host_tool_versions(_TARGET_ID, "build")
+                run_workflow._check_required_host_tools(_TARGET_ID, "build")
                 versions.assert_called_once()
                 missing.assert_called_once()
                 versions.reset_mock()
                 missing.reset_mock()
-                run_workflow._check_host_tool_versions(None, "validate")
-                run_workflow._check_required_host_tools(None, "validate")
+                run_workflow._check_host_tool_versions(_TARGET_ID, "validate")
+                run_workflow._check_required_host_tools(_TARGET_ID, "validate")
                 versions.assert_not_called()
                 missing.assert_not_called()
 
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
         separator change cannot drift away from what an operator is told to install."""
-        from tools.host_prerequisites import required_host_executables
+        from tools.host_prerequisites import (required_host_executables,
+                                              resolve_launch_axis_selection)
 
-        targets = [item.executable for item in required_host_executables()]
+        targets = [item.executable for item in required_host_executables(
+            resolve_launch_axis_selection(_TP_RW))]
         self.assertGreater(len(targets), 1)
         original_which = run_workflow.shutil.which
         run_workflow.shutil.which = lambda name: (  # type: ignore[assignment]
@@ -4238,7 +4248,8 @@ class RunWorkflowTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    "--target", _TARGET_ID])
         finally:
             run_workflow.shutil.which = original_which  # type: ignore[assignment]
             run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
@@ -4280,7 +4291,8 @@ class RunWorkflowTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    "--target", _TARGET_ID])
         finally:
             host_prerequisites.unsupported_host_tool_versions = original_arm  # type: ignore[assignment]
             run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
@@ -4307,9 +4319,10 @@ class RunWorkflowTests(unittest.TestCase):
         which message comes out.
         """
         from tools import host_prerequisites
-        from tools.host_prerequisites import required_host_executables
+        from tools.host_prerequisites import (required_host_executables,
+                                              resolve_launch_axis_selection)
 
-        target = required_host_executables()[0].executable
+        target = required_host_executables(resolve_launch_axis_selection(_TP_RW))[0].executable
         original_which = run_workflow.shutil.which
         original_arm = host_prerequisites.unsupported_host_tool_versions
         original_runtime = run_workflow._runtime_command
@@ -4324,7 +4337,8 @@ class RunWorkflowTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl"])
+                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    "--target", _TARGET_ID])
         finally:
             run_workflow.shutil.which = original_which  # type: ignore[assignment]
             host_prerequisites.unsupported_host_tool_versions = original_arm  # type: ignore[assignment]

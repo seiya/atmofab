@@ -1,0 +1,5 @@
+spec_id: harness_cpp_gpu
+spec_kind: infrastructure
+dependencies:
+  components: []
+  profiles: []

@@ -43,7 +43,7 @@ high-risk **Build** — executes under bwrap:
 ```
 ! python3 tools/run_workflow.py \
     spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2 \
-    validate
+    validate --target fortran_cpu
 ```
 
 bwrap enforcement is unconditional, so the conductor wraps every leaf in

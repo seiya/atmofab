@@ -362,7 +362,7 @@ integer version. The version is part of the token, not a range.
 
 | capability | meaning |
 |---|---|
-| `sync_single_case` | synchronous one-case-at-a-time execution; the current `harness_fortran_cpu` ABI |
+| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`) |
 | `async_device_resident` | device-resident state with asynchronous capture (reserved) |
 | `distributed_state` | distributed state across ranks (reserved) |
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
@@ -389,6 +389,7 @@ the issue records this as a departure from `zero_base_architecture.md` §A4 as w
 
 ```
 "infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_cpp_gpu@0.1.0":     {"sync_single_case@1", "state_registration@1"}
 ```
 
 `state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
@@ -399,8 +400,10 @@ any check or metric callback of that case (`docs/workflow/CHECKS_MODULE_CONTRACT
 The harness source needs no new operation for it, so the harness version is unchanged.
 
 `sync_single_case@1` is defined as exactly the canonical interface block of
-`harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`
-rendered `real64`, `case_id_len = 64`). The mechanical enforcer of that definition remains
+`harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
+`case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
+target language by that language's backend; `harness_cpp_gpu@0.1.0` §5.1 is the same block.
+The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract

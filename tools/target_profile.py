@@ -71,7 +71,7 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                    "parallel", "execution", "harness"}),
         frozenset(),
     ),
-    "hardware": (frozenset({"class", "architecture"}), frozenset()),
+    "hardware": (frozenset({"class"}), frozenset({"architecture"})),
     "toolchain": (frozenset({"language", "standard", "build_system"}),
                   frozenset({"compiler", "linker"})),
     "parallel": (frozenset({"backend"}), frozenset()),
@@ -443,9 +443,11 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
 def hardware_violations(profile: TargetProfile, *, until_phase: str | None = None) -> list[str]:
     """The `hardware` half of the launch gate (issue #289, R4-b PR-1).
 
-    The class must be one this repository implements, and its `architecture` must satisfy the
-    class's `perf_facts` when the class states them (a class that states none leaves it a
-    recorded token, as every class did before the `hardware` axis existed).
+    The class must be one this repository implements, and its `architecture`, when the profile
+    states one, must satisfy the class's `perf_facts` when the class states them (a class that
+    states none leaves it a recorded token, as every class did before the `hardware` axis
+    existed). An absent `architecture` is the compiler's default: the operator pins one only when
+    the build must target a particular device.
 
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
@@ -468,8 +470,9 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     record = backend_registry.get("hardware", hardware_class)
     if "perf_facts" in record.backend_provides:
         facts = backend_registry.capability_module("hardware", hardware_class, "perf_facts")
-        architecture = str(profile.doc["hardware"]["architecture"])
-        if not facts.ARCHITECTURE_PATTERN.fullmatch(architecture):
+        architecture = profile.doc["hardware"].get("architecture")
+        if architecture is not None and \
+                not facts.ARCHITECTURE_PATTERN.fullmatch(str(architecture)):
             out.append(f"hardware.architecture: {architecture!r} is not a {hardware_class} "
                        f"architecture (pattern {facts.ARCHITECTURE_PATTERN.pattern})")
     if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:

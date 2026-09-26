@@ -29,9 +29,10 @@ from tools.target_profile import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The one profile this checkout declares, loaded the way a run loads it.
-FORTRAN_CPU: TargetProfile = load_target_profile(
-    REPO_ROOT, min(p.stem for p in (REPO_ROOT / TARGETS_DIR).glob(f"*{TARGET_PROFILE_SUFFIX}")))
+#: The `fortran_cpu` profile, loaded the way a run loads it. Named, not discovered: the checkout
+#: declares more than one profile since issue #289 (R4-b PR-5), and every fixture built on this
+#: one is a Fortran/CPU fixture.
+FORTRAN_CPU: TargetProfile = load_target_profile(REPO_ROOT, "fortran_cpu")
 TARGET_ID: str = FORTRAN_CPU.target_id
 
 SECOND_TARGET_ID = "fortran_cpu_t2"

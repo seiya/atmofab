@@ -10097,7 +10097,7 @@ class Conductor:
         staged_suffixes = tuple(s.lower() for s in syntax_facts.STAGED_SUFFIXES)
         mandatory = str(backend_registry.capability_module(
             "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
-        architecture = str(self.target.doc["hardware"]["architecture"])
+        architecture = self._target_architecture()
         src_dir = self.repo_root / refs.source_dir() / "src"
         command_log_ref = self._rel(src_dir / "command_log.jsonl")
 

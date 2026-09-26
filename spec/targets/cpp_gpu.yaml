@@ -1,0 +1,23 @@
+# Target profile (issue #289, R4-b). Operator-authored data: one value per target axis, and the
+# harness a node built for this target runs over. Loader and gate: tools/target_profile.py.
+# Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
+#
+# `hardware.architecture` is left out, so the device compiler builds for its default
+# architecture. To build for a particular GPU, add its compute capability, e.g.
+# `architecture: sm_90` (the grammar is tools/backends/hardware/gpu/perf.py).
+target_profile_version: 1
+target_id: cpp_gpu
+hardware:
+  class: gpu
+toolchain:
+  language: cuda_cpp
+  standard: c++17
+  build_system: make
+  compiler: nvcc
+parallel:
+  backend: cuda
+execution:
+  threads_per_rank: 1
+harness:
+  infrastructure_id: harness_cpp_gpu
+  version_constraint: ">=0.1.0 <1.0.0"
