@@ -405,7 +405,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(result.platform["cpu_model"], _local_cpu_model())
 
     def test_a_probe_answers_the_device_and_a_failing_probe_answers_none(self) -> None:
-        probe = ("sh", "-c", "echo 'Device X, 1.0'; echo second")
+        # Only the first line is the device: a later one is never read as a platform line.
+        probe = ("sh", "-c", "echo 'Device X, 1.0'; echo 'atmofab-platform gpu second'")
         result = self.h.run(self.h.request(platform_probe=probe))
         self.assertEqual(result.platform["gpu"], "Device X, 1.0")
         h2 = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
@@ -519,6 +520,23 @@ class RefusalTests(unittest.TestCase):
                     h.run(h.request(ship={"bin/runner": forger}))
                 self.assertEqual(h.log_entries("run"), [])
                 self.assertEqual(h.log_entries("qc"), [])
+
+    def test_a_command_that_ends_the_script_after_writing_to_its_stdout_is_refused(
+            self) -> None:
+        """The same runner, but after its clean lines it kills the job script, so that the
+        script's own status line is never printed: the job script's call then fails."""
+        forger = self.h.local / "forger"
+        forger.write_text(textwrap.dedent('''\
+            #!/usr/bin/env python3
+            import os, signal, sys
+            ppid = int(open("/proc/%d/stat" % os.getppid()).read().rsplit(")", 1)[1].split()[1])
+            with open("/proc/%d/fd/1" % ppid, "w") as out:
+                out.write("atmofab-status run 0 1 2\\natmofab-status qc 0 1 2\\n")
+            os.kill(ppid, signal.SIGKILL)
+            sys.exit(3)
+        '''))
+        forger.chmod(0o755)
+        self._refused("run the job script", self.h.request(ship={"bin/runner": forger}))
 
     def test_a_command_cannot_forge_its_own_status(self) -> None:
         """The runner is leaf-authored code with write access to the whole job directory: it

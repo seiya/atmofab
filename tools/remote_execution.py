@@ -321,6 +321,8 @@ def render_job_script(request: JobRequest) -> str:
 
 
 def _transport(argv: list[str], *, stage: str, timeout: int, remote: str) -> str:
+    # stdin is /dev/null so that ssh never reads the operator's terminal; not pinned, because
+    # the test process's own stdin is not a terminal either.
     try:
         proc = subprocess.run(argv, text=True, capture_output=True, timeout=timeout,
                               check=False, stdin=subprocess.DEVNULL)
