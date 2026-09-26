@@ -1056,9 +1056,11 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn(result.site_record["queue_wait_ms"], (1000, 2000, 3000))
 
     def test_the_job_line_is_printed_before_the_first_command(self) -> None:
-        """Printed after a command, the "start" would count that command's run as queue wait."""
-        script = rx.render_job_script(self.h.request())
+        """Printed after a command, or after the device probe (up to `PROBE_TIMEOUT_SEC`), the
+        "start" would count that time as queue wait."""
+        script = rx.render_job_script(self.h.request(platform_probe=("true",)))
         job_line = script.index(f"{rx.JOB_MARKER} ")
+        self.assertLess(job_line, script.index(f"timeout -k 5 {rx.PROBE_TIMEOUT_SEC} true"))
         self.assertLess(job_line, script.index("t0=$(date +%s)"))
         self.assertLess(job_line, script.index(f"{rx.STATUS_MARKER} "))
 
