@@ -108,6 +108,18 @@ def _real_target_resolution():
         yield
 
 
+def _seed_launch_repo(repo_root: Path) -> list[str]:
+    """The least a scratch `repo_root` needs for `main` to reach the launch's target resolution
+    (and the host probes after it), and the argv prefix that points `main` at it."""
+    _seed_default_llm_config_into(repo_root)
+    _seed_shape_expr_schema_into(repo_root)
+    (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
+    (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
+    (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
+    (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+    return ["spec/problem/test.md", "Compile", "--repo-root", str(repo_root)]
+
+
 def setUpModule() -> None:
     """Keep start-claim lock files out of the operator's home.
 
@@ -4105,10 +4117,9 @@ class RunWorkflowTests(unittest.TestCase):
         run_workflow._runtime_command = fake_runtime  # type: ignore[assignment]
         try:
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md",
-                    "Compile",
+                    *_seed_launch_repo(Path(tmp)),
                     "--stdout-format",
                     "jsonl",
                     "--target",
@@ -4128,105 +4139,79 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn(target, payload.get("detail", ""))
         self.assertEqual(payload.get("docs_ref"), "docs/RUNBOOK.md#0-1")
 
-    def test_the_host_probes_are_asked_about_the_invocations_target(self) -> None:
-        """Issue #284: the launch's host probes answer for `--target`'s profile. The presence
-        probe, the `required` list of its refusal and the version probe each take it — and,
-        since issue #289, the invocation's `until_phase` as typed, which the launch gate reads
-        (a run that stops before Validate is probed for a class this host cannot execute on)."""
+    def test_the_host_probes_are_asked_about_the_resolved_target(self) -> None:
+        """Issue #289 (R4-b PR-5): the host probes run AFTER the launch's target resolution and
+        take the profile it returned — `--target`, else the one a resumed orchestration recorded
+        — so a resume without `--target` is probed for its recorded target, not skipped. Driven
+        with no `--target` on the command line: the probe must still get the resolved profile."""
         from unittest import mock
 
-        from tools.host_prerequisites import resolve_launch_axis_selection
-        seen: list[object] = []
-        with mock.patch.object(run_workflow, "_check_required_host_tools",
-                               side_effect=lambda requested=None, until_phase=None:
-                               seen.append((requested, until_phase)) or ["x"]), \
-                mock.patch.object(run_workflow, "_host_probe_selection",
-                                  wraps=run_workflow._host_probe_selection) as selection, \
-                mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
-                redirect_stdout(io.StringIO()):
-            code = run_workflow.main([
-                "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
-                "--target", _TP_RW.target_id])
-        self.assertEqual(code, 2)
-        self.assertEqual(seen, [(_TP_RW.target_id, "Compile")])
-        selection.assert_called_with(_TP_RW.target_id, "Compile")
+        from tools.tests.target_fixtures import second_target
+        resolved = second_target()
+        given: list[object] = []
 
         class _Stop(Exception):
             pass
 
-        asked: list[object] = []
+        def presence(profile):
+            given.append(("presence", profile))
+            return []
 
-        def versions_probe(requested=None, until_phase=None):
-            asked.append((requested, until_phase))
+        def versions(profile):
+            given.append(("versions", profile))
             raise _Stop
-        with mock.patch.object(run_workflow, "_check_required_host_tools", return_value=[]), \
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(run_workflow, "_resolve_launch_target",
+                                  return_value=resolved) as resolve, \
+                mock.patch.object(run_workflow, "_check_required_host_tools",
+                                  side_effect=presence), \
                 mock.patch.object(run_workflow, "_check_host_tool_versions",
-                                  side_effect=versions_probe), \
+                                  side_effect=versions), \
                 mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
                 redirect_stdout(io.StringIO()), self.assertRaises(_Stop):
-            run_workflow.main(["spec/problem/dummy.md", "Compile", "--stdout-format",
-                               "jsonl", "--target", _TP_RW.target_id])
-        self.assertEqual(asked, [(_TP_RW.target_id, "Compile")])
-        # The version probe, driven directly: it asks the registry about that selection.
-        with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
-                        autospec=True, return_value=[]) as versions:
-            self.assertEqual(run_workflow._check_host_tool_versions(_TP_RW.target_id), [])
-        versions.assert_called_once_with(resolve_launch_axis_selection(_TP_RW))
-
-    def test_the_probe_resolves_the_requested_target(self) -> None:
-        """`_host_probe_selection(requested)` asks `select_target_id` for THAT target. With one
-        declared profile the default resolves to the same id, so the row observes the
-        argument rather than the answer."""
-        from unittest import mock
-        root = Path(run_workflow.__file__).resolve().parent.parent
-        with mock.patch.object(run_workflow, "select_target_id", autospec=True,
-                               return_value=_TP_RW.target_id) as select:
-            self.assertIsNotNone(run_workflow._host_probe_selection("some_target"))
-        select.assert_called_once_with(root, "some_target")
+            run_workflow.main([*_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl"])
+        resolve.assert_called_once()
+        self.assertIsNone(resolve.call_args.args[2], "no --target was passed")
+        self.assertEqual(given, [("presence", resolved), ("versions", resolved)])
 
     def test_a_profile_the_launch_gate_refuses_is_not_probed(self) -> None:
-        """A `--target` whose language the registry does not implement is the launch gate's
-        structured refusal (`target_profile_violations`), a few steps on. Probing it first
-        raised a bare RuntimeError out of `main` (round-2 finding F1); the probe defers."""
+        """The gate's structured refusal comes out, and the probes never run: probing a profile
+        the gate refuses could only answer with a traceback (round-2 finding F1 of issue #284)."""
         from unittest import mock
 
-        from tools.target_profile import target_profile_violations
-        from tools.tests.target_fixtures import profile_with
-        unimplemented = profile_with(toolchain={"language": "no_such_language"})
+        from tools.target_profile import TargetProfileError
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(run_workflow, "_resolve_launch_target", side_effect=
+                                  TargetProfileError("target_profile_invalid", "refused")), \
+                mock.patch.object(run_workflow, "_check_required_host_tools",
+                                  side_effect=AssertionError("probed")), \
+                mock.patch.object(run_workflow, "_check_host_tool_versions",
+                                  side_effect=AssertionError("probed")), \
+                mock.patch.object(run_workflow, "_runtime_command", side_effect=AssertionError), \
+                redirect_stdout(buf):
+            code = run_workflow.main([*_seed_launch_repo(Path(tmp)), "--stdout-format",
+                                      "jsonl", "--target", _TARGET_ID])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(buf.getvalue().strip())["reason"], "target_profile_invalid")
+
+    def test_the_checked_in_profiles_are_each_probed_for_their_own_toolchain(self) -> None:
+        """Issue #289 (R4-b PR-5): every checked-in profile resolves a probe selection of its
+        own toolchain — the GPU one included, whose harness the launch gate admits through
+        `build`. Before the probe moved after target resolution it re-ran the gate with no node,
+        read the harness as a physics node the GPU language cannot serve, and probed nothing."""
+        from tools.target_profile import list_target_ids, load_target_profile
         root = Path(run_workflow.__file__).resolve().parent.parent
-        self.assertTrue(target_profile_violations(root, unimplemented))  # the gate refuses it
-        with mock.patch.object(run_workflow, "load_target_profile", return_value=unimplemented):
-            self.assertIsNone(run_workflow._host_probe_selection(None))
-            self.assertEqual(run_workflow._check_required_host_tools(None), [])
-            self.assertEqual(run_workflow._check_host_tool_versions(None), [])
-
-    def test_the_probe_answers_a_build_run_on_a_class_this_host_cannot_execute_on(self) -> None:
-        """Issue #289: the probe asks the launch gate with the invocation's `until_phase`, so a
-        run that stops before Validate on a `gpu` target is still probed for the tools it builds
-        with, and a run that reaches Validate defers to the gate's own refusal."""
-        from unittest import mock
-
-        from tools.tests.target_fixtures import profile_with
-        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
-        with mock.patch.object(run_workflow, "load_target_profile", return_value=gpu):
-            self.assertIsNotNone(run_workflow._host_probe_selection(_TARGET_ID, "build"))
-            self.assertIsNone(run_workflow._host_probe_selection(_TARGET_ID, "validate"))
-            self.assertIsNone(run_workflow._host_probe_selection(_TARGET_ID))
-            # Both probes carry the phase to the selection, not only the presence one.
-            with mock.patch("tools.host_prerequisites.unsupported_host_tool_versions",
-                            autospec=True, return_value=[]) as versions, \
-                    mock.patch("tools.host_prerequisites.missing_host_executables",
-                               autospec=True, return_value=[]) as missing:
-                run_workflow._check_host_tool_versions(_TARGET_ID, "build")
-                run_workflow._check_required_host_tools(_TARGET_ID, "build")
-                versions.assert_called_once()
-                missing.assert_called_once()
-                versions.reset_mock()
-                missing.reset_mock()
-                run_workflow._check_host_tool_versions(_TARGET_ID, "validate")
-                run_workflow._check_required_host_tools(_TARGET_ID, "validate")
-                versions.assert_not_called()
-                missing.assert_not_called()
+        ids = list_target_ids(root)
+        self.assertGreater(len(ids), 1)
+        languages = set()
+        for target_id in ids:
+            profile = load_target_profile(root, target_id)
+            selection = run_workflow._host_probe_selection(profile)
+            self.assertEqual(selection["language"], profile.toolchain["language"], target_id)
+            self.assertEqual(selection["build_system"], profile.toolchain["build_system"])
+            languages.add(selection["language"])
+        self.assertEqual(len(languages), len(ids), "each profile probed for its own language")
 
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
@@ -4246,9 +4231,9 @@ class RunWorkflowTests(unittest.TestCase):
             AssertionError("orchestration_runtime must not be invoked"))
         try:
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
                     "--target", _TARGET_ID])
         finally:
             run_workflow.shutil.which = original_which  # type: ignore[assignment]
@@ -4262,7 +4247,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_check_required_host_tools_returns_empty_when_all_present(self) -> None:
         """Sanity check of the same kind as the CLI-tool one below: if this fails, the machine
         running the suite could not run a workflow."""
-        self.assertEqual(run_workflow._check_required_host_tools(), [])
+        self.assertEqual(run_workflow._check_required_host_tools(_TP_RW), [])
 
     def test_main_fails_fast_when_a_required_host_tool_is_of_an_unmeasured_version(self) -> None:
         """The VERSION half of the same family (issue #111).
@@ -4284,14 +4269,14 @@ class RunWorkflowTests(unittest.TestCase):
         original_arm = host_prerequisites.unsupported_host_tool_versions
         original_runtime = run_workflow._runtime_command
         host_prerequisites.unsupported_host_tool_versions = (  # type: ignore[assignment]
-            lambda selection=None: (refusal,))
+            lambda selection: (refusal,))
         run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
             AssertionError("orchestration_runtime must not be invoked"))
         try:
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
                     "--target", _TARGET_ID])
         finally:
             host_prerequisites.unsupported_host_tool_versions = original_arm  # type: ignore[assignment]
@@ -4329,15 +4314,15 @@ class RunWorkflowTests(unittest.TestCase):
         run_workflow.shutil.which = lambda name: (  # type: ignore[assignment]
             None if name == target else original_which(name))
         host_prerequisites.unsupported_host_tool_versions = (  # type: ignore[assignment]
-            lambda selection=None: (host_prerequisites.HostToolVersion(
+            lambda selection: (host_prerequisites.HostToolVersion(
                 "linter", "probe_backend", target, None, "must not be reported"),))
         run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
             AssertionError("orchestration_runtime must not be invoked"))
         try:
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md", "Compile", "--stdout-format", "jsonl",
+                    *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
                     "--target", _TARGET_ID])
         finally:
             run_workflow.shutil.which = original_which  # type: ignore[assignment]
@@ -4350,7 +4335,7 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_check_host_tool_versions_returns_empty_when_the_host_is_supported(self) -> None:
         """The companion sanity row: a workflow started on this machine is not refused here."""
-        self.assertEqual(run_workflow._check_host_tool_versions(), [])
+        self.assertEqual(run_workflow._check_host_tool_versions(_TP_RW), [])
 
     def test_main_fails_fast_when_required_cli_tool_missing(self) -> None:
         """If jq (or any REQUIRED_CLI_TOOLS entry) is not on PATH, main() must
