@@ -79,7 +79,18 @@ linter (`registry.linter_for_language`) and the compiler (the language backend's
 | `make` | the build system `Build` drives via MCP `compile_project` | `Build` — one phase later still |
 | `gfortran` | the compiler — both the mandatory `Generate.gate` syntax-only stage and the `FC` the build control file pins | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
 
-Install them with the platform's own package manager, e.g. on Debian/Ubuntu:
+#### Target `cpp_gpu` (`spec/targets/cpp_gpu.yaml`)
+
+| tool | purpose | when its absence used to surface |
+|---|---|---|
+| `nvcc` | the CUDA compiler driver, in three roles: the `static lint` tool (`linter/nvcc`, every warning an error), the mandatory `Generate.gate` syntax-only stage, and the `NVCC` the build control file pins. Supported versions: `>=13.0,<14.0` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
+| `make` | the build system `Build` drives via MCP `compile_project` | `Build` |
+
+The probe lists `nvcc` once, under its first role. It comes with the CUDA toolkit, which also
+supplies the runtime the build links; a machine with no GPU builds with it (the `gpu` class runs
+nothing locally, below).
+
+Install them with the platform's own package manager, e.g. on Debian/Ubuntu for the CPU target:
 
 ```
 sudo apt-get install gfortran make      # the toolchain
@@ -111,10 +122,9 @@ declares the languages it lints (`LANGUAGES` in its `lint` module, answered by
 `registry.linter_for_language`) — not restated here, because what an operator meeting this
 refusal needs is the RANGE.
 
-Only the first row is reachable today: every target profile in this tree names `fortran`, so an
-operator setting up a machine installs `fortitude` and none of the others. The `nvcc` row (the CUDA
-compiler driver, which lints `cuda_cpp`) is reached by a target profile naming `cuda_cpp`. Three
-things such a profile meets before its first run: only its `infrastructure` harness runs — a
+Two rows are reachable today, one per target profile in this tree: `fortitude` for `fortran_cpu`
+and `nvcc` (the CUDA compiler driver, which lints `cuda_cpp`) for `cpp_gpu`; an operator installs
+the one of the target they run. Three things a `cuda_cpp` profile meets before its first run: only its `infrastructure` harness runs — a
 `component` / `problem` node of `cuda_cpp` is refused at launch, because the host renders no
 CUDA C++ runner yet (`toolchain_servable_reasons`); the `gpu` hardware class declares no
 `execution`, so a run of the profile that reaches `Validate` is refused at launch
@@ -122,8 +132,8 @@ CUDA C++ runner yet (`toolchain_servable_reasons`); the `gpu` hardware class dec
 the compiler as `nvcc`'s `release` line and the target's `hardware.architecture`, not the host C++
 compiler `nvcc` drives, so changing that compiler alone reuses a certified build. The other rows are here because the ranges are refused by the same launch arm the
 moment one of them is selected. The `missing_required_host_tools` table above deliberately does
-not grow the same rows: it renders one RESOLVED selection, not a catalogue, and adding a program
-no run installs would make the install line above wrong.
+not grow the same rows: it renders the RESOLVED selection of each target profile in this tree, not a
+catalogue, and adding a program no run installs would make the install line above wrong.
 
 Without this arm the failure surfaces at the first `Generate.gate` and consumes the whole
 `Generate` retry budget on findings no leaf can act on: the linter's vendor enabled 18 additional
