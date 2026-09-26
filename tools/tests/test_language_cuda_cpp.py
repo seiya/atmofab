@@ -851,6 +851,26 @@ class PhysicsGateTests(unittest.TestCase):
             "void p_checks::get_time(double& when) { when = 0.0; }\n")
         self.assertIn("get_time", cpp_source.checks_module_abi_facts(qualified, "p")[0])
 
+    def test_a_checks_declaration_of_the_node_s_operation_must_match_its_definition(self) -> None:
+        """Round 3 of this change's review: a `problem` node's header declares nothing of its
+        operation, so its checks source declares it itself; a declaration with other types than
+        the model's definition is refused before Build, where it is a link error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "p_model.cu"
+            model.write_text("namespace p_model {\nvoid p__step(atmofab::View<double, 1> u, "
+                             "int nx) { (void)u; (void)nx; }\n}\n")
+            declared = _CHECKS_SOURCE + ("namespace p_model {\nvoid p__step("
+                                         "atmofab::View<double, 1> u, int {t});\n}\n")
+            for label, text, refused in (
+                    ("same types, other name", declared.replace("{t}", "n"), False),
+                    ("another type", declared.replace("int {t}", "long n"), True),
+                    ("no such operation", declared.replace("p__step", "p__other").replace(
+                        "{t}", "n"), True)):
+                with self.subTest(label):
+                    out = cpp_source.checks_harness_isolation_violations(
+                        Path(tmp) / "p_checks.cu", text, [model])
+                    self.assertEqual(refused, any("declares `p_model::" in v for v in out), out)
+
     def test_bound_state_must_be_defined_with_external_linkage(self) -> None:
         for label, text in {
             "static": _CHECKS_SOURCE.replace("double s = 0.0;", "static double s = 0.0;"),

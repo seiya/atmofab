@@ -571,6 +571,41 @@ _LEAF_IO_RE = re.compile(
     r"|\bremove\s*\(\s*[^,()]*\)")
 
 
+def _model_declaration_violations(checks_path: Path, text: str,
+                                  model_files: list[Path]) -> list[str]:
+    """A checks source that DECLARES one of the node's own operations (`<spec_id>__<op>` in
+    namespace `<spec_id>_model`, which it must do on a `problem` node, whose host-rendered header
+    declares none — round 3 of this change's review) declares it with exactly the return type and
+    parameter types the model source defines it with: another spelling is an overload the model
+    never defines, a link error at Build, where it would cost a whole Build to learn."""
+    spec_id = checks_path.name.removesuffix("_checks.cu")
+    namespace = (f"{spec_id}_model",)
+
+    def shape(fn: cpp_decls.Function) -> tuple[str, tuple[str, ...]]:
+        return fn.returns, tuple(_canonical_type(ptype) for ptype, _n in fn.params)
+
+    defined: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
+    for model in model_files:
+        try:
+            model_text = model.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for fn in cpp_decls.read(model_text).functions:
+            if fn.defined and fn.namespace == namespace:
+                defined.setdefault(fn.name, set()).add(shape(fn))
+    out: list[str] = []
+    for fn in cpp_decls.read(text).functions:
+        if fn.defined or fn.namespace != namespace or not fn.name.startswith(f"{spec_id}__"):
+            continue
+        if shape(fn) not in defined.get(fn.name, set()):
+            out.append(
+                f"{checks_path}: declares `{spec_id}_model::{fn.name}` with a return type or "
+                "parameter types the model source does not define it with (or the model defines "
+                "no such operation) — copy the declaration from the model's definition head "
+                "exactly, or the call cannot link")
+    return out
+
+
 def checks_harness_isolation_violations(
     checks_path: Path, text: str, model_files: list[Path]
 ) -> list[str]:
@@ -592,6 +627,7 @@ def checks_harness_isolation_violations(
                 f"{path}: a physics source must not include or name the harness — the physics "
                 "node never depends on the harness at the source level (the host-rendered "
                 "runner is the sole caller of the harness)")
+    violations.extend(_model_declaration_violations(checks_path, text, model_files))
     # Every leaf-authored source of the node, at any depth (`leaf_sources`), but the host-rendered
     # runner, whose name is derived from the checks source's.
     runner_name = checks_path.name.removesuffix("_checks.cu") + "_runner.cu"
