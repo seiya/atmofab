@@ -173,6 +173,15 @@ probe asks the login, and a job's directory must be visible at the same path fro
 machines, whose programs the job script checks again before its first command. A site is in no derivation key: re-mapping a target to another site
 does not re-run its certified Validate (pass `--rederive validate`; §"Updating a shared dependency spec (derivation-key re-certification)" below).
 
+To try a site before a run, `python3 tools/site_smoke.py <site_id>` (or `--target <target_id>`)
+runs the same probe and then one job with a shell command (`--cmd`, default `echo OK; hostname`)
+through the executor `Validate.execute` uses — the site's scheduler, collection and removal
+included — and prints the job id, the platform record and the command's output. `--ship FILE`
+sends a local file into the job directory (`$JOB` in `--cmd`), and `--gpu` adds the `gpu`
+class's device probe; shipping a small program built here is how to see that the site's
+runtime accepts what this host builds, which the probe does not ask. It writes nothing under
+`workspace/`.
+
 ### Refused at `preflight`, still before the first leaf
 
 | requirement | where it is checked |
