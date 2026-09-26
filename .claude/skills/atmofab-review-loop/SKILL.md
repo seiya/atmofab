@@ -578,7 +578,15 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   consecutive up-model launches died to HTTP 500 / 529 across two rounds, and the round that
   recovered did so as a checklist of seventeen named mutations plus five over-refusal probes; what
   that CANNOT tell you is whether an open-ended attacker would have found an eighteenth, because
-  the list was the author's
+  the list was the author's.
+  **A launch the model's safety classifier stops is the same case, and its retry is a REWORDED
+  brief, not the same one.** The report arrives as a normal hand-back ("stopped partway through;
+  no findings"), and the transcript shows reads but no command. On issue #293 PR-2 an attack-framed
+  security brief ("security-bypass / fail-open", "attack the status channel") and its rewording
+  ("evidence integrity", "construct counterexamples") were both stopped; the SAME questions framed
+  as "record correctness and failure classification", with the executed program described as "an
+  input to check", ran in rounds 4 and 5 and found each round's blockers. Frame the axis by the
+  property the record must have, not by the adversary
 - **Hand over the premises in one paragraph** (`AGENTS.md` §"Development premises" is canonical;
   hand over this short form): "a single-operator research workflow platform. What is defended
   against is a **`leaf shortcut`** — an `LLM` leaf is not malicious and takes shortcuts, so

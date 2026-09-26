@@ -269,6 +269,29 @@ The budget question this leaves open: a round that could not launch is not a rou
 count against round 0 plus three — but the wall-clock and the token cost were spent anyway, and
 the decision to keep paying for retries belongs to the user once the second one fails.
 
+## A reviewer stopped by the safety classifier (issue #293 PR-2, PR #301, 2026-09-26)
+
+Round 2's security axis was launched with the usual brief — "security-bypass / fail-open", "attack
+the new status channel: can the command get a status line into the script's stdout, suppress one".
+It read the commit log and the module (three tool calls) and handed back "a safety classifier
+stopped my response partway through; no findings". A reworded retry ("evidence integrity and
+failure classification", "construct counterexamples where the recorded result differs from what the
+command did", with the two already-known findings excluded) got as far as five tool calls and was
+stopped the same way. Both hand-backs looked like ordinary reports; only their own text, and the
+absence of any test run in them, said nothing had been reviewed.
+
+The round's security axis was then run by the author as a checklist (a 48-mutant sweep plus the
+status-channel attack shapes as test rows) and recorded as advancing no stopping condition.
+
+Rounds 4 and 5 launched the same axis as "review for record correctness and failure
+classification", listing questions about what the recorded result says versus what happened, and
+describing the runner as "code produced by an LLM step; what it writes, prints or leaves running is
+an input to check". Both ran to completion (30-40 tool calls, real sshd, mutation sweeps) and each
+found a blocker the other axis also needed: a job script bash re-reads from a file the runner can
+rewrite, and a shipped control file the runner can rewrite before the quality check runs it. The
+subject matter did not change between the stopped and the completed launches; the framing did —
+from what an adversary can do to what the record must satisfy.
+
 ## An agent that notifies twice (issue #177, PR #213, 2026-09-11)
 
 *(A second shape, issue #250 PR #253, 2026-09-18: the SAME report delivered two to four times
