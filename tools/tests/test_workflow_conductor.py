@@ -14391,7 +14391,8 @@ class WriteRunnerTest(unittest.TestCase):
         runner.render_runner = lambda ir, spec_id, harness, target: f"! rendered by zz for {spec_id}\n"
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
-        runner.render_checks_header = lambda ir, spec_id: None
+        runner.render_checks_header = lambda ir, spec_id: (f"{spec_id}_checks.zzh",
+                                                            f"// declared for {spec_id}\n")
         other.runner = runner
         # The names the host gives this language's files are its `bundle_facts` (issue #289).
         other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
@@ -14413,7 +14414,11 @@ class WriteRunnerTest(unittest.TestCase):
                 c._write_runner(refs)
             text = (repo / refs.source_dir() / "src"
                     / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
+            # The checks header the backend renders is written beside the runner (R4-b PR-6).
+            header = (repo / refs.source_dir() / "src"
+                      / f"{self.SID}_checks.zzh").read_text(encoding="utf-8")
         self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
+        self.assertEqual(f"// declared for {self.SID}\n", header)
 
     def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
         """The clauses added to fix the previous round, which were themselves unobserved.

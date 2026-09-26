@@ -1091,6 +1091,25 @@ class PhysicsGateTests(unittest.TestCase):
                 "= x;", "= x.data[0];")
             self.assertEqual([], self._gates(self._model(tmp, viewed), [], multidim="p"))
 
+    def test_a_returned_value_counts_toward_the_metric_only_threshold(self) -> None:
+        body = ("double p__m(double x, double& a, double& b, double& c, double& d) {\n"
+                "  a = x; b = x; c = x; d = x;\n  return x;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._gates(self._model(tmp, body), [], multidim="p")
+            self.assertTrue(any("metric-only scalar kernel" in v for v in out), out)
+            void = body.replace("double p__m", "void p__m").replace("  return x;\n", "")
+            self.assertEqual([], self._gates(self._model(tmp, void), [], multidim="p"))
+
+    def test_an_unreadable_model_is_refused_by_the_dependency_use_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "p_model.cu"
+            model.write_text('#include "dep_model.cuh"\nnamespace p_model {\n'
+                             "void p__run(double& x) { x = dep_model::dep__norm({}); }\n")
+            out: list[str] = []
+            cpp_source.validate_dependency_operations([model], ["dep"], out)
+            self.assertEqual(1, len(out), out)
+            self.assertIn("the dependency-use gate cannot read this source's declarations", out[0])
+
     def test_an_unreadable_problem_model_is_refused_not_passed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / "p_model.cu"
