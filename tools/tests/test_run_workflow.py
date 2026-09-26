@@ -9421,10 +9421,22 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(ran, [])
             self.assertEqual(events[-1]["reason"], "site_unreachable")
             self.assertIn("failed_dependency_node", events[-1])
-            # 3. The same site answering: every member runs, each asked once.
+            # 3. The same site answering: every member runs, each asked once, against the
+            #    configuration `main` loaded (handed on, not read again).
             env.pop("SHIM_SSH_FAIL")
             log.write_text("")
-            rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+            handed: list[object] = []
+            real_rejection = run_workflow._sites_rejection
+
+            def spy_rejection(*a, **k):
+                handed.append(k.get("sites_config"))
+                return real_rejection(*a, **k)
+
+            with mock.patch.object(run_workflow, "_sites_rejection", spy_rejection):
+                rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+            self.assertIsNone(handed[0], "main loads the file itself")
+            self.assertTrue(handed[1:])
+            self.assertTrue(all(h is not None and h is handed[1] for h in handed[1:]))
             self.assertEqual(rc, 0, events[-3:])
             self.assertIn("spec/problem/a", ran)
             dependencies = [r for r in ran if r != "spec/problem/a"]
