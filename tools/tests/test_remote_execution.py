@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Tests for `tools/remote_execution.py` — the remote executor (issue #293, PR-2).
 
-No network: `ssh` and `scp` are shims placed first on `PATH`. The `ssh` shim drops the options
-and the destination and runs the command string with `sh -c` LOCALLY, which is what a real ssh
-does with it at the far end; the `scp` shim drops the options, strips `host:` and copies with
-`cp -rp`. The site's `workdir` is a directory under the test's own temporary tree, so a job runs
+No network: `ssh` and `scp` are shims placed first on `PATH`. The `ssh` shim refuses a call
+without `BatchMode=yes` (a real one could prompt and hang), drops the options and the
+destination, and runs the command string with `sh -c` LOCALLY in the test's working directory —
+a real ssh hands it to the user's login shell in the home directory, which the executor does not
+depend on (argv[0] is absolute or a PATH name, every other path absolute). The `scp` shim drops
+the options, strips `host:`, and copies with `cp`, refusing a directory without `-r` as scp
+does; like scp it keeps a file's execute bit. The site's `workdir` is a directory under the test's own temporary tree, so a job runs
 end to end on this machine. Each shim appends its argv to a log, and reads three knobs from the
 environment: `SHIM_SSH_FAIL` / `SHIM_SCP_FAIL` (a substring of the command, or `up` / `down` for
 scp's direction) makes the call exit 255 or 1 without doing anything, `SHIM_SSH_POST` is a shell
@@ -18,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -44,6 +49,9 @@ while args:
         args = args[1:]
     else:
         break
+if "BatchMode=yes" not in sys.argv:
+    sys.stderr.write("shim: no BatchMode=yes, a real ssh could prompt\n")
+    sys.exit(97)
 host, command = args[0], " ".join(args[1:])
 if "job.sh" in command:
     time.sleep(float(os.environ.get("SHIM_SSH_DELAY") or 0))
@@ -51,7 +59,10 @@ fail = os.environ.get("SHIM_SSH_FAIL")
 if fail and fail in command:
     sys.stderr.write("shim: connection closed by remote host\n")
     sys.exit(255)
-proc = subprocess.run(["sh", "-c", command], stdout=subprocess.PIPE, text=True)
+env = dict(os.environ)
+if os.environ.get("SHIM_SSH_PATH") and "job.sh" in command:
+    env["PATH"] = os.environ["SHIM_SSH_PATH"]
+proc = subprocess.run(["sh", "-c", command], stdout=subprocess.PIPE, text=True, env=env)
 out, rc = proc.stdout, proc.returncode
 sub = os.environ.get("SHIM_SSH_SUB")
 if sub and "job.sh" in command:
@@ -70,6 +81,7 @@ with open(os.environ["SHIM_LOG"], "a") as f:
     f.write("scp\t" + "\t".join(sys.argv[1:]) + "\n")
 args = sys.argv[1:]
 paths = []
+recursive = False
 while args:
     a = args.pop(0)
     if a == "-o":
@@ -78,7 +90,7 @@ while args:
         paths += args
         break
     elif a.startswith("-"):
-        pass
+        recursive = recursive or "r" in a
     else:
         paths.append(a)
 direction = "down" if re.match(r"^[^/:]+:", paths[0]) else "up"
@@ -87,7 +99,10 @@ if fail == direction:
     sys.stderr.write("shim: lost connection\n")
     sys.exit(1)
 paths = [re.sub(r"^[^/:]+:", "", p) for p in paths]
-sys.exit(subprocess.run(["cp", "-rp", *paths]).returncode)
+if not recursive and any(os.path.isdir(p) for p in paths[:-1]):
+    sys.stderr.write("shim: not a regular file\n")
+    sys.exit(1)
+sys.exit(subprocess.run(["cp", *(["-r"] if recursive else []), *paths]).returncode)
 '''
 
 #: A shipped runner: records its argv and cwd, writes an output file, prints to both streams, and
@@ -219,6 +234,25 @@ class EndToEndTests(unittest.TestCase):
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": self.h.job, "queue_wait_ms": 0})
 
+    def test_every_transport_call_carries_the_options_and_ends_them(self) -> None:
+        """No prompt (a prompt hangs a run), a bounded connect, and `--` before the destination
+        and the paths, on every ssh and scp call; scp copies directories recursively."""
+        self.assertIn("BatchMode=yes", rx.SSH_OPTIONS)
+        self.assertIn("ConnectTimeout=30", rx.SSH_OPTIONS)
+        self.h.run(self.h.request())
+        calls = self.h.calls()
+        self.assertEqual([c[0] for c in calls], ["ssh", "scp", "ssh", "scp", "ssh"])
+        n = len(rx.SSH_OPTIONS)
+        for call in calls:
+            args = call[1:]
+            with self.subTest(call=call[:3]):
+                if call[0] == "ssh":
+                    self.assertEqual(args[:n + 1], [*rx.SSH_OPTIONS, "--"])
+                    self.assertEqual(args[n + 1], "box")
+                else:
+                    self.assertEqual(args[:2], ["-q", "-r"])
+                    self.assertEqual(args[2:n + 3], [*rx.SSH_OPTIONS, "--"])
+
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""
         server = rx._server()
@@ -274,6 +308,18 @@ class EndToEndTests(unittest.TestCase):
         (entry,) = self.h.log_entries("run")
         self.assertIsNone(entry["return_code"])
         self.assertEqual(entry["error"], "timeout: exceeded 1 sec")
+
+    def test_a_command_that_ignores_term_is_killed_and_recorded_as_a_timeout(self) -> None:
+        stubborn = self.h.command("run", ("python3", "-c", (
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "time.sleep(30)")), timeout=1)
+        # The job's local bound (1 + 1 + 2 sec) is far below the 30 sec the command would take
+        # if nothing KILLed it.
+        with mock.patch.object(rx, "KILL_AFTER_SEC", 1), \
+                mock.patch.object(rx, "TRANSPORT_GRACE_SEC", 2):
+            (run,) = self.h.run(self.h.request(stubborn)).results
+        self.assertIsNone(run["return_code"])
+        self.assertEqual(run["error"], "timeout: exceeded 1 sec")
 
     def test_a_command_that_exits_124_on_its_own_is_not_a_timeout(self) -> None:
         quick = self.h.command("run", ("sh", "-c", "exit 124"), timeout=60)
@@ -448,6 +494,27 @@ class RefusalTests(unittest.TestCase):
         # The default is this host's own machine, which the shim's "site" is.
         self.assertEqual(self.h.request().machine, os.uname().machine)
 
+    def test_a_site_without_timeout_is_the_hosts_failure(self) -> None:
+        bare = self.h.root / "bare_path"
+        bare.mkdir()
+        for tool in ("sh", "uname", "mkdir", "date", "hostname", "grep", "env", "python3"):
+            found = shutil.which(tool)
+            if found:
+                (bare / tool).symlink_to(found)
+        self.assertIsNone(shutil.which("timeout", path=str(bare)))
+        self._refused("(?s)ssh exited 3.*timeout is missing", SHIM_SSH_PATH=str(bare))
+
+    def test_a_directory_the_script_cannot_make_is_the_hosts_failure(self) -> None:
+        """A shipped FILE where the job needs a directory: one of `dirs`, or a command's cwd."""
+        for dirs in (("run/raw",), ()):
+            with self.subTest(dirs=dirs):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                what = "run/raw" if dirs else f"{h.job}/run"
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            rf"(?s)ssh exited 3.*cannot make {re.escape(what)}"):
+                    h.run(h.request(ship={"bin/runner": h.runner, "run": h.runner}, dirs=dirs))
+                self.assertEqual(h.log_entries("run"), [])
+
     def test_a_connection_failure_is_refused_with_the_stage(self) -> None:
         self._refused("create the job directory.*ssh exited 255", SHIM_SSH_FAIL="mkdir")
         self.assertFalse(Path(self.h.job).exists())
@@ -519,8 +586,11 @@ class RequestValidationTests(unittest.TestCase):
                                      cwd=cwd, env={}, timeout_sec=1,
                                      command_log_path=self.h.local / "l", capture_limit=1000)
                 self._invalid("is not under", self.h.request(bad))
-        self._invalid("is not under", rx.JobRequest(
-            site=self.h.site, job_dir="/elsewhere/x", ship={}, commands=(ok,)))
+        elsewhere = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),
+                                   cwd="/elsewhere/x/run", env={}, timeout_sec=1,
+                                   command_log_path=self.h.local / "l", capture_limit=1000)
+        self._invalid("job_dir '/elsewhere/x' is not under", rx.JobRequest(
+            site=self.h.site, job_dir="/elsewhere/x", ship={}, commands=(elsewhere,)))
         self._invalid("workdir itself", rx.JobRequest(
             site=self.h.site, job_dir=str(self.h.workdir), ship={}, commands=(ok,)))
 

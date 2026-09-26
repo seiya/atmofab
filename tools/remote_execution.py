@@ -309,9 +309,9 @@ def _ssh(host: str, command: str, *, stage: str, timeout: int, remote: str) -> s
 
 
 def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
-    # `-p` keeps each file's mode and times, so a shipped executable stays one. Not pinned: the
-    # test shim copies with the mode kept either way.
-    _transport(["scp", "-q", "-r", "-p", *SSH_OPTIONS, "--", *sources, dest],
+    # scp keeps a file's execute bit without `-p` (measured on OpenSSH 8.9, in both its legacy
+    # and its SFTP protocol); `-p` would add only the times, which nothing reads.
+    _transport(["scp", "-q", "-r", *SSH_OPTIONS, "--", *sources, dest],
                stage=stage, timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
 
