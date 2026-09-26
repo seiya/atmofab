@@ -22,7 +22,9 @@ states which gates are refused and why).
   `-std=c++17`: no unused parameter (mark an interface-fixed one with `(void)name;`), no unused
   variable, no signed/unsigned comparison, a `return` on every path of a non-`void` function.
 - Only `#include` and `#pragma unroll`: every other directive, `_Pragma`, `##` and every digraph
-  is refused by the static check (`CHECKS_ABI.md` §5).
+  is refused by the static check, and so are a `<...>` include of anything but a standard library
+  header or `cuda_runtime.h`, a reserved identifier other than the CUDA keywords, and a
+  backslash at the end of a line (`CHECKS_ABI.md` §5).
 
 ## 2. The syntax stage
 

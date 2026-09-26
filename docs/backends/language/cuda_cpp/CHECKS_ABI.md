@@ -97,8 +97,21 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   `#include <header>` and `#pragma unroll [<argument>]` (in device code only: the host compiler
   reports it unknown in a host function, which fails the lint), and no other directive — no `#define`, no
   `#if` / `#ifdef` / `#endif`, no other `#pragma` (in particular no diagnostic pragma), no line
-  marker — and no `_Pragma` / `__pragma` operator, no `##` and no digraph. The deterministic
-  `Generate.gate` static check refuses each by presence
+  marker — and no `_Pragma` / `__pragma` operator, no `##` and no digraph. Three more rules
+  close the same door from the other side:
+  - `#include <...>` names a C++17 standard library header or `cuda_runtime.h` only
+    (`STANDARD_HEADERS`); a bundle or host file is included with `"..."`.
+  - No identifier reserved to the implementation — one starting with `_` and a capital letter,
+    or with `__` — except the CUDA keywords `__global__`, `__device__`, `__host__`, `__shared__`,
+    `__constant__`, `__managed__`, `__restrict__`, `__launch_bounds__`, `__forceinline__`,
+    `__noinline__`, `__syncthreads`, `__syncwarp` and `__func__`
+    (`RESERVED_IDENTIFIERS_ALLOWED`). The toolchain's headers define macros under reserved names
+    that expand to a diagnostic pragma, the runtime header the driver includes into every source
+    among them.
+  - No backslash at the end of a line, in a comment or a literal included: a continued comment
+    is read one way by the compiler and another by the static check.
+
+  The deterministic `Generate.gate` static check refuses each by presence
   (`tools/backends/language/cuda_cpp/source.py` `preprocessor_violations`): a suppression pragma
   would switch the lint off, and a macro or a conditional would make the §5.1 check read another
   program than the compiler builds. The host-rendered header is not a leaf source and is not

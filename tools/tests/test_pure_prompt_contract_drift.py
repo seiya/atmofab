@@ -629,8 +629,10 @@ PINNED: dict[str, str] = {
     # modules — its lint rule set, gate guards, checks-ABI slices and runner-output binding.
     # The Fortran entries of those members are the same bytes as before, and the composed
     # Fortran prompts are unchanged (measured again, as above), so no leaf that has ever run
-    # reads anything different; the `cuda_cpp` entries are read by no run yet.
-    "pure-50": "37cfe0a8b519d809546b837154a31a159b77918623645ceb79d0deaa41ad073d",
+    # reads anything different; the `cuda_cpp` entries are read by no run yet. Round 3 of that
+    # PR's review re-pinned it once more for the `cuda_cpp` checks-ABI §5 alone (the header,
+    # reserved-identifier and line-splice rules), on the same ground.
+    "pure-50": "6f9c754209a25ca319b295e71d3b3c3c6400471785411251946be12e9e11f6a0",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),

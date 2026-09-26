@@ -54,6 +54,14 @@ class MaskTests(unittest.TestCase):
         text = "int n = 1'000'000; int m = 2;\n"
         self.assertEqual(cpp_lines.mask(text), text)
 
+    def test_a_separator_after_an_identifier_and_a_sign_is_not_a_literal(self) -> None:
+        """Round 3 of the review: the walk back over a pp-number crossed `+` after an identifier
+        ending in `e`, so `e+1'0` opened a character literal that blanked the rest of the line."""
+        for text in ("u += e+1'0; int y;\n", "i < size+1'000; ++i\n", "x = 1e+1'0 + e-.5'0;\n"):
+            with self.subTest(text=text):
+                self.assertEqual(text, cpp_lines.mask(text))
+        self.assertEqual("x = u8' ' + L' ';\n", cpp_lines.mask("x = u8'a' + L'b';\n"))
+
     def test_a_continued_line_comment_continues(self) -> None:
         text = "// a comment \\\nstill { comment\nint x;\n"
         masked = cpp_lines.mask(text)
@@ -458,6 +466,13 @@ class GeneratedSourcePinTests(unittest.TestCase):
         self.assertNotEqual(respaced, _GOOD_MODEL)
         self.assertEqual([], self._violations(respaced))
 
+    def test_a_directive_after_a_form_feed_is_not_read_as_code(self) -> None:
+        """The pin's reader treats any preprocessing whitespace before `#` as the start of a
+        directive, as the compiler does (round 3 of the review: with `[ \\t]*` there, the include
+        below was read as code and both operations as never defined)."""
+        self.assertEqual([], self._violations("\f" + _GOOD_MODEL))
+        self.assertEqual([], self._violations("\v" + _GOOD_MODEL))
+
     def test_a_top_level_const_and_an_unnamed_forward_declaration_are_the_same_function(self) -> None:
         """`void f(const dp x)` declares `void f(dp)`, and a declaration may leave its
         parameters unnamed; both are one function with the header's declaration."""
@@ -593,6 +608,18 @@ class SourceGateTests(unittest.TestCase):
             "include with a tail": "#include \"h_model.cuh\" junk\n",
             "pasting outside a directive": "int x = a ## b;\n",
             "closing bracket digraph": "int a[2:>;\n",
+            # Round 3 of the review: each of these passed the round-2 allowlist.
+            "comment opened across a splice": "#include \"h_model.cuh\" /\\\n*\nvoid f() {} // */\n",
+            "comment closed across a splice": "/* c *\\\n/ int x;\n",
+            "splice with trailing blanks": "int x; // a \\  \nint y;\n",
+            "splice in a literal": "const char* s = \"a\\\nb\";\n",
+            "runtime suppression macro": "__NV_SILENCE_DEPRECATION_BEGIN\n",
+            "library pragma macro": "_PSTL_PRAGMA(nv_diag_suppress 177)\n",
+            "cccl suppression macro": "_CCCL_DIAG_SUPPRESS_NVCC(177)\n",
+            "glibc pragma macro": "__glibc_macro_warning1(GCC diagnostic ignored \"-Wall\")\n",
+            "reserved name in an unroll": "#pragma unroll __NV_SILENCE_DEPRECATION_BEGIN\n",
+            "non-standard header": "#include <cuda/std/cstddef>\n",
+            "non-standard header with blanks": "#include < thrust/version.h >\n",
         }
         for label, text in refused.items():
             with self.subTest(label=label):
@@ -605,7 +632,10 @@ class SourceGateTests(unittest.TestCase):
             "const char* s = \"#pragma nv_diag_suppress ## %: <%\";\n"
             "/*\n#pragma GCC diagnostic ignored \"-Wall\"\n*/\n"
             "// _Pragma(\"GCC diagnostic ignored\")\n"
-            "std::vector<::std::string> v;\nint y = a ? b : c;\n"))
+            "std::vector<::std::string> v;\nint y = a ? b : c;\n"
+            "#include <cuda_runtime.h>\n#include < cmath >\n"
+            "__global__ void k(float* __restrict__ p) { __syncthreads(); p[0] = 1'0; }\n"
+            "std::string h__emit(dp x);\nconst char* f = __func__;\n"))
 
     def test_a_digit_separator_in_a_number_starting_with_a_dot(self) -> None:
         text = "x = .5'0; y = 1e+1'0; int z{0};\n"
@@ -618,6 +648,23 @@ class SourceGateTests(unittest.TestCase):
             'std::snprintf(buf, sizeof buf, "%a", x);\nstd::fprintf(f, "%.16e", x);\n', out)
         self.assertEqual(1, len(out), out)
         self.assertIn(":2:", out[0])
+
+    def test_the_format_is_the_first_literal_of_the_call(self) -> None:
+        """Round 3 of the review: `printf("%s", "100% Accurate")` (lowercased by the validator to
+        `100% accurate`, i.e. `% a`) was refused. A later literal is an argument; a literal
+        concatenated onto the first is still the format; a call with no literal ends at its own
+        `)`, so the next call's literal is not read as its format."""
+        cases = {
+            'printf("%s\\n", "status: 100% accurate");\n': 0,
+            'printf("%.16e " "%a", x);\n': 1,
+            'printf(fmt, x); puts("100% accurate");\n': 0,
+            'fprintf(f, "%a", x);\n': 1,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                out: list[str] = []
+                cpp_source.validate_runner_json_serialization(Path("r.cu"), text, out)
+                self.assertEqual(expected, len(out), out)
 
     def test_every_leaf_source_at_any_depth_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -633,6 +680,7 @@ class SourceGateTests(unittest.TestCase):
         text = ("for (int i = 0; i < n; ++i) {}\nfor (auto& x : v) {}\n"
                 "// for (int j = 0; j < n; ++j)\nfor (int k = 0; f(k, 1); ++k) {}\n")
         self.assertEqual(2, cpp_source.counted_loops(text))
+        self.assertEqual(1, cpp_source.counted_loops("for (i = 0; i < size+1'000; ++i) {}\n"))
 
     def test_runner_json_serialization(self) -> None:
         out: list[str] = []
@@ -906,6 +954,45 @@ class RealDriverTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in pathlib.Path(tmp).iterdir()),
                              sorted([".m", nvcc_syntax.CANARY_FILENAME]))
 
+
+    def test_no_macro_the_permitted_headers_define_can_emit_a_pragma_unrefused(self) -> None:
+        """The reserved-identifier rule and the header allowlist of the preprocessor gate rest on
+        one measurement, taken here against the installed driver: every macro that the permitted
+        `<...>` headers (and the runtime header the driver includes into every source) define,
+        and whose expansion reaches `_Pragma` / `__pragma` through any chain of macros, is refused
+        by name — except `sigmask`, which expands to a `GCC warning` pragma that RAISES a
+        diagnostic, so using it fails the lint rather than silencing it."""
+        import re
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "all.cu"
+            src.write_text("".join(f"#include <{h}>\n" for h in sorted(cpp_source.STANDARD_HEADERS)))
+            proc = subprocess.run([nvcc_syntax.EXECUTABLE, "-std=c++17", "-E", "-Xcompiler", "-dM",
+                                   str(src)], capture_output=True, text=True, check=False, timeout=600)
+        self.assertEqual(0, proc.returncode, proc.stderr[-2000:])
+        definitions = {}
+        for line in proc.stdout.splitlines():
+            m = re.match(r"#define (\w+)(?:\([^)]*\))? ?(.*)", line)
+            if m:
+                definitions[m.group(1)] = m.group(2)
+        self.assertGreater(len(definitions), 1000)
+        emitting = {name for name, body in definitions.items()
+                    if re.search(r"\b(?:_Pragma|__pragma)\b", body)}
+        self.assertIn("__NV_SILENCE_DEPRECATION_BEGIN", emitting)
+        grew = True
+        while grew:
+            grew = False
+            for name, body in definitions.items():
+                if name not in emitting and emitting & set(re.findall(r"\b\w+\b", body)):
+                    emitting.add(name)
+                    grew = True
+        self.assertEqual(set(), emitting & cpp_source.RESERVED_IDENTIFIERS_ALLOWED)
+        unrefused = {name for name in emitting
+                     if not cpp_source.preprocessor_violations(Path("x.cu"), f"{name}\n")}
+        self.assertLessEqual(unrefused, {"sigmask"}, sorted(unrefused))
+        if unrefused:
+            self.assertIn("__glibc_macro_warning", definitions["sigmask"])
+            self.assertIn("GCC warning", definitions["__glibc_macro_warning"])
 
     def test_every_rendered_header_in_the_tree_is_lint_clean(self) -> None:
         """The host-rendered header is CONTEXT to the lint (a leaf source includes it), so a

@@ -92,6 +92,46 @@ _DIRECTIVE_RE = re.compile(r"^[^\S\n]*#(?P<body>.*)$", re.MULTILINE)
 # `<:` is a digraph except in `<::` not followed by `:` or `>` (the lexer's own special case).
 _FORBIDDEN_TOKEN_RE = re.compile(r"\b_Pragma\b|\b__pragma\b|##|%:|<%|%>|<:(?!:(?![:>]))|:>")
 
+# A line splice: a backslash before a newline, with or without whitespace between (the compiler
+# joins both). Refused ANYWHERE in a leaf source, a comment and a literal included (round 3 of this
+# change's review): `/\<newline>*` opens a comment the compiler honours and the one-pass readers of
+# `lines` do not see, so a published operation written inside it read as DEFINED to the §5.1 pin
+# while the compiler discarded it, and `*\<newline>/` closed one the literal-metric floor read as
+# still open. Neither permitted directive needs a continuation.
+_SPLICE_RE = re.compile(r"\\[^\S\n]*\n")
+
+# An identifier the language reserves to the implementation: one starting with `_` and an
+# upper-case letter, or with `__`. The toolchain's own headers — including the runtime header the
+# CUDA compiler driver includes into EVERY source — define macros under such names that expand to
+# a diagnostic pragma (round 3 of this change's review: `__NV_SILENCE_DEPRECATION_BEGIN`,
+# `_PSTL_PRAGMA(nv_diag_suppress 177)` with no include at all, `_CCCL_DIAG_SUPPRESS_NVCC(177)`
+# after one), which silence a lint finding while no directive or `_Pragma` is spelled in the leaf's
+# text. So a reserved name is refused unless it is one of the language's own CUDA keywords a kernel
+# needs, none of which expands to a pragma (`RealDriverTests` measures the closure).
+_RESERVED_IDENTIFIER_RE = re.compile(r"\b(?:_[A-Z]|__)\w*")
+RESERVED_IDENTIFIERS_ALLOWED: frozenset[str] = frozenset({
+    "__global__", "__device__", "__host__", "__shared__", "__constant__", "__managed__",
+    "__restrict__", "__launch_bounds__", "__forceinline__", "__noinline__",
+    "__syncthreads", "__syncwarp", "__func__",
+})
+
+#: The headers a leaf source may include with `<...>`: the C++17 standard library, and the CUDA
+#: runtime header the driver includes anyway. A header outside the toolchain's standard surface may
+#: define a suppression macro under an ordinary name (the reserved-identifier rule above covers only
+#: reserved ones), so any other `<...>` include is refused; `"..."` names a bundle or host file,
+#: which these gates read themselves.
+STANDARD_HEADERS: frozenset[str] = frozenset((
+    "algorithm any array atomic bitset cassert ccomplex cctype cerrno cfenv cfloat charconv chrono "
+    "cinttypes ciso646 climits clocale cmath codecvt complex condition_variable csetjmp csignal "
+    "cstdalign cstdarg cstdbool cstddef cstdint cstdio cstdlib cstring ctgmath ctime cuchar cwchar "
+    "cwctype deque exception execution filesystem forward_list fstream functional future "
+    "initializer_list iomanip ios iosfwd iostream istream iterator limits list locale map memory "
+    "memory_resource mutex new numeric optional ostream queue random ratio regex scoped_allocator "
+    "set shared_mutex sstream stack stdexcept streambuf string string_view strstream system_error "
+    "thread tuple type_traits typeindex typeinfo unordered_map unordered_set utility valarray "
+    "variant vector cuda_runtime.h").split())
+_ANGLE_INCLUDE_RE = re.compile(r"^include[^\S\n]*<(?P<name>[^>\n]*)>")
+
 
 def splice_lines(text: str) -> str:
     """`text` with every backslash-newline removed — the translation phase that joins a continued
@@ -102,11 +142,24 @@ def splice_lines(text: str) -> str:
 def preprocessor_violations(path: Path, text: str) -> list[str]:
     """The allowlist above, over the CODE of `text` after line splicing (a directive or a token
     inside a comment or a literal is not one). Line numbers are those of the spliced text."""
-    code = cpp_lines.mask(splice_lines(text))
     out: list[str] = []
+    for m in _SPLICE_RE.finditer(text):
+        out.append(
+            f"{path}:{cpp_lines.line_of(text, m.start())}: a backslash at the end of a line is "
+            "refused — a leaf-authored source continues no line (not in a comment or a literal "
+            "either): a continued comment is read differently by the compiler and by these gates")
+    code = cpp_lines.mask(splice_lines(text))
     for m in _DIRECTIVE_RE.finditer(code):
         body = m.group("body").strip()
-        if not _ALLOWED_DIRECTIVE_RE.match(body):
+        include = _ANGLE_INCLUDE_RE.match(body)
+        if include and include.group("name").strip() not in STANDARD_HEADERS:
+            out.append(
+                f"{path}:{cpp_lines.line_of(code, m.start())}: `#include <"
+                f"{include.group('name')[:60]}>` is refused — a leaf-authored source includes "
+                "only a C++17 standard library header or `cuda_runtime.h` with `<...>`, and "
+                "bundle or host files with `\"...\"` (another header may define a macro that "
+                "switches the static lint off)")
+        elif not _ALLOWED_DIRECTIVE_RE.match(body):
             out.append(
                 f"{path}:{cpp_lines.line_of(code, m.start())}: preprocessor directive "
                 f"`#{body[:60]}` is refused — a leaf-authored source may use only `#include` and "
@@ -119,6 +172,14 @@ def preprocessor_violations(path: Path, text: str) -> list[str]:
             "leaf-authored source uses no `_Pragma` / `__pragma` operator, no `##` and no "
             "digraph (write `#pragma unroll` as a directive, and spell `#`, `{`, `}`, `[`, `]` "
             "plainly)")
+    for m in _RESERVED_IDENTIFIER_RE.finditer(code):
+        if m.group(0) not in RESERVED_IDENTIFIERS_ALLOWED:
+            out.append(
+                f"{path}:{cpp_lines.line_of(code, m.start())}: identifier `{m.group(0)[:60]}` "
+                "is refused — a name starting with `_` and a capital letter, or with `__`, is "
+                "reserved to the implementation, whose headers define such macros to switch "
+                "diagnostics off; a leaf-authored source uses only the CUDA keywords "
+                f"{', '.join(f'`{n}`' for n in sorted(RESERVED_IDENTIFIERS_ALLOWED))}")
     return out
 
 
@@ -226,10 +287,22 @@ def validate_runner_json_serialization(
     runtime deliverable gate's (every runner document must parse as JSON). A preprocessor
     directive in the runner is judged by `model_source_gates`, which reads every leaf source."""
     code = cpp_lines.mask(text)
-    calls = [(m.end() - 1, _close_paren(code, m.end() - 1)) for m in _PRINTF_CALL_RE.finditer(code)]
-    for start, _end, literal in cpp_lines.literal_spans(text):
-        if not any(open_at < start < close_at for open_at, close_at in calls):
-            continue  # not an argument of a printf-family call: not a format
+    spans = cpp_lines.literal_spans(text)
+    formats: list[tuple[int, str]] = []
+    for call in _PRINTF_CALL_RE.finditer(code):
+        open_at = call.end() - 1
+        close_at = _close_paren(code, open_at)
+        inside = [span for span in spans if open_at < span[0] < close_at]
+        # The FORMAT is the call's first literal, with the literals concatenated onto it; a later
+        # literal is an argument (`printf("%s", "100% Accurate")` prints text — round 3 of this
+        # change's review found the scan refusing it).
+        end = None
+        for start, stop, literal in inside:
+            if end is not None and code[end:start].strip():
+                break
+            formats.append((start, literal))
+            end = stop
+    for start, literal in formats:
         lineno = cpp_lines.line_of(text, start)
         for m in _CONVERSION_RE.finditer(literal):
             if m.group(1) == "a":

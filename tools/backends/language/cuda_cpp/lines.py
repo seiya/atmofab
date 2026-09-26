@@ -73,15 +73,16 @@ def mask(text: str) -> str:
             continue
         if ch in "\"'":
             # A `'` inside a pp-number is a digit separator (`1'000'000`, `.5'0`, `1e+1'0`), not a
-            # literal: walk back over the pp-number (digits, letters, `_`, `.`, `'`, and a sign
-            # after an exponent letter) and require it to START like a number — a digit, or a `.`
-            # followed by a digit. The `.5'0` start is round 2 of this change's review: read as a
-            # literal, it blanked the rest of the line, a `_Pragma` or a literal metric included.
+            # literal: walk back over the digits, letters, `_`, `.` and `'` before it and require
+            # what that reaches to START like a number — a digit, or a `.` followed by a digit.
+            # The walk does not cross a sign: a separator never follows an exponent's sign without
+            # a digit between, so stopping there still starts on a digit, and crossing one read
+            # `e+1'0` (a variable `e` plus `1'0`) as a number starting with `e` — the quote then
+            # opened a literal that blanked the rest of the line (round 3 of this change's review;
+            # the `.5'0` start is round 2's, the same blanking).
             if ch == "'" and i > 0 and text[i - 1].isalnum() and i + 1 < n and text[i + 1].isalnum():
                 prev = i - 1
-                while prev >= 0 and (text[prev].isalnum() or text[prev] in "_.'"
-                                     or (text[prev] in "+-" and prev > 0
-                                         and text[prev - 1] in "eEpP")):
+                while prev >= 0 and (text[prev].isalnum() or text[prev] in "_.'"):
                     prev -= 1
                 first = prev + 1
                 if text[first].isdigit() or (text[first] == "." and first + 1 < n
