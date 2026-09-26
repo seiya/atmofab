@@ -1009,14 +1009,14 @@ class SchedulerTests(unittest.TestCase):
             (entry,) = self.h.log_entries(tag)
             self.assertEqual(entry["site"]["job_id"], "4242")
             self.assertEqual(entry["site"]["scheduler"], "slurm")
-        # One srun call, inside the job's ssh call: the directives, split into words, and then
-        # the executor's own options, last so that none of the directives changes them.
+        # One srun call, inside the job's ssh call: the time limit, the directives split into
+        # words (the last `--time` wins), and the options no directive may change.
         (srun,) = [c for c in self.h.calls() if c[0] == "srun"]
         wall = sum(c.timeout_sec + rx.KILL_AFTER_SEC for c in self.h.request().commands) \
             + rx.TRANSPORT_GRACE_SEC
-        self.assertEqual(srun[1:9], ["--partition=debug", "-p", "other", "--time=1",
-                                     "--ntasks=1", "--job-name=atmofab-arid-1",
-                                     f"--time={-(-wall // 60)}", "--immediate=77"])
+        self.assertEqual(srun[1:9], [f"--time={-(-wall // 60)}", "--partition=debug", "-p",
+                                     "other", "--time=1", "--ntasks=1",
+                                     "--job-name=atmofab-arid-1", "--immediate=77"])
         self.assertEqual(srun[9:11], ["sh", "-c"])
         self.assertIn(rx.STATUS_MARKER, srun[11])
         self.assertEqual([c[0] for c in self.h.calls()], ["ssh", "scp", "ssh", "srun", "scp", "ssh"])

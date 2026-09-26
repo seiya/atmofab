@@ -20,11 +20,13 @@ class ForegroundArgvTests(unittest.TestCase):
         args.update(kw)
         return submit.foreground_argv(**args)
 
-    def test_the_executors_options_come_after_the_directives(self) -> None:
+    def test_the_time_limit_comes_before_the_directives_and_the_rest_after(self) -> None:
+        """A directive may shorten the time limit (a short partition's maximum); it may not
+        change the task count, the name or the queue bound."""
         self.assertEqual(
-            self._argv(directives=("--partition=gpu", "-p  debug", "--gres=gpu:1")),
-            ("srun", "--partition=gpu", "-p", "debug", "--gres=gpu:1", "--ntasks=1",
-             "--job-name=atmofab-j", "--time=1", "--immediate=5"))
+            self._argv(directives=("--partition=gpu", "-p  debug", "--time=30")),
+            ("srun", "--time=1", "--partition=gpu", "-p", "debug", "--time=30", "--ntasks=1",
+             "--job-name=atmofab-j", "--immediate=5"))
 
     def test_the_time_limit_is_rounded_up_to_whole_minutes(self) -> None:
         for sec, minutes in ((1, 1), (60, 1), (61, 2), (3600, 60), (3601, 61)):

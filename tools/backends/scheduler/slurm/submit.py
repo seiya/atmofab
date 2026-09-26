@@ -34,15 +34,19 @@ JOB_ID_VARIABLE = "SLURM_JOB_ID"
 
 def foreground_argv(*, directives: Sequence[str], job_name: str, wall_clock_sec: int,
                     queue_timeout_sec: int) -> tuple[str, ...]:
-    """The argv the job script runs under: `srun`, the operator's `scheduler_directives` (each
-    split on whitespace into words, as a `#SBATCH` line's are), and then this executor's own
-    options, which come last so that a directive cannot change them — `srun` takes the last of a
-    repeated option (measured): one task, the job's name, a time limit of `wall_clock_sec`
-    rounded up to whole minutes, and `--immediate`, which ends the call with a non-zero exit, and
-    the job with it, when no allocation is granted within `queue_timeout_sec`."""
+    """The argv the job script runs under. `srun` takes the LAST of a repeated option
+    (measured), so the order is the policy:
+
+    1. a time limit of `wall_clock_sec` rounded up to whole minutes, FIRST, so that a directive
+       may replace it — a site whose partitions allow less than the job's full bound states its
+       maximum there. A job that reaches a shorter limit is killed and refused, never recorded;
+    2. the operator's `scheduler_directives`, each split on whitespace into words, as a
+       `#SBATCH` line's are;
+    3. the options a directive may not change, LAST: one task (the statuses are one task's
+       stdout), the job's name, and `--immediate`, which ends the call with a non-zero exit, and
+       the job with it, when no allocation is granted within `queue_timeout_sec`."""
     if wall_clock_sec < 1 or queue_timeout_sec < 1:
         raise ValueError("wall_clock_sec and queue_timeout_sec must be >= 1")
     minutes = -(-wall_clock_sec // 60)
-    return ("srun", *(w for d in directives for w in d.split()),
-            "--ntasks=1", f"--job-name={job_name}", f"--time={minutes}",
-            f"--immediate={queue_timeout_sec}")
+    return ("srun", f"--time={minutes}", *(w for d in directives for w in d.split()),
+            "--ntasks=1", f"--job-name={job_name}", f"--immediate={queue_timeout_sec}")

@@ -11,7 +11,7 @@
 A job runs as ONE Slurm job, in the foreground of the ssh call that runs the job script:
 
 ```
-ssh <host> -- 'echo; printf ... atmofab-submitted <epoch>; exec srun <directives> --ntasks=1 --job-name=atmofab-<agent_run_id> --time=<minutes> --immediate=<queue_timeout_sec> sh -c <job script>'
+ssh <host> -- 'echo; printf ... atmofab-submitted <epoch> && exec srun --time=<minutes> <directives> --ntasks=1 --job-name=atmofab-<agent_run_id> --immediate=<queue_timeout_sec> sh -c <job script>'
 ```
 
 - `srun` waits for an allocation, runs the job script as the job's single task, relays the
@@ -19,11 +19,16 @@ ssh <host> -- 'echo; printf ... atmofab-submitted <epoch>; exec srun <directives
   task's stdout is a pipe (`/proc/self/fd/1` is `pipe:[…]` inside the task), so the statuses the
   script prints never pass through a file the job's own commands could rewrite. `srun`'s own
   messages go to its stderr only.
-- `scheduler_directives` come first, each split on whitespace into words (`"-p gpu"` is two
-  words), and the executor's options come after them: `srun` takes the LAST of a repeated option,
-  so a directive cannot change the task count, the job's name, the time limit or the queue bound.
-- `--time` is the job's commands' bounds plus the executor's grace (and the device probe's bound
-  when the class names one), rounded up to whole minutes.
+- `srun` takes the LAST of a repeated option, so the order is the policy. `--time` comes first:
+  it is the job's commands' bounds plus the executor's grace (and the device probe's bound when
+  the class names one), rounded up to whole minutes — 96 or 97 minutes with the server's default
+  command timeouts — and a directive may replace it. A site whose partition, QOS or association
+  allows less states its maximum there (`"--time=30"`); a job that reaches the shorter limit is
+  killed and refused, never recorded. Without it such a site's job pends until `--immediate`
+  gives up, since the launch probe does not ask the partition's limits.
+- `scheduler_directives` come next, each split on whitespace into words (`"-p gpu"` is two
+  words), and the options no directive may change come last: `--ntasks=1` (the statuses are one
+  task's stdout), the job's name and the queue bound.
 - `--immediate=<queue_timeout_sec>` ends the call with exit status 1, and cancels the job, when no
   allocation is granted in that many seconds. The site's `queue_timeout_sec`, or
   `remote_execution.QUEUE_TIMEOUT_DEFAULT_SEC` when it states none.

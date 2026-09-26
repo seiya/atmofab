@@ -483,8 +483,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # BEGINS with a scheduler marker is refused rather than skipped, which a `none` site's job
     # never prints. And once more in round 1: the tuple gained the scheduler records and the
     # `slurm` package's `job_submit` module, which the round-1 review found outside it (a change
-    # to the prefix a job runs under moved no pin). None of it changes a none site's job.
-    "execute-5": "4265e12555dbc5d19a8045d526f97d388f22698a697b7fd6966a0c59183d0510",
+    # to the prefix a job runs under moved no pin). None of it changes a none site's job. Then the
+    # prefix's time limit moved before the directives (a directive may shorten it).
+    "execute-5": "9e187ec10258f6832753f58e64e6019733ebfd1780cc90079f7c70df11726938",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
