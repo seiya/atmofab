@@ -2157,6 +2157,37 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(seen, [frozenset({"build", "compile"}), frozenset()])
         self.assertIsInstance(seen[0], frozenset)
 
+    def test_run_conductor_hands_the_drivers_site_to_the_conductor(self) -> None:
+        """Issue #293: `site` reaches `Conductor.site` as the driver resolved it, and its
+        absence is the local site (None), never a site the conductor resolves itself."""
+        from unittest.mock import patch
+
+        from tools.execution_sites import Site
+        seen: list[object] = []
+        orig_init = wc.Conductor.__init__
+
+        def _capture_init(self, **kw):  # type: ignore[no-untyped-def]
+            orig_init(self, **kw)
+            seen.append(self.site)
+
+        box = Site(site_id="box", executes=("cpu",), host="box", workdir="/w")
+        common = dict(
+            repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
+            spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
+            llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+            workflow_mode="dev", env={})
+        with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
+             patch.object(wc, "prepare_node",
+                          return_value=wc.NodeRefs(target_id=_TARGET_ID, node_key="c/x@0.1.0",
+                                                   spec_path="spec/c/x", ir_id="x_1",
+                                                   pipeline_id="x_1")), \
+             patch.object(wc.Conductor, "__init__", _capture_init), \
+             patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch.object(wc, "resolve_run_target", return_value=None):
+            wc.run_conductor(**common, site=box)
+            wc.run_conductor(**common)
+        self.assertEqual(seen, [box, None])
+
     def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
         """A model-less claude entry is stamped with the SPEC-side default, and that default
         is not read out of the operator's `~/.claude`.
@@ -15626,7 +15657,8 @@ class DeterministicBuildTest(unittest.TestCase):
             trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
             env = trial["environment"]
             self.assertEqual(set(env), {"target_id", "target_class", "backend",
-                                        "threads_per_rank", "launch", "platform"})
+                                        "threads_per_rank", "launch", "platform",
+                                        "execution_site"})
             # The target's, not the IR's (issue #284) — `backend` read a key the IR never had
             # until then, so every record said the fallback.
             self.assertEqual(
@@ -15650,18 +15682,27 @@ class DeterministicBuildTest(unittest.TestCase):
             qc = json.loads((repo / refs.run_node_dir() / "quality_check.json").read_text("utf-8"))
             self.assertEqual(qc["comparison"]["reference"]["threads_per_rank"], 3)
             self.assertIn("threads_per_rank=3", qc["notes"])
-            self.assertEqual(env["platform"], {**wc._host_platform_record(), "site": shape.site})
+            from tools.host_execution import local_platform_record
+            self.assertEqual(env["platform"], {**local_platform_record(), "site": shape.site})
             self.assertEqual(env["platform"]["site"], "local")
             self.assertEqual(env["platform"]["machine"], _platform.machine())
             self.assertEqual(env["platform"]["node"], _platform.node())
             self.assertIn("cpu_model", env["platform"])
+            # A `cpu` target names no device probe (issue #293).
+            self.assertIsNone(env["platform"]["gpu"])
+            # The local site: reached by no transport, run by no scheduler.
+            self.assertEqual(env["execution_site"], {
+                "site": "local", "host": None, "scheduler": "none", "job_id": None,
+                "remote_dir": None, "queue_wait_ms": 0})
 
     def test_execute_inproc_refuses_a_class_this_host_cannot_run_on_before_running(
             self) -> None:
         """Issue #289: a `gpu` target reached a CPU run silently until R4-b PR-1. The launch
         gate refuses it before anything runs; this is the backstop behind it, and it must fire
         before `run_program` — surfaced by `_run_deterministic_substep` as a transport
-        fail_closed, since no leaf can repair where the binary runs."""
+        fail_closed, since no leaf can repair where the binary runs. Since issue #293 the class
+        declares `execution` and what refuses it here is the SITE half: a conductor with no
+        site runs at the local site, whose default `executes` is `cpu`."""
         import sys
         import tempfile
         from unittest import mock
@@ -15684,14 +15725,7 @@ class DeterministicBuildTest(unittest.TestCase):
             run_program.assert_not_called()
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("deterministic_validate_error", result.stderr)
-            self.assertIn("'execution'", result.stderr)
-
-    def test_host_platform_record_survives_an_unreadable_cpuinfo(self) -> None:
-        with mock.patch.object(Path, "read_text", side_effect=OSError("no proc")):
-            record = wc._host_platform_record()
-        self.assertEqual(set(record), {"machine", "node", "cpu_model"})
-        self.assertIsNone(record["cpu_model"])
-        self.assertTrue(record["machine"])
+            self.assertIn("gpu is not executed at site local", result.stderr)
 
     def test_execute_inproc_clears_stale_verdict_on_runtime_error(self) -> None:
         # R2 guard: a structural (runtime-error) execute failure must leave NO verdict.json, so a

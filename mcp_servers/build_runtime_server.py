@@ -997,10 +997,35 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+#: The bound `run_program` applies when its caller names none. The remote executor
+#: (`tools/remote_execution.py`) has no server to apply it, so the conductor passes it there.
+RUN_PROGRAM_TIMEOUT_SEC = 3600
+#: The same for `run_quality_checks`.
+QUALITY_CHECKS_TIMEOUT_SEC = 1800
+
+#: The argv of each `run_quality_checks` preset.
+_QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
+    "make_test": ("make", "test"),
+    "make_check": ("make", "check"),
+    "ctest": ("ctest", "--output-on-failure"),
+    "pytest": ("pytest", "-q"),
+}
+
+
+def quality_check_command(preset: str) -> list[str]:
+    """The argv `run_quality_checks` runs for `preset`: the one table both the server and the
+    remote executor's caller read, so a quality check at a site runs what one here would. Raises
+    `ValueError` for a preset the server does not run."""
+    if preset not in _QUALITY_CHECK_PRESET_COMMANDS:
+        supported = ", ".join(sorted(_QUALITY_CHECK_PRESET_COMMANDS))
+        raise ValueError(f"unsupported preset: {preset}. supported={supported}")
+    return list(_QUALITY_CHECK_PRESET_COMMANDS[preset])
+
+
 def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
     _refuse_retired_arguments(args, "run_program")
-    timeout_sec = _bounded_int(args.get("timeout_sec"), 3600, 1, "timeout_sec")
+    timeout_sec = _bounded_int(args.get("timeout_sec"), RUN_PROGRAM_TIMEOUT_SEC, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
@@ -1035,7 +1060,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
 def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
     _refuse_retired_arguments(args, "run_quality_checks")
-    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    timeout_sec = _bounded_int(args.get("timeout_sec"), QUALITY_CHECKS_TIMEOUT_SEC, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
@@ -1046,21 +1071,10 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     _validate_env_overrides(env, "run_quality_checks")
     preset = str(args.get("preset", "make_test"))
 
-    presets: dict[str, list[str]] = {
-        "make_test": ["make", "test"],
-        "make_check": ["make", "check"],
-        "ctest": ["ctest", "--output-on-failure"],
-        "pytest": ["pytest", "-q"],
-    }
-
     if "command" in args:
         raise ValueError("run_quality_checks does not allow custom command; use preset")
 
-    if preset in presets:
-        command = presets[preset]
-    else:
-        supported = ", ".join(sorted(presets.keys()))
-        raise ValueError(f"unsupported preset: {preset}. supported={supported}")
+    command = quality_check_command(preset)
 
     run_env: dict[str, str] | None
     if env is None:

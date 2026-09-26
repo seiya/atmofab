@@ -71,8 +71,12 @@ the number beyond `ok`. No log entry is written until every status and every out
 been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
 behind it.
 
-Nothing calls `execute_job` yet: the conductor is wired to it in a later pull request of issue
-#293, and until then this module changes no run. Only `scheduler: none` is implemented — the job
+`Validate.execute` calls `execute_job` for a target the operator's `sites.yaml` maps to a remote
+site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` before a node that
+will reach `Validate` runs — once at launch, and again before each dependency member of a
+`--with-deps` run — so a site that cannot be reached, lacks a program the job needs, cannot hold
+or run it, or is another machine is refused before that node is billed (`tools/run_workflow.py`
+`_sites_rejection`). Only `scheduler: none` is implemented — the job
 script runs in the foreground of the ssh call; a site whose scheduler is anything else is refused
 here until a scheduler backend implements `job_submit`.
 """
@@ -470,6 +474,103 @@ def _read_output(path: Path, remote: str) -> str:
             f"{exc}") from None
 
 
+#: The first word of each line `probe_site`'s script prints.
+PROBE_MARKER = "atmofab-probe"
+
+
+#: What `probe_site` checks beyond the programs, each a POSIX test and the problem it names when
+#: the test fails; the job script refuses the same two conditions, later.
+_PROBE_CHECKS: tuple[tuple[str, str], ...] = (
+    ("workdir", "the workdir cannot be made or is not writable"),
+    ("workdir_exec", "a program in the workdir cannot be executed (a noexec mount)"),
+    ("timeout_kill", "its timeout does not take -k"),
+)
+
+
+#: The problem `probe_site` names when the site's login prints to stdout before the probe's own
+#: lines.
+STARTUP_OUTPUT_PROBLEM = ("its login's startup files print to stdout, on which scp fails "
+                          "(a non-interactive login must print nothing)")
+
+
+@dataclass(frozen=True)
+class SiteProbe:
+    """What `probe_site` found: the programs of those asked for that the site's login shell
+    cannot resolve, the site's `uname -m`, and the problems `_PROBE_CHECKS` names that it has."""
+
+    missing: tuple[str, ...]
+    machine: str
+    problems: tuple[str, ...] = ()
+
+
+def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
+    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve, what
+    machine it is, whether its `workdir` can be made and written (it is created if absent, as
+    the first job would create it) and whether its `timeout` takes `-k` — the launch-time
+    detector of what a job refuses again before its first command. Raises `RemoteExecutionError`
+    when the site cannot be reached or does not answer in the probe's shape, and `ValueError`
+    for a site that is not remote or a program name that is not a plain element."""
+    if site.is_local or not site.host:
+        raise ValueError(f"site {site.site_id!r} is not a remote site")
+    for exe in executables:
+        if not _ELEMENT.fullmatch(exe):
+            raise ValueError(f"program {exe!r} is not a plain name")
+    q = shlex.quote
+    workdir = str(site.workdir)
+    # The shipped runner is executed from beneath the workdir, so a file there must run: one is
+    # made, run and removed (the job script refuses a program that is not an executable file).
+    exe = f"{workdir}/.atmofab-probe-$$"
+    tests = {
+        "workdir": f"mkdir -p {q(workdir)} 2>/dev/null && [ -d {q(workdir)} ] && [ -w {q(workdir)} ]",
+        "workdir_exec": (f"{{ printf '#!/bin/sh\\nexit 0\\n' > \"{exe}\" && chmod +x \"{exe}\" && "
+                         f"\"{exe}\"; }} >/dev/null 2>&1; r=$?; rm -f \"{exe}\"; [ \"$r\" = 0 ]"),
+        "timeout_kill": "timeout -k 1 5 sh -c : >/dev/null 2>&1",
+    }
+    # The first line printed is empty, as the job script's is, so that a login banner printed
+    # without a newline ends there rather than gluing onto the first probe line.
+    script = "\n".join([
+        "echo",
+        *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
+          for exe in executables),
+        # Whether a program runs beneath the workdir is asked only of a workdir that is there:
+        # one that cannot be made is its own problem, and the second would restate it.
+        *(f"{tests['workdir']} && {{ {tests[name]} || echo {PROBE_MARKER} problem {name}; }}"
+          if name == "workdir_exec" else f"{tests[name]} || echo {PROBE_MARKER} problem {name}"
+          for name, _ in _PROBE_CHECKS),
+        f'echo "{PROBE_MARKER} machine $(uname -m)"',
+    ])
+    remote = f"{site.host} ({site.site_id})"
+    out = _ssh(str(site.host), f"sh -c {q(script)}", stage="probe the site",
+               timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    missing: list[str] = []
+    machines: list[str] = []
+    problems: list[str] = []
+    names = dict(_PROBE_CHECKS)
+    printed = False
+    for line in out.splitlines():
+        if not line.startswith(PROBE_MARKER + " "):
+            # Output of the login's startup files. It does not hide a probe line (the script's
+            # first line is empty), and it is named: scp, which ships and collects every job,
+            # fails on a login that prints.
+            printed = printed or bool(line.strip())
+            continue
+        kind, _, value = line[len(PROBE_MARKER) + 1:].partition(" ")
+        if kind == "missing" and value in executables:
+            missing.append(value)
+        elif kind == "machine" and value.strip():
+            machines.append(value.strip())
+        elif kind == "problem" and value in names:
+            problems.append(names[value])
+        else:
+            raise RemoteExecutionError(f"a probe line does not parse: {line[:200]!r} ({remote})")
+    if len(machines) != 1:
+        raise RemoteExecutionError(
+            f"the probe printed {len(machines)} machine lines, not one ({remote})")
+    if printed:
+        problems.append(STARTUP_OUTPUT_PROBLEM)
+    return SiteProbe(missing=tuple(missing), machine=machines[0], problems=tuple(problems))
+
+
 def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     """Run `request` at its site and return its results; see the module docstring for the
     refusals. `local_tmp` is a local directory this job owns: the files are staged in
@@ -566,8 +667,12 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
                 f"stderr ends: {tail or '(empty)'} ({remote})")
 
     # 6. Remove the remote directory; the evidence is local now.
-    _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",
-         timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    # The orchestration's directory above it goes too when this was its last job; `rmdir`
+    # removes only an empty one, so a sibling job still running (or left for inspection) keeps
+    # it.
+    parent = remote.rsplit("/", 1)[0]
+    _ssh(host, f"rm -rf {q(remote)} && {{ rmdir {q(parent)} 2>/dev/null || true; }}",
+         stage="remove the collected job directory", timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
     # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
     #    `command` names each shipped file by its LOCAL source, so the entry says which of this

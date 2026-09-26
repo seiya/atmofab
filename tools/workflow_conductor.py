@@ -47,6 +47,7 @@ from typing import Any, ClassVar, NamedTuple
 import yaml
 
 from tools.backends import registry as backend_registry
+from tools.execution_sites import Site
 from tools.target_profile import (
     TargetProfile,
     pipeline_ref_for,
@@ -3524,6 +3525,11 @@ class Conductor:
     #: unit tests build it — makes every one of those reads RAISE (`target`), never default;
     #: `run_conductor`, the only production constructor, never passes None.
     target_profile: TargetProfile | None = None
+    #: The execution site `Validate.execute` runs the binary at (issue #293), resolved by the
+    #: driver from the operator's `sites.yaml` for this run's target. None is the local site
+    #: with its default `executes` — the configuration with no `sites.yaml`, and what a conductor
+    #: built without a driver gets; `run_conductor` passes the driver's resolution.
+    site: Site | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
     #: attempt is stamped with.
@@ -10830,7 +10836,13 @@ class Conductor:
         mcp_dir = str(self.repo_root / "mcp_servers")
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
-        from build_runtime_server import tool_run_program, tool_run_quality_checks
+        from build_runtime_server import (
+            QUALITY_CHECKS_TIMEOUT_SEC,
+            RUN_PROGRAM_TIMEOUT_SEC,
+            quality_check_command,
+            tool_run_program,
+            tool_run_quality_checks,
+        )
 
         # The execution shape is the TARGET's (issue #284): its hardware class and threads per
         # rank are what `run_program` is told, and the validate key binds them through the
@@ -10843,14 +10855,20 @@ class Conductor:
         # R4-b PR-1), which refuses a class this host cannot run on. Until then `run_program`
         # was handed the class and the thread count and set the OpenMP variables itself, for
         # `cpu` alone — a `gpu` target ran here with no word.
-        from tools.host_execution import launch_shape
+        #
+        # WHERE it runs is the execution site's (issue #293): `self.site`, which the driver
+        # resolved from the operator's `sites.yaml`. The seam refuses a site that does not
+        # execute the target's class, as the backstop of the launch gate's site half.
+        from tools.execution_sites import DIRECT_SCHEDULER
+        from tools.host_execution import launch_shape, local_platform_record
 
         target = self.target
         target_class = target.hardware_class
         threads = target.threads_per_rank
-        launch = launch_shape(target)
-        self._require_build_execute(
-            self._read_toolchain(refs)["build_system"], "validate.execute")
+        site = self.site
+        launch = launch_shape(target, site)
+        build_system = self._read_toolchain(refs)["build_system"]
+        self._require_build_execute(build_system, "validate.execute")
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
 
         node_dir = self.repo_root / refs.run_node_dir()
@@ -10866,10 +10884,6 @@ class Conductor:
         qc_cmd_log = src_dir / "command_log.jsonl"
         case_ids = list(self.read_case_ids(refs))
 
-        # The runner opens raw/ paths relatively (cwd=RUNDIR); pre-create them — `initial/`
-        # included, which the host-rendered runner writes its post-`case_setup` captures into.
-        (run_tmp / "raw" / "state_snapshots" / "initial").mkdir(parents=True, exist_ok=True)
-        qc_tmp.mkdir(parents=True, exist_ok=True)
 
         # R2 invariant guard: clear any pre-existing verdict.json / trial_meta.json in this run
         # node dir so that, after this substep, `<file> present` ⟺ `THIS execute authored it`.
@@ -10891,52 +10905,121 @@ class Conductor:
 
         # Attribution only: the server records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
-        gate_args = {"orchestration_id": self.orchestration_id,
-                     "agent_run_id": child_arid,
-                     "repo_root": str(self.repo_root)}
+        attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
 
-        # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
-        res_run = tool_run_program({
-            "project_dir": str(run_tmp),
-            "command": launch.command([str(binary), "--cases", str(ir_spec), *case_ids]),
-            "env": dict(launch.env),
-            "command_log_path": str(cmd_log),
-            "capture_limit": _FULL_CAPTURE_LIMIT,
-            **gate_args,
-        })
+        # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries them
+        # pre-created — `initial/` included, which the host-rendered runner writes its
+        # post-`case_setup` captures into.
+        run_raw_dirs = ("raw", "state_snapshots", "initial")
+
+        def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
+                     obj_path: str) -> tuple[list[str], dict[str, str]]:
+            """The run's argv and the quality check's environment, from one set of paths — the
+            local ones or the site's — so the two sites cannot run different commands.
+
+            The quality check's variables: BIN imposed to the canonical <spec_id>_runner so
+            `make test`'s `$(BINDIR)/$(BIN)` guard resolves the same binary Build produced.
+            make_test passes overrides via the environment only, which overrides the Makefile's
+            `BIN ?=` form (enforced by post_generate). SPEC/CASES imposed so `make test` invokes
+            the runner identically to run_program (`--cases <spec.ir.yaml> <case_id>...`) —
+            without this the test target's `--cases $(SPEC) $(CASES)` would fall back to the
+            Makefile's baked defaults; pinning them to the authoritative run_program spec/case
+            set keeps the quality_check a true apples-to-apples value comparison (the runner
+            requires `--cases` and aborts without it). No dependency-source staging here
+            (unlike _build_inproc): `make test` only runs the already-built binary (the `test:`
+            target has no build prerequisite, so it never recompiles), so the closure
+            `.f90`/`.mod` are not needed in OBJDIR."""
+            run_argv = launch.command([binary_path, "--cases", spec_path, *case_ids])
+            qc_env = {"OBJDIR": obj_path, "BINDIR": bin_path, "RUNDIR": qc_path,
+                      "BIN": str(exe), "SPEC": spec_path, "CASES": " ".join(case_ids)}
+            return run_argv, qc_env
+
+        res_qc: dict[str, Any] | None
+        if site is None or site.is_local:
+            run_tmp.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+            qc_tmp.mkdir(parents=True, exist_ok=True)
+            run_argv, qc_env = commands(str(binary), str(ir_spec), str(bin_dir), str(qc_tmp),
+                                        str(obj_tmp))
+            # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
+            res_run = tool_run_program({
+                "project_dir": str(run_tmp),
+                "command": run_argv,
+                "env": dict(launch.env),
+                "command_log_path": str(cmd_log),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                "repo_root": str(self.repo_root),
+                **attribution,
+            })
+            # 2. run_quality_checks (make_test re-run; output to a SEPARATE tmp), only after a
+            #    run that succeeded.
+            res_qc = tool_run_quality_checks({
+                "project_dir": str(src_dir),
+                "preset": "make_test",
+                "env": qc_env,
+                "command_log_path": str(qc_cmd_log),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                "repo_root": str(self.repo_root),
+                **attribution,
+            }) if res_run.get("ok") else None
+            platform_record = local_platform_record(launch.platform_probe)
+            site_record: dict[str, Any] = {
+                "site": launch.site, "host": None, "scheduler": DIRECT_SCHEDULER,
+                "job_id": None, "remote_dir": None, "queue_wait_ms": 0}
+        else:
+            # The same two commands at a remote site (`tools/remote_execution.py`): one job,
+            # the binary, the IR and the build control file shipped to a fresh job directory,
+            # the evidence copied back, and each command's `command_log.jsonl` entry written
+            # here by the server's own writer, at the placement the local path uses. A transport
+            # failure raises `RemoteExecutionError`, which `_run_deterministic_substep` turns
+            # into `deterministic_validate_error`: not the kernel's failure, and no leaf's.
+            from tools.remote_execution import (
+                CommandSpec,
+                JobRequest,
+                execute_job,
+                job_dir,
+            )
+
+            jdir = job_dir(site, self.orchestration_id, child_arid)
+            control_file = str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
+            run_argv, qc_env = commands(f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml",
+                                        f"{jdir}/bin", f"{jdir}/qc_run", f"{jdir}/build")
+            result = execute_job(JobRequest(
+                site=site, job_dir=jdir,
+                ship={f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
+                      f"src/{control_file}": src_dir / control_file},
+                commands=(
+                    CommandSpec(tag="run", tool_name="run_program", argv=tuple(run_argv),
+                                cwd=f"{jdir}/run", record_cwd=str(run_tmp),
+                                env=dict(launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
+                                command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                    CommandSpec(tag="qc", tool_name="run_quality_checks",
+                                argv=tuple(quality_check_command("make_test")),
+                                cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
+                                timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
+                                command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                ),
+                dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build"),
+                platform_probe=launch.platform_probe,
+                attribution=attribution,
+            ), local_tmp=run_tmp.parent / "site")
+            # The collected job directory holds each command's working directory; they become
+            # the local run and quality-check directories every later step reads.
+            for name, dest in (("run", run_tmp), ("qc_run", qc_tmp)):
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.move(str(result.collected / name), str(dest))
+            res_run, res_qc = result.results
+            platform_record = result.platform
+            site_record = result.site_record
+
         stdout = res_run.get("stdout", "") or ""
         stderr = res_run.get("stderr", "") or ""
-        if not res_run.get("ok"):
+        if not res_run.get("ok") or res_qc is None:
             # Runtime error is a CONTENT failure (buggy generated code): rc 0 so run_phase
             # routes it via the validate tables / diagnostician, not transport fail_closed.
             # No trial_meta is written, so determine_substep_status fails this substep.
             return {"returncode": 0, "stdout": stdout,
                     "stderr": stderr + "\n[run_program failed: runtime_error]"}
-
-        # 2. run_quality_checks (make_test re-run; output to a SEPARATE tmp).
-        res_qc = tool_run_quality_checks({
-            "project_dir": str(src_dir),
-            "preset": "make_test",
-            # BIN imposed to the canonical <spec_id>_runner so `make test`'s
-            # `$(BINDIR)/$(BIN)` guard resolves the same binary Build produced. make_test
-            # passes overrides via the environment only, which overrides the Makefile's
-            # `BIN ?=` form (enforced by post_generate).
-            # SPEC/CASES imposed so `make test` invokes the runner identically to
-            # run_program (`--cases <spec.ir.yaml> <case_id>...`) — without this the test
-            # target's `--cases $(SPEC) $(CASES)` would fall back to the Makefile's baked
-            # defaults; pinning them to the authoritative run_program spec/case set keeps the
-            # quality_check a true apples-to-apples value comparison (the runner requires
-            # `--cases` and aborts without it).
-            # No dependency-source staging here (unlike _build_inproc): `make test` only runs
-            # the already-built binary (the `test:` target has no build prerequisite, so it
-            # never recompiles), so the closure `.f90`/`.mod` are not needed in OBJDIR.
-            "env": {"OBJDIR": str(obj_tmp), "BINDIR": str(bin_dir),
-                    "RUNDIR": str(qc_tmp), "BIN": str(exe),
-                    "SPEC": str(ir_spec), "CASES": " ".join(case_ids)},
-            "command_log_path": str(qc_cmd_log),
-            "capture_limit": _FULL_CAPTURE_LIMIT,
-            **gate_args,
-        })
 
         # 3. promote primary evidence (selective per artifact type) + author metadata.
         artifacts = self._required_evidence_artifacts(ir)
@@ -11004,8 +11087,12 @@ class Conductor:
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.
-                # `site` says where it ran; a remote site will write its own record here.
-                "platform": {**_host_platform_record(), "site": launch.site},
+                # `site` says where it ran, and a remote site's facts are its own answers
+                # (issue #293); `gpu` is the class's device probe, `null` when it names none.
+                "platform": {**platform_record, "site": launch.site},
+                # How the site was reached (issue #293): the host, the scheduler, the job and
+                # the remote directory — `null` for each at the local site.
+                "execution_site": site_record,
             },
             "status": "pass" if qc_status == "pass" else "fail",
         }
@@ -13408,22 +13495,6 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 }
 
 
-def _host_platform_record() -> dict[str, str | None]:
-    """The machine a Validate run executed on, for `trial_meta.json#environment.platform`:
-    `platform.machine()`, `platform.node()`, and the CPU model name from `/proc/cpuinfo` when
-    that file is readable (`None` otherwise — a record, never a refusal)."""
-    import platform as _platform
-    cpu_model: str | None = None
-    try:
-        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.lower().startswith("model name"):
-                cpu_model = line.split(":", 1)[1].strip() or None
-                break
-    except OSError:
-        cpu_model = None
-    return {"machine": _platform.machine(), "node": _platform.node(), "cpu_model": cpu_model}
-
-
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, runner_host_authored: bool = False,
                            bundle_sources: Sequence[str] = (),
@@ -13837,7 +13908,8 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   env: dict[str, str] | None = None, resume: bool = False,
                   wait_usage_reset: bool = False,
                   rederive: frozenset[str] | set[str] | None = None,
-                  target_profile: TargetProfile | None = None) -> str:
+                  target_profile: TargetProfile | None = None,
+                  site: Site | None = None) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
     pipeline bound to it on a cold run; on resume, seeding the stage ids from
@@ -13847,7 +13919,9 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     `llm_config` is the leaf-model authority, and is required: the caller has already loaded
     and pinned the operator's configuration, so there is nothing here to reconstruct one
     from. `target_profile` is the target the driver resolved at launch; None resolves the
-    default target (`select_target_id`), which refuses when several profiles are declared."""
+    default target (`select_target_id`), which refuses when several profiles are declared.
+    `site` is the execution site the driver resolved for that target (issue #293); None is the
+    local site."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
     # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
@@ -13862,6 +13936,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
         wait_usage_reset=wait_usage_reset, llm_config=llm_config,
         rederive=frozenset(rederive or ()),
         target_profile=target_profile,
+        site=site,
     )
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))

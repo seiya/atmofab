@@ -1,7 +1,8 @@
 # Execution sites: where Validate.execute runs each target's binary (docs/ORCHESTRATION.md
 # §Execution sites). Copy to ./sites.yaml and edit; that file is machine-local and gitignored.
-# Without ./sites.yaml every target runs at the `local` site. Nothing reads the file until
-# issue #293 wires it into the driver; until then every run executes locally whatever it says.
+# Without ./sites.yaml every target runs at the `local` site. The driver reads it once per run,
+# and probes a remote site before anything is billed — for a `--with-deps` run, before each
+# dependency member, which is driven to Validate whatever phase the run stops at.
 #
 # The host names and paths below are placeholders. Authentication and port are ssh's own
 # configuration, not this file's: a site names one ssh destination ([user@]name) and nothing
@@ -22,3 +23,6 @@ sites:
     executes: [cpu]
 targets:                            # target id -> site id; a target not listed runs at `local`
   fortran_cpu: local                # write `cpu_box` here to run this target's binary there
+# A site is not part of any derivation key, so re-mapping a target does not re-run a Validate
+# already certified for it: add `--rederive validate` to run it at the new site (for the target
+# node only; a --with-deps member is re-run by its own invocation).

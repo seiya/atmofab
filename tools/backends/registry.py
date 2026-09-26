@@ -282,10 +282,13 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "execution": (
         ("hardware",),
-        "This host can launch a binary built for this hardware class and collect its evidence "
-        "(`Validate.execute`). Asked only of a run that reaches `Validate` "
+        "This repository can launch a binary built for this hardware class and collect its "
+        "evidence (`Validate.execute`), and a package implementation names the argv that "
+        "identifies the class's device at the site (`PLATFORM_PROBE`, recorded as "
+        "`platform.gpu`). Asked only of a run that reaches `Validate` "
         "(`target_profile.target_profile_violations`): building for a class needs no machine "
-        "of that class, running on it does.",
+        "of that class, running on it does — and whether a MACHINE of the class is reachable is "
+        "the execution site's half (`tools/execution_sites.site_violations`, issue #293).",
     ),
     "perf_facts": (
         ("hardware",),
@@ -326,6 +329,8 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     # contemplates when it says a package with two capabilities has no single "the module".
     "lint_rules": "lint",
     "execution_env": "execution",
+    # Same submodule name as `execution_env`, on another axis: the `hardware` package's.
+    "execution": "execution",
     "parallel_directives": "directives",
     "perf_facts": "perf",
     "bundle_facts": "bundle",
@@ -501,25 +506,26 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # is neutral code, so `execution` is core. It declares no `perf_facts` because nothing
         # reads one for it yet — its `architecture` stays a recorded token, as it was.
         Backend("hardware", "cpu", None, core_provides=frozenset({"execution"})),
-        # `gpu` does NOT declare `execution`, and that is the point of the record: building for a
-        # GPU needs no GPU, running on one does, and this host has no way to reach one. A profile
-        # naming it therefore passes the launch gate for a run that stops before `Validate` and
-        # is refused for one that reaches it (`target_profile.target_profile_violations`), which
-        # is the refusal the remote-execution feature lifts by declaring `execution` here (issue
-        # #289 §9). Until R4-b PR-1 the class passed the gate and was silently ignored at
+        # `gpu` declares `execution` in its package (issue #293): the remote executor reaches a
+        # machine that has one, and the package names the probe that identifies the device
+        # there. Declaring it opens the REGISTRY half of the gate only: a run that reaches
+        # `Validate` for this class also needs a site that `executes` it
+        # (`tools/execution_sites.site_violations`), and the local site's default is `cpu`. From
+        # R4-b PR-1 until then it declared no `execution` and a run reaching `Validate` was
+        # refused; before that the class passed the gate and was silently ignored at
         # `run_program`.
         Backend(
             "hardware", "gpu", "tools.backends.hardware.gpu",
-            backend_provides=frozenset({"perf_facts"}),
+            backend_provides=frozenset({"perf_facts", "execution"}),
         ),
         # A site that submits nothing: the job script runs in the foreground over the site's
         # transport (`sites.yaml`, `scheduler: none`; issue #293). It is core because running a
-        # script is not a scheduler's knowledge. DECLARED AHEAD OF ITS EXECUTOR, and stated
-        # rather than pretended: the remote executor that runs it lands in the next pull request
-        # of issue #293, and until then nothing dispatches on `job_submit` — it is in the
+        # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it. Nothing
+        # dispatches on `job_submit` through this registry yet — the executor compares the site's
+        # scheduler with `execution_sites.DIRECT_SCHEDULER` and refuses any other, so it is in the
         # declaration-only group of
-        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` — and no run reads
-        # `sites.yaml`, so no run can reach a site that uses it.
+        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` until a scheduler
+        # backend implements it.
         Backend("scheduler", "none", None, core_provides=frozenset({"job_submit"})),
     )
 }

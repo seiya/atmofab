@@ -241,9 +241,11 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(recorded["cwd"], f"{self.h.job}/run")
         self.assertEqual(recorded["env"], "a b")
         self.assertTrue((result.collected / "run" / "raw").is_dir())
-        # The remote job directory is gone; its parent stays for the next job.
+        # The remote job directory is gone, and so is the orchestration's directory above it,
+        # which held no other job (the next job makes it again).
         self.assertFalse(Path(self.h.job).exists())
-        self.assertTrue(Path(self.h.job).parent.is_dir())
+        self.assertFalse(Path(self.h.job).parent.exists())
+        self.assertTrue(self.h.workdir.is_dir())
         for tag, res, tool in (("run", run, "run_program"), ("qc", qc, "run_quality_checks")):
             (entry,) = self.h.log_entries(tag)
             self.assertEqual(entry["command_id"], res["command_id"])
@@ -269,6 +271,13 @@ class EndToEndTests(unittest.TestCase):
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": self.h.job, "queue_wait_ms": 0})
 
+
+    def test_the_orchestrations_directory_stays_while_another_job_is_in_it(self) -> None:
+        sibling = Path(self.h.job).parent / "arid-other"
+        sibling.mkdir(parents=True)
+        self.h.run(self.h.request())
+        self.assertFalse(Path(self.h.job).exists())
+        self.assertTrue(sibling.is_dir())
     def test_every_transport_call_carries_the_options_and_ends_them(self) -> None:
         """No prompt (a prompt hangs a run), a bounded connect, and `--` before the destination
         and the paths, on every ssh and scp call; scp copies directories recursively."""
@@ -952,6 +961,160 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(script.startswith("#!/bin/sh\n"))
         for prog in rx.REMOTE_EXECUTABLES:
             self.assertIn(f"command -v {prog} ", script)
+
+
+class ProbeSiteTests(unittest.TestCase):
+    """`probe_site` (issue #293, PR-3): the driver's launch-time question to a remote site."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
+        with self.h.env(**knobs):
+            return rx.probe_site(self.h.site, exes)
+
+    def test_one_call_answers_the_missing_programs_and_the_machine(self) -> None:
+        import platform
+
+        got = self.probe("sh", "zz-no-such-tool", "timeout", "zz-other")
+        self.assertEqual(got, rx.SiteProbe(missing=("zz-no-such-tool", "zz-other"),
+                                           machine=platform.machine()))
+        calls = self.h.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:5], ["ssh", *rx.SSH_OPTIONS])
+        self.assertEqual(self.probe().missing, ())
+
+    def test_a_site_whose_path_lacks_a_program_reports_it(self) -> None:
+        bare = _bare_path(self.h.root, without="timeout")
+        self.assertEqual(self.probe("timeout", "sh", SHIM_SSH_PATH=str(bare)).missing,
+                         ("timeout",))
+
+    def test_a_site_that_does_not_answer_is_a_remote_execution_error(self) -> None:
+        with self.assertRaises(rx.RemoteExecutionError) as ctx:
+            self.probe("sh", SHIM_SSH_FAIL=rx.PROBE_MARKER)
+        self.assertIn("probe the site", str(ctx.exception))
+        self.assertIn("box", str(ctx.exception))
+
+    def test_an_answer_not_in_the_probes_shape_is_refused(self) -> None:
+        cases = {
+            "no machine line": "printf 'hello\\n'",
+            "two machine lines": (f"echo '{rx.PROBE_MARKER} machine a'; "
+                                  f"echo '{rx.PROBE_MARKER} machine b'"),
+            "an unknown kind": f"echo '{rx.PROBE_MARKER} weather sunny'",
+            "a program not asked about": (f"echo '{rx.PROBE_MARKER} missing zz'; "
+                                          f"echo '{rx.PROBE_MARKER} machine x'"),
+        }
+        for what, script in cases.items():
+            with self.subTest(what), mock.patch.object(
+                    rx, "_ssh", side_effect=lambda *a, _s=script, **k: subprocess.run(
+                        ["sh", "-c", _s], capture_output=True, text=True).stdout):
+                with self.assertRaises(rx.RemoteExecutionError):
+                    rx.probe_site(self.h.site, ("sh",))
+
+    def test_an_unusable_workdir_and_a_timeout_without_kill_are_named(self) -> None:
+        import platform
+
+        blocker = self.h.root / "remote" / "blocker"
+        blocker.write_text("a file, so nothing can be made beneath it")
+        site = es.Site(site_id="box", executes=("cpu",), host="box",
+                       workdir=str(blocker / "jobs"))
+        fake = self.h.root / "fake_timeout"
+        fake.mkdir()
+        (fake / "timeout").write_text('#!/bin/sh\n[ "$1" = -k ] && exit 1\nexec true\n')
+        (fake / "timeout").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(site, ("sh",))
+        self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(), problems=(
+            "the workdir cannot be made or is not writable",
+            "its timeout does not take -k")))
+        # A workdir that does not exist yet is made, as the first job would make it.
+        fresh = self.h.root / "remote" / "fresh" / "jobs"
+        with self.h.env():
+            ok = rx.probe_site(es.Site(site_id="box", executes=("cpu",), host="box",
+                                       workdir=str(fresh)), ("sh",))
+        self.assertEqual(ok.problems, ())
+        self.assertTrue(fresh.is_dir())
+
+    def test_an_existing_workdir_that_cannot_be_written_is_named(self) -> None:
+        locked = self.h.root / "remote" / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            # The fixture's premise, asserted rather than assumed: a process that may write
+            # anywhere (root) would see this directory as writable.
+            self.assertFalse(os.access(locked, os.W_OK), "the fixture needs an unwritable dir")
+            with self.h.env():
+                got = rx.probe_site(es.Site(site_id="box", executes=("cpu",), host="box",
+                                            workdir=str(locked)), ("sh",))
+        finally:
+            locked.chmod(0o755)
+        self.assertEqual(got.problems, ("the workdir cannot be made or is not writable",))
+
+    def test_a_workdir_where_nothing_runs_is_named(self) -> None:
+        """A noexec mount, stood in for by a `chmod` that sets no mode: the probe's program is
+        then not executable, as it is not on a noexec mount; nothing is left behind."""
+        fake = self.h.root / "no_chmod"
+        fake.mkdir()
+        (fake / "chmod").write_text("#!/bin/sh\nexit 0\n")
+        (fake / "chmod").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.problems,
+                         ("a program in the workdir cannot be executed (a noexec mount)",))
+        self.assertEqual(list(self.h.workdir.iterdir()), [])
+        with self.h.env():
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)).problems, ())
+        self.assertEqual(list(self.h.workdir.iterdir()), [])
+
+    def test_a_login_banner_without_a_newline_does_not_hide_a_line(self) -> None:
+        """The probe's first line is empty, as the job script's is: a banner printed without a
+        newline glues onto it, not onto the first probe line."""
+        real = rx._ssh
+
+        def banner(*a, **k):
+            return "Last login: somewhere" + real(*a, **k)
+
+        with self.h.env(), mock.patch.object(rx, "_ssh", side_effect=banner):
+            got = rx.probe_site(self.h.site, ("zz-no-such-tool", "sh"))
+        self.assertEqual(got.missing, ("zz-no-such-tool",))
+        # And the banner itself is named: scp fails on a login that prints.
+        self.assertEqual(got.problems, (rx.STARTUP_OUTPUT_PROBLEM,))
+
+    def test_startup_output_is_not_read_as_a_probe_line_and_is_named(self) -> None:
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"Welcome\n{rx.PROBE_MARKER} machine x86_64\nbye\n")):
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)),
+                             rx.SiteProbe(missing=(), machine="x86_64",
+                                          problems=(rx.STARTUP_OUTPUT_PROBLEM,)))
+        # Empty lines are not output: the probe prints one itself.
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"\n\n{rx.PROBE_MARKER} machine x86_64\n")):
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)).problems, ())
+
+    def test_a_login_that_prints_is_named_through_the_transport(self) -> None:
+        fake = self.h.root / "chatty"
+        fake.mkdir()
+        # A startup file's echo, stood in for by an `sh` that prints before it runs the script.
+        real_sh = shutil.which("sh")
+        (fake / "sh").write_text(f"#!{real_sh}\necho 'Welcome to the site'\nexec {real_sh} \"$@\"\n")
+        (fake / "sh").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.problems, (rx.STARTUP_OUTPUT_PROBLEM,))
+
+    def test_a_malformed_request_is_refused_before_any_call(self) -> None:
+        local = es.Site(site_id="local", executes=("cpu",))
+        with self.h.env():
+            with self.assertRaises(ValueError):
+                rx.probe_site(local, ("sh",))
+            for bad in ("a b", "$(x)", "-v", "../sh", ""):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    rx.probe_site(self.h.site, (bad,))
+        self.assertEqual(self.h.calls(), [])
 
 
 if __name__ == "__main__":

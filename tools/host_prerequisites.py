@@ -166,6 +166,23 @@ def required_host_executables(
     return tuple(found)
 
 
+def required_site_executables(selection: dict[str, str]) -> tuple[str, ...]:
+    """The programs a remote execution site must have for a job of the resolved selection
+    (issue #293): what the job script itself needs beyond the POSIX utilities
+    (`remote_execution.REMOTE_EXECUTABLES`), and the build system, whose test target the quality
+    check runs there. Read out of the tables that run them, like `required_host_executables`."""
+    from tools.remote_execution import REMOTE_EXECUTABLES
+
+    server = _build_runtime_server()
+    build_system = selection["build_system"]
+    _require_implemented("build_system", build_system)
+    found: list[str] = []
+    for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system)):
+        if executable not in found:
+            found.append(executable)
+    return tuple(found)
+
+
 def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
     """What the program prints for its own version, whole, or `None` when it cannot be read.
 

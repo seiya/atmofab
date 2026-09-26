@@ -22,8 +22,9 @@ file an operator writes by hand. Values that reach a remote shell — `host`, `w
 server refuses in a value for the same reason (`_SHELL_ACTIVE_CHARS`), read from the server
 rather than copied.
 
-Nothing calls `load_sites` yet: the driver and the conductor are wired to it in a later pull
-request of issue #293, and until then this module changes no run.
+The driver (`tools/run_workflow.py`) calls `load_sites` once per run, refuses with
+`site_violations`, and hands the resolved `Site` to the conductor, whose `Validate.execute` runs at
+it (`docs/ORCHESTRATION.md` §Execution sites).
 """
 
 from __future__ import annotations

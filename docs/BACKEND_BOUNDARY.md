@@ -169,7 +169,13 @@ together with the bundle's `target_lowering_plan.parallelization`.
     reaches `Validate`, and asks the parallel backend for `execution_env` then too; the launch
     itself goes through `tools/host_execution.py`, which asks the same two. So a registered
     hardware class with no `execution` is admitted for a run that stops at `Build` and refused
-    for one that runs the binary — building for a class needs no machine of that class.
+    for one that runs the binary — building for a class needs no machine of that class. Declaring
+    `execution` says the CODE exists (a package's `execution` names the probe that identifies the
+    class's device); whether a MACHINE exists is the execution site's second half, which the
+    operator's `sites.yaml` answers: the driver asks `tools/execution_sites.site_violations`, and
+    the launch seam (`tools/host_execution.launch_shape`) asks the site's `executes` again as its
+    backstop (issue #293). So `gpu` declares `execution`, and a
+    run of it reaches `Validate` only where a site executes it.
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
     allowlist, the compiler-driver families, the identifier grammar and the names the host gives
     a language's files are the language backend's `bundle_facts`, reached through
