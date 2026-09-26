@@ -8,7 +8,9 @@ entry per command. A remote site has no server: the host stages the files a job 
 ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh call, copies the
 job directory back with scp, and then writes the same log entries itself — through the server's
 own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
-§Execution sites).
+§Execution sites). An entry's `command` names each shipped file by its LOCAL source, because the
+post-execute gate binds `command[0]` to the node's own build `bin/`; the argv the site executed
+is the entry's `site.remote_command`.
 
 What the executor knows is a SEQUENCE of commands (`CommandSpec`), each an argv, a working
 directory, an environment override set and a timeout, and the files to ship. It does not know
@@ -494,7 +496,11 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
          timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
     # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
+    #    `command` names each shipped file by its LOCAL source, so the entry says which of this
+    #    host's artifacts ran — `_validate_run_program_inputs` binds `command[0]` to the node's
+    #    own build `bin/` — and `site.remote_command` is the argv as the site executed it.
     server = _server()
+    local_of = {f"{remote}/{rel}": str(src) for rel, src in request.ship.items()}
     results: list[dict[str, Any] | None] = []
     for c, status in zip(request.commands, statuses):
         if status is None:
@@ -502,7 +508,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
             continue
         rc, t0, t1 = status
         timed_out = rc in _TIMEOUT_CODES and t1 - t0 >= c.timeout_sec
-        argv = list(c.argv)
+        argv = [local_of.get(a, a) for a in c.argv]
         command_id = uuid.uuid4().hex
         result: dict[str, Any] = {
             "ok": rc == 0,
@@ -532,7 +538,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
             "return_code": result["return_code"],
             **({"error": result["error"]} if timed_out else {}),
             "site": {"site": site.site_id, "host": host, "scheduler": site.scheduler,
-                     "job_id": None, "remote_cwd": c.cwd},
+                     "job_id": None, "remote_cwd": c.cwd, "remote_command": list(c.argv)},
             **dict(request.attribution),
         }
         server._append_command_log(c.command_log_path, entry)

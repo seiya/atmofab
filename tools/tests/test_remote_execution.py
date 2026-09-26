@@ -248,8 +248,11 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(entry["command"], res["command"])
             self.assertEqual(entry["orchestration_id"], "orch_1")
             self.assertEqual(entry["agent_run_id"], "arid-1")
-            self.assertEqual(entry["site"], {"site": "box", "host": "box", "scheduler": "none",
-                                             "job_id": None, "remote_cwd": res["cwd"]})
+            self.assertEqual(entry["site"], {
+                "site": "box", "host": "box", "scheduler": "none", "job_id": None,
+                "remote_cwd": res["cwd"],
+                "remote_command": list(self.h.request().commands[
+                    ["run", "qc"].index(tag)].argv)})
             self.assertTrue(entry["started_at_utc"].endswith("Z"))
             self.assertGreaterEqual(entry["elapsed_ms"], 0)
             self.assertEqual(entry["elapsed_ms"] % 1000, 0)
@@ -276,6 +279,62 @@ class EndToEndTests(unittest.TestCase):
                 else:
                     self.assertEqual(args[:2], ["-q", "-r"])
                     self.assertEqual(args[2:n + 3], [*rx.SSH_OPTIONS, "--"])
+
+    def test_the_entry_names_each_shipped_file_by_its_local_source(self) -> None:
+        """What the post-execute gate binds: `command[0]` is the node's own built binary, not
+        its copy at the site, which the site record names instead."""
+        result = self.h.run(self.h.request())
+        (entry,) = self.h.log_entries("run")
+        self.assertEqual(entry["command"], [str(self.h.runner), "--cases", "c1"])
+        self.assertEqual(entry["executed_command"], f"{self.h.runner} --cases c1")
+        self.assertEqual(result.results[0]["command"], entry["command"])
+        self.assertEqual(entry["site"]["remote_command"],
+                         [f"{self.h.job}/bin/runner", "--cases", "c1"])
+        # A word that is no shipped file is left as it is.
+        (qc_entry,) = self.h.log_entries("qc")
+        self.assertEqual(qc_entry["command"], ["sh", "-c", "echo qc-ran; ls ../run"])
+
+    def test_the_post_execute_gate_accepts_the_entry_it_binds(self) -> None:
+        """The real `_validate_run_program_inputs` over a run entry this executor wrote, in a
+        synthetic tree where the shipped runner IS the node's build `bin/` file: no violation.
+        The same entry with its site argv as `command` is the mixed-build violation."""
+        import tools.validate_pipeline_semantics as vps
+
+        repo = self.h.root / "repo"
+        pipeline = repo / "workspace" / "pipelines" / "p"
+        bin_dir = pipeline / "binary" / "b1" / "bin"
+        bin_dir.mkdir(parents=True)
+        runner = bin_dir / "runner"
+        runner.write_text(_RUNNER)
+        runner.chmod(0o755)
+        ir = repo / "workspace" / "ir" / "n" / "spec.ir.yaml"
+        ir.parent.mkdir(parents=True)
+        ir.write_text("{}\n")
+        node_dir = pipeline / "runs" / "r1" / "n"
+        log = node_dir / "command_log.jsonl"
+        run = rx.CommandSpec(
+            tag="run", tool_name="run_program",
+            argv=(f"{self.h.job}/bin/runner", "--cases", f"{self.h.job}/ir/spec.ir.yaml", "c1"),
+            cwd=f"{self.h.job}/run", env={}, timeout_sec=60, command_log_path=log,
+            capture_limit=120000)
+        result = self.h.run(self.h.request(
+            run, ship={"bin/runner": runner, "ir/spec.ir.yaml": ir}))
+        command_id = result.results[0]["command_id"]
+        (node_dir / "trial_meta.json").write_text(json.dumps({
+            "source_binary_id": "b1",
+            "source_command_ref": [{"command_id": command_id,
+                                    "command_log_ref": log.relative_to(repo).as_posix()}]}))
+        execution = vps.NodeExecution(node_key="n", node_dir=node_dir, exec_dir=node_dir,
+                                      pipeline_dir=pipeline)
+        violations: list[str] = []
+        vps._validate_run_program_inputs(repo, execution, violations)
+        self.assertEqual(violations, [])
+        entry = json.loads(log.read_text())
+        entry["command"] = entry["site"]["remote_command"]
+        log.write_text(json.dumps(entry) + "\n")
+        vps._validate_run_program_inputs(repo, execution, violations)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("Mixed-build attribution", violations[0])
 
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""
