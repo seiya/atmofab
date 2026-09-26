@@ -301,7 +301,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_includes_the_two_headers_and_the_standard_library_only(self) -> None:
         includes = re.findall(r'^#include (.*)$', self.text, re.MULTILINE)
         self.assertEqual(['"harness_cpp_gpu_model.cuh"', f'"{RANK_SID}_checks.cuh"', "<chrono>",
-                          "<cstddef>", "<cstdlib>", "<iostream>", "<string>", "<type_traits>",
+                          "<cstddef>", "<cstdio>", "<cstdlib>", "<iostream>", "<string>", "<type_traits>",
                           "<vector>"], includes)
         self.assertIn("int main(int argc, char** argv) {", self.text)
 
@@ -624,6 +624,33 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertEqual({"case_id": "c1_xfail", "target": "gpu", "steps": 4,
                               "cells_updated": 16, "walltime_positive": True, "mpi_ranks": 1,
                               "threads_per_rank": 3, "gpu_devices": 1}, perf)
+
+    def test_no_leaf_code_runs_after_the_harness_writes(self) -> None:
+        """Round 3 of this change's review: a leaf source's namespace-scope destructor and exit
+        handler ran after `main` returned — after the harness wrote the outputs — and rewrote
+        them. The runner ends every exit with `std::_Exit`, so neither runs. (The source gates
+        refuse the file I/O this uses too; this pins the runner's half on its own.)"""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._tree(d, _smoke_ir(), RANK_SID)
+            checks = d / f"{RANK_SID}_checks.cu"
+            checks.write_text(checks.read_text() + textwrap.dedent("""\
+                #include <cstdlib>
+                #include <fstream>
+                namespace {
+                void forge() { std::ofstream("diagnostics.json") << "{\\"forged\\": 1}"; }
+                struct Forger {
+                  Forger() { std::atexit(forge); }
+                  ~Forger() { forge(); }
+                } forger;
+                }  // namespace
+                """))
+            self._build(d, RANK_SID)
+            r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0", "c1_xfail"], cwd=d,
+                               capture_output=True, text=True, check=False)
+            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+            self.assertNotIn("forged", (d / "diagnostics.json").read_text())
+            self.assertIn("per_case", json.loads((d / "diagnostics.json").read_text()))
 
     def test_an_unbound_array_stops_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as td:

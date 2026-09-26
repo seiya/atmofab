@@ -337,6 +337,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("")
     a("#include <chrono>")
     a("#include <cstddef>")
+    a("#include <cstdio>")
     a("#include <cstdlib>")
     a("#include <iostream>")
     a("#include <string>")
@@ -365,6 +366,20 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f"using CaseResult = hm::{_hname(harness_spec_id, 'h_case_result')};")
     a(f"using MbEntry = hm::{_hname(harness_spec_id, 'h_mb_entry')};")
     a("")
+    # Every exit of the program, the successful one included, goes through `finish`, which
+    # flushes and ends the process with `std::_Exit`: no namespace-scope destructor and no exit
+    # handler of the leaf's sources runs after the harness has written the run's outputs (round
+    # 3 of this change's review — a C++ program otherwise runs them after `main` returns, and a
+    # model source's destructor rewrote `diagnostics.json` there with every gate green).
+    a("// Every exit ends here: flush, then end the process with no destructor or exit handler of")
+    a("// the node's sources running after the harness has written the run's outputs.")
+    a("[[noreturn]] void finish(int code) {")
+    a("  std::cout.flush();")
+    a("  std::cerr.flush();")
+    a("  std::fflush(nullptr);")
+    a("  std::_Exit(code);")
+    a("}")
+    a("")
     if array_bound:
         a("// Stop the run when a bound array does not hold its declared data at a capture point.")
         a("void require_bound(bool is_bound, const std::string& name, const std::string& cid) {")
@@ -373,7 +388,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("  }")
         a('  std::cerr << "error: bound state " << name << " is not allocated at capture for case "')
         a("            << cid << std::endl;")
-        a("  std::exit(1);")
+        a("  finish(1);")
         a("}")
         a("")
     # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
@@ -432,7 +447,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    }")
     a("  }")
     a('  std::cerr << "error: raw variable " << name << " absent from snapshot" << std::endl;')
-    a("  std::exit(1);")
+    a("  finish(1);")
     a("}")
     a("")
     a("}  // namespace")
@@ -449,7 +464,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f"  {H('parse_cases')}(tokens, static_cast<int>(tokens.size()), case_ids, ncases, ok);")
     a("  if (!ok || ncases < 1 || static_cast<std::size_t>(ncases) > case_ids.size()) {")
     a('    std::cerr << "error: --cases <spec> <case_id>... required" << std::endl;')
-    a("    return 1;")
+    a("    finish(1);")
     a("  }")
     a("")
     a("  std::vector<CaseResult> results;")
@@ -539,7 +554,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a(f'    const int tci = find_case_index(case_ids, ncases, "{tlit}");')
         a("    if (tci < 0) {")
         a(f'      std::cerr << "error: target case not run: " << "{tlit}" << std::endl;')
-        a("      return 1;")
+        a("      finish(1);")
         a("    }")
         a("    MbEntry entry{};")
         a(f'    entry.test_id = "{_clit(tid)}";')
@@ -556,7 +571,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f'  {H("write_perf")}(case_ids[static_cast<std::size_t>(ncases - 1)], '
       f'"{_clit(target_class)}", steps_total,')
     a(f"      cells_total, walltime, {ranks}, {threads}, {devices});")
-    a("  return 0;")
+    a("  finish(0);")
     a("}")
     return "\n".join(lines) + "\n"
 
