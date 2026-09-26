@@ -23,8 +23,9 @@ conductor's layout it asks for is the directories to create before the first com
 Every way the evidence could be incomplete or not this job's is a refusal
 (`RemoteExecutionError`), never a default:
 
-- the job directory is created with `mkdir` and no `-p`, so a directory that already exists —
-  a stale job's output — is refused rather than read;
+- a job directory that already exists — a stale job's output — is refused rather than read: the
+  first ssh call checks for it and names it, and creates it with `mkdir` and no `-p`, so one that
+  appears between the check and the creation is refused too (that race is not pinned);
 - the job script is the ssh call's command string, held in the shell's memory, never a file: a
   file is one a running command can rewrite, and bash executes a rewritten script file's rest;
 - a command's exit status and times travel on the job script's own stdout, one status line per
@@ -335,7 +336,10 @@ def render_job_script(request: JobRequest) -> str:
         base = f"{ctl}/{c.tag}"
         lines += [
             'if [ "$rc" = 0 ]; then',
-            f"  p=$(command -v {q(c.argv[0])}) || fail 4 {q(f'{c.argv[0]} is missing')}",
+            # bash and zsh answer `command -v` with 1 for a path that is not executable, dash
+            # answers it with the path; the case below catches the second.
+            (f"  p=$(command -v {q(c.argv[0])}) || fail 4 "
+             f"{q(f'{c.argv[0]} is missing or not executable')}"),
             (f'  case "$p" in /*) [ -f "$p" ] && [ -x "$p" ] || fail 4 '
              f"{q(f'{c.argv[0]} is not an executable file')};; esac"),
             "  t0=$(date +%s) || fail 6 'date failed'",
@@ -482,7 +486,8 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
         if p.exists():
             raise ValueError(f"{p} already exists; a job owns a fresh local_tmp")
 
-    # 1. The job directory, fresh: `mkdir` without `-p` refuses a directory that is already there.
+    # 1. The job directory, fresh: an existing one is named and refused; `mkdir` without `-p` also
+    #    refuses one that appeared after the check (not pinned: only a race reaches it).
     parent = remote.rsplit("/", 1)[0]
     _ssh(host, f"if [ -e {q(remote)} ]; then echo {q(f'a stale job directory exists: {remote}')}"
                f" >&2; exit 1; fi; mkdir -p {q(parent)} && mkdir {q(remote)}",

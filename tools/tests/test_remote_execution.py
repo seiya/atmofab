@@ -569,6 +569,8 @@ class RefusalTests(unittest.TestCase):
                     h.run(h.request(),
                           SHIM_SSH_SUB=json.dumps([rf"^atmofab-status {tag} .*$", ""]))
                 self.assertEqual(h.log_entries("run"), [])
+                # Refused in step 5, before the removal: the message's "left" is true.
+                self.assertTrue(Path(h.job).is_dir())
 
     def test_a_command_that_ended_before_it_started_is_refused(self) -> None:
         self._refused("ended before it started", SHIM_SSH_SUB=json.dumps(
@@ -669,10 +671,21 @@ class RefusalTests(unittest.TestCase):
         rewriter = self.h.local / "rewriter"
         rewriter.write_text(textwrap.dedent('''\
             #!/usr/bin/env python3
-            import os
-            for path in ("../ctl/job.sh",):
-                if os.path.exists(path):
+            import os, sys
+            # The output files the skipped command would have written, so that their absence
+            # is not what refuses the job.
+            for name in ("qc.stdout", "qc.stderr"):
+                open(os.path.join("..", "ctl", name), "w").close()
+            # Wherever the script might sit as a file under the job directory (not this file).
+            me = os.path.realpath(sys.argv[0])
+            paths = [os.path.join(d, f) for d, _, fs in os.walk("..") for f in fs
+                     if os.path.realpath(os.path.join(d, f)) != me]
+            for path in paths:
+                try:
                     text = open(path).read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if text.count('if [ "$rc" = 0 ]') >= 2:
                     first = text.index('if [ "$rc" = 0 ]')
                     i = text.index('if [ "$rc" = 0 ]', first + 1)
                     new = 'echo "atmofab-status qc 0 1 1"; exit 0\\n'
@@ -730,7 +743,7 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_program_the_site_cannot_find_is_the_hosts_failure(self) -> None:
         missing = self.h.command("run", ("no-such-program-zz",))
-        self._refused("run the job script: ssh exited 4.*no-such-program-zz is missing",
+        self._refused("run the job script: ssh exited 4.*no-such-program-zz is missing or not executable",
                       self.h.request(missing))
 
     def test_a_shipped_program_the_site_cannot_execute_is_the_hosts_failure(self) -> None:
@@ -898,6 +911,7 @@ class RequestValidationTests(unittest.TestCase):
                             ({"argv": ()}, "empty argv"),
                             ({"argv": ("bin/runner",)}, "relative path"),
                             ({"argv": ("./runner",)}, "relative path"),
+                            ({"record_cwd": "local/run"}, "not an absolute local path"),
                             ({"timeout_sec": 0}, "timeout_sec"),
                             ({"timeout_sec": True}, "timeout_sec")):
             with self.subTest(kw=kw):
