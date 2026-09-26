@@ -80,7 +80,7 @@ value is one more output, whether or not its `return` names anything.
   Fortran binding (an inert call's inputs). An actual's names are its storage (`u`, `&u`,
   `u[i]`, `u.data()`), else every plain name it mentions (a pointer, `as_view(u)`, `w.flux`).
   The closure runs backward from the outputs over assignments `lhs = rhs` (a target's base name,
-  `u[i]`, `u.data[i]` and `v.data` included; a compound `op=` also reads `lhs`), over a view or
+  `u[i]`, `u.data[i]` and `v.data` included), over a view or
   pointer made to point into another name's storage (`View<...> v{u.data(), ...}`,
   `double* p = u.data();` make `u` take `v` / `p`), and — past the Fortran binding, which follows
   no call — over calls whose parameter directions the types state: a function or kernel the model

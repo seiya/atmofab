@@ -747,8 +747,9 @@ def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
     """`(target name, source identifiers, offset, right-hand text, not an assignment statement)`
     per data edge of `body`.
 
-    An assignment `lhs op= rhs;` makes every `rhs` identifier a source of `lhs` — and `lhs` itself
-    for a compound `op=`, which reads the previous value. A declaration's initializer carries data
+    An assignment `lhs op= rhs;` makes every `rhs` identifier a source of `lhs` (a compound `op=`
+    also reads `lhs`, an edge the backward closure gains nothing from). A declaration's
+    initializer carries data
     the same way, and is flagged: the dataflow gate's "assigned before the call" clause reads
     assignment STATEMENTS only, as the Fortran binding's does (its pattern matches no
     declaration). An ALIAS record is added for every name that is made to point into another's
@@ -758,7 +759,7 @@ def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
     records: list[tuple[str, set[str], int, str, bool]] = []
     for m in _ASSIGNMENT_RE.finditer(body):
         lhs, rhs = m.group("lhs"), m.group("rhs")
-        sources = _identifiers(rhs) | ({lhs} if m.group("op") != "=" else set())
+        sources = _identifiers(rhs)
         pointees = _pointee_names(rhs) - {lhs}
         # Making `lhs` point into another's storage sets up where a call will WRITE, not a value
         # the call reads, so it is not an assignment statement for the "assigned before" clause.
