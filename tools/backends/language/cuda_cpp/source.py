@@ -535,7 +535,10 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
     return [name for name in names if name not in defined]
 
 
-_HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\s*::|\bharness_\w+__\w+")
+# Any mention of a harness's namespace or operations in code — a qualified name, a
+# `namespace h = harness_<x>_model;` alias, a `using` of it (round 1 of this change's review: the
+# alias passed a `::`-anchored pattern).
+_HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\b|\bharness_\w+__\w+")
 
 #: What opens, writes, renames or deletes a file, or runs a command, in a checks source — every
 #: file-stream class (`ofstream`, `fstream`, `basic_ofstream<char>`, the wide ones), the C stdio

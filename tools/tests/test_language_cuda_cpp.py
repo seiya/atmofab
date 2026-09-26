@@ -878,6 +878,10 @@ class PhysicsGateTests(unittest.TestCase):
             out = cpp_source.checks_harness_isolation_violations(
                 Path("c.cu"), _CHECKS_SOURCE, [model])
             self.assertTrue(any(str(model) in v for v in out), out)
+            model.write_text("namespace h = harness_cpp_gpu_model;\n")
+            out = cpp_source.checks_harness_isolation_violations(
+                Path("c.cu"), _CHECKS_SOURCE, [model])
+            self.assertTrue(any(str(model) in v for v in out), out)
             model.write_text('// #include "harness_cpp_gpu_model.cuh"\n'
                              'const char* m = "harness_cpp_gpu_model::";\n')
             self.assertEqual([], cpp_source.checks_harness_isolation_violations(
