@@ -82,7 +82,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 | `compile_project` | build through a standard build tool that handles dependencies (`make` by default for the `fortran` / `c` families) |
 | `run_program` | run the built `runner` |
 | `run_quality_checks` | run a quality-check `preset` |
-| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `mixed`) |
+| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `nvcc` / `mixed`) |
 | `run_syntax_check` | run a compiler front end in syntax-only mode, producing no build artifacts |
 | `detect_build_system` | recommend a build system from the marker files present (standalone use only) |
 
