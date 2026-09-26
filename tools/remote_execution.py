@@ -72,9 +72,11 @@ been read (a missing output file is lost evidence, refused), so a refused job le
 behind it.
 
 `Validate.execute` calls `execute_job` for a target the operator's `sites.yaml` maps to a remote
-site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` once at launch, so a
-site that cannot be reached, lacks a program the job needs or is another machine is refused before
-anything is billed (`tools/run_workflow.py`). Only `scheduler: none` is implemented — the job
+site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` before a node that
+will reach `Validate` runs — once at launch, and again before each dependency member of a
+`--with-deps` run — so a site that cannot be reached, lacks a program the job needs, cannot hold
+or run it, or is another machine is refused before that node is billed (`tools/run_workflow.py`
+`_sites_rejection`). Only `scheduler: none` is implemented — the job
 script runs in the foreground of the ssh call; a site whose scheduler is anything else is refused
 here until a scheduler backend implements `job_submit`.
 """
@@ -480,6 +482,7 @@ PROBE_MARKER = "atmofab-probe"
 #: the test fails; the job script refuses the same two conditions, later.
 _PROBE_CHECKS: tuple[tuple[str, str], ...] = (
     ("workdir", "the workdir cannot be made or is not writable"),
+    ("workdir_exec", "a program in the workdir cannot be executed (a noexec mount)"),
     ("timeout_kill", "its timeout does not take -k"),
 )
 
@@ -508,11 +511,19 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
             raise ValueError(f"program {exe!r} is not a plain name")
     q = shlex.quote
     workdir = str(site.workdir)
+    # The shipped runner is executed from beneath the workdir, so a file there must run: one is
+    # made, run and removed (the job script refuses a program that is not an executable file).
+    exe = f"{workdir}/.atmofab-probe-$$"
     tests = {
         "workdir": f"mkdir -p {q(workdir)} 2>/dev/null && [ -d {q(workdir)} ] && [ -w {q(workdir)} ]",
+        "workdir_exec": (f"{{ printf '#!/bin/sh\\nexit 0\\n' > \"{exe}\" && chmod +x \"{exe}\" && "
+                         f"\"{exe}\"; }} >/dev/null 2>&1; r=$?; rm -f \"{exe}\"; [ \"$r\" = 0 ]"),
         "timeout_kill": "timeout -k 1 5 sh -c : >/dev/null 2>&1",
     }
+    # The first line printed is empty, as the job script's is, so that a login banner printed
+    # without a newline ends there rather than gluing onto the first probe line.
     script = "\n".join([
+        "echo",
         *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
           for exe in executables),
         *(f"{tests[name]} || echo {PROBE_MARKER} problem {name}" for name, _ in _PROBE_CHECKS),

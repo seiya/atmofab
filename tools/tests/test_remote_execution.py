@@ -1030,6 +1030,7 @@ class ProbeSiteTests(unittest.TestCase):
             got = rx.probe_site(site, ("sh",))
         self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(), problems=(
             "the workdir cannot be made or is not writable",
+            "a program in the workdir cannot be executed (a noexec mount)",
             "its timeout does not take -k")))
         # A workdir that does not exist yet is made, as the first job would make it.
         fresh = self.h.root / "remote" / "fresh" / "jobs"
@@ -1038,6 +1039,49 @@ class ProbeSiteTests(unittest.TestCase):
                                        workdir=str(fresh)), ("sh",))
         self.assertEqual(ok.problems, ())
         self.assertTrue(fresh.is_dir())
+
+    def test_an_existing_workdir_that_cannot_be_written_is_named(self) -> None:
+        locked = self.h.root / "remote" / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            # The fixture's premise, asserted rather than assumed: a process that may write
+            # anywhere (root) would see this directory as writable.
+            self.assertFalse(os.access(locked, os.W_OK), "the fixture needs an unwritable dir")
+            with self.h.env():
+                got = rx.probe_site(es.Site(site_id="box", executes=("cpu",), host="box",
+                                            workdir=str(locked)), ("sh",))
+        finally:
+            locked.chmod(0o755)
+        self.assertIn("the workdir cannot be made or is not writable", got.problems)
+
+    def test_a_workdir_where_nothing_runs_is_named(self) -> None:
+        """A noexec mount, stood in for by a `chmod` that sets no mode: the probe's program is
+        then not executable, as it is not on a noexec mount; nothing is left behind."""
+        fake = self.h.root / "no_chmod"
+        fake.mkdir()
+        (fake / "chmod").write_text("#!/bin/sh\nexit 0\n")
+        (fake / "chmod").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.problems,
+                         ("a program in the workdir cannot be executed (a noexec mount)",))
+        self.assertEqual(list(self.h.workdir.iterdir()), [])
+        with self.h.env():
+            self.assertEqual(rx.probe_site(self.h.site, ("sh",)).problems, ())
+        self.assertEqual(list(self.h.workdir.iterdir()), [])
+
+    def test_a_login_banner_without_a_newline_does_not_hide_a_line(self) -> None:
+        """The probe's first line is empty, as the job script's is: a banner printed without a
+        newline glues onto it, not onto the first probe line."""
+        real = rx._ssh
+
+        def banner(*a, **k):
+            return "Last login: somewhere" + real(*a, **k)
+
+        with self.h.env(), mock.patch.object(rx, "_ssh", side_effect=banner):
+            got = rx.probe_site(self.h.site, ("zz-no-such-tool", "sh"))
+        self.assertEqual(got.missing, ("zz-no-such-tool",))
 
     def test_a_login_banner_is_not_read(self) -> None:
         with mock.patch.object(rx, "_ssh", return_value=(
