@@ -1022,6 +1022,19 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual([c[0] for c in self.h.calls()], ["ssh", "scp", "ssh", "srun", "scp", "ssh"])
         self.assertFalse(Path(self.h.job).exists())
 
+    def test_a_directive_reaches_the_scheduler_as_written(self) -> None:
+        """The loader admits a directive's shell-active characters (a scheduler's own syntax),
+        because each word reaches the site's shell quoted: srun receives it byte for byte, and
+        nothing in it runs."""
+        planted = self.h.root / "ran"
+        directives = ("--constraint=a|b", "--nodelist=n[01-02]",
+                      f"--comment=$(touch${{IFS}}{planted})", f"--x=';touch${{IFS}}{planted};'&")
+        h = self._slurm(self.h, scheduler_directives=directives)
+        h.run(h.request())
+        (srun,) = [c for c in h.calls() if c[0] == "srun"]
+        self.assertEqual(tuple(srun[2:6]), directives)
+        self.assertFalse(planted.exists())
+
     def test_the_queue_timeout_defaults_and_bounds_the_call(self) -> None:
         h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)), queue_timeout_sec=None)
         request = h.request(platform_probe=("true",))
