@@ -633,14 +633,18 @@ PINNED: dict[str, str] = {
     # reserved-identifier and line-splice rules), and again in the same round for three more
     # `cuda_cpp`-only texts (§5's top-level-source rule, the verify fragment's reading of H5's
     # "declared bounds", the runner-output binding's non-finite item), on the same ground.
-    # Re-pinned in place by R4-b PR-6 (issue #289), on the same ground: the `cuda_cpp` physics
-    # fragments (`generate_generate.txt`, `generate_verify.txt`), the `cuda_cpp` checks-ABI
-    # binding's §1-§4, and the checks-ABI names / status width becoming per-language members
-    # (the second runner renderer). Every `pure_*.txt` composed for `fortran`, and the Fortran
-    # binding slices, runner-output binding and lint rule set, are byte-identical to origin/main
-    # 4f81d082's (measured by composing each through `_compose_language_fragments` in both
-    # trees); a `cuda_cpp` physics prompt had never been composed before this change.
-    "pure-50": "9389fecc05fbcc776068bc92c944e287cd8603e60bdf7cad727362a170442654",
+    # Re-pinned in place by R4-b PR-6 (issue #289): the `cuda_cpp` physics fragments
+    # (`generate_generate.txt`, `generate_verify.txt`), the `cuda_cpp` checks-ABI binding's
+    # §1-§4, and the checks-ABI names / status width becoming per-language members (the second
+    # runner renderer). Every prompt a run has composed under `pure-50` is byte-identical to
+    # origin/main 4f81d082's, measured by composing in both trees: every `pure_*.txt` for
+    # `fortran` with the Fortran binding slices, runner-output binding and lint rule set, and
+    # the two `harness` templates for `cuda_cpp` (the certified `harness_cpp_gpu` producer's)
+    # with its §5 gate guards, runner-output binding and lint rule set. The binding's §1-§4 reach
+    # only a `cuda_cpp` physics reviewer, and no `cuda_cpp` physics prompt had been composed.
+    # (A round-1 review found §5 changed by one sentence in an earlier version of this entry's
+    # commit, which this claim would then not have held for; the sentence was reverted.)
+    "pure-50": "680ccbf851be1c9818b58984c76703515e8e1e213f2e03f12674c836e931dbae",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),

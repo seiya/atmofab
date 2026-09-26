@@ -108,8 +108,7 @@ unnamed namespace keeps internal to it.
 ## 5. CUDA C++ legality and gate guards
 
 This section applies to every leaf-authored CUDA C++ source of any `Generate` node (the model,
-the checks source of a physics node, and the hand-authored runner of an `infrastructure` node's
-self-test).
+and the hand-authored runner of an `infrastructure` node's self-test).
 
 - **The host declares the published surface; the model DEFINES it.** Before the gates run, the
   host renders `<spec_id>_model.cuh` beside the sources from the IR's `public_api`: inside
