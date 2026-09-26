@@ -683,7 +683,8 @@ _OUT_VIEW_RE = re.compile(r"^(?:atmofab::)?View<(?P<element>.+),\d+>$")
 _ARRAY_TYPE_RE = re.compile(r"\b(?:View|Array|vector)\s*<|\*$")
 _ASSIGNMENT_RE = re.compile(
     r"(?<![\w.>:])(?P<lhs>[A-Za-z_]\w*)\s*"
-    r"(?P<index>(?:\[[^\];]*\]\s*|\.\s*data\s*(?:\(\s*\))?\s*\[[^\];]*\]\s*)*)"
+    r"(?P<index>(?:\[[^\];]*\]\s*|\.\s*data\s*(?:\(\s*\))?\s*\[[^\];]*\]\s*"
+    r"|\.\s*data\s*(?=[-+*/%&|^]?=(?!=)))*)"
     r"(?P<op>[-+*/%&|^]?=)(?!=)(?P<rhs>[^;]*);")
 _RETURN_RE = re.compile(r"\breturn\b(?P<expr>[^;]*);")
 _LOOP_RE = re.compile(r"\bfor\s*\(|\bwhile\s*\(|<<<")
@@ -743,18 +744,82 @@ def _is_declaration(body: str, lhs_at: int) -> bool:
 
 
 def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
-    """`(target name, right-hand identifiers, offset, right-hand text, is a declaration)` per
-    assignment of `body`, plus one ALIAS record per view declared over another name's storage
-    (`View<double, 1> v{u.data(), ...}`): a write through `v` is a write to `u`, so `u` takes `v`
-    as a source. A declaration's initializer carries data like any assignment; it is flagged
-    because the dataflow gate's "assigned before the call" clause reads assignment STATEMENTS
-    only, as the Fortran binding's does (its assignment pattern does not match a declaration)."""
-    records = [(m.group("lhs"), _identifiers(m.group("rhs")), m.start(), m.group("rhs").strip(),
-                _is_declaration(body, m.start()))
-               for m in _ASSIGNMENT_RE.finditer(body)]
+    """`(target name, source identifiers, offset, right-hand text, not an assignment statement)`
+    per data edge of `body`.
+
+    An assignment `lhs op= rhs;` makes every `rhs` identifier a source of `lhs` — and `lhs` itself
+    for a compound `op=`, which reads the previous value. A declaration's initializer carries data
+    the same way, and is flagged: the dataflow gate's "assigned before the call" clause reads
+    assignment STATEMENTS only, as the Fortran binding's does (its pattern matches no
+    declaration). An ALIAS record is added for every name that is made to point into another's
+    storage — a view or pointer built over `u.data()` / `&u[...]` (`View<double, 1> v{u.data(),
+    ...}`, `auto v = View<...>{u.data(), ...}`, `double* p = u.data();`, `v.data = u.data();`):
+    a write through the alias is a write to `u`, so `u` takes the alias as a source."""
+    records: list[tuple[str, set[str], int, str, bool]] = []
+    for m in _ASSIGNMENT_RE.finditer(body):
+        lhs, rhs = m.group("lhs"), m.group("rhs")
+        sources = _identifiers(rhs) | ({lhs} if m.group("op") != "=" else set())
+        pointees = _pointee_names(rhs) - {lhs}
+        # Making `lhs` point into another's storage sets up where a call will WRITE, not a value
+        # the call reads, so it is not an assignment statement for the "assigned before" clause.
+        records.append((lhs, sources, m.start(), rhs.strip(),
+                        bool(pointees) or _is_declaration(body, m.start())))
+        for storage in pointees:
+            records.append((storage, {lhs}, m.start(), "", True))
     for m in _VIEW_DECLARATION_RE.finditer(body):
-        for storage in _STORAGE_NAME_RE.findall(m.group("init")):
+        for storage in _pointee_names(m.group("init")):
             records.append((storage, {m.group("name")}, m.start(), "", True))
+    return records
+
+
+_POINTEE_RE = re.compile(r"(?<![\w.>:])([A-Za-z_]\w*)\s*\.\s*data\b|(?<![\w)\]&])&\s*([A-Za-z_]\w*)")
+
+
+def _pointee_names(expr: str) -> set[str]:
+    """The names whose storage `expr` POINTS into — `u.data` / `u.data()`, `&u` / `&u[i]` — as
+    opposed to a value read out of it (`u[i]`), which aliases nothing."""
+    return {a or b for a, b in _POINTEE_RE.findall(expr)}
+
+
+def _storage_names(expr: str) -> set[str]:
+    """The names whose storage `expr` points into: `u.data`, `u[...]`, `&u`."""
+    return (set(_STORAGE_NAME_RE.findall(expr))
+            | set(re.findall(r"(?<![\w)\]&])&\s*([A-Za-z_]\w*)", expr)))
+
+
+#: Calls the dataflow closure follows although this file does not define them: the CUDA runtime's
+#: copies, `(destination, source, ...)`.
+_RUNTIME_COPIES: dict[str, list[bool]] = {
+    "cudaMemcpy": [True, False, False, False],
+    "cudaMemcpyAsync": [True, False, False, False, False],
+}
+_CALL_RE = re.compile(r"(?<![\w.>:])(?P<name>[A-Za-z_]\w*)\s*(?:<<<.*?>>>\s*)?\(", re.DOTALL)
+
+
+def _call_records(body: str, signatures: dict[str, list[bool]]) -> list[
+        tuple[str, set[str], int, str, bool]]:
+    """One data edge per output actual of each call to a callee whose parameter directions are
+    KNOWN — a function or kernel this file defines, a dependency operation (its header), a CUDA
+    runtime copy: the names the actual hands over take every identifier of the call's input
+    actuals as sources. C++ states each parameter's direction in its type (`is_output_parameter`),
+    which is what lets the C++ binding cross a call where the Fortran binding's gate does not. A
+    call to anything else — a standard-library function, a function of another file — is not
+    followed. Flagged as not an assignment statement, so a call's output is never "assigned
+    before" a later call."""
+    records: list[tuple[str, set[str], int, str, bool]] = []
+    for call in _CALL_RE.finditer(body):
+        out_at = signatures.get(call.group("name"))
+        if out_at is None:
+            continue
+        args = _call_arguments(body, call.end() - 1)
+        inputs: set[str] = set()
+        for index, arg in enumerate(args):
+            if not (index < len(out_at) and out_at[index]):
+                inputs |= _identifiers(arg)
+        for index, arg in enumerate(args):
+            if index < len(out_at) and out_at[index]:
+                for name in _actual_names(arg):
+                    records.append((name, set(inputs), call.start(), "", True))
     return records
 
 
@@ -765,15 +830,26 @@ def _call_arguments(body: str, open_at: int) -> list[str]:
     return [arg.strip() for arg in cpp_decls.split_top_level(inside)] if inside.strip() else []
 
 
+_PLAIN_NAME_RE = re.compile(r"(?<![\w.>:])([A-Za-z_]\w*)\b(?!\s*(?:::|<|\())")
+
+
 def _actual_names(arg: str) -> set[str]:
-    """The names whose storage an actual argument hands the callee: the bare name, `&name`, and
-    every name whose storage the expression indexes or views (`u[i]`, `u.data()`, a view built
-    over `u.data()`). Any other expression hands over no storage and yields nothing."""
+    """The names whose storage an actual argument hands the callee: the bare name or `&name`;
+    else every name whose storage the expression indexes or views (`u[i]`, `u.data()`, a view
+    built over `u.data()`); else — the storage is reached some other way (`View<...>{p, ...}`
+    over a pointer, `as_view(u)`, `w.flux.data()`) — every plain name the expression mentions,
+    a type, a namespace and a called function excluded. The last clause exists because an actual
+    whose storage name could not be read made the call's candidates EMPTY, which passed the gate
+    with the result discarded (round 2 of this change's review)."""
     arg = arg.strip()
     bare = re.fullmatch(r"&?\s*([A-Za-z_]\w*)", arg)
     if bare is not None:
         return {bare.group(1)}
-    return set(_STORAGE_NAME_RE.findall(arg))
+    storage = _storage_names(arg)
+    if storage:
+        return storage
+    return {name for name in _PLAIN_NAME_RE.findall(arg)
+            if name not in cpp_signatures.CPP_KEYWORDS and name not in cpp_decls._TYPE_WORDS}
 
 
 def _dependency_out_positions(model_file: Path, spec_id: str) -> dict[str, list[bool]] | None:
@@ -811,12 +887,17 @@ def _validate_problem_literal_outputs(model_file: Path, functions: list[cpp_decl
         if not outs:
             continue
         inputs = {name for _ptype, name in fn.params if name}
-        whole = [(m.group("lhs"), m.group("rhs")) for m in _ASSIGNMENT_RE.finditer(fn.body)
+        whole = [(m.group("lhs"), m.group("rhs"), m.group("op"))
+                 for m in _ASSIGNMENT_RE.finditer(fn.body)
                  if m.group("lhs") in outs and not m.group("index").strip()]
-        if {lhs for lhs, _rhs in whole} != outs:
+        if {lhs for lhs, _rhs, _op in whole} != outs:
             continue
-        all_literal = all(_is_literal_like(rhs) for _lhs, rhs in whole)
-        input_dependent = any(_identifiers(rhs) & (inputs - {lhs}) for lhs, rhs in whole)
+        all_literal = all(_is_literal_like(rhs) for _lhs, rhs, _op in whole)
+        # A compound assignment (`x += 1.0;`) reads the output's previous value — an input to the
+        # function, since an output parameter is a reference the caller holds (Codex, round 2 of
+        # this change's review: `x += 1.0` was refused as literal-only).
+        input_dependent = any(op != "=" or _identifiers(rhs) & (inputs - {lhs})
+                              for lhs, rhs, op in whole)
         if all_literal and not input_dependent:
             violations.append(
                 f"{model_file}: function {fn.name} has literal-only assignments for all output "
@@ -846,10 +927,16 @@ def _validate_problem_dependency_dataflow(
     A function returning a value always takes part: its result is an output even when no
     identifier reaches its `return`, as the Fortran binding's result variable always is. The
     closure then runs backward from the function's outputs (and every identifier it returns)
-    over assignments `lhs = rhs` — each `rhs` identifier is a source of `lhs` — and over view
-    aliases (`_assignments`). Assignments only: whether a value passed to another call is read or
-    written cannot be decided here, which is the Fortran gate's stated limit too; the semantic
-    authority is `Generate.verify`."""
+    over assignments `lhs = rhs` — each `rhs` identifier is a source of `lhs` — over view and
+    pointer aliases (`_assignments`), and over calls whose parameter directions are known
+    (`_call_records`: this file's functions and kernels, the dependency operations, the CUDA
+    runtime copies). That last is where the C++ binding goes past the Fortran one, which follows
+    no call because it cannot tell which argument a call writes; C++ states it in the type, and a
+    device lowering (copy to the device, a kernel, copy back) has no assignment for the gate to
+    follow otherwise (round 2 of this change's review). A call to anything else is not followed;
+    the semantic authority is `Generate.verify`. An actual whose storage the call writes is read
+    by `_actual_names`, which falls back to every plain name the actual mentions, so an output
+    reached through a pointer, a helper or a member still yields a candidate."""
     if not dep_spec_ids:
         return
     positions: dict[str, list[bool]] = {}
@@ -859,6 +946,9 @@ def _validate_problem_dependency_dataflow(
             positions.update(read)
     constants = {m.group("name") for m in _CONST_DECLARATION_RE.finditer(code)}
     function_names = {fn.name for fn in functions}
+    signatures = {**{fn.name: [is_output_parameter(ptype) for ptype, _n in fn.params]
+                     for fn in functions},
+                  **positions, **_RUNTIME_COPIES}
     call_re = re.compile(
         r"\b(?P<name>(?:" + "|".join(re.escape(s) for s in dep_spec_ids) + r")__\w+)\s*\(")
     for fn in functions:
@@ -869,7 +959,7 @@ def _validate_problem_dependency_dataflow(
         # is always an output. Skipped only when nothing leaves the function.
         if not outs and fn.returns == "void":
             continue
-        records = _assignments(fn.body)
+        records = _assignments(fn.body) + _call_records(fn.body, signatures)
         candidates: set[str] = set()
         for call in call_re.finditer(fn.body):
             args = _call_arguments(fn.body, call.end() - 1)

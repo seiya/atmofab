@@ -987,6 +987,7 @@ class PhysicsGateTests(unittest.TestCase):
             "boolean literal": ("void p__f(bool& ok, double& a, double x) "
                                 "{ ok = true; a = 2.0; (void)x; }", True),
             "suffixed literal": ("void p__f(float& a, double x) { a = 0.5f; (void)x; }", True),
+            "compound update": ("void p__f(double& x) { x += 1.0; }", False),
         }
         for label, (body, refused) in cases.items():
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
@@ -1025,6 +1026,84 @@ class PhysicsGateTests(unittest.TestCase):
                 self.assertEqual([f"{model}: function p__run does not propagate dependency "
                                   "operation outputs to its output dataflow "
                                   "(candidates=['flux'])"], self._gates(model, ["dep"]))
+
+    # Round 2 of this change's review: shapes of a dependency output the closure must follow.
+    # Each is written twice — CONSUMED (the flux reaches `u_new`: the gate passes) and DISCARDED
+    # (`u_new` copies `u`: the gate refuses) — so a row is red if the gate is blind in either
+    # direction. `{flux}` in the templates is where the call's output actual goes.
+    _CONSUME = ("  for (long i = 0; i < 4; ++i) {\n"
+                "    u_new.data[i] = u.data[i] + dt * flux[static_cast<std::size_t>(i)];\n  }\n")
+    _DISCARD = ("  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i];\n  }\n")
+    _SHAPES = {
+        "pointer": ("  double* fp = flux.data();\n"
+                    "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n"),
+        "auto view": ("  auto fv = atmofab::View<double, 1>{flux.data(), {4}};\n"
+                      "  dep_model::dep__flux(u, fv, dt);\n"),
+        "copy-initialized view": (
+            "  atmofab::View<double, 1> fv = atmofab::View<double, 1>{flux.data(), {4}};\n"
+            "  dep_model::dep__flux(u, fv, dt);\n"),
+        "member-assigned view": ("  atmofab::View<double, 1> fv;\n  fv.data = flux.data();\n"
+                                 "  fv.extent[0] = 4;\n  dep_model::dep__flux(u, fv, dt);\n"),
+        "helper": ("  dep_model::dep__flux(u, as_view(flux), dt);\n"),
+        "address": ("  dep_model::dep__flux(u, atmofab::View<double, 1>{&flux[0], {4}}, dt);\n"),
+    }
+
+    def _flux_model(self, tmp: str, shape: str, tail: str) -> Path:
+        body = ("namespace {\natmofab::View<double, 1> as_view(std::vector<double>& v) {\n"
+                "  return atmofab::View<double, 1>{v.data(), {static_cast<long>(v.size())}};\n}\n}\n"
+                "void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n  std::vector<double> flux(4);\n" + shape + tail + "}")
+        return self._model(tmp, body)
+
+    def test_the_dataflow_follows_every_shape_of_a_dependency_output(self) -> None:
+        for label, shape in self._SHAPES.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual([], self._gates(self._flux_model(tmp, shape, self._CONSUME),
+                                                 ["dep"]))
+                out = self._gates(self._flux_model(tmp, shape, self._DISCARD), ["dep"])
+                self.assertEqual(1, len(out), out)
+                self.assertIn("does not propagate dependency operation outputs", out[0])
+
+    def test_the_dataflow_follows_a_device_round_trip(self) -> None:
+        """The default GPU lowering: the dependency's output copied to the device, consumed by a
+        kernel this file defines, and copied back (round 2 of this change's review: refused)."""
+        kernel = ("__global__ void upd(const double* u, const double* f, double* out, double dt) {\n"
+                  "  const int i = threadIdx.x;\n  out[i] = u[i] + dt * f[i];\n}\n")
+        call = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n  std::vector<double> flux(4);\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  double* du = nullptr;\n  double* df = nullptr;\n  double* dn = nullptr;\n"
+                "  cudaMemcpy(du, u.data, 32, cudaMemcpyHostToDevice);\n"
+                "  cudaMemcpy(df, flux.data(), 32, cudaMemcpyHostToDevice);\n"
+                "  upd<<<1, 4>>>(du, df, dn, dt);\n"
+                "  cudaMemcpy(u_new.data, dn, 32, cudaMemcpyDeviceToHost);\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, kernel + call), ["dep"]))
+            dropped = call.replace("cudaMemcpy(df, flux.data(), 32, cudaMemcpyHostToDevice);",
+                                   "cudaMemcpy(df, u.data, 32, cudaMemcpyHostToDevice);")
+            out = self._gates(self._model(tmp, kernel + dropped), ["dep"])
+            self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_an_address_of_actual_and_an_assignment_after_a_keyword(self) -> None:
+        """`&m` hands the storage of `m` over; after `else`, `do` or a ternary `?` an assignment
+        is a STATEMENT, not a declaration's initializer (each clause of `_is_declaration`)."""
+        header = ("namespace dep_model {\nvoid dep__norm(atmofab::View<const double, 1> u, "
+                  "double& m);\n}\n")
+        base = ("void p__run(atmofab::View<const double, 1> u, double& out, bool c) {\n"
+                "  double m;\n{pre}  dep_model::dep__norm(u, {arg});\n  out = c ? 1.0 : 0.0;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(header)
+            for arg in ("m", "&m"):
+                model = self._model(tmp, base.replace("{pre}", "").replace("{arg}", arg),
+                                    header=False)
+                (Path(tmp) / "dep_model.cuh").write_text(header)
+                self.assertTrue(any("candidates=['m']" in v for v in self._gates(model, ["dep"])),
+                                arg)
+            for pre in ("  if (c) { m = 1.0; } else m = 0.0;\n", "  do m = 0.0; while (false);\n",
+                        "  c ? m = 1.0 : m = 0.0;\n"):
+                model = self._model(tmp, base.replace("{pre}", pre).replace("{arg}", "m"),
+                                    header=False)
+                self.assertEqual([], self._gates(model, ["dep"]), pre)
 
     def test_a_value_returning_function_always_has_an_output(self) -> None:
         """Round 1 of this change's review: a function returning a literal had no output the

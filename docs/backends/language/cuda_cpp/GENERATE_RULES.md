@@ -69,16 +69,23 @@ it — a non-const reference, a pointer to non-const, a non-const `atmofab::View
 value is one more output, whether or not its `return` names anything.
 
 - **Literal outputs.** A function every one of whose output parameters is assigned whole
-  (`out = ...;`) only from literals, none depending on an input, is refused.
+  (`out = ...;`) only from literals, none depending on an input, is refused; a compound
+  `out += ...;` reads the output's previous value and so depends on an input.
 - **Dependency dataflow.** What a dependency call writes must reach an output through
   assignments. Its candidates are the names whose storage the call's actuals hand over — at the
   operation's output parameters as the dependency's header `<dep>_model.cuh` beside the model
   declares them, or, without the header, at every position minus `const` / `constexpr` names and
   functions this file defines — minus the enclosing function's parameters and names assigned
   before the call by an assignment statement — a declaration's initializer is not one, as in the
-  Fortran binding (an inert call's inputs). The closure runs backward from the outputs over
-  assignments `lhs = rhs` (a target's base name, `u[i]` and `u.data[i]` included) and over a view
-  declared over another name's storage (`View<...> v{u.data(), ...}` makes `u` take `v`).
+  Fortran binding (an inert call's inputs). An actual's names are its storage (`u`, `&u`,
+  `u[i]`, `u.data()`), else every plain name it mentions (a pointer, `as_view(u)`, `w.flux`).
+  The closure runs backward from the outputs over assignments `lhs = rhs` (a target's base name,
+  `u[i]`, `u.data[i]` and `v.data` included; a compound `op=` also reads `lhs`), over a view or
+  pointer made to point into another name's storage (`View<...> v{u.data(), ...}`,
+  `double* p = u.data();` make `u` take `v` / `p`), and — past the Fortran binding, which follows
+  no call — over calls whose parameter directions the types state: a function or kernel the model
+  source defines, a dependency operation, `cudaMemcpy` / `cudaMemcpyAsync` (each output actual
+  takes every input actual as a source). A call to anything else is not followed.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
