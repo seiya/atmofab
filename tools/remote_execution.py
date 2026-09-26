@@ -40,6 +40,9 @@ Every way the evidence could be incomplete or not this job's is a refusal
   glues onto the script's next line, which then carries a marker somewhere other than at its
   start and is refused. The platform facts travel the same way (`PLATFORM_MARKER`), printed
   once each before the first command starts;
+- a shipped file that does not come back byte-identical to its local source is refused: the
+  entries name each shipped file by its local source, so one a command rewrote before a later
+  command ran it (the quality check's control file) would be recorded as unchanged;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a `timeout` that does not
   take `-k`, a site machine other than the one the shipped files were built on, a program it
@@ -531,6 +534,20 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     status_lines, facts = _job_lines(job_stdout, remote)
     statuses = _statuses(status_lines, request.commands, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
+    # Every shipped file must come back as it was sent. The entries name each one by its local
+    # source, and the gate reads that source: a command that rewrote a file a LATER command runs
+    # (the control file the quality check reads) would otherwise be recorded as having run the
+    # unchanged local one.
+    for rel, src in request.ship.items():
+        try:
+            same = (collected / rel).read_bytes() == Path(src).read_bytes()
+        except OSError as exc:
+            raise RemoteExecutionError(f"shipped file {rel} cannot be compared: {exc} ({remote})"
+                                       ) from exc
+        if not same:
+            raise RemoteExecutionError(
+                f"shipped file {rel} changed at the site while the job ran, so no entry can name "
+                f"its local source as what ran ({remote})")
     outputs = {c.tag: (_read_output(ctl / f"{c.tag}.stdout", remote),
                        _read_output(ctl / f"{c.tag}.stderr", remote))
                for c, status in zip(request.commands, statuses) if status is not None}

@@ -688,6 +688,22 @@ class RefusalTests(unittest.TestCase):
                             SHIM_SSH_PATH=str(bash_site))
         self.assertEqual((result.results[1]["ok"], result.results[1]["return_code"]), (False, 1))
 
+    def test_a_command_that_rewrites_a_shipped_file_is_refused(self) -> None:
+        """The runner rewrites the control file the quality check runs next (its test target
+        becomes a no-op). The gate reads the unchanged LOCAL file the entry names, so the job is
+        refused when the collected copy differs — as it also is for the runner itself."""
+        makefile = self.h.local / "Makefile"
+        makefile.write_text("test:\n\t@exit 1\n")
+        rewriter = self.h.local / "rewriter"
+        rewriter.write_text("#!/bin/sh\nprintf 'test:\\n\\t@true\\n' > ../src/Makefile\n")
+        rewriter.chmod(0o755)
+        qc = self.h.command("qc", ("make", "test"), cwd="src", tool="run_quality_checks")
+        run = self.h.command("run", (f"{self.h.job}/bin/runner",))
+        self._refused("shipped file src/Makefile changed at the site.*left at the site",
+                      self.h.request(run, qc, ship={"bin/runner": rewriter,
+                                                    "src/Makefile": makefile}))
+        self.assertEqual(makefile.read_text(), "test:\n\t@exit 1\n")
+
     def test_a_command_cannot_forge_its_own_status(self) -> None:
         """The runner is leaf-authored code with write access to the whole job directory: it
         plants, read-only, the control files a status used to be read from (and the second
