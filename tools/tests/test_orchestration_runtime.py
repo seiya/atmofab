@@ -23,7 +23,7 @@ import yaml
 # fixtures keep working. Production environments do NOT set this variable.
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -28078,7 +28078,7 @@ class InterfaceHeaderBindingTests(unittest.TestCase):
     model source for a language that declares `interface_header` (issue #289, R4-b PR-6), and
     binds nothing more for one that does not — the Fortran binding's key set is unchanged."""
 
-    FORTRAN_KEYS = {"node_key", "pipeline_ref", "source_id", "model_source_ref",
+    FORTRAN_KEYS: ClassVar[set[str]] = {"node_key", "pipeline_ref", "source_id", "model_source_ref",
                     "model_source_sha256", "output_hash"}
 
     def _resolver(self, stage: Path, language: str):

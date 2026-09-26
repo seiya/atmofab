@@ -51,9 +51,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tools.backends.language.fortran import bundle
-from tools.backends.language.fortran import lines as fortran_lines
-
 # Neutral policy this emitter also enforces at render time.
 #
 # `RenderError` is the seam's class, not this module's, and importing it is what makes the
@@ -63,6 +60,8 @@ from tools.backends.language.fortran import lines as fortran_lines
 # token grammar among them: a case id reaches a filesystem path and an argv, neither of which is a
 # language question).
 from tools import runner_ir
+from tools.backends.language.fortran import bundle
+from tools.backends.language.fortran import lines as fortran_lines
 from tools.host_render import RenderError
 
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
@@ -761,7 +760,6 @@ def render_checks_header(ir: dict[str, Any], spec_id: str) -> None:
     `use` of it is checked against them by the compiler, so the host renders no checks header
     for Fortran (`host_render.render_checks_header`)."""
     del ir, spec_id
-    return None
 
 
 # --- checks ABI: the dummy declaration the compiler cannot check ----------------

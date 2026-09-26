@@ -3010,9 +3010,9 @@ def _resolve_certified_closure_binding(
         try:
             header_digest = hashlib.sha256(header.read_bytes()).hexdigest()
         except Exception as exc:  # noqa: BLE001 - an absent header is a precondition failure
-            return (None, f"cannot read the certified interface header of {node_key} beside "
-                          f"its model source ({exc}); the dependency's Generate writes it — "
-                          f"re-certify the dependency (run_workflow.py --with-deps)")
+            return (None, (f"cannot read the certified interface header of {node_key} beside "
+                           f"its model source ({exc}); the dependency's Generate writes it — "
+                           f"re-certify the dependency (run_workflow.py --with-deps)"))
         binding["interface_header_ref"] = _normalize_rel_posix(
             header.relative_to(repo_root).as_posix())
         binding["interface_header_sha256"] = header_digest

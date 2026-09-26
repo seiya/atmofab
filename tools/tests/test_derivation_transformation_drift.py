@@ -433,7 +433,10 @@ PINNED_RENDER: dict[str, str] = {
     # Re-pinned again within the same PR's review (round 3): the CUDA C++ runner ends every exit
     # with `std::_Exit` (`finish`). Only the `cuda_cpp` physics runner's text moved, and no such
     # node has run; the Fortran render and the harness's control file and header are unchanged.
-    "render-5": "d06c2dd802b9ecb11ba7c96b1545779d7c7c2a293bf9bdc624ec18bd583bb034",
+    # And in round 4: the Fortran runner's import block reordered (ruff I001) and a redundant
+    # `return None` dropped — the rendered Fortran runner and `ir_content_violations` are
+    # byte-identical over all 148 IRs under `workspace/ir/` to origin/main 4f81d082 (re-measured).
+    "render-5": "97c84f197c8aff68b5f9dc79aba5edb50b5c528ddfae4a2a0e951443b4bba699",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

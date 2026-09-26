@@ -21407,7 +21407,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
     DEP = "component/dep_a@0.1.0"
     HARNESS = "infrastructure/harness_cpp_gpu@0.1.0"
 
-    def _conductor(self, repo: Path, target: str = "cpp_gpu") -> "_FakeConductor":
+    def _conductor(self, repo: Path, target: str = "cpp_gpu") -> _FakeConductor:
         from tools import target_profile as tp
         c = _FakeConductor(repo_root=repo, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
@@ -21422,6 +21422,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
 
     def _seed(self, repo: Path, refs: wc.NodeRefs) -> None:
         import yaml as _yaml
+
         from tools.tests.test_fortran_runner import _boundary_ir
         ir = _boundary_ir()
         ir.pop("impl_defaults", None)

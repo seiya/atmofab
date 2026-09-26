@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from tools.backends import registry
 from tools.backends.compiler.nvcc import syntax as nvcc_syntax
@@ -1082,7 +1083,7 @@ class PhysicsGateTests(unittest.TestCase):
     _CONSUME = ("  for (long i = 0; i < 4; ++i) {\n"
                 "    u_new.data[i] = u.data[i] + dt * flux[static_cast<std::size_t>(i)];\n  }\n")
     _DISCARD = ("  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i];\n  }\n")
-    _SHAPES = {
+    _SHAPES: ClassVar[dict[str, str]] = {
         "pointer": ("  double* fp = flux.data();\n"
                     "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n"),
         "auto view": ("  auto fv = atmofab::View<double, 1>{flux.data(), {4}};\n"
