@@ -463,7 +463,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # quality-check argv table both paths read; the `gpu` record declares `execution` with a
     # package module, which `launch_declarations` digests. The derivation inputs are unchanged: a
     # site is a record, and a run at `local` and one at a remote site of the same tree key equal.
-    "execute-5": "2f2538b5ab332131abeb37d2c991d2c954286806c2228a3de8df4018810d2be7",
+    # Re-pinned within PR-3's review (round 1), before the acceptance run that stamps it: the
+    # remote executor's probe and job-directory cleanup, and the `gpu` package's probe docstring.
+    # The self-ssh acceptance run orch_20260926T082603Z_3dbb0c04 carries `execute-5` and ran the
+    # round-0 code; execute-5 is on no branch but this one, so no other run carries it.
+    "execute-5": "94aab0f1701f48d41c96eecc3351f38f3e42dbcf9618e2b59b4595a1acf8fb82",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

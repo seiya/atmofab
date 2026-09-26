@@ -238,6 +238,8 @@ under a read-only sandbox in which this root is not bound writable.
 What uses the root is the CONDUCTOR's own deterministic substeps, in its own process: the
 out-of-source build directory `Build` writes objects to, and the run and quality-check output
 trees `Validate.execute` points the runner at (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md`
-names the overrides that route them there). `record-launch` and `init_orchestration` create
+names the overrides that route them there). At a remote execution site (issue #293) it also holds
+`site/`: `stage/`, the files shipped to the job, and `collected/`, the job directory copied back,
+whose run and quality-check trees are then moved to where the local path writes them. `record-launch` and `init_orchestration` create
 the directory; `_cleanup_agent_tmp_root` removes it when the agent reaches a terminal status.
 

@@ -455,11 +455,12 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     `execution_env`: the two questions `tools/host_execution.launch_shape` asks when
     `Validate.execute` launches the binary, asked here first so a run that would be refused
     there is refused before anything is billed. A run that stops earlier is not asked, because
-    building for a class needs no machine of that class (the `gpu` record declares no
-    `execution`). That admits the run, not its dependencies: a closure member is driven to
-    Validate (`run_workflow`'s `dep_until_phase`) and asked there, and a node whose dependencies
-    are not certified through Validate stops at the dependency-readiness gate — so today only a
-    harness, which has none, can be built for such a class."""
+    building for a class needs no machine of that class. That admits the run, not its
+    dependencies: a closure member is driven to Validate (`run_workflow`'s `dep_until_phase`) and
+    asked there, and a node whose dependencies are not certified through Validate stops at the
+    dependency-readiness gate. Every implemented class declares `execution` since issue #293, so
+    whether a MACHINE of the class is reachable is the other half of the question, asked by the
+    driver with the same phase: `execution_sites.site_violations`."""
     from tools.backends import registry as backend_registry
 
     out: list[str] = []

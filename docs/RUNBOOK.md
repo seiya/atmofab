@@ -148,7 +148,9 @@ Read from `./sites.yaml` once the checks above pass (issue #293; the file's shap
 `sites_config_*` rule are in [docs/ORCHESTRATION.md](ORCHESTRATION.md) §Execution sites). Without
 the file every target runs here, at `local`, and nothing in this section applies beyond the site
 half of `target_profile_invalid`. The rows below the first two apply only to a run that reaches
-`Validate` for a target the file maps to a REMOTE site; a run that stops earlier contacts no site.
+`Validate` for a target the file maps to a REMOTE site. A `--with-deps` run is asked them again
+before each dependency member it runs, because a member is driven to `Validate` whatever phase
+the run stops at; a run with no member left to run that stops earlier contacts no site.
 
 | reason | what it means |
 |---|---|
@@ -157,11 +159,16 @@ half of `target_profile_invalid`. The rows below the first two apply only to a r
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
 | `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils) and the target's build system, read from the tables that run them (`host_prerequisites.required_site_executables`) |
+| `site_unusable` | the site's `workdir` cannot be made or written, or its `timeout` does not take `-k` (busybox builds refuse it) |
 | `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here |
 
 A site is reached with the operator's own ssh configuration, which this repository does not
-describe: a non-interactive `ssh <host> true` must succeed without a prompt, and the login's
-startup files must print nothing.
+describe: a non-interactive `ssh <host> true` must succeed without a prompt, the login shell
+must be a POSIX-family shell (every call is an `sh` command line, which a csh-family shell
+refuses as `site_unreachable`), and the login's startup files must print nothing. What the
+probe does not see is the runtime the shipped binary links against: a shared library the
+site's non-interactive login does not resolve makes the job refuse its first command (exit
+127) mid-run.
 
 ### Refused at `preflight`, still before the first leaf
 
