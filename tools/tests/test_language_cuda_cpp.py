@@ -868,11 +868,23 @@ class PhysicsGateTests(unittest.TestCase):
                              'const char* m = "harness_cpp_gpu_model::";\n')
             self.assertEqual([], cpp_source.checks_harness_isolation_violations(
                 Path("c.cu"), _CHECKS_SOURCE, [model]))
-        for io in ("std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");"):
+        for io in ("std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");",
+                   "std::fstream f(\"x\", std::ios::out);",
+                   "std::basic_ofstream<char> f(\"x\");", "std::wofstream f(\"x\");",
+                   "std::system(\"cp a b\");", "popen(\"ls\", \"r\");",
+                   "std::filesystem::copy_file(\"a\", \"b\");", "std::rename(\"a\", \"b\");",
+                   "std::remove(\"a\");"):
             text = _CHECKS_SOURCE.replace("double s = 0.0;", f"double s = 0.0;\nvoid w() {{ {io} }}")
             with self.subTest(io):
                 out = cpp_source.checks_harness_isolation_violations(Path("c.cu"), text, [])
                 self.assertTrue(any("must not do file I/O" in v for v in out), out)
+        # A name or a literal is not an opener (over-refusal probes).
+        for clean in ("double opened = 0.0;", "const char* m = \"std::system(x)\";",
+                      "double removed_mass = 1.0;"):
+            text = _CHECKS_SOURCE.replace("double s = 0.0;", f"double s = 0.0;\n{clean}")
+            with self.subTest(clean):
+                self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                    Path("c.cu"), text, []))
 
     def _model(self, tmp: str, body: str, *, header: bool = True) -> Path:
         if header:

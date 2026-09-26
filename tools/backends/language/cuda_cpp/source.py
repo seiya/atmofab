@@ -510,6 +510,16 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
 
 _HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\s*::|\bharness_\w+__\w+")
 
+#: What opens, writes, renames or deletes a file, or runs a command, in a checks source — every
+#: file-stream class (`ofstream`, `fstream`, `basic_ofstream<char>`, the wide ones), the C stdio
+#: and POSIX openers, `std::filesystem`, `rename` / `remove`, and `system` / `popen`. Wider than
+#: the runner scan's `_FILE_OPEN_RE` on purpose: round 1 of this change's review wrote the run's
+#: outputs from a checks source through `std::fstream` and `std::system` with the narrower one
+#: silent, and the Fortran binding's `open(` covers every way its language opens a file.
+_CHECKS_IO_RE = re.compile(
+    r"\b\w*fstream\b|\b(?:fopen|freopen|fdopen|popen|open|creat|rename|remove|system)\s*\("
+    r"|\bfilesystem\b")
+
 
 def checks_harness_isolation_violations(
     checks_path: Path, text: str, model_files: list[Path]
@@ -530,11 +540,13 @@ def checks_harness_isolation_violations(
                 f"{path}: a physics source must not include or name the harness — the physics "
                 "node never depends on the harness at the source level (the host-rendered "
                 "runner is the sole caller of the harness)")
-    if _FILE_OPEN_RE.search(cpp_lines.mask(splice_lines(text))):
+    io = _CHECKS_IO_RE.search(cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(text))))
+    if io:
         violations.append(
-            f"{checks_path}: the checks source must not do file I/O (`std::ofstream`, `fopen`, "
-            "`.open(`) — emission is the harness's job; the checks source only holds the state "
-            "and computes the checks and metrics")
+            f"{checks_path}: the checks source must not do file I/O or run a command "
+            f"(`{io.group(0).strip()}` — no file stream, `fopen`, `std::filesystem`, `rename` / "
+            "`remove`, `system` / `popen`) — emission is the harness's job; the checks source "
+            "only holds the state and computes the checks and metrics")
     return violations
 
 
