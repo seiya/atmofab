@@ -184,15 +184,18 @@ def _check_required_host_tools(target_profile: TargetProfile) -> list[str]:
             for item in missing_host_executables(_host_probe_selection(target_profile))]
 
 
-def _sites_rejection(repo_root: Path, target_profile: TargetProfile,
-                     until_phase: str) -> SitesConfig | dict[str, Any]:
+def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase: str, *,
+                     sites_config: SitesConfig | None = None) -> SitesConfig | dict[str, Any]:
     """The loaded site configuration, or the startup refusal event that stops the run (issue
     #293). Refusals, most reachable first: `sites_config_invalid` (the file does not load);
     `target_profile_invalid` (the site the target maps to does not execute its hardware class,
     for a run that reaches `Validate`); and for a remote site that the run will execute at,
     `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
     did not come back), `missing_required_site_tools` and `site_machine_mismatch` (the shipped
-    binary is built here, so the site must be this machine type)."""
+    binary is built here, so the site must be this machine type) and `site_unusable` (its
+    `workdir` cannot be made or written, or its `timeout` does not take `-k`). `sites_config`, when
+    given, is the configuration `main` already loaded: a closure member is gated against it, with
+    the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
     import platform as _platform
 
     from tools.execution_sites import SitesConfigError, load_sites, site_violations
@@ -205,7 +208,8 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile,
     from tools.target_profile import NON_EXECUTING_PHASES
 
     try:
-        sites_config = load_sites(repo_root)
+        if sites_config is None:
+            sites_config = load_sites(repo_root)
     except SitesConfigError as exc:
         return {"status": "fail", "reason": "sites_config_invalid", "rule": exc.rule,
                 "detail": f"{exc} — see docs/ORCHESTRATION.md §Execution sites"}
@@ -232,14 +236,20 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile,
     except RemoteExecutionError as exc:
         return {"status": "fail", "reason": "site_unreachable", "site": site.site_id,
                 "detail": (f"site {site.site_id} did not answer the launch probe: {exc} — check "
-                           f"that a non-interactive ssh to it succeeds (see "
-                           f"docs/RUNBOOK.md#0-1)"),
+                           f"that a non-interactive ssh to it succeeds without a prompt and that "
+                           f"its login shell is a POSIX-family shell (see docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
     if probe.missing:
         return {"status": "fail", "reason": "missing_required_site_tools",
                 "site": site.site_id, "missing": list(probe.missing), "required": list(required),
                 "detail": (f"site {site.site_id} lacks {', '.join(probe.missing)} on a "
                            f"non-interactive login's PATH (see docs/RUNBOOK.md#0-1)"),
+                "docs_ref": "docs/RUNBOOK.md#0-1"}
+    if probe.problems:
+        return {"status": "fail", "reason": "site_unusable", "site": site.site_id,
+                "problems": list(probe.problems),
+                "detail": (f"site {site.site_id}: {'; '.join(probe.problems)} (see "
+                           f"docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
     if probe.machine != _platform.machine():
         return {"status": "fail", "reason": "site_machine_mismatch", "site": site.site_id,
@@ -5383,6 +5393,24 @@ def _run_with_dependency_closure(
                         "status": "fail",
                         "reason": exc.reason,
                         "detail": exc.detail,
+                        "failed_dependency_node": node_label,
+                        "spec_ref": spec_ref,
+                        "dependency_runs": dependency_runs,
+                        "target_spec_ref": target_spec_ref,
+                    },
+                    stdout_format,
+                )
+                return 2
+            # And the execution-site half, with the member's phase (issue #293): `main` gated
+            # the site for the TARGET's phase, and a dependency of a run that stops at `Build`
+            # is driven to `Validate`, so its site must execute the class and answer the probe
+            # before its first billed phase — as a `--jobs` child's own `_run_main` requires.
+            site_rejection = _sites_rejection(repo_root, target_profile, dep_until_phase,
+                                              sites_config=sites_config)
+            if isinstance(site_rejection, dict):
+                _emit_unlogged_event(
+                    {
+                        **site_rejection,
                         "failed_dependency_node": node_label,
                         "spec_ref": spec_ref,
                         "dependency_runs": dependency_runs,

@@ -241,9 +241,11 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(recorded["cwd"], f"{self.h.job}/run")
         self.assertEqual(recorded["env"], "a b")
         self.assertTrue((result.collected / "run" / "raw").is_dir())
-        # The remote job directory is gone; its parent stays for the next job.
+        # The remote job directory is gone, and so is the orchestration's directory above it,
+        # which held no other job (the next job makes it again).
         self.assertFalse(Path(self.h.job).exists())
-        self.assertTrue(Path(self.h.job).parent.is_dir())
+        self.assertFalse(Path(self.h.job).parent.exists())
+        self.assertTrue(self.h.workdir.is_dir())
         for tag, res, tool in (("run", run, "run_program"), ("qc", qc, "run_quality_checks")):
             (entry,) = self.h.log_entries(tag)
             self.assertEqual(entry["command_id"], res["command_id"])
@@ -269,6 +271,13 @@ class EndToEndTests(unittest.TestCase):
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": self.h.job, "queue_wait_ms": 0})
 
+
+    def test_the_orchestrations_directory_stays_while_another_job_is_in_it(self) -> None:
+        sibling = Path(self.h.job).parent / "arid-other"
+        sibling.mkdir(parents=True)
+        self.h.run(self.h.request())
+        self.assertFalse(Path(self.h.job).exists())
+        self.assertTrue(sibling.is_dir())
     def test_every_transport_call_carries_the_options_and_ends_them(self) -> None:
         """No prompt (a prompt hangs a run), a bounded connect, and `--` before the destination
         and the paths, on every ssh and scp call; scp copies directories recursively."""
@@ -1005,6 +1014,30 @@ class ProbeSiteTests(unittest.TestCase):
                         ["sh", "-c", _s], capture_output=True, text=True).stdout):
                 with self.assertRaises(rx.RemoteExecutionError):
                     rx.probe_site(self.h.site, ("sh",))
+
+    def test_an_unusable_workdir_and_a_timeout_without_kill_are_named(self) -> None:
+        import platform
+
+        blocker = self.h.root / "remote" / "blocker"
+        blocker.write_text("a file, so nothing can be made beneath it")
+        site = es.Site(site_id="box", executes=("cpu",), host="box",
+                       workdir=str(blocker / "jobs"))
+        fake = self.h.root / "fake_timeout"
+        fake.mkdir()
+        (fake / "timeout").write_text('#!/bin/sh\n[ "$1" = -k ] && exit 1\nexec true\n')
+        (fake / "timeout").chmod(0o755)
+        with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
+            got = rx.probe_site(site, ("sh",))
+        self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(), problems=(
+            "the workdir cannot be made or is not writable",
+            "its timeout does not take -k")))
+        # A workdir that does not exist yet is made, as the first job would make it.
+        fresh = self.h.root / "remote" / "fresh" / "jobs"
+        with self.h.env():
+            ok = rx.probe_site(es.Site(site_id="box", executes=("cpu",), host="box",
+                                       workdir=str(fresh)), ("sh",))
+        self.assertEqual(ok.problems, ())
+        self.assertTrue(fresh.is_dir())
 
     def test_a_login_banner_is_not_read(self) -> None:
         with mock.patch.object(rx, "_ssh", return_value=(

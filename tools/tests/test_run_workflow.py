@@ -9347,6 +9347,89 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertTrue(sha)
             self.assertEqual(sites_handed, {ref: (sha, sha) for ref in handed})
 
+    def _closure_until(self, repo_root: Path, until: str, target: str,
+                       **env: str) -> tuple[int, list[str], list[dict]]:
+        """`main` over the diamond with `--with-deps --jobs 1` and `_run_node` spied: the
+        members run (spec_ref) and the events."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        _load_spec_catalog.cache_clear()
+        self._runtime_calls = []
+        ran: list[str] = []
+        real_run_node = run_workflow._run_node
+
+        def _spy_run_node(**kw):
+            ran.append(kw["spec_ref"])
+            return real_run_node(**kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(run_workflow, "_runtime_command", self._fake_runtime), \
+                mock.patch.object(run_workflow, "_dependency_node_readiness",
+                                  lambda root, node, stages, *_t: {
+                                      "ready": node["spec_ref"] in ran,
+                                      "version": node["spec_versions"][0],
+                                      "failed_stage": None if node["spec_ref"] in ran
+                                      else "ir_ref",
+                                      "detail": None}), \
+                mock.patch.object(run_workflow, "_run_node", _spy_run_node), \
+                mock.patch.dict(os.environ, env), \
+                redirect_stdout(buf), _real_target_resolution():
+            rc = run_workflow.main([
+                "spec/problem/a", until, "--with-deps", "--jobs", "1", "--target", target,
+                "--repo-root", str(repo_root), "--orchestration-id", "orch_site_closure",
+                "--no-run-conductor", "--stdout-format", "jsonl"])
+        events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+        return rc, ran, events
+
+    def test_a_closure_that_stops_before_validate_gates_its_members_site(self) -> None:
+        """Issue #293: a dependency of a `--with-deps` run that stops at `Build` is driven to
+        `Validate`, so the site half is asked of each member with the MEMBER's phase — before
+        its first billed phase, as a `--jobs` child's own `_run_main` asks it. Two routes: the
+        `gpu` class, which declares `execution` since this issue and so passes the registry
+        half, at a site that does not execute it; and a remote site that does not answer."""
+        from tools.tests.test_remote_execution import _SSH_SHIM
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            self._seed(repo_root)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            _seed_target_profile_into(repo_root, target_id="t_cpu")
+            _seed_target_profile_into(repo_root, target_id="t_gpu",
+                                      hardware={"class": "gpu", "architecture": "sm_90"})
+            # 1. gpu with no sites.yaml: the target stops at Build and passes the top gate; the
+            #    first dependency member is refused before it runs.
+            rc, ran, events = self._closure_until(repo_root, "build", "t_gpu")
+            self.assertEqual(rc, 2)
+            self.assertEqual(ran, [])
+            self.assertEqual(events[-1]["reason"], "target_profile_invalid")
+            self.assertIn("gpu is not executed", events[-1]["detail"])
+            self.assertIn("failed_dependency_node", events[-1])
+            # 2. cpu mapped to a remote site whose probe fails: refused at the first member.
+            shims = Path(tmp) / "shims"
+            shims.mkdir()
+            (shims / "ssh").write_text(_SSH_SHIM)
+            (shims / "ssh").chmod(0o755)
+            log = Path(tmp) / "shim.log"
+            log.touch()
+            (repo_root / "sites.yaml").write_text(
+                f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                f"    workdir: {Path(tmp) / 'jobs'}\n    executes: [cpu, gpu]\n"
+                f"    scheduler: none\ntargets:\n  t_cpu: box\n", encoding="utf-8")
+            env = {"PATH": f"{shims}{os.pathsep}{os.environ['PATH']}", "SHIM_LOG": str(log),
+                   "SHIM_SSH_FAIL": "atmofab-probe"}
+            rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+            self.assertEqual(rc, 2)
+            self.assertEqual(ran, [])
+            self.assertEqual(events[-1]["reason"], "site_unreachable")
+            self.assertIn("failed_dependency_node", events[-1])
+            # 3. The same site answering: every member runs, each asked once.
+            env.pop("SHIM_SSH_FAIL")
+            log.write_text("")
+            rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+            self.assertEqual(rc, 0, events[-3:])
+            self.assertIn("spec/problem/a", ran)
+            dependencies = [r for r in ran if r != "spec/problem/a"]
+            self.assertEqual(len(log.read_text().splitlines()), len(dependencies))
+
     def test_a_sequential_closure_gates_each_member_like_a_jobs_child(self) -> None:
         """`--with-deps` at `--jobs 1` over a harness member whose run would not be the
         target's harness: refused at that member (`target_harness_mismatch`) before it runs —
@@ -10032,6 +10115,18 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
         self.assertEqual(events[-1]["missing"], required)
         self.assertEqual(events[-1]["required"], required)
+        self.assertEqual(calls, [])
+
+    def test_a_site_whose_workdir_cannot_be_made_is_refused_at_launch(self) -> None:
+        blocker = Path(self._tmp.name) / "blocker"
+        blocker.write_text("a file")
+        self.workdir = blocker / "jobs"
+        self._remote()
+        code, events, calls = self._main()
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "site_unusable")
+        self.assertEqual(events[-1]["problems"],
+                         ["the workdir cannot be made or is not writable"])
         self.assertEqual(calls, [])
 
     def test_a_site_of_another_machine_type_is_refused(self) -> None:

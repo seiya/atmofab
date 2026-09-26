@@ -476,30 +476,46 @@ def _read_output(path: Path, remote: str) -> str:
 PROBE_MARKER = "atmofab-probe"
 
 
+#: What `probe_site` checks beyond the programs, each a POSIX test and the problem it names when
+#: the test fails; the job script refuses the same two conditions, later.
+_PROBE_CHECKS: tuple[tuple[str, str], ...] = (
+    ("workdir", "the workdir cannot be made or is not writable"),
+    ("timeout_kill", "its timeout does not take -k"),
+)
+
+
 @dataclass(frozen=True)
 class SiteProbe:
     """What `probe_site` found: the programs of those asked for that the site's login shell
-    cannot resolve, and the site's `uname -m`."""
+    cannot resolve, the site's `uname -m`, and the problems `_PROBE_CHECKS` names that it has."""
 
     missing: tuple[str, ...]
     machine: str
+    problems: tuple[str, ...] = ()
 
 
 def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
-    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve and
-    what machine it is — the launch-time detector of what the job script checks again before
-    its first command (a missing program, another machine). Raises `RemoteExecutionError` when
-    the site cannot be reached or does not answer in the probe's shape, and `ValueError` for a
-    site that is not remote or a program name that is not a plain element."""
+    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve, what
+    machine it is, whether its `workdir` can be made and written (it is created if absent, as
+    the first job would create it) and whether its `timeout` takes `-k` — the launch-time
+    detector of what a job refuses again before its first command. Raises `RemoteExecutionError`
+    when the site cannot be reached or does not answer in the probe's shape, and `ValueError`
+    for a site that is not remote or a program name that is not a plain element."""
     if site.is_local or not site.host:
         raise ValueError(f"site {site.site_id!r} is not a remote site")
     for exe in executables:
         if not _ELEMENT.fullmatch(exe):
             raise ValueError(f"program {exe!r} is not a plain name")
     q = shlex.quote
+    workdir = str(site.workdir)
+    tests = {
+        "workdir": f"mkdir -p {q(workdir)} 2>/dev/null && [ -d {q(workdir)} ] && [ -w {q(workdir)} ]",
+        "timeout_kill": "timeout -k 1 5 sh -c : >/dev/null 2>&1",
+    }
     script = "\n".join([
         *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
           for exe in executables),
+        *(f"{tests[name]} || echo {PROBE_MARKER} problem {name}" for name, _ in _PROBE_CHECKS),
         f'echo "{PROBE_MARKER} machine $(uname -m)"',
     ])
     remote = f"{site.host} ({site.site_id})"
@@ -507,6 +523,8 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
                timeout=TRANSPORT_GRACE_SEC, remote=remote)
     missing: list[str] = []
     machines: list[str] = []
+    problems: list[str] = []
+    names = dict(_PROBE_CHECKS)
     for line in out.splitlines():
         if not line.startswith(PROBE_MARKER + " "):
             continue  # a login shell's startup files may print
@@ -515,12 +533,14 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
             missing.append(value)
         elif kind == "machine" and value.strip():
             machines.append(value.strip())
+        elif kind == "problem" and value in names:
+            problems.append(names[value])
         else:
             raise RemoteExecutionError(f"a probe line does not parse: {line[:200]!r} ({remote})")
     if len(machines) != 1:
         raise RemoteExecutionError(
             f"the probe printed {len(machines)} machine lines, not one ({remote})")
-    return SiteProbe(missing=tuple(missing), machine=machines[0])
+    return SiteProbe(missing=tuple(missing), machine=machines[0], problems=tuple(problems))
 
 
 def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
@@ -619,8 +639,12 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
                 f"stderr ends: {tail or '(empty)'} ({remote})")
 
     # 6. Remove the remote directory; the evidence is local now.
-    _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",
-         timeout=TRANSPORT_GRACE_SEC, remote=remote)
+    # The orchestration's directory above it goes too when this was its last job; `rmdir`
+    # removes only an empty one, so a sibling job still running (or left for inspection) keeps
+    # it.
+    parent = remote.rsplit("/", 1)[0]
+    _ssh(host, f"rm -rf {q(remote)} && {{ rmdir {q(parent)} 2>/dev/null || true; }}",
+         stage="remove the collected job directory", timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
     # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
     #    `command` names each shipped file by its LOCAL source, so the entry says which of this
