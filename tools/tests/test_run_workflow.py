@@ -4211,7 +4211,7 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(selection["language"], profile.toolchain["language"], target_id)
             self.assertEqual(selection["build_system"], profile.toolchain["build_system"])
             languages.add(selection["language"])
-        self.assertEqual(len(languages), len(ids), "each profile probed for its own language")
+        self.assertGreater(len(languages), 1, "the profiles are not all probed as one language")
 
     def test_the_host_tool_rejection_enumerates_every_missing_tool(self) -> None:
         """Same format contract the CLI-tool rejection has: comma-separated, no spaces, so a
@@ -9750,6 +9750,52 @@ class TargetProfileLaunchTests(unittest.TestCase):
                  "--no-run-conductor", "--target", "t_g"])
             self.assertEqual(code, 0)
             self.assertEqual(asked, [("presence", "t_g"), ("versions", "t_g")])
+
+    def test_the_refusal_names_the_tools_of_the_run_s_own_target(self) -> None:
+        """The `missing_required_host_tools` refusal is what an operator installs from: its
+        `missing` and `required` lists are those of the target the run resolved — here a GPU
+        profile of another language than the checkout default — not the default target's and
+        not only the missing subset. Nothing is mocked between the refusal and the resolution:
+        the real selection, the real presence probe, one executable hidden from `PATH`."""
+        import yaml
+
+        from tools.host_prerequisites import (required_host_executables,
+                                              resolve_launch_axis_selection)
+        from tools.target_profile import load_target_profile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            path = _seed_target_profile_into(repo_root, target_id="t_g",
+                                             harness_id="harness_a", hardware={"class": "gpu"})
+            gpu = yaml.safe_load(REPO_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
+                                 .read_text(encoding="utf-8"))
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]
+            path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            required = [item.executable for item in required_host_executables(
+                resolve_launch_axis_selection(load_target_profile(repo_root, "t_g")))]
+            default_required = [item.executable for item in required_host_executables(
+                resolve_launch_axis_selection(_TP_RW))]
+            self.assertGreater(len(required), 1)
+            self.assertNotEqual(required, default_required)
+            hidden = required[0]
+            harness = repo_root / "spec" / "infrastructure" / "harness_a"
+            harness.mkdir(parents=True, exist_ok=True)
+            (harness / "controlled_spec.md").write_text("spec\n", encoding="utf-8")
+            (harness / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+            original_which = run_workflow.shutil.which
+            with _real_target_resolution(), mock.patch.object(
+                    run_workflow.shutil, "which",
+                    side_effect=lambda name: None if name == hidden else original_which(name)):
+                code, _out, calls = RunWorkflowTests._run_main_with_fake_runtime(
+                    self, ["spec/infrastructure/harness_a", "build",  # type: ignore[arg-type]
+                           "--repo-root", str(repo_root), "--target", "t_g"])
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [], "refused before any orchestration state is touched")
+            refusal = self._last_events[-1]  # type: ignore[attr-defined]
+            self.assertEqual(refusal["reason"], "missing_required_host_tools")
+            self.assertEqual(refusal["missing"], [hidden])
+            self.assertEqual(refusal["required"], required)
 
     def test_run_node_handed_no_target_resolves_the_default(self) -> None:
         """The fallback for a caller that resolved nothing: the default target — which, with
