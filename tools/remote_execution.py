@@ -23,6 +23,8 @@ Every way the evidence could be incomplete or not this job's is a refusal
 
 - the job directory is created with `mkdir` and no `-p`, so a directory that already exists —
   a stale job's output — is refused rather than read;
+- the job script is the ssh call's command string, held in the shell's memory, never a file: a
+  file is one a running command can rewrite, and bash executes a rewritten script file's rest;
 - a command's exit status and times travel on the job script's own stdout, one status line per
   command that ran (`STATUS_MARKER`), and never in a file: the command itself — leaf-authored
   code, for the runner — can write anything under the job directory, including a file planted
@@ -100,7 +102,7 @@ KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
-#: The job's control files — the script and each command's output — live in this subdirectory of the job directory, which no shipped file may enter.
+#: Each command's output lives in this subdirectory of the job directory, which no shipped file may enter.
 CONTROL_DIR = "ctl"
 #: A path element of a job directory or a shipped file: no separator, no shell-active character,
 #: and not led by `.` (no `..`, no hidden name) or `-` (read as an option).
@@ -483,23 +485,26 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     host = str(site.host)
     q = shlex.quote
 
-    # 2. Stage and ship: the files, and the script in the control directory.
+    # 2. Stage and ship the files, and an empty control directory for the commands' output.
     for rel, src in request.ship.items():
         dst = stage_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
     (stage_dir / CONTROL_DIR).mkdir(parents=True, exist_ok=True)
-    script = stage_dir / CONTROL_DIR / "job.sh"
-    script.write_text(render_job_script(request), encoding="utf-8")
     tops = sorted({p.name for p in stage_dir.iterdir()})
     _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
          stage="ship the job's files", remote=remote)
 
     # 3. Run the script in the foreground; its commands' statuses are on its stdout, and its own
-    #    exit status is non-zero only when it failed outside them.
+    #    exit status is non-zero only when it failed outside them. The script is the ssh call's
+    #    command string, held in the shell's memory — never a file: a file under the job
+    #    directory (or anywhere else this user owns) is one the command can rewrite while the
+    #    script runs, and bash reads a script file a command at a time, so the rewritten rest is
+    #    what it executes (reproduced in round 4: the second command skipped, a clean status
+    #    printed in its place).
     bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
-    job_stdout = _ssh(host, f"sh {q(remote + '/' + CONTROL_DIR + '/job.sh')}",
-         stage="run the job script", timeout=bound, remote=remote)
+    job_stdout = _ssh(host, f"sh -c {q(render_job_script(request))}",
+                      stage="run the job script", timeout=bound, remote=remote)
 
     # 4. Collect. A failure here leaves the remote directory for the operator.
     _scp([f"{host}:{remote}"], str(collected), stage="collect the job directory", remote=remote)

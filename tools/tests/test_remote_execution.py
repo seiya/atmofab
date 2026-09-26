@@ -4,16 +4,18 @@
 No network: `ssh` and `scp` are shims placed first on `PATH`. The `ssh` shim refuses a call
 without `BatchMode=yes` (a real one could prompt and hang), drops the options and the
 destination, and runs the command string with `sh -c` LOCALLY in the test's working directory —
-a real ssh hands it to the user's login shell in the home directory, which the executor does not
-depend on (argv[0] is absolute or a PATH name, every other path absolute). The `scp` shim drops
+a real ssh hands it to the user's login shell in the home directory. The executor needs that
+shell to be POSIX-family (its commands are `sh` command lines) and does not depend on the
+directory (argv[0] is absolute or a PATH name, every other path absolute). The `scp` shim drops
 the options, strips `host:`, and copies with `cp`, refusing a directory without `-r` as scp
 does; like scp it keeps a file's execute bit. The site's `workdir` is a directory under the
 test's own temporary tree, so a job runs end to end on this machine. Each shim appends its argv to a log, and reads these knobs from the
 environment: `SHIM_SSH_FAIL` / `SHIM_SCP_FAIL` (a substring of the command, or `up` / `down` for
 scp's direction) makes the call exit 255 or 1 without doing anything, `SHIM_SSH_POST` is a shell
-snippet run after a command that runs the job script (to plant or lose a file),
+snippet run after the call that runs the job script (the one whose command carries a status
+marker) (to plant or lose a file),
 `SHIM_SSH_SUB` is a JSON `[pattern, replacement]` applied with `re.sub` to the job script's stdout
-(to lose, forge or alter a status line), `SHIM_SSH_PATH` is the PATH the job script runs under
+(to lose, forge or alter a status line), `SHIM_SSH_PATH` is the PATH every call runs under
 (to take a tool away from the "site"), and `SHIM_SSH_DELAY` makes the job script's call wait
 that many seconds first. A job script killed mid-run makes the shim exit non-zero (137 for a
 SIGKILL), where a real ssh exits 255: the rows match the stage, not the number.
@@ -39,7 +41,7 @@ from tools import remote_execution as rx
 _SSH_SHIM = r'''#!/usr/bin/env python3
 import json, os, re, subprocess, sys, time
 with open(os.environ["SHIM_LOG"], "a") as f:
-    f.write("ssh\t" + "\t".join(sys.argv[1:]) + "\n")
+    f.write(json.dumps(["ssh", *sys.argv[1:]]) + "\n")
 args = sys.argv[1:]
 while args:
     if args[0] == "-o":
@@ -55,32 +57,32 @@ if "BatchMode=yes" not in sys.argv:
     sys.stderr.write("shim: no BatchMode=yes, a real ssh could prompt\n")
     sys.exit(97)
 host, command = args[0], " ".join(args[1:])
-if "job.sh" in command:
+if "atmofab-status" in command:
     time.sleep(float(os.environ.get("SHIM_SSH_DELAY") or 0))
 fail = os.environ.get("SHIM_SSH_FAIL")
 if fail and fail in command:
     sys.stderr.write("shim: connection closed by remote host\n")
     sys.exit(255)
 env = dict(os.environ)
-if os.environ.get("SHIM_SSH_PATH") and "job.sh" in command:
+if os.environ.get("SHIM_SSH_PATH"):
     env["PATH"] = os.environ["SHIM_SSH_PATH"]
 proc = subprocess.run(["sh", "-c", command], stdout=subprocess.PIPE, text=True, env=env)
 out, rc = proc.stdout, proc.returncode
 sub = os.environ.get("SHIM_SSH_SUB")
-if sub and "job.sh" in command:
+if sub and "atmofab-status" in command:
     pattern, repl = json.loads(sub)
     out = re.sub(pattern, repl, out, flags=re.M)
 sys.stdout.write(out)
 post = os.environ.get("SHIM_SSH_POST")
-if post and "job.sh" in command:
+if post and "atmofab-status" in command:
     subprocess.run(["sh", "-c", post], check=True)
 sys.exit(rc)
 '''
 
 _SCP_SHIM = r'''#!/usr/bin/env python3
-import os, re, subprocess, sys
+import json, os, re, subprocess, sys
 with open(os.environ["SHIM_LOG"], "a") as f:
-    f.write("scp\t" + "\t".join(sys.argv[1:]) + "\n")
+    f.write(json.dumps(["scp", *sys.argv[1:]]) + "\n")
 args = sys.argv[1:]
 paths = []
 recursive = False
@@ -182,23 +184,25 @@ class _Harness:
         return [json.loads(line) for line in p.read_text().splitlines()]
 
     def calls(self) -> list[list[str]]:
-        return [line.split("\t") for line in self.log.read_text().splitlines()]
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
 
 
 #: What the job script and the shipped runner execute at the site.
-_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "date", "env", "timeout", "ls",
+_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "rm", "date", "env", "timeout", "ls",
                "python3")
 
 
-def _bare_path(root: Path, *, without: str) -> Path:
-    """A directory to use as the site's PATH: the tools the job needs, less `without`."""
-    bare = root / f"path_without_{without}"
+def _bare_path(root: Path, *, without: str, sh: str = "sh") -> Path:
+    """A directory to use as the site's PATH: the tools the job needs, less `without`, with
+    `sh` being the program named `sh` (a site whose `/bin/sh` is bash: `sh="bash"`)."""
+    bare = root / f"path_without_{without}_{sh}"
     bare.mkdir()
     for tool in _SITE_TOOLS:
-        found = shutil.which(tool)
+        found = shutil.which(sh if tool == "sh" else tool)
         if tool != without and found:
             (bare / tool).symlink_to(found)
-    assert shutil.which(without, path=str(bare)) is None
+    if without:
+        assert shutil.which(without, path=str(bare)) is None
     return bare
 
 
@@ -626,6 +630,34 @@ class RefusalTests(unittest.TestCase):
         '''))
         forger.chmod(0o755)
         self._refused("run the job script", self.h.request(ship={"bin/runner": forger}))
+
+    def test_a_command_cannot_rewrite_the_rest_of_the_job_script(self) -> None:
+        """bash reads a script FILE a command at a time, so a command that rewrote the rest of
+        the file in place would have the second command skipped and a clean status printed for
+        it. The script is the ssh call's command string, so there is no file: under a site
+        `sh` that is bash, the second command still runs and its failure is its result."""
+        self.assertIsNotNone(shutil.which("bash"), "this row needs bash to stand for the site's sh")
+        rewriter = self.h.local / "rewriter"
+        rewriter.write_text(textwrap.dedent('''\
+            #!/usr/bin/env python3
+            import os
+            for path in ("../ctl/job.sh",):
+                if os.path.exists(path):
+                    text = open(path).read()
+                    first = text.index('if [ "$rc" = 0 ]')
+                    i = text.index('if [ "$rc" = 0 ]', first + 1)
+                    new = 'echo "atmofab-status qc 0 1 1"; exit 0\\n'
+                    with open(path, "r+") as f:
+                        f.seek(i)
+                        f.write(new.ljust(len(text) - i))
+        '''))
+        rewriter.chmod(0o755)
+        qc = self.h.command("qc", ("sh", "-c", "exit 1"), cwd="src", tool="run_quality_checks")
+        run = self.h.command("run", (f"{self.h.job}/bin/runner",))
+        bash_site = _bare_path(self.h.root, without="", sh="bash")
+        result = self.h.run(self.h.request(run, qc, ship={"bin/runner": rewriter}),
+                            SHIM_SSH_PATH=str(bash_site))
+        self.assertEqual((result.results[1]["ok"], result.results[1]["return_code"]), (False, 1))
 
     def test_a_command_cannot_forge_its_own_status(self) -> None:
         """The runner is leaf-authored code with write access to the whole job directory: it
