@@ -629,7 +629,12 @@ _VIEW_DECLARATION_RE = re.compile(
     r"\bView\s*<[^;{}]*>\s+(?P<name>[A-Za-z_]\w*)\s*(?:=\s*)?[{(](?P<init>[^;]*);")
 _STORAGE_NAME_RE = re.compile(r"(?<![\w.>:])([A-Za-z_]\w*)\s*(?:\.\s*data\b|\[)")
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
-_LITERAL_LIKE_RE = re.compile(r"[0-9eEfFlLuU.+\-*/()\s,']+")
+# A numeric literal token — digits with separators, a fraction, an exponent and the C++ suffixes
+# — matched as a WHOLE token, so a name made only of suffix letters (`e`, `f`, `ul`) is a name,
+# not a literal (round 1 of this change's review: `energy = e;` read as literal-only).
+_NUMBER_TOKEN_RE = re.compile(
+    r"(?<![\w.])(?:\d[\d']*\.?[\d']*|\.\d[\d']*)(?:[eE][+-]?\d[\d']*)?[fFlLuU]*(?![\w.])")
+_LITERAL_OPERATORS_RE = re.compile(r"[+\-*/()\s,]*")
 _CONST_DECLARATION_RE = re.compile(
     r"\b(?:constexpr|const)\b[^;(){}=]*?\b(?P<name>[A-Za-z_]\w*)\s*(?:=|\{)")
 
@@ -650,10 +655,13 @@ def _identifiers(expr: str) -> set[str]:
 
 
 def _is_literal_like(expr: str) -> bool:
+    """`expr` is a boolean literal, or numeric literals joined by arithmetic and parentheses."""
     expr = expr.strip()
     if expr in ("true", "false"):
         return True
-    return bool(expr) and _LITERAL_LIKE_RE.fullmatch(expr) is not None
+    if not _NUMBER_TOKEN_RE.search(expr):
+        return False
+    return _LITERAL_OPERATORS_RE.fullmatch(_NUMBER_TOKEN_RE.sub(" ", expr)) is not None
 
 
 def _assignments(body: str) -> list[tuple[str, set[str], int, str]]:

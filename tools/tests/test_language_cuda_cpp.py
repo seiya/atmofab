@@ -915,6 +915,30 @@ class PhysicsGateTests(unittest.TestCase):
                               "output parameters"], out)
             self.assertEqual([], self._gates(model, [], node_key="component/p@0.1.0"))
 
+    def test_the_literal_gate_s_each_clause(self) -> None:
+        """Each clause of the literal-outputs gate, one row each (round 1 of this change's review:
+        four of its clauses had no witness): a name made of literal-suffix letters is a name, an
+        element write is not a whole assignment, every output must be assigned whole, an
+        input-dependent right-hand side exempts, and a boolean literal is a literal."""
+        cases = {
+            "suffix-letter local": ("void p__f(atmofab::View<const double, 1> h, double& energy) "
+                                    "{ double e = 0.0; for (long i = 0; i < h.extent[0]; ++i) "
+                                    "{ e += h.data[i]; } energy = e; }", False),
+            "element write": ("void p__f(atmofab::View<double, 1> u, double x) "
+                              "{ u.data[0] = 1.0; (void)x; }", False),
+            "one output unassigned": ("void p__f(double& a, double& b, double x) "
+                                      "{ a = 1.0; b = b * x; }", False),
+            "input dependent": ("void p__f(double& a, double& b, double x) "
+                                "{ a = 1.0; b = x; }", False),
+            "boolean literal": ("void p__f(bool& ok, double& a, double x) "
+                                "{ ok = true; a = 2.0; (void)x; }", True),
+            "suffixed literal": ("void p__f(float& a, double x) { a = 0.5f; (void)x; }", True),
+        }
+        for label, (body, refused) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                out = self._gates(self._model(tmp, body), [])
+                self.assertEqual(refused, any("literal-only assignments" in v for v in out), out)
+
     def test_a_discarded_dependency_output_is_refused(self) -> None:
         good = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
                 " double dt) {\n"
