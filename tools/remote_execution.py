@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""The remote executor: runs `Validate.execute`'s commands at an execution site reached over ssh
+(issue #293).
+
+The local path runs each command through the build-runtime server in this process
+(`tool_run_program`, `tool_run_quality_checks`), and the server writes one `command_log.jsonl`
+entry per command. A remote site has no server: the host stages the files a job needs, renders
+ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh call, copies the
+job directory back with scp, and then writes the same log entries itself — through the server's
+own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
+§Execution sites).
+
+What the executor knows is a SEQUENCE of commands (`CommandSpec`), each an argv, a working
+directory, an environment override set and a timeout, and the files to ship. It does not know
+what the commands are: the conductor composes them, and a build system's test target, its
+variable names and the runner's argv reach this module only as values. The one piece of the
+conductor's layout it asks for is the directories to create before the first command runs.
+
+Every way the evidence could be incomplete or not this job's is a refusal
+(`RemoteExecutionError`), never a default:
+
+- the job directory is created with `mkdir` and no `-p`, so a directory that already exists —
+  a stale job's output — is refused rather than read;
+- a command's exit status is the integer its `.rc` file holds; a missing, empty or non-integer
+  file is a lost status and is refused, never read as 0. A command runs only when every earlier
+  one exited 0, and an `.rc` file for a command that should not have run is refused too;
+- a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
+  script that fails outside its commands (a directory it cannot make, a program it cannot
+  find), and a job directory that cannot be removed after collection are refused, with the
+  stage and the remote path in the message.
+
+A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
+`_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
+fail_closed). A command that RAN and exited non-zero is not a refusal; it is reported in its
+result exactly as the local server reports it. No log entry is written until every status has
+been read, so a refused job leaves no evidence behind it.
+
+Nothing calls `execute_job` yet: the conductor is wired to it in a later pull request of issue
+#293, and until then this module changes no run. Only `scheduler: none` is implemented — the job
+script runs in the foreground of the ssh call; a site whose scheduler is anything else is refused
+here until a scheduler backend implements `job_submit`.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from tools.execution_sites import DIRECT_SCHEDULER, Site
+
+#: The local programs the transport runs, in the order it runs them.
+TRANSPORT_EXECUTABLES: tuple[str, ...] = ("ssh", "scp")
+#: The programs the job script needs at the site beyond the POSIX utilities; the script checks
+#: for them before it runs anything and fails without writing a status when one is missing.
+REMOTE_EXECUTABLES: tuple[str, ...] = ("timeout",)
+#: ssh options every transport call carries: never prompt (a prompt would hang a run), and give
+#: up on a host that does not answer.
+SSH_OPTIONS: tuple[str, ...] = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=30")
+#: Seconds a command is given to exit after its timeout sends TERM, before KILL.
+KILL_AFTER_SEC = 30
+#: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
+#: every other transport call.
+TRANSPORT_GRACE_SEC = 300
+#: The job's control files — the script, each command's status, times and output, the platform
+#: facts — live in this subdirectory of the job directory, which no shipped file may enter.
+CONTROL_DIR = "ctl"
+#: A path element of a job directory or a shipped file: no separator, no shell-active character,
+#: and not led by `.` (no `..`, no hidden name) or `-` (read as an option).
+_ELEMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+_TAG = re.compile(r"[a-z][a-z0-9_]*")
+#: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
+_TIMEOUT_CODES = frozenset({124, 137})
+
+
+class RemoteExecutionError(RuntimeError):
+    """The job's evidence could not be produced or collected completely. The message names the
+    stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
+
+
+def _server():
+    """The build-runtime server module, reached the way `tools/execution_sites.py` reaches it,
+    for the log writer and the validation this executor must share with the local path."""
+    mcp_dir = str(Path(__file__).resolve().parents[1] / "mcp_servers")
+    if mcp_dir not in sys.path:
+        sys.path.insert(0, mcp_dir)
+    import build_runtime_server
+
+    return build_runtime_server
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """One command of a job, as the local path would hand it to the server.
+
+    `tag` names the command's control files; `tool_name` is the tool its log entry is recorded
+    under (the validator requires the names the local path records). `argv` and `cwd` are
+    REMOTE paths, and `cwd` lies under the job directory. `env` is an override set, checked with
+    the server's own `_validate_env_overrides` before anything is contacted."""
+
+    tag: str
+    tool_name: str
+    argv: tuple[str, ...]
+    cwd: str
+    env: Mapping[str, str]
+    timeout_sec: int
+    command_log_path: Path
+    capture_limit: int
+
+
+@dataclass(frozen=True)
+class JobRequest:
+    """Everything one job needs. `ship` maps a path relative to the job directory to the local
+    file copied there (the mode is kept, so an executable stays one); `dirs` are the directories,
+    relative to the job directory, created before the first command. `platform_probe` is an argv
+    whose first output line identifies the site's device, when the hardware class has one;
+    `attribution` is recorded in each log entry, as the server records it."""
+
+    site: Site
+    job_dir: str
+    ship: Mapping[str, Path]
+    commands: tuple[CommandSpec, ...]
+    dirs: tuple[str, ...] = ()
+    platform_probe: tuple[str, ...] | None = None
+    attribution: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class JobResult:
+    """`results[i]` is `commands[i]`'s result in the local server's shape, or None when an
+    earlier command failed and it did not run. `platform` is `{machine, node, cpu_model, gpu}`;
+    `site_record` is `{site, host, scheduler, job_id, remote_dir, queue_wait_ms}`; `collected` is
+    the local copy of the job directory."""
+
+    results: tuple[dict[str, Any] | None, ...]
+    platform: dict[str, str | None]
+    site_record: dict[str, Any]
+    collected: Path
+
+
+def job_dir(site: Site, orchestration_id: str, agent_run_id: str) -> str:
+    """The remote directory one job runs in: `<workdir>/<orchestration_id>/<agent_run_id>`."""
+    if site.is_local or not site.workdir or not site.host:
+        raise ValueError(f"site {site.site_id!r} is not a remote site")
+    for name, value in (("orchestration_id", orchestration_id), ("agent_run_id", agent_run_id)):
+        if not _ELEMENT.fullmatch(str(value)):
+            raise ValueError(f"{name} {value!r} is not a single path element")
+    return f"{site.workdir.rstrip('/')}/{orchestration_id}/{agent_run_id}"
+
+
+def _relative(path: str, what: str) -> str:
+    parts = path.split("/")
+    if not path or not all(_ELEMENT.fullmatch(p) for p in parts):
+        raise ValueError(f"{what} {path!r} is not a relative path of plain elements")
+    if parts[0] == CONTROL_DIR:
+        raise ValueError(f"{what} {path!r} enters the job's control directory {CONTROL_DIR}/")
+    return path
+
+
+def _under(path: str, root: str, what: str) -> None:
+    """`path` is `root` or `root` followed by plain elements (no `..`, no empty element)."""
+    rest = path[len(root):] if path.startswith(root) else None
+    if rest is None or (rest and not (rest.startswith("/")
+                                      and all(_ELEMENT.fullmatch(p) for p in rest[1:].split("/")))):
+        raise ValueError(f"{what} {path!r} is not under {root} by plain path elements")
+
+
+def _validate(request: JobRequest) -> None:
+    """Refuse a malformed request before any transport call: a host defect, not the site's."""
+    site = request.site
+    if site.is_local or not site.host or not site.workdir:
+        raise ValueError(f"site {site.site_id!r} is not a remote site")
+    if site.scheduler != DIRECT_SCHEDULER:
+        raise ValueError(
+            f"site {site.site_id!r} submits through scheduler {site.scheduler!r}, which this "
+            f"executor does not implement yet; only {DIRECT_SCHEDULER!r} runs")
+    _under(request.job_dir, site.workdir.rstrip("/"), "job_dir")
+    if request.job_dir == site.workdir.rstrip("/"):
+        raise ValueError("job_dir is the site's workdir itself")
+    if not request.commands:
+        raise ValueError("a job runs at least one command")
+    for rel in request.ship:
+        _relative(rel, "shipped path")
+    for rel in request.dirs:
+        _relative(rel, "directory")
+    tags = [c.tag for c in request.commands]
+    if len(set(tags)) != len(tags):
+        raise ValueError(f"command tags repeat: {tags}")
+    server = _server()
+    for c in request.commands:
+        if not _TAG.fullmatch(c.tag):
+            raise ValueError(f"command tag {c.tag!r} is not a lowercase token")
+        if not c.argv:
+            raise ValueError(f"command {c.tag!r} has an empty argv")
+        if isinstance(c.timeout_sec, bool) or not isinstance(c.timeout_sec, int) \
+                or c.timeout_sec < 1:
+            raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
+        _under(c.cwd, request.job_dir, f"command {c.tag!r} cwd")
+        server._validate_env_overrides(dict(c.env), c.tool_name)
+        for key in c.env:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+                raise ValueError(f"command {c.tag!r} env name {key!r} is not a variable name")
+
+
+def render_job_script(request: JobRequest) -> str:
+    """The POSIX `sh` script that runs `request.commands` at the site.
+
+    Each command writes `<tag>.t0` / `<tag>.t1` (epoch seconds), `<tag>.stdout` / `<tag>.stderr`
+    and `<tag>.rc` under the control directory, and runs only when every earlier command exited
+    0. The script exits non-zero, before any command, when a directory cannot be made or a
+    program in `REMOTE_EXECUTABLES` is missing, and before a command whose program cannot be
+    found: the local server raises for a program it cannot start rather than reporting an exit
+    status, so a missing program is the host's failure here too, and a 126 or 127 a command
+    reports is its own. Every value is quoted with `shlex.quote`."""
+    q = shlex.quote
+    j = request.job_dir
+    ctl = f"{j}/{CONTROL_DIR}"
+    lines = ["#!/bin/sh", "set -u"]
+    for prog in REMOTE_EXECUTABLES:
+        lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || exit 3")
+    for rel in request.dirs:
+        lines.append(f"mkdir -p {q(f'{j}/{rel}')} || exit 3")
+    for c in request.commands:
+        lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || exit 3")
+    lines.append(
+        f"{{ uname -m; hostname; grep -m1 'model name' /proc/cpuinfo; }} > {q(ctl + '/platform')}"
+        " 2>/dev/null")
+    if request.platform_probe:
+        lines.append(f"{shlex.join(request.platform_probe)} > {q(ctl + '/platform.probe')}"
+                     f" 2>/dev/null < /dev/null; echo $? > {q(ctl + '/platform.probe.rc')}")
+    lines.append("rc=0")
+    for c in request.commands:
+        env_words = " ".join(q(f"{k}={v}") for k, v in sorted(c.env.items()))
+        run = (f"cd {q(c.cwd)} && exec env {env_words + ' ' if env_words else ''}"
+               f"timeout -k {KILL_AFTER_SEC} {c.timeout_sec} {shlex.join(c.argv)}")
+        base = f"{ctl}/{c.tag}"
+        lines += [
+            'if [ "$rc" = 0 ]; then',
+            f"  command -v {q(c.argv[0])} >/dev/null 2>&1 || exit 4",
+            f"  date +%s > {q(base + '.t0')}",
+            f"  ( {run} ) > {q(base + '.stdout')} 2> {q(base + '.stderr')} < /dev/null",
+            "  rc=$?",
+            f"  echo \"$rc\" > {q(base + '.rc')}",
+            f"  date +%s > {q(base + '.t1')}",
+            "fi",
+        ]
+    lines.append("exit 0")
+    return "\n".join(lines) + "\n"
+
+
+def _transport(argv: list[str], *, stage: str, timeout: int, remote: str) -> str:
+    try:
+        proc = subprocess.run(argv, text=True, capture_output=True, timeout=timeout,
+                              check=False, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise RemoteExecutionError(
+            f"{stage}: {argv[0]} did not finish within {timeout} sec; the job may still be "
+            f"running and its directory is left at {remote}") from None
+    except OSError as exc:
+        raise RemoteExecutionError(f"{stage}: {argv[0]} could not be started: {exc}") from exc
+    if proc.returncode != 0:
+        raise RemoteExecutionError(
+            f"{stage}: {argv[0]} exited {proc.returncode} ({remote}): "
+            f"{(proc.stderr or proc.stdout).strip()[-2000:]}")
+    return proc.stdout
+
+
+def _ssh(host: str, command: str, *, stage: str, timeout: int, remote: str) -> str:
+    return _transport(["ssh", *SSH_OPTIONS, "--", host, command],
+                      stage=stage, timeout=timeout, remote=remote)
+
+
+def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
+    _transport(["scp", "-q", "-r", "-p", *SSH_OPTIONS, "--", *sources, dest],
+               stage=stage, timeout=TRANSPORT_GRACE_SEC, remote=remote)
+
+
+def _read_int(path: Path, what: str, remote: str) -> int:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        raise RemoteExecutionError(
+            f"{what}: {path.name} was not written, so the status is lost ({remote})") from None
+    if not re.fullmatch(r"-?[0-9]+", text):
+        raise RemoteExecutionError(
+            f"{what}: {path.name} holds {text[:80]!r}, not an integer ({remote})")
+    return int(text)
+
+
+def _iso(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _platform(ctl: Path, probed: bool) -> dict[str, str | None]:
+    """The same record the local path builds, from the site's own answers: machine, node, the
+    CPU model name, and the probe's first line (None when there is no probe or it failed)."""
+    try:
+        lines = (ctl / "platform").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    machine = (lines[0].strip() or None) if len(lines) > 0 else None
+    node = (lines[1].strip() or None) if len(lines) > 1 else None
+    cpu_model = None
+    if len(lines) > 2 and ":" in lines[2]:
+        cpu_model = lines[2].split(":", 1)[1].strip() or None
+    gpu = None
+    if probed:
+        try:
+            ok = (ctl / "platform.probe.rc").read_text(encoding="utf-8").strip() == "0"
+            first = (ctl / "platform.probe").read_text(
+                encoding="utf-8", errors="replace").splitlines()
+            gpu = (first[0].strip() or None) if ok and first else None
+        except OSError:
+            gpu = None
+    return {"machine": machine, "node": node, "cpu_model": cpu_model, "gpu": gpu}
+
+
+def _read_output(path: Path, limit: int) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    return _server()._trim(text, limit)
+
+
+def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
+    """Run `request` at its site and return its results; see the module docstring for the
+    refusals. `local_tmp` is a local directory this job owns: the files are staged in
+    `<local_tmp>/stage` and the job directory is collected to `<local_tmp>/collected`, and
+    neither may exist beforehand."""
+    _validate(request)
+    site = request.site
+    host = str(site.host)
+    remote = request.job_dir
+    q = shlex.quote
+    stage_dir = local_tmp / "stage"
+    collected = local_tmp / "collected"
+    for p in (stage_dir, collected):
+        if p.exists():
+            raise ValueError(f"{p} already exists; a job owns a fresh local_tmp")
+
+    # 1. The job directory, fresh: `mkdir` without `-p` refuses a directory that is already there.
+    parent = remote.rsplit("/", 1)[0]
+    _ssh(host, f"mkdir -p {q(parent)} && mkdir {q(remote)}",
+         stage="create the job directory (an existing one is a stale job's and is refused)",
+         timeout=TRANSPORT_GRACE_SEC, remote=remote)
+
+    # 2. Stage and ship: the files, and the script in the control directory.
+    for rel, src in request.ship.items():
+        dst = stage_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    (stage_dir / CONTROL_DIR).mkdir(parents=True, exist_ok=True)
+    script = stage_dir / CONTROL_DIR / "job.sh"
+    script.write_text(render_job_script(request), encoding="utf-8")
+    tops = sorted({p.name for p in stage_dir.iterdir()})
+    _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
+         stage="ship the job's files", remote=remote)
+
+    # 3. Run the script in the foreground; its commands' statuses are in files, and its own exit
+    #    status is non-zero only when it failed before them.
+    bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
+    _ssh(host, f"sh {q(remote + '/' + CONTROL_DIR + '/job.sh')}",
+         stage="run the job script", timeout=bound, remote=remote)
+
+    # 4. Collect. A failure here leaves the remote directory for the operator.
+    _scp([f"{host}:{remote}"], str(collected), stage="collect the job directory", remote=remote)
+    ctl = collected / CONTROL_DIR
+
+    # 5. Read every status before anything is recorded.
+    statuses: list[tuple[int, int, int] | None] = []
+    upstream_ok = True
+    for c in request.commands:
+        what = f"command {c.tag!r}"
+        if not upstream_ok:
+            if any((ctl / f"{c.tag}.{s}").exists() for s in ("rc", "t0")):
+                raise RemoteExecutionError(
+                    f"{what} ran although an earlier command failed ({remote})")
+            statuses.append(None)
+            continue
+        rc = _read_int(ctl / f"{c.tag}.rc", what, remote)
+        t0 = _read_int(ctl / f"{c.tag}.t0", what, remote)
+        t1 = _read_int(ctl / f"{c.tag}.t1", what, remote)
+        if t1 < t0:
+            raise RemoteExecutionError(f"{what}: ended before it started ({remote})")
+        statuses.append((rc, t0, t1))
+        upstream_ok = rc == 0
+
+    # 6. Remove the remote directory; the evidence is local now.
+    _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",
+         timeout=TRANSPORT_GRACE_SEC, remote=remote)
+
+    # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
+    server = _server()
+    results: list[dict[str, Any] | None] = []
+    for c, status in zip(request.commands, statuses):
+        if status is None:
+            results.append(None)
+            continue
+        rc, t0, t1 = status
+        timed_out = rc in _TIMEOUT_CODES and t1 - t0 >= c.timeout_sec
+        argv = list(c.argv)
+        command_id = uuid.uuid4().hex
+        result: dict[str, Any] = {
+            "ok": rc == 0,
+            "return_code": None if timed_out else rc,
+            "command": argv,
+            "executed_command": shlex.join(argv),
+            "cwd": c.cwd,
+            "stdout": _read_output(ctl / f"{c.tag}.stdout", c.capture_limit),
+            "stderr": _read_output(ctl / f"{c.tag}.stderr", c.capture_limit),
+        }
+        if timed_out:
+            result["error"] = f"timeout: exceeded {c.timeout_sec} sec"
+        entry = {
+            "version": 1,
+            "command_id": command_id,
+            "tool_name": c.tool_name,
+            "started_at_utc": _iso(t0),
+            "ended_at_utc": _iso(t1),
+            "elapsed_ms": (t1 - t0) * 1000,
+            "cwd": c.cwd,
+            "command": argv,
+            "executed_command": shlex.join(argv),
+            "timeout_sec": c.timeout_sec,
+            "capture_limit": c.capture_limit,
+            "env_override_keys": sorted(c.env),
+            "ok": result["ok"],
+            "return_code": result["return_code"],
+            **({"error": result["error"]} if timed_out else {}),
+            "site": {"site": site.site_id, "host": host, "scheduler": site.scheduler,
+                     "job_id": None, "remote_cwd": c.cwd},
+            **dict(request.attribution),
+        }
+        server._append_command_log(c.command_log_path, entry)
+        result["command_id"] = command_id
+        result["command_log_path"] = str(c.command_log_path)
+        log_ref = server._path_to_ref(c.command_log_path)
+        if log_ref is not None:
+            result["command_log_ref"] = log_ref
+        results.append(result)
+
+    return JobResult(
+        results=tuple(results),
+        platform=_platform(ctl, bool(request.platform_probe)),
+        site_record={"site": site.site_id, "host": host, "scheduler": site.scheduler,
+                     "job_id": None, "remote_dir": remote, "queue_wait_ms": 0},
+        collected=collected)
