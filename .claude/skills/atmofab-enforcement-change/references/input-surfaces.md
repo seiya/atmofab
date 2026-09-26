@@ -57,6 +57,21 @@ pin moved. Two things that cost time:
   decision; four were changed and two were unreachable by construction. The unreachable pair
   still got a comment, because the next reader cannot tell "deliberately not classified" from
   "missed" — and prove unreachability with a call-graph closure, not by reading the file.
+- **The emitter and the named artifacts are on the channel too (issue #293 PR-2, PR #301).** The
+  remote executor's first shape read each command's exit status from `ctl/<tag>.rc`, a file the
+  runner — leaf-authored code, running in `<job>/run` — could plant read-only before the script's
+  own write failed silently (round 1). The fix changed the channel as this surface says: statuses
+  became lines on the job script's stdout, which the command holds no descriptor of. Three more
+  rounds each found the same class one step further out. The status stream could be reached
+  through `/proc/<pid>/fd/1` and a line glued onto the script's own (round 2: a line carrying the
+  marker anywhere but once at its start is now refused). The SCRIPT printing the lines was a file
+  in the job directory, and bash reads a script file a command at a time, so the runner rewrote
+  the rest to skip the quality check and print a clean status for it (round 4: the script became
+  the ssh call's command string). And the record named each shipped file by its local source —
+  what the gate reads — while the runner could rewrite the shipped copy of the control file the
+  quality check ran next (round 5: every shipped file must come back byte-identical). The three
+  are one question asked once: **what can the evaluated program write before the host reads the
+  record?** — the channel, the emitter of the channel, and every artifact the record names.
 
 **Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
 rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a

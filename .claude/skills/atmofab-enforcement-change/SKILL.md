@@ -373,7 +373,13 @@ recipes are in `references/input-surfaces.md`:
   `sorted(...)`) so trace the container from emit site to decision and witness it through the
   **real CLI in a real subprocess**; and **counting the sites is not answering them** — a site you
   leave unchanged needs a comment saying it is deliberate, with unreachability proved by call-graph
-  closure rather than by reading
+  closure rather than by reading. **A third, when the party you are protecting the channel from is
+  the program being EVALUATED: the emitter is on the channel too.** Moving a status off files the
+  program can write onto a stream it cannot is half the job if the script that PRINTS the status
+  is itself a file the program can write — bash executes a rewritten script file's rest — and so
+  is any input a later step runs (a control file the next command reads). Enumerate what the
+  evaluated program can write before the host reads the record: the record's channel, its emitter,
+  and every artifact the record names (`references/input-surfaces.md` §Surface 5, issue #293)
 - **Surface 6 — if the check tells the reader "do this to fix it", what else does that remedy
   rewrite?** Wherever a ratchet, baseline or allowlist says "on failure, run this to update",
   check that the command does not also rewrite the pin (PR #66: a pin described in three places as
