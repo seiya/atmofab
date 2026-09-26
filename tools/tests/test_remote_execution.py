@@ -183,6 +183,29 @@ class _Harness:
         return [line.split("\t") for line in self.log.read_text().splitlines()]
 
 
+#: What the job script and the shipped runner execute at the site.
+_SITE_TOOLS = ("sh", "uname", "hostname", "grep", "mkdir", "date", "env", "timeout", "python3")
+
+
+def _bare_path(root: Path, *, without: str) -> Path:
+    """A directory to use as the site's PATH: the tools the job needs, less `without`."""
+    bare = root / f"path_without_{without}"
+    bare.mkdir()
+    for tool in _SITE_TOOLS:
+        found = shutil.which(tool)
+        if tool != without and found:
+            (bare / tool).symlink_to(found)
+    assert shutil.which(without, path=str(bare)) is None
+    return bare
+
+
+def _local_cpu_model() -> str | None:
+    for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
+        if line.startswith("model name"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
+
 class EndToEndTests(unittest.TestCase):
 
     def setUp(self) -> None:
@@ -373,6 +396,13 @@ class EndToEndTests(unittest.TestCase):
         self.assertIsNone(result.platform["gpu"])
         self.assertEqual(set(result.platform), {"machine", "node", "cpu_model", "gpu"})
 
+    def test_a_site_without_one_platform_tool_loses_that_fact_only(self) -> None:
+        bare = _bare_path(self.h.root, without="hostname")
+        result = self.h.run(self.h.request(), SHIM_SSH_PATH=str(bare))
+        self.assertEqual(result.platform["machine"], os.uname().machine)
+        self.assertIsNone(result.platform["node"])
+        self.assertEqual(result.platform["cpu_model"], _local_cpu_model())
+
     def test_a_probe_answers_the_device_and_a_failing_probe_answers_none(self) -> None:
         probe = ("sh", "-c", "echo 'Device X, 1.0'; echo second")
         result = self.h.run(self.h.request(platform_probe=probe))
@@ -495,13 +525,7 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(self.h.request().machine, os.uname().machine)
 
     def test_a_site_without_timeout_is_the_hosts_failure(self) -> None:
-        bare = self.h.root / "bare_path"
-        bare.mkdir()
-        for tool in ("sh", "uname", "mkdir", "date", "hostname", "grep", "env", "python3"):
-            found = shutil.which(tool)
-            if found:
-                (bare / tool).symlink_to(found)
-        self.assertIsNone(shutil.which("timeout", path=str(bare)))
+        bare = _bare_path(self.h.root, without="timeout")
         self._refused("(?s)ssh exited 3.*timeout is missing", SHIM_SSH_PATH=str(bare))
 
     def test_a_directory_the_script_cannot_make_is_the_hosts_failure(self) -> None:
@@ -580,6 +604,10 @@ class RequestValidationTests(unittest.TestCase):
                 ({"dirs": ("-rf",)}, "plain elements")):
             with self.subTest(kw=kw):
                 self._invalid(pattern, self.h.request(ok, **kw))
+        ctl_cwd = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),
+                                 cwd=f"{self.h.job}/ctl/x", env={}, timeout_sec=1,
+                                 command_log_path=self.h.local / "l", capture_limit=1000)
+        self._invalid("control directory", self.h.request(ctl_cwd))
         for cwd in ("/tmp", f"{self.h.job}/../x", f"{self.h.job}x", f"{self.h.job}//a"):
             with self.subTest(cwd=cwd):
                 bad = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),

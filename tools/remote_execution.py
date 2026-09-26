@@ -39,7 +39,10 @@ Every way the evidence could be incomplete or not this job's is a refusal
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
 fail_closed). A command that RAN and exited non-zero is not a refusal; it is reported in its
-result exactly as the local server reports it. No log entry is written until every status has
+result as the local server reports it — with one difference in the value: a command killed by a
+signal N is recorded as `128 + N`, the shell's spelling, where the local server records `-N`,
+and `timeout` adds a line about it to the command's stderr. Nothing on the Validate path reads
+the number beyond `ok`. No log entry is written until every status has
 been read, so a refused job leaves no evidence behind it.
 
 Nothing calls `execute_job` yet: the conductor is wired to it in a later pull request of issue
@@ -226,6 +229,8 @@ def _validate(request: JobRequest) -> None:
                 or c.timeout_sec < 1:
             raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
         _under(c.cwd, request.job_dir, f"command {c.tag!r} cwd")
+        if c.cwd != request.job_dir:
+            _relative(c.cwd[len(request.job_dir) + 1:], f"command {c.tag!r} cwd")
         server._validate_env_overrides(dict(c.env), c.tool_name)
         for key in c.env:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
@@ -256,9 +261,10 @@ def render_job_script(request: JobRequest) -> str:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
         lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || fail 3 {q(f'cannot make {c.cwd}')}")
-    lines.append(
-        f"{{ uname -m; hostname; grep -m1 'model name' /proc/cpuinfo; }} > {q(ctl + '/platform')}"
-        " 2>/dev/null")
+    # One fact per file, so a site that lacks one tool loses that fact and not the next one's.
+    for name, fact in (("machine", "uname -m"), ("node", "hostname"),
+                       ("cpu", "grep -m1 'model name' /proc/cpuinfo")):
+        lines.append(f"{fact} > {q(f'{ctl}/platform.{name}')} 2>/dev/null")
     if request.platform_probe:
         lines.append(f"{shlex.join(request.platform_probe)} > {q(ctl + '/platform.probe')}"
                      f" 2>/dev/null < /dev/null; echo $? > {q(ctl + '/platform.probe.rc')}")
@@ -360,15 +366,17 @@ def _iso(epoch: int) -> str:
 def _platform(ctl: Path, probed: bool) -> dict[str, str | None]:
     """The same record the local path builds, from the site's own answers: machine, node, the
     CPU model name, and the probe's first line (None when there is no probe or it failed)."""
-    try:
-        lines = (ctl / "platform").read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        lines = []
-    machine = (lines[0].strip() or None) if len(lines) > 0 else None
-    node = (lines[1].strip() or None) if len(lines) > 1 else None
-    cpu_model = None
-    if len(lines) > 2 and ":" in lines[2]:
-        cpu_model = lines[2].split(":", 1)[1].strip() or None
+    def first_line(name: str) -> str | None:
+        try:
+            lines = (ctl / name).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        return (lines[0].strip() or None) if lines else None
+
+    machine = first_line("platform.machine")
+    node = first_line("platform.node")
+    cpu = first_line("platform.cpu")
+    cpu_model = (cpu.split(":", 1)[1].strip() or None) if cpu and ":" in cpu else None
     gpu = None
     if probed:
         try:
