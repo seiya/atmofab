@@ -10,7 +10,7 @@ G5 — io_contract consistency: no constant/fixed-JSON/analytic-expression outpu
 @@ checklist_g6_floor_scope
 Scope your judgment: on a `component`/`problem` node whose target is gpu+cuda+cuda_cpp, whose plan does not explicitly decline CUDA and whose model source has counted `for` loops, the "not one kernel anywhere" case is already settled deterministically by the `Generate.gate` static check before you see the source, so judge whether the kernels present COVER the loops the plan names, with the launch shape it states, and whether the operation moves its state to the device and back as a `host` residency requires — not whether any kernel exists. That floor does not run on any other node kind, on a model source with no counted `for` loop, or when the plan's parallelization explicitly names `none` or some other model, so in those cases existence is still yours to judge. A declared `none` is the producer's own claim, and the deterministic floor trusts it: hold it to the loops, and a plan that says `none` over loops that are plainly parallelizable on the device is itself the finding.
 @@ gate_checked_classes
-unused parameters, output-reference dataflow
+an unused parameter of a HOST function, an unused variable
 @@ inert_dummy_binding
 a `(void)x;` binding of an inert parameter
 @@ dependency_call_consistency
