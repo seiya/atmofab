@@ -516,7 +516,7 @@ class GeneratedSourcePinTests(unittest.TestCase):
                                                   "h__cb f, bool& ok) { (void)u; f(0.0)"),
                               "drifts from"),
             "argument type": (_GOOD_MODEL.replace("std::string h__emit(dp x)", "std::string h__emit(double x)"),
-                              "different signatures"),
+                              "`std::string(dp)`; `std::string(double)`"),
             "device specifier": (_GOOD_MODEL.replace("std::string h__emit", "__device__ std::string h__emit"),
                                  "different signatures"),
             "vendor attribute": (_GOOD_MODEL.replace("std::string h__emit",
@@ -589,6 +589,12 @@ class DependencyInterfaceTests(unittest.TestCase):
         facts = cs.published_interface(_GOOD_MODEL, "h__run")
         self.assertEqual(["u", "cb", "ok"], facts["argument_order"])
         self.assertEqual([1, 0, 0], [a["rank"] for a in facts["arguments"]])
+        # A consumer's sources declare no `dp` and no `h__cb`: each header name is shown
+        # qualified by the dependency's namespace, and what is already qualified stays as it is.
+        self.assertEqual(["atmofab::View<h_model::dp,1>", "h_model::h__cb", "bool&"],
+                         [a["type"] for a in facts["arguments"]])
+        self.assertEqual("std::string h__emit(h_model::dp x)",
+                         cs.published_interface(_GOOD_MODEL, "h__emit")["interface"])
         self.assertIsNone(cs.published_interface(_GOOD_MODEL, "h__absent"))
         self.assertEqual(["h__run", "h__emit"], cs.prefixed_procedures(_GOOD_MODEL, "h__"))
         self.assertEqual("p", cs.procedure_interface({"procedure_interface": " p "}))
