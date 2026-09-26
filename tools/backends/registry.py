@@ -168,8 +168,8 @@ AXES: dict[str, Axis] = {
         name="scheduler",
         source="execution site sites.<site_id>.scheduler (./sites.yaml, machine-local)",
         description=(
-            "The batch scheduler a remote execution site submits a job through: how a job "
-            "script is submitted, how its state is polled, and how its terminal state is read."
+            "The batch scheduler a remote execution site runs a job through: the command a "
+            "job script runs under, and how the job names itself."
         ),
     ),
 }
@@ -297,9 +297,11 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "job_submit": (
         ("scheduler",),
-        "The host knows how a rendered job script is submitted at a site running this "
-        "scheduler, how the job's state is polled, and how its terminal state is read "
-        "(issue #293: the remote executor drives the loop, the scheduler spells the commands).",
+        "The host knows how a job script is run as one job at a site running this scheduler: "
+        "the argv prefix it runs under in the foreground of the site's ssh call, the programs "
+        "that needs at the site, and the variable the job reads its id from (issue #293: "
+        "`tools/remote_execution.py` runs the job and reads its evidence, the scheduler spells "
+        "the prefix).",
     ),
 }
 
@@ -343,6 +345,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "source_reading": "source",
     "signatures": "signatures",
     "interface_header": "header",
+    "job_submit": "submit",
 }
 
 
@@ -520,13 +523,16 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         ),
         # A site that submits nothing: the job script runs in the foreground over the site's
         # transport (`sites.yaml`, `scheduler: none`; issue #293). It is core because running a
-        # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it. Nothing
-        # dispatches on `job_submit` through this registry yet — the executor compares the site's
-        # scheduler with `execution_sites.DIRECT_SCHEDULER` and refuses any other, so it is in the
-        # declaration-only group of
-        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` until a scheduler
-        # backend implements it.
+        # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it, under no
+        # prefix, and the job has no id.
         Backend("scheduler", "none", None, core_provides=frozenset({"job_submit"})),
+        # Slurm (issue #293 PR-4): the job script runs as one job under `srun`, in the
+        # foreground of the same ssh call, so its statuses travel on the same channel. The
+        # executor asks `capability_module` for the prefix (`remote_execution._submission`).
+        Backend(
+            "scheduler", "slurm", "tools.backends.scheduler.slurm",
+            backend_provides=frozenset({"job_submit"}),
+        ),
     )
 }
 

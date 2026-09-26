@@ -2219,7 +2219,11 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
                       "checks_abi", "source_reading", "signatures", "parallel_directives",
-                      "interface_header"}
+                      "interface_header", "job_submit"}
+        # `job_submit` joined them with issue #293 PR-4: the remote executor asks
+        # `missing_capability_reason` / `capability_module` for the site's scheduler
+        # (`remote_execution._submission`) when it renders a job and when the launch probe lists
+        # the programs a site needs.
         # `interface_header` joined them with issue #289 (R4-b PR-4): the conductor asks
         # `provides` / `capability_module` for it when it writes a bundle's files, and when it
         # names the files it authors (`_host_rendered_src_names`).

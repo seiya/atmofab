@@ -19,10 +19,18 @@ marker) (to plant or lose a file),
 (to take a tool away from the "site"), and `SHIM_SSH_DELAY` makes the job script's call wait
 that many seconds first. A job script killed mid-run makes the shim exit non-zero (137 for a
 SIGKILL), where a real ssh exits 255: the rows match the stage, not the number.
+
+A `slurm` site's job runs under `srun`, which is a shim too: it logs its argv, skips its options,
+and runs the rest with `SLURM_JOB_ID=4242` added to the environment, relaying the task's stdout
+and exit status as a real one does (measured on Slurm 20.02). Its knobs: `SHIM_SRUN_QUEUE` waits
+that many seconds first (a queued job), `SHIM_SRUN_DENY` exits 1 with srun's words for an
+allocation `--immediate` gave up on, `SHIM_SRUN_KILLED` runs the task and then exits 143 as a job
+the scheduler killed does, and `SHIM_SRUN_NO_ID` leaves the job id unset.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -109,6 +117,27 @@ if not recursive and any(os.path.isdir(p) for p in paths[:-1]):
 sys.exit(subprocess.run(["cp", *(["-r"] if recursive else []), *paths]).returncode)
 '''
 
+_SRUN_SHIM = r'''#!/usr/bin/env python3
+import json, os, subprocess, sys, time
+with open(os.environ["SHIM_LOG"], "a") as f:
+    f.write(json.dumps(["srun", *sys.argv[1:]]) + "\n")
+args = sys.argv[1:]
+while args and args[0].startswith("-"):
+    args = args[2:] if args[0] in ("-p", "-t", "-J", "-N", "-n") else args[1:]
+if os.environ.get("SHIM_SRUN_DENY"):
+    sys.stderr.write("srun: error: Unable to allocate resources: Requested nodes are busy\n")
+    sys.exit(1)
+time.sleep(float(os.environ.get("SHIM_SRUN_QUEUE") or 0))
+env = dict(os.environ)
+if not os.environ.get("SHIM_SRUN_NO_ID"):
+    env["SLURM_JOB_ID"] = "4242"
+rc = subprocess.run(args, env=env).returncode
+if os.environ.get("SHIM_SRUN_KILLED"):
+    sys.stderr.write("slurmstepd: error: *** JOB 4242 CANCELLED DUE TO TIME LIMIT ***\n")
+    sys.exit(143)
+sys.exit(rc)
+'''
+
 #: A shipped runner: records its argv and cwd, writes an output file, prints to both streams, and
 #: exits with `$RUNNER_RC` (0 when unset).
 _RUNNER = textwrap.dedent('''\
@@ -129,7 +158,7 @@ class _Harness:
         self.root = Path(tmp)
         self.shims = self.root / "shims"
         self.shims.mkdir()
-        for name, body in (("ssh", _SSH_SHIM), ("scp", _SCP_SHIM)):
+        for name, body in (("ssh", _SSH_SHIM), ("scp", _SCP_SHIM), ("srun", _SRUN_SHIM)):
             p = self.shims / name
             p.write_text(body)
             p.chmod(p.stat().st_mode | stat.S_IXUSR)
@@ -881,7 +910,7 @@ class RequestValidationTests(unittest.TestCase):
     def test_a_site_this_executor_does_not_run(self) -> None:
         batch = es.Site(site_id="c", executes=("cpu",), host="c", workdir=str(self.h.workdir),
                         scheduler="zz_batch")
-        self._invalid("does not implement", rx.JobRequest(
+        self._invalid("implements 'job_submit' for scheduler", rx.JobRequest(
             site=batch, job_dir=self.h.job, ship={}, commands=(self.h.command("r", ("true",)),)))
         local = es.Site(site_id="local", executes=("cpu",))
         self._invalid("not a remote site", rx.JobRequest(
@@ -946,6 +975,111 @@ class RequestValidationTests(unittest.TestCase):
                 self.assertRaises(ValueError, rx.job_dir, self.h.site, orch, arid)
         with self.assertRaisesRegex(ValueError, "not a remote site"):
             rx.job_dir(es.Site(site_id="local", executes=("cpu",)), "o", "a")
+
+
+class SchedulerTests(unittest.TestCase):
+    """A `slurm` site: the same job, run under the backend's `srun` prefix."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = self._slurm(_Harness(self._tmp.name))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _slurm(h: _Harness, **kw) -> _Harness:
+        kw.setdefault("scheduler_directives", ("--partition=debug", "-p other", "--time=1"))
+        kw.setdefault("queue_timeout_sec", 77)
+        h.site = dataclasses.replace(h.site, scheduler="slurm", **kw)
+        return h
+
+    def _refused(self, pattern: str, **knobs: str) -> None:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, pattern):
+            self.h.run(self.h.request(), **knobs)
+        self.assertEqual(self.h.log_entries("run"), [])
+        self.assertEqual(self.h.log_entries("qc"), [])
+
+    def test_the_job_runs_under_srun_and_records_its_id(self) -> None:
+        result = self.h.run(self.h.request())
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertEqual(result.site_record["scheduler"], "slurm")
+        self.assertEqual(result.site_record["job_id"], "4242")
+        for tag in ("run", "qc"):
+            (entry,) = self.h.log_entries(tag)
+            self.assertEqual(entry["site"]["job_id"], "4242")
+            self.assertEqual(entry["site"]["scheduler"], "slurm")
+        # One srun call, inside the job's ssh call: the directives, split into words, and then
+        # the executor's own options, last so that none of the directives changes them.
+        (srun,) = [c for c in self.h.calls() if c[0] == "srun"]
+        wall = sum(c.timeout_sec + rx.KILL_AFTER_SEC for c in self.h.request().commands) \
+            + rx.TRANSPORT_GRACE_SEC
+        self.assertEqual(srun[1:9], ["--partition=debug", "-p", "other", "--time=1",
+                                     "--ntasks=1", "--job-name=atmofab-arid-1",
+                                     f"--time={-(-wall // 60)}", "--immediate=77"])
+        self.assertEqual(srun[9:11], ["sh", "-c"])
+        self.assertIn(rx.STATUS_MARKER, srun[11])
+        self.assertEqual([c[0] for c in self.h.calls()], ["ssh", "scp", "ssh", "srun", "scp", "ssh"])
+        self.assertFalse(Path(self.h.job).exists())
+
+    def test_the_queue_timeout_defaults_and_bounds_the_call(self) -> None:
+        h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)), queue_timeout_sec=None)
+        request = h.request(platform_probe=("true",))
+        with mock.patch.object(rx, "_ssh", wraps=rx._ssh) as ssh:
+            h.run(request)
+        (srun,) = [c for c in h.calls() if c[0] == "srun"]
+        self.assertIn(f"--immediate={rx.QUEUE_TIMEOUT_DEFAULT_SEC}", srun)
+        # The time limit covers the device probe; the local bound adds the queue wait on top.
+        wall = sum(c.timeout_sec + rx.KILL_AFTER_SEC for c in request.commands) \
+            + rx.TRANSPORT_GRACE_SEC + rx.PROBE_TIMEOUT_SEC
+        self.assertIn(f"--time={-(-wall // 60)}", srun)
+        (job_call,) = [c for c in ssh.call_args_list if c.kwargs["stage"] == "run the job script"]
+        self.assertEqual(job_call.kwargs["timeout"],
+                         rx.QUEUE_TIMEOUT_DEFAULT_SEC + wall + rx.TRANSPORT_GRACE_SEC)
+
+    def test_the_queue_wait_is_the_time_between_asking_and_starting(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SRUN_QUEUE="1.5")
+        self.assertGreaterEqual(result.site_record["queue_wait_ms"], 1000)
+        self.assertEqual(result.site_record["queue_wait_ms"] % 1000, 0)
+
+    def test_a_job_not_granted_an_allocation_is_refused(self) -> None:
+        self._refused("run the job script: ssh exited 1 .*Unable to allocate resources",
+                      SHIM_SRUN_DENY="1")
+        self.assertTrue(Path(self.h.job).is_dir())
+
+    def test_a_job_the_scheduler_killed_is_refused_although_every_status_arrived(self) -> None:
+        self._refused("run the job script: ssh exited 143 .*TIME LIMIT", SHIM_SRUN_KILLED="1")
+
+    def test_a_job_without_its_id_is_refused(self) -> None:
+        self._refused("empty job id", SHIM_SRUN_NO_ID="1")
+
+    def test_the_scheduler_lines_are_one_each_and_only_under_a_scheduler(self) -> None:
+        one_each = "1 atmofab-submitted and 2 atmofab-job lines|, not one each"
+        for pattern, repl, refusal in (
+                (r"^(atmofab-job .*)$", r"\1\n\1", one_each),              # a second job line
+                (r"^(atmofab-job .*)$", "", one_each),                     # the job line lost
+                (r"^(atmofab-submitted .*)$", "", one_each),               # the ask lost
+                (r"^(atmofab-job) \S+ (.*)$", r"\1 9 9 \2", "does not parse"),  # not its shape
+                (r"^(atmofab-submitted) .*$", r"\1 soon", "does not parse")):
+            with self.subTest(repl=repl, pattern=pattern):
+                h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
+                with self.assertRaisesRegex(rx.RemoteExecutionError, refusal):
+                    h.run(h.request(), SHIM_SSH_SUB=json.dumps([pattern, repl]))
+                self.assertEqual(h.log_entries("run"), [])
+        h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "run under no scheduler"):
+            h.run(h.request(), SHIM_SSH_SUB=json.dumps(
+                [r"^(atmofab-platform machine .*)$", r"atmofab-job 1 2\n\1"]))
+
+    def test_the_launch_probe_asks_for_the_schedulers_program(self) -> None:
+        from tools.host_prerequisites import required_site_executables
+        self.assertEqual(rx.scheduler_executables("slurm"), ("srun",))
+        self.assertEqual(rx.scheduler_executables("none"), ())
+        selection = {"build_system": "make"}
+        self.assertEqual(required_site_executables(selection, scheduler="slurm"),
+                         ("timeout", "make", "srun"))
+        self.assertEqual(required_site_executables(selection, scheduler="none"),
+                         ("timeout", "make"))
 
 
 class ScriptTests(unittest.TestCase):

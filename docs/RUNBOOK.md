@@ -158,7 +158,7 @@ the run stops at; a run with no member left to run that stops earlier contacts n
 | `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes` |
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
-| `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils) and the target's build system, read from the tables that run them (`host_prerequisites.required_site_executables`) |
+| `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only |
 | `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here. Asked before the two rows below, whose remedies would be work on the wrong site |
 | `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), or its login prints to stdout (scp fails on that) |
 
@@ -168,7 +168,9 @@ must be a POSIX-family shell (every call is an `sh` command line, which a csh-fa
 refuses as `site_unreachable`), and the login's startup files must print nothing to stdout.
 Among what the probe does not see is the runtime the shipped binary links against: a shared
 library the site's non-interactive login does not resolve makes the job refuse its first
-command (exit 127) mid-run. A site is in no derivation key: re-mapping a target to another site
+command (exit 127) mid-run. Nor does it see the machines a site's scheduler runs a job on: the
+probe asks the login, and a job's directory must be visible at the same path from those
+machines, whose programs the job script checks again before its first command. A site is in no derivation key: re-mapping a target to another site
 does not re-run its certified Validate (pass `--rederive validate`; §"Updating a shared dependency spec (derivation-key re-certification)" below).
 
 ### Refused at `preflight`, still before the first leaf

@@ -234,7 +234,8 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            f"over them (see docs/RUNBOOK.md#0-1)"),
                 "missing": missing_transport, "required": list(TRANSPORT_EXECUTABLES),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
-    required = required_site_executables(_host_probe_selection(target_profile))
+    required = required_site_executables(_host_probe_selection(target_profile),
+                                         scheduler=site.scheduler)
     try:
         probe = probe_site(site, required)
     except RemoteExecutionError as exc:

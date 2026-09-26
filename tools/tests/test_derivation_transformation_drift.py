@@ -471,7 +471,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # this branch — the self-ssh run orch_20260926T082603Z_3dbb0c04 (round-0 code) and the remote
     # acceptance run orch_20260926T085603Z_0083aa59 (round-1 code, 24b09466) — and what they ran
     # is the job script and the conductor wiring these re-pins leave unchanged.
-    "execute-5": "e6b9360b446f8588c3ea73a0a4a4ddfd469eaf4a807706619361c736830fa48a",
+    # Re-pinned by PR-4 (the `slurm` scheduler), without a bump: a `none` site's job runs the
+    # same script and is read the same way (no scheduler lines, `job_id` null, `queue_wait_ms`
+    # 0), and a scheduler's job runs that same script under its backend's prefix and records the
+    # job id and the queue wait — `execution_site` fields, a record of where and how, like the
+    # site itself, and in no key.
+    "execute-5": "948ff352f75c7d7e153b752c3a736ecfbc533cb39092f65c1450becef7a9eac7",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

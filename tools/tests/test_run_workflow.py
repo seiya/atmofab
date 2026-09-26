@@ -10122,7 +10122,8 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         from tools.host_prerequisites import resolve_launch_axis_selection
         with _real_target_resolution():
             profile = run_workflow.resolve_run_target(self.repo_root, "t_a")
-        required = list(required_site_executables(resolve_launch_axis_selection(profile)))
+        required = list(required_site_executables(resolve_launch_axis_selection(profile),
+                                                  scheduler="none"))
         self.assertEqual(len(required), 2, "the job script's tool and the build system")
         code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 2)
