@@ -560,11 +560,12 @@ LEAF_IO_NAMES: tuple[str, ...] = (
     "fopen", "fopen64", "freopen", "freopen64", "fdopen", "popen", "creat", "creat64",
     "renameat", "renameat2", "unlink", "unlinkat", "ftruncate", "ftruncate64", "truncate64",
     "open64", "openat", "openat64", "execl", "execlp", "execle", "execv", "execvp", "execvpe",
-    "execve", "atexit", "at_quick_exit", "asm",
+    "execve", "atexit", "at_quick_exit", "asm", "syscall", "posix_spawn", "posix_spawnp",
+    "fork", "vfork", "mkstemp", "mkostemp", "symlink", "symlinkat", "linkat", "dup2", "dup3",
 )
 #: Names that ALSO name ordinary things (a physics helper `open_boundary`, a local `system`): refused
 #: when called, qualified (`std::rename`) or taken by address — never as a bare word.
-LEAF_IO_CALL_NAMES: tuple[str, ...] = ("open", "rename", "system", "truncate")
+LEAF_IO_CALL_NAMES: tuple[str, ...] = ("open", "rename", "system", "truncate", "link")
 
 #: What a leaf-authored source of a physics node may not contain: every file-stream and
 #: stream-buffer class (`ofstream`, `fstream`, `basic_filebuf<char>`, the wide ones), anything of
@@ -574,6 +575,11 @@ LEAF_IO_CALL_NAMES: tuple[str, ...] = ("open", "rename", "system", "truncate")
 #: handlers after `main` returns — after the harness has written the run's outputs. The
 #: host-rendered runner now ends with `std::_Exit`, so no such code runs (round 3); this refusal is
 #: the second layer, and it also covers I/O from inside a callback. Emission is the harness's alone.
+#: A language-linkage specification (`extern "C" long syscall(long, ...);`): it declares a C symbol
+#: no allowed header provides, which is how round 5 of this change's review reached a system call
+#: past every name above. A leaf source has no reason to declare one. The literal's contents are
+#: masked, its quotes are not.
+_LINKAGE_SPEC_RE = re.compile(r'\bextern\s*"')
 _LEAF_IO_RE = re.compile(
     r"\b\w*fstream\b|\b\w*filebuf\b|\bfilesystem\b"
     r"|\b(?:" + "|".join(LEAF_IO_NAMES) + r")\b"
@@ -648,7 +654,13 @@ def checks_harness_isolation_violations(
             continue
         source = text if path == checks_path else path.read_text(encoding="utf-8",
                                                                   errors="ignore")
-        io = _LEAF_IO_RE.search(cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source))))
+        code = cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source)))
+        if _LINKAGE_SPEC_RE.search(code):
+            violations.append(
+                f"{path}: a physics source must not declare a language linkage (`extern \"C\"`) — "
+                "it would declare a C symbol no allowed header provides; call only the standard "
+                "library, the CUDA runtime and the host-rendered headers")
+        io = _LEAF_IO_RE.search(code)
         if io:
             violations.append(
                 f"{path}: a physics source must not do file I/O, run a command, or register code "

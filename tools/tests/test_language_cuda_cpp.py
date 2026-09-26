@@ -944,7 +944,15 @@ class PhysicsGateTests(unittest.TestCase):
                         Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, [])
                     self.assertTrue(any("p_model.cu" in v and "must not do file I/O" in v
                                         for v in out), out)
+        # Round 5: a self-declared C symbol reached a system call past every name.
+        for spelling in ('extern "C" long syscall(long, ...);', 'extern "C" { int f(int); }'):
+            with self.subTest(spelling), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "p_model.cu").write_text(spelling + "\n")
+                out = cpp_source.checks_harness_isolation_violations(
+                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, [])
+                self.assertTrue(any("language linkage" in v for v in out), out)
         for clean in ("double system_size = 1.0;", "double rename_count = 0.0;",
+                      "extern double shared_total;", "double linkage = 0.0;",
                       "void g(double& x) { x = other::open; }"):
             with self.subTest(clean), tempfile.TemporaryDirectory() as tmp:
                 (Path(tmp) / "p_model.cu").write_text(clean + "\n")

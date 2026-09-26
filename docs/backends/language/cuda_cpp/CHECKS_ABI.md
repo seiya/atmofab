@@ -108,11 +108,12 @@ unnamed namespace keeps internal to it.
   (`std::ofstream`, `std::ifstream`, `std::fstream`, `std::filebuf`, …), no C stdio or POSIX
   opener (`fopen`, `freopen`, `open`, their `64` / `at` variants), no `std::filesystem`, no
   `rename` / `unlink` / one-path `remove`, no `system` / `popen` / `exec*`, no `atexit` /
-  `at_quick_exit`, no `asm` — refused by NAME, called or not
-  (`source.checks_harness_isolation_violations`, `LEAF_IO_NAMES` / `LEAF_IO_CALL_NAMES`).
-  Emission is the harness's alone. The host-rendered runner also ends every exit with
-  `std::_Exit`, so no namespace-scope destructor or exit handler of a leaf source runs after the
-  harness has written the run's outputs.
+  `at_quick_exit`, no `asm`, no `syscall` / `fork` / `posix_spawn`, no `extern "C"` declaration —
+  refused by NAME, called or not (`source.checks_harness_isolation_violations`,
+  `LEAF_IO_NAMES` / `LEAF_IO_CALL_NAMES`). Emission is the harness's alone, and the host-rendered
+  runner makes it so structurally: it writes EVERY output — the snapshots it serialized at the
+  capture points included — after the node's last callback has returned, and ends every exit
+  with `std::_Exit`, so no code of a leaf source runs after the harness has written anything.
 
 ## 5. CUDA C++ legality and gate guards
 

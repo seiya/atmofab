@@ -319,16 +319,22 @@ class RenderShapeTest(unittest.TestCase):
             self.assertIn(f"hm::harness_cpp_gpu__emit_array_r{rank}(view)", self.text)
             self.assertIn(f"ck::a{rank}.data.size() == ", self.text)
 
-    def test_capture_precedes_every_callback_of_the_case(self) -> None:
+    def test_capture_precedes_every_callback_and_every_write_follows_them(self) -> None:
+        """Both captures of a case precede its check and metric callbacks, and EVERY harness
+        write — the snapshots included — follows the last callback of the whole run (round 5 of
+        this change's review: a checks callback that ran after the per-case snapshot write
+        replaced it)."""
         order = [self.text.index(needle) for needle in (
-            "ck::case_setup(cid, setup_ok);", "std::vector<Named> initial = capture_state(cid);",
-            'harness_cpp_gpu__write_snapshot("initial/" + cid', "ck::case_run(cid,",
-            "std::vector<Named> final_state = capture_state(cid);",
-            "harness_cpp_gpu__write_snapshot(cid, final_state", "ck::checks_compute(",
-            "ck::metric_compute(")]
+            "ck::case_setup(cid, setup_ok);", "initial_cache.push_back(capture_state(cid));",
+            "ck::case_run(cid,", "snap_cache.push_back(capture_state(cid));",
+            "ck::checks_compute(", "ck::metric_compute(")]
         self.assertEqual(sorted(order), order)
-        self.assertLess(self.text.index("std::vector<Named> initial = capture_state(cid);"),
+        self.assertLess(self.text.index("initial_cache.push_back(capture_state(cid));"),
                         self.text.index("ck::get_time(tval);"))
+        last_callback = self.text.rindex("ck::metric_compute(")
+        for write in ("harness_cpp_gpu__write_snapshot(", "harness_cpp_gpu__write_metrics_basis(",
+                      "harness_cpp_gpu__write_diagnostics(", "harness_cpp_gpu__write_perf("):
+            self.assertGreater(self.text.index(write), last_callback, write)
 
     def test_every_check_id_and_metric_is_driven_with_an_escaped_literal(self) -> None:
         self.assertIn('ck::checks_compute(cid, "c1", cstatus);', self.text)
@@ -689,6 +695,26 @@ class NvccSmokeTest(unittest.TestCase):
         } forger;
         }  // namespace
         """)
+
+    def test_a_callback_cannot_replace_a_snapshot(self) -> None:
+        """Round 5 of this change's review: `checks_compute` ran after the case's final snapshot
+        was written and replaced it. Every write now follows the last callback."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._tree(d, _smoke_ir(), RANK_SID)
+            checks = d / f"{RANK_SID}_checks.cu"
+            checks.write_text(checks.read_text().replace(
+                "void checks_compute(const std::string& case_id, const std::string& check_id,\n"
+                "                    std::string& status) {",
+                "void checks_compute(const std::string& case_id, const std::string& check_id,\n"
+                "                    std::string& status) {\n"
+                "  std::ofstream(\"raw/state_snapshots/\" + case_id + \".json\") << \"{}\";") .replace(
+                f'#include "{RANK_SID}_checks.cuh"', f'#include "{RANK_SID}_checks.cuh"\n#include <fstream>'))
+            self._build(d, RANK_SID)
+            r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0", "c1_xfail"], cwd=d,
+                               capture_output=True, text=True, check=False)
+            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+            self.assertIn("a3", json.loads((d / "raw/state_snapshots/c0.json").read_text()))
 
     def test_an_unbound_array_stops_the_run(self) -> None:
         """...through `finish`, so no leaf destructor runs on this exit either."""
