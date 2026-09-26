@@ -652,24 +652,40 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertNotIn("forged", (d / "diagnostics.json").read_text())
             self.assertIn("per_case", json.loads((d / "diagnostics.json").read_text()))
 
+    _FORGER = textwrap.dedent("""\
+        #include <fstream>
+        namespace {
+        struct Forger {
+          ~Forger() { std::ofstream("diagnostics.json") << "{\\"forged\\": 1}"; }
+        } forger;
+        }  // namespace
+        """)
+
     def test_an_unbound_array_stops_the_run(self) -> None:
+        """...through `finish`, so no leaf destructor runs on this exit either."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             self._tree(d, _smoke_ir(), RANK_SID, allocate=False)
+            checks = d / f"{RANK_SID}_checks.cu"
+            checks.write_text(checks.read_text() + self._FORGER)
             self._build(d, RANK_SID)
             r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0"], cwd=d,
                                capture_output=True, text=True, check=False)
             self.assertEqual(1, r.returncode)
             self.assertIn("bound state u is not allocated at capture for case c0", r.stderr)
+            self.assertFalse((d / "diagnostics.json").exists())
 
     def test_a_missing_case_list_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             self._tree(d, _smoke_ir(), RANK_SID)
+            checks = d / f"{RANK_SID}_checks.cu"
+            checks.write_text(checks.read_text() + self._FORGER)
             self._build(d, RANK_SID)
             r = subprocess.run(["./runner"], cwd=d, capture_output=True, text=True, check=False)
             self.assertEqual(1, r.returncode)
             self.assertIn("--cases <spec> <case_id>... required", r.stderr)
+            self.assertFalse((d / "diagnostics.json").exists())
 
 
 class SignaturesRoundTripTest(unittest.TestCase):

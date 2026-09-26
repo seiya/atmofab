@@ -963,10 +963,6 @@ def _actual_names(arg: str) -> set[str]:
     a type, a namespace and a called function excluded. The last clause exists because an actual
     whose storage name could not be read made the call's candidates EMPTY, which passed the gate
     with the result discarded (round 2 of this change's review)."""
-    arg = arg.strip()
-    bare = re.fullmatch(r"&?\s*([A-Za-z_]\w*)", arg)
-    if bare is not None:
-        return {bare.group(1)}
     arg = _payload(arg)
     bare = re.fullmatch(r"&?\s*([A-Za-z_]\w*)", arg)
     if bare is not None:
