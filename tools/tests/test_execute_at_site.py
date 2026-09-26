@@ -153,7 +153,14 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
 
     def test_the_evidence_and_the_records_are_the_local_paths_own(self) -> None:
         n = self.n
-        out = n.execute()
+        # The "site" answers `hostname` with a name of its own, so the platform record can only
+        # be the site's answer: the shim runs on this machine, and without this the host's
+        # own record would satisfy every assertion below.
+        fake = n.root / "site_bin"
+        fake.mkdir()
+        (fake / "hostname").write_text("#!/bin/sh\necho site-node-zz\n")
+        (fake / "hostname").chmod(0o755)
+        out = n.execute(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
         self.assertEqual(out["returncode"], 0, out)
         job = f"{n.workdir}/orch_1/arid-1"
 
@@ -217,10 +224,11 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(refs["run_quality_checks"]["command_id"], qc_log[0]["command_id"])
         env = trial["environment"]
         self.assertEqual(env["platform"]["site"], "box")
-        # The site's own answers (the shim runs it on this machine).
+        # The site's own answers.
         import platform
         self.assertEqual((env["platform"]["machine"], env["platform"]["node"]),
-                         (platform.machine(), platform.node()))
+                         (platform.machine(), "site-node-zz"))
+        self.assertNotEqual(platform.node(), "site-node-zz")
         self.assertIsNone(env["platform"]["gpu"])
         self.assertEqual(env["execution_site"], {
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
