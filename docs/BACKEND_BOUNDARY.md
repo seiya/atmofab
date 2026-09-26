@@ -172,8 +172,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
     for one that runs the binary — building for a class needs no machine of that class. Declaring
     `execution` says the CODE exists (a package's `execution` names the probe that identifies the
     class's device); whether a MACHINE exists is the execution site's second half, which the
-    operator's `sites.yaml` answers and the driver and the seam both ask
-    (`tools/execution_sites.site_violations`, issue #293). So `gpu` declares `execution`, and a
+    operator's `sites.yaml` answers: the driver asks `tools/execution_sites.site_violations`, and
+    the launch seam (`tools/host_execution.launch_shape`) asks the site's `executes` again as its
+    backstop (issue #293). So `gpu` declares `execution`, and a
     run of it reaches `Validate` only where a site executes it.
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
     allowlist, the compiler-driver families, the identifier grammar and the names the host gives

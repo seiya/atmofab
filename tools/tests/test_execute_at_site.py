@@ -7,7 +7,8 @@ The rows drive the production entry point — `Conductor._execute_inproc`, and
 the same `ssh` / `scp` shims `tools/tests/test_remote_execution.py` uses: the "site" is a
 directory under the test's temporary tree, reached by running the command string locally. What is
 mocked is the post-execute gate's process (every other `subprocess.run` is the real one, the
-shims' included) and, in one row, the device probe the `hardware` package names.
+shims' included) and, in two rows, the device probe the `hardware` package names — the local-site
+row also mocks `_control_file_module`, to observe that no build control file is shipped.
 """
 
 from __future__ import annotations

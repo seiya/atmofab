@@ -159,16 +159,17 @@ the run stops at; a run with no member left to run that stops earlier contacts n
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
 | `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils) and the target's build system, read from the tables that run them (`host_prerequisites.required_site_executables`) |
-| `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), or its `timeout` does not take `-k` (busybox builds refuse it) |
-| `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here |
+| `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here. Asked before the two rows below, whose remedies would be work on the wrong site |
+| `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), or its login prints to stdout (scp fails on that) |
 
 A site is reached with the operator's own ssh configuration, which this repository does not
 describe: a non-interactive `ssh <host> true` must succeed without a prompt, the login shell
 must be a POSIX-family shell (every call is an `sh` command line, which a csh-family shell
-refuses as `site_unreachable`), and the login's startup files must print nothing. What the
-probe does not see is the runtime the shipped binary links against: a shared library the
-site's non-interactive login does not resolve makes the job refuse its first command (exit
-127) mid-run.
+refuses as `site_unreachable`), and the login's startup files must print nothing to stdout.
+Among what the probe does not see is the runtime the shipped binary links against: a shared
+library the site's non-interactive login does not resolve makes the job refuse its first
+command (exit 127) mid-run. A site is in no derivation key: re-mapping a target to another site
+does not re-run its certified Validate (pass `--rederive validate`; §"Updating a shared dependency spec (derivation-key re-certification)" below).
 
 ### Refused at `preflight`, still before the first leaf
 
@@ -386,7 +387,7 @@ python3 tools/run_workflow.py <target spec_ref> validate --with-deps --target <t
 
 The run log says why each member re-ran: `dependency_node_begin` carries `not_ready=<stage>: <node> <phase>: derivation_key_mismatch:<input>`, where `<input>` is the first input that moved (`spec.controlled_spec` for the edited node; `closure[0].ir` / `closure[0].source` for its consumers). Without `--with-deps` a single-node run stops at `workflow-launch-check` with `dependency_not_ready`, and the `reason_detail` names the node, the stage and the input the same way.
 
-What moves the key, and therefore re-derives: an edit to a node's `controlled_spec.md`, `tests.md` or `deps.yaml` under an unchanged `spec_version` (its Compile, then everything below); a catalog change that re-resolves a closure; a change of the target profile or of the harness it resolves to (Generate, Build and Validate for that target — never Compile, whose key is target-free); a dependency re-derived to DIFFERENT output within its version (its consumers' Compile when the IR changed — `closure[].ir` is a compile input — and their Generate and Build when the source changed); a bump of an adopted `profile`; a compiler upgrade (`toolchain.compiler_version`, every Build); a prompt-contract or transformation-version bump. What does not: a dependency re-derived to byte-identical output (the output hash is stage-relative, so nothing downstream moves), and a `--rederive` whose attempt reproduces the output.
+What moves the key, and therefore re-derives: an edit to a node's `controlled_spec.md`, `tests.md` or `deps.yaml` under an unchanged `spec_version` (its Compile, then everything below); a catalog change that re-resolves a closure; a change of the target profile or of the harness it resolves to (Generate, Build and Validate for that target — never Compile, whose key is target-free); a dependency re-derived to DIFFERENT output within its version (its consumers' Compile when the IR changed — `closure[].ir` is a compile input — and their Generate and Build when the source changed); a bump of an adopted `profile`; a compiler upgrade (`toolchain.compiler_version`, every Build); a prompt-contract or transformation-version bump. What does not: a dependency re-derived to byte-identical output (the output hash is stage-relative, so nothing downstream moves), a `--rederive` whose attempt reproduces the output, and the `execution site` a target maps to in `./sites.yaml` (issue #293) — re-mapping a target leaves its certified Validate in place, so a run that must execute at the new site passes `--rederive validate`, which applies to the node the invocation names; a `--with-deps` member is re-run by an invocation naming it.
 
 **One-time cost when this landed ([issue #250](https://github.com/seiya/atmofab/issues/250) PR-2).** A phase output certified before PR-1 of the issue carries no `derivation_key` and is refused (`derivation_key_missing`); nothing backfills one, by decision (a backfill would stamp "no input the old predicate could not see has changed" as a fact). On a reused `workspace/`, the first `--with-deps` run after this change therefore re-derives **every node of the closure**, leaves included. That is the intended behaviour, not a defect. A fresh workspace pays nothing.
 
