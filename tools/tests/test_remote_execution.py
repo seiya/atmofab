@@ -1039,8 +1039,23 @@ class SchedulerTests(unittest.TestCase):
 
     def test_the_queue_wait_is_the_time_between_asking_and_starting(self) -> None:
         result = self.h.run(self.h.request(), SHIM_SRUN_QUEUE="1.5")
-        self.assertGreaterEqual(result.site_record["queue_wait_ms"], 1000)
-        self.assertEqual(result.site_record["queue_wait_ms"] % 1000, 0)
+        # Whole seconds (both ends are the sites' epoch seconds), and the wait, not an epoch.
+        self.assertIn(result.site_record["queue_wait_ms"], (1000, 2000, 3000))
+
+    def test_the_job_line_is_printed_before_the_first_command(self) -> None:
+        """Printed after a command, the "start" would count that command's run as queue wait."""
+        script = rx.render_job_script(self.h.request())
+        job_line = script.index(f"{rx.JOB_MARKER} ")
+        self.assertLess(job_line, script.index("t0=$(date +%s)"))
+        self.assertLess(job_line, script.index(f"{rx.STATUS_MARKER} "))
+
+    def test_a_start_before_the_ask_is_recorded_as_no_wait(self) -> None:
+        """The two times are read on two machines; a job machine whose clock is behind the
+        login's gives a negative difference, recorded as 0 rather than refused."""
+        result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
+            [r"^(atmofab-job \S+) \d+$", r"\1 1"]))
+        self.assertEqual(result.site_record["queue_wait_ms"], 0)
+        self.assertTrue(all(r["ok"] for r in result.results))
 
     def test_a_job_not_granted_an_allocation_is_refused(self) -> None:
         self._refused("run the job script: ssh exited 1 .*Unable to allocate resources",
@@ -1060,7 +1075,12 @@ class SchedulerTests(unittest.TestCase):
                 (r"^(atmofab-job .*)$", "", one_each),                     # the job line lost
                 (r"^(atmofab-submitted .*)$", "", one_each),               # the ask lost
                 (r"^(atmofab-job) \S+ (.*)$", r"\1 9 9 \2", "does not parse"),  # not its shape
-                (r"^(atmofab-submitted) .*$", r"\1 soon", "does not parse")):
+                (r"^(atmofab-submitted) .*$", r"\1 soon", "does not parse"),
+                (r"^(atmofab-submitted .*)$", r"\1 2", "does not parse"),  # a third word
+                (r"^(atmofab-job) \S+ (.*)$", r"\1 a/b \2", "does not parse"),  # not an element
+                (r"^(atmofab-job \S+) .*$", r"\1 later", "does not parse"),  # not an epoch
+                # A marker glued to more letters is no scheduler line, and no status line either.
+                (r"^(atmofab-job .*)$", r"\1\natmofab-jobx 8 999", "does not parse")):
             with self.subTest(repl=repl, pattern=pattern):
                 h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
                 with self.assertRaisesRegex(rx.RemoteExecutionError, refusal):

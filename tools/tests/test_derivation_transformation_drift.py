@@ -475,8 +475,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # same script and is read the same way (no scheduler lines, `job_id` null, `queue_wait_ms`
     # 0), and a scheduler's job runs that same script under its backend's prefix and records the
     # job id and the queue wait — `execution_site` fields, a record of where and how, like the
-    # site itself, and in no key.
-    "execute-5": "948ff352f75c7d7e153b752c3a736ecfbc533cb39092f65c1450becef7a9eac7",
+    # site itself, and in no key. Re-pinned again in PR-4's round 1: a line whose first word only
+    # BEGINS with a scheduler marker is refused rather than skipped, which a `none` site's job
+    # never prints.
+    "execute-5": "1b0b15cb107830284527c296d4e876be20a61b08d116723bccc8f08518c2ee0c",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -451,7 +451,7 @@ def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str,
             key, _, value = line[len(PLATFORM_MARKER) + 1:].partition(" ")
             facts.setdefault(key, []).append(value)
             continue
-        if line.startswith((SUBMIT_MARKER, JOB_MARKER)):
+        if line.startswith((SUBMIT_MARKER + " ", JOB_MARKER + " ")):
             scheduled.append(line.split(" "))
             continue
         m = _STATUS_LINE.fullmatch(line)
