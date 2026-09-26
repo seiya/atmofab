@@ -293,7 +293,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     "perf_facts": (
         ("hardware",),
         "This hardware class states the grammar a profile's `hardware.architecture` must "
-        "satisfy (asked at launch).",
+        "satisfy (asked at launch), and the parallelism a run of it states in its performance "
+        "record (`parallelism`, read by the host-rendered runner through "
+        "`host_execution.perf_parallelism`).",
     ),
     "job_submit": (
         ("scheduler",),
@@ -403,18 +405,18 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
                                         "prompt_fragments", "checks_abi", "source_reading",
                                         "signatures", "control_file"}),
         ),
-        # CUDA C++ (issue #289, R4-b PR-4): every capability a node of ANY kind needs
+        # CUDA C++ (issue #289): every capability a node of ANY kind needs
         # (`target_profile.LANGUAGE_CAPABILITIES_EVERY_NODE`), the language half of `control_file`
         # (the host authors every node's build control file — a harness bundle has no shape without
-        # it) and
-        # `interface_header` (the host renders the published-surface header), so its
-        # `infrastructure` harness runs; NOT `runner_render`, so a physics node of this language is
-        # refused at launch until the host renders its runner.
+        # it) and `interface_header` (the host renders the published-surface header) since R4-b
+        # PR-4, which made its `infrastructure` harness run; and `runner_render` since R4-b PR-6,
+        # which renders a physics node's runner and checks header over that harness, so a
+        # `component` / `problem` node of this language runs too.
         Backend(
             "language", "cuda_cpp", "tools.backends.language.cuda_cpp",
-            backend_provides=frozenset({"bundle_facts", "syntax_promotions", "prompt_fragments",
-                                        "checks_abi", "source_reading", "signatures",
-                                        "control_file", "interface_header"}),
+            backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
+                                        "prompt_fragments", "checks_abi", "source_reading",
+                                        "signatures", "control_file", "interface_header"}),
         ),
         # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
         # conductor held and the control-file gates the validator held. `build_execute` stays

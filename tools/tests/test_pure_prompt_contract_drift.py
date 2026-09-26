@@ -95,7 +95,6 @@ from pathlib import Path
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-import tools.backends.language.fortran.runner as rr
 from tools.backends import registry as _registry
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
@@ -634,7 +633,14 @@ PINNED: dict[str, str] = {
     # reserved-identifier and line-splice rules), and again in the same round for three more
     # `cuda_cpp`-only texts (§5's top-level-source rule, the verify fragment's reading of H5's
     # "declared bounds", the runner-output binding's non-finite item), on the same ground.
-    "pure-50": "8ed40da66a179758bab267d90c559702295bc26b293ad99406acb178df4d2d75",
+    # Re-pinned in place by R4-b PR-6 (issue #289), on the same ground: the `cuda_cpp` physics
+    # fragments (`generate_generate.txt`, `generate_verify.txt`), the `cuda_cpp` checks-ABI
+    # binding's §1-§4, and the checks-ABI names / status width becoming per-language members
+    # (the second runner renderer). Every `pure_*.txt` composed for `fortran`, and the Fortran
+    # binding slices, runner-output binding and lint rule set, are byte-identical to origin/main
+    # 4f81d082's (measured by composing each through `_compose_language_fragments` in both
+    # trees); a `cuda_cpp` physics prompt had never been composed before this change.
+    "pure-50": "9389fecc05fbcc776068bc92c944e287cd8603e60bdf7cad727362a170442654",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
@@ -660,8 +666,17 @@ def _contract_tuple() -> dict[str, object]:
         },
         "system_prompt": PURE_SYSTEM_PROMPT,
         "repair_static_prefixes": list(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
-        "checks_public_names": list(rr.CHECKS_PUBLIC_NAMES),
-        "check_status_width": rr.CHECK_STATUS_WIDTH,
+        # The checks ABI's names and status width, PER LANGUAGE that renders a runner (issue #289,
+        # R4-b PR-6): until the second renderer these named the Fortran module, so a `cuda_cpp`
+        # runner's ABI could change with the digest unmoved.
+        "checks_public_names": {
+            language: list(_runner_module(language).CHECKS_PUBLIC_NAMES)
+            for language in _runner_languages()
+        },
+        "check_status_width": {
+            language: _runner_module(language).CHECK_STATUS_WIDTH
+            for language in _runner_languages()
+        },
         # The §1-4 SLICE of the checks-module contract, not the file: since issue #142 those
         # sections are inlined verbatim into the reviewer's prompt, which puts them under this
         # pin's own stated bar (a stable, behavior-defining leaf INPUT) exactly as the template
@@ -771,6 +786,16 @@ def _prompt_languages() -> list[str]:
             if _registry.provides("language", language, "prompt_fragments")]
 
 
+def _runner_languages() -> list[str]:
+    """Every language whose runner the host renders (`runner_render`), sorted."""
+    return [language for language in _registry.implemented_backend_ids("language")
+            if _registry.provides("language", language, "runner_render")]
+
+
+def _runner_module(language: str):
+    return _registry.capability_module("language", language, "runner_render")
+
+
 def _checks_abi_document(language: str) -> str:
     return _registry.capability_module("language", language, "checks_abi").document()
 
@@ -813,14 +838,18 @@ class PurePromptContractDriftTests(unittest.TestCase):
         self.assertIn("cuda_cpp", _prompt_languages())
         base = _digest()
         from unittest import mock
+        self.assertIn("cuda_cpp", _runner_languages())
         checks = _registry.capability_module("language", "cuda_cpp", "checks_abi")
         prompts = _registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         lint = _registry.capability_module("linter", "nvcc", "lint_rules")
+        runner = _registry.capability_module("language", "cuda_cpp", "runner_render")
         for label, target, attribute, value in (
                 ("checks-ABI binding", checks, "document",
                  lambda: checks.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n"),
                 ("runner-output binding", prompts, "runner_output_document", lambda: "changed"),
-                ("lint rule set", lint, "lint_rules_document", lambda: "changed")):
+                ("lint rule set", lint, "lint_rules_document", lambda: "changed"),
+                ("checks-ABI names", runner, "CHECKS_PUBLIC_NAMES", ("case_setup",)),
+                ("check status width", runner, "CHECK_STATUS_WIDTH", 5)):
             with self.subTest(label=label), mock.patch.object(target, attribute, value):
                 self.assertNotEqual(base, _digest())
 

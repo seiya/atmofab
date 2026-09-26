@@ -1397,6 +1397,10 @@ class PureRenderTests(unittest.TestCase):
          None, None),
         ("tools/prompt_templates/backends/language/cuda_cpp/generate_verify_harness.txt",
          None, None),
+        # Issue #289 (R4-b PR-6): the physics fragment files of the second language, which a
+        # `cuda_cpp` component / problem node's producer and reviewer are handed.
+        ("tools/prompt_templates/backends/language/cuda_cpp/generate_generate.txt", None, None),
+        ("tools/prompt_templates/backends/language/cuda_cpp/generate_verify.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify_harness.txt",
          None, None),
         # Round 5 found the tuple short of its own docstring twice over.
@@ -3206,6 +3210,25 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
                 composed = composed_pure_template(key)
                 self.assertIsNone(ort._LANGUAGE_FRAGMENT_RE.search(composed))
                 self.assertNotIn("{{", composed)
+
+    def test_the_physics_templates_compose_for_cuda_cpp_with_no_fortran_spelling(self) -> None:
+        """R4-b PR-6 (issue #289): a `cuda_cpp` physics node's producer and reviewer compose,
+        and what replaces each marker is the C++ binding — none of the Fortran spellings the
+        markers were made to carry (the `.f90` runner, `associate`, `!$omp`, `intent(out)` in the
+        gate-checked classes) reaches them."""
+        from tools import target_profile as tp
+        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        for key in self._KEYS:
+            with self.subTest(template=key):
+                composed = composed_pure_template(key, cuda)
+                self.assertIsNone(ort._LANGUAGE_FRAGMENT_RE.search(composed))
+                for fortran in ("_runner.f90", "associate (", "!$omp", "`call <dep>__<op>",
+                                "use <spec_id>_checks"):
+                    self.assertNotIn(fortran, composed)
+        self.assertIn('`language` ("cuda_cpp")',
+                      composed_pure_template("pure generate.generate", cuda))
+        self.assertIn("`<spec_id>_runner.cu` and the headers",
+                      composed_pure_template("pure generate.verify", cuda))
 
     def test_composition_refuses_every_way_it_can_fail(self) -> None:
         template = "a {{language:rule}} b"

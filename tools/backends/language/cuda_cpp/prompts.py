@@ -4,10 +4,11 @@ The `prompt_fragments` capability, shaped like the Fortran backend's: the fragme
 `tools/prompt_templates/backends/language/cuda_cpp/` hold what replaces a neutral template's
 `{{language:<name>}}` markers for this language (format: `tools/prompt_fragments.py`).
 
-ONLY THE `harness` SHAPE HAS FRAGMENTS. The physics templates (`pure_generate_generate.txt`,
-`pure_generate_verify.txt`) have none here: a `cuda_cpp` physics node is refused at launch (the
-language renders no runner), and `fragments` raises for a template with no file, so a composer
-asked for one anyway is refused rather than handed another language's rules.
+Both shapes have fragments: the `harness` templates (`pure_generate_generate_harness.txt`,
+`pure_generate_verify_harness.txt`, issue #289 R4-b PR-4) and the physics templates
+(`pure_generate_generate.txt`, `pure_generate_verify.txt`, R4-b PR-6, written with the runner this
+language renders). `fragments` raises for a template with no file, so a composer asked for one
+anyway is refused rather than handed another language's rules.
 
 Stdlib only, plus the neutral fragment parser.
 """

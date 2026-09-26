@@ -18,7 +18,14 @@
   The declarations a source needs of a node's published surface are in `<spec_id>_model.cuh`,
   which the HOST renders from the node's IR `public_api` (`header.render`, the `interface_header`
   capability) and writes beside the bundle's files; the model source includes it and defines the
-  published operations, and the runner (and, later, a consumer) includes it and calls them.
+  published operations, and the runner and a consumer include it and call them. A consumer's
+  `src/` also holds, host-written at Generate start, each closure member's header COPIED from the
+  member's certified source directory — never re-rendered, so it is the declaration the member's
+  own Build compiled — sha-checked against the consumer's generate key
+  (`workflow_conductor._write_dependency_headers`); Build stages the same bytes beside each
+  member's source in the object directory (`_stage_dependency_sources`), which is on the include
+  path. On a physics node the host also renders `<spec_id>_checks.cuh`, the declarations of the
+  checks ABI and the bound state the leaf's `<spec_id>_checks.cu` defines (`CHECKS_ABI.md` §1).
   No object of one source is a prerequisite of another's compile (`source.source_module_deps`
   states no edge). The rendered control file does not name the header as a prerequisite either:
   Build compiles into a fresh object directory, and the header is rewritten with every accepted

@@ -19,6 +19,7 @@ from pathlib import Path
 from tools.backends import registry
 from tools.backends.compiler.nvcc import syntax as nvcc_syntax
 from tools.backends.language.cuda_cpp import bundle as cpp_bundle
+from tools.backends.language.cuda_cpp import checks_abi as cpp_checks_abi
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
 from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import lines as cpp_lines
@@ -130,6 +131,22 @@ class DeclarationReaderTests(unittest.TestCase):
         self.assertEqual(("demo_model", ""), self._fn("hidden")[0].namespace)
         self.assertEqual(("demo_model",), self._fn("c_linkage")[0].namespace)
         self.assertNotIn("no", {f.name for f in self.decls.functions})
+
+    def test_a_definition_carries_its_masked_body_and_a_declaration_none(self) -> None:
+        """The `problem` model gates read a definition's body (R4-b PR-6): the text between its
+        braces, comments and literal contents blanked, directive lines blanked."""
+        decls = cpp_decls.read('void f(double& a) {\n  a = 1.0; // x = "{"\n}\n'
+                               "void g(int);\n")
+        f = next(fn for fn in decls.functions if fn.name == "f")
+        g = next(fn for fn in decls.functions if fn.name == "g")
+        self.assertIn("a = 1.0;", f.body)
+        self.assertNotIn("x =", f.body)
+        self.assertEqual("", g.body)
+
+    def test_a_brace_initialized_variable_is_read(self) -> None:
+        decls = cpp_decls.read("namespace n {\nstd::vector<double> u{};\n"
+                               "inline constexpr int k{64};\ndouble a[2]{{1, 2}};\n}\n")
+        self.assertEqual(["u", "k", "a"], [v.name for v in decls.variables])
 
     def test_a_qualified_definition_joins_its_namespace(self) -> None:
         parse = self._fn("demo__parse")
@@ -722,25 +739,292 @@ class SourceGateTests(unittest.TestCase):
             self.assertIn("quiet.cu: a CUDA C++ source in a subdirectory is refused", joined)
             self.assertNotIn("h_model.cu: a CUDA C++ source in a subdirectory", joined)
             self.assertNotIn("not implemented", joined)
+            # A physics node's model gates RUN since R4-b PR-6 (they were a refusal before): a
+            # component model with no defect draws nothing.
             out = []
             cpp_source.model_source_gates(node_key="component/c@0.1.0", model_file=model,
                                           text="int x;\n", dep_spec_ids=[], violations=out,
                                           multidim_spec_id=None)
-            self.assertTrue(any("not implemented yet" in v for v in out), out)
+            self.assertFalse([v for v in out if "h_model.cu" in v and "sub" not in v], out)
+            self.assertFalse(any("not implemented" in v for v in out), out)
 
-    def test_physics_gates_refuse_and_the_harness_has_nothing_to_check(self) -> None:
-        self.assertTrue(cpp_source.checks_module_declaration_violations(Path("c"), "", "s"))
-        self.assertTrue(cpp_source.checks_harness_isolation_violations(Path("c"), "", []))
-        self.assertEqual((set(), set(), set()), cpp_source.checks_module_abi_facts("x", "s"))
-        self.assertEqual(["a"], cpp_source.unpublished_bound_state("", "s", ["a"]))
+    def test_the_harness_has_nothing_to_check(self) -> None:
         out: list[str] = []
         cpp_source.validate_dependency_operations([Path("m.cu")], [], out)
         self.assertEqual([], out)
-        cpp_source.validate_dependency_operations([Path("m.cu")], ["dep"], out)
-        self.assertTrue(out)
         self.assertEqual({"a": set()}, cpp_source.source_module_deps([Path("a.cu")]))
         self.assertEqual(["h__run", "h__emit"],
                          cpp_source.published_subroutines(_GOOD_MODEL, "h"))
+
+
+_CHECKS_SOURCE = """#include "p_checks.cuh"
+
+namespace p_checks {
+double s = 0.0;
+std::vector<double> u{};
+atmofab::Array<double, 2> a2;
+
+void case_setup(const std::string& case_id, bool& ok) { (void)case_id; ok = true; }
+void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& ok) {
+  (void)case_id; steps = 1; cells_updated = 1; ok = true;
+}
+void get_time(double& t) { t = 0.0; }
+void checks_compute(const std::string& case_id, const std::string& check_id,
+                    std::string& status) { (void)case_id; (void)check_id; status = "na  "; }
+void metric_compute(const std::string& case_id, const std::string& name, double& val,
+                    bool& is_na, std::string& reason_na, bool& found) {
+  (void)case_id; (void)name; val = 0.0; is_na = false; reason_na = ""; found = false;
+}
+}  // namespace p_checks
+"""
+
+_DEP_HEADER = """namespace dep_model {
+void dep__flux(atmofab::View<const double, 1> u, atmofab::View<double, 1> f, double dt);
+double dep__norm(const std::vector<double>& u);
+}
+"""
+
+
+class PhysicsGateTests(unittest.TestCase):
+    """The checks-source, dependency-use and `problem` model gates a physics node reaches
+    (R4-b PR-6): each passes the certified idiom and names each defect it exists for."""
+
+    def test_a_clean_checks_source_passes_every_checks_gate(self) -> None:
+        path = Path("p_checks.cu")
+        self.assertEqual([], cpp_source.checks_module_declaration_violations(
+            path, _CHECKS_SOURCE, "p"))
+        published, subroutines, defined = cpp_source.checks_module_abi_facts(_CHECKS_SOURCE, "p")
+        abi = set(cpp_checks_abi.CHECKS_PUBLIC_NAMES)
+        self.assertEqual((abi, abi, abi), (published, subroutines, defined))
+        self.assertEqual([], cpp_source.unpublished_bound_state(_CHECKS_SOURCE, "p",
+                                                                ["s", "u", "a2"]))
+        self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+            path, _CHECKS_SOURCE, []))
+
+    def test_the_header_include_and_the_namespace_are_required(self) -> None:
+        no_include = _CHECKS_SOURCE.replace('#include "p_checks.cuh"', "// #include \"p_checks.cuh\"")
+        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), no_include, "p")
+        self.assertTrue(any('must `#include "p_checks.cuh"`' in v for v in out), out)
+        other_ns = _CHECKS_SOURCE.replace("namespace p_checks {", "namespace q_checks {")
+        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), other_ns, "p")
+        self.assertTrue(any("namespace p_checks" in v for v in out), out)
+        unbalanced = _CHECKS_SOURCE + "void broken() {\n"
+        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), unbalanced, "p")
+        self.assertTrue(any("cannot read this source's declarations" in v for v in out), out)
+        self.assertEqual((set(), set(), set()),
+                         cpp_source.checks_module_abi_facts(unbalanced, "p"))
+        self.assertEqual(["s"], cpp_source.unpublished_bound_state(unbalanced, "p", ["s"]))
+
+    def test_a_callback_is_published_only_as_the_header_declares_it(self) -> None:
+        """Each way a definition misses the runner's call reads as unpublished: another
+        parameter type (an overload), another return type, internal linkage, a device function,
+        an unnamed namespace. A qualified definition outside the namespace block counts."""
+        variants = {
+            "float": _CHECKS_SOURCE.replace("void get_time(double& t)", "void get_time(float& t)"),
+            "value": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
+                                            "void get_time(double t) { (void)t; }"),
+            "return": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
+                                             "int get_time(double& t) { t = 0.0; return 0; }"),
+            "static": _CHECKS_SOURCE.replace("void get_time(", "static void get_time("),
+            "inline": _CHECKS_SOURCE.replace("void get_time(", "inline void get_time("),
+            "device": _CHECKS_SOURCE.replace("void get_time(", "__device__ void get_time("),
+            "unnamed": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
+                                              "namespace { void get_time(double& t) { t = 0.0; } }"),
+        }
+        for label, text in variants.items():
+            with self.subTest(label):
+                published, _subs, _defined = cpp_source.checks_module_abi_facts(text, "p")
+                self.assertNotIn("get_time", published)
+                self.assertIn("case_setup", published)
+        qualified = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }", "") + (
+            "void p_checks::get_time(double& when) { when = 0.0; }\n")
+        self.assertIn("get_time", cpp_source.checks_module_abi_facts(qualified, "p")[0])
+
+    def test_bound_state_must_be_defined_with_external_linkage(self) -> None:
+        for label, text in {
+            "static": _CHECKS_SOURCE.replace("double s = 0.0;", "static double s = 0.0;"),
+            "const": _CHECKS_SOURCE.replace("double s = 0.0;", "const double s = 0.0;"),
+            "extern": _CHECKS_SOURCE.replace("double s = 0.0;", "extern double s;"),
+            "unnamed": _CHECKS_SOURCE.replace("double s = 0.0;", "namespace { double s = 0.0; }"),
+            "absent": _CHECKS_SOURCE.replace("double s = 0.0;", ""),
+        }.items():
+            with self.subTest(label):
+                self.assertEqual(["s"], cpp_source.unpublished_bound_state(text, "p", ["s", "u"]))
+        direct = _CHECKS_SOURCE.replace("std::vector<double> u{};", "std::vector<double> u(3);")
+        self.assertEqual([], cpp_source.unpublished_bound_state(direct, "p", ["u"]))
+
+    def test_isolation_refuses_the_harness_and_file_io(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "p_model.cu"
+            model.write_text('#include "harness_cpp_gpu_model.cuh"\nint x;\n')
+            out = cpp_source.checks_harness_isolation_violations(
+                Path("c.cu"), _CHECKS_SOURCE, [model])
+            self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
+            model.write_text("void f() { harness_cpp_gpu_model::harness_cpp_gpu__emit_real(1.0); }\n")
+            out = cpp_source.checks_harness_isolation_violations(
+                Path("c.cu"), _CHECKS_SOURCE, [model])
+            self.assertTrue(any(str(model) in v for v in out), out)
+            model.write_text('// #include "harness_cpp_gpu_model.cuh"\n'
+                             'const char* m = "harness_cpp_gpu_model::";\n')
+            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                Path("c.cu"), _CHECKS_SOURCE, [model]))
+        for io in ("std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");"):
+            text = _CHECKS_SOURCE.replace("double s = 0.0;", f"double s = 0.0;\nvoid w() {{ {io} }}")
+            with self.subTest(io):
+                out = cpp_source.checks_harness_isolation_violations(Path("c.cu"), text, [])
+                self.assertTrue(any("must not do file I/O" in v for v in out), out)
+
+    def _model(self, tmp: str, body: str, *, header: bool = True) -> Path:
+        if header:
+            (Path(tmp) / "dep_model.cuh").write_text(_DEP_HEADER)
+        model = Path(tmp) / "p_model.cu"
+        model.write_text('#include "p_model.cuh"\n#include "dep_model.cuh"\n'
+                         f"namespace p_model {{\n{body}\n}}\n")
+        return model
+
+    def _gates(self, model: Path, deps: list[str], *, multidim: str | None = None,
+               node_key: str = "problem/p@0.1.0") -> list[str]:
+        out: list[str] = []
+        cpp_source.model_source_gates(node_key=node_key, model_file=model,
+                                      text=model.read_text(), dep_spec_ids=deps, violations=out,
+                                      multidim_spec_id=multidim)
+        return [v for v in out if "p_model.cu" in v]
+
+    def test_dependency_use_requires_include_call_and_no_redefinition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, "void p__run(double& x) { x = dep_model::dep__norm({}); }")
+            out: list[str] = []
+            cpp_source.validate_dependency_operations([model], ["dep", "other"], out)
+            self.assertEqual([f"{model}: missing dependency header include "
+                              f'(#include "other_model.cuh")',
+                              f"{model}: missing dependency operation call (other__*)"], out)
+            model = self._model(tmp, "// dep__norm(u) in a comment\n"
+                                     "void dep__norm(double& x) { x = 0.0; }")
+            out = []
+            cpp_source.validate_dependency_operations([model], ["dep"], out)
+            self.assertIn(f"{model}: dependency operation redefinition detected (dep__*)", out)
+            self.assertIn(f"{model}: missing dependency operation call (dep__*)", out)
+
+    def test_literal_outputs_are_refused_on_a_problem_node_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, "void p__lit(double& a, double& b, double x) "
+                                     "{ a = 1.0; b = 2.5e-3; (void)x; }\n"
+                                     "void p__ok(double& a, double x) { a = 2.0 * x; }")
+            out = self._gates(model, [])
+            self.assertEqual([f"{model}: function p__lit has literal-only assignments for all "
+                              "output parameters"], out)
+            self.assertEqual([], self._gates(model, [], node_key="component/p@0.1.0"))
+
+    def test_a_discarded_dependency_output_is_refused(self) -> None:
+        good = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n"
+                "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
+                "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+                "  dep_model::dep__flux(u, fv, dt);\n"
+                "  for (long i = 0; i < u.extent[0]; ++i) {\n"
+                "    u_new.data[i] = u.data[i] + dt * flux[static_cast<std::size_t>(i)];\n"
+                "  }\n}")
+        bad = good.replace("u.data[i] + dt * flux[static_cast<std::size_t>(i)]", "u.data[i]")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, good), ["dep"]))
+            model = self._model(tmp, bad)
+            self.assertEqual([f"{model}: function p__step does not propagate dependency "
+                              "operation outputs to its output dataflow (candidates=['fv'])"],
+                             self._gates(model, ["dep"]))
+
+    def test_an_inert_call_with_every_actual_assigned_before_is_silent(self) -> None:
+        """The neutral authoring rule 5: an inert dependency call assigns every actual before
+        the call, which keeps this gate silent — at an output position of the header too."""
+        body = ("void p__run(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+                "  std::vector<double> work(4);\n"
+                "  for (int i = 0; i < 4; ++i) { work[static_cast<std::size_t>(i)] = 0.0; }\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{work.data(), {4}}, dt);\n"
+                "  out = dt;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
+            written = body.replace(
+                "  for (int i = 0; i < 4; ++i) { work[static_cast<std::size_t>(i)] = 0.0; }\n",
+                "")
+            model = self._model(tmp, written)
+            self.assertEqual([f"{model}: function p__run does not propagate dependency "
+                              "operation outputs to its output dataflow (candidates=['work'])"],
+                             self._gates(model, ["dep"]))
+
+    def test_an_input_position_of_the_header_is_not_a_candidate(self) -> None:
+        """`dep__norm` READS its argument (a const reference in the header), so handing it an
+        unassigned local discards nothing; without the header the same call is read as the
+        Fortran binding reads it, every actual a candidate."""
+        body = ("void p__total(double& out, double x) {\n"
+                "  std::vector<double> scratch(3);\n"
+                "  dep_model::dep__norm(scratch);\n"
+                "  out = x;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
+            model = self._model(tmp, body, header=False)
+            (Path(tmp) / "dep_model.cuh").unlink()
+            self.assertEqual([f"{model}: function p__total does not propagate dependency "
+                              "operation outputs to its output dataflow "
+                              "(candidates=['scratch'])"], self._gates(model, ["dep"]))
+
+    def test_without_the_header_every_actual_is_a_candidate_but_four_kinds(self) -> None:
+        """The Fortran binding's candidate rule, where no dependency header says which
+        parameter is written: a parameter, a `const` name, a function this file defines, and a
+        name assigned before the call are not candidates."""
+        body = ("const double k = 2.0;\n"
+                "void helper() {}\n"
+                "void p__run(double& out, double x) {\n"
+                "  double pre = x;\n"
+                "  double scratch;\n"
+                "  dep_model::dep__apply(x, k, helper, pre, scratch);\n"
+                "  out = pre;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body, header=False)
+            self.assertEqual([f"{model}: function p__run does not propagate dependency "
+                              "operation outputs to its output dataflow "
+                              "(candidates=['scratch'])"], self._gates(model, ["dep"]))
+            fixed = body.replace("out = pre;", "out = pre + scratch;")
+            self.assertEqual([], self._gates(self._model(tmp, fixed, header=False), ["dep"]))
+
+    def test_a_returned_value_is_an_output(self) -> None:
+        body = ("double p__total(const std::vector<double>& u) {\n"
+                "  double norm = dep_model::dep__norm(u);\n"
+                "  double scratch;\n"
+                "  dep_model::dep__other(scratch);\n"
+                "  return norm + scratch;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, body, header=False), ["dep"]))
+
+    def test_a_metric_only_scalar_kernel_is_refused_on_a_multidimensional_node(self) -> None:
+        body = ("void p__m(double x, double& a, double& b, double& c, double& d, double& e) {\n"
+                "  a = x; b = x; c = x; d = x; e = x;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body)
+            self.assertEqual([], self._gates(model, []))
+            self.assertEqual([f"{model}: function p__m is metric-only scalar kernel for p; "
+                              "2d/3d problem model must not derive many outputs without array "
+                              "inputs or update loops"], self._gates(model, [], multidim="p"))
+            looped = body.replace("a = x;", "for (int i = 0; i < 2; ++i) { a = x; }")
+            self.assertEqual([], self._gates(self._model(tmp, looped), [], multidim="p"))
+            viewed = body.replace("double x,", "atmofab::View<const double, 2> x,").replace(
+                "= x;", "= x.data[0];")
+            self.assertEqual([], self._gates(self._model(tmp, viewed), [], multidim="p"))
+
+    def test_an_unreadable_problem_model_is_refused_not_passed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "p_model.cu"
+            model.write_text("namespace p_model {\nvoid p__lit(double& a) { a = 1.0; }\n")
+            out = self._gates(model, [])
+            self.assertTrue(any("cannot read this source's declarations" in v for v in out), out)
+
+    def test_output_parameter_classification(self) -> None:
+        outs = ["double&", "std::vector<double>&", "atmofab::View<double,1>", "View<double,2>",
+                "double*", "atmofab::Array<double,2>&"]
+        ins = ["double", "const double&", "atmofab::View<const double,1>", "const double*",
+               "const std::vector<double>&", "int"]
+        for ctype in outs:
+            self.assertTrue(cpp_source.is_output_parameter(ctype), ctype)
+        for ctype in ins:
+            self.assertFalse(cpp_source.is_output_parameter(ctype), ctype)
 
 
 class ToolAdapterTests(unittest.TestCase):
@@ -813,8 +1097,7 @@ class ToolAdapterTests(unittest.TestCase):
                            "source_reading", "signatures"):
             with self.subTest(capability=capability):
                 registry.capability_module("language", "cuda_cpp", capability)
-        self.assertFalse(registry.provides("language", "cuda_cpp", "runner_render"))
-        for capability in ("control_file", "interface_header"):
+        for capability in ("control_file", "interface_header", "runner_render"):
             with self.subTest(capability=capability):
                 registry.capability_module("language", "cuda_cpp", capability)
         self.assertFalse(registry.provides("language", "fortran", "interface_header"))
@@ -824,8 +1107,15 @@ class ToolAdapterTests(unittest.TestCase):
                           "gate_guard_examples"},
                          set(prompts.fragments("generate_generate_harness")))
         self.assertEqual({"host_rendered_scope"}, set(prompts.fragments("generate_verify_harness")))
+        # The physics templates' fragments (R4-b PR-6): the same marker set as the Fortran
+        # files, so a template composed for either language resolves every marker.
+        fortran = registry.capability_module("language", "fortran", "prompt_fragments")
+        for template in ("generate_generate", "generate_verify"):
+            with self.subTest(template=template):
+                self.assertEqual(set(fortran.fragments(template)),
+                                 set(prompts.fragments(template)))
         with self.assertRaises(ValueError):
-            prompts.fragments("generate_generate")
+            prompts.fragments("no_such_template")
         self.assertTrue(prompts.runner_output_document().startswith("# Runner output"))
         abi = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
         self.assertIn("## 5. CUDA C++ legality and gate guards", abi)

@@ -28071,3 +28071,55 @@ class ProfileExpansionTests(unittest.TestCase):
             self._seed(repo, profile_infra=False)
             sel_ok = DerivationResolver(repo, target=_TP).select("problem/a@0.1.0", "compile")
             self.assertNotIn("does not resolve", sel_ok.reason or "")
+
+
+class InterfaceHeaderBindingTests(unittest.TestCase):
+    """`_resolve_certified_closure_binding` binds a closure member's interface header beside its
+    model source for a language that declares `interface_header` (issue #289, R4-b PR-6), and
+    binds nothing more for one that does not — the Fortran binding's key set is unchanged."""
+
+    FORTRAN_KEYS = {"node_key", "pipeline_ref", "source_id", "model_source_ref",
+                    "model_source_sha256", "output_hash"}
+
+    def _resolver(self, stage: Path, language: str):
+        from types import SimpleNamespace
+
+        selection = SimpleNamespace(ok=True, reason="", pipeline_ref="p", source_id="src_1",
+                                    output_hash="h1", stage_dir=lambda: stage)
+        return SimpleNamespace(target=SimpleNamespace(toolchain={"language": language}),
+                               select=lambda node_key, phase: selection)
+
+    def test_a_header_language_binds_the_header_and_a_missing_one_refuses(self) -> None:
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            stage = repo / "workspace" / "pipelines" / "x" / "source" / "src_1"
+            (stage / "src").mkdir(parents=True)
+            (stage / "src" / "dep_a_model.cu").write_text("// model\n", encoding="utf-8")
+            (stage / "src" / "dep_a_model.cuh").write_text("// header\n", encoding="utf-8")
+            binding, err = _resolve_certified_closure_binding(
+                repo, "component/dep_a@0.1.0", resolver=self._resolver(stage, "cuda_cpp"))
+            self.assertIsNone(err)
+            self.assertEqual(self.FORTRAN_KEYS | {"interface_header_ref",
+                                                  "interface_header_sha256"}, set(binding))
+            self.assertEqual("workspace/pipelines/x/source/src_1/src/dep_a_model.cuh",
+                             binding["interface_header_ref"])
+            self.assertEqual(hashlib.sha256(b"// header\n").hexdigest(),
+                             binding["interface_header_sha256"])
+            (stage / "src" / "dep_a_model.cuh").unlink()
+            binding, err = _resolve_certified_closure_binding(
+                repo, "component/dep_a@0.1.0", resolver=self._resolver(stage, "cuda_cpp"))
+            self.assertIsNone(binding)
+            self.assertIn("cannot read the certified interface header of component/dep_a", err)
+
+    def test_a_language_without_one_binds_the_same_keys_as_before(self) -> None:
+        from tools.orchestration_runtime import _resolve_certified_closure_binding
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            stage = repo / "workspace" / "pipelines" / "x" / "source" / "src_1"
+            (stage / "src").mkdir(parents=True)
+            (stage / "src" / "dep_a_model.f90").write_text("! model\n", encoding="utf-8")
+            binding, err = _resolve_certified_closure_binding(
+                repo, "component/dep_a@0.1.0", resolver=self._resolver(stage, "fortran"))
+            self.assertIsNone(err)
+            self.assertEqual(self.FORTRAN_KEYS, set(binding))

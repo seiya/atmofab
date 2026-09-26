@@ -124,9 +124,10 @@ refusal needs is the RANGE.
 
 Two rows are reachable today, one per target profile in this tree: `fortitude` for `fortran_cpu`
 and `nvcc` (the CUDA compiler driver, which lints `cuda_cpp`) for `cpp_gpu`; an operator installs
-the one of the target they run. Three things a `cuda_cpp` profile meets before its first run: only its `infrastructure` harness runs — a
-`component` / `problem` node of `cuda_cpp` is refused at launch, because the host renders no
-CUDA C++ runner yet (`toolchain_servable_reasons`); a run of the profile that reaches `Validate`
+the one of the target they run. Two things a `cuda_cpp` profile meets before its first run: every
+node kind builds on a host with no GPU — a `component` / `problem` node's runner is host-rendered
+over the certified harness since issue #289 R4-b PR-6, and no phase before `Validate` runs a
+kernel — while a run of the profile that reaches `Validate`
 needs an execution site that executes `gpu` (the execution-site section below) — with none it is
 refused at launch (`target_profile_invalid`) and one that stops at `Build` is not; and the build derivation key records
 the compiler as `nvcc`'s `release` line and the target's `hardware.architecture`, not the host C++
