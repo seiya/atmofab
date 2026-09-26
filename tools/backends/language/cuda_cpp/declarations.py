@@ -152,10 +152,12 @@ def _drop_top_level_const(ctype: str) -> str:
     """A BY-VALUE parameter's type without a top-level `const`, which is not part of a function's
     type (`void f(const double x)` declares `void f(double)`); a reference or a pointer keeps its
     `const`, which is."""
-    if ctype.endswith(("&", "*")):
-        return ctype
-    if ctype.endswith("*const"):
-        return ctype[:-len("const")]  # `T* const` (normalized `T*const`): a const pointer value
+    if "*" in ctype or "&" in ctype:
+        # A pointer or a reference keeps the `const` of what it points to; only a `const` of the
+        # pointer VALUE itself (`T* const`, normalized `T*const`) is top-level. A qualifier after
+        # the `*` (`const T* __restrict__`) does not make the pointee writable (round 5 of this
+        # change's review: the element's `const` was dropped from exactly that spelling).
+        return re.sub(r"(?<=[*&])const$", "", ctype)
     ctype = ctype.removesuffix(" const")
     return ctype.removeprefix("const ")
 

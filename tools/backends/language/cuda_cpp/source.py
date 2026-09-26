@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 from tools.backends.language.cuda_cpp import checks_abi
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
@@ -739,11 +740,49 @@ def validate_dependency_operations(
 
 _OUT_VIEW_RE = re.compile(r"^(?:atmofab::)?View<(?P<element>.+),\d+>$")
 _ARRAY_TYPE_RE = re.compile(r"\b(?:View|Array|vector)\s*<|\*$")
-_ASSIGNMENT_RE = re.compile(
+_ASSIGNMENT_HEAD_RE = re.compile(
     r"(?<![\w.>:])(?P<lhs>[A-Za-z_]\w*)\s*"
     r"(?P<index>(?:\[[^\];]*\]\s*|\.\s*data\s*(?:\(\s*\))?\s*\[[^\];]*\]\s*"
     r"|\.\s*data\s*(?=[-+*/%&|^]?=(?!=)))*)"
-    r"(?P<op>[-+*/%&|^]?=)(?!=)(?P<rhs>[^;]*);")
+    r"(?P<op>[-+*/%&|^]?=)(?!=)")
+
+
+class _Assignment(NamedTuple):
+    lhs: str
+    index: str
+    op: str
+    rhs: str
+    start: int
+
+
+def _assignment_matches(body: str) -> list[_Assignment]:
+    """Every `lhs [index] op= rhs` of masked `body`. The right-hand side ends at the first `;` at
+    its own bracket depth, or at a `)` that closes a bracket opened BEFORE the `=` — so the
+    step of a `for` header (`i += stride)`) does not swallow the loop body after it, braced or not
+    (round 5 of this change's review: a grid-stride loop's body was lost, and a discarded result
+    reached the output through the swallowed text). Heads are found independently of each other,
+    so an assignment inside a loop body is found after the header's. A top-level `,` does not end
+    it (a template argument list `View<double, 1>` has one, and `<` cannot be told from a
+    comparison here), so the first declarator of `double a = x, b = y;` also takes `b`, `y` as
+    sources — an extra edge, never a lost one."""
+    out: list[_Assignment] = []
+    for m in _ASSIGNMENT_HEAD_RE.finditer(body):
+        depth = 0
+        end = m.end()
+        while end < len(body):
+            ch = body[end]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif ch == ";" and depth == 0:
+                break
+            end += 1
+        out.append(_Assignment(m.group("lhs"), m.group("index"), m.group("op"),
+                               body[m.end():end], m.start()))
+    return out
 _RETURN_RE = re.compile(r"\breturn\b(?P<expr>[^;]*);")
 _LOOP_RE = re.compile(r"\bfor\s*\(|\bwhile\s*\(|<<<")
 _VIEW_DECLARATION_RE = re.compile(
@@ -821,16 +860,16 @@ def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
     ...}`, `auto v = View<...>{u.data(), ...}`, `double* p = u.data();`, `v.data = u.data();`):
     a write through the alias is a write to `u`, so `u` takes the alias as a source."""
     records: list[tuple[str, set[str], int, str, bool]] = []
-    for m in _ASSIGNMENT_RE.finditer(body):
-        lhs, rhs = m.group("lhs"), m.group("rhs")
+    for m in _assignment_matches(body):
+        lhs, rhs = m.lhs, m.rhs
         sources = _identifiers(rhs)
         pointees = _pointee_names(rhs) - {lhs}
         # Making `lhs` point into another's storage sets up where a call will WRITE, not a value
         # the call reads, so it is not an assignment statement for the "assigned before" clause.
-        records.append((lhs, sources, m.start(), rhs.strip(),
-                        bool(pointees) or _is_declaration(body, m.start())))
+        records.append((lhs, sources, m.start, rhs.strip(),
+                        bool(pointees) or _is_declaration(body, m.start)))
         for storage in pointees:
-            records.append((storage, {lhs}, m.start(), "", True))
+            records.append((storage, {lhs}, m.start, "", True))
     for m in _VIEW_DECLARATION_RE.finditer(body):
         for storage in _pointee_names(m.group("init")):
             records.append((storage, {m.group("name")}, m.start(), "", True))
@@ -945,10 +984,12 @@ def _function_summaries(functions: list[cpp_decls.Function],
             updated: Summary = {}
             for out_index in current:
                 reached = _closure({names[out_index]}, records) if names[out_index] else set()
+                # Any OTHER parameter whose data reaches this output, whatever its type: a
+                # kernel's non-const `double* f` that it only reads is an input of that call
+                # (round 5 of this change's review: filtering by type dropped it).
                 updated[out_index] = frozenset(
                     i for i, name in enumerate(names)
-                    if i != out_index and name and name in reached
-                    and not is_output_parameter(fn.params[i][0]))
+                    if i != out_index and name and name in reached)
             if updated != current:
                 summaries[fn.name] = updated
                 changed = True
@@ -1024,9 +1065,8 @@ def _validate_problem_literal_outputs(model_file: Path, functions: list[cpp_decl
         outs = {name for ptype, name in fn.params if name and is_output_parameter(ptype)}
         if not outs:
             continue
-        whole = [(m.group("lhs"), m.group("rhs"), m.group("op"))
-                 for m in _ASSIGNMENT_RE.finditer(fn.body)
-                 if m.group("lhs") in outs and not m.group("index").strip()]
+        whole = [(m.lhs, m.rhs, m.op) for m in _assignment_matches(fn.body)
+                 if m.lhs in outs and not m.index.strip()]
         if {lhs for lhs, _rhs, _op in whole} != outs:
             continue
         all_literal = all(_is_literal_like(rhs) for _lhs, rhs, _op in whole)

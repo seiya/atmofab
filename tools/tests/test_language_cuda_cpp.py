@@ -144,6 +144,12 @@ class DeclarationReaderTests(unittest.TestCase):
         self.assertNotIn("x =", f.body)
         self.assertEqual("", g.body)
 
+    def test_a_pointer_keeps_its_element_const_whatever_follows_the_star(self) -> None:
+        params = cpp_decls.read("void k(const double* __restrict__ u, double* const p, "
+                                "const double* const q, const double x) {}").functions[0].params
+        self.assertEqual((("const double*__restrict__", "u"), ("double*", "p"),
+                          ("const double*", "q"), ("double", "x")), params)
+
     def test_a_brace_initialized_variable_is_read(self) -> None:
         decls = cpp_decls.read("namespace n {\nstd::vector<double> u{};\n"
                                "inline constexpr int k{64};\ndouble a[2]{{1, 2}};\n}\n")
@@ -1171,6 +1177,50 @@ class PhysicsGateTests(unittest.TestCase):
                 with self.subTest(label):
                     out = self._round_trip(tmp, **kwargs)
                     self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_kernel_spellings_the_rules_invite(self) -> None:
+        """Round 5 of this change's review, each through the REAL declaration reader: inputs
+        `const double* __restrict__` (the reader dropped the element's `const`, making them
+        outputs), an input `double*` the kernel only reads, and a grid-stride loop (its step
+        `i += stride)` swallowed the body). Each passes consuming the flux and is refused
+        discarding it."""
+        kernels = {
+            "const restrict inputs": (
+                "__global__ void upd(const double* __restrict__ u, const double* __restrict__ f,"
+                " double* __restrict__ out, double dt) {{\n  const int i = threadIdx.x;\n"
+                "  out[i] = u[i] + dt * {use};\n}}\n"),
+            "non-const input": (
+                "__global__ void upd(const double* u, double* f, double* out, double dt) {{\n"
+                "  const int i = threadIdx.x;\n  out[i] = u[i] + dt * {use};\n}}\n"),
+            "grid-stride": (
+                "__global__ void upd(const double* u, const double* f, double* out, double dt) {{\n"
+                "  for (int i = threadIdx.x; i < 4; i += blockDim.x * gridDim.x) {{\n"
+                "    out[i] = u[i] + dt * {use};\n  }}\n}}\n"),
+            "grid-stride, no braces": (
+                "__global__ void upd(const double* u, const double* f, double* out, double dt) {{\n"
+                "  for (int i = threadIdx.x; i < 4; i += blockDim.x * gridDim.x)\n"
+                "    out[i] = u[i] + dt * {use};\n}}\n"),
+        }
+        call = self._ROUND_TRIP.format(copied="flux", count="32", launch="upd<<<1, 4>>>")
+        for label, kernel in kernels.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual([], self._gates(self._model(tmp, kernel.format(use="f[i]") + call),
+                                                 ["dep"]))
+                out = self._gates(self._model(tmp, kernel.format(use="u[i]") + call), ["dep"])
+                self.assertTrue(any("does not propagate" in v for v in out), out)
+
+    def test_a_loop_step_does_not_carry_a_discarded_result_to_the_output(self) -> None:
+        """Round 5: `i += 1)` swallowed `finite = finite && isfinite(flux[i])`, making `i` take
+        `flux`, and the index carried the discarded result to the output."""
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n  std::vector<double> flux(4);\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  bool finite = true;\n"
+                "  for (long i = 0; i < 4; i += 1) { finite = finite && flux[i] == flux[i]; }\n"
+                "  for (long i = 0; i < 4; ++i) { u_new.data[i] = u.data[i]; }\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._gates(self._model(tmp, body), ["dep"])
+            self.assertTrue(any("candidates=['flux']" in v for v in out), out)
 
     def test_a_qualified_helper_is_followed_and_summarized_from_its_body(self) -> None:
         helper = ("namespace detail {{\nvoid axpy(double* y, const double* x, const double* f,"
