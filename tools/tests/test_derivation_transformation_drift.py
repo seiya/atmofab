@@ -430,7 +430,10 @@ PINNED_RENDER: dict[str, str] = {
     # the CUDA C++ runner, its checks header and the dependency-header copy. The certified
     # `cuda_cpp` output (the harness) renders no runner and copies no header, and its control
     # file and published-surface header are unchanged; no `cuda_cpp` physics node has run.
-    "render-5": "0c015a47cbc1cb7025af01b6c1898a4d0400faffb8638eb9cacb8a004fabb021",
+    # Re-pinned again within the same PR's review (round 3): the CUDA C++ runner ends every exit
+    # with `std::_Exit` (`finish`). Only the `cuda_cpp` physics runner's text moved, and no such
+    # node has run; the Fortran render and the harness's control file and header are unchanged.
+    "render-5": "d06c2dd802b9ecb11ba7c96b1545779d7c7c2a293bf9bdc624ec18bd583bb034",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

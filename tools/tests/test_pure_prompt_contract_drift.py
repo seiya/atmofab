@@ -647,7 +647,9 @@ PINNED: dict[str, str] = {
     
     # Re-pinned again in round 2 for `cuda_cpp` physics fragment edits only (rules 1, 4, (b));
     # the same two compositions were re-measured byte-identical.
-    "pure-50": "96b6eff4ff68464deb262d395a064ae920c4fe6b74846e5344ab938de6e0791f",
+    # And in round 3, again for `cuda_cpp` physics fragment edits only (rules 1 (b), 4, 6a),
+    # the same two compositions re-measured byte-identical.
+    "pure-50": "105bd7b3e5249e4e78dd8ac360ae222e48853981b166c60ad548e20fb094c434",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
