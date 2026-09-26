@@ -273,6 +273,35 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(run["return_code"], 124)
         self.assertNotIn("error", run)
 
+    def test_the_entry_times_are_the_sites_own(self) -> None:
+        post = (f"echo 1700000000 > {self.h.job}/ctl/run.t0; "
+                f"echo 1700000007 > {self.h.job}/ctl/run.t1")
+        result = self.h.run(self.h.request(), SHIM_SSH_POST=post)
+        entry = self.h.log_entries("run")[0]
+        self.assertEqual(entry["started_at_utc"], "2023-11-14T22:13:20Z")
+        self.assertEqual(entry["ended_at_utc"], "2023-11-14T22:13:27Z")
+        self.assertEqual(entry["elapsed_ms"], 7000)
+        self.assertTrue(result.results[0]["ok"])
+
+    def test_a_long_command_that_succeeded_is_not_a_timeout(self) -> None:
+        """Only a 124 or 137 is read as a timeout, however long the command took."""
+        cmd = self.h.command("run", ("true",), timeout=5)
+        post = (f"echo 1700000000 > {self.h.job}/ctl/run.t0; "
+                f"echo 1700000100 > {self.h.job}/ctl/run.t1")
+        (run,) = self.h.run(self.h.request(cmd), SHIM_SSH_POST=post).results
+        self.assertEqual(run["return_code"], 0)
+        self.assertNotIn("error", run)
+
+    def test_output_is_trimmed_to_the_capture_limit_as_the_server_trims_it(self) -> None:
+        cmd = rx.CommandSpec(
+            tag="run", tool_name="run_program",
+            argv=("python3", "-c", "print('x' * 5000)"), cwd=f"{self.h.job}/run", env={},
+            timeout_sec=60, command_log_path=self.h.local / "logs" / "run.jsonl",
+            capture_limit=1000)
+        (run,) = self.h.run(self.h.request(cmd)).results
+        self.assertEqual(run["stdout"], rx._server()._trim("x" * 5000 + "\n", 1000))
+        self.assertLess(len(run["stdout"]), 1100)
+
     def test_argv_and_env_survive_quoting(self) -> None:
         odd = ("c 1", "it's", "$HOME", "a;b", "`x`", "*")
         cmd = self.h.command("run", (f"{self.h.job}/bin/runner", *odd), env={"KNOB": "x=y z"})
@@ -336,6 +365,10 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_lost_time_is_refused(self) -> None:
         self._refused("run.t1 was not written", SHIM_SSH_POST=f"rm {self.h.job}/ctl/run.t1")
+
+    def test_a_command_that_ended_before_it_started_is_refused(self) -> None:
+        self._refused("ended before it started",
+                      SHIM_SSH_POST=f"echo 1 > {self.h.job}/ctl/run.t1")
 
     def test_a_status_that_is_not_an_integer_is_refused(self) -> None:
         for text in ("", "0x", "zero"):

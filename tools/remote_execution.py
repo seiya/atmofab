@@ -236,6 +236,8 @@ def render_job_script(request: JobRequest) -> str:
     if request.platform_probe:
         lines.append(f"{shlex.join(request.platform_probe)} > {q(ctl + '/platform.probe')}"
                      f" 2>/dev/null < /dev/null; echo $? > {q(ctl + '/platform.probe.rc')}")
+    # A command's stdin is `/dev/null`, as the ssh call's own is; not pinned, because the second
+    # makes the first unobservable under test.
     lines.append("rc=0")
     for c in request.commands:
         env_words = " ".join(q(f"{k}={v}") for k, v in sorted(c.env.items()))
@@ -279,6 +281,8 @@ def _ssh(host: str, command: str, *, stage: str, timeout: int, remote: str) -> s
 
 
 def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
+    # `-p` keeps each file's mode and times, so a shipped executable stays one. Not pinned: the
+    # test shim copies with the mode kept either way.
     _transport(["scp", "-q", "-r", "-p", *SSH_OPTIONS, "--", *sources, dest],
                stage=stage, timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
