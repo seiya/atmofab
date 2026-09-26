@@ -9700,6 +9700,57 @@ class TargetProfileLaunchTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIsNone(run_node_kwargs)
 
+    def _probed_targets(self, argv: list[str]) -> tuple[int, list[tuple[str, str]]]:
+        """Run `main` with both host probes recorded, not answered by the host: which probe
+        was asked about which target id."""
+        asked: list[tuple[str, str]] = []
+        with _real_target_resolution(), \
+                mock.patch.object(run_workflow, "_check_required_host_tools",
+                                  side_effect=lambda p: asked.append(("presence", p.target_id))
+                                  or []), \
+                mock.patch.object(run_workflow, "_check_host_tool_versions",
+                                  side_effect=lambda p: asked.append(("versions", p.target_id))
+                                  or []):
+            code, _closure, _run_node = RunWorkflowTests._run_main_with_closure_spy(
+                self, argv)  # type: ignore[arg-type]
+        return code, asked
+
+    def test_a_resume_without_target_is_probed_for_its_recorded_target(self) -> None:
+        """Issue #289 (R4-b PR-5), round 1: with two profiles declared, the host probes chose
+        their own target before the resume recovered its recorded one, found none, and passed
+        silently. They now take the target the launch resolved — the recorded one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            RunWorkflowTests._seed_resumable_orchestration(  # type: ignore[arg-type]
+                self, repo_root, "orch_r", spec_ref="spec/problem/test.md",
+                until_phase="Validate", mode="dev", backend="claude",
+                invocation={"target": {"target_id": "t_b"}})
+            code, asked = self._probed_targets(
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [("presence", "t_b"), ("versions", "t_b")])
+
+    def test_the_harness_of_a_class_this_host_cannot_execute_on_is_probed(self) -> None:
+        """Issue #289 (R4-b PR-5), round 1: a `build` run of an `infrastructure` harness for a
+        `gpu` target is admitted by the launch gate (for its own node) and must be probed for
+        the tools it builds with. The old probe re-ran the gate as if for a physics node and
+        skipped it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _seed_target_profile_into(repo_root, target_id="t_g", harness_id="harness_a",
+                                      hardware={"class": "gpu"})
+            harness = repo_root / "spec" / "infrastructure" / "harness_a"
+            harness.mkdir(parents=True, exist_ok=True)
+            (harness / "controlled_spec.md").write_text("spec\n", encoding="utf-8")
+            (harness / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+            code, asked = self._probed_targets(
+                ["spec/infrastructure/harness_a", "build", "--repo-root", str(repo_root),
+                 "--no-run-conductor", "--target", "t_g"])
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [("presence", "t_g"), ("versions", "t_g")])
+
     def test_run_node_handed_no_target_resolves_the_default(self) -> None:
         """The fallback for a caller that resolved nothing: the default target — which, with
         two profiles declared, is a refusal rather than either one."""
