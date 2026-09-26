@@ -179,8 +179,12 @@ def build_tuple() -> dict[str, str]:
 
 #: The capabilities whose DECLARATION decides a launch environment (issue #289): which parallel
 #: value gets a package environment and which gets the empty one, and which hardware class runs
-#: at all, are read off the registry records by `tools/host_execution.py`.
-_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env"})
+#: at all, are read off the registry records by `tools/host_execution.py`. And what a site's
+#: scheduler runs a job under (issue #293 PR-4), read the same way by
+#: `tools/remote_execution._submission`: the prefix decides which machine runs the commands and
+#: with what allocation, as the hardware class's module decides the device probe.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit"})
+_LAUNCH_AXES = ("parallel", "hardware", "scheduler")
 
 
 def launch_declarations() -> dict[str, str]:
@@ -189,7 +193,7 @@ def launch_declarations() -> dict[str, str]:
     Round 1 digested the records' declarations and one named module, and round 2 changed the
     re-export attribute (`CAPABILITY_MODULE_ATTR`) and the package `__init__` to route openmp's
     environment through a new module with every pin green. So this reads what the dispatch
-    READS: each parallel / hardware record's module and where it declares a launch capability,
+    READS: each parallel / hardware / scheduler record's module and where it declares a launch capability,
     the attribute row the dispatch resolves by, and — for every capability a package implements
     — the file of the package and of the module `registry.capability_module` returns. A new
     record, a moved declaration, a renamed row or a rewired re-export each move it."""
@@ -197,7 +201,7 @@ def launch_declarations() -> dict[str, str]:
 
     members: dict[str, str] = {}
     for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
-        if axis not in ("parallel", "hardware"):
+        if axis not in _LAUNCH_AXES:
             continue
         key = f"{axis}/{backend_id}"
         members[f"{key} record"] = json.dumps(
@@ -477,8 +481,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # job id and the queue wait — `execution_site` fields, a record of where and how, like the
     # site itself, and in no key. Re-pinned again in PR-4's round 1: a line whose first word only
     # BEGINS with a scheduler marker is refused rather than skipped, which a `none` site's job
-    # never prints.
-    "execute-5": "1b0b15cb107830284527c296d4e876be20a61b08d116723bccc8f08518c2ee0c",
+    # never prints. And once more in round 1: the tuple gained the scheduler records and the
+    # `slurm` package's `job_submit` module, which the round-1 review found outside it (a change
+    # to the prefix a job runs under moved no pin). None of it changes a none site's job.
+    "execute-5": "4265e12555dbc5d19a8045d526f97d388f22698a697b7fd6966a0c59183d0510",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
