@@ -1049,6 +1049,20 @@ def _dependency_out_positions(model_file: Path, spec_id: str) -> dict[str, list[
             for fn in cpp_decls.read(text).functions if fn.name.startswith(f"{spec_id}__")}
 
 
+def _dependency_array_outputs(model_file: Path, spec_id: str) -> dict[str, set[int]]:
+    """`{operation: positions of its ARRAY-typed output parameters}` of dependency `spec_id` (a
+    non-const `atmofab::View`, `atmofab::Array&` / `std::vector&`, a pointer), from its header;
+    empty when the header is not there."""
+    try:
+        text = (model_file.parent / cpp_header.basename(spec_id)).read_text(
+            encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    return {fn.name: {i for i, (ptype, _n) in enumerate(fn.params)
+                      if is_output_parameter(ptype) and _ARRAY_TYPE_RE.search(ptype.rstrip("&"))}
+            for fn in cpp_decls.read(text).functions if fn.name.startswith(f"{spec_id}__")}
+
+
 def _signature_summary(out_at: list[bool]) -> Summary:
     """A callee known by its declaration only: every input may reach every output."""
     inputs = frozenset(i for i, out in enumerate(out_at) if not out)
@@ -1134,7 +1148,9 @@ def _validate_problem_dependency_dataflow(
     if not dep_spec_ids:
         return
     positions: dict[str, list[bool]] = {}
+    array_outputs: dict[str, set[int]] = {}
     for spec_id in dep_spec_ids:
+        array_outputs.update(_dependency_array_outputs(model_file, spec_id))
         read = _dependency_out_positions(model_file, spec_id)
         if read is not None:
             positions.update(read)
@@ -1159,9 +1175,16 @@ def _validate_problem_dependency_dataflow(
         for call in call_re.finditer(fn.body):
             args = _call_arguments(fn.body, call.end() - 1)
             out_at = positions.get(call.group("name"))
+            # An operation that writes an ARRAY must have an array result reach the output: its
+            # scalar outputs (a guard flag) do not stand for it (round 5 of this change's review:
+            # `ok = guard_pass;` alone made every call of the advdiff problem "propagated" while
+            # its fluxes were discarded).
+            arrays = array_outputs.get(call.group("name"), set())
             candidates: set[str] = set()
             for index, arg in enumerate(args):
                 if out_at is not None and not (index < len(out_at) and out_at[index]):
+                    continue
+                if arrays and index not in arrays:
                     continue
                 for name in _actual_names(arg):
                     if name in params or any(lhs == name and pos < call.start()

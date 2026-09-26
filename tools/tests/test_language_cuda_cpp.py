@@ -1281,6 +1281,27 @@ class PhysicsGateTests(unittest.TestCase):
                                 header=False)
             self.assertEqual([], self._gates(model, ["dep"]))
 
+    def test_a_guard_flag_does_not_stand_for_an_array_result(self) -> None:
+        """Round 5 of this change's review: every advdiff / shallow-water dependency publishes a
+        guard flag, and `ok = guard;` alone made the call \"propagated\" while its flux was
+        discarded. An operation with an array output needs an array result to reach an output."""
+        header = ("namespace dep_model {\nvoid dep__flux(atmofab::View<const double, 1> u, "
+                  "atmofab::View<double, 1> f, double dt, bool& guard_pass);\n}\n")
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt, bool& ok) {\n  std::vector<double> flux(4);\n  bool guard;\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt, guard);\n"
+                "  ok = guard;\n"
+                "  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i]{use};\n  }\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(header)
+            model = self._model(tmp, body.replace("{use}", ""), header=False)
+            self.assertEqual([f"{model}: function p__step does not propagate dependency "
+                              "operation outputs to its output dataflow (candidates=['flux'])"],
+                             self._gates(model, ["dep"]))
+            model = self._model(tmp, body.replace("{use}", " + dt * flux[static_cast<std::size_t>(i)]"),
+                                header=False)
+            self.assertEqual([], self._gates(model, ["dep"]))
+
     def test_a_pointer_taken_by_address_aliases_the_storage(self) -> None:
         shape = ("  double* fp = &flux[0];\n"
                  "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n")

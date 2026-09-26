@@ -95,10 +95,11 @@ value is one more output, whether or not its `return` names anything.
   every input; a copy from its source argument alone). A view built in place carries its first
   element only (`View<...>{p, {n}}` carries `p`, not the extent `n`). A call to anything else —
   a template, which the declaration reader does not read, included — is not followed. The check
-  is PER CALL: at least one of the names each dependency call writes must reach an output (the
-  Fortran binding pools the candidates of every call; neither checks every written name, so a
-  call whose flux is discarded while its guard flag reaches `ok` passes — `Generate.verify` G5
-  is the authority on the rest).
+  is PER CALL: at least one of the names each dependency call writes must reach an output, and
+  when the operation's header gives it an ARRAY output (a non-const view, an owning array or
+  vector reference, a pointer), one of its array outputs — a guard flag reaching `ok` does not
+  stand for a discarded flux. The Fortran binding pools the candidates of every call; neither
+  checks every written name, and `Generate.verify` G5 is the authority on the rest.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
