@@ -645,10 +645,12 @@ PINNED: dict[str, str] = {
     # (A round-1 review found §5 changed by one sentence in an earlier version of this entry's
     # commit, which this claim would then not have held for; the sentence was reverted.)
     
-    # Re-pinned again in round 2 for `cuda_cpp` physics fragment edits only (rules 1, 4, (b));
-    # the same two compositions were re-measured byte-identical.
-    # And in round 3, again for `cuda_cpp` physics fragment edits only (rules 1 (b), 4, 6a),
-    # the same two compositions re-measured byte-identical.
+    # Re-pinned again in rounds 2 and 3 of its review, each time for `cuda_cpp` physics inputs
+    # only: the physics fragments (rule 1 (b), rule 4, rule 6a) and the `cuda_cpp` binding's
+    # §1-§4 (its §4, the I/O rule), which reach only a `cuda_cpp` physics producer and reviewer.
+    # The same two compositions were re-measured byte-identical each time. (Round 4 of the
+    # review found the first versions of these two lines naming rule 1 — changed in round 1 —
+    # and omitting §4.)
     "pure-50": "105bd7b3e5249e4e78dd8ac360ae222e48853981b166c60ad548e20fb094c434",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later

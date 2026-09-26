@@ -1028,10 +1028,10 @@ class PhysicsGateTests(unittest.TestCase):
                                     "{ e += h.data[i]; } energy = e; }", False),
             "element write": ("void p__f(atmofab::View<double, 1> u, double x) "
                               "{ u.data[0] = 1.0; (void)x; }", False),
+            "one output not a literal": ("void p__f(double& a, double& b, double x) "
+                                         "{ a = 1.0; b = b * x; }", False),
             "one output unassigned": ("void p__f(double& a, double& b, double x) "
-                                      "{ a = 1.0; b = b * x; }", False),
-            "input dependent": ("void p__f(double& a, double& b, double x) "
-                                "{ a = 1.0; b = x; }", False),
+                                      "{ a = 1.0; (void)b; (void)x; }", False),
             "boolean literal": ("void p__f(bool& ok, double& a, double x) "
                                 "{ ok = true; a = 2.0; (void)x; }", True),
             "suffixed literal": ("void p__f(float& a, double x) { a = 0.5f; (void)x; }", True),
@@ -1187,9 +1187,12 @@ class PhysicsGateTests(unittest.TestCase):
 
     def test_a_view_s_extent_is_not_a_candidate(self) -> None:
         """Round 3 of this change's review: `View<...>{fp, {n}}` made `n` a candidate, and `n`
-        reached the output through an index, passing a discarded flux."""
+        reached the output through an index, passing a discarded flux. `n` is DECLARED with its
+        initializer, so the "assigned before the call" clause does not drop it — round 4 found
+        an earlier version of this row assigning it by a statement, which made the row pass
+        with the fix disabled."""
         body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
-                " double dt) {\n  std::vector<double> flux(4);\n  long n;\n  n = u.extent[0];\n"
+                " double dt) {\n  std::vector<double> flux(4);\n  long n = u.extent[0];\n"
                 "  double* fp = flux.data();\n"
                 "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {n}}, dt);\n"
                 "  for (long i = 0; i < 4; ++i) {\n    long j;\n    j = (i + 1) % n;\n"

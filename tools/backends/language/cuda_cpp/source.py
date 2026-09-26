@@ -1024,7 +1024,6 @@ def _validate_problem_literal_outputs(model_file: Path, functions: list[cpp_decl
         outs = {name for ptype, name in fn.params if name and is_output_parameter(ptype)}
         if not outs:
             continue
-        inputs = {name for _ptype, name in fn.params if name}
         whole = [(m.group("lhs"), m.group("rhs"), m.group("op"))
                  for m in _ASSIGNMENT_RE.finditer(fn.body)
                  if m.group("lhs") in outs and not m.group("index").strip()]
@@ -1034,8 +1033,10 @@ def _validate_problem_literal_outputs(model_file: Path, functions: list[cpp_decl
         # A compound assignment (`x += 1.0;`) reads the output's previous value — an input to the
         # function, since an output parameter is a reference the caller holds (Codex, round 2 of
         # this change's review: `x += 1.0` was refused as literal-only).
-        input_dependent = any(op != "=" or _identifiers(rhs) & (inputs - {lhs})
-                              for lhs, rhs, op in whole)
+        # (The Fortran gate also exempts an output whose expression names an input; a literal-like
+        # right-hand side names nothing, so that clause could never fire here, and round 4 of
+        # this change's review found it unwitnessable. It is not kept.)
+        input_dependent = any(op != "=" for _lhs, _rhs, op in whole)
         if all_literal and not input_dependent:
             violations.append(
                 f"{model_file}: function {fn.name} has literal-only assignments for all output "
