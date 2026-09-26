@@ -798,8 +798,9 @@ class PhysicsGateTests(unittest.TestCase):
         self.assertEqual((abi, abi, abi), (published, subroutines, defined))
         self.assertEqual([], cpp_source.unpublished_bound_state(_CHECKS_SOURCE, "p",
                                                                 ["s", "u", "a2"]))
-        self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-            path, _CHECKS_SOURCE, []))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                Path(tmp) / path.name, _CHECKS_SOURCE, []))
 
     def test_the_header_include_and_the_namespace_are_required(self) -> None:
         no_include = _CHECKS_SOURCE.replace('#include "p_checks.cuh"', "// #include \"p_checks.cuh\"")
@@ -869,40 +870,63 @@ class PhysicsGateTests(unittest.TestCase):
 
     def test_isolation_refuses_the_harness_and_file_io(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            checks = Path(tmp) / "p_checks.cu"
             model = Path(tmp) / "p_model.cu"
             model.write_text('#include "harness_cpp_gpu_model.cuh"\nint x;\n')
-            out = cpp_source.checks_harness_isolation_violations(
-                Path("c.cu"), _CHECKS_SOURCE, [model])
+            out = cpp_source.checks_harness_isolation_violations(checks, _CHECKS_SOURCE, [model])
             self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
-            model.write_text("void f() { harness_cpp_gpu_model::harness_cpp_gpu__emit_real(1.0); }\n")
-            out = cpp_source.checks_harness_isolation_violations(
-                Path("c.cu"), _CHECKS_SOURCE, [model])
-            self.assertTrue(any(str(model) in v for v in out), out)
-            model.write_text("namespace h = harness_cpp_gpu_model;\n")
-            out = cpp_source.checks_harness_isolation_violations(
-                Path("c.cu"), _CHECKS_SOURCE, [model])
-            self.assertTrue(any(str(model) in v for v in out), out)
+            for reference in ("void f() { harness_cpp_gpu_model::harness_cpp_gpu__emit_real(1.0); }",
+                              "namespace h = harness_cpp_gpu_model;",
+                              "void f() { harness_cpp_gpu__box(a, b); }"):
+                model.write_text(reference + "\n")
+                out = cpp_source.checks_harness_isolation_violations(checks, _CHECKS_SOURCE,
+                                                                     [model])
+                self.assertTrue(any(str(model) in v for v in out), (reference, out))
             model.write_text('// #include "harness_cpp_gpu_model.cuh"\n'
                              'const char* m = "harness_cpp_gpu_model::";\n')
             self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                Path("c.cu"), _CHECKS_SOURCE, [model]))
-        for io in ("std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");",
-                   "std::fstream f(\"x\", std::ios::out);",
-                   "std::basic_ofstream<char> f(\"x\");", "std::wofstream f(\"x\");",
-                   "std::system(\"cp a b\");", "popen(\"ls\", \"r\");",
-                   "std::filesystem::copy_file(\"a\", \"b\");", "std::rename(\"a\", \"b\");",
-                   "std::remove(\"a\");"):
-            text = _CHECKS_SOURCE.replace("double s = 0.0;", f"double s = 0.0;\nvoid w() {{ {io} }}")
-            with self.subTest(io):
-                out = cpp_source.checks_harness_isolation_violations(Path("c.cu"), text, [])
-                self.assertTrue(any("must not do file I/O" in v for v in out), out)
-        # A name or a literal is not an opener (over-refusal probes).
+                checks, _CHECKS_SOURCE, [model]))
+
+    _IO_SPELLINGS = (
+        "std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");",
+        "std::fstream f(\"x\", std::ios::out);", "std::basic_ofstream<char> f(\"x\");",
+        "std::wofstream f(\"x\");", "std::ifstream in(\"x\");", "std::system(\"cp a b\");",
+        "popen(\"ls\", \"r\");", "std::filesystem::copy_file(\"a\", \"b\");",
+        "std::rename(\"a\", \"b\");", "std::remove(\"a\");", "fopen64(\"x\", \"w\");",
+        "freopen64(\"x\", \"w\", stdout);", "renameat(0, \"a\", 0, \"b\");",
+        "unlink(\"x\");", "std::atexit(g);", "std::at_quick_exit(g);", "f.open(\"x\");")
+
+    def test_no_leaf_source_does_file_io_or_runs_after_main(self) -> None:
+        """Round 2 of this change's review: a MODEL source's namespace-scope destructor rewrote
+        `diagnostics.json` after the harness wrote it, and every gate passed. Every leaf `.cu`
+        of the node is read, the checks source and a helper included; the host-rendered runner
+        is not."""
+        for io in self._IO_SPELLINGS:
+            for victim in ("p_checks.cu", "p_model.cu", "p_helper.cu"):
+                with self.subTest(io=io, file=victim), tempfile.TemporaryDirectory() as tmp:
+                    checks = Path(tmp) / "p_checks.cu"
+                    text = _CHECKS_SOURCE
+                    body = f"namespace {{ void w() {{ {io} }} }}\n"
+                    if victim == "p_checks.cu":
+                        text = _CHECKS_SOURCE + body
+                    else:
+                        (Path(tmp) / victim).write_text(body)
+                    out = cpp_source.checks_harness_isolation_violations(checks, text, [])
+                    self.assertTrue(any(victim in v and "must not do file I/O" in v
+                                        for v in out), out)
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_runner.cu").write_text("std::ofstream host_rendered;\n")
+            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, []))
+        # Over-refusal probes: a name, a literal, the `<algorithm>` remove, a physics helper.
         for clean in ("double opened = 0.0;", "const char* m = \"std::system(x)\";",
-                      "double removed_mass = 1.0;"):
-            text = _CHECKS_SOURCE.replace("double s = 0.0;", f"double s = 0.0;\n{clean}")
-            with self.subTest(clean):
+                      "double removed_mass = 1.0;",
+                      "void g(std::vector<int>& v) { v.erase(std::remove(v.begin(), v.end(), 0), "
+                      "v.end()); }", "void apply_open_boundary(double& x) { x = 0.0; }",
+                      "bool is_open = false;"):
+            with self.subTest(clean), tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                    Path("c.cu"), text, []))
+                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE + clean + "\n", []))
 
     def _model(self, tmp: str, body: str, *, header: bool = True) -> Path:
         if header:

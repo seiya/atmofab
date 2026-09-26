@@ -103,7 +103,14 @@ unnamed namespace keeps internal to it.
   includes a harness header (`#include "harness_..."`) or names the harness
   (`harness_<x>_model::`, a `harness_<x>__<op>` call); the host-rendered runner is the sole
   caller (`source.checks_harness_isolation_violations`).
-- **No file I/O in the checks source** — no `std::ofstream`, `fopen`, `freopen` or `.open(`.
+- **No file I/O, no command, nothing that runs after `main`, in ANY leaf source** — the checks
+  source, the model and every helper: no file stream of any kind (`std::ofstream`,
+  `std::ifstream`, `std::fstream`, …), no C stdio or POSIX opener (`fopen`, `freopen`, `open`,
+  their `64` / `at` variants), no `std::filesystem`, no `rename` / `unlink` / one-path `remove`,
+  no `system` / `popen` / `exec*`, no `atexit` / `at_quick_exit`
+  (`source.checks_harness_isolation_violations`). A C++ program runs namespace-scope destructors
+  and exit handlers after `main` returns, which is after the harness has written the run's
+  outputs; emission is the harness's alone.
 
 ## 5. CUDA C++ legality and gate guards
 

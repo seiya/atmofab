@@ -540,24 +540,34 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
 # alias passed a `::`-anchored pattern).
 _HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\b|\bharness_\w+__\w+")
 
-#: What opens, writes, renames or deletes a file, or runs a command, in a checks source — every
-#: file-stream class (`ofstream`, `fstream`, `basic_ofstream<char>`, the wide ones), the C stdio
-#: and POSIX openers, `std::filesystem`, `rename` / `remove`, and `system` / `popen`. Wider than
-#: the runner scan's `_FILE_OPEN_RE` on purpose: round 1 of this change's review wrote the run's
-#: outputs from a checks source through `std::fstream` and `std::system` with the narrower one
-#: silent, and the Fortran binding's `open(` covers every way its language opens a file.
-_CHECKS_IO_RE = re.compile(
-    r"\b\w*fstream\b|\b(?:fopen|freopen|fdopen|popen|open|creat|rename|remove|system)\s*\("
-    r"|\bfilesystem\b")
+#: What opens, renames or deletes a file, runs a command, or registers code to run after `main`
+#: returns, in a leaf-authored source of a physics node — every file-stream class (`ofstream`,
+#: `fstream`, `basic_ofstream<char>`, the wide ones), the C stdio and POSIX openers with their
+#: large-file and `at` variants, `std::filesystem`, `rename` / `unlink` / `truncate`, the one-path
+#: `remove` (the three-argument algorithm of `<algorithm>` is not a file operation), `system` /
+#: `popen` / `exec*`, and `atexit` / `at_quick_exit`. Named explicitly rather than by a pattern
+#: over `*open*`, which would refuse a physics helper such as `apply_open_boundary`.
+#: Why every leaf source and not the checks source alone (round 2 of this change's review): a C++
+#: program runs namespace-scope destructors and `atexit` handlers AFTER `main` returns, so a model
+#: source could rewrite the outputs the harness had just written — measured end to end, every
+#: check read `pass` — and the Fortran binding's language has no such hook. Emission is the
+#: harness's alone.
+_LEAF_IO_RE = re.compile(
+    r"\b\w*fstream\b|\bfilesystem\b|\b(?:open|open64|openat|openat64|fopen|fopen64|freopen"
+    r"|freopen64|fdopen|popen|creat|creat64|rename|renameat|renameat2|unlink|unlinkat|truncate"
+    r"|truncate64|ftruncate|ftruncate64|system|execl|execlp|execle|execv|execvp|execvpe|execve"
+    r"|atexit|at_quick_exit)\s*\(|\bremove\s*\(\s*[^,()]*\)")
 
 
 def checks_harness_isolation_violations(
     checks_path: Path, text: str, model_files: list[Path]
 ) -> list[str]:
     """The isolation half of the checks-source gate: neither physics source includes a harness
-    header or names the harness (`harness_<x>_model::`, `harness_<x>__<op>`) — the host-rendered
-    runner is the only caller of the harness — and the checks source opens no file (emission is
-    the harness's). `text` is the checks source's raw content; each model source is read here."""
+    header or names the harness (`harness_<x>_model`, `harness_<x>__<op>`) — the host-rendered
+    runner is the only caller of the harness — and no leaf-authored source of the node (every
+    `.cu` under the checks source's directory but the host-rendered runner) does file I/O, runs a
+    command, or registers code to run after `main` (`_LEAF_IO_RE`). `text` is the checks
+    source's raw content; every other source is read here."""
     violations: list[str] = []
     for path in [checks_path, *model_files]:
         source = text if path == checks_path else path.read_text(encoding="utf-8",
@@ -570,13 +580,23 @@ def checks_harness_isolation_violations(
                 f"{path}: a physics source must not include or name the harness — the physics "
                 "node never depends on the harness at the source level (the host-rendered "
                 "runner is the sole caller of the harness)")
-    io = _CHECKS_IO_RE.search(cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(text))))
-    if io:
-        violations.append(
-            f"{checks_path}: the checks source must not do file I/O or run a command "
-            f"(`{io.group(0).strip()}` — no file stream, `fopen`, `std::filesystem`, `rename` / "
-            "`remove`, `system` / `popen`) — emission is the harness's job; the checks source "
-            "only holds the state and computes the checks and metrics")
+    # Every leaf-authored source of the node, at any depth (`leaf_sources`), but the host-rendered
+    # runner, whose name is derived from the checks source's.
+    runner_name = checks_path.name.removesuffix("_checks.cu") + "_runner.cu"
+    sources = [checks_path, *(p for p in leaf_sources(checks_path.parent) if p != checks_path)]
+    for path in sources:
+        if path.name == runner_name and path.parent == checks_path.parent:
+            continue
+        source = text if path == checks_path else path.read_text(encoding="utf-8",
+                                                                  errors="ignore")
+        io = _LEAF_IO_RE.search(cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source))))
+        if io:
+            violations.append(
+                f"{path}: a physics source must not do file I/O, run a command, or register code "
+                f"to run after `main` (`{io.group(0).strip()}` — no file stream, `fopen` / `open`, "
+                "`std::filesystem`, `rename` / `unlink` / a one-path `remove`, `system` / `popen` "
+                "/ `exec*`, `atexit`) — emission is the harness's job alone; the model computes "
+                "and the checks source holds the state and computes the checks and metrics")
     return violations
 
 
