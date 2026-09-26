@@ -896,6 +896,34 @@ class PhysicsGateTests(unittest.TestCase):
         "freopen64(\"x\", \"w\", stdout);", "renameat(0, \"a\", 0, \"b\");",
         "unlink(\"x\");", "std::atexit(g);", "std::at_quick_exit(g);", "f.open(\"x\");")
 
+    def test_every_io_name_is_refused_however_it_is_reached(self) -> None:
+        """Round 3 of this change's review reached `fopen` through a function pointer and
+        `filebuf::open` through a pointer to member. Every name of the two enumerations is
+        refused bound to a pointer (the unambiguous ones) or qualified / called / taken by
+        address (the ones that also name ordinary things) — one row per element, derived from
+        the constants so an element added later is witnessed too."""
+        forms = {name: [f"auto p = &{name};", f"auto p = std::{name};"]
+                 for name in cpp_source.LEAF_IO_NAMES if name != "asm"}
+        forms["asm"] = ['asm("nop");']
+        for name in cpp_source.LEAF_IO_CALL_NAMES:
+            forms[name] = [f"auto p = &std::{name};", f"::{name}(x);", f"{name}(x);"]
+        forms["filebuf"] = ["auto p = &std::filebuf::open;", "std::basic_filebuf<char> b;"]
+        for name, spellings in forms.items():
+            for spelling in spellings:
+                with self.subTest(spelling), tempfile.TemporaryDirectory() as tmp:
+                    (Path(tmp) / "p_model.cu").write_text(
+                        f"namespace {{ void w() {{ {spelling} }} }}\n")
+                    out = cpp_source.checks_harness_isolation_violations(
+                        Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, [])
+                    self.assertTrue(any("p_model.cu" in v and "must not do file I/O" in v
+                                        for v in out), out)
+        for clean in ("double system_size = 1.0;", "double rename_count = 0.0;",
+                      "void g(double& x) { x = other::open; }"):
+            with self.subTest(clean), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "p_model.cu").write_text(clean + "\n")
+                self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, []))
+
     def test_no_leaf_source_does_file_io_or_runs_after_main(self) -> None:
         """Round 2 of this change's review: a MODEL source's namespace-scope destructor rewrote
         `diagnostics.json` after the harness wrote it, and every gate passed. Every leaf `.cu`

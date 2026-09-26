@@ -540,23 +540,35 @@ def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> li
 # alias passed a `::`-anchored pattern).
 _HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\b|\bharness_\w+__\w+")
 
-#: What opens, renames or deletes a file, runs a command, or registers code to run after `main`
-#: returns, in a leaf-authored source of a physics node — every file-stream class (`ofstream`,
-#: `fstream`, `basic_ofstream<char>`, the wide ones), the C stdio and POSIX openers with their
-#: large-file and `at` variants, `std::filesystem`, `rename` / `unlink` / `truncate`, the one-path
-#: `remove` (the three-argument algorithm of `<algorithm>` is not a file operation), `system` /
-#: `popen` / `exec*`, and `atexit` / `at_quick_exit`. Named explicitly rather than by a pattern
-#: over `*open*`, which would refuse a physics helper such as `apply_open_boundary`.
-#: Why every leaf source and not the checks source alone (round 2 of this change's review): a C++
-#: program runs namespace-scope destructors and `atexit` handlers AFTER `main` returns, so a model
-#: source could rewrite the outputs the harness had just written — measured end to end, every
-#: check read `pass` — and the Fortran binding's language has no such hook. Emission is the
-#: harness's alone.
+#: Names that open, rename, delete or truncate a file, run a command, register an exit handler or
+#: embed assembly, and mean nothing else: refused as a TOKEN anywhere in a leaf source's code,
+#: whether called, taken by address or bound to a pointer (round 3 of this change's review
+#: reached `fopen` / `freopen` through a function pointer and a lambda, past a scan that wanted
+#: the name followed by `(`).
+LEAF_IO_NAMES: tuple[str, ...] = (
+    "fopen", "fopen64", "freopen", "freopen64", "fdopen", "popen", "creat", "creat64",
+    "renameat", "renameat2", "unlink", "unlinkat", "ftruncate", "ftruncate64", "truncate64",
+    "open64", "openat", "openat64", "execl", "execlp", "execle", "execv", "execvp", "execvpe",
+    "execve", "atexit", "at_quick_exit", "asm",
+)
+#: Names that ALSO name ordinary things (a physics helper `open_boundary`, a local `system`): refused
+#: when called, qualified (`std::rename`) or taken by address — never as a bare word.
+LEAF_IO_CALL_NAMES: tuple[str, ...] = ("open", "rename", "system", "truncate")
+
+#: What a leaf-authored source of a physics node may not contain: every file-stream and
+#: stream-buffer class (`ofstream`, `fstream`, `basic_filebuf<char>`, the wide ones), anything of
+#: `std::filesystem`, the names above, and the one-path `remove` (the three-argument algorithm of
+#: `<algorithm>` is not a file operation). Why every leaf source and not the checks source alone
+#: (round 2 of this change's review): a C++ program runs namespace-scope destructors and `atexit`
+#: handlers after `main` returns — after the harness has written the run's outputs. The
+#: host-rendered runner now ends with `std::_Exit`, so no such code runs (round 3); this refusal is
+#: the second layer, and it also covers I/O from inside a callback. Emission is the harness's alone.
 _LEAF_IO_RE = re.compile(
-    r"\b\w*fstream\b|\bfilesystem\b|\b(?:open|open64|openat|openat64|fopen|fopen64|freopen"
-    r"|freopen64|fdopen|popen|creat|creat64|rename|renameat|renameat2|unlink|unlinkat|truncate"
-    r"|truncate64|ftruncate|ftruncate64|system|execl|execlp|execle|execv|execvp|execvpe|execve"
-    r"|atexit|at_quick_exit)\s*\(|\bremove\s*\(\s*[^,()]*\)")
+    r"\b\w*fstream\b|\b\w*filebuf\b|\bfilesystem\b"
+    r"|\b(?:" + "|".join(LEAF_IO_NAMES) + r")\b"
+    r"|(?:\bstd\s*::\s*|(?<![\w\s])\s*::\s*|&\s*)(?:" + "|".join(LEAF_IO_CALL_NAMES) + r")\b"
+    r"|\b(?:" + "|".join(LEAF_IO_CALL_NAMES) + r")\s*\("
+    r"|\bremove\s*\(\s*[^,()]*\)")
 
 
 def checks_harness_isolation_violations(

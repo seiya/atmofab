@@ -50,8 +50,9 @@ transport `fail_closed`.
   object directory at Build), defines no `<dep>__*` function, and calls at least one
   `<dep>__<op>` operation — qualified `<dep>_model::` or not — from a function body.
 - Neither the model nor the checks source includes or names the harness, and the checks source
-  does no file I/O; no leaf source — the model and every helper included — opens, renames or
-  deletes a file, runs a command, or registers an exit handler (`CHECKS_ABI.md` §4).
+  does no file I/O; no leaf source — the model and every helper included — names a file stream
+  or stream buffer, a file opener, renamer or deleter, a command runner, an exit handler
+  registration or `asm`, called or not (`CHECKS_ABI.md` §4); the runner ends with `std::_Exit`.
 
 ## 4. The parallel presence floor
 

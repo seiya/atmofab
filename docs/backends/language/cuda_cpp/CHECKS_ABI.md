@@ -104,13 +104,15 @@ unnamed namespace keeps internal to it.
   (`harness_<x>_model::`, a `harness_<x>__<op>` call); the host-rendered runner is the sole
   caller (`source.checks_harness_isolation_violations`).
 - **No file I/O, no command, nothing that runs after `main`, in ANY leaf source** — the checks
-  source, the model and every helper: no file stream of any kind (`std::ofstream`,
-  `std::ifstream`, `std::fstream`, …), no C stdio or POSIX opener (`fopen`, `freopen`, `open`,
-  their `64` / `at` variants), no `std::filesystem`, no `rename` / `unlink` / one-path `remove`,
-  no `system` / `popen` / `exec*`, no `atexit` / `at_quick_exit`
-  (`source.checks_harness_isolation_violations`). A C++ program runs namespace-scope destructors
-  and exit handlers after `main` returns, which is after the harness has written the run's
-  outputs; emission is the harness's alone.
+  source, the model and every helper: no file stream or stream buffer of any kind
+  (`std::ofstream`, `std::ifstream`, `std::fstream`, `std::filebuf`, …), no C stdio or POSIX
+  opener (`fopen`, `freopen`, `open`, their `64` / `at` variants), no `std::filesystem`, no
+  `rename` / `unlink` / one-path `remove`, no `system` / `popen` / `exec*`, no `atexit` /
+  `at_quick_exit`, no `asm` — refused by NAME, called or not
+  (`source.checks_harness_isolation_violations`, `LEAF_IO_NAMES` / `LEAF_IO_CALL_NAMES`).
+  Emission is the harness's alone. The host-rendered runner also ends every exit with
+  `std::_Exit`, so no namespace-scope destructor or exit handler of a leaf source runs after the
+  harness has written the run's outputs.
 
 ## 5. CUDA C++ legality and gate guards
 
