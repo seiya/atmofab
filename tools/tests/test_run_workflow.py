@@ -10096,6 +10096,10 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["reason"], "site_unreachable")
         self.assertEqual(events[-1]["site"], "box")
         self.assertIn("connection closed", events[-1]["detail"])
+        # The remedy names both conditions a probe that did not come back points at: a prompt,
+        # and a login shell that refuses an `sh` command line (a csh-family one).
+        self.assertIn("without a prompt", events[-1]["detail"])
+        self.assertIn("POSIX-family shell", events[-1]["detail"])
         self.assertEqual(calls, [])
 
     def test_a_site_that_lacks_a_program_the_job_runs_is_refused(self) -> None:
