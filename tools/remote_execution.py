@@ -21,9 +21,15 @@ Every way the evidence could be incomplete or not this job's is a refusal
 
 - the job directory is created with `mkdir` and no `-p`, so a directory that already exists —
   a stale job's output — is refused rather than read;
-- a command's exit status is the integer its `.rc` file holds; a missing, empty or non-integer
-  file is a lost status and is refused, never read as 0. A command runs only when every earlier
-  one exited 0, and an `.rc` file for a command that should not have run is refused too;
+- a command's exit status and times travel on the job script's own stdout, one status line per
+  command that ran (`STATUS_MARKER`), and never in a file: the command itself — leaf-authored
+  code, for the runner — can write anything under the job directory, including a file planted
+  before the script writes its own, but its stdout and stderr go to files and its stdin is
+  `/dev/null`, so it holds no descriptor of the script's stdout. A command's missing status line
+  is a lost status and is refused, never read as 0; a second line for one command, a line for a
+  command that should not have run (a command runs only when every earlier one exited 0), and
+  a line that does not parse are refused too, so a line forged by anything else is refused
+  rather than read;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a program it cannot
   find), and a job directory that cannot be removed after collection are refused, with the
@@ -70,13 +76,19 @@ KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
-#: The job's control files — the script, each command's status, times and output, the platform
-#: facts — live in this subdirectory of the job directory, which no shipped file may enter.
+#: The job's control files — the script, each command's output, the platform facts — live in
+#: this subdirectory of the job directory, which no shipped file may enter.
 CONTROL_DIR = "ctl"
 #: A path element of a job directory or a shipped file: no separator, no shell-active character,
 #: and not led by `.` (no `..`, no hidden name) or `-` (read as an option).
 _ELEMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 _TAG = re.compile(r"[a-z][a-z0-9_]*")
+#: The first word of a status line the job script prints: `<marker> <tag> <rc> <t0> <t1>`, the
+#: exit status and the epoch seconds before and after. Any other line on the script's stdout —
+#: what a login shell's startup files print — is not read.
+STATUS_MARKER = "atmofab-status"
+_STATUS_LINE = re.compile(rf"{STATUS_MARKER} (\S*) (\S*) (\S*) (\S*)")
+_INT = re.compile(r"-?[0-9]+")
 #: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
 _TIMEOUT_CODES = frozenset({124, 137})
 
@@ -213,9 +225,9 @@ def _validate(request: JobRequest) -> None:
 def render_job_script(request: JobRequest) -> str:
     """The POSIX `sh` script that runs `request.commands` at the site.
 
-    Each command writes `<tag>.t0` / `<tag>.t1` (epoch seconds), `<tag>.stdout` / `<tag>.stderr`
-    and `<tag>.rc` under the control directory, and runs only when every earlier command exited
-    0. The script exits non-zero, before any command, when a directory cannot be made or a
+    Each command writes `<tag>.stdout` / `<tag>.stderr` under the control directory, runs only
+    when every earlier command exited 0, and is followed by its status line on the script's
+    stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory cannot be made or a
     program in `REMOTE_EXECUTABLES` is missing, and before a command whose program cannot be
     found: the local server raises for a program it cannot start rather than reporting an exit
     status, so a missing program is the host's failure here too, and a 126 or 127 a command
@@ -247,11 +259,11 @@ def render_job_script(request: JobRequest) -> str:
         lines += [
             'if [ "$rc" = 0 ]; then',
             f"  command -v {q(c.argv[0])} >/dev/null 2>&1 || exit 4",
-            f"  date +%s > {q(base + '.t0')}",
+            "  t0=$(date +%s) || exit 5",
             f"  ( {run} ) > {q(base + '.stdout')} 2> {q(base + '.stderr')} < /dev/null",
             "  rc=$?",
-            f"  echo \"$rc\" > {q(base + '.rc')}",
-            f"  date +%s > {q(base + '.t1')}",
+            "  t1=$(date +%s) || exit 5",
+            f'  echo "{STATUS_MARKER} {c.tag} $rc $t0 $t1"',
             "fi",
         ]
     lines.append("exit 0")
@@ -287,16 +299,42 @@ def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
                stage=stage, timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
 
-def _read_int(path: Path, what: str, remote: str) -> int:
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        raise RemoteExecutionError(
-            f"{what}: {path.name} was not written, so the status is lost ({remote})") from None
-    if not re.fullmatch(r"-?[0-9]+", text):
-        raise RemoteExecutionError(
-            f"{what}: {path.name} holds {text[:80]!r}, not an integer ({remote})")
-    return int(text)
+def _statuses(stdout: str, commands: tuple[CommandSpec, ...],
+              remote: str) -> list[tuple[int, int, int] | None]:
+    """Each command's `(rc, t0, t1)` from the job script's status lines, or None for a command
+    that did not run; see the module docstring for what is refused."""
+    lines: dict[str, list[tuple[str, str, str]]] = {}
+    for line in stdout.splitlines():
+        if line.split(" ", 1)[0] != STATUS_MARKER:
+            continue
+        m = _STATUS_LINE.fullmatch(line)
+        if not m or not all(_INT.fullmatch(v) for v in m.group(2, 3, 4)):
+            raise RemoteExecutionError(f"a status line does not parse: {line[:200]!r} ({remote})")
+        lines.setdefault(m.group(1), []).append(m.group(2, 3, 4))
+    unknown = sorted(set(lines) - {c.tag for c in commands})
+    if unknown:
+        raise RemoteExecutionError(f"status lines for no command of this job: {unknown} ({remote})")
+    out: list[tuple[int, int, int] | None] = []
+    upstream_ok = True
+    for c in commands:
+        what = f"command {c.tag!r}"
+        got = lines.get(c.tag, [])
+        if len(got) > 1:
+            raise RemoteExecutionError(f"{what}: {len(got)} status lines, not one ({remote})")
+        if not upstream_ok:
+            if got:
+                raise RemoteExecutionError(
+                    f"{what} reports a status although an earlier command failed ({remote})")
+            out.append(None)
+            continue
+        if not got:
+            raise RemoteExecutionError(f"{what}: no status line, so the status is lost ({remote})")
+        rc, t0, t1 = (int(v) for v in got[0])
+        if t1 < t0:
+            raise RemoteExecutionError(f"{what}: ended before it started ({remote})")
+        out.append((rc, t0, t1))
+        upstream_ok = rc == 0
+    return out
 
 
 def _iso(epoch: int) -> str:
@@ -369,10 +407,10 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
          stage="ship the job's files", remote=remote)
 
-    # 3. Run the script in the foreground; its commands' statuses are in files, and its own exit
-    #    status is non-zero only when it failed before them.
+    # 3. Run the script in the foreground; its commands' statuses are on its stdout, and its own
+    #    exit status is non-zero only when it failed outside them.
     bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
-    _ssh(host, f"sh {q(remote + '/' + CONTROL_DIR + '/job.sh')}",
+    job_stdout = _ssh(host, f"sh {q(remote + '/' + CONTROL_DIR + '/job.sh')}",
          stage="run the job script", timeout=bound, remote=remote)
 
     # 4. Collect. A failure here leaves the remote directory for the operator.
@@ -380,23 +418,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     ctl = collected / CONTROL_DIR
 
     # 5. Read every status before anything is recorded.
-    statuses: list[tuple[int, int, int] | None] = []
-    upstream_ok = True
-    for c in request.commands:
-        what = f"command {c.tag!r}"
-        if not upstream_ok:
-            if any((ctl / f"{c.tag}.{s}").exists() for s in ("rc", "t0")):
-                raise RemoteExecutionError(
-                    f"{what} ran although an earlier command failed ({remote})")
-            statuses.append(None)
-            continue
-        rc = _read_int(ctl / f"{c.tag}.rc", what, remote)
-        t0 = _read_int(ctl / f"{c.tag}.t0", what, remote)
-        t1 = _read_int(ctl / f"{c.tag}.t1", what, remote)
-        if t1 < t0:
-            raise RemoteExecutionError(f"{what}: ended before it started ({remote})")
-        statuses.append((rc, t0, t1))
-        upstream_ok = rc == 0
+    statuses = _statuses(job_stdout, request.commands, remote)
 
     # 6. Remove the remote directory; the evidence is local now.
     _ssh(host, f"rm -rf {q(remote)}", stage="remove the collected job directory",

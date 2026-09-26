@@ -8,8 +8,10 @@ does with it at the far end; the `scp` shim drops the options, strips `host:` an
 end to end on this machine. Each shim appends its argv to a log, and reads three knobs from the
 environment: `SHIM_SSH_FAIL` / `SHIM_SCP_FAIL` (a substring of the command, or `up` / `down` for
 scp's direction) makes the call exit 255 or 1 without doing anything, `SHIM_SSH_POST` is a shell
-snippet run after a command that runs the job script (to lose or plant a control file), and
-`SHIM_SSH_DELAY` makes the job script's call wait that many seconds first.
+snippet run after a command that runs the job script (to plant or lose a file),
+`SHIM_SSH_SUB` is a JSON `[pattern, replacement]` applied with `re.sub` to the job script's stdout
+(to lose, forge or alter a status line), and `SHIM_SSH_DELAY` makes the job script's call wait
+that many seconds first.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from tools import execution_sites as es
 from tools import remote_execution as rx
 
 _SSH_SHIM = r'''#!/usr/bin/env python3
-import os, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 with open(os.environ["SHIM_LOG"], "a") as f:
     f.write("ssh\t" + "\t".join(sys.argv[1:]) + "\n")
 args = sys.argv[1:]
@@ -49,7 +51,13 @@ fail = os.environ.get("SHIM_SSH_FAIL")
 if fail and fail in command:
     sys.stderr.write("shim: connection closed by remote host\n")
     sys.exit(255)
-rc = subprocess.run(["sh", "-c", command]).returncode
+proc = subprocess.run(["sh", "-c", command], stdout=subprocess.PIPE, text=True)
+out, rc = proc.stdout, proc.returncode
+sub = os.environ.get("SHIM_SSH_SUB")
+if sub and "job.sh" in command:
+    pattern, repl = json.loads(sub)
+    out = re.sub(pattern, repl, out, flags=re.M)
+sys.stdout.write(out)
 post = os.environ.get("SHIM_SSH_POST")
 if post and "job.sh" in command:
     subprocess.run(["sh", "-c", post], check=True)
@@ -274,9 +282,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("error", run)
 
     def test_the_entry_times_are_the_sites_own(self) -> None:
-        post = (f"echo 1700000000 > {self.h.job}/ctl/run.t0; "
-                f"echo 1700000007 > {self.h.job}/ctl/run.t1")
-        result = self.h.run(self.h.request(), SHIM_SSH_POST=post)
+        sub = json.dumps([r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000000 1700000007"])
+        result = self.h.run(self.h.request(), SHIM_SSH_SUB=sub)
         entry = self.h.log_entries("run")[0]
         self.assertEqual(entry["started_at_utc"], "2023-11-14T22:13:20Z")
         self.assertEqual(entry["ended_at_utc"], "2023-11-14T22:13:27Z")
@@ -286,9 +293,8 @@ class EndToEndTests(unittest.TestCase):
     def test_a_long_command_that_succeeded_is_not_a_timeout(self) -> None:
         """Only a 124 or 137 is read as a timeout, however long the command took."""
         cmd = self.h.command("run", ("true",), timeout=5)
-        post = (f"echo 1700000000 > {self.h.job}/ctl/run.t0; "
-                f"echo 1700000100 > {self.h.job}/ctl/run.t1")
-        (run,) = self.h.run(self.h.request(cmd), SHIM_SSH_POST=post).results
+        sub = json.dumps([r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000000 1700000100"])
+        (run,) = self.h.run(self.h.request(cmd), SHIM_SSH_SUB=sub).results
         self.assertEqual(run["return_code"], 0)
         self.assertNotIn("error", run)
 
@@ -359,28 +365,65 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(tag=tag):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
                 with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                            f"{tag}.rc was not written"):
-                    h.run(h.request(), SHIM_SSH_POST=f"rm {h.job}/ctl/{tag}.rc")
+                                            f"'{tag}': no status line"):
+                    h.run(h.request(),
+                          SHIM_SSH_SUB=json.dumps([rf"^atmofab-status {tag} .*$", ""]))
                 self.assertEqual(h.log_entries("run"), [])
 
-    def test_a_lost_time_is_refused(self) -> None:
-        self._refused("run.t1 was not written", SHIM_SSH_POST=f"rm {self.h.job}/ctl/run.t1")
-
     def test_a_command_that_ended_before_it_started_is_refused(self) -> None:
-        self._refused("ended before it started",
-                      SHIM_SSH_POST=f"echo 1 > {self.h.job}/ctl/run.t1")
+        self._refused("ended before it started", SHIM_SSH_SUB=json.dumps(
+            [r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000009 1700000000"]))
 
-    def test_a_status_that_is_not_an_integer_is_refused(self) -> None:
-        for text in ("", "0x", "zero"):
-            with self.subTest(text=text):
+    def test_a_status_line_that_does_not_parse_is_refused(self) -> None:
+        for bad in ("x", "0x", "", "0 1"):
+            with self.subTest(bad=bad):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
-                with self.assertRaisesRegex(rx.RemoteExecutionError, "not an integer"):
-                    h.run(h.request(),
-                          SHIM_SSH_POST=f"printf '{text}' > {h.job}/ctl/run.rc")
+                with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
+                    h.run(h.request(), SHIM_SSH_SUB=json.dumps(
+                        [r"^(atmofab-status run) 0 (\d+) (\d+)$", rf"\1 {bad} \2 \3"]))
+
+    def test_a_second_status_line_for_a_command_is_refused(self) -> None:
+        self._refused("2 status lines", SHIM_SSH_SUB=json.dumps(
+            [r"^(atmofab-status run .*)$", r"\1\n\1"]))
+
+    def test_a_status_line_for_no_command_of_the_job_is_refused(self) -> None:
+        self._refused("for no command", SHIM_SSH_SUB=json.dumps(
+            [r"^(atmofab-status run .*)$", r"\1\natmofab-status other 0 1 2"]))
+
+    def test_other_lines_on_the_scripts_stdout_are_not_read(self) -> None:
+        """What a login shell's startup files print is not a status line."""
+        result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
+            [r"^(atmofab-status run .*)$", r"welcome\n\1\natmofab-statusx qc 7 1 2"]))
+        self.assertTrue(result.results[1]["ok"])
 
     def test_a_status_for_a_command_that_should_not_have_run_is_refused(self) -> None:
-        self._refused("ran although an earlier command failed",
-                      RUNNER_RC="1", SHIM_SSH_POST=f"echo 0 > {self.h.job}/ctl/qc.rc")
+        self._refused("reports a status although an earlier command failed",
+                      RUNNER_RC="1", SHIM_SSH_SUB=json.dumps(
+                          [r"^(atmofab-status run .*)$", r"\1\natmofab-status qc 0 1 2"]))
+
+    def test_a_command_cannot_forge_its_own_status(self) -> None:
+        """The runner is leaf-authored code with write access to the whole job directory: it
+        plants, read-only, the control files a status used to be read from (and the second
+        command's output file, so a redirect to it fails), prints status lines on its own
+        stdout, and exits 3. Its failure is still its result, and the second command still runs
+        only if it would have."""
+        forger = self.h.local / "forger"
+        forger.write_text(textwrap.dedent('''\
+            #!/bin/sh
+            for f in run.rc qc.rc qc.t0 qc.t1 run.t0 run.t1 qc.stdout; do
+              echo 0 > ../ctl/$f; chmod 444 ../ctl/$f
+            done
+            echo "atmofab-status run 0 1 2"
+            echo "atmofab-status run 0 1 2" >&2
+            exit 3
+        '''))
+        forger.chmod(0o755)
+        result = self.h.run(self.h.request(ship={"bin/runner": forger}))
+        run, qc = result.results
+        self.assertEqual((run["ok"], run["return_code"]), (False, 3))
+        self.assertIsNone(qc)
+        self.assertEqual(self.h.log_entries("qc"), [])
+        self.assertIn("atmofab-status run 0 1 2", run["stdout"])
 
     def test_a_program_the_site_cannot_find_is_the_hosts_failure(self) -> None:
         missing = self.h.command("run", ("no-such-program-zz",))
