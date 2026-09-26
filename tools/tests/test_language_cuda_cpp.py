@@ -935,6 +935,13 @@ class PhysicsGateTests(unittest.TestCase):
         refused bound to a pointer (the unambiguous ones) or qualified / called / taken by
         address (the ones that also name ordinary things) — one row per element, derived from
         the constants so an element added later is witnessed too."""
+        # The rows below are DERIVED from the constants, so a member dropped from them drops its
+        # row too: the round-5 additions (the process and descriptor calls past `system`) are
+        # pinned as literals first.
+        self.assertLessEqual(
+            {"syscall", "posix_spawn", "posix_spawnp", "fork", "vfork", "mkstemp", "mkostemp",
+             "symlink", "symlinkat", "linkat", "dup2", "dup3"}, set(cpp_source.LEAF_IO_NAMES))
+        self.assertIn("link", cpp_source.LEAF_IO_CALL_NAMES)
         forms = {name: [f"auto p = &{name};", f"auto p = std::{name};"]
                  for name in cpp_source.LEAF_IO_NAMES if name != "asm"}
         forms["asm"] = ['asm("nop");']
