@@ -88,6 +88,9 @@ TESTS_DIR = REPO_ROOT / "tools" / "tests"
 _DECLARED_ENVIRONMENT_SKIPS = {
     "gfortran not available":
         "the Fortran front end is not installed on this host",
+    "the CUDA compiler driver is not installed":
+        "nvcc is absent from this host's PATH; the CI image installs no CUDA toolkit, so the "
+        "rows that run it are measured where one is installed (issue #289, R4-b PR-4)",
     "the declared lint invocation's linter is not installed":
         "the static linter the Generate.gate lint check declares is absent from this host",
     "the installed linter is outside the measured version range":

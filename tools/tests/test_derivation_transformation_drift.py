@@ -116,6 +116,25 @@ def render_tuple() -> dict[str, str]:
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
         "Conductor._write_pure_bundle_artifacts":
             _source_digest(wc.Conductor._write_pure_bundle_artifacts),
+        # The second language's host renders (issue #289, R4-b PR-4): its control-file rules,
+        # its `bundle_facts`, the published-surface header the host writes beside its bundle (and the
+        # lowering it renders with),
+        # the package re-exporting them, and the conductor methods that write the header.
+        "tools/backends/language/cuda_cpp/control_file.py":
+            _file_digest("tools/backends/language/cuda_cpp/control_file.py"),
+        "tools/backends/language/cuda_cpp/bundle.py":
+            _file_digest("tools/backends/language/cuda_cpp/bundle.py"),
+        "tools/backends/language/cuda_cpp/header.py":
+            _file_digest("tools/backends/language/cuda_cpp/header.py"),
+        "tools/backends/language/cuda_cpp/signatures.py":  # the header's lowering
+            _file_digest("tools/backends/language/cuda_cpp/signatures.py"),
+        "tools/backends/language/cuda_cpp/__init__.py":
+            _file_digest("tools/backends/language/cuda_cpp/__init__.py"),
+        "registry interface_header attr": registry_attr("interface_header"),
+        "Conductor._interface_header_module":
+            _source_digest(wc.Conductor._interface_header_module),
+        "Conductor._write_interface_header":
+            _source_digest(wc.Conductor._write_interface_header),
     }
 
 
@@ -303,7 +322,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `select case` / `error stop`, which the target-free Compile leaf read; it now says
     # "the host-rendered runner's case dispatch". What a valid IR is did not change (the
     # distinctness, length and character rules are word for word the same).
-    "compile-docs-6": "a42516f0d5f55c5313c27198f41243a0cbaa48ec8a66db21970aa254d53a69c3",
+    # Re-pinned again by R4-b PR-4 (issue #289), without a bump, on the same ground: four
+    # Fortran spellings the target-free Compile leaf read became neutral — the `operations`
+    # rule's "subroutine" (now "operation"), V4c-i's "`use`/`call`" (now "the import and the
+    # call"), the snapshot-variable rule's `sb_<name> => <name>` (now "binds under the alias
+    # `sb_<name>`", the case-insensitivity reason now attributed to a bound target language),
+    # and the spec_id rule's "f2008 63-character limit" (now the shortest identifier bound an
+    # implemented language backend declares, still 63). No rule's bound or character set moved.
+    "compile-docs-6": "853ccc0b0fb4f0a2fdf756fc113f59cfe36f2487c673b75804d289bf436d1c63",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -355,7 +381,15 @@ PINNED_RENDER: dict[str, str] = {
     # gained the checks-ABI remedy sentences the bundle layer and the validator show a leaf
     # (moved verbatim out of `codegen_bundle` / `validate_pipeline_semantics`), and
     # `host_render.py` the seam functions that reach them; nothing the renderer emits changed.
-    "render-5": "1b057854dfae28e3a92eab466e1e9bcf3b0a018febe4ee0c3bf2b5a4c097aca8",
+    # Re-pinned (issue #289, R4-b PR-4), behaviour-preserving for every existing target: the
+    # conductor hands a language's control-file rules the target's `hardware.architecture` (the
+    # CUDA C++ rules put it in `-arch=`); the Fortran rules accept and do not read it, and return
+    # the identical rule set (measured: equal with and without the argument). Re-pinned again in
+    # round 3 of that PR's review: the tuple gained the CUDA C++ host renders (control-file rules,
+    # bundle facts, the header and its lowering, the conductor's header writer), which no pin
+    # watched — a change to the header or to `-O2` left every `cuda_cpp` key unmoved. No
+    # `cuda_cpp` node has run, and nothing the Fortran path renders changed.
+    "render-5": "9689ccadef31c017591a0c376c689aeed534877c40d6bbbe105231169f43e7a4",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -381,7 +415,10 @@ PINNED_BUILD: dict[str, str] = {
     # every profile the launch gate admits. Re-pinned again in that PR's round 2: the tuple
     # gained `Conductor._classify_build_failure_category`, and in round 3 the rest of the dispatch
     # into `failure.py` (the attribute row, the make package `__init__` and `control_file.py`).
-    "build-1": "a52500a00c4b3e14d7097e91b7ac591d4c8f51a6704ad18d6fe20a83cbf17a39",
+    # Re-pinned (issue #289, R4-b PR-4), comment only: `_build_inproc`'s note on the recorded
+    # `compiler_version` now says it is the first VERSIONED line of `--version` (the server's
+    # probe changed; for a compiler that prints its version first, the value is the same line).
+    "build-1": "2a5089ac003f7f49d37b155eac08a3ad6dfdd5afbbe221521425a11db6453be8",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -406,7 +443,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # Re-pinned (issue #289, R4-b PR-3), behaviour-preserving: the `openmp` package's
     # `__init__` (a digested launch member) re-exports its new `directives` module beside
     # `execution`; the environment `launch_shape` resolves is unchanged.
-    "execute-4": "e850442fd518a1e57031142090834ebae329d302ed233c8b7b967d4cd4a89eb4",
+    # Re-pinned (issue #289, R4-b PR-4), behaviour-preserving for every existing profile: the
+    # tuple gained the new `parallel/cuda` record's `execution_env` module and package (an empty
+    # environment); what `launch_shape` resolves for an `openmp` / `none` profile is unchanged.
+    "execute-4": "caf20787a818c920fc403b29150b50b452e1b20c1848b3ba27da62b0a8a93224",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

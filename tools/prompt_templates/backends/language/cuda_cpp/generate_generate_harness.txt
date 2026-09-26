@@ -1,0 +1,13 @@
+# The CUDA C++ language fragments of `tools/prompt_templates/pure_generate_generate_harness.txt`.
+# Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/language/cuda_cpp/prompts.py`; lines before the first header are comments.
+
+@@ interface_prototypes
+use the function-pointer alias the host-rendered header `<spec_id>_model.cuh` declares for every `interfaces` entry — declare no alias of your own and define no function of that name
+@@ runner_import
+`#include`
+@@ types_and_parameters
+`public_api.published_types`, `public_api.module_parameters` and the `interfaces` aliases are DECLARED for you, lowered as **Legality and gate guards** below states, in the host-rendered `<spec_id>_model.cuh` beside your sources: include it, and declare none of them again (a second declaration of a type is a compile error, and of a module parameter a gate refusal).
+@@ gate_guard_examples
+(the published-surface header you include and do not repeat, the binding for an interface-fixed unused argument, the preprocessor directives a source may use)

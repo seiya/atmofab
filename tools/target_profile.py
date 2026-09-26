@@ -390,11 +390,15 @@ def target_harness_entries(target: TargetProfile | None,
 #: What `Generate` asks of the target LANGUAGE for every node kind: `bundle_facts` (the bundle
 #: contract's file facts and the host-given names), `syntax_promotions` (the syntax stage),
 #: `prompt_fragments` (the generate prompts' rules and the runner-output binding) and
-#: `checks_abi` (the checks-module binding and the gate guards). A capability the phase reads
-#: for one kind only belongs in `toolchain_servable_reasons`' kind-specific list instead.
+#: `checks_abi` (the checks-module binding and the gate guards), and `control_file` (the language
+#: half of the build control file the host authors for every node: a `harness` bundle has no shape
+#: without it — R4-b PR-4's round 3 moved it here from the non-`infrastructure` list, where a
+#: language declaring it for no node passed launch and stopped mid-`Generate`). A capability the
+#: phase reads for one kind only belongs in `toolchain_servable_reasons`' kind-specific list
+#: instead.
 LANGUAGE_CAPABILITIES_EVERY_NODE: tuple[str, ...] = (
     "bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi", "source_reading",
-    "signatures")
+    "signatures", "control_file")
 
 
 def toolchain_servable_reasons(language: str, build_system: str, *,
@@ -409,11 +413,12 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
     `Generate` phase asks of it (issue #289, R4-b PR-2): the bundle facts, the syntax-stage
     facts, the prompt fragments and the checks-ABI binding, and since R4-b PR-3 the source
     reader and the signature module the deterministic gates read every node's sources and §5.1
-    surface with (`LANGUAGE_CAPABILITIES_EVERY_NODE`).
+    surface with, and since R4-b PR-4 the control file's language half (both
+    `LANGUAGE_CAPABILITIES_EVERY_NODE`); the build system's half of the control file too.
     A language missing one is refused HERE, at launch, rather than at the first dispatch that
     needs it — mid-run, after Compile has been billed — and never silently served with another
-    language's rules. Every other kind than `infrastructure` also needs the host to author the
-    control file (both axes) and render the runner (language)."""
+    language's rules. Every other kind than `infrastructure` also needs the host to render the
+    runner (language)."""
     from tools.backends import registry as backend_registry
 
     reasons: list[str] = []
@@ -423,12 +428,11 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
             reasons.append(reason)
     if reasons:
         return reasons
-    required: list[tuple[str, str, str]] = [("build_system", build_system, "build_execute")]
+    required: list[tuple[str, str, str]] = [("build_system", build_system, "build_execute"),
+                                            ("build_system", build_system, "control_file")]
     required += [("language", language, c) for c in LANGUAGE_CAPABILITIES_EVERY_NODE]
     if not infrastructure:
-        required += [("build_system", build_system, "control_file"),
-                     ("language", language, "control_file"),
-                     ("language", language, "runner_render")]
+        required += [("language", language, "runner_render")]
     for axis, value, capability in required:
         reason = backend_registry.missing_capability_reason(axis, value, capability)
         if reason is not None:

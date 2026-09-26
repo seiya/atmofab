@@ -1211,15 +1211,16 @@ class DevRequirementsTests(unittest.TestCase):
     def _pip_installable_ranges(self) -> dict[str, str]:
         """The subset of the above whose tool pip can install, keyed by DISTRIBUTION name.
 
-        `cppcheck` is a system package, so its range is documented and not declared here; the map
-        below is the one place this file states a distribution name that a module does not, and it
-        is asserted against the registry's own backend ids so a new linter cannot land unnoticed.
+        `cppcheck` is a system package and `nvcc` ships with the CUDA toolkit, so their ranges are
+        documented and not declared here; the map below is the one place this file states a
+        distribution name that a module does not, and it is asserted against the registry's own
+        backend ids so a new linter cannot land unnoticed.
         """
         distributions = {"fortitude": "fortitude-lint", "ruff": "ruff"}
-        apt_only = {"cppcheck"}
+        not_pip = {"cppcheck", "nvcc"}
         declared = self._declared_ranges()
         self.assertEqual(
-            set(declared), set(distributions) | apt_only,
+            set(declared), set(distributions) | not_pip,
             "a linter backend was added or removed; requirements-dev.txt and this map have to say "
             "whether pip installs it")
         return {_canonical(distributions[b]): spec

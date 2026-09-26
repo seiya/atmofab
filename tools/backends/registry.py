@@ -233,6 +233,14 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "errors. Without it the stage has nothing to check, and a node of this value is refused "
         "rather than passed through unchecked.",
     ),
+    "interface_header": (
+        ("language",),
+        "The host renders this language's declaration of a node's published surface from the "
+        "node's IR `public_api` (a header the node's sources and its consumers compile against), "
+        "and writes it beside the bundle's files. A language that compiles each source against "
+        "another's declarations needs it; one whose compiler reads the published surface off the "
+        "defining source does not declare it.",
+    ),
     "syntax_check": (
         ("compiler",),
         "The syntax-only gate has an adapter for this value: its argv, its executable, a version "
@@ -315,6 +323,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "checks_abi": "checks_abi",
     "source_reading": "source",
     "signatures": "signatures",
+    "interface_header": "header",
 }
 
 
@@ -372,6 +381,19 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
                                         "prompt_fragments", "checks_abi", "source_reading",
                                         "signatures", "control_file"}),
         ),
+        # CUDA C++ (issue #289, R4-b PR-4): every capability a node of ANY kind needs
+        # (`target_profile.LANGUAGE_CAPABILITIES_EVERY_NODE`), the language half of `control_file`
+        # (the host authors every node's build control file — a harness bundle has no shape without
+        # it) and
+        # `interface_header` (the host renders the published-surface header), so its
+        # `infrastructure` harness runs; NOT `runner_render`, so a physics node of this language is
+        # refused at launch until the host renders its runner.
+        Backend(
+            "language", "cuda_cpp", "tools.backends.language.cuda_cpp",
+            backend_provides=frozenset({"bundle_facts", "syntax_promotions", "prompt_fragments",
+                                        "checks_abi", "source_reading", "signatures",
+                                        "control_file", "interface_header"}),
+        ),
         # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
         # conductor held and the control-file gates the validator held. `build_execute` stays
         # core: the in-process Build / Validate.execute path that drives make (the object /
@@ -386,6 +408,11 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # the version probe `run_syntax_check` used to hold inline.
         Backend(
             "compiler", "gfortran", "tools.backends.compiler.gfortran",
+            backend_provides=frozenset({"syntax_check"}),
+        ),
+        # The CUDA compiler driver's syntax-only adapter (issue #289, R4-b PR-4).
+        Backend(
+            "compiler", "nvcc", "tools.backends.compiler.nvcc",
             backend_provides=frozenset({"syntax_check"}),
         ),
         # The linter members ARE the presets the `Generate` lint evidence gate accepts: that gate
@@ -409,6 +436,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend(
             "linter", "ruff", "tools.backends.linter.ruff",
             backend_provides=frozenset({"lint"}),
+        ),
+        # The CUDA compiler driver with every warning an error is the `cuda_cpp` lint (issue
+        # #289, R4-b PR-4): the C-family linter misreads a kernel launch.
+        Backend(
+            "linter", "nvcc", "tools.backends.linter.nvcc",
+            backend_provides=frozenset({"lint", "lint_rules"}),
         ),
         # `mixed` stays in the neutral core, and the ground is that it has no invocation of its
         # own: it is a COMPOSITE, defined by the presets it runs in order
@@ -443,6 +476,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # environment of its own, and `tools/host_execution.py` answers that as an empty mapping.
         Backend("parallel", "none", None,
                 core_provides=frozenset({"parallel_directives", "execution_env"})),
+        # CUDA (issue #289, R4-b PR-4): its launch environment is empty, and its presence floor
+        # asks a GPU model source with counted loops for a kernel.
+        Backend(
+            "parallel", "cuda", "tools.backends.parallel.cuda",
+            backend_provides=frozenset({"execution_env", "parallel_directives"}),
+        ),
         # `cpu` is the class THIS host is: `Validate.execute` launches the binary in-process
         # (`workflow_conductor._execute_inproc` through `tools/host_execution.py`), and that path
         # is neutral code, so `execution` is core. It declares no `perf_facts` because nothing

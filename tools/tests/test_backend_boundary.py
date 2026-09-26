@@ -2218,7 +2218,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
-                      "checks_abi", "source_reading", "signatures", "parallel_directives"}
+                      "checks_abi", "source_reading", "signatures", "parallel_directives",
+                      "interface_header"}
+        # `interface_header` joined them with issue #289 (R4-b PR-4): the conductor asks
+        # `provides` / `capability_module` for it when it writes a bundle's files, and when it
+        # names the files it authors (`_host_rendered_src_names`).
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
         # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
@@ -2546,7 +2550,7 @@ class RegistryConsistencyTests(unittest.TestCase):
             # R4-b PR-4: how the dependency-fact renderer shows a consumer those interfaces.
             "procedure_interface", "dependency_operations_header", "prototype_heading",
             "argument_detail_lines"),
-        "control_file": ("rules",),
+        "control_file": ("rules", "READS_ARCHITECTURE"),
     }
 
     #: The same, for the build-system and parallel capabilities a package carries (issue #289,

@@ -3321,5 +3321,108 @@ class PureHarnessShapeTests(unittest.TestCase):
                                               (tc["build_system"], tc["language"])))
 
 
+
+class CudaCppHarnessTests(unittest.TestCase):
+    """The harness shape on the second language (issue #289, R4-b PR-4): the host authors the
+    Makefile (the language half of `control_file`) and renders the published-surface header
+    (`interface_header`), so the node has a bundle shape at all — round 1 of that change found it
+    had none, and a `cuda_cpp` harness could not reach Generate."""
+
+    def setUp(self) -> None:
+        import re
+
+        import yaml
+
+        from tools.backends.language.cuda_cpp import signatures as cs
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.refs = _write_harness_node(self.repo)
+        install_target_profile(self.repo, profile_with(
+            toolchain={"language": "cuda_cpp", "standard": "c++17", "compiler": "nvcc"},
+            hardware={"class": "gpu", "architecture": "sm_90"},
+            parallel={"backend": "cuda"}))
+        real = Path(wc.__file__).resolve().parents[1] / _HARNESS_SPEC_PATH / "controlled_spec.md"
+        body = re.search(r"### 5\.1.*?```ya?ml\n(.*?)```", real.read_text(encoding="utf-8"),
+                         re.DOTALL).group(1)
+        struct, _err = cs.load_structured_signatures(body)
+        ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
+        ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
+        ir["public_api"].update({
+            "signatures": [{"symbol": s["name"], "signature": s}
+                           for s in struct["types"] + struct["procedures"]],
+            "module_parameters": struct["module_parameters"]})
+        ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
+        self.public_api = ir["public_api"]
+        self.c = _conductor(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_node_takes_the_harness_shape_and_both_generate_pairs_go_pure(self) -> None:
+        self.assertEqual("harness", self.c._bundle_shape(self.refs))
+        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "generate"))
+
+    def test_the_host_authors_the_makefile_and_the_header(self) -> None:
+        self.assertEqual({"Makefile", f"{_HARNESS_SPEC_ID}_model.cuh"},
+                         set(self.c._host_rendered_src_names(self.refs)))
+
+    def test_the_bundle_write_renders_the_header_and_an_nvcc_makefile(self) -> None:
+        from tools.backends.language.cuda_cpp import header as cpp_header
+        doc = {
+            "bundle_schema_version": "1.2.0",
+            "optimization_unit": {"members": [_HARNESS]},
+            "files": [
+                {"logical_path": f"{_HARNESS_SPEC_ID}_model.cu", "role": "model",
+                 "language": "cuda_cpp", "member_node_key": _HARNESS,
+                 "content": f'#include "{_HARNESS_SPEC_ID}_model.cuh"\n',
+                 "modules": [f"{_HARNESS_SPEC_ID}_model"]},
+                {"logical_path": f"{_HARNESS_SPEC_ID}_runner.cu", "role": "runner",
+                 "language": "cuda_cpp", "member_node_key": _HARNESS,
+                 "content": "int main() { return 0; }\n", "modules": []},
+            ],
+        }
+        graph = self.c._build_pure_bundle_graph(self.refs, doc)
+        self.c._write_pure_bundle_artifacts(self.refs, doc, graph)
+        src = self.repo / self.refs.source_dir() / "src"
+        self.assertEqual(cpp_header.render(_HARNESS_SPEC_ID, self.public_api),
+                         (src / f"{_HARNESS_SPEC_ID}_model.cuh").read_text(encoding="utf-8"))
+        makefile = (src / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("NVCC    := nvcc", makefile)
+        self.assertIn("-std=c++17 -O2 -arch=sm_90 -I$(OBJDIR)", makefile)
+        self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_model.o: {_HARNESS_SPEC_ID}_model.cu", makefile)
+        self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_runner.o: {_HARNESS_SPEC_ID}_runner.cu",
+                      makefile)
+
+    def test_the_lint_probes_give_the_header_to_both_sides(self) -> None:
+        """A compiling linter needs the host header as CONTEXT on the leaf side, and the header is
+        not a lint subject on either side: a leaf finding stays the leaf's."""
+        src = self.repo / self.refs.source_dir() / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        header = f"{_HARNESS_SPEC_ID}_model.cuh"
+        (src / header).write_text("#pragma once\n", encoding="utf-8")
+        (src / "Makefile").write_text("all:\n", encoding="utf-8")
+        (src / f"{_HARNESS_SPEC_ID}_model.cu").write_text("int x;\n", encoding="utf-8")
+        seen: dict[str, set[str]] = {}
+
+        def fake_linter(args: dict) -> dict:
+            root = Path(args["project_dir"])
+            seen[root.name] = {p.name for p in root.rglob("*") if p.is_file()}
+            return {"ok": root.name != "leaf", "return_code": 0 if root.name != "leaf" else 1,
+                    "stdout": "", "stderr": ""}
+
+        import sys
+        mcp_dir = str(Path(wc.__file__).resolve().parents[1] / "mcp_servers")
+        if mcp_dir not in sys.path:
+            sys.path.insert(0, mcp_dir)
+        import build_runtime_server
+        with mock.patch.object(build_runtime_server, "tool_run_linter", fake_linter):
+            category, _excerpt = self.c._attribute_lint_findings(self.refs, "arid", "nvcc", ["x"])
+        self.assertEqual("lint_findings", category)
+        # Every host file here is of a suffix the linter is not handed (the header, the Makefile),
+        # so each is context on the leaf side and nothing is judged on the host side.
+        self.assertEqual({header, "Makefile", f"{_HARNESS_SPEC_ID}_model.cu"}, seen["leaf"])
+        self.assertNotIn("host", seen)  # the host side holds nothing the linter judges
+
 if __name__ == "__main__":
     unittest.main()

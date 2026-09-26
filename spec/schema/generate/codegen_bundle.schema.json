@@ -68,10 +68,10 @@
             "x-entry-bearing-role": "runner"
           },
           "language": {
-            "description": "Source language. v1 is fortran only; a new language is added by extending this enum and LANGUAGE_EXTENSION_ALLOWLIST together.",
+            "description": "Source language: a language whose backend declares bundle facts (tools/codegen_bundle.py LANGUAGES, derived from the registry); a new language is added by extending this enum and x-extension-allowlist together.",
             "type": "string",
-            "enum": ["fortran"],
-            "x-extension-allowlist": {"fortran": [".f90"]}
+            "enum": ["cuda_cpp", "fortran"],
+            "x-extension-allowlist": {"cuda_cpp": [".cu"], "fortran": [".f90"]}
           },
           "member_node_key": {
             "description": "The unit member this file belongs to, or null for a file shared by the whole unit. null is admissible only for role helper / internal_module; a model or checks file belongs to exactly one member.",
@@ -83,10 +83,10 @@
             "minLength": 1
           },
           "modules": {
-            "description": "The Fortran modules this file defines. Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
+            "description": "The modules this file defines — a language's publishing units (a Fortran module, a CUDA C++ namespace). Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
             "type": "array",
             "x-non-empty-unless-role": "runner",
-            "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"}
+            "items": {"type": "string", "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"}
           },
           "compile_after": {
             "description": "Optional. logical_paths of other bundle files that must compile before this one (e.g. this file `use`s a module another defines). It refines the role-precedence order that ROLE_BUILD_PRECEDENCE gives by default, so two files of the same role can be ordered. tools/codegen_bundle.py:bundle_invariant_violations checks that each entry resolves to another files[] entry, does not name the file itself, does not reverse ROLE_BUILD_PRECEDENCE (an edge may order within a role or agree with precedence, never a dependency of a later role), and forms no cycle; derive_build_graph topologically sorts by it. The host never infers these edges from the source — the bundle declares them.",
@@ -106,14 +106,14 @@
         "required": ["symbol", "kind", "node_key", "defined_in", "module"],
         "properties": {
           "symbol": {
-            "description": "The published identifier (Fortran identifier grammar).",
+            "description": "The published identifier: the union of the bundle languages' identifier grammars here, and the grammar of the language of its `defined_in` file at validate_bundle.",
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "module": {
-            "description": "The Fortran module that publishes `symbol`, so the host renders `use <module>, only: <symbol>` mechanically. A file may define several modules or name them freely; the host never parses the source to discover which, so the bundle declares it. Fortran identifier grammar (<= 63 chars).",
+            "description": "The module (a Fortran module, a CUDA C++ namespace) that publishes `symbol`, so the host renders `use <module>, only: <symbol>` mechanically. A file may define several modules or name them freely; the host never parses the source to discover which, so the bundle declares it. Fortran identifier grammar (<= 63 chars).",
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "kind": {
             "description": "operation = the member's published semantic operation (defined in a model-role file). checks_interface = the member's checks module surface (defined in a checks-role file).",
@@ -186,16 +186,16 @@
           "node_key": {"$ref": "#/definitions/node_key"},
           "state_variable": {
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "storage_symbol": {
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "module": {
             "description": "The Fortran module that publishes storage_symbol, so the host renders `use <module>, only: <storage_symbol>` mechanically. A member may have several checks files with freely chosen module names; the host never parses the source to find the exporter. Fortran identifier grammar (<= 63 chars).",
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}(?![\\s\\S])"
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "capture": {
             "type": "string",

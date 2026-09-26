@@ -104,15 +104,23 @@ backend package that owns the tool, so the check cannot look for a build the gat
 | `fortitude` | `>=0.8,<0.10` | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) |
 | `ruff` | `>=0.14,<0.17` | [docs/backends/linter/ruff/RULES.md](backends/linter/ruff/RULES.md) |
 | `cppcheck` | `>=2.7,<2.18` | [docs/backends/linter/cppcheck/RULES.md](backends/linter/cppcheck/RULES.md) |
+| `nvcc` | `>=13.0,<14.0` | [docs/backends/linter/nvcc/RULES.md](backends/linter/nvcc/RULES.md) |
 
 Which of them a run selects follows from its own `toolchain.language`: each linter backend
 declares the languages it lints (`LANGUAGES` in its `lint` module, answered by
 `registry.linter_for_language`) — not restated here, because what an operator meeting this
 refusal needs is the RANGE.
 
-Only the first row is reachable today: no `spec` node can select a non-`fortran` language on a
-non-`infrastructure` node, so an operator setting up a machine installs `fortitude` and neither of
-the other two. The other rows are here because the ranges are refused by the same launch arm the
+Only the first row is reachable today: every target profile in this tree names `fortran`, so an
+operator setting up a machine installs `fortitude` and none of the others. The `nvcc` row (the CUDA
+compiler driver, which lints `cuda_cpp`) is reached by a target profile naming `cuda_cpp`. Three
+things such a profile meets before its first run: only its `infrastructure` harness runs — a
+`component` / `problem` node of `cuda_cpp` is refused at launch, because the host renders no
+CUDA C++ runner yet (`toolchain_servable_reasons`); the `gpu` hardware class declares no
+`execution`, so a run of the profile that reaches `Validate` is refused at launch
+(`hardware_violations`) and one that stops at `Build` is not; and the build derivation key records
+the compiler as `nvcc`'s `release` line and the target's `hardware.architecture`, not the host C++
+compiler `nvcc` drives, so changing that compiler alone reuses a certified build. The other rows are here because the ranges are refused by the same launch arm the
 moment one of them is selected. The `missing_required_host_tools` table above deliberately does
 not grow the same rows: it renders one RESOLVED selection, not a catalogue, and adding a program
 no run installs would make the install line above wrong.

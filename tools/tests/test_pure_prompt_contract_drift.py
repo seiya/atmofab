@@ -96,9 +96,7 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.backends.language.fortran.runner as rr
-import tools.backends.language.fortran.checks_abi as _fortran_checks_abi
-import tools.backends.language.fortran.prompts as _fortran_prompts
-import tools.backends.linter.fortitude.lint as _fortitude_lint
+from tools.backends import registry as _registry
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
@@ -621,7 +619,22 @@ PINNED: dict[str, str] = {
     # producer template's abstract-interface / host-association / implicit-typing sentence
     # became `{{language:interface_prototypes}}` (a new Fortran fragment file carries it), and
     # the composed prompt is again byte-identical — measured for all 12 launch templates.
-    "pure-50": "3636ed21f5d5e9dd96bf8009a642fb1158bdf4e8e7cf31bff4720ea53b957b08",
+    # Re-pinned in place a third time by R4-b PR-4 (issue #289), on the same ground: the
+    # `harness` producer template's "nothing else may `use` it" became
+    # `{{language:runner_import}}` (the Fortran fragment carries "`use`"), and every
+    # `pure_*.txt` composed for `fortran` is byte-identical to origin/main 94faa816's (measured
+    # by composing each through `_compose_language_fragments` in both trees). Re-pinned again in
+    # the same PR when the second language joined the tuple: its fragment file, and — the tuple's
+    # per-language members now being derived from the registry rather than naming the Fortran
+    # modules — its lint rule set, gate guards, checks-ABI slices and runner-output binding.
+    # The Fortran entries of those members are the same bytes as before, and the composed
+    # Fortran prompts are unchanged (measured again, as above), so no leaf that has ever run
+    # reads anything different; the `cuda_cpp` entries are read by no run yet. Round 3 of that
+    # PR's review re-pinned it once more for the `cuda_cpp` checks-ABI §5 alone (the header,
+    # reserved-identifier and line-splice rules), and again in the same round for three more
+    # `cuda_cpp`-only texts (§5's top-level-source rule, the verify fragment's reading of H5's
+    # "declared bounds", the runner-output binding's non-finite item), on the same ground.
+    "pure-50": "8ed40da66a179758bab267d90c559702295bc26b293ad99406acb178df4d2d75",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
@@ -716,18 +729,50 @@ def _contract_tuple() -> dict[str, object]:
         # slices beside it, and the one member that comes from a BACKEND rather than a document:
         # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
         # and has to bump the version rather than ship silently.
-        "lint_rules_document": _fortitude_lint.lint_rules_document(),
+        #
+        # PER LANGUAGE, derived from the registry (issue #289, R4-b PR-4): until the second
+        # language this member and the three below named the Fortran backend's modules, so a
+        # `cuda_cpp` leaf's rule set, gate guards and runner-output binding could change with
+        # the digest unmoved. Every language that declares `prompt_fragments` (the capability a
+        # launch of that language composes its prompts with) contributes its entry; the linter
+        # is the one `registry.linter_for_language` resolves for it, as `_gate_lint_check` and
+        # the prompt assembly both do.
+        "lint_rules_document": {
+            language: _registry.capability_module(
+                "linter", _registry.linter_for_language(language), "lint_rules"
+            ).lint_rules_document()
+            for language in _prompt_languages()
+        },
         # Since issue #289 (R4-b PR-2) §5 is the LANGUAGE's (its checks-ABI binding), and the
         # reviewer is shown the binding's §1-§4 after the neutral ones: both slices are leaf
         # INPUT on the same ground as the neutral slice above.
-        "checks_contract_gate_guards_section": wc._checks_contract_gate_guards_section(
-            _fortran_checks_abi.document()),
-        "checks_abi_binding_sections": wc._checks_contract_abi_sections(
-            _fortran_checks_abi.document()),
+        "checks_contract_gate_guards_section": {
+            language: wc._checks_contract_gate_guards_section(_checks_abi_document(language))
+            for language in _prompt_languages()
+        },
+        "checks_abi_binding_sections": {
+            language: wc._checks_contract_abi_sections(_checks_abi_document(language))
+            for language in _prompt_languages()
+        },
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
-        "runner_output_binding_document": _fortran_prompts.runner_output_document(),
+        "runner_output_binding_document": {
+            language: _registry.capability_module(
+                "language", language, "prompt_fragments").runner_output_document()
+            for language in _prompt_languages()
+        },
     }
+
+
+def _prompt_languages() -> list[str]:
+    """Every language a pure `generate` prompt can be composed for: those declaring
+    `prompt_fragments`, sorted."""
+    return [language for language in _registry.implemented_backend_ids("language")
+            if _registry.provides("language", language, "prompt_fragments")]
+
+
+def _checks_abi_document(language: str) -> str:
+    return _registry.capability_module("language", language, "checks_abi").document()
 
 
 def _digest() -> str:
@@ -761,6 +806,23 @@ class PurePromptContractDriftTests(unittest.TestCase):
             f"pure prompt contract digest for {PURE_PROMPT_CONTRACT_VERSION!r} does not match the pin."
             + resolution,
         )
+
+    def test_every_prompt_language_s_leaf_inputs_are_in_the_digest(self) -> None:
+        """The per-language members are derived from the registry, so the SECOND language's leaf
+        inputs move the digest too (issue #289, R4-b PR-4) — each witnessed by changing it."""
+        self.assertIn("cuda_cpp", _prompt_languages())
+        base = _digest()
+        from unittest import mock
+        checks = _registry.capability_module("language", "cuda_cpp", "checks_abi")
+        prompts = _registry.capability_module("language", "cuda_cpp", "prompt_fragments")
+        lint = _registry.capability_module("linter", "nvcc", "lint_rules")
+        for label, target, attribute, value in (
+                ("checks-ABI binding", checks, "document",
+                 lambda: checks.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n"),
+                ("runner-output binding", prompts, "runner_output_document", lambda: "changed"),
+                ("lint rule set", lint, "lint_rules_document", lambda: "changed")):
+            with self.subTest(label=label), mock.patch.object(target, attribute, value):
+                self.assertNotEqual(base, _digest())
 
     def test_no_empty_version_bump(self) -> None:
         # Every pinned version's digest must be UNIQUE. A genuine contract bump changes the tuple and

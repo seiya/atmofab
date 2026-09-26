@@ -102,8 +102,7 @@
       "make-control-file": 2
     },
     "docs/workflow/phases/phase_01_compile.md": {
-      "fortran-standard": 1,
-      "fortran-subroutine": 2
+      "fortran-subroutine": 1
     },
     "docs/workflow/phases/phase_02_generate.md": {
       "fortran": 25,
@@ -202,6 +201,9 @@
     },
     "tools/spec_input_gates.py": {
       "fortran": 1
+    },
+    "tools/structured_signatures.py": {
+      "fortran-subroutine": 6
     },
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 1,

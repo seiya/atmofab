@@ -1,0 +1,7 @@
+# The Fortran language fragments of `tools/prompt_templates/pure_generate_verify_harness.txt`.
+# Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/language/fortran/prompts.py`; lines before the first header are comments.
+
+@@ host_rendered_scope
+Nothing here is host-rendered, so nothing is out of scope for being invisible to you:

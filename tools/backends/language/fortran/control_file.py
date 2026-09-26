@@ -32,8 +32,19 @@ def flags(standard: str, parallel_backend: str) -> str:
     return value + " -J$(OBJDIR) -I$(OBJDIR)"
 
 
-def rules(*, standard: str, parallel_backend: str) -> dict[str, Any]:
-    """The language facts a build system's control-file renderer composes with its grammar."""
+#: Whether the rules READ the target's `hardware.architecture`: they do not (it is accepted by
+#: `rules` and ignored), so it stays out of the build derivation key, which is byte-identical to
+#: the key before the argument existed.
+READS_ARCHITECTURE = False
+
+
+def rules(*, standard: str, parallel_backend: str, architecture: str | None = None
+          ) -> dict[str, Any]:
+    """The language facts a build system's control-file renderer composes with its grammar.
+    `architecture` (the target profile's `hardware.architecture`) is ACCEPTED AND NOT READ: a CPU
+    Fortran compile takes no device architecture, and the argument exists for the languages whose
+    compiler does."""
+    del architecture  # accepted, not read (see the docstring)
     return {
         # The name the renderer's header comment gives the language.
         "language": "fortran",

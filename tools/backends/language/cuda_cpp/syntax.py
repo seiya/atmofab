@@ -1,0 +1,41 @@
+"""What the `Generate.gate` syntax-only stage has to know about CUDA C++ (issue #289, R4-b PR-4).
+
+The `syntax_promotions` capability: which files are sources, the order they are handed to the
+compiler in, and which warning classes the stage promotes to errors. The compiler adapter
+(`tools/backends/compiler/nvcc/syntax.py`) builds the command line out of these.
+
+Stdlib only.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+#: The suffixes the stage treats as translation units — for auto-discovery, for the source-name
+#: rule an explicit list must satisfy, and for the conductor's "no source to check" test. Every
+#: `.cu` is compiled on its own (BUNDLE_BINDING.md §1), so every staged `.cu` is checked on its
+#: own.
+SOURCE_SUFFIXES: tuple[str, ...] = (".cu",)
+
+#: The files copied into the stage directory: the translation units AND the host-rendered
+#: headers they include (`header.basename`), which are compiled only through their includers.
+STAGED_SUFFIXES: tuple[str, ...] = (".cu", ".cuh")
+
+#: NONE, deliberately. The warning classes a CUDA C++ source is held to are the static-lint
+#: rule set (`tools/backends/linter/nvcc/lint.py`: every host-compiler warning of `-Wall -Wextra`
+#: and every device-front-end warning, as errors), which the `Generate.gate` lint check applies to
+#: the same files; promoting a subset here as well would state one rule twice, in two places
+#: that could drift. This stage answers "does it compile" for the target's standard and
+#: architecture, which the lint invocation does not pin.
+PROMOTED_WARNINGS: tuple[str, ...] = ()
+
+
+def compile_order(project_dir: Path) -> list[str]:
+    """The `.cu` sources in `project_dir`, name-sorted. Each is its own translation unit and
+    reaches another's surface only through a header in the same directory, so no order between
+    them is needed. Only the top level: a `.cu` in a subdirectory is refused by the static check
+    (`source.model_source_gates`)."""
+    return sorted(
+        p.name for p in project_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES
+    )

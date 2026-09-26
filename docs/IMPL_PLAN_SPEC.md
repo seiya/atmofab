@@ -33,7 +33,7 @@ A target profile requires the following fields. `spec/schema/targets/target_prof
 
 Rules:
 - The toolchain is fixed by the target profile, not by `Compile`. `Compile` reads no toolchain and produces the same IR for every target.
-- The launch gate requires every axis value to be implemented, and requires the toolchain to be servable for the node's kind: an `infrastructure` node needs an executable build system; every other kind also needs the host to author the build control file and to render the runner (`tools/target_profile.py:toolchain_servable_reasons`). A profile that fails is refused at launch as `target_profile_invalid`.
+- The launch gate requires every axis value to be implemented, and requires the toolchain to be servable for the node's kind: every node needs an executable build system and the host to author its build control file (an `infrastructure` node included, since issue #289's R4-b PR-4); every other kind also needs the host to render the runner (`tools/target_profile.py:toolchain_servable_reasons`). A profile that fails is refused at launch as `target_profile_invalid`.
 - An `infrastructure` node run for a target must be that target's harness; any other `infrastructure` node is refused at launch as `target_harness_mismatch`.
 - Adding another toolchain is a repository-level change (a `backend` package that implements the missing capabilities, `docs/BACKEND_BOUNDARY.md`), not a per-spec decision.
 

@@ -1428,6 +1428,19 @@ def node_key_safe(node_key: str) -> str:
     return f"{kind}__{spec_id}__{version}"
 
 
+def stage_syntax_inputs(src_dir: Path, stage_dir: Path, staged_suffixes: tuple[str, ...]) -> None:
+    """Copy every file of `src_dir` whose suffix is one of `staged_suffixes` (lowercased) into
+    `stage_dir`, at ANY depth and at the same relative path, so the syntax stage compiles the
+    include tree the lint check and Build see (issue #289, R4-b PR-4: a bundle file may sit in a
+    subdirectory and be included from there — flat copying dropped it and failed a correct
+    source). A symbolic link is not followed."""
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.suffix.lower() in staged_suffixes:
+            target = stage_dir / path.relative_to(src_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+
+
 def spec_id_of(node_key: str) -> str:
     kind_rest, _, _ = node_key.partition("@")
     _, _, spec_id = kind_rest.partition("/")
@@ -5495,6 +5508,9 @@ class Conductor:
             names.add(self._runner_basename(refs))
         if self._conductor_authors_makefile(refs):
             names.add(self.CONTROL_FILE_BASENAME)
+        header = self._interface_header_module(refs)
+        if header is not None:
+            names.add(header.basename(spec_id_of(refs.node_key)))
         return frozenset(names)
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
@@ -5865,7 +5881,7 @@ class Conductor:
         # takes the spec path positionally but does not read it, so the `SPEC ?=` default is a
         # harmless placeholder.
         template = self._control_file_module(build_system).render_node(
-            rules=self._control_file_rules(tc),
+            rules=self._control_file_rules(tc, self._target_architecture()),
             compiler=compiler,
             bin_name=self._resolve_exe_name(refs),  # canonical <spec_id>_runner
             cases_default=" ".join(self.read_case_ids(refs)),
@@ -6217,7 +6233,7 @@ class Conductor:
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
         tc = self._read_toolchain(refs)
         return self._control_file_module(tc["build_system"]).render_from_graph(
-            rules=self._control_file_rules(tc),
+            rules=self._control_file_rules(tc, self._target_architecture()),
             compiler=tc["compiler"] or default_compiler(tc["language"]),
             bin_name=self._resolve_exe_name(refs),
             cases_default=" ".join(self.read_case_ids(refs)),
@@ -6237,17 +6253,25 @@ class Conductor:
                 backend_registry.BackendNotExtracted) as exc:
             raise RuntimeError(f"control_file_renderer_unavailable: {exc}") from exc
 
+    def _target_architecture(self) -> str | None:
+        """The target profile's `hardware.architecture`, which a compile for a device class takes
+        (`-arch=`); `None` when the profile states none."""
+        value = (self.target.doc.get("hardware") or {}).get("architecture")
+        return str(value) if value else None
+
     @staticmethod
-    def _control_file_rules(tc: dict[str, str]) -> dict[str, Any]:
+    def _control_file_rules(tc: dict[str, str], architecture: str | None) -> dict[str, Any]:
         """The target language's half of the control file: what it must say to compile and link
-        this language (`control_file` of the language axis, `rules(...)`)."""
+        this language (`control_file` of the language axis, `rules(...)`), for the target's
+        standard, parallel backend and hardware architecture."""
         try:
             module = backend_registry.capability_module("language", tc["language"],
                                                         "control_file")
         except (backend_registry.UnsupportedBackend,
                 backend_registry.BackendNotExtracted) as exc:
             raise RuntimeError(f"control_file_rules_unavailable: {exc}") from exc
-        return module.rules(standard=tc["standard"], parallel_backend=tc["backend"])
+        return module.rules(standard=tc["standard"], parallel_backend=tc["backend"],
+                            architecture=architecture)
 
     def _write_pure_bundle_artifacts(self, refs: NodeRefs, doc: dict[str, Any],
                                      graph: dict[str, Any]) -> list[str]:
@@ -6290,7 +6314,36 @@ class Conductor:
         makefile = (self.repo_root / refs.source_dir() / "src"
                     / self.CONTROL_FILE_BASENAME)
         makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
+        self._write_interface_header(refs)
         return written
+
+    def _interface_header_module(self, refs: NodeRefs) -> Any | None:
+        """The target language's `interface_header` module, or `None` when the language declares
+        none (its compiler reads a published surface off the defining source)."""
+        language = self._read_toolchain(refs)["language"]
+        if not backend_registry.provides("language", language, "interface_header"):
+            return None
+        return backend_registry.capability_module("language", language, "interface_header")
+
+    def _write_interface_header(self, refs: NodeRefs) -> None:
+        """Render the node's published-surface header from its IR `public_api` into `src/`, for a
+        language that declares `interface_header` (issue #289, R4-b PR-4). Host-authored like the
+        build control file: the leaf declares no part of the surface, it defines it. A surface the language
+        cannot lower raises, as a host precondition — the §5.1 pin at Compile already refused such
+        an IR in every language that declares `signatures`, so reaching here with one is a host
+        fault."""
+        module = self._interface_header_module(refs)
+        if module is None:
+            return
+        spec_id = spec_id_of(refs.node_key)
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        public_api = ir.get("public_api") if isinstance(ir, dict) else None
+        try:
+            text = module.render(spec_id, public_api if isinstance(public_api, dict) else {})
+        except ValueError as exc:
+            raise RuntimeError(f"interface_header_unrenderable: {refs.node_key}: {exc}") from exc
+        (self.repo_root / refs.source_dir() / "src" / module.basename(spec_id)).write_text(
+            text, encoding="utf-8")
 
     def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
         """The `files[].logical_path` names of the ACCEPTED bundle under `refs.source_dir()`
@@ -9480,7 +9533,7 @@ class Conductor:
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
             # The target the binary was built for, and the compiler the control file pins (the
-            # target profile's, else the host default) with the first line of its `--version`:
+            # target profile's, else the host default) with the first versioned line of its `--version`:
             # the toolchain identity the build derivation key hashes (issues #250, #284),
             # recorded on the binary it built. `compile_project` itself answers neither — make
             # picks the compiler — so this is resolved the way the key resolves it, from the
@@ -9773,20 +9826,35 @@ class Conductor:
             if d.exists():
                 shutil.rmtree(d)
             d.mkdir(parents=True, exist_ok=True)
+        # A linter handed files by name (`SOURCE_SUFFIXES`, issue #289, R4-b PR-4) is a COMPILER:
+        # a leaf source includes the host-rendered header, so that header is CONTEXT the leaf
+        # probe needs to compile at all, not a subject of either probe. A host file of a suffix
+        # the linter does not take is therefore copied to BOTH sides; it cannot make either side
+        # fail on its own (the linter is not handed it), so the partition of what is JUDGED stays
+        # total. A directory-walking linter (`None`) judges every file it walks, so nothing is
+        # context for it and the partition is unchanged.
+        # A composite preset (`mixed`) has no package of its own and runs directory walkers.
+        lint_suffixes = (
+            backend_registry.capability_module("linter", preset, "lint").SOURCE_SUFFIXES
+            if "lint" in backend_registry.get("linter", preset).backend_provides else None)
         host_present = False
         for entry in sorted(p for p in src_dir.rglob("*") if p.is_file()):
-            # The host-authored set is a set of BASENAMES, and the two files in it live at the
-            # top level; a same-named file deeper in the tree is not one the host wrote, so the
+            # The host-authored set is a set of BASENAMES, and the files in it live at the top
+            # level; a same-named file deeper in the tree is not one the host wrote, so the
             # membership test is anchored to depth 1. Anything else would let a nested file
             # borrow the host's attribution.
             relative = entry.relative_to(src_dir)
-            side = host_dir if (len(relative.parts) == 1
-                                and entry.name in host_names) else leaf_dir
-            if side is host_dir:
+            host_authored = len(relative.parts) == 1 and entry.name in host_names
+            context = (host_authored and lint_suffixes is not None
+                       and entry.suffix.lower() not in tuple(s.lower() for s in lint_suffixes))
+            sides = ((leaf_dir, host_dir) if context
+                     else (host_dir,) if host_authored else (leaf_dir,))
+            if host_authored and not context:
                 host_present = True
-            target = side / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(entry, target)
+            for side in sides:
+                target = side / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(entry, target)
 
         def _probe(target: Path) -> tuple[bool, str]:
             out = tool_run_linter({
@@ -10021,8 +10089,12 @@ class Conductor:
         # Single source of truth for the source suffix set: the language backend the tool also
         # discovers and orders by. The conductor's "no source to check" test and the tool's
         # discover-and-order set must not drift.
-        suffixes = tuple(backend_registry.capability_module(
-            "language", language, "syntax_promotions").SOURCE_SUFFIXES)
+        syntax_facts = backend_registry.capability_module(
+            "language", language, "syntax_promotions")
+        suffixes = tuple(syntax_facts.SOURCE_SUFFIXES)
+        # What the stage directory must hold besides the translation units — a header the
+        # sources include (issue #289, R4-b PR-4) — is the language's `STAGED_SUFFIXES`.
+        staged_suffixes = tuple(s.lower() for s in syntax_facts.STAGED_SUFFIXES)
         mandatory = str(backend_registry.capability_module(
             "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
         architecture = str(self.target.doc["hardware"]["architecture"])
@@ -10125,8 +10197,7 @@ class Conductor:
                 stage_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                              / "syntax" / compiler)
                 stage_dir.mkdir(parents=True, exist_ok=True)
-                for p in node_sources:
-                    shutil.copy2(p, stage_dir / p.name)
+                stage_syntax_inputs(src_dir, stage_dir, staged_suffixes)
                 for p in dep_files:
                     shutil.copy2(p, stage_dir / p.name)
                 try:

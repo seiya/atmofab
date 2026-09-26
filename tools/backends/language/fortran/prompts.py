@@ -6,9 +6,10 @@ state the contract every language shares and mark the places a language's rules 
 `{{language:<name>}}`; the fragment files under `tools/prompt_templates/backends/language/fortran/`
 hold what goes there for Fortran — the lint and syntax idioms, the lowering of neutral signature
 tokens, the checks-module binding. `tools/orchestration_runtime.py` composes the two before it
-substitutes anything, so a composed template is exactly the text the leaf reads.
+substitutes anything, so a composed template is exactly the text the leaf reads. The fragment
+files' format is neutral (`tools/prompt_fragments.py`).
 
-Stdlib only.
+Stdlib only, plus that neutral parser.
 """
 
 from __future__ import annotations
@@ -16,35 +17,12 @@ from __future__ import annotations
 from functools import cache
 from pathlib import Path
 
+from tools.prompt_fragments import parse_fragments
+
 #: Where this language's fragment files live — the placement `docs/BACKEND_BOUNDARY.md` gives a
 #: backend's prompt templates.
 FRAGMENT_DIR = (Path(__file__).resolve().parents[3]
                 / "prompt_templates" / "backends" / "language" / "fortran")
-
-_HEADER = "@@ "
-
-
-def parse_fragments(text: str, *, source: str = "<fragments>") -> dict[str, str]:
-    """The `@@ <name>` sections of a fragment file, each body VERBATIM without the newline that
-    ends it. Lines before the first header must be `#` comments or blank; a repeated or empty
-    name is refused, because the composer would otherwise pick one silently."""
-    sections: dict[str, list[str]] = {}
-    current: list[str] | None = None
-    for number, line in enumerate(text.split("\n"), start=1):
-        if line.startswith(_HEADER):
-            name = line[len(_HEADER):].strip()
-            if not name or name in sections:
-                raise ValueError(f"{source}:{number}: empty or repeated fragment name {name!r}")
-            current = sections[name] = []
-        elif current is None:
-            if line.strip() and not line.startswith("#"):
-                raise ValueError(f"{source}:{number}: text before the first `@@` header")
-        else:
-            current.append(line)
-    out: dict[str, str] = {}
-    for name, body in sections.items():
-        out[name] = "\n".join(body).removesuffix("\n")
-    return out
 
 
 @cache

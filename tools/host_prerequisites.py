@@ -172,12 +172,17 @@ def required_host_executables(
 
 
 def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
-    """The first line the program prints for its own version, or `None` when it cannot be read.
+    """What the program prints for its own version, whole, or `None` when it cannot be read.
 
     Copied in shape from `_syntax_compiler_version` in `mcp_servers/build_runtime_server.py`,
     including the failure polarity: a program that cannot be started, times out, or prints
     nothing yields `None`, and the CALLER decides what an unreadable version means. Here the
     caller is a launch gate, and the backend's own clause refuses it.
+
+    WHOLE, not the first line: where the version sits in the output is the backend's knowledge
+    (its `parse_version` reads it), and one supported program prints it on the fourth line
+    (issue #289, R4-b PR-4: the CUDA compiler driver's first line is its name). The other
+    backends' programs print one line, so for them the two are the same text.
     """
     try:
         completed = subprocess.run(
@@ -185,8 +190,8 @@ def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    first_line = (completed.stdout or completed.stderr or "").strip().splitlines()
-    return first_line[0].strip() if first_line else None
+    text = (completed.stdout or completed.stderr or "").strip()
+    return text or None
 
 
 #: The capabilities whose backend package decides whether the installed build of its program may

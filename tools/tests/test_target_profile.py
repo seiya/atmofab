@@ -378,8 +378,9 @@ class LaunchGateTests(unittest.TestCase):
                 until_phase="Validate"), [])
 
     def test_a_capability_the_node_kind_needs_is_asked_by_kind(self) -> None:
-        """A non-infrastructure node needs the control file and the runner render; an
-        infrastructure node only the build. Driven by withdrawing a capability."""
+        """A non-infrastructure node needs the runner render; an infrastructure node does not.
+        Every node needs the control file (both halves; R4-b PR-4 round 3). Driven by
+        withdrawing a capability."""
         from tools.backends import registry
 
         real = registry.provides
@@ -397,18 +398,28 @@ class LaunchGateTests(unittest.TestCase):
             # today gives its one language and one build system every capability, so only a
             # withdrawal can tell the four requirements apart (round 1: dropping the
             # language's `control_file` survived).
-            for axis, capability in (("language", "runner_render"), ("language", "control_file"),
-                                     ("build_system", "control_file")):
+            for axis, capability in (("language", "runner_render"),):
                 with self.subTest(axis=axis, capability=capability), \
                         mock.patch.object(registry, "provides", without(axis, capability)):
                     self.assertTrue(tp.target_profile_violations(repo.root, profile))
                     self.assertEqual(tp.target_profile_violations(
                         repo.root, profile, node_key="infrastructure/harness_x@0.7.0"), [])
+            for axis, capability in (("language", "control_file"),
+                                     ("build_system", "control_file")):
+                with self.subTest(every_node_axis=axis, capability=capability), \
+                        mock.patch.object(registry, "provides", without(axis, capability)):
+                    self.assertTrue(tp.target_profile_violations(repo.root, profile))
+                    self.assertTrue(tp.target_profile_violations(
+                        repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
 
-            # The build is asked of EVERY kind, the harness included.
-            with mock.patch.object(registry, "provides", without("build_system", "build_execute")):
-                self.assertTrue(tp.target_profile_violations(
-                    repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
+            # The build is asked of EVERY kind, the harness included, and so is the build
+            # system's half of the control file (R4-b PR-4 round 3: the harness bundle's shape
+            # needs the host-authored control file).
+            for capability in ("build_execute", "control_file"):
+                with self.subTest(build_system=capability), \
+                        mock.patch.object(registry, "provides", without("build_system", capability)):
+                    self.assertTrue(tp.target_profile_violations(
+                        repo.root, profile, node_key="infrastructure/harness_x@0.7.0"))
             # ... and so is every language capability `Generate` reads for any kind (issue
             # #289, R4-b PR-2; the source reader and the signature module since R4-b PR-3): a
             # language missing one is refused at launch, for a harness as for a physics node,
@@ -416,7 +427,7 @@ class LaunchGateTests(unittest.TestCase):
             self.assertEqual(
                 tp.LANGUAGE_CAPABILITIES_EVERY_NODE,
                 ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
-                 "source_reading", "signatures"))
+                 "source_reading", "signatures", "control_file"))
             for capability in tp.LANGUAGE_CAPABILITIES_EVERY_NODE:
                 with self.subTest(every_node=capability), \
                         mock.patch.object(registry, "provides", without("language", capability)):

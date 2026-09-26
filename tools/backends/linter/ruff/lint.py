@@ -169,6 +169,11 @@ EXECUTABLE = "ruff"
 #: linters is refused there rather than resolved by order.
 LANGUAGES: tuple[str, ...] = ("python",)
 
+#: `None`: this linter walks the directory it is pointed at (`check_argv(target)`), rather than
+#: being handed files by name — the `lint` capability contract's switch
+#: (`mcp_servers/build_runtime_server.py` `_lint_command_over`).
+SOURCE_SUFFIXES: tuple[str, ...] | None = None
+
 #: The rule set the `Generate.gate` lint check applies, and the only place it is written.
 #:
 #: Derived, not invented: ruff's own default set on 0.14.0 and 0.15.20, byte-identical on both,
@@ -267,7 +272,11 @@ def parse_version(text: str | None) -> tuple[int, int, int] | None:
     """
     if not text:
         return None
-    match = _VERSION_RE.search(text)
+    # The FIRST line only. The launch probe hands over the program's whole output, because where
+    # the version sits is each backend's knowledge; this program prints it on its first line, and
+    # a banner printed before it is not read past — a version-shaped number in a banner is not the
+    # build's, so the build stays unidentified and is refused (fail-closed).
+    match = _VERSION_RE.search((text.strip().splitlines() or [""])[0])
     if match is None:
         return None
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))

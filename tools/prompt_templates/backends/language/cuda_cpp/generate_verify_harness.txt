@@ -1,0 +1,7 @@
+# The CUDA C++ language fragments of `tools/prompt_templates/pure_generate_verify_harness.txt`.
+# Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/language/cuda_cpp/prompts.py`; lines before the first header are comments.
+
+@@ host_rendered_scope
+The host renders ONE file of this node, `<spec_id>_model.cuh`, from the IR's `public_api`: it DECLARES every published type, module parameter, `interfaces` alias and operation, lowered from `public_api.signatures`, and you are not shown it. So a model that declares none of those itself is correct and never a finding — judge H5 on the model's DEFINITIONS, each against its `public_api.signatures` entry. An argument's declared bounds (`dims`) and a string's `len` are not part of a CUDA C++ type: an array argument is an `atmofab::View<T, R>` whose `extent` members carry its bounds at run time, so H5's "declared bounds preserved" means the definition reads the extents from the view — a signature that spells no bound is correct, and a finding for it is not one — and everything else is in front of you:
