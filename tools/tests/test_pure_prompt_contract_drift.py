@@ -644,7 +644,10 @@ PINNED: dict[str, str] = {
     # only a `cuda_cpp` physics reviewer, and no `cuda_cpp` physics prompt had been composed.
     # (A round-1 review found §5 changed by one sentence in an earlier version of this entry's
     # commit, which this claim would then not have held for; the sentence was reverted.)
-    "pure-50": "680ccbf851be1c9818b58984c76703515e8e1e213f2e03f12674c836e931dbae",
+    
+    # Re-pinned again in round 2 for `cuda_cpp` physics fragment edits only (rules 1, 4, (b));
+    # the same two compositions were re-measured byte-identical.
+    "pure-50": "96b6eff4ff68464deb262d395a064ae920c4fe6b74846e5344ab938de6e0791f",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
