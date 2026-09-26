@@ -66,7 +66,7 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   `(void)<name>;`. A parameter no interface fixes — in a helper the leaf itself declared — is
   deleted from the signature and from every call site instead. An unused local variable is not
   declared at all.
-- **No in-source suppression.** `#pragma nv_diag_suppress`, `#pragma diag_suppress`,
+- **No in-source suppression.** `#pragma nv_diag_suppress` (any `nv_diag...` pragma), `#pragma diag_suppress`,
   `#pragma GCC diagnostic`, `#pragma clang diagnostic`, `#pragma warning`, `_Pragma(...)` and
   `__pragma(...)` are refused in every leaf-authored source by the deterministic `Generate.gate`
   static check (`tools/backends/language/cuda_cpp/source.py` `suppression_violations`), because no

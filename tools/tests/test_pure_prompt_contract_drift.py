@@ -630,7 +630,7 @@ PINNED: dict[str, str] = {
     # The Fortran entries of those members are the same bytes as before, and the composed
     # Fortran prompts are unchanged (measured again, as above), so no leaf that has ever run
     # reads anything different; the `cuda_cpp` entries are read by no run yet.
-    "pure-50": "f42379822a76f2db235dc9aaded7983ca47161ada358c87799134b196f948492",
+    "pure-50": "7bb6f8bf33641d9d9ca1b766ec9d2888b388d0745cfa08f3276cf374dedd6d3d",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),

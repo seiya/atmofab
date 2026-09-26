@@ -69,7 +69,7 @@ def source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
 # A diagnostic-control pragma, by whichever front end reads it, and the operator form `_Pragma`.
 _SUPPRESSION_RE = re.compile(
     r"^[ \t]*#[ \t]*pragma[ \t]+(?:GCC[ \t]+diagnostic|clang[ \t]+diagnostic|nv_diag\w*|diag_\w+"
-    r"|nv_diagnostic|warning)\b|\b_Pragma[ \t]*\(|\b__pragma[ \t]*\(",
+    r"|warning)\b|\b_Pragma[ \t]*\(|\b__pragma[ \t]*\(",
     re.MULTILINE)
 
 

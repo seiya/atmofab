@@ -135,6 +135,19 @@ class DeclarationReaderTests(unittest.TestCase):
         self.assertEqual("inline std::string", self._fn("demo__emit")[0].head)
         self.assertEqual("__global__ void", self._fn("kernel")[0].returns)
         self.assertEqual((("int", ""), ("double", "")), self._fn("helper")[0].params)
+        self.assertEqual("void", self._fn("helper")[0].returns)
+        self.assertEqual("static void", self._fn("helper")[0].head)
+
+    def test_a_type_word_is_never_a_parameter_name(self) -> None:
+        self.assertEqual(("unsigned int", ""), cpp_decls.parse_param("unsigned int"))
+        self.assertEqual(("const double", ""), cpp_decls.parse_param("const double"))
+        self.assertEqual(("unsigned int", "n"), cpp_decls.parse_param("unsigned int n"))
+
+    def test_a_template_and_an_initialized_variable_are_not_functions(self) -> None:
+        decls = cpp_decls.read("namespace m {\ntemplate <class T> T twice(T x) { return x + x; }\n"
+                               "S s = S(1), t{2};\nint v = f(3);\n}\n")
+        self.assertEqual([], decls.errors)
+        self.assertEqual([], [f.name for f in decls.functions])
 
     def test_struct_data_members_in_order(self) -> None:
         (st,) = [s for s in self.decls.structs if s.name == "demo__h_check"]
@@ -365,6 +378,23 @@ class GeneratedSourcePinTests(unittest.TestCase):
                 found = self._violations(model)
                 self.assertTrue(any(needle in v for v in found), (needle, found))
 
+    def test_a_declaration_may_leave_parameters_unnamed(self) -> None:
+        """C++ lets a declaration name its parameters differently from its definition, or not
+        at all; the two are one function, compared by the DEFINITION's names."""
+        forward = _GOOD_MODEL.replace(
+            "struct h__rec {", "void h__run(atmofab::View<dp, 1>, h__cb, bool&);\nstruct h__rec {")
+        self.assertNotEqual(forward, _GOOD_MODEL)
+        self.assertEqual([], self._violations(forward))
+
+    def test_the_parameter_pin_ignores_spacing(self) -> None:
+        self.assertEqual([], self._violations(_GOOD_MODEL.replace(
+            "constexpr int n = 64;", "constexpr int n=64;")))
+
+    def test_a_type_defined_twice_is_an_error(self) -> None:
+        _o, _t, _i, errors = cs.parse_interface_stanzas(
+            "struct T { int a; };\nnamespace { }\nstruct T { int a; };\n")
+        self.assertTrue(any("type 'T' is defined more than once" in e for e in errors), errors)
+
     def test_no_namespace_of_the_file_stem(self) -> None:
         found = self._violations(_GOOD_MODEL, name="other_model.cu")
         self.assertTrue(any("opens no namespace `other_model`" in v for v in found), found)
@@ -408,7 +438,10 @@ class SourceGateTests(unittest.TestCase):
                 self.assertEqual(1, len(cpp_source.suppression_violations(Path("x.cu"), form + "\n")))
         self.assertEqual([], cpp_source.suppression_violations(
             Path("x.cu"), "// #pragma GCC diagnostic ignored\n#pragma once\n"
-                          "const char* s = \"#pragma nv_diag_suppress\";\n"))
+                          "const char* s = \"#pragma nv_diag_suppress\";\n"
+                          "/*\n#pragma GCC diagnostic ignored \"-Wall\"\n*/\n"
+                          "// _Pragma(\"GCC diagnostic ignored\")\n"
+                          "const char* u = \"_Pragma(\";\n"))
 
     def test_counted_loops_read_code_only(self) -> None:
         text = ("for (int i = 0; i < n; ++i) {}\nfor (auto& x : v) {}\n"
@@ -501,6 +534,8 @@ class ToolAdapterTests(unittest.TestCase):
         banner = ("nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA\n"
                   "Cuda compilation tools, release 13.4, V13.4.92\n")
         self.assertEqual((13, 4, 92), nvcc_lint.parse_version(banner))
+        # Only the `release` line is read: a dotted number earlier in the output is not the build.
+        self.assertEqual((13, 4, 92), nvcc_lint.parse_version("driver 2.0\n" + banner))
         self.assertIsNone(nvcc_lint.unsupported_version_reason(banner))
         self.assertIsNotNone(nvcc_lint.unsupported_version_reason(banner.replace("13.4", "12.9")))
         self.assertIsNotNone(nvcc_lint.unsupported_version_reason(banner.replace("13.4", "14.0")))

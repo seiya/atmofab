@@ -252,14 +252,18 @@ def _stanzas(decls: cpp_decls.Declarations, namespace: tuple[str, ...] | None) -
         return namespace is None or ns == namespace
 
     ops: dict[str, list[str]] = {}
+    # One function is its declarations and its definition. They agree when their return type and
+    # parameter TYPES do — a declaration may leave its parameters unnamed or name them otherwise,
+    # which C++ allows — so the overload test compares types only, and the stanza compared
+    # against §5.1 (which pins the names) is the DEFINITION's when there is one.
     by_name: dict[str, set[tuple[str, ...]]] = {}
     for fn in decls.functions:
         if not here(fn.namespace):
             continue
-        stanza = _function_stanza(fn)
-        by_name.setdefault(fn.name, set()).add(stanza_line_list(stanza))
+        by_name.setdefault(fn.name, set()).add(
+            tuple(stanza_atoms([fn.returns, *(ptype for ptype, _n in fn.params)])))
         if fn.name not in ops or fn.defined:
-            ops[fn.name] = stanza
+            ops[fn.name] = _function_stanza(fn)
     for name, variants in sorted(by_name.items()):
         if len(variants) > 1:
             errors.append(
