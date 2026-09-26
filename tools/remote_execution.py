@@ -10,7 +10,9 @@ job directory back with scp, and then writes the same log entries itself — thr
 own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
 §Execution sites). An entry's `command` names each shipped file by its LOCAL source, because the
 post-execute gate binds `command[0]` to the node's own build `bin/`; the argv the site executed
-is the entry's `site.remote_command`.
+is the entry's `site.remote_command`. Its `cwd` is the command's `record_cwd`, the local
+directory it stands for (the gate requires a quality check's to be the node's source `src/`),
+and the site's is `site.remote_cwd`.
 
 What the executor knows is a SEQUENCE of commands (`CommandSpec`), each an argv, a working
 directory, an environment override set and a timeout, and the files to ship. It does not know
@@ -148,7 +150,11 @@ class CommandSpec:
 
     `tag` names the command's control files; `tool_name` is the tool its log entry is recorded
     under (the validator requires the names the local path records). `argv` and `cwd` are
-    REMOTE paths, and `cwd` lies under the job directory. `env` is an override set, checked with
+    REMOTE paths, and `cwd` lies under the job directory. `record_cwd` is the LOCAL directory the
+    command stands for — the `project_dir` the local path would have handed the server — and it
+    is what the entry records as `cwd`: the post-execute gate requires a quality check's `cwd`
+    to be the node's own `source/<source_id>/src`, holding its build control file. The remote
+    `cwd` is the entry's `site.remote_cwd`. `env` is an override set, checked with
     the server's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
     no default: the local server's are 3600 for `run_program` and 1800 for
     `run_quality_checks`, and the same bound is kept only by passing them."""
@@ -157,6 +163,7 @@ class CommandSpec:
     tool_name: str
     argv: tuple[str, ...]
     cwd: str
+    record_cwd: str
     env: Mapping[str, str]
     timeout_sec: int
     command_log_path: Path
@@ -262,6 +269,9 @@ def _validate(request: JobRequest) -> None:
                 or c.timeout_sec < 1:
             raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
         _under(c.cwd, request.job_dir, f"command {c.tag!r} cwd")
+        if not (isinstance(c.record_cwd, str) and c.record_cwd.startswith("/")):
+            raise ValueError(f"command {c.tag!r} record_cwd {c.record_cwd!r} is not an absolute "
+                             f"local path")
         if c.cwd != request.job_dir:
             _relative(c.cwd[len(request.job_dir) + 1:], f"command {c.tag!r} cwd")
         server._validate_env_overrides(dict(c.env), c.tool_name)
@@ -530,7 +540,8 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
     #    `command` names each shipped file by its LOCAL source, so the entry says which of this
     #    host's artifacts ran — `_validate_run_program_inputs` binds `command[0]` to the node's
-    #    own build `bin/` — and `site.remote_command` is the argv as the site executed it.
+    #    own build `bin/` — and `site.remote_command` is the argv as the site executed it; `cwd`
+    #    is the command's `record_cwd` for the same reason, and `site.remote_cwd` the site's.
     server = _server()
     local_of = {f"{remote}/{rel}": str(src) for rel, src in request.ship.items()}
     results: list[dict[str, Any] | None] = []
@@ -547,7 +558,7 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             "return_code": None if timed_out else rc,
             "command": argv,
             "executed_command": shlex.join(argv),
-            "cwd": c.cwd,
+            "cwd": c.record_cwd,
             "stdout": _read_output(ctl / f"{c.tag}.stdout", c.capture_limit),
             "stderr": _read_output(ctl / f"{c.tag}.stderr", c.capture_limit),
         }
@@ -560,7 +571,7 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             "started_at_utc": _iso(t0),
             "ended_at_utc": _iso(t1),
             "elapsed_ms": (t1 - t0) * 1000,
-            "cwd": c.cwd,
+            "cwd": c.record_cwd,
             "command": argv,
             "executed_command": shlex.join(argv),
             "timeout_sec": c.timeout_sec,

@@ -156,7 +156,8 @@ class _Harness:
                 env: dict[str, str] | None = None, timeout: int = 60,
                 tool: str = "run_program") -> rx.CommandSpec:
         return rx.CommandSpec(
-            tag=tag, tool_name=tool, argv=argv, cwd=f"{self.job}/{cwd}", env=env or {},
+            tag=tag, tool_name=tool, argv=argv, cwd=f"{self.job}/{cwd}",
+            record_cwd=str(self.local / "cwd" / cwd), env=env or {},
             timeout_sec=timeout, command_log_path=self.local / "logs" / f"{tag}.jsonl",
             capture_limit=120000)
 
@@ -229,7 +230,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(run["return_code"], 0)
         self.assertEqual(run["stdout"], "runner stdout\n")
         self.assertEqual(run["stderr"], "runner stderr\n")
-        self.assertEqual(run["cwd"], f"{self.h.job}/run")
+        # The result and the entry record the LOCAL directory the command stands for.
+        self.assertEqual(run["cwd"], str(self.h.local / "cwd" / "run"))
         self.assertTrue(qc["ok"])
         self.assertIn("qc-ran", qc["stdout"])
         self.assertIn("argv.json", qc["stdout"], "qc ran after run, beside its output")
@@ -256,7 +258,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(entry["agent_run_id"], "arid-1")
             self.assertEqual(entry["site"], {
                 "site": "box", "host": "box", "scheduler": "none", "job_id": None,
-                "remote_cwd": res["cwd"],
+                "remote_cwd": f"{self.h.job}/{'run' if tag == 'run' else 'src'}",
                 "remote_command": list(self.h.request().commands[
                     ["run", "qc"].index(tag)].argv)})
             self.assertTrue(entry["started_at_utc"].endswith("Z"))
@@ -300,10 +302,11 @@ class EndToEndTests(unittest.TestCase):
         (qc_entry,) = self.h.log_entries("qc")
         self.assertEqual(qc_entry["command"], ["sh", "-c", "echo qc-ran; ls ../run"])
 
-    def test_the_post_execute_gate_accepts_the_entry_it_binds(self) -> None:
-        """The real `_validate_run_program_inputs` over a run entry this executor wrote, in a
-        synthetic tree where the shipped runner IS the node's build `bin/` file: no violation.
-        The same entry with its site argv as `command` is the mixed-build violation."""
+    def test_the_post_execute_gate_accepts_the_entries_it_binds(self) -> None:
+        """The real post-execute gate functions over the two entries this executor wrote, in a
+        synthetic tree where the shipped runner IS the node's build `bin/` file and the shipped
+        control file IS its source `src/` one: no violation. Each entry with its site value put
+        back — `command` from `site.remote_command`, `cwd` from `site.remote_cwd` — is refused."""
         import tools.validate_pipeline_semantics as vps
 
         repo = self.h.root / "repo"
@@ -313,34 +316,55 @@ class EndToEndTests(unittest.TestCase):
         runner = bin_dir / "runner"
         runner.write_text(_RUNNER)
         runner.chmod(0o755)
+        src_dir = pipeline / "source" / "s1" / "src"
+        src_dir.mkdir(parents=True)
+        (src_dir / "Makefile").write_text("test:\n\t@echo quality check ran\n")
+        (src_dir.parent / "source_meta.json").write_text('{"verification_status": "pass"}')
         ir = repo / "workspace" / "ir" / "n" / "spec.ir.yaml"
         ir.parent.mkdir(parents=True)
         ir.write_text("{}\n")
         node_dir = pipeline / "runs" / "r1" / "n"
-        log = node_dir / "command_log.jsonl"
+        run_log, qc_log = node_dir / "command_log.jsonl", src_dir / "command_log.jsonl"
         run = rx.CommandSpec(
             tag="run", tool_name="run_program",
             argv=(f"{self.h.job}/bin/runner", "--cases", f"{self.h.job}/ir/spec.ir.yaml", "c1"),
-            cwd=f"{self.h.job}/run", env={}, timeout_sec=60, command_log_path=log,
-            capture_limit=120000)
-        result = self.h.run(self.h.request(
-            run, ship={"bin/runner": runner, "ir/spec.ir.yaml": ir}))
-        command_id = result.results[0]["command_id"]
+            cwd=f"{self.h.job}/run", record_cwd=str(repo / "workspace" / "tmp" / "run"), env={},
+            timeout_sec=60, command_log_path=run_log, capture_limit=120000)
+        qc = rx.CommandSpec(
+            tag="qc", tool_name="run_quality_checks", argv=("make", "test"),
+            cwd=f"{self.h.job}/src", record_cwd=str(src_dir), env={}, timeout_sec=60,
+            command_log_path=qc_log, capture_limit=120000)
+        result = self.h.run(self.h.request(run, qc, ship={
+            "bin/runner": runner, "ir/spec.ir.yaml": ir, "src/Makefile": src_dir / "Makefile"}))
+        self.assertTrue(result.results[1]["ok"], result.results[1])
         (node_dir / "trial_meta.json").write_text(json.dumps({
-            "source_binary_id": "b1",
-            "source_command_ref": [{"command_id": command_id,
-                                    "command_log_ref": log.relative_to(repo).as_posix()}]}))
+            "source_binary_id": "b1", "source_source_id": "s1",
+            "source_command_ref": [
+                {"command_id": r["command_id"], "command_log_ref": log.relative_to(repo).as_posix()}
+                for r, log in zip(result.results, (run_log, qc_log))]}))
         execution = vps.NodeExecution(node_key="n", node_dir=node_dir, exec_dir=node_dir,
                                       pipeline_dir=pipeline)
-        violations: list[str] = []
-        vps._validate_run_program_inputs(repo, execution, violations)
-        self.assertEqual(violations, [])
-        entry = json.loads(log.read_text())
-        entry["command"] = entry["site"]["remote_command"]
-        log.write_text(json.dumps(entry) + "\n")
-        vps._validate_run_program_inputs(repo, execution, violations)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("Mixed-build attribution", violations[0])
+
+        def violations() -> list[str]:
+            found: list[str] = []
+            vps._validate_run_program_inputs(repo, execution, found)
+            vps._validate_quality_check_commands(repo, execution, found)
+            return found
+
+        with mock.patch.object(vps, "_target_toolchain_from_pipeline_dir", autospec=True,
+                               return_value=("make", "fortran")):
+            self.assertEqual(violations(), [])
+            for log, key, site_key, refusal in (
+                    (run_log, "command", "remote_command", "Mixed-build attribution"),
+                    (qc_log, "cwd", "remote_cwd", "must run inside source/<source_id>/src")):
+                with self.subTest(key=key):
+                    kept = log.read_text()
+                    entry = json.loads(kept)
+                    entry[key] = entry["site"][site_key]
+                    log.write_text(json.dumps(entry) + "\n")
+                    (found,) = violations()
+                    self.assertIn(refusal, found)
+                    log.write_text(kept)
 
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""
@@ -436,7 +460,7 @@ class EndToEndTests(unittest.TestCase):
     def test_output_is_trimmed_to_the_capture_limit_as_the_server_trims_it(self) -> None:
         cmd = rx.CommandSpec(
             tag="run", tool_name="run_program",
-            argv=("python3", "-c", "print('x' * 5000)"), cwd=f"{self.h.job}/run", env={},
+            argv=("python3", "-c", "print('x' * 5000)"), cwd=f"{self.h.job}/run", record_cwd="/local/run", env={},
             timeout_sec=60, command_log_path=self.h.local / "logs" / "run.jsonl",
             capture_limit=1000)
         (run,) = self.h.run(self.h.request(cmd)).results
@@ -816,17 +840,17 @@ class RequestValidationTests(unittest.TestCase):
             with self.subTest(kw=kw):
                 self._invalid(pattern, self.h.request(ok, **kw))
         ctl_cwd = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),
-                                 cwd=f"{self.h.job}/ctl/x", env={}, timeout_sec=1,
+                                 cwd=f"{self.h.job}/ctl/x", record_cwd="/local/run", env={}, timeout_sec=1,
                                  command_log_path=self.h.local / "l", capture_limit=1000)
         self._invalid("control directory", self.h.request(ctl_cwd))
         for cwd in ("/tmp", f"{self.h.job}/../x", f"{self.h.job}x", f"{self.h.job}//a"):
             with self.subTest(cwd=cwd):
                 bad = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),
-                                     cwd=cwd, env={}, timeout_sec=1,
+                                     cwd=cwd, record_cwd="/local/run", env={}, timeout_sec=1,
                                      command_log_path=self.h.local / "l", capture_limit=1000)
                 self._invalid("is not under", self.h.request(bad))
         elsewhere = rx.CommandSpec(tag="run", tool_name="run_program", argv=("true",),
-                                   cwd="/elsewhere/x/run", env={}, timeout_sec=1,
+                                   cwd="/elsewhere/x/run", record_cwd="/local/run", env={}, timeout_sec=1,
                                    command_log_path=self.h.local / "l", capture_limit=1000)
         self._invalid("job_dir '/elsewhere/x' is not under", rx.JobRequest(
             site=self.h.site, job_dir="/elsewhere/x", ship={}, commands=(elsewhere,)))
@@ -842,7 +866,8 @@ class RequestValidationTests(unittest.TestCase):
                             ({"timeout_sec": True}, "timeout_sec")):
             with self.subTest(kw=kw):
                 base = {"tag": "run", "tool_name": "run_program", "argv": ("true",),
-                        "cwd": f"{self.h.job}/run", "env": {}, "timeout_sec": 1,
+                        "cwd": f"{self.h.job}/run", "record_cwd": "/local/run", "env": {},
+                        "timeout_sec": 1,
                         "command_log_path": self.h.local / "l", "capture_limit": 1000}
                 base.update(kw)
                 self._invalid(pattern, self.h.request(rx.CommandSpec(**base)))
