@@ -664,16 +664,35 @@ def _is_literal_like(expr: str) -> bool:
     return _LITERAL_OPERATORS_RE.fullmatch(_NUMBER_TOKEN_RE.sub(" ", expr)) is not None
 
 
-def _assignments(body: str) -> list[tuple[str, set[str], int, str]]:
-    """`(target name, right-hand identifiers, offset, right-hand text)` per assignment of `body`,
-    plus one ALIAS record per view declared over another name's storage
+#: Words that open a statement without declaring anything, so an assignment after one is a plain
+#: assignment (`else x = 1;`), not a declaration's initializer.
+_STATEMENT_KEYWORDS = frozenset({"else", "do", "return", "case", "default"})
+
+
+def _is_declaration(body: str, lhs_at: int) -> bool:
+    """Whether the assignment whose target starts at `lhs_at` is a DECLARATION's initializer
+    (`std::vector<double> f = ...;`, `auto f = ...;`, `for (int i = 0; ...)`, the second
+    declarator of `double a = 0.0, b = 1.0;`): something other than an operator stands between
+    the statement's start — the last `;`, `{`, `}`, `(` or `)` — and the target."""
+    start = max(body.rfind(ch, 0, lhs_at) for ch in ";{}()") + 1
+    prefix = body[start:lhs_at].strip()
+    return (bool(prefix) and not prefix.endswith(("=", "?", ":"))
+            and prefix.split()[0] not in _STATEMENT_KEYWORDS)
+
+
+def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
+    """`(target name, right-hand identifiers, offset, right-hand text, is a declaration)` per
+    assignment of `body`, plus one ALIAS record per view declared over another name's storage
     (`View<double, 1> v{u.data(), ...}`): a write through `v` is a write to `u`, so `u` takes `v`
-    as a source."""
-    records = [(m.group("lhs"), _identifiers(m.group("rhs")), m.start(), m.group("rhs").strip())
+    as a source. A declaration's initializer carries data like any assignment; it is flagged
+    because the dataflow gate's "assigned before the call" clause reads assignment STATEMENTS
+    only, as the Fortran binding's does (its assignment pattern does not match a declaration)."""
+    records = [(m.group("lhs"), _identifiers(m.group("rhs")), m.start(), m.group("rhs").strip(),
+                _is_declaration(body, m.start()))
                for m in _ASSIGNMENT_RE.finditer(body)]
     for m in _VIEW_DECLARATION_RE.finditer(body):
         for storage in _STORAGE_NAME_RE.findall(m.group("init")):
-            records.append((storage, {m.group("name")}, m.start(), ""))
+            records.append((storage, {m.group("name")}, m.start(), "", True))
     return records
 
 
@@ -752,15 +771,19 @@ def _validate_problem_dependency_dataflow(
     The candidate outputs of a dependency call are the names whose storage its actuals hand over,
     minus two kinds the Fortran binding's rule also drops: a parameter of the enclosing function
     (an output parameter already IS an output, and an input handed over for writing is the
-    callee's business) and a name assigned before the call (an input the call reads — which is
-    also how an INERT call keeps this gate silent, as the authoring rules tell the leaf). Which
+    callee's business) and a name assigned before the call by an assignment STATEMENT — not a
+    declaration's initializer, which the Fortran binding's pattern does not match either (an
+    input the call reads — which is also how an INERT call keeps this gate silent, as the
+    authoring rules tell the leaf). Which
     actuals are read at all is decided by the dependency's host-rendered header when it is beside
     the model source: only those at the operation's OUTPUT parameters — the Fortran binding's
     `intent(out)` question, answered by the declaration. Without the header every actual is read,
     minus the Fortran binding's two further kinds: a name the file declares `const` / `constexpr`
     (not definable) and the name of a function this file defines (a procedure argument).
 
-    The closure then runs backward from the function's outputs (and every identifier it returns)
+    A function returning a value always takes part: its result is an output even when no
+    identifier reaches its `return`, as the Fortran binding's result variable always is. The
+    closure then runs backward from the function's outputs (and every identifier it returns)
     over assignments `lhs = rhs` — each `rhs` identifier is a source of `lhs` — and over view
     aliases (`_assignments`). Assignments only: whether a value passed to another call is read or
     written cannot be decided here, which is the Fortran gate's stated limit too; the semantic
@@ -779,7 +802,10 @@ def _validate_problem_dependency_dataflow(
     for fn in functions:
         params = {name for _ptype, name in fn.params if name}
         outs, returned = _outputs(fn)
-        if not outs and not returned:
+        # A function returning a value always has an output — its result — even when no
+        # identifier reaches its `return` (`return 1.0;`): the Fortran binding's result variable
+        # is always an output. Skipped only when nothing leaves the function.
+        if not outs and fn.returns == "void":
             continue
         records = _assignments(fn.body)
         candidates: set[str] = set()
@@ -791,7 +817,8 @@ def _validate_problem_dependency_dataflow(
                     continue
                 for name in _actual_names(arg):
                     if name in params or any(lhs == name and pos < call.start()
-                                             for lhs, _ids, pos, _rhs in records):
+                                             and not declared
+                                             for lhs, _ids, pos, _rhs, declared in records):
                         continue
                     if out_at is None and (name in constants or name in function_names):
                         continue
@@ -802,7 +829,7 @@ def _validate_problem_dependency_dataflow(
         changed = True
         while changed:
             changed = False
-            for lhs, rhs_ids, _pos, _rhs in records:
+            for lhs, rhs_ids, _pos, _rhs, _declared in records:
                 if lhs in sources and not rhs_ids <= sources:
                     sources |= rhs_ids
                     changed = True

@@ -956,6 +956,37 @@ class PhysicsGateTests(unittest.TestCase):
                               "operation outputs to its output dataflow (candidates=['fv'])"],
                              self._gates(model, ["dep"]))
 
+    def test_a_declaration_s_initializer_is_not_an_assignment_before_the_call(self) -> None:
+        """Round 1 of this change's review: copy-initialized buffers (`= std::vector<double>(n)`,
+        `auto f = ...`) were read as inputs the call consumes, so a discarded dependency result
+        passed. The Fortran binding's assignment pattern matches no declaration either."""
+        for decl in ("std::vector<double> flux(4);", "std::vector<double> flux = "
+                     "std::vector<double>(4);", "auto flux = std::vector<double>(4);"):
+            body = ("void p__run(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+                    f"  {decl}\n"
+                    "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                    "  out = dt;\n}")
+            with self.subTest(decl), tempfile.TemporaryDirectory() as tmp:
+                model = self._model(tmp, body)
+                self.assertEqual([f"{model}: function p__run does not propagate dependency "
+                                  "operation outputs to its output dataflow "
+                                  "(candidates=['flux'])"], self._gates(model, ["dep"]))
+
+    def test_a_value_returning_function_always_has_an_output(self) -> None:
+        """Round 1 of this change's review: a function returning a literal had no output the
+        gate could see, so it was skipped and its discarded dependency result passed."""
+        body = ("double p__run(atmofab::View<const double, 1> u) {\n"
+                "  std::vector<double> flux(4);\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, 0.1);\n"
+                "  return 1.0;\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body)
+            self.assertEqual([f"{model}: function p__run does not propagate dependency "
+                              "operation outputs to its output dataflow (candidates=['flux'])"],
+                             self._gates(model, ["dep"]))
+            fixed = body.replace("return 1.0;", "return flux[0];")
+            self.assertEqual([], self._gates(self._model(tmp, fixed), ["dep"]))
+
     def test_an_inert_call_with_every_actual_assigned_before_is_silent(self) -> None:
         """The neutral authoring rule 5: an inert dependency call assigns every actual before
         the call, which keeps this gate silent — at an output position of the header too."""
@@ -997,7 +1028,8 @@ class PhysicsGateTests(unittest.TestCase):
         body = ("const double k = 2.0;\n"
                 "void helper() {}\n"
                 "void p__run(double& out, double x) {\n"
-                "  double pre = x;\n"
+                "  double pre;\n"
+                "  pre = x;\n"
                 "  double scratch;\n"
                 "  dep_model::dep__apply(x, k, helper, pre, scratch);\n"
                 "  out = pre;\n}")

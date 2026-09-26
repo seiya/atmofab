@@ -65,7 +65,7 @@ The Fortran binding's three gates, read over the namespace-scope function defini
 model source (`source.run_problem_model_gates`); a source whose brackets do not balance is
 refused rather than read in part. A parameter is an OUTPUT when the function can write through
 it — a non-const reference, a pointer to non-const, a non-const `atmofab::View` — and a returned
-value is one more output.
+value is one more output, whether or not its `return` names anything.
 
 - **Literal outputs.** A function every one of whose output parameters is assigned whole
   (`out = ...;`) only from literals, none depending on an input, is refused.
@@ -74,7 +74,8 @@ value is one more output.
   operation's output parameters as the dependency's header `<dep>_model.cuh` beside the model
   declares them, or, without the header, at every position minus `const` / `constexpr` names and
   functions this file defines — minus the enclosing function's parameters and names assigned
-  before the call (an inert call's inputs). The closure runs backward from the outputs over
+  before the call by an assignment statement — a declaration's initializer is not one, as in the
+  Fortran binding (an inert call's inputs). The closure runs backward from the outputs over
   assignments `lhs = rhs` (a target's base name, `u[i]` and `u.data[i]` included) and over a view
   declared over another name's storage (`View<...> v{u.data(), ...}` makes `u` take `v`).
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
