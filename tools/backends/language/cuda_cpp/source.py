@@ -214,7 +214,8 @@ def model_source_gates(
     `metrics[...]`), the literal-metric floor (six or more `metrics[<n>] = <literal>`
     assignments), and the preprocessor allowlist (`preprocessor_violations`) — the last over EVERY
     `.cu` under the model's source directory at any depth (`leaf_sources`), because a directive in
-    a file the model or runner includes reaches the gates through it. A physics node's model gates
+    a file the model or runner includes reaches the gates through it — and the rule that every
+    `.cu` sits at the top level of that directory. A physics node's model gates
     are refused (module docstring)."""
     del dep_spec_ids, multidim_spec_id  # read by the physics gates only
     code = cpp_lines.mask(text)
@@ -231,6 +232,15 @@ def model_source_gates(
         source_text = (text if source == model_file
                        else source.read_text(encoding="utf-8", errors="ignore"))
         violations.extend(preprocessor_violations(source, source_text))
+        if source.parent != model_file.parent:
+            # Build compiles every `.cu` as its own object, and the syntax stage compiles only
+            # the top level (the compiler tool takes no path below its directory): a nested one
+            # would reach Build uncompiled for the target, or — included from a top-level file
+            # as well — be compiled twice (round 3 of this change's review).
+            violations.append(
+                f"{source}: a CUDA C++ source in a subdirectory is refused — every `.cu` is a "
+                "translation unit of its own and sits beside the host-rendered header at the top "
+                "of the source directory (move it there, and do not `#include` a `.cu`)")
     if not node_key.startswith("infrastructure/"):
         violations.append(f"{model_file}: {_PHYSICS_REFUSAL}")
 

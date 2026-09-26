@@ -4,8 +4,9 @@ The LANGUAGE half of the `control_file` capability, shaped like the Fortran back
 system's renderer (`tools/backends/build_system/<id>/control_file.py`) takes `rules()` and writes
 one compile rule per source and one link rule. A CUDA C++ source is compiled on its own against
 the host-rendered headers (BUNDLE_BINDING.md §1), so each `.cu` is one object and the objects meet
-at link — the build graph's ordinary shape. The staged dependency headers sit in the object
-directory, which is why it is on the include path.
+at link — the build graph's ordinary shape. The object directory is on the include path for the
+dependency headers a physics node will have staged there; no node of this language stages any yet
+(the physics change of `TODO.md`'s prompt-templates row).
 
 Stdlib only; imports nothing from the neutral core.
 """
@@ -15,6 +16,11 @@ from __future__ import annotations
 from typing import Any
 
 from tools.backends.language.cuda_cpp.bundle import HOST_SOURCE_EXTENSION
+
+#: Whether the rules READ the target's `hardware.architecture` (`-arch=`): they do, so the build
+#: derivation key carries it (`orchestration_runtime._target_toolchain_identity`) — a build for
+#: another architecture is another build.
+READS_ARCHITECTURE = True
 
 
 def flags(standard: str, architecture: str | None) -> str:

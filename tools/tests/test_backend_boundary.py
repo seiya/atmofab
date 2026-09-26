@@ -2550,7 +2550,7 @@ class RegistryConsistencyTests(unittest.TestCase):
             # R4-b PR-4: how the dependency-fact renderer shows a consumer those interfaces.
             "procedure_interface", "dependency_operations_header", "prototype_heading",
             "argument_detail_lines"),
-        "control_file": ("rules",),
+        "control_file": ("rules", "READS_ARCHITECTURE"),
     }
 
     #: The same, for the build-system and parallel capabilities a package carries (issue #289,

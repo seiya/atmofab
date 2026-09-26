@@ -2332,12 +2332,18 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     (`bundle_facts`) — the compiler the conductor's control-file writer pins in the same case,
     and the one the mandatory syntax stage runs. The VERSION is probed from the executable,
     because a profile names a compiler and not the build of it on this machine;
-    `compiler_version` is `None` when it cannot be probed (recorded, not refused)."""
+    `compiler_version` is `None` when it cannot be probed (recorded, not refused).
+
+    The target's `hardware.architecture` joins it when the language's control-file rules read it
+    (`READS_ARCHITECTURE`; the CUDA C++ rules compile with `-arch=`, issue #289 R4-b PR-4): the
+    target id and the profile's other fields do not move when only the architecture does, and the
+    source the build reads may be byte-identical across the change, so without it a build for
+    the old architecture was reused. A language whose rules do not read it keeps the key it had."""
     tc = target.toolchain
     server = _build_runtime_server_module()
     compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
         "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
-    return {
+    identity: dict[str, Any] = {
         "target_id": target.target_id,
         "language": tc["language"],
         "standard": tc["standard"],
@@ -2346,6 +2352,16 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
         "compiler": compiler,
         "compiler_version": server._syntax_compiler_version((compiler, "--version")),
     }
+    # Asked of the backend's PACKAGE only: a language whose control-file rules the neutral core
+    # still carries (`core_provides`) has no module to ask, and reads no architecture; nor does
+    # a language no backend declares (the launch gate refuses its profile; a reader of a
+    # recorded one still gets the identity it always got).
+    if backend_registry.unsupported_reason("language", tc["language"]) is None and \
+            "control_file" in backend_registry.get("language", tc["language"]).backend_provides and \
+            backend_registry.capability_module(
+                "language", tc["language"], "control_file").READS_ARCHITECTURE:
+        identity["architecture"] = (target.doc.get("hardware") or {}).get("architecture")
+    return identity
 
 
 def _build_runtime_server_module() -> Any:

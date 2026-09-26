@@ -32,6 +32,12 @@ def flags(standard: str, parallel_backend: str) -> str:
     return value + " -J$(OBJDIR) -I$(OBJDIR)"
 
 
+#: Whether the rules READ the target's `hardware.architecture`: they do not (it is accepted by
+#: `rules` and ignored), so it stays out of the build derivation key, which is byte-identical to
+#: the key before the argument existed.
+READS_ARCHITECTURE = False
+
+
 def rules(*, standard: str, parallel_backend: str, architecture: str | None = None
           ) -> dict[str, Any]:
     """The language facts a build system's control-file renderer composes with its grammar.

@@ -24546,6 +24546,18 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(tc2["compiler"], "no_such_fc_x")
             self.assertIsNone(tc2["compiler_version"])
 
+    def test_the_architecture_is_in_the_build_toolchain_when_the_rules_read_it(self) -> None:
+        """Issue #289, R4-b PR-4 round 3: the CUDA C++ control-file rules compile with `-arch=`,
+        so a profile whose `hardware.architecture` alone changes is another build; the Fortran
+        rules ignore it, so its identity has no such member (its key is the one it had)."""
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+        self.assertNotIn("architecture", ort._target_toolchain_identity(FORTRAN_CPU))
+        cuda = {"language": "cuda_cpp", "standard": "c++17", "compiler": "no_such_nvcc_x"}
+        ids = [ort._target_toolchain_identity(profile_with(
+            toolchain=cuda, hardware={"class": "gpu", "architecture": arch}))
+            for arch in ("sm_80", "sm_90")]
+        self.assertEqual(["sm_80", "sm_90"], [i["architecture"] for i in ids])
+
     def test_an_upstream_binds_by_the_recomputed_hash_never_the_stamped_one(self) -> None:
         """Round-3 mutant: `_meta_output_hash` returning a stamped `output_hash` when present
         survived. The stamped key is a RECORD; what a downstream key binds is recomputed from

@@ -30,7 +30,7 @@ states which gates are refused and why).
 
 The mandatory syntax stage for `cuda_cpp` is
 `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -odir <scratch> -c <sources>`
-over every `.cu` of the staged directory, each its own translation unit, with the host-rendered
+over every `.cu` of the staged directory (all at its top level: a nested one is refused by the static check), each its own translation unit, with the host-rendered
 header staged beside them (`STAGED_SUFFIXES`; `tools/backends/compiler/nvcc/syntax.py`). It promotes no warning class: the lint rule set
 already makes every warning an error. A failing stage is attributed by re-running the same argv
 over a canary translation unit with one kernel; a canary failure is an invocation the driver

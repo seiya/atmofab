@@ -1,7 +1,9 @@
 # Checks-module ABI — the CUDA C++ binding
 
-> **Audience: the `Generate.generate` / `Generate.verify` leaves of a node whose target
-> profile names `toolchain.language: cuda_cpp`.** This document binds the language-neutral
+> **Audience: the `Generate.generate` leaf of a node whose target profile names
+> `toolchain.language: cuda_cpp`, which is shown §5, and the maintainer of the binding.** No part
+> of it is inlined into the `Generate.verify` reviewer's prompt yet: the harness reviewer is told
+> what the host renders by the language's prompt fragment instead. This document binds the language-neutral
 > checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md`) to CUDA C++, section by
 > section, and its §5 is the legality and gate-guard rule set every leaf-authored CUDA C++ source
 > of a `Generate` node is held to. It is reached through the CUDA C++ language backend's
@@ -79,7 +81,8 @@ and the hand-authored runner of an `infrastructure` node's self-test).
 - **Separate compilation.** Every `.cu` is compiled on its own and the objects are linked; the
   runner reaches the model's surface through `#include "<spec_id>_model.cuh"` and defines
   `int main(int argc, char** argv)`. Never `#include` a `.cu` file: the model would then be
-  defined in two objects, which fails at link.
+  defined in two objects, which fails at link. Every `.cu` sits at the top level of the source
+  directory, beside the header; one in a subdirectory is refused by the static check.
 - **Published operations are host functions.** A published operation is callable from the host:
   no `__global__`, `__device__` or vendor attribute on it. Device work sits in kernels the
   operation launches; a kernel is internal, and its name does not start with `<spec_id>__`.
@@ -118,6 +121,5 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   held to this.
 - **The syntax stage compiles for the target.** The `Generate.gate` syntax check runs
   `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -c` over
-  every top-level `.cu` of the source directory, each on its own, with the host-rendered header
-  and every `.cu` of a subdirectory staged beside it at the same relative path (a nested source
-  is compiled through the file that includes it; `tools/backends/compiler/nvcc/syntax.py`).
+  every `.cu` of the source directory, each on its own, with the host-rendered header staged
+  beside them (`tools/backends/compiler/nvcc/syntax.py`).

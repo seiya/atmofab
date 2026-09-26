@@ -33,7 +33,8 @@ PROMOTED_WARNINGS: tuple[str, ...] = ()
 def compile_order(project_dir: Path) -> list[str]:
     """The `.cu` sources in `project_dir`, name-sorted. Each is its own translation unit and
     reaches another's surface only through a header in the same directory, so no order between
-    them is needed."""
+    them is needed. Only the top level: a `.cu` in a subdirectory is refused by the static check
+    (`source.model_source_gates`)."""
     return sorted(
         p.name for p in project_dir.iterdir()
         if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES

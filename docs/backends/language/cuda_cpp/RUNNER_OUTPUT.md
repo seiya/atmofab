@@ -36,4 +36,5 @@ spelling in the runner source; it never inspects runtime output, so a runtime fi
   ```
 
 - A non-finite real (a NaN, an infinity) has no JSON number: `%.16e` prints `nan` / `inf` (signed, e.g. `-nan`) for it,
-  which is not JSON.
+  which is not JSON, and the runtime deliverable gate refuses the document. Do not format one: a
+  non-finite value is a defect of the computation to fix, not a value to spell.

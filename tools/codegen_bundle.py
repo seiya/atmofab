@@ -1209,9 +1209,11 @@ def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
     this layer can. A file's `modules` are its own; an entrypoint's `symbol` / `module` belong
     to its `defined_in` file; a binding's names belong to the file that defines its `module`.
     An identifier whose file does not resolve is left to the invariants that report the
-    unresolved reference. With one bundle language the union IS its grammar, so this layer
-    adds no refusal today; it is what stops a second language's identifiers being validated
-    against another's grammar (issue #289, R4-b PR-2)."""
+    unresolved reference. It is what stops one language's identifiers being validated against
+    another's grammar (issue #289, R4-b PR-2), and since the second language joined (R4-b PR-4)
+    it refuses what the union admits: a module name one language's grammar bounds below its length
+    (64 characters, say) matches the other's, so the schema passes it and only this layer
+    refuses it."""
     def check(value: Any, language: Any, where: str) -> list[str]:
         pattern = _language_identifier_re(str(language)) if isinstance(language, str) else None
         if pattern is None or not isinstance(value, str) or pattern.fullmatch(value):

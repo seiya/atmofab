@@ -631,8 +631,10 @@ PINNED: dict[str, str] = {
     # Fortran prompts are unchanged (measured again, as above), so no leaf that has ever run
     # reads anything different; the `cuda_cpp` entries are read by no run yet. Round 3 of that
     # PR's review re-pinned it once more for the `cuda_cpp` checks-ABI §5 alone (the header,
-    # reserved-identifier and line-splice rules), on the same ground.
-    "pure-50": "6f9c754209a25ca319b295e71d3b3c3c6400471785411251946be12e9e11f6a0",
+    # reserved-identifier and line-splice rules), and again in the same round for three more
+    # `cuda_cpp`-only texts (§5's top-level-source rule, the verify fragment's reading of H5's
+    # "declared bounds", the runner-output binding's non-finite item), on the same ground.
+    "pure-50": "8ed40da66a179758bab267d90c559702295bc26b293ad99406acb178df4d2d75",
     # ...and the digest `pure-50` SHIPPED with (origin/main 3c117410), kept as a history entry
     # of its own so the in-place re-pins above do not cost this file its revert check: a later
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),

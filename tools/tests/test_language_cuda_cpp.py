@@ -717,6 +717,10 @@ class SourceGateTests(unittest.TestCase):
             self.assertIn("many literal metric assignments", joined)
             self.assertIn("hardcoded case_id -> metrics", joined)
             self.assertIn("quiet.cu:1: preprocessor directive `#pragma GCC diagnostic", joined)
+            # Every `.cu` sits at the top level (round 3 of the review: the syntax stage never
+            # compiled a nested one, which Build compiles as an object of its own).
+            self.assertIn("quiet.cu: a CUDA C++ source in a subdirectory is refused", joined)
+            self.assertNotIn("h_model.cu: a CUDA C++ source in a subdirectory", joined)
             self.assertNotIn("not implemented", joined)
             out = []
             cpp_source.model_source_gates(node_key="component/c@0.1.0", model_file=model,

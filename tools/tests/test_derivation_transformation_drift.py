@@ -116,6 +116,25 @@ def render_tuple() -> dict[str, str]:
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
         "Conductor._write_pure_bundle_artifacts":
             _source_digest(wc.Conductor._write_pure_bundle_artifacts),
+        # The second language's host renders (issue #289, R4-b PR-4): its control-file rules,
+        # its `bundle_facts`, the published-surface header the host writes beside its bundle (and the
+        # lowering it renders with),
+        # the package re-exporting them, and the conductor methods that write the header.
+        "tools/backends/language/cuda_cpp/control_file.py":
+            _file_digest("tools/backends/language/cuda_cpp/control_file.py"),
+        "tools/backends/language/cuda_cpp/bundle.py":
+            _file_digest("tools/backends/language/cuda_cpp/bundle.py"),
+        "tools/backends/language/cuda_cpp/header.py":
+            _file_digest("tools/backends/language/cuda_cpp/header.py"),
+        "tools/backends/language/cuda_cpp/signatures.py":  # the header's lowering
+            _file_digest("tools/backends/language/cuda_cpp/signatures.py"),
+        "tools/backends/language/cuda_cpp/__init__.py":
+            _file_digest("tools/backends/language/cuda_cpp/__init__.py"),
+        "registry interface_header attr": registry_attr("interface_header"),
+        "Conductor._interface_header_module":
+            _source_digest(wc.Conductor._interface_header_module),
+        "Conductor._write_interface_header":
+            _source_digest(wc.Conductor._write_interface_header),
     }
 
 
@@ -365,8 +384,12 @@ PINNED_RENDER: dict[str, str] = {
     # Re-pinned (issue #289, R4-b PR-4), behaviour-preserving for every existing target: the
     # conductor hands a language's control-file rules the target's `hardware.architecture` (the
     # CUDA C++ rules put it in `-arch=`); the Fortran rules accept and do not read it, and return
-    # the identical rule set (measured: equal with and without the argument).
-    "render-5": "561bfda035d81a654613e3de30e7a25e5c26c18d18bad7d18c0f73b1a2c3129e",
+    # the identical rule set (measured: equal with and without the argument). Re-pinned again in
+    # round 3 of that PR's review: the tuple gained the CUDA C++ host renders (control-file rules,
+    # bundle facts, the header and its lowering, the conductor's header writer), which no pin
+    # watched — a change to the header or to `-O2` left every `cuda_cpp` key unmoved. No
+    # `cuda_cpp` node has run, and nothing the Fortran path renders changed.
+    "render-5": "9689ccadef31c017591a0c376c689aeed534877c40d6bbbe105231169f43e7a4",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

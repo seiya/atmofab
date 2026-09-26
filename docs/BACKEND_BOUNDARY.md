@@ -154,9 +154,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `toolchain_servable_reasons`; until R4-a PR-3, issue #284, the question was asked of the
     IR at `Compile.static`) requires a language to declare every capability `Generate` reads of
     it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`,
-    `source_reading`, `signatures` (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue #289) — and, for a
-    non-`infrastructure` node,
-    `control_file` and `runner_render`. It, together with the validator's dispatch into the
+    `source_reading`, `signatures`, `control_file` (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue
+    #289; `control_file` since R4-b PR-4, with the build system's half) — and, for a
+    non-`infrastructure` node, `runner_render`. It, together with the validator's dispatch into the
     control-file gates (`_validate_control_file`, whose gates are the build system backend's since
     issue #289's R4-b PR-3), and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
