@@ -63,8 +63,9 @@ fail_closed). A command that RAN and exited non-zero is not a refusal; it is rep
 result as the local server reports it — with one difference in the value: a command killed by a
 signal N is recorded as `128 + N`, the shell's spelling, where the local server records `-N`
 (and when the signal dumped core, `timeout` adds a line saying so to the command's stderr). Nothing on the Validate path reads
-the number beyond `ok`. No log entry is written until every status has
-been read, so a refused job leaves no evidence behind it.
+the number beyond `ok`. No log entry is written until every status and every output file has
+been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
+behind it.
 
 Nothing calls `execute_job` yet: the conductor is wired to it in a later pull request of issue
 #293, and until then this module changes no run. Only `scheduler: none` is implemented — the job
@@ -313,7 +314,7 @@ def render_job_script(request: JobRequest) -> str:
     # The platform facts, before any command runs, each on a line of its own and always printed:
     # a site that lacks one tool prints that fact empty.
     facts = [("machine", "uname -m"), ("node", "hostname"),
-             ("cpu", "grep -m1 'model name' /proc/cpuinfo")]
+             ("cpu", "grep -i -m1 '^model name' /proc/cpuinfo")]
     if request.platform_probe:
         # The probe's first line when it exits 0, empty otherwise.
         lines.append(f"g=$(timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.platform_probe)}"
@@ -451,12 +452,15 @@ def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _read_output(path: Path, limit: int) -> str:
+def _read_output(path: Path, remote: str) -> str:
+    """A command's collected output file. The script redirects both streams of every command it
+    runs, so a missing file is lost evidence, refused like a lost status."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        text = ""
-    return _server()._trim(text, limit)
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise RemoteExecutionError(
+            f"{path.name} was not collected, so the command's output is lost ({remote}): "
+            f"{exc}") from None
 
 
 def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
@@ -498,8 +502,11 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     # 2. Stage and ship the files, and an empty control directory for the commands' output.
     for rel, src in request.ship.items():
         dst = stage_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        except OSError as exc:
+            raise RemoteExecutionError(f"stage the job's files: {rel}: {exc} ({remote})") from exc
     (stage_dir / CONTROL_DIR).mkdir(parents=True, exist_ok=True)
     tops = sorted({p.name for p in stage_dir.iterdir()})
     _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
@@ -524,9 +531,12 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     status_lines, facts = _job_lines(job_stdout, remote)
     statuses = _statuses(status_lines, request.commands, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
+    outputs = {c.tag: (_read_output(ctl / f"{c.tag}.stdout", remote),
+                       _read_output(ctl / f"{c.tag}.stderr", remote))
+               for c, status in zip(request.commands, statuses) if status is not None}
     for c, status in zip(request.commands, statuses):
         if status is not None and status[0] in LAUNCH_CODES:
-            tail = _read_output(ctl / f"{c.tag}.stderr", 2000).strip()[-2000:]
+            tail = outputs[c.tag][1].strip()[-2000:]
             raise RemoteExecutionError(
                 f"command {c.tag!r} exited {status[0]}: at a site that is the code of a program "
                 f"that did not start (a missing interpreter or shared library, a program that "
@@ -559,8 +569,8 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             "command": argv,
             "executed_command": shlex.join(argv),
             "cwd": c.record_cwd,
-            "stdout": _read_output(ctl / f"{c.tag}.stdout", c.capture_limit),
-            "stderr": _read_output(ctl / f"{c.tag}.stderr", c.capture_limit),
+            "stdout": server._trim(outputs[c.tag][0], c.capture_limit),
+            "stderr": server._trim(outputs[c.tag][1], c.capture_limit),
         }
         if timed_out:
             result["error"] = f"timeout: exceeded {c.timeout_sec} sec"

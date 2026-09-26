@@ -165,7 +165,7 @@ class _Harness:
         if not commands:
             commands = (
                 self.command("run", (f"{self.job}/bin/runner", "--cases", "c1"),
-                             env={"KNOB": "a b"}),
+                             env={"ZED": "1", "KNOB": "a b"}),
                 self.command("qc", ("sh", "-c", "echo qc-ran; ls ../run"), cwd="src",
                              tool="run_quality_checks"),
             )
@@ -264,7 +264,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertTrue(entry["started_at_utc"].endswith("Z"))
             self.assertGreaterEqual(entry["elapsed_ms"], 0)
             self.assertEqual(entry["elapsed_ms"] % 1000, 0)
-        self.assertEqual(self.h.log_entries("run")[0]["env_override_keys"], ["KNOB"])
+        self.assertEqual(self.h.log_entries("run")[0]["env_override_keys"], ["KNOB", "ZED"])
         self.assertEqual(result.site_record, {
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": self.h.job, "queue_wait_ms": 0})
@@ -296,6 +296,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(entry["command"], [str(self.h.runner), "--cases", "c1"])
         self.assertEqual(entry["executed_command"], f"{self.h.runner} --cases c1")
         self.assertEqual(result.results[0]["command"], entry["command"])
+        self.assertEqual(result.results[0]["executed_command"], entry["executed_command"])
         self.assertEqual(entry["site"]["remote_command"],
                          [f"{self.h.job}/bin/runner", "--cases", "c1"])
         # A word that is no shipped file is left as it is.
@@ -497,6 +498,10 @@ class EndToEndTests(unittest.TestCase):
         result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps([r"\A", "Last login: x"]))
         self.assertTrue(result.results[0]["ok"])
         self.assertEqual(result.platform["machine"], os.uname().machine)
+
+    def test_a_platform_value_is_recorded_without_surrounding_space(self) -> None:
+        result = self.h.run(self.h.request(platform_probe=("echo", "  Dev X  ")))
+        self.assertEqual(result.platform["gpu"], "Dev X")
 
     def test_a_probe_answer_is_recorded_as_printed(self) -> None:
         """A backslash sequence in a device name is not interpreted (`echo` under dash would)."""
@@ -745,17 +750,19 @@ class RefusalTests(unittest.TestCase):
     def test_a_program_that_did_not_start_is_the_hosts_failure(self) -> None:
         """126 / 127: a missing interpreter, a missing shared library at the site, a program
         `timeout` could not execute. The stderr tail is in the message."""
-        for body, rc in (("#!/nonexistent/interpreter\n", None),
-                         ("#!/bin/sh\necho 'error while loading shared libraries' >&2\nexit 127\n",
-                          127),
-                         ("#!/bin/sh\nexit 126\n", 126)):
+        loader = "#!/bin/sh\necho 'error while loading shared libraries' >&2\nexit 127\n"
+        for body, rc, tail in (("#!/nonexistent/interpreter\n", "12[67]", "bin/runner"),
+                               (loader, "127", "error while loading shared libraries"),
+                               ("#!/bin/sh\nexit 126\n", "126", r"\(empty\)")):
             with self.subTest(body=body):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
                 prog = h.local / "prog"
                 prog.write_text(body)
                 prog.chmod(0o755)
-                with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                            rf"'run' exited {rc or '12[67]'}: at a site that is the code of a program"):
+                with self.assertRaisesRegex(
+                        rx.RemoteExecutionError,
+                        rf"(?s)'run' exited {rc}: at a site that is the code of a program.*"
+                        rf"its stderr ends: [^(]*{tail}"):
                     h.run(h.request(ship={"bin/runner": prog}))
                 self.assertEqual(h.log_entries("run"), [])
 
@@ -785,6 +792,19 @@ class RefusalTests(unittest.TestCase):
         self.assertIn(f"the job directory is left at the site for inspection — remove "
                       f"{self.h.job} when done", str(ctx.exception))
         self.assertTrue((Path(self.h.job) / "run" / "argv.json").is_file())
+
+    def test_a_lost_output_file_is_refused(self) -> None:
+        for name in ("run.stdout", "qc.stderr"):
+            with self.subTest(name=name):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            f"{name} was not collected.*left at the site"):
+                    h.run(h.request(), SHIM_SSH_POST=f"rm {h.job}/ctl/{name}")
+                self.assertEqual(h.log_entries("run"), [])
+
+    def test_a_file_that_cannot_be_staged_is_refused(self) -> None:
+        self._refused("stage the job's files: bin/runner.*left at the site",
+                      self.h.request(ship={"bin/runner": self.h.local / "no-such-file"}))
 
     def test_a_directory_that_cannot_be_removed_is_refused(self) -> None:
         self._refused("remove the collected job directory", SHIM_SSH_FAIL="rm -rf")
