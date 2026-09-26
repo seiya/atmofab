@@ -18,7 +18,9 @@
   capability) and writes beside the bundle's files; the model source includes it and defines the
   published operations, and the runner (and, later, a consumer) includes it and calls them.
   No object of one source is a prerequisite of another's compile (`source.source_module_deps`
-  states no edge); the header is.
+  states no edge). The rendered control file does not name the header as a prerequisite either:
+  Build compiles into a fresh object directory, and the header is rewritten with every accepted
+  bundle.
 - **`modules`.** A module is a C++ namespace. The model file declares the namespace
   `<spec_id>_model`, which holds its whole published surface; a consumer names a published
   symbol as `<spec_id>_model::<name>`.
@@ -40,11 +42,11 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 | neutral | argument, `intent(in)` | argument, `out` / `inout` | component / result |
 |---|---|---|---|
 | `real` / `integer` / `logical`, rank 0 | `K name` | `K& name` | `K` |
-| `real` / `integer` / `logical`, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` | `std::vector<K>` (rank 1 only) |
-| the same, rank 1, `alloc: true` | `const std::vector<K>& name` | `std::vector<K>& name` | — |
+| `real` / `integer` / `logical`, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` | `O` |
+| the same, `alloc: true` | `const O& name` | `O& name` | — |
 | `string`, rank 0 | `const std::string& name` | `std::string& name` | `std::string` |
 | `derived T`, rank 0 | `const T& name` | `T& name` | `T` |
-| `string` / `derived X`, rank 1 | `const std::vector<X>& name` | `std::vector<X>& name` | `std::vector<X>` |
+| `string` / `derived X`, rank R ≥ 1 | `const O& name` | `O& name` | `O` |
 | `procedure` (entry `P` of `interfaces`) | `P name` | — | — |
 
 - A `subroutine` lowers to a function returning `void`; a `function` to one returning its result's
@@ -52,16 +54,19 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 - A module parameter `n = float64` lowers to `using n = double;` (`float32` to `float`); an
   integer value `n = 64` to `inline constexpr int n = 64;` (in a header, an unreferenced
   `inline constexpr` draws no unused-variable diagnostic).
-- A `kind` must name a module parameter with a `float64` / `float32` value: that is the only kind
-  that lowers to a C++ type.
+- `O` is the owning container: `std::vector<X>` at rank 1, `atmofab::Array<X, R>` at rank
+  R ≥ 2 (defined by every rendered header: `std::vector<X> data` and `long extent[R]`,
+  column-major).
+- A `kind` naming a module parameter with an INTEGER value is refused: only a `float64` /
+  `float32` parameter lowers to a C++ type. A kind naming no parameter of the block is rendered as
+  the name.
 - An `interfaces` entry `P` lowers to `using P = <return type> (*)(<parameters>);`.
 - A `type` lowers to `struct T { <component>; ... };`, components in order.
 - **Not part of the C++ type, so not pinned:** an argument's `dims` (a view's extents are run-time
   values) and a string's `len` (a `std::string` carries its own length).
-- **No lowering, refused (`SignatureParseError`):** an array component or result of rank above
-  1, a string or derived array argument of rank above 1, an allocatable numeric argument of rank
-  above 1, a `logical` with a kind, a kind that is not a float-valued module parameter, and a name
-  that is a C++ keyword or a CUDA execution-space specifier. The target-free Compile
+- **No lowering, refused (`SignatureParseError`):** a `logical` with a kind, a kind naming an
+  integer-valued module parameter, and a name that is a C++ keyword or a CUDA execution-space
+  specifier. The target-free Compile
   gate renders every §5.1 in every language that declares `signatures`, so a §5.1 using one of
   these fails Compile.
 - **`atmofab::View<T, R>`** is the array view every rendered header defines, once per

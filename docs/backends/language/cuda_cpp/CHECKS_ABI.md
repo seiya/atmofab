@@ -61,15 +61,17 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   |---|---|---|
   | `real` / `integer` / `logical`, rank 0 | `K name` | `K& name` |
   | the same, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` |
-  | the same, rank 1, `alloc: true` | `const std::vector<K>& name` | `std::vector<K>& name` |
+  | the same, `alloc: true` | `const O& name` | `O& name` |
   | `string`, rank 0 | `const std::string& name` | `std::string& name` |
   | `derived T`, rank 0 | `const T& name` | `T& name` |
-  | `string` / `derived X`, rank 1 | `const std::vector<X>& name` | `std::vector<X>& name` |
+  | `string` / `derived X`, rank R ≥ 1 | `const O& name` | `O& name` |
   | `procedure` naming entry `P` | `P name` | — |
 
-  A `subroutine` returns `void`; a `function` returns its result's type (`std::string` for a
-  string, `T` for a derived type, `std::vector<X>` for a rank-1 result). A string's `len` and an
-  argument's `dims` are not part of the C++ type.
+  `O` is the OWNING container of the element type: `std::vector<X>` at rank 1, the header's
+  `atmofab::Array<X, R>` (members `std::vector<X> data` and `long extent[R]`, column-major) at
+  rank R ≥ 2. A `subroutine` returns `void`; a `function` returns its result's type
+  (`std::string` for a string, `T` for a derived type, `O` for an array). A component is the
+  scalar type or `O`. A string's `len` and an argument's `dims` are not part of the C++ type.
 - **The array view.** `atmofab::View<T, R>` has public members `T* data` and `long extent[R]`;
   the element at 0-based indices `(i1, ..., iR)` is
   `data[i1 + extent[0] * (i2 + extent[1] * (... + extent[R-2] * iR))]` — column-major, the first
@@ -92,7 +94,8 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   deleted from the signature and from every call site instead. An unused local variable is not
   declared at all.
 - **Only two preprocessor directives.** A leaf-authored source uses `#include "<file>"` /
-  `#include <header>` and `#pragma unroll [<n>]`, and no other directive — no `#define`, no
+  `#include <header>` and `#pragma unroll [<argument>]` (in device code only: the host compiler
+  reports it unknown in a host function, which fails the lint), and no other directive — no `#define`, no
   `#if` / `#ifdef` / `#endif`, no other `#pragma` (in particular no diagnostic pragma), no line
   marker — and no `_Pragma` / `__pragma` operator, no `##` and no digraph. The deterministic
   `Generate.gate` static check refuses each by presence
@@ -102,5 +105,6 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   held to this.
 - **The syntax stage compiles for the target.** The `Generate.gate` syntax check runs
   `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -c` over
-  every `.cu` of the source directory, each on its own with the host-rendered header beside it
-  (`tools/backends/compiler/nvcc/syntax.py`).
+  every top-level `.cu` of the source directory, each on its own, with the host-rendered header
+  and every `.cu` of a subdirectory staged beside it at the same relative path (a nested source
+  is compiled through the file that includes it; `tools/backends/compiler/nvcc/syntax.py`).

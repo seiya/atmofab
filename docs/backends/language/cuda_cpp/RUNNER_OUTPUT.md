@@ -13,8 +13,9 @@ JSON documents are written by host code. Enforcement is **format-syntactic**: `p
 (`validate_pipeline_semantics --stage post_generate`) flags the mere presence of a forbidden
 spelling in the runner source; it never inspects runtime output, so a runtime fixup does not pass.
 
-- Do **not** use the `%a` / `%A` conversion (hexadecimal floating point) in a format string, or
-  the `std::hexfloat` stream manipulator: neither produces a JSON number. Both are flagged.
+- Do **not** use the `%a` / `%A` conversion (hexadecimal floating point) in the format literal of
+  a printf-family call, or the `std::hexfloat` stream manipulator: neither produces a JSON number.
+  Both are flagged (a literal passed to anything else is text, and is not read as a format).
 - **Canonical safe idiom:** reals with `std::snprintf(buf, sizeof buf, "%.16e", x)` — seventeen
   significant digits in exponential form, a leading digit always present, and the value restored
   exactly by a standard parser; integers with `%d` / `%ld` / `%lld` matching the argument's type,

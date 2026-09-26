@@ -14,11 +14,12 @@ language default:
     real / integer / logical, rank 0,  in    K name              K
     ... rank 0, out / inout                  K& name             —
     real / integer / logical, rank R >= 1    atmofab::View<const K, R> (in) / View<K, R>
-                                             (rank 1 component / result: std::vector<K>)
-    ... rank 1, alloc                        const std::vector<K>& (in) / std::vector<K>&
+                                             (component / result: the owning container below)
+    ... alloc                                const <owning>& (in) / <owning>&
+    owning container, rank 1 / rank R >= 2   std::vector<X> / atmofab::Array<X, R>
     string, rank 0                           const std::string& (in) / std::string&   std::string
     derived T, rank 0                        const T& (in) / T&                       T
-    string / derived, rank 1                 const std::vector<X>& (in) / std::vector<X>&  std::vector<X>
+    string / derived, rank R >= 1            const <owning>& (in) / <owning>&              <owning>
     procedure (an `interfaces` entry P)      P name              —
     subroutine / function                    void name(...) / <result type> name(...)
     module parameter  dp = float64           using dp = double;  (float32 -> float)
@@ -31,10 +32,10 @@ defines (data pointer plus extents); the neutral `dims` of an argument are NOT p
 type, because a view's extents are run-time values, so they are not pinned here. A neutral string
 length is likewise not part of the type (`std::string` carries its own). A default kind is `float`
 for `real` and `int` for `integer`, and a named kind must be a float-valued module parameter (the
-only kind that is a C++ type). What has no row above — an array component or result of rank > 1,
-a string / derived argument of rank > 1, an allocatable numeric argument of rank > 1, a `logical`
-with a kind — has no C++ lowering and is refused (`SignatureParseError`), as is a name that is a
-C++ keyword.
+only kind that is a C++ type). A `logical` with a kind has no C++ lowering and is refused
+(`SignatureParseError`), as is a name that is a C++ keyword; the target-free Compile gate renders
+every §5.1 in every language that declares `signatures`, so those are the only §5.1 shapes this
+lowering makes Compile refuse.
 
 THE STANZA a text is read into (`parse_interface_stanzas`), per symbol, is a list of canonical
 lines — the header first, then one line per parameter / data member:
@@ -73,8 +74,11 @@ from tools.structured_signatures import validate_symbol as _validate_symbol
 #: The language's name as the gates' messages spell it.
 LANGUAGE_DISPLAY_NAME = "CUDA C++"
 
-#: The array view type the target's harness defines (see the module docstring).
+#: The array view type every rendered header defines (see the module docstring).
 VIEW_TYPE = "atmofab::View"
+#: The OWNING rank-R array every rendered header defines, for an array of rank 2 or more that owns
+#: its storage (a component, a result, an allocatable argument) or holds strings / derived values.
+ARRAY_TYPE = "atmofab::Array"
 
 #: C++ keywords (C++17) and the CUDA execution-space / memory-space specifiers. A §5.1 name equal
 #: to one of them cannot be declared in C++, so the lowering refuses it.
@@ -126,20 +130,19 @@ def _argument_type(ent: dict[str, Any], ctx: str) -> str:
     if t in _DEFAULT_SCALAR:
         base = _scalar(spec, ctx)
         if spec.get("alloc"):
-            # The callee may size an allocatable array, which a view cannot do: a rank-1 one is
-            # a `std::vector`, and no higher rank has a lowering.
-            if rank != 1:
-                raise SignatureParseError(
-                    f"{ctx}: an allocatable rank-{rank} numeric argument has no "
-                    f"{LANGUAGE_DISPLAY_NAME} lowering (only rank 1, to std::vector)")
-            return f"const std::vector<{base}>&" if reading else f"std::vector<{base}>&"
+            # The callee may size an allocatable array, which a view cannot do: it is an owning
+            # container, passed by reference.
+            owned = _owning(base, rank)
+            return f"const {owned}&" if reading else f"{owned}&"
         return f"{VIEW_TYPE}<{'const ' if reading else ''}{base}, {rank}>"
-    if rank == 1:
-        vec = f"std::vector<{_scalar(spec, ctx)}>"
-        return f"const {vec}&" if reading else f"{vec}&"
-    raise SignatureParseError(
-        f"{ctx}: a rank-{rank} `{t}` argument has no {LANGUAGE_DISPLAY_NAME} lowering (only rank 1 "
-        "lowers, to std::vector)")
+    owned = _owning(_scalar(spec, ctx), rank)
+    return f"const {owned}&" if reading else f"{owned}&"
+
+
+def _owning(element: str, rank: int) -> str:
+    """The owning container of `rank` elements: `std::vector` for rank 1, the header's
+    `atmofab::Array<T, R>` above it."""
+    return f"std::vector<{element}>" if rank == 1 else f"{ARRAY_TYPE}<{element}, {rank}>"
 
 
 def _value_type(ent: dict[str, Any], ctx: str) -> str:
@@ -148,11 +151,7 @@ def _value_type(ent: dict[str, Any], ctx: str) -> str:
     rank = ent.get("rank", 0) or 0
     if rank == 0:
         return _scalar(spec, ctx)
-    if rank == 1:
-        return f"std::vector<{_scalar(spec, ctx)}>"
-    raise SignatureParseError(
-        f"{ctx}: a rank-{rank} `{spec['type']}` component or result has no "
-        f"{LANGUAGE_DISPLAY_NAME} lowering (only rank 1, to std::vector)")
+    return _owning(_scalar(spec, ctx), rank)
 
 
 def _render_params(args: list[dict[str, Any]], ctx: str) -> list[str]:

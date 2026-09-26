@@ -23,7 +23,7 @@ leave no artifact beside a source (measured: none in the source directory or a s
 WHAT A SOURCE CANNOT DO. An in-source suppression — `#pragma nv_diag_suppress`, `#pragma GCC
 diagnostic ignored`, `_Pragma(...)` — is not something any flag of this driver disables, so it is
 refused by the language backend's source gate instead
-(`tools/backends/language/cuda_cpp/source.py` `suppression_violations`), over every
+(`tools/backends/language/cuda_cpp/source.py` `preprocessor_violations`), over every
 leaf-authored file this lint reads.
 
 EXIT STATUS. Measured on 13.4 with this argv (`docs/backends/linter/nvcc/RULES.md` §Measurements):

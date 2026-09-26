@@ -1428,6 +1428,19 @@ def node_key_safe(node_key: str) -> str:
     return f"{kind}__{spec_id}__{version}"
 
 
+def stage_syntax_inputs(src_dir: Path, stage_dir: Path, staged_suffixes: tuple[str, ...]) -> None:
+    """Copy every file of `src_dir` whose suffix is one of `staged_suffixes` (lowercased) into
+    `stage_dir`, at ANY depth and at the same relative path, so the syntax stage compiles the
+    include tree the lint check and Build see (issue #289, R4-b PR-4: a bundle file may sit in a
+    subdirectory and be included from there — flat copying dropped it and failed a correct
+    source). A symbolic link is not followed."""
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.suffix.lower() in staged_suffixes:
+            target = stage_dir / path.relative_to(src_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+
+
 def spec_id_of(node_key: str) -> str:
     kind_rest, _, _ = node_key.partition("@")
     _, _, spec_id = kind_rest.partition("/")
@@ -9520,7 +9533,7 @@ class Conductor:
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
             # The target the binary was built for, and the compiler the control file pins (the
-            # target profile's, else the host default) with the first line of its `--version`:
+            # target profile's, else the host default) with the first versioned line of its `--version`:
             # the toolchain identity the build derivation key hashes (issues #250, #284),
             # recorded on the binary it built. `compile_project` itself answers neither — make
             # picks the compiler — so this is resolved the way the key resolves it, from the
@@ -10184,9 +10197,7 @@ class Conductor:
                 stage_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                              / "syntax" / compiler)
                 stage_dir.mkdir(parents=True, exist_ok=True)
-                for p in sorted(p for p in src_dir.iterdir()
-                                if p.is_file() and p.suffix.lower() in staged_suffixes):
-                    shutil.copy2(p, stage_dir / p.name)
+                stage_syntax_inputs(src_dir, stage_dir, staged_suffixes)
                 for p in dep_files:
                     shutil.copy2(p, stage_dir / p.name)
                 try:

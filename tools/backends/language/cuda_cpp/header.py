@@ -35,6 +35,13 @@ struct View {
     T* data;
     long extent[R];
 };
+// A rank-R array that OWNS its storage: `data` holds extent[0] * ... * extent[R-1] elements in
+// the same column-major order.
+template <class T, int R>
+struct Array {
+    std::vector<T> data;
+    long extent[R];
+};
 }  // namespace atmofab
 #endif
 """

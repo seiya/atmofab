@@ -80,9 +80,15 @@ def source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
 # see one program. No flag of the CUDA compiler driver disables an in-source diagnostic pragma,
 # which is why this is a source rule and not a lint flag.
 
+# `#pragma unroll` takes any argument (`4`, `(4)`, a constant): an unroll hint cannot control a
+# diagnostic. It is a DEVICE-code pragma: in a host function the host compiler reports it unknown,
+# which the lint fails.
 _ALLOWED_DIRECTIVE_RE = re.compile(
-    r'^include[ \t]*(?:"[^"\n]*"|<[^>\n]*>)[ \t]*$|^pragma[ \t]+unroll(?:[ \t]+\d+)?[ \t]*$')
-_DIRECTIVE_RE = re.compile(r"^[ \t]*#(?P<body>.*)$", re.MULTILINE)
+    r'^include[^\S\n]*(?:"[^"\n]*"|<[^>\n]*>)[^\S\n]*$|^pragma[^\S\n]+unroll(?:[^\S\n][^\n]*)?$')
+# A directive is a line whose first non-whitespace character is `#` — ANY preprocessing
+# whitespace before it: a form feed or a vertical tab there is still a directive to the compiler,
+# and round 2 of this change's review silenced lint findings with `\f#pragma` past a `[ \t]*`.
+_DIRECTIVE_RE = re.compile(r"^[^\S\n]*#(?P<body>.*)$", re.MULTILINE)
 # `<:` is a digraph except in `<::` not followed by `:` or `>` (the lexer's own special case).
 _FORBIDDEN_TOKEN_RE = re.compile(r"\b_Pragma\b|\b__pragma\b|##|%:|<%|%>|<:(?!:(?![:>]))|:>")
 
@@ -188,6 +194,23 @@ def model_source_not_found_violation(
 # A printf-family conversion inside a format literal. Only the conversion character and its
 # precision are read.
 _CONVERSION_RE = re.compile(r"%[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|L|j|z|t)?([a-z%])")
+# A printf-family call (`printf`, `fprintf`, `snprintf`, `vsnprintf`, ...): only a literal among
+# its arguments is a FORMAT — `puts("100% accurate")` is text (round 2 of this change's review
+# found the scan refusing it).
+_PRINTF_CALL_RE = re.compile(r"\b(?:v?f|v?s|v?sn|v)?printf\s*\(")
+
+
+def _close_paren(code: str, open_at: int) -> int:
+    """Offset of the `)` closing the `(` at `open_at` in masked `code`, or the end."""
+    depth = 0
+    for index in range(open_at, len(code)):
+        if code[index] == "(":
+            depth += 1
+        elif code[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(code)
 
 
 def validate_runner_json_serialization(
@@ -202,14 +225,18 @@ def validate_runner_json_serialization(
     the Fortran scan: a runtime fixup does not pass, and a spelling this does not list is the
     runtime deliverable gate's (every runner document must parse as JSON). A preprocessor
     directive in the runner is judged by `model_source_gates`, which reads every leaf source."""
-    for lineno, literal in cpp_lines.literals(text):
+    code = cpp_lines.mask(text)
+    calls = [(m.end() - 1, _close_paren(code, m.end() - 1)) for m in _PRINTF_CALL_RE.finditer(code)]
+    for start, _end, literal in cpp_lines.literal_spans(text):
+        if not any(open_at < start < close_at for open_at, close_at in calls):
+            continue  # not an argument of a printf-family call: not a format
+        lineno = cpp_lines.line_of(text, start)
         for m in _CONVERSION_RE.finditer(literal):
             if m.group(1) == "a":
                 violations.append(
                     f"{runner_file}:{lineno}: forbidden JSON output format `{m.group(0)}` — a "
                     "hexadecimal floating-point conversion is not a JSON number; write a real "
                     "with `%.16e` (RUNNER_OUTPUT.md §1)")
-    code = cpp_lines.mask(text)
     for m in re.finditer(r"\bhexfloat\b", code):
         violations.append(
             f"{runner_file}:{cpp_lines.line_of(code, m.start())}: forbidden JSON output "

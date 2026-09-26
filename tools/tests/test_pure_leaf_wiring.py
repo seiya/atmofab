@@ -1395,6 +1395,10 @@ class PureRenderTests(unittest.TestCase):
         ("docs/backends/language/cuda_cpp/RUNNER_OUTPUT.md", None, None),
         ("tools/prompt_templates/backends/language/cuda_cpp/generate_generate_harness.txt",
          None, None),
+        ("tools/prompt_templates/backends/language/cuda_cpp/generate_verify_harness.txt",
+         None, None),
+        ("tools/prompt_templates/backends/language/fortran/generate_verify_harness.txt",
+         None, None),
         # Round 5 found the tuple short of its own docstring twice over.
         # `RUNNER_OUTPUT_CONTRACT.md` is force-read by every non-M3c `generate` leaf, and
         # `docs/RUNBOOK.md` is named by `skills/workflow-generate-verify/SKILL.md:18` in the

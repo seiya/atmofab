@@ -2208,7 +2208,7 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               Build stages (`_stage_dependency_sources` copies exactly these sources);
 #             toolchain — `{target_id, language, standard, build_system, backend, compiler,
 #               compiler_version}` read off the target profile, with the compiler the
-#               control-file writer would pin and the first line of its `--version`.
+#               control-file writer would pin and the first versioned line of its `--version`.
 #   validate  binary — this node's certified build output hash;
 #             ir — the compile output hash (the case set and the predicates);
 #             spec.tests — the judge reads `tests.md`;
@@ -2325,7 +2325,7 @@ def pipeline_closure_nodes(
 def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     """The build toolchain identity of a target, for the build key and for `binary_meta.json`:
     the target id, the profile's `language` / `standard` / `build_system` / parallel `backend`,
-    and the compiler with the first line of its `--version` (issue #284; before R4-a PR-2 the
+    and the compiler with the first versioned line of its `--version` (issue #284; before R4-a PR-2 the
     same fields were read off the IR's `impl_defaults`).
 
     The compiler is the profile's pin, else the language backend's `DEFAULT_COMPILER`

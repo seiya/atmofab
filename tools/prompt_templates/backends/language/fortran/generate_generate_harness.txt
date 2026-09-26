@@ -8,3 +8,7 @@ lower every `interfaces` entry into one abstract-interface block as a prototype 
 
 @@ runner_import
 `use`
+@@ types_and_parameters
+`public_api.published_types` are published the same way, each by its fully-qualified name and never by a short alias. `public_api.module_parameters` are declared once each, at module level, with the neutral kind value lowered to the language's spelling — a deterministic gate renders the same lowering and compares it against your source, so emitting a neutral token verbatim fails, and so does binding one of those names any other way (an alias import, a second declaration anywhere in the file, one inside a contained procedure included).
+@@ gate_guard_examples
+(the column limit, the binding for an interface-fixed unused argument, the assignment of every output argument, the ban on suppression comments)

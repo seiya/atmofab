@@ -392,7 +392,10 @@ PINNED_BUILD: dict[str, str] = {
     # every profile the launch gate admits. Re-pinned again in that PR's round 2: the tuple
     # gained `Conductor._classify_build_failure_category`, and in round 3 the rest of the dispatch
     # into `failure.py` (the attribute row, the make package `__init__` and `control_file.py`).
-    "build-1": "a52500a00c4b3e14d7097e91b7ac591d4c8f51a6704ad18d6fe20a83cbf17a39",
+    # Re-pinned (issue #289, R4-b PR-4), comment only: `_build_inproc`'s note on the recorded
+    # `compiler_version` now says it is the first VERSIONED line of `--version` (the server's
+    # probe changed; for a compiler that prints its version first, the value is the same line).
+    "build-1": "2a5089ac003f7f49d37b155eac08a3ad6dfdd5afbbe221521425a11db6453be8",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

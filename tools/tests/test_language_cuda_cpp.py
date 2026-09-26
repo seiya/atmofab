@@ -244,21 +244,30 @@ class LoweringTests(unittest.TestCase):
 
     def test_a_shape_with_no_lowering_is_refused(self) -> None:
         refused = [
-            {"kind": "subroutine", "name": "d__a",
-             "args": [_arg("v", "string", rank=2, len="assumed")]},
-            {"kind": "subroutine", "name": "d__a",
-             "args": [_arg("v", "real", rank=2, kind="dp", intent="inout", alloc=True)]},
             {"kind": "subroutine", "name": "d__a", "args": [_arg("b", "logical", kind="k")]},
             {"kind": "subroutine", "name": "new", "args": []},
             {"kind": "subroutine", "name": "d__a", "args": [_arg("class", "integer")]},
-            {"name": "T", "components": [{"name": "a", "rank": 2,
-                                          "spec": {"type": "real", "kind": "dp"}}]},
-            {"kind": "function", "name": "d__r", "args": [],
-             "result": {"name": "r", "rank": 2, "spec": {"type": "real", "kind": "dp"}}},
+            {"name": "this", "components": []},
         ]
         for sig in refused:
             with self.subTest(sig=sig.get("name")), self.assertRaises(cs.SignatureParseError):
                 cs.render_symbol(sig)
+
+    def test_arrays_of_rank_two_and_more_that_own_their_storage_lower_to_array(self) -> None:
+        """Every shape Fortran renders but a keyword name and a logical kind has a C++ lowering
+        (the target-free Compile renders §5.1 in both): rank >= 2 owning arrays are the header's
+        `atmofab::Array<X, R>`."""
+        self.assertEqual("const atmofab::Array<std::string, 2>& v", self._param(
+            _arg("v", "string", rank=2, len="assumed")))
+        self.assertEqual("atmofab::Array<dp, 2>& v", self._param(
+            _arg("v", "real", rank=2, kind="dp", intent="inout", alloc=True)))
+        self.assertEqual("struct T {\n    atmofab::Array<dp, 2> a;\n};\n", cs.render_symbol(
+            {"name": "T", "components": [{"name": "a", "rank": 2,
+                                          "spec": {"type": "real", "kind": "dp", "alloc": True}}]}))
+        self.assertEqual("atmofab::Array<dp, 3> d__r();\n", cs.render_symbol(
+            {"kind": "function", "name": "d__r", "args": [],
+             "result": {"name": "r", "rank": 3, "spec": {"type": "real", "kind": "dp"}}}))
+        self.assertIn("struct Array {", cpp_header.VIEW_DEFINITION)
 
     def test_rank_one_numeric_arrays_that_own_their_storage_lower_to_vector(self) -> None:
         self.assertEqual("std::vector<dp>& v", self._param(
@@ -574,6 +583,16 @@ class SourceGateTests(unittest.TestCase):
             "__pragma": "__pragma(warning(disable:1))\n",
             "brace digraph": "namespace h_model <% void f(); %>\n",
             "bracket digraph": "int a<:2:>;\n",
+            # Round 2 of the review: each of these passed the round-1 allowlist.
+            "form-feed directive": "\f#pragma nv_diag_suppress 177\n",
+            "vertical-tab directive": "\v#pragma GCC diagnostic ignored \"-Wall\"\n",
+            "form-feed conditional": "\f#if 0\nint hidden();\n\f#endif\n",
+            "indented pragma": "\t  #pragma GCC diagnostic ignored \"-Wall\"\n",
+            "operator split by a continuation": "_Pra\\\ngma(\"nv_diag_suppress 177\")\n",
+            "operator after a dot-number": "x += .5'0; _Pragma(\"nv_diag_suppress 177\")\n",
+            "include with a tail": "#include \"h_model.cuh\" junk\n",
+            "pasting outside a directive": "int x = a ## b;\n",
+            "closing bracket digraph": "int a[2:>;\n",
         }
         for label, text in refused.items():
             with self.subTest(label=label):
@@ -581,12 +600,24 @@ class SourceGateTests(unittest.TestCase):
         self.assertEqual([], cpp_source.preprocessor_violations(
             Path("x.cu"),
             '#include "h_model.cuh"\n#include <cstdio>\n  #  include <vector>\n'
-            "#pragma unroll\n#pragma unroll 4\n"
+            "#pragma unroll\n#pragma unroll 4\n#pragma unroll (4)\n#pragma unroll kUnroll\n"
             "// #pragma GCC diagnostic ignored\n"
             "const char* s = \"#pragma nv_diag_suppress ## %: <%\";\n"
             "/*\n#pragma GCC diagnostic ignored \"-Wall\"\n*/\n"
             "// _Pragma(\"GCC diagnostic ignored\")\n"
             "std::vector<::std::string> v;\nint y = a ? b : c;\n"))
+
+    def test_a_digit_separator_in_a_number_starting_with_a_dot(self) -> None:
+        text = "x = .5'0; y = 1e+1'0; int z{0};\n"
+        self.assertEqual(text, cpp_lines.mask(text))
+
+    def test_only_a_printf_family_format_is_read_as_a_format(self) -> None:
+        out: list[str] = []
+        cpp_source.validate_runner_json_serialization(
+            Path("r.cu"), 'std::puts("coverage: 100% accurate");\n'
+            'std::snprintf(buf, sizeof buf, "%a", x);\nstd::fprintf(f, "%.16e", x);\n', out)
+        self.assertEqual(1, len(out), out)
+        self.assertIn(":2:", out[0])
 
     def test_every_leaf_source_at_any_depth_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -737,13 +768,37 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertFalse(registry.provides("language", "fortran", "interface_header"))
         self.assertEqual("nvcc", registry.linter_for_language("cuda_cpp"))
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
-        self.assertEqual({"interface_prototypes", "runner_import"},
+        self.assertEqual({"interface_prototypes", "runner_import", "types_and_parameters",
+                          "gate_guard_examples"},
                          set(prompts.fragments("generate_generate_harness")))
+        self.assertEqual({"host_rendered_scope"}, set(prompts.fragments("generate_verify_harness")))
         with self.assertRaises(ValueError):
             prompts.fragments("generate_generate")
         self.assertTrue(prompts.runner_output_document().startswith("# Runner output"))
         abi = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
         self.assertIn("## 5. CUDA C++ legality and gate guards", abi)
+
+
+class SyntaxStagingTests(unittest.TestCase):
+    def test_the_stage_holds_every_staged_file_at_its_relative_path(self) -> None:
+        """Codex, round 2: a nested bundle file included from a top-level source must be staged
+        where the include finds it, and the host header must be staged at all."""
+        from tools.workflow_conductor import stage_syntax_inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            src, stage = Path(tmp) / "src", Path(tmp) / "stage"
+            (src / "detail").mkdir(parents=True)
+            stage.mkdir()
+            for name in ("h_model.cu", "h_model.cuh", "detail/helper.cu", "Makefile",
+                         "command_log.jsonl"):
+                (src / name).write_text("")
+            (src / "link.cu").symlink_to(src / "h_model.cu")
+            stage_syntax_inputs(src, stage, tuple(cpp_syntax.STAGED_SUFFIXES))
+            self.assertEqual(["detail/helper.cu", "h_model.cu", "h_model.cuh"],
+                             sorted(p.relative_to(stage).as_posix()
+                                    for p in stage.rglob("*") if p.is_file()))
+        header_suffix = Path(cpp_header.basename("h")).suffix
+        self.assertIn(header_suffix, cpp_syntax.STAGED_SUFFIXES)
+        self.assertNotIn(header_suffix, cpp_syntax.SOURCE_SUFFIXES)
 
 
 class IdentifierBoundStatementTests(unittest.TestCase):

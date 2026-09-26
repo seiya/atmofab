@@ -72,12 +72,20 @@ def mask(text: str) -> str:
             i = j
             continue
         if ch in "\"'":
-            # A `'` between two digits is a digit separator (`1'000'000`), not a literal.
+            # A `'` inside a pp-number is a digit separator (`1'000'000`, `.5'0`, `1e+1'0`), not a
+            # literal: walk back over the pp-number (digits, letters, `_`, `.`, `'`, and a sign
+            # after an exponent letter) and require it to START like a number — a digit, or a `.`
+            # followed by a digit. The `.5'0` start is round 2 of this change's review: read as a
+            # literal, it blanked the rest of the line, a `_Pragma` or a literal metric included.
             if ch == "'" and i > 0 and text[i - 1].isalnum() and i + 1 < n and text[i + 1].isalnum():
                 prev = i - 1
-                while prev >= 0 and (text[prev].isalnum() or text[prev] in "_."):
+                while prev >= 0 and (text[prev].isalnum() or text[prev] in "_.'"
+                                     or (text[prev] in "+-" and prev > 0
+                                         and text[prev - 1] in "eEpP")):
                     prev -= 1
-                if text[prev + 1].isdigit():
+                first = prev + 1
+                if text[first].isdigit() or (text[first] == "." and first + 1 < n
+                                             and text[first + 1].isdigit()):
                     out.append(ch)
                     i += 1
                     continue
@@ -98,26 +106,34 @@ def mask(text: str) -> str:
     return masked
 
 
-def literals(text: str) -> list[tuple[int, str]]:
-    """Every ordinary string literal of `text` as `(line number, contents)`, in source order —
-    the contents between the quotes, escapes left as written. Raw literals are included with
-    their body; character literals are not."""
+def literal_spans(text: str) -> list[tuple[int, int, str]]:
+    """Every ordinary string literal of `text` as `(offset of its opening quote, offset just past
+    its closing quote, contents)`, in source order — the contents between the quotes, escapes left
+    as written. Raw literals are included with their body; character literals are not."""
     masked = mask(text)
-    found: list[tuple[int, str]] = []
+    found: list[tuple[int, int, str]] = []
     i, n = 0, len(text)
     while i < n:
         if masked[i] == '"':
             j = masked.find('"', i + 1)
             if j < 0:
                 break
-            found.append((text.count("\n", 0, i) + 1, text[i + 1:j]))
+            found.append((i, j + 1, text[i + 1:j]))
             i = j + 1
             continue
         i += 1
     return found
 
 
-_DIRECTIVE_START = re.compile(r"^[ \t]*#", re.MULTILINE)
+def literals(text: str) -> list[tuple[int, str]]:
+    """Every ordinary string literal of `text` as `(line number, contents)`, in source order."""
+    return [(text.count("\n", 0, start) + 1, contents)
+            for start, _end, contents in literal_spans(text)]
+
+
+# Any preprocessing whitespace before the `#` — a form feed and a vertical tab included, which the
+# compiler accepts there (round 2 of this change's review: `\f#if 0` was read as code).
+_DIRECTIVE_START = re.compile(r"^[^\S\n]*#", re.MULTILINE)
 
 
 def strip_preprocessor(masked: str) -> str:
