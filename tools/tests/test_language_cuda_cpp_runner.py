@@ -390,7 +390,11 @@ class RenderedRunnerThroughTheModelGatesTest(unittest.TestCase):
             return out
 
     def test_the_rendered_runner_passes_a_physics_node_s_model_gates(self) -> None:
-        self.assertIn("std::_Exit", _render(_smoke_ir(), RANK_SID))
+        rendered = _render(_smoke_ir(), RANK_SID)
+        self.assertIn("std::_Exit", rendered)
+        # The device reset precedes `_Exit`: a kernel trace loses its records otherwise (#307).
+        finish = rendered[rendered.index("void finish(int code)"):]
+        self.assertLess(finish.index("cudaDeviceReset()"), finish.index("std::_Exit"))
         for kind in ("problem", "component"):
             with self.subTest(kind):
                 self.assertEqual([], self._gates(f"{kind}/{RANK_SID}@0.1.0"))

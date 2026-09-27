@@ -82,6 +82,12 @@ The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `M
 - **A report with no kernel data gives an EMPTY file and exit 0**: `nsys stats` prints
   `SKIPPED: kernel_trace.sqlite does not contain CUDA kernel data.` and the exit code says
   nothing. The reader answers `None` for it (and for a header with no row).
+- **A process that ends without the profiler's exit hook loses its kernel records.** A binary
+  that ran a kernel and then called `std::_Exit` gave the same empty summary; with
+  `cudaDeviceReset()` before `_Exit`, or `cudaProfilerStop()`, or a plain return from `main`,
+  it gave the kernel's row (measured at the gpu site on 2025.1.3, issue #307). The host-rendered
+  physics runner ends every exit with `_Exit` (`tools/backends/language/cuda_cpp/runner.py`), so
+  its `finish` resets the device first.
 
 `defined_kernels` reads a CUDA C++ source for the names of the kernels it defines or declares,
 over the language backend's code view (comments and literal contents masked):
