@@ -622,7 +622,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # target — `trial_meta.json#environment.ranks`, `quality_check.json#comparison.{reference,
     # candidate}.ranks` and, under a launcher, `environment.platform.parallel_runtime`. A bump:
     # a certified execute-7 record has none of them, and the post-execute gate reads them.
-    "execute-8": "25ed4ccf809a6aa46374100bd0c58301cacb61326009220090b8bf33aed56ef7",
+    "execute-8": "0e275855da82e3d464a98093b5b46c72a7f905a448dd5f5ea14d630cf2ea3c46",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

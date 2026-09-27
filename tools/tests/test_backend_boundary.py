@@ -2593,7 +2593,10 @@ class RegistryConsistencyTests(unittest.TestCase):
             "EXECUTABLES", "profile_argv_prefix", "summary_argv", "summary_file",
             "kernel_instances", "SummaryUnreadable", "defined_kernels"),
         # Issue #316: the launch seam's launcher half, the site gate and the launch probe.
-        ("parallel", "launcher"): ("EXECUTABLE", "EXECUTABLES", "RUNTIME_PROBE", "argv_prefix"),
+        ("parallel", "launcher"): ("EXECUTABLE", "EXECUTABLES", "RUNTIME_PROBE", "argv_prefix",
+                                   "LAUNCH_CANARY_RANKS", "LAUNCH_CANARY_SOURCE",
+                                   "LAUNCH_CANARY_FILENAME", "LAUNCH_CANARY_BUILD_ARGV",
+                                   "launch_canary_problem"),
         # Issue #316: the build control file, the syntax stage and its certification, the build
         # key and the launch probe.
         ("parallel", "compiler_wrapper"): (

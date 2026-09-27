@@ -153,11 +153,13 @@ compiles and links through it, and the missing-tool arm above asks for it by nam
 not enough, and two things are asked next, before anything is billed
 (`host_prerequisites.parallel_toolchain_problems`):
 
-- the wrapper and the backend's `launcher`, when both resolve on `PATH`, sit in one directory.
-  A launcher of another installation starts the binary's processes, each of which then runs
-  alone, and the run's evidence says so only after a billed `Build`;
 - the wrapper compiles the backend's binding canary syntax-only — the language binding the
-  backend's harness uses, with the target's compiler.
+  backend's harness uses, with the target's compiler;
+- when the backend's `launcher` resolves too, a program the wrapper builds, started under the
+  launcher with two processes, runs as ONE run of two. A launcher of another installation
+  starts processes that each run alone and exit 0, which the node's own run would show only
+  after a billed `Build`. Where the two programs sit is not asked: one directory can hold two
+  installations' programs.
 
 The event's `problems` lists each failure with the paths the host resolved and, for the canary,
 the compiler's own message. The remedy is to put the wrapper and the launcher of ONE

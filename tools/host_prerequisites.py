@@ -37,9 +37,9 @@ member. One LIMIT, stated rather than implied:
 A parallel backend that declares `compiler_wrapper` (issue #316) adds its wrapper: the build
 control file's compiler variable and the syntax stage's `argv[0]` are that program, so it is
 needed from the first `Generate.gate`. `parallel_toolchain_problems` then asks the two questions
-a resolved wrapper can still fail: whether it and the backend's launcher, when both resolve, are
-one installation (the same directory), and whether the wrapper compiles the backend's binding
-canary.
+a resolved wrapper can still fail: whether it compiles the backend's binding canary, and — when
+the backend's launcher resolves too — whether a program it builds, started under that launcher,
+runs as one run.
 
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
@@ -193,24 +193,39 @@ def _parallel_capability_module(backend_id: str, capability: str):
     return backend_registry.capability_module("parallel", backend_id, capability)
 
 
-#: Seconds the binding canary's compile may take.
+#: Seconds each canary command (a compile, a build, a launch) may take.
 BINDING_CANARY_TIMEOUT_SEC = 120
+
+
+def _canary_run(argv: list[str], cwd: str) -> subprocess.CompletedProcess | str:
+    """Run one canary command; its completed process, or why it could not run."""
+    try:
+        return subprocess.run(argv, text=True, capture_output=True, check=False,
+                              timeout=BINDING_CANARY_TIMEOUT_SEC, cwd=cwd,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
 
 
 def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
     """What is wrong with the parallel backend's compiler wrapper this host resolves, beyond its
     presence (`missing_host_executables` asks that first): empty for a backend that declares no
-    `compiler_wrapper`, and for a wrapper this host does not resolve.
+    `compiler_wrapper`, and for a wrapper this host does not resolve. Two canaries, both the
+    backend's, run in a scratch directory:
 
-    * When the backend also declares `launcher` and this host resolves both programs, they must
-      sit in one directory. A launcher of another installation starts the binary's processes
-      without the runtime the binary was linked against, and each then runs alone — every one
-      writing the run's evidence as the only process. That shows only after a billed Build, as
-      a performance record whose process count is not the profile's.
-    * The wrapper must compile the backend's `BINDING_CANARY_SOURCE` syntax-only
-      (`BINDING_CANARY_ARGV`), in a scratch directory: an installation whose wrapper cannot
-      compile the language binding this backend's harness uses fails every node's syntax stage,
-      the first of them after `Compile` and `Generate.generate` have been billed.
+    * The wrapper must compile `BINDING_CANARY_SOURCE` syntax-only (`BINDING_CANARY_ARGV`): an
+      installation whose wrapper cannot compile the language binding this backend's harness
+      uses fails every node's syntax stage, the first of them after `Compile` and
+      `Generate.generate` have been billed.
+    * When the backend also declares `launcher` and this host resolves it, a program built with
+      the wrapper (`LAUNCH_CANARY_SOURCE`, `LAUNCH_CANARY_BUILD_ARGV`) and started under the
+      launcher with `LAUNCH_CANARY_RANKS` must report ONE run of that many processes
+      (`launch_canary_problem`). A launcher of another installation starts processes that each
+      run alone and exit 0, and the node's own run would show it only after a billed Build.
+      This asks the pair what it DOES: where the two programs sit says nothing, since one
+      directory can hold two installations' programs (Debian's alternatives switch the
+      launcher and the wrapper separately, both in `/usr/bin`). Asked only when the binding
+      canary passed, since the launch canary is written in that binding.
     """
     parallel = selection.get("parallel")
     if not parallel:
@@ -222,39 +237,47 @@ def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
     wrapper_path = shutil.which(wrapper_exe)
     if wrapper_path is None:
         return []
-    problems: list[str] = []
     launcher = _parallel_capability_module(parallel, "launcher")
-    if launcher is not None:
-        launcher_exe = str(launcher.EXECUTABLE)
-        launcher_path = shutil.which(launcher_exe)
-        if launcher_path is not None and \
-                Path(launcher_path).parent != Path(wrapper_path).parent:
-            problems.append(
-                f"parallel/{parallel}: the launcher {launcher_exe} resolves to "
-                f"{launcher_path} and the compiler wrapper {wrapper_exe} to {wrapper_path}; "
-                f"both must come from one {parallel} installation, or the launcher starts "
-                f"processes that do not form one run")
+    launcher_path = shutil.which(str(launcher.EXECUTABLE)) if launcher is not None else None
     with tempfile.TemporaryDirectory(prefix="atmofab_parallel_canary_") as scratch:
         source = Path(scratch) / str(wrapper.BINDING_CANARY_FILENAME)
         source.write_text(str(wrapper.BINDING_CANARY_SOURCE), encoding="utf-8")
-        argv = [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source))
-                               for a in wrapper.BINDING_CANARY_ARGV)]
-        try:
-            completed = subprocess.run(argv, text=True, capture_output=True, check=False,
-                                       timeout=BINDING_CANARY_TIMEOUT_SEC, cwd=scratch,
-                                       stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            problems.append(f"parallel/{parallel}: the binding canary could not be compiled "
-                            f"with {wrapper_path} ({exc})")
-        else:
-            if completed.returncode != 0:
-                tail = (completed.stderr or completed.stdout or "").strip()[-400:]
-                problems.append(
-                    f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
+        completed = _canary_run(
+            [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source))
+                            for a in wrapper.BINDING_CANARY_ARGV)], scratch)
+        if isinstance(completed, str):
+            return [f"parallel/{parallel}: the binding canary could not be compiled with "
+                    f"{wrapper_path} ({completed})"]
+        if completed.returncode != 0:
+            tail = (completed.stderr or completed.stdout or "").strip()[-400:]
+            return [f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
                     f"this backend's harness uses (rc={completed.returncode}: {tail}); resolve "
                     f"the wrapper and the launcher to a {parallel} installation that provides "
-                    f"it for the target's compiler")
-    return problems
+                    f"it for the target's compiler"]
+        if launcher is None or launcher_path is None:
+            return []
+        source = Path(scratch) / str(launcher.LAUNCH_CANARY_FILENAME)
+        source.write_text(str(launcher.LAUNCH_CANARY_SOURCE), encoding="utf-8")
+        exe = Path(scratch) / "launch_canary"
+        built = _canary_run(
+            [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source), exe=str(exe))
+                            for a in launcher.LAUNCH_CANARY_BUILD_ARGV)], scratch)
+        if isinstance(built, str) or built.returncode != 0:
+            detail = built if isinstance(built, str) else (
+                f"rc={built.returncode}: "
+                f"{(built.stderr or built.stdout or '').strip()[-400:]}")
+            return [f"parallel/{parallel}: {wrapper_path} does not build the launch canary "
+                    f"({detail})"]
+        ranks = int(launcher.LAUNCH_CANARY_RANKS)
+        launched = _canary_run([*launcher.argv_prefix(ranks), str(exe)], scratch)
+        problem = (launched if isinstance(launched, str) else
+                   launcher.launch_canary_problem(launched.returncode, launched.stdout or ""))
+        if problem is not None:
+            return [f"parallel/{parallel}: a program built with {wrapper_path} and started "
+                    f"under {launcher_path} with {ranks} processes did not run as one run: "
+                    f"{problem}. The launcher and the compiler wrapper must come from one "
+                    f"{parallel} installation"]
+    return []
 
 
 def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:

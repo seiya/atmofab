@@ -44,23 +44,32 @@ make test                                                           # the qualit
 
 ## 3. Requirements on the host
 
-- `mpif90` and `mpirun` resolve on `PATH`, from ONE installation (the same directory). A
-  launcher of another installation starts the binary's processes without the runtime the binary
-  was linked against, and each process runs alone as rank 0 of 1 with exit code 0 (measured
-  2026-09-27 in both directions between Intel MPI 2021.10 and Open MPI 4.1.2, `-n 2`). The
-  startup probe refuses the pair
-  (`parallel_toolchain_unusable`; `host_prerequisites.parallel_toolchain_problems`).
+- `mpif90` and `mpirun` resolve on `PATH`, from ONE installation. A launcher of another
+  installation starts the binary's processes without the runtime the binary was linked
+  against, and each process runs alone as rank 0 of 1 with exit code 0 (measured 2026-09-27 in
+  both directions between Intel MPI 2021.10 and Open MPI 4.1.2, `-n 2`). Where the two
+  programs sit does not decide it — Debian's alternatives switch `mpirun` and the wrapper
+  separately, both in `/usr/bin` — so the startup probe asks what the pair DOES: it builds
+  `LAUNCH_CANARY_SOURCE` with `mpif90`, starts it with `mpirun -n 2`, and refuses the run
+  (`parallel_toolchain_unusable`) unless both processes report a run of 2
+  (`host_prerequisites.parallel_toolchain_problems`). Asked when `mpirun` resolves; a run that
+  stops before `Validate` on a host without it is asked the binding canary only.
 - The wrapper compiles a `use mpi_f08` source with the target's compiler. The harness uses the
   `mpi_f08` binding. An installation whose `mpi_f08` module is built for another compiler cannot
   build it: Intel MPI 2021.10 ships its `mpi_f08` module for the Intel compilers only, and its
   gfortran module directory holds `mpi.mod` without `mpi_f08.mod` (measured 2026-09-27). The
   startup probe compiles `BINDING_CANARY_SOURCE` syntax-only with the resolved wrapper and
   refuses the run when it fails (`parallel_toolchain_unusable`), before anything is billed. Open
-  MPI 4.1.2 built for gfortran passes it.
+  MPI 4.1.2 built for gfortran passes it. The binding canary is asked first; the launch canary
+  is written in the same binding.
 - `mpirun` is asked only of a run that executes the binary: the local site's launch probe
   (`missing_required_site_tools`, `host_execution.execution_executables`).
 - The CPUs this process may run on (its affinity mask) are at least `execution.ranks`
-  (`site_unfit_for_ranks`).
+  (`site_unfit_for_ranks`). The mask counts logical CPUs. A launcher may count its slots
+  differently (Open MPI's default is one slot per physical core), so on a host with more than
+  one hardware thread per core a count that passes this check can still be refused by the
+  launcher at `Validate.execute`. Not measured: the host this was written on has one thread per
+  core.
 
 ## 4. Sites
 
