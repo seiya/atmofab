@@ -1895,9 +1895,9 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
     that started the binary as independent one-process runs — a launcher of another
     installation, a prefix dropped on the way — only when the runner writes the process count
     the harness observes at run time; a runner that wrote the profile's count would make it
-    compare the profile with itself. The Fortran runner writes a literal 1 today, which this
-    refuses for every launcher target with more than one rank; the runner a launcher target
-    runs is the distributed variant of issue #316 PR-4, which writes the harness's count.
+    compare the profile with itself. The host-rendered CPU runner writes a literal 1 today,
+    which this refuses for every launcher target with more than one rank; the runner a launcher
+    target runs is the distributed variant of issue #316 PR-4, which writes the harness's count.
     The shape checks of both files are `_validate_execution_json_outputs` and
     `_validate_raw_evidence`; this reads only the members it compares, and a member that is
     missing or of the wrong type is a violation here too, since the comparison cannot hold. A
