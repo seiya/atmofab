@@ -34,6 +34,13 @@ member. One LIMIT, stated rather than implied:
   `MANDATORY_SYNTAX_COMPILER` whatever the profile says, and a skipped mandatory stage is a
   `Generate.gate` fail_closed rather than a silent pass.
 
+A parallel backend that declares `compiler_wrapper` (issue #316) adds its wrapper: the build
+control file's compiler variable and the syntax stage's `argv[0]` are that program, so it is
+needed from the first `Generate.gate`. `parallel_toolchain_problems` then asks the two questions
+a resolved wrapper can still fail: whether it and the backend's launcher, when both resolve, are
+one installation (the same directory), and whether the wrapper compiles the backend's binding
+canary.
+
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
 
@@ -166,7 +173,88 @@ def required_host_executables(
     _require_implemented("compiler", compiler)
     add("compiler", compiler, server.syntax_compiler_executable(compiler))
 
+    # The program that stands in for the compiler at build and at the syntax stage (issue #316).
+    parallel = selection.get("parallel")
+    wrapper = _parallel_capability_module(parallel, "compiler_wrapper") if parallel else None
+    if wrapper is not None:
+        add("parallel", parallel, str(wrapper.COMPILER_WRAPPER))
+
     return tuple(found)
+
+
+def _parallel_capability_module(backend_id: str, capability: str):
+    """The package module of `backend_id`'s `capability`, None when its record does not declare
+    it in a package."""
+    from tools.backends import registry as backend_registry
+
+    _require_implemented("parallel", backend_id)
+    if capability not in backend_registry.get("parallel", backend_id).backend_provides:
+        return None
+    return backend_registry.capability_module("parallel", backend_id, capability)
+
+
+#: Seconds the binding canary's compile may take.
+BINDING_CANARY_TIMEOUT_SEC = 120
+
+
+def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
+    """What is wrong with the parallel backend's compiler wrapper this host resolves, beyond its
+    presence (`missing_host_executables` asks that first): empty for a backend that declares no
+    `compiler_wrapper`, and for a wrapper this host does not resolve.
+
+    * When the backend also declares `launcher` and this host resolves both programs, they must
+      sit in one directory. A launcher of another installation starts the binary's processes
+      without the runtime the binary was linked against, and each then runs alone — every one
+      writing the run's evidence as the only process. That shows only after a billed Build, as
+      a performance record whose process count is not the profile's.
+    * The wrapper must compile the backend's `BINDING_CANARY_SOURCE` syntax-only
+      (`BINDING_CANARY_ARGV`), in a scratch directory: an installation whose wrapper cannot
+      compile the language binding this backend's harness uses fails every node's syntax stage,
+      the first of them after `Compile` and `Generate.generate` have been billed.
+    """
+    parallel = selection.get("parallel")
+    if not parallel:
+        return []
+    wrapper = _parallel_capability_module(parallel, "compiler_wrapper")
+    if wrapper is None:
+        return []
+    wrapper_exe = str(wrapper.COMPILER_WRAPPER)
+    wrapper_path = shutil.which(wrapper_exe)
+    if wrapper_path is None:
+        return []
+    problems: list[str] = []
+    launcher = _parallel_capability_module(parallel, "launcher")
+    if launcher is not None:
+        launcher_exe = str(launcher.EXECUTABLE)
+        launcher_path = shutil.which(launcher_exe)
+        if launcher_path is not None and \
+                Path(launcher_path).parent != Path(wrapper_path).parent:
+            problems.append(
+                f"parallel/{parallel}: the launcher {launcher_exe} resolves to "
+                f"{launcher_path} and the compiler wrapper {wrapper_exe} to {wrapper_path}; "
+                f"both must come from one {parallel} installation, or the launcher starts "
+                f"processes that do not form one run")
+    with tempfile.TemporaryDirectory(prefix="atmofab_parallel_canary_") as scratch:
+        source = Path(scratch) / str(wrapper.BINDING_CANARY_FILENAME)
+        source.write_text(str(wrapper.BINDING_CANARY_SOURCE), encoding="utf-8")
+        argv = [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source))
+                               for a in wrapper.BINDING_CANARY_ARGV)]
+        try:
+            completed = subprocess.run(argv, text=True, capture_output=True, check=False,
+                                       timeout=BINDING_CANARY_TIMEOUT_SEC, cwd=scratch,
+                                       stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            problems.append(f"parallel/{parallel}: the binding canary could not be compiled "
+                            f"with {wrapper_path} ({exc})")
+        else:
+            if completed.returncode != 0:
+                tail = (completed.stderr or completed.stdout or "").strip()[-400:]
+                problems.append(
+                    f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
+                    f"this backend's harness uses (rc={completed.returncode}: {tail}); resolve "
+                    f"the wrapper and the launcher to a {parallel} installation that provides "
+                    f"it for the target's compiler")
+    return problems
 
 
 def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:

@@ -3485,6 +3485,23 @@ def default_compiler(language: str) -> str:
         "language", language, "bundle_facts").DEFAULT_COMPILER)
 
 
+def compiler_wrapper(parallel_backend: str) -> str | None:
+    """The program the parallel backend puts in the compiler's place at build and at the syntax
+    stage (`compiler_wrapper`, issue #316), None for a backend that declares none."""
+    if not backend_registry.provides("parallel", parallel_backend, "compiler_wrapper"):
+        return None
+    return str(backend_registry.capability_module(
+        "parallel", parallel_backend, "compiler_wrapper").COMPILER_WRAPPER)
+
+
+def build_compiler(tc: dict[str, str]) -> str:
+    """The program the build control file pins its compiler variable to, for `_read_toolchain`'s
+    `tc`: the parallel backend's compiler wrapper when it declares one (a profile that also pins
+    `toolchain.compiler` is refused by the launch gate), else the profile's pin, else the
+    language's `default_compiler`."""
+    return compiler_wrapper(tc["backend"]) or tc["compiler"] or default_compiler(tc["language"])
+
+
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     """The `(makefile_host_authored, runner_host_authored)` stamp the two Z1/Z2 pure paths use.
 
@@ -5922,7 +5939,8 @@ class Conductor:
             return
         # The optional toolchain.compiler pins the compiler (another compiler's build only needs
         # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
-        compiler = tc["compiler"] or default_compiler(tc["language"])
+        # A parallel backend's compiler wrapper replaces both (issue #316).
+        compiler = build_compiler(tc)
         # R1/M3c-β: a harness-backed physics node also compiles a leaf-authored checks module
         # (which `use`s the model kernel) between the model and the host-rendered runner.
         authors_runner = self._conductor_authors_runner(refs)
@@ -6285,7 +6303,7 @@ class Conductor:
         tc = self._read_toolchain(refs)
         return self._control_file_module(tc["build_system"]).render_from_graph(
             rules=self._control_file_rules(tc, self._target_architecture()),
-            compiler=tc["compiler"] or default_compiler(tc["language"]),
+            compiler=build_compiler(tc),
             bin_name=self._resolve_exe_name(refs),
             cases_default=" ".join(self.read_case_ids(refs)),
             graph=graph,
@@ -6322,7 +6340,8 @@ class Conductor:
                 backend_registry.BackendNotExtracted) as exc:
             raise RuntimeError(f"control_file_rules_unavailable: {exc}") from exc
         return module.rules(standard=tc["standard"], parallel_backend=tc["backend"],
-                            architecture=architecture)
+                            architecture=architecture,
+                            compiler_wrapper=compiler_wrapper(tc["backend"]))
 
     def _write_pure_bundle_artifacts(self, refs: NodeRefs, doc: dict[str, Any],
                                      graph: dict[str, Any]) -> list[str]:
@@ -10302,6 +10321,7 @@ class Conductor:
                         "std": tc["standard"],
                         "openmp": tc["backend"] == "openmp",
                         "architecture": architecture,
+                        "parallel_backend": tc["backend"],
                         "project_dir": str(stage_dir),
                         "repo_root": str(self.repo_root),
                         "command_log_path": str(src_dir / "command_log.jsonl"),
@@ -10382,6 +10402,7 @@ class Conductor:
                             "std": tc["standard"],
                             "openmp": tc["backend"] == "openmp",
                             "architecture": architecture,
+                            "parallel_backend": tc["backend"],
                             "project_dir": str(sub_dir),
                             "repo_root": str(self.repo_root),
                             "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -10889,9 +10910,14 @@ class Conductor:
     def _author_quality_check(node_dir: Path, run_diag: dict[str, Any],
                               qc_diag: dict[str, Any], run_cmd_id: str | None,
                               qc_cmd_id: str | None, preset: str,
-                              threads: int) -> str:
+                              threads: int, ranks: int = 1) -> str:
         """quality_check.json = deterministic value-equality of run_program vs the
-        make-test re-run (per phase_04 §4-1). Returns the top-level status."""
+        make-test re-run (per phase_04 §4-1). Returns the top-level status.
+
+        `ranks` is the process count the run was launched with (the target's
+        `execution.ranks`, issue #316); the `make test` re-run starts the binary without a
+        launcher, so it is one process — the serial reference the parallel run is compared
+        against (phase_04 §4-2)."""
         def _check_map(d: dict[str, Any]) -> dict[str, Any]:
             return {k: (v.get("status") if isinstance(v, dict) else v)
                     for k, v in (d.get("checks") or {}).items()}
@@ -10918,14 +10944,17 @@ class Conductor:
             },
             "comparison": {
                 "reference": {"source": "run_program", "command_id": run_cmd_id,
-                              "threads_per_rank": threads, "verdict": run_verdict},
+                              "threads_per_rank": threads, "ranks": ranks,
+                              "verdict": run_verdict},
                 "candidate": {"source": f"run_quality_checks/{preset}", "command_id": qc_cmd_id,
-                              "threads_per_rank": "make_default", "verdict": qc_verdict},
+                              "threads_per_rank": "make_default", "ranks": 1,
+                              "verdict": qc_verdict},
                 "diagnostics_checks_match": checks_match,
                 "per_case_verdict_match": per_case,
             },
-            "notes": (f"conductor in-process: run_program (threads_per_rank={threads}) and "
-                      f"{preset} re-run diagnostics checks and verdicts compared."),
+            "notes": (f"conductor in-process: run_program (threads_per_rank={threads}, "
+                      f"ranks={ranks}) and {preset} re-run (one process) diagnostics checks "
+                      f"and verdicts compared."),
         }
         (node_dir / "quality_check.json").write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -11083,7 +11112,8 @@ class Conductor:
                 "repo_root": str(self.repo_root),
                 **attribution,
             }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
-            platform_record = local_platform_record(launch.platform_probe)
+            platform_record = local_platform_record(launch.platform_probe,
+                                                    runtime_probe=launch.runtime_probe)
             site_record: dict[str, Any] = {
                 "site": launch.site, "host": None, "scheduler": DIRECT_SCHEDULER,
                 "job_id": None, "remote_dir": None, "queue_wait_ms": 0}
@@ -11202,7 +11232,7 @@ class Conductor:
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
         qc_status = self._author_quality_check(
             node_dir, run_diag, qc_diag, res_run.get("command_id"),
-            res_qc.get("command_id"), "make_test", threads)
+            res_qc.get("command_id"), "make_test", threads, target.ranks)
 
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
@@ -11244,6 +11274,9 @@ class Conductor:
                 # the fallback whatever the node declared.
                 "backend": target.parallel_backend,
                 "threads_per_rank": threads,
+                # The processes the run started (issue #316): the target's `execution.ranks`,
+                # under the parallel backend's launcher when it declares one.
+                "ranks": target.ranks,
                 # What the binary was launched with (issue #289): the argv prefix and the
                 # environment `tools/host_execution.py` composed — the record `openmp_env`
                 # was, for every parallel model rather than one, and read off the shape that

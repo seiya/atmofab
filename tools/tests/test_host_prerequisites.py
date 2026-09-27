@@ -12,6 +12,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -612,6 +613,104 @@ class NeutralCoreTests(unittest.TestCase):
             name: rx.findall(source) for name, rx in _COMPILED.items() if rx.search(source)
         }
         self.assertEqual(hits, {})
+
+
+class ParallelToolchainTests(unittest.TestCase):
+    """Issue #316: a parallel backend that declares `compiler_wrapper` adds its wrapper to what
+    the host must have, and `parallel_toolchain_problems` asks what a resolved wrapper can still
+    get wrong. Driven with real programs on a scratch PATH — the probe resolves and RUNS them, so
+    a mocked `which` would say nothing about what production does on a host without them."""
+
+    _MPI: ClassVar[dict[str, str]] = {**_SELECTION, "parallel": "mpi"}
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.wrapper = backend_registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        self.launcher = backend_registry.capability_module("parallel", "mpi", "launcher")
+
+    def _program(self, directory: str, name: str, body: str) -> Path:
+        path = self.root / directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def _path(self, *directories: str):
+        # Only the scratch directories: this host's own PATH may carry a real launcher or
+        # wrapper (the development machine does), which would answer for the fake one.
+        return mock.patch.dict("os.environ", {"PATH": ":".join(
+            str(self.root / d) for d in directories)})
+
+    def test_the_wrapper_is_a_host_requirement_of_a_wrapper_backend_only(self) -> None:
+        required = hp.required_host_executables(self._MPI)
+        self.assertIn(hp.HostExecutable("parallel", "mpi", self.wrapper.COMPILER_WRAPPER),
+                      required)
+        self.assertEqual([i for i in hp.required_host_executables(_SELECTION)
+                          if i.axis == "parallel"], [])
+
+    def test_a_backend_without_a_wrapper_has_no_problems_and_runs_nothing(self) -> None:
+        import subprocess
+
+        with mock.patch.object(subprocess, "run") as run:
+            self.assertEqual(hp.parallel_toolchain_problems(_SELECTION), [])
+        run.assert_not_called()
+
+    def test_an_unresolved_wrapper_is_left_to_the_missing_tools_refusal(self) -> None:
+        with self._path("empty"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI), [])
+
+    def test_one_installation_that_compiles_the_canary_passes(self) -> None:
+        """The wrapper is handed the backend's canary argv, over the canary written into a
+        scratch directory — recorded by the program itself."""
+        log = self.root / "argv.log"
+        copy = self.root / "canary.copy"
+        self._program("inst", self.wrapper.COMPILER_WRAPPER,
+                      f'printf "%s\\n" "$@" > {log}; /bin/cp "$4" {copy}; exit 0')
+        self._program("inst", self.launcher.EXECUTABLE, "exit 0")
+        with self._path("inst"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI), [])
+        argv = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(argv), len(self.wrapper.BINDING_CANARY_ARGV))
+        self.assertEqual(argv[:2], ["-fsyntax-only", "-J"])
+        self.assertEqual(Path(argv[3]).name, self.wrapper.BINDING_CANARY_FILENAME)
+        self.assertEqual(Path(argv[3]).parent, Path(argv[2]))
+        self.assertEqual(copy.read_text(encoding="utf-8"), self.wrapper.BINDING_CANARY_SOURCE)
+
+    def test_a_wrapper_that_does_not_compile_the_canary_is_refused_with_its_output(self) -> None:
+        self._program("inst", self.wrapper.COMPILER_WRAPPER,
+                      'echo "Fatal Error: Reading module mpi_f08.mod: Unexpected EOF" >&2; exit 1')
+        self._program("inst", self.launcher.EXECUTABLE, "exit 0")
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("does not compile the language binding", problems[0])
+        self.assertIn("rc=1", problems[0])
+        self.assertIn("Unexpected EOF", problems[0])
+
+    def test_a_launcher_of_another_installation_is_refused(self) -> None:
+        self._program("one", self.wrapper.COMPILER_WRAPPER, "exit 0")
+        self._program("two", self.launcher.EXECUTABLE, "exit 0")
+        with self._path("one", "two"):
+            problems = hp.parallel_toolchain_problems(self._MPI)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(f"the launcher {self.launcher.EXECUTABLE} resolves to "
+                      f"{self.root / 'two' / self.launcher.EXECUTABLE}", problems[0])
+        self.assertIn("one mpi installation", problems[0])
+        # Both problems are reported together when both hold.
+        self._program("one", self.wrapper.COMPILER_WRAPPER, "exit 2")
+        with self._path("one", "two"):
+            self.assertEqual(len(hp.parallel_toolchain_problems(self._MPI)), 2)
+
+    def test_an_absent_launcher_leaves_the_canary_to_decide(self) -> None:
+        """A Build-only run needs no launcher on this host; the local site's launch probe asks
+        for it when the run executes (`run_workflow._sites_rejection`)."""
+        self._program("inst", self.wrapper.COMPILER_WRAPPER, "exit 0")
+        with self._path("inst"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI), [])
 
 
 if __name__ == "__main__":

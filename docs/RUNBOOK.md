@@ -146,6 +146,24 @@ runner (issue #110). The refusal names the installed version and the supported r
 is to install a version inside the range, or to re-measure and widen it per that document's
 Operations Rules.
 
+### Refused at startup — `parallel_toolchain_unusable`
+
+A target whose parallel backend declares a `compiler wrapper` (issue #316; `docs/GLOSSARY.md`)
+compiles and links through it, and the missing-tool arm above asks for it by name. Present is
+not enough, and two things are asked next, before anything is billed
+(`host_prerequisites.parallel_toolchain_problems`):
+
+- the wrapper and the backend's `launcher`, when both resolve on `PATH`, sit in one directory.
+  A launcher of another installation starts the binary's processes, each of which then runs
+  alone, and the run's evidence says so only after a billed `Build`;
+- the wrapper compiles the backend's binding canary syntax-only — the language binding the
+  backend's harness uses, with the target's compiler.
+
+The event's `problems` lists each failure with the paths the host resolved and, for the canary,
+the compiler's own message. The remedy is to put the wrapper and the launcher of ONE
+installation that provides the binding first on `PATH`. The backend's document names the
+installations measured: `docs/backends/parallel/mpi/LAUNCHER.md` §3 for `mpi`.
+
 ### Refused at startup — the execution site
 
 Read from `./sites.yaml` once the checks above pass (issue #293; the file's shape and every
@@ -161,10 +179,11 @@ the run stops at; a run with no member left to run that stops earlier contacts n
 | reason | what it means |
 |---|---|
 | `sites_config_invalid` | the file does not load; the event's `rule` names why |
-| `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes` |
+| `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes`, or the target's parallel backend runs its binary under a `launcher` and the site is not `local` (issue #316: the binary links against this host's runtime of the model; `docs/backends/parallel/mpi/LAUNCHER.md` §4) |
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
 | `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, what the target's parallel backend runs the binary under (the device trace's program, in the `cpp_gpu` tool table above) at a site whose `scheduler` is `none` only, and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only. At a site with a batch scheduler the binary runs on another node, so what it runs under is not asked of the login (issue #307 PR-4: the `cpp_gpu` site's login node has no trace program, its compute nodes do); the job script asks for it where the binary runs, and a missing one fails the job (`job script: <program> is missing or not executable`, a transport `fail_closed`, retried by `--resume`). At the local site (`"site": "local"`) it is the parallel backend's programs alone, looked up on this host's `PATH` (`host_prerequisites.execution_executables`) |
+| `site_unfit_for_ranks` | the local site only: the target's `execution.ranks` is more than the CPUs this process may run on (its affinity mask, not the machine's CPU count). The event carries both numbers. Lower the profile's `execution.ranks`, or run where the process may use more CPUs (issue #316) |
 | `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here. Asked before the two rows below, whose remedies would be work on the wrong site |
 | `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), or its login prints to stdout (scp fails on that) |
 

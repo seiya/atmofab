@@ -1885,6 +1885,51 @@ def _validate_execution_json_outputs(execution: NodeExecution, violations: list[
             violations.append(f"{perf_path}:parallelism.{key} must be >= 0")
 
 
+def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
+                             violations: list[str]) -> None:
+    """For a pipeline whose target's parallel backend declares `launcher` (issue #316): the run's
+    performance record states the process count the target runs (`execution.ranks`), and the
+    quality check records the run as that many ranks and its `make test` re-run as one.
+
+    The runner reports `parallelism.mpi_ranks` from the harness's own process count, so a launch
+    that started the binary as that many independent one-process runs — a launcher of another
+    installation, a prefix dropped on the way — shows here as a count that is not the profile's.
+    The shape checks of both files are `_validate_execution_json_outputs` and
+    `_validate_raw_evidence`; this reads only the members it compares, and a member that is
+    missing or of the wrong type is a violation here too, since the comparison cannot hold. A
+    target without a launcher is not asked: its runs are one process by construction."""
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    if target is None or not host_execution.declares_launcher(target.parallel_backend):
+        return
+    ranks = target.ranks
+    perf_path = execution.node_dir / "perf.json"
+    try:
+        perf = _read_json(perf_path)
+    except (OSError, json.JSONDecodeError):
+        perf = None
+    parallelism = perf.get("parallelism") if isinstance(perf, dict) else None
+    reported = parallelism.get("mpi_ranks") if isinstance(parallelism, dict) else None
+    if reported != ranks or isinstance(reported, bool):
+        violations.append(
+            f"{perf_path}: parallelism.mpi_ranks is {reported!r} and target {target.target_id} "
+            f"runs {ranks} rank(s) under {target.parallel_backend}'s launcher; the runner's "
+            f"performance record or the launch is wrong")
+    quality_path = execution.node_dir / "quality_check.json"
+    try:
+        quality = _read_json(quality_path)
+    except (OSError, json.JSONDecodeError):
+        quality = None
+    comparison = quality.get("comparison") if isinstance(quality, dict) else None
+    for side, expected in (("reference", ranks), ("candidate", 1)):
+        entry = comparison.get(side) if isinstance(comparison, dict) else None
+        got = entry.get("ranks") if isinstance(entry, dict) else None
+        if got != expected or isinstance(got, bool):
+            violations.append(
+                f"{quality_path}: comparison.{side}.ranks is {got!r}, expected {expected} "
+                f"(the run is under the launcher with the target's ranks; the make test re-run "
+                f"is one process)")
+
+
 def _execution_raw_source_source_id(execution: NodeExecution) -> str | None:
     """The ``source_source_id`` string declared by this execution's ``trial_meta.json``,
     stripped; ``None`` when the file/key is absent, unreadable, or blank."""
@@ -3887,10 +3932,26 @@ def _validate_generate_syntax_command_logs(
     mandatory = str(backend_registry.capability_module(
         "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
 
+    # The pipeline's target decides whether a stage ran through the parallel backend's compiler
+    # wrapper (issue #316; `build_runtime_server.syntax_compiler_wrapper` makes the same
+    # decision when it runs the stage). A pipeline whose target does not resolve is refused by
+    # `_validate_pipeline_targets_resolve`; here it admits no wrapper, so a wrapped record is
+    # refused as a mismatch rather than accepted on its word.
+    _target = _pipeline_target(repo_root, pipeline_root)
+    _parallel_backend = _target.parallel_backend if _target is not None else None
+
     def _stage_executable(compiler: str) -> str:
-        # What a registered adapter launches; an unregistered id (a forged or a future stage)
-        # is held to its own spelling, as every stage was before the adapters moved.
+        # What a registered adapter launches — through the target's compiler wrapper when its
+        # parallel backend declares one for this compiler; an unregistered id (a forged or a
+        # future stage) is held to its own spelling, as every stage was before the adapters
+        # moved.
         if compiler and backend_registry.provides("compiler", compiler, "syntax_check"):
+            if _parallel_backend and backend_registry.provides(
+                    "parallel", _parallel_backend, "compiler_wrapper"):
+                wrapper = backend_registry.capability_module(
+                    "parallel", _parallel_backend, "compiler_wrapper")
+                if str(wrapper.WRAPPED_COMPILER) == compiler:
+                    return str(wrapper.COMPILER_WRAPPER).lower()
             return str(backend_registry.capability_module(
                 "compiler", compiler, "syntax_check").EXECUTABLE).lower()
         return compiler
@@ -6075,7 +6136,8 @@ def _validate_run_program_inputs(
     # prefix is every record written before issue #307 and every untraced target's.
     if _argv_prefix:
         _target = _pipeline_target(repo_root, execution.pipeline_dir)
-        _expected = (list(host_execution.launch_argv_prefix(_target.parallel_backend))
+        _expected = (list(host_execution.launch_argv_prefix(_target.parallel_backend,
+                                                            _target.ranks))
                      if _target is not None else None)
         if _argv_prefix != _expected:
             violations.append(
@@ -10641,6 +10703,7 @@ def _validate_impl(
         _validate_io_contract_schema(repo_root, execution, violations)
         _validate_trial_meta(repo_root, execution, violations)
         _validate_execution_json_outputs(execution, violations)
+        _validate_launched_ranks(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
         _validate_metrics_basis_not_trivial(execution, violations)
         in_scope_src_dir = _execution_in_scope_src_dir(execution, violations)

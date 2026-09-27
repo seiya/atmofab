@@ -196,7 +196,9 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     other is wasted on the wrong site), `missing_required_site_tools` and `site_unusable`
     (`remote_execution.SiteProbe.problems`); for the local site, when it executes the run,
     `missing_required_site_tools` for a program the binary runs under that this host lacks
-    (`host_prerequisites.execution_executables`, issue #307). `sites_config`, when
+    (`host_prerequisites.execution_executables`, issue #307; a launcher, issue #316), and
+    `site_unfit_for_ranks` when the profile's `execution.ranks` exceeds the CPUs this process
+    may run on. `sites_config`, when
     given, is the configuration `main` already loaded: a closure member is gated against it, with
     the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
     import platform as _platform
@@ -243,6 +245,18 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                                f"{', '.join(missing_local)} on PATH, which target "
                                f"{target_profile.target_id}'s binary runs under at "
                                f"Validate.execute (see docs/RUNBOOK.md#0-1)"),
+                    "docs_ref": "docs/RUNBOOK.md#0-1"}
+        # One rank per CPU this process may be scheduled on (issue #316): more ranks than that
+        # oversubscribe the host, which a launcher refuses or runs at a fraction of the speed
+        # the performance record would then attribute to the kernel.
+        available = len(os.sched_getaffinity(0))
+        if target_profile.ranks > available:
+            return {"status": "fail", "reason": "site_unfit_for_ranks", "site": site.site_id,
+                    "ranks": target_profile.ranks, "available_cpus": available,
+                    "detail": (f"target {target_profile.target_id} runs "
+                               f"{target_profile.ranks} ranks, and site {site.site_id} (this "
+                               f"host) lets this process run on {available} CPU(s) (see "
+                               f"docs/RUNBOOK.md#0-1)"),
                     "docs_ref": "docs/RUNBOOK.md#0-1"}
         return sites_config
     missing_transport = [exe for exe in TRANSPORT_EXECUTABLES if shutil.which(exe) is None]
@@ -2983,6 +2997,24 @@ def _run_main(
                     }
                     for item in unsupported_versions
                 ],
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
+
+    # The parallel backend's compiler wrapper resolves; whether it is the one this backend's
+    # nodes can be built with is asked next (issue #316), still before anything is billed.
+    from tools.host_prerequisites import parallel_toolchain_problems
+
+    toolchain_problems = parallel_toolchain_problems(_host_probe_selection(target_profile))
+    if toolchain_problems:
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "parallel_toolchain_unusable",
+                "detail": "; ".join(toolchain_problems) + " (see docs/RUNBOOK.md#0-1)",
+                "problems": toolchain_problems,
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,

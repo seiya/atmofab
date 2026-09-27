@@ -25,6 +25,10 @@
         "type": "string",
         "description": "The target profile's hardware.architecture. An adapter whose compiler takes a device architecture passes it; one that has none accepts it and does not read it."
       },
+      "parallel_backend": {
+        "type": "string",
+        "description": "The target profile's parallel.backend. When its record declares compiler_wrapper for this compiler, the stage runs through the wrapper."
+      },
       "sources": {
         "type": "array",
         "items": {

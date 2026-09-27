@@ -4257,6 +4257,43 @@ class RunWorkflowTests(unittest.TestCase):
         running the suite could not run a workflow."""
         self.assertEqual(run_workflow._check_required_host_tools(_TP_RW), [])
 
+    def test_main_fails_fast_when_the_parallel_toolchain_is_unusable(self) -> None:
+        """Issue #316: a compiler wrapper that resolves but cannot build the backend's nodes (or
+        a launcher of another installation) is refused at startup, before any orchestration
+        state is touched — asked with the run's own probe selection, whose `parallel` member is
+        the target's backend."""
+        from tools import host_prerequisites
+
+        seen: list[dict[str, str]] = []
+
+        def problems(selection):
+            seen.append(dict(selection))
+            return ["parallel/zz: the wrapper does not compile the binding"]
+
+        original_problems = host_prerequisites.parallel_toolchain_problems
+        original_runtime = run_workflow._runtime_command
+        host_prerequisites.parallel_toolchain_problems = problems  # type: ignore[assignment]
+        run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+            AssertionError("orchestration_runtime must not be invoked"))
+        try:
+            buf = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
+                code = run_workflow.main([
+                    *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
+                    "--target", _TARGET_ID])
+        finally:
+            host_prerequisites.parallel_toolchain_problems = original_problems  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("reason"), "parallel_toolchain_unusable")
+        self.assertEqual(payload.get("problems"),
+                         ["parallel/zz: the wrapper does not compile the binding"])
+        self.assertIn("the wrapper does not compile the binding", payload.get("detail", ""))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["parallel"], _TP_RW.parallel_backend)
+
     def test_main_fails_fast_when_a_required_host_tool_is_of_an_unmeasured_version(self) -> None:
         """The VERSION half of the same family (issue #111).
 
@@ -7993,7 +8030,8 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # `target_changed_on_resume` — one site, the reason carried by the exception).
         # 16 -> 17: issue #293's execution-site refusal — one site, the event built by
         # `_sites_rejection`, whose docstring lists the reasons it carries.
-        self.assertEqual(len(helper_calls), 17)
+        # 17 -> 18: issue #316's parallel-toolchain refusal (`parallel_toolchain_unusable`).
+        self.assertEqual(len(helper_calls), 18)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -10185,6 +10223,31 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["missing"], ["srun"])
         self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
         self.assertEqual(calls, [])
+
+    def test_the_local_site_refuses_more_ranks_than_this_process_may_run_on(self) -> None:
+        """Issue #316: one rank per CPU this process may be scheduled on. The count is read from
+        the affinity mask (the machine may have more CPUs than the process is allowed). A
+        backend with no launcher program keeps this row off this host's PATH; the rank count is
+        what is under test, and the launch gate's own refusal of such a profile is
+        `test_target_profile.py`'s."""
+        from tools.execution_sites import SitesConfig
+        from tools.tests.target_fixtures import profile_with
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        three = profile_with(fixture, parallel={"backend": "none"},
+                             execution={"threads_per_rank": 1, "ranks": 3})
+        with mock.patch.object(run_workflow.os, "sched_getaffinity", return_value={0, 1}):
+            refused = run_workflow._sites_rejection(self.repo_root, three, "validate")
+            self.assertIsInstance(run_workflow._sites_rejection(
+                self.repo_root, profile_with(three, execution={"threads_per_rank": 1,
+                                                               "ranks": 2}),
+                "validate"), SitesConfig)
+            # A run that stops before Validate starts no rank.
+            self.assertIsInstance(run_workflow._sites_rejection(
+                self.repo_root, three, "build"), SitesConfig)
+        self.assertEqual(refused["reason"], "site_unfit_for_ranks")
+        self.assertEqual((refused["ranks"], refused["available_cpus"]), (3, 2))
+        self.assertIn("runs 3 ranks", refused["detail"])
 
     def test_a_scheduler_site_is_not_asked_for_what_the_binary_runs_under(self) -> None:
         """Issue #307 PR-4: a batch scheduler runs the binary on another node, and the program a

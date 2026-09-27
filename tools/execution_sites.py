@@ -43,7 +43,7 @@ import yaml
 
 from tools.backends import registry
 from tools.derivation import canonical_json_bytes, sha256_hex
-from tools.host_execution import LOCAL_SITE
+from tools.host_execution import LOCAL_SITE, declares_launcher
 from tools.target_profile import NON_EXECUTING_PHASES, TOKEN_PATTERN, list_target_ids
 
 SITES_VERSION = 1
@@ -392,14 +392,23 @@ def site_violations(config: SitesConfig, profile: Any, *,
                     until_phase: str | None = None) -> list[str]:
     """The machine half of the "can this run execute" gate: for a run that reaches `Validate`
     (every `until_phase` not in `NON_EXECUTING_PHASES`, None included), the site `profile`'s
-    target maps to must list the profile's hardware class in its `executes`. Empty otherwise."""
+    target maps to must list the profile's hardware class in its `executes`, and must be
+    `local` when the profile's parallel backend runs its binary under a launcher (issue #316:
+    the binary is built here and linked against this host's runtime of the model, which the
+    site need not have, and a batch site runs the whole job as one task). Empty otherwise."""
     if str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
         return []
     site = config.site_for(profile.target_id)
     hardware_class = profile.hardware_class
+    target_id = profile.target_id
+    backend = profile.parallel_backend
+    if not site.is_local and declares_launcher(backend):
+        return [(f"parallel.backend: {backend} runs its binary under a launcher, and a binary "
+                 f"built here is bound to this host's {backend} runtime; target {target_id} "
+                 f"maps to site {site.site_id}, and a launcher target runs at {LOCAL_SITE} only "
+                 f"(docs/backends/parallel/{backend}/LAUNCHER.md §Sites)")]
     if hardware_class in site.executes:
         return []
-    target_id = profile.target_id
     if config.path is None:
         where = f"there is no {DEFAULT_SITES_PATH}, so target {target_id} runs at {LOCAL_SITE}"
     elif target_id in config.targets:

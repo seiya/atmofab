@@ -156,7 +156,32 @@ def render_tuple() -> dict[str, str]:
         "Conductor._write_dependency_headers":
             _source_digest(wc.Conductor._write_dependency_headers),
         "Conductor._copy_bound_file": _source_digest(wc.Conductor._copy_bound_file),
+        # The compiler the control file pins (issue #316): the parallel backend's compiler
+        # wrapper when it declares one — the two conductor functions that choose it, the
+        # dispatch row, and every package that implements the capability.
+        "workflow_conductor.build_compiler": _source_digest(wc.build_compiler),
+        "workflow_conductor.compiler_wrapper": _source_digest(wc.compiler_wrapper),
+        "registry compiler_wrapper attr": registry_attr("compiler_wrapper"),
+        **compiler_wrapper_declarations(),
     }
+
+
+def compiler_wrapper_declarations() -> dict[str, str]:
+    """Each parallel record that declares `compiler_wrapper`: its package and the module
+    `registry.capability_module` returns, digested (a new record or a rewired re-export moves
+    it, as `launch_declarations` does for the launch capabilities)."""
+    from tools.backends import registry
+
+    members: dict[str, str] = {}
+    for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+        if axis != "parallel" or "compiler_wrapper" not in record.backend_provides:
+            continue
+        package = registry.load(axis, backend_id)
+        module = registry.capability_module(axis, backend_id, "compiler_wrapper")
+        for label, loaded in (("package", package), ("module", module)):
+            rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+            members[f"parallel/{backend_id} compiler_wrapper {label} {rel}"] = _file_digest(rel)
+    return members
 
 
 def _server():
@@ -205,8 +230,10 @@ def build_tuple() -> dict[str, str]:
 #: `tools/remote_execution._submission`: the prefix decides which machine runs the commands and
 #: with what allocation, as the hardware class's module decides the device probe. And the device
 #: trace a parallel model's binary runs under (issue #307), read the same way: its prefix and its
-#: summary command are what `Validate.execute` runs.
-_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit", "device_trace"})
+#: summary command are what `Validate.execute` runs. And the launcher a parallel model's ranks are
+#: started by (issue #316), read the same way: its prefix is what the binary runs under.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit", "device_trace",
+                                  "launcher"})
 _LAUNCH_AXES = ("parallel", "hardware", "scheduler")
 
 
@@ -457,7 +484,15 @@ PINNED_RENDER: dict[str, str] = {
     # re-pin: certified `cuda_cpp` physics outputs carry the old runner, and a reused one would
     # be refused by the device-kernel gate again. Every node's Generate key moves; the Fortran
     # render is unchanged.
-    "render-6": "33523967701b69094b4512b995d3e2044da023ed46628580491d3fcf3dcb537f",
+    # Re-pinned (issue #316, R4-c PR-1), behaviour-preserving for every existing target: the
+    # control file's compiler is chosen by `workflow_conductor.build_compiler` (the parallel
+    # backend's compiler wrapper when it declares one; no checked-in target's does), the
+    # language rules accept `compiler_wrapper`, and `host_execution.perf_parallelism` takes the
+    # rank count from the profile (1 for every checked-in profile). Measured at this commit's
+    # parent against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
+    # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
+    # rules and `perf_parallelism` — 312 digests, identical.
+    "render-6": "94046feb37cff31b532d41675a22fd0c9ae5d3b2f82af834cd4b1b1c3795ef92",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -582,6 +617,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # gate itself is the validator's, outside this tuple. Re-pinned within PR-3's review (round
     # 3, before any run was stamped execute-7): comments in `_execute_inproc` only.
     "execute-7": "6817439f559b6e9beed9428d9245ab5916e598f7d84ea190270041798950b39a",
+    # Issue #316 (R4-c PR-1): a parallel backend that declares `launcher` runs the binary under
+    # it with the profile's `execution.ranks`, and the run record changes shape for every
+    # target — `trial_meta.json#environment.ranks`, `quality_check.json#comparison.{reference,
+    # candidate}.ranks` and, under a launcher, `environment.platform.parallel_runtime`. A bump:
+    # a certified execute-7 record has none of them, and the post-execute gate reads them.
+    "execute-8": "25ed4ccf809a6aa46374100bd0c58301cacb61326009220090b8bf33aed56ef7",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

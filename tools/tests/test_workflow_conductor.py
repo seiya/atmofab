@@ -13363,6 +13363,39 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertNotIn("-fopenmp", text)
             self.assertIn("-std=f2008 -O2 -J$(OBJDIR) -I$(OBJDIR)", text)
 
+    def test_a_compiler_wrapper_backend_pins_the_wrapper_and_says_so(self) -> None:
+        """Issue #316: a parallel backend that declares `compiler_wrapper` puts it in the
+        compiler variable (the build compiles and links through it), and the pin comment names
+        it; any other backend keeps the language's default, with the comment it always had.
+        Driven through both conductor writers: the IR-shaped one and the bundle-derived one."""
+        from tools.backends import registry
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._write_ir(repo, refs, backend="mpi")
+            c = self._conductor(repo)
+            c._write_makefile(refs)
+            text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
+            graph_text = c._render_pure_makefile_from_graph(refs, {
+                "compile_units": [], "link_units": [], "dependency_edges": []})
+            self._write_ir(repo, refs, backend="openmp")
+            c = self._conductor(repo)
+            c._write_makefile(refs)
+            default = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
+        for rendered in (text,):
+            self.assertRegex(rendered, rf"\nFC +:= {wrapper.COMPILER_WRAPPER}\n")
+            self.assertIn(f"{wrapper.COMPILER_WRAPPER}, the parallel backend's compiler "
+                          "wrapper", rendered)
+            self.assertNotIn("-fopenmp", rendered)
+        self.assertRegex(graph_text, rf"\nFC +:= {wrapper.COMPILER_WRAPPER}\n")
+        self.assertRegex(default, rf"\nFC +:= {wc.default_compiler('fortran')}\n")
+        self.assertIn("toolchain.compiler when it sets one", default)
+        self.assertNotIn(wrapper.COMPILER_WRAPPER, default)
+        self.assertEqual(wc.build_compiler({"backend": "mpi", "compiler": "",
+                                            "language": "fortran"}), wrapper.COMPILER_WRAPPER)
+        self.assertIsNone(wc.compiler_wrapper("openmp"))
+
     def test_skips_non_fortran_and_non_make(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -15710,8 +15743,9 @@ class DeterministicBuildTest(unittest.TestCase):
             trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
             env = trial["environment"]
             self.assertEqual(set(env), {"target_id", "target_class", "backend",
-                                        "threads_per_rank", "launch", "platform",
+                                        "threads_per_rank", "ranks", "launch", "platform",
                                         "execution_site"})
+            self.assertEqual(env["ranks"], target.ranks)
             # The target's, not the IR's (issue #284) — `backend` read a key the IR never had
             # until then, so every record said the fallback.
             self.assertEqual(
@@ -15758,7 +15792,7 @@ class DeterministicBuildTest(unittest.TestCase):
         return profile_with(parallel={"backend": "cuda"})
 
     def _drive_traced_execute(self, target, *, trace_result=None, write_summary=True,
-                              run_ok=True, stale=None):
+                              run_ok=True, stale=None, probe_answer=None):
         """Run `_execute_inproc` for `target` with the server's two tools faked, through
         `_run_deterministic_substep` (so a raise arrives as the substep's transport failure).
         The fake `run_program` answers the binary's run, then — when the target is traced — the
@@ -15812,14 +15846,48 @@ class DeterministicBuildTest(unittest.TestCase):
                 json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
             return {"ok": True, "command_id": "Q"}
 
+        def fake_subprocess_run(argv, *args, **kwargs):
+            # The host's own probes (the device probe, a launcher's runtime probe): `probe_answer`
+            # maps an argv to its stdout; any other command exits 0 with none.
+            out = (probe_answer or {}).get(tuple(argv), "") if isinstance(argv, list) else ""
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
         with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
              mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
-             mock.patch.object(subprocess, "run",
-                               return_value=subprocess.CompletedProcess([], 0, "", "")):
+             mock.patch.object(subprocess, "run", side_effect=fake_subprocess_run):
             result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
         return result, calls, node_dir, shape, repo, refs
 
     SUMMARY = "Instances,Name\n2,k(double *, long)\n"
+
+    def test_execute_inproc_runs_a_launcher_target_under_its_launcher_and_records_it(
+            self) -> None:
+        """Issue #316: the binary runs under the launcher with the target's rank count, the
+        `make test` re-run stays one process, and the record says both — `environment.ranks`,
+        the quality check's two `ranks`, and the launcher's runtime line."""
+        from tools.backends import registry
+        from tools.tests.target_fixtures import profile_with
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        target = profile_with(parallel={"backend": "mpi"},
+                              execution={"threads_per_rank": 1, "ranks": 4})
+        result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(
+            target, probe_answer={tuple(launcher.RUNTIME_PROBE): "Runtime Z 4.1.2\nmore\n"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([tag for tag, _ in calls], ["run", "qc"])
+        run, qc = calls[0][1], calls[1][1]
+        self.assertEqual(run["command"][:3], list(launcher.argv_prefix(4)))
+        self.assertEqual(Path(run["command"][3]).name, "spec_x_runner")
+        # The quality check is `make test`, handed no launcher.
+        self.assertNotIn(launcher.EXECUTABLE, json.dumps(qc))
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        env = trial["environment"]
+        self.assertEqual(env["ranks"], 4)
+        self.assertEqual(env["launch"]["argv_prefix"], list(launcher.argv_prefix(4)))
+        self.assertEqual(env["platform"]["parallel_runtime"], "Runtime Z 4.1.2")
+        quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
+        self.assertEqual(quality["comparison"]["reference"]["ranks"], 4)
+        self.assertEqual(quality["comparison"]["candidate"]["ranks"], 1)
+        self.assertIn("ranks=4", quality["notes"])
 
     def test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it(self) -> None:
         target = self._traced_target()
@@ -15845,8 +15913,9 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(trial["source_command_ref"]["run_program"]["command_id"], "R")
         self.assertEqual(trial["environment"]["launch"], shape.record())
         self.assertEqual(set(trial["environment"]),
-                         {"target_id", "target_class", "backend", "threads_per_rank", "launch",
-                          "platform", "execution_site"})
+                         {"target_id", "target_class", "backend", "threads_per_rank", "ranks",
+                          "launch", "platform", "execution_site"})
+        self.assertEqual(trial["environment"]["ranks"], 1)
 
     def test_execute_inproc_an_untraced_target_runs_no_summary(self) -> None:
         from tools.tests.target_fixtures import profile_with
@@ -18188,6 +18257,38 @@ class DeterministicSyntaxTest(unittest.TestCase):
             expected = c.target.doc["hardware"]["architecture"]
         self.assertGreaterEqual(len(seen), 2)   # the stage and at least its canary
         self.assertEqual(set(seen), {expected})
+
+    def test_every_syntax_run_is_handed_the_target_parallel_backend(self) -> None:
+        """Issue #316: the server runs a stage through the backend's compiler wrapper when the
+        backend declares one; every run the gate makes — the stage and the canary / closure
+        probes of a failing one — names the target's backend, so a probe never runs a compiler
+        other than the one its stage ran."""
+        import tempfile
+        from unittest import mock
+        for backend in ("openmp", "mpi"):
+            seen: list[str | None] = []
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+                # Only the toolchain read the gate takes its values from: the fixture's closure
+                # is certified for the checked-in profile, whose hash another profile moves.
+                real_tc = c._read_toolchain(refs)
+
+                def fake(args, seen=seen):
+                    seen.append(args.get("parallel_backend", "<absent>"))
+                    if self._call_kind(args) in ("canary", "probe"):
+                        return {"ok": True, "skipped": False, "command_id": "x"}
+                    return {"ok": False, "return_code": 1, "command_id": "sid",
+                            "skipped": False, "stderr": "Error: boom"}
+
+                with self._patch_syntax(fake), \
+                        mock.patch.object(c, "_read_toolchain",
+                                          return_value={**real_tc, "backend": backend}):
+                    c._gate_syntax_check(refs, "child-1")
+                self.assertGreaterEqual(len(seen), 2)
+                self.assertEqual(set(seen), {backend})
 
     def test_a_profile_with_no_architecture_hands_every_syntax_run_none(self) -> None:
         """`hardware.architecture` is optional (issue #289, R4-b PR-5): a profile that states

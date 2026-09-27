@@ -267,6 +267,50 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # scratch mod dir is created inside project_dir, isolated per call
         self.assertTrue((d / ".mods").is_dir())
 
+    def _argv0_for(self, **extra: object) -> tuple[str, list[str], list[str]]:
+        """The syntax stage's argv and the programs it asked `which` for, for a gfortran stage
+        with `extra` arguments."""
+        d = self._src_dir({"m.f90": "module m\nend module m\n"})
+        fake = subprocess.CompletedProcess(args=["x"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(self.mod.shutil, "which", return_value="/opt/x/bin/tool") as which, \
+                mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run_mock:
+            self.mod.tool_run_syntax_check(
+                {"project_dir": str(d), "compiler": "gfortran", "std": "f2008", **extra})
+        argv = run_mock.call_args_list[0].args[0]
+        return argv[0], argv, [c.args[0] for c in which.call_args_list]
+
+    def test_a_compiler_wrapper_backend_runs_the_stage_through_its_wrapper(self) -> None:
+        """Issue #316: the stage of the compiler the wrapper runs is the same argv with the
+        wrapper at argv[0], and the availability check asks for the wrapper."""
+        wrapper = self.mod._backend_registry().capability_module(
+            "parallel", "mpi", "compiler_wrapper")
+        self.assertEqual(wrapper.WRAPPED_COMPILER, "gfortran")
+        plain0, plain, plain_which = self._argv0_for()
+        wrapped0, wrapped, wrapped_which = self._argv0_for(parallel_backend="mpi")
+        self.assertEqual(plain0, "gfortran")
+        self.assertEqual(wrapped0, wrapper.COMPILER_WRAPPER)
+        self.assertEqual(wrapped[1:], plain[1:])
+        self.assertIn(wrapper.COMPILER_WRAPPER, wrapped_which)
+        self.assertNotIn(wrapper.COMPILER_WRAPPER, plain_which)
+        # A backend that declares no wrapper, and a token with no record, run the adapter's.
+        for backend in ("openmp", "none", "zz_no_such_model"):
+            with self.subTest(parallel_backend=backend):
+                self.assertEqual(self._argv0_for(parallel_backend=backend)[0], "gfortran")
+
+    def test_a_wrapper_does_not_replace_another_compilers_stage(self) -> None:
+        wrapper = self.mod._backend_registry().capability_module(
+            "parallel", "mpi", "compiler_wrapper")
+        self.assertIsNone(self.mod.syntax_compiler_wrapper("mpi", "nvcc"))
+        self.assertIs(self.mod.syntax_compiler_wrapper("mpi", wrapper.WRAPPED_COMPILER), wrapper)
+        self.assertIsNone(self.mod.syntax_compiler_wrapper(None, wrapper.WRAPPED_COMPILER))
+
+    def test_a_malformed_parallel_backend_is_refused(self) -> None:
+        d = self._src_dir({"m.f90": "module m\nend module m\n"})
+        for bad in ("", "  ", 3, ["mpi"]):
+            with self.subTest(parallel_backend=bad), self.assertRaises(ValueError):
+                self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran",
+                                                "std": "f2008", "parallel_backend": bad})
+
     def test_compile_error_returns_ok_false(self) -> None:
         d = self._src_dir({"bad.f90": "program p\n  implicit none (external)\nend program p\n"})
         fake = subprocess.CompletedProcess(

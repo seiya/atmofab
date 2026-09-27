@@ -100,5 +100,8 @@ that runs long a refusal rather than the command's own timeout.
   enforces memory, a runner killed for exceeding it may also make `srun` exit non-zero although
   the script finished; the job is then refused as a host-side failure rather than recorded as the
   runner's runtime error. The cluster measured runs no such plugin.
-- **One task.** `--ntasks=1`; a launcher that runs more ranks is the `parallel` axis' `launcher`
-  capability, not implemented (issue #293 §Out of scope).
+- **One task.** `--ntasks=1`. The `parallel` axis' `launcher` capability exists since issue #316,
+  and a target whose parallel backend declares it runs at the `local` site only
+  (`docs/backends/parallel/mpi/LAUNCHER.md` §4): with `--ntasks=N` this script would run `N`
+  times, and a launcher inside one task would start its ranks within that task's allocation.
+  Placing a launcher at a batch site is outside issue #316.

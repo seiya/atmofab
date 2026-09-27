@@ -32,12 +32,13 @@ def flags(standard: str, architecture: str | None) -> str:
     return value + " -I$(OBJDIR)"
 
 
-def rules(*, standard: str, parallel_backend: str, architecture: str | None = None
-          ) -> dict[str, Any]:
+def rules(*, standard: str, parallel_backend: str, architecture: str | None = None,
+          compiler_wrapper: str | None = None) -> dict[str, Any]:
     """The language facts a build system's control-file renderer composes with its grammar.
     `parallel_backend` is ACCEPTED AND NOT READ: CUDA's parallelism is in the source (kernels
-    and launches), not a compiler switch."""
-    del parallel_backend  # accepted, not read (see the docstring)
+    and launches), not a compiler switch. `compiler_wrapper` is ACCEPTED AND NOT READ: no
+    parallel backend a CUDA C++ target can name declares one."""
+    del parallel_backend, compiler_wrapper  # accepted, not read (see the docstring)
     return {
         "language": "cuda_cpp",
         "compiler_variable": "NVCC",

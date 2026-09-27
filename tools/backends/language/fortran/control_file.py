@@ -38,13 +38,20 @@ def flags(standard: str, parallel_backend: str) -> str:
 READS_ARCHITECTURE = False
 
 
-def rules(*, standard: str, parallel_backend: str, architecture: str | None = None
-          ) -> dict[str, Any]:
+def rules(*, standard: str, parallel_backend: str, architecture: str | None = None,
+          compiler_wrapper: str | None = None) -> dict[str, Any]:
     """The language facts a build system's control-file renderer composes with its grammar.
     `architecture` (the target profile's `hardware.architecture`) is ACCEPTED AND NOT READ: a CPU
     Fortran compile takes no device architecture, and the argument exists for the languages whose
-    compiler does."""
+    compiler does. `compiler_wrapper` is the parallel backend's compiler wrapper when it declares
+    one (issue #316): the host pins the compiler variable to it, and the comment says so."""
     del architecture  # accepted, not read (see the docstring)
+    pinned_value = (
+        ("The pinned value is the target profile's toolchain.compiler when it sets one, else "
+         "gfortran.")
+        if compiler_wrapper is None else
+        (f"The pinned value is {compiler_wrapper}, the parallel backend's compiler wrapper, "
+         f"which runs gfortran."))
     return {
         # The name the renderer's header comment gives the language.
         "language": "fortran",
@@ -65,7 +72,6 @@ def rules(*, standard: str, parallel_backend: str, architecture: str | None = No
              "?= does"),
             ("NOT override a default-origin variable, so `FC ?= gfortran` would silently leave "
              "FC=f77."),
-            ("The pinned value is the target profile's toolchain.compiler when it sets one, else "
-             "gfortran."),
+            pinned_value,
         ),
     }

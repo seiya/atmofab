@@ -23,7 +23,7 @@
 - `cells_updated`: the total number of updated cells (nx*ny*nz*steps etc.)
 - `throughput_cells_per_sec`: cells_updated / walltime_sec
 - `parallelism`: parallelism information (required object)
-  - `mpi_ranks`: the number of MPI ranks (1 when non-MPI)
+  - `mpi_ranks`: the number of processes the run started, as the harness counts them (1 when the target's parallel backend runs no launcher). Under a launcher the post-execute gate requires it to equal the target profile's `execution.ranks` (issue #316)
   - `threads_per_rank`: the number of threads per rank (1 when single-threaded)
   - `gpu_devices`: the number of GPU devices used (0 for CPU-only)
   - `parallel_degree_total`: the total parallelism. Defined as `mpi_ranks * threads_per_rank * max(gpu_devices,1)`

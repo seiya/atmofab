@@ -26,6 +26,14 @@ its profiling argv is `LaunchShape.argv_prefix`, and `LaunchShape.trace` is the 
 writes the trace's per-kernel summary in the run's working directory and the file it writes, which
 `Validate.execute` runs after the binary and promotes as `KERNEL_TRACE_ARTIFACT`. The spellings are
 the backend's; this module holds them as opaque tokens.
+
+A parallel backend that declares `launcher` (issue #316) starts the binary's ranks: its
+`argv_prefix(ranks)`, with the profile's `execution.ranks`, is the OUTER part of
+`LaunchShape.argv_prefix` (a device trace's prefix, when a backend declares both, goes between
+it and the binary), and its `RUNTIME_PROBE` is `LaunchShape.runtime_probe`, whose first line is
+recorded as `platform.parallel_runtime`. A binary built here is bound to this host's runtime of
+the model, so such a target runs at the local site only: the launch gate refuses another site
+(`execution_sites.site_violations`) and `launch_shape` refuses it as the backstop.
 """
 
 from __future__ import annotations
@@ -78,13 +86,15 @@ class LaunchShape:
     set is inherited from wherever the binary runs — and `site` names where it runs. `platform_probe` is the argv that identifies the class's device where it
     runs, None for a class that names none. `trace` is the summary half of a device trace when
     the parallel backend declares `device_trace` (its profiling half is `argv_prefix`), None
-    otherwise."""
+    otherwise. `runtime_probe` is the argv whose first line names the parallel model's runtime
+    when the backend declares `launcher`, None otherwise."""
 
     argv_prefix: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     site: str = LOCAL_SITE
     platform_probe: tuple[str, ...] | None = None
     trace: TraceShape | None = None
+    runtime_probe: tuple[str, ...] | None = None
 
     def command(self, argv: list[str]) -> list[str]:
         """The full command line for a binary invoked as `argv`."""
@@ -140,21 +150,51 @@ def _device_trace(parallel_backend: str) -> tuple[tuple[str, ...], TraceShape | 
         summary_file=str(module.summary_file(KERNEL_TRACE_STEM)))
 
 
-def launch_argv_prefix(parallel_backend: str) -> tuple[str, ...]:
-    """The argv prefix a binary built for `parallel_backend` runs under (`launch_shape`'s
-    `argv_prefix`): its device trace's, none for a value that declares no trace. The post-execute
-    gate admits a recorded prefix only when it is this one."""
-    return _device_trace(parallel_backend)[0]
+def declares_launcher(parallel_backend: str) -> bool:
+    """Whether a binary built for `parallel_backend` runs under a launcher (`launcher`). A
+    value with no record answers False, as `registry.provides` does; the gate that refuses it is
+    the profile's (`target_profile.target_profile_violations`)."""
+    return registry.provides("parallel", parallel_backend, "launcher") and \
+        "launcher" in registry.get("parallel", parallel_backend).backend_provides
+
+
+def _launcher(parallel_backend: str, ranks: int) -> tuple[str, ...]:
+    """The launcher prefix that starts `ranks` processes of a binary built for
+    `parallel_backend`, none for a value that declares no launcher (issue #316)."""
+    if not declares_launcher(parallel_backend):
+        return ()
+    module = registry.capability_module("parallel", parallel_backend, "launcher")
+    return tuple(str(a) for a in module.argv_prefix(ranks))
+
+
+def launch_argv_prefix(parallel_backend: str, ranks: int) -> tuple[str, ...]:
+    """The argv prefix a binary built for `parallel_backend` runs under with `ranks` ranks
+    (`launch_shape` composes the same two parts): the launcher's, outermost, then the device
+    trace's; none
+    for a value that declares neither. The post-execute gate admits a recorded prefix only when
+    it is this one."""
+    return (*_launcher(parallel_backend, ranks), *_device_trace(parallel_backend)[0])
 
 
 def execution_executables(parallel_backend: str) -> tuple[str, ...]:
     """The programs the machine that executes a binary built for `parallel_backend` needs
-    beyond the binary itself: its device trace's (`device_trace`), none for a value that
-    declares no trace."""
-    if "device_trace" not in registry.get("parallel", parallel_backend).backend_provides:
-        return ()
-    module = registry.capability_module("parallel", parallel_backend, "device_trace")
-    return tuple(str(e) for e in module.EXECUTABLES)
+    beyond the binary itself: its launcher's (`launcher`) and its device trace's
+    (`device_trace`), none for a value that declares neither."""
+    found: list[str] = []
+    backend_provides = registry.get("parallel", parallel_backend).backend_provides
+    for capability in ("launcher", "device_trace"):
+        if capability in backend_provides:
+            module = registry.capability_module("parallel", parallel_backend, capability)
+            found += [str(e) for e in module.EXECUTABLES if str(e) not in found]
+    return tuple(found)
+
+
+def _runtime_probe(parallel_backend: str) -> tuple[str, ...] | None:
+    """The launcher's runtime probe, None for a value that declares no launcher."""
+    if not declares_launcher(parallel_backend):
+        return None
+    module = registry.capability_module("parallel", parallel_backend, "launcher")
+    return tuple(str(a) for a in module.RUNTIME_PROBE)
 
 
 def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
@@ -162,12 +202,15 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
     `site` (an `execution_sites.Site`; None is the local site with its default `executes`, the
     configuration with no `sites.yaml`).
 
-    The argv prefix and `trace` are the parallel backend's device trace when it declares one
-    (`_device_trace`), none otherwise.
+    The argv prefix is the parallel backend's launcher with the profile's `ranks` when it
+    declares one, then its device trace's when it declares one (`launch_argv_prefix`); `trace` is
+    the trace's summary half.
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
-    a site whose `executes` does not list the class, and a parallel backend whose record does not
-    declare `execution_env`, with the registry's own wording for the first and the third.
+    a site whose `executes` does not list the class, a parallel backend whose record does not
+    declare `execution_env` (with the registry's own wording for the first and the third), a
+    launcher backend at a site other than `local`, and more ranks than one for a backend with no
+    launcher.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")
@@ -184,34 +227,65 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
         raise LaunchUnavailable(
             f"hardware.class: {profile.hardware_class} is not executed at site {site_id}, "
             f"which executes {', '.join(executes)}")
-    env = _execution_env(profile.parallel_backend, profile.threads_per_rank)
-    argv_prefix, trace = _device_trace(profile.parallel_backend)
-    return LaunchShape(argv_prefix=argv_prefix, env=env, site=site_id,
-                       platform_probe=_platform_probe(profile.hardware_class), trace=trace)
+    backend = profile.parallel_backend
+    if declares_launcher(backend) and site_id != LOCAL_SITE:
+        raise LaunchUnavailable(
+            f"parallel.backend: {backend} runs its binary under a launcher, and a binary built "
+            f"here is bound to this host's {backend} runtime; site {site_id} is not {LOCAL_SITE}")
+    if profile.ranks != 1 and not declares_launcher(backend):
+        raise LaunchUnavailable(
+            f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel backend "
+            f"{backend} declares none")
+    env = _execution_env(backend, profile.threads_per_rank)
+    trace_prefix, trace = _device_trace(backend)
+    return LaunchShape(argv_prefix=(*_launcher(backend, profile.ranks), *trace_prefix), env=env,
+                       site=site_id, platform_probe=_platform_probe(profile.hardware_class),
+                       trace=trace, runtime_probe=_runtime_probe(backend))
 
 
 def perf_parallelism(target: dict[str, Any]) -> tuple[int, int, int]:
     """`(mpi_ranks, threads_per_rank, gpu_devices)` a run of `target` (a target profile DOCUMENT,
     `TargetProfile.doc`) states in its performance record — what a host-rendered runner passes the
-    harness's `write_perf`. A hardware class that declares `perf_facts` answers it
-    (`parallelism`); one that declares none is one rank of the profile's threads on no device,
-    which is what the in-process CPU launch runs. Pure; raises `KeyError` / `ValueError` for a
-    document without the two fields, which the profile loader requires."""
+    harness's `write_perf`. The rank count is the profile's `execution.ranks` (1 when it states
+    none, issue #316). A hardware class that declares `perf_facts` answers the per-rank half
+    (`parallelism`, whose rank member this replaces); one that declares none is the profile's
+    threads on no device, which is what the in-process CPU launch runs. Pure; raises
+    `KeyError` / `ValueError` for a document without the fields the profile loader requires."""
     hardware_class = str(target["hardware"]["class"])
     threads = int(target["execution"]["threads_per_rank"])
+    ranks = int(target["execution"].get("ranks", 1))
     if "perf_facts" in registry.get("hardware", hardware_class).backend_provides:
         facts = registry.capability_module("hardware", hardware_class, "perf_facts")
-        ranks, per_rank, devices = facts.parallelism(threads)
-        return (int(ranks), int(per_rank), int(devices))
-    return (1, threads, 0)
+        _one_rank, per_rank, devices = facts.parallelism(threads)
+        return (ranks, int(per_rank), int(devices))
+    return (ranks, threads, 0)
 
 
-def local_platform_record(probe: tuple[str, ...] | None = None) -> dict[str, str | None]:
+def probe_first_line(probe: tuple[str, ...] | None) -> str | None:
+    """The first line `probe` prints when it exits 0; None when it names nothing, cannot run,
+    or exits non-zero."""
+    if not probe:
+        return None
+    try:
+        proc = subprocess.run(list(probe), text=True, capture_output=True, check=False,
+                              timeout=PROBE_TIMEOUT_SEC, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout.splitlines() or [""])[0].strip() or None
+
+
+def local_platform_record(probe: tuple[str, ...] | None = None, *,
+                          runtime_probe: tuple[str, ...] | None = None
+                          ) -> dict[str, str | None]:
     """The machine a local Validate run executed on, for `trial_meta.json#environment.platform`:
     `platform.machine()`, `platform.node()`, the CPU model name from `/proc/cpuinfo`, and the
-    first line `probe` prints when it exits 0 (`gpu`). Each fact that cannot be read is `None` —
-    a record, never a refusal. The remote executor builds the same shape from the site's own
-    answers (`tools/remote_execution.py`)."""
+    first line `probe` prints when it exits 0 (`gpu`). A launch with a `runtime_probe` (a
+    launcher's, issue #316) adds `parallel_runtime`, its first line the same way. Each fact that
+    cannot be read is `None` — a record, never a refusal. The remote executor builds the same
+    shape from the site's own answers (`tools/remote_execution.py`); a launcher target never runs
+    there."""
     cpu_model: str | None = None
     try:
         for line in Path("/proc/cpuinfo").read_text(encoding="utf-8",
@@ -221,14 +295,9 @@ def local_platform_record(probe: tuple[str, ...] | None = None) -> dict[str, str
                 break
     except OSError:
         cpu_model = None
-    gpu: str | None = None
-    if probe:
-        try:
-            proc = subprocess.run(list(probe), text=True, capture_output=True, check=False,
-                                  timeout=PROBE_TIMEOUT_SEC, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.TimeoutExpired):
-            proc = None
-        if proc is not None and proc.returncode == 0:
-            gpu = (proc.stdout.splitlines() or [""])[0].strip() or None
-    return {"machine": platform.machine(), "node": platform.node(), "cpu_model": cpu_model,
-            "gpu": gpu}
+    record: dict[str, str | None] = {
+        "machine": platform.machine(), "node": platform.node(), "cpu_model": cpu_model,
+        "gpu": probe_first_line(probe)}
+    if runtime_probe:
+        record["parallel_runtime"] = probe_first_line(runtime_probe)
+    return record
