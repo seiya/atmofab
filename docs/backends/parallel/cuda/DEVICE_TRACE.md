@@ -82,5 +82,15 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
   so the profiler's process start-up and its report generation are outside it, and the tracing
   cost of the process's CUDA calls — its initialisation at the first call included — is inside
   it.
+- A failure of the profiler itself (it cannot inject into the process) ends the run with a
+  non-zero code that cannot be told from the binary's own, so it routes as the runner's failure
+  (`[run_program failed: runtime_error]`), not as host tooling. Not observed at the site.
+- The report's path is not emptied before the run, because the binary runs inside the profiling
+  command. A READ-ONLY file the binary leaves at `kernel_trace.nsys-rep` survives: measured on
+  2026.3.2, `nsys profile` then writes its report under `/tmp/nsys-<user>/`, exits 0, and the
+  summary reads the binary's file. A file that is not a valid report fails the summary
+  (`deterministic_validate_error`); passing it off as one would take writing a valid report
+  whose kernel records name the model's kernels, from a source whose file I/O `Generate.gate`
+  already refuses. Recorded, not closed.
 - nsys's progress lines go to the binary's stdout, so `stdout.log` carries them. It is an audit
   log that no gate and no judge reads.
