@@ -6150,6 +6150,16 @@ def _validate_run_program_inputs(
                 f"({'unresolved' if _expected is None else repr(_expected)}); the binary a "
                 f"run_program record ran cannot be bound after it")
             _argv_prefix = None
+    # ... and a target whose parallel backend declares a launcher (issue #316) never runs
+    # without one, one rank included: an EMPTY prefix on such a record says the binary ran bare,
+    # which no launch of this target does, so the record is not this target's run.
+    elif _argv_prefix == []:
+        _target = _pipeline_target(repo_root, execution.pipeline_dir)
+        if _target is not None and host_execution.declares_launcher(_target.parallel_backend):
+            violations.append(
+                f"{trial_meta_path}: environment.launch.argv_prefix is empty, and this "
+                f"pipeline's target runs its binary under {_target.parallel_backend}'s launcher "
+                f"({list(host_execution.launch_argv_prefix(_target.parallel_backend, _target.ranks))!r})")
 
     for entry in _iter_command_ref_entries(source_command_ref):
         command_id = entry.get("command_id")

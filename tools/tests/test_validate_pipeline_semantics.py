@@ -13175,6 +13175,10 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                            execution={"threads_per_rank": 1, "ranks": 4})
         launched = list(launch_argv_prefix("mpi", 4))
         other_count = list(launch_argv_prefix("mpi", 3))
+        # A one-rank launcher target runs under the launcher all the same, so a record of it
+        # with no prefix is not its run.
+        mpi1 = profile_with(parallel={"backend": "mpi"},
+                            execution={"threads_per_rank": 1, "ranks": 1})
         self.assertTrue(launched)
         self.assertNotEqual(launched, other_count)
         for target, recorded, carried, refused in (
@@ -13183,7 +13187,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 (cuda, self._NO_LAUNCH, [], False),
                 (None, traced, traced, True),
                 (mpi, launched, launched, False),
-                (mpi, other_count, other_count, True)):
+                (mpi, other_count, other_count, True),
+                (mpi1, list(launch_argv_prefix("mpi", 1)), list(launch_argv_prefix("mpi", 1)),
+                 False),
+                (mpi1, [], [], False),
+                (mpi1, self._NO_LAUNCH, [], False)):
             with self.subTest(target=None if target is None else target.parallel_backend,
                               recorded=recorded if recorded is not self._NO_LAUNCH else "none"), \
                     tempfile.TemporaryDirectory() as tmp, \
@@ -13200,6 +13208,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 self.assertEqual(
                     any("parallelism.mpi_ranks is" in v for v in violations),
                     target is mpi, violations)
+                # An empty or absent prefix is refused for a launcher target only.
+                bare = recorded is self._NO_LAUNCH or recorded == []
+                self.assertEqual(
+                    any("environment.launch.argv_prefix is empty" in v for v in violations),
+                    bare and target in (mpi, mpi1), violations)
 
     def _real_seam_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
         """`_launch_prefix_tree` without its seam patch: the validator asks the real one."""
