@@ -6220,10 +6220,12 @@ def _validate_device_kernel_execution(
     * the summary records NO kernel while the sources define some: `DeviceKernelsAbsentViolation`
       (exit 6, terminal). The measured cause is the environment — every launch of #306's billed
       run failed because the site's device and driver could not run the binary as built — and a
-      warm Generate retry rebuilds nothing that changes that. Two content causes reach it too:
-      every kernel dead, which the `Generate.gate` presence floor and verify G6 hold first, and
-      every launch failing on the model's own account (an invalid launch configuration), which
-      nothing before the run holds; the remedy names `--rederive generate` for both;
+      warm Generate retry rebuilds nothing that changes that. Content causes reach it too — no
+      kernel launched on the cases' paths (a stub beside a host loop, a branch every case takes
+      to the host) or every launch failing on the model's own account (an invalid launch
+      configuration). The `Generate.gate` presence floor does not hold them: it asks only that a
+      kernel exist. Verify G6 is the one rule before the run, for the first; nothing holds the
+      second. The remedy names `--rederive generate` for them;
     * some defined kernels have no row: an ordinary violation, a content failure routed back to
       Generate — the model defines a kernel the cases do not launch.
 

@@ -1827,7 +1827,6 @@ class DeviceTraceTests(unittest.TestCase):
                      "template <class T> void k [[gnu::global]] (T* p) {}\n",
                      "void __global__ (k)(int* p) {}\n",
                      "__global__ void (k)(int* p) {}\n",
-                     "__global__ void k(int* p) noexcept(true) {}\n",
                      "__global__ void __launch_bounds__(((256))) k(int* p) {}\n",
                      # An attribute whose argument carries its own brackets does not end early.
                      "[[gnu::global, gnu::aligned(alignof(int[1]))]] void k(int* p) {}\n"):

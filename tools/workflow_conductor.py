@@ -522,11 +522,11 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # the kernels the node's sources define. The measured cause is the environment — #306's billed
 # run certified a GPU model whose every launch had failed because the site's device and driver
 # could not run the binary as built — and a warm Generate retry changes neither, so it is
-# terminal; the operator runs a minimal kernel where the run executed and resumes. A model whose
-# every launch fails on its own account (an invalid launch configuration) reaches this class too;
-# the remedy names `--rederive generate` for it, as it does for a model that launches none of
-# its kernels, which `Generate.gate`'s presence floor and verify G6 hold before a run is
-# reached. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
+# terminal; the operator runs a minimal kernel where the run executed and resumes. A model that
+# launches no kernel on the cases' paths, or whose every launch fails on its own account (an
+# invalid launch configuration), reaches this class too, and the remedy names
+# `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
+# run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
      "host_authored_artifact_violation", "device_kernels_absent"}
@@ -11297,7 +11297,7 @@ class Conductor:
                     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
-            # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the two
+            # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the
             # terminal categories, a fail_closed) and the (bounded) excerpt becomes the repair
             # leaf's findings, so the violation text that failed the run is what the leaf gets to
             # fix. The runner runtime-error branch above returns BEFORE any trial_meta is written
@@ -11305,10 +11305,11 @@ class Conductor:
             # (cold-restart) kind.
             #
             # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
-            # two leading branches read the post_execute validator's DEDICATED EXIT CODES, which
-            # say the failure is not the leaf's: rc 3 is an uninstalled structure front end (a
-            # machine problem — the gates that need it read nothing), rc 4 a stale certified IR. Both
-            # must dominate a co-occurring `quality_check`/snapshot symptom, because those
+            # four leading branches read the post_execute validator's DEDICATED EXIT CODES, which
+            # say the failure is not the leaf's to repair: rc 3 is an uninstalled structure front
+            # end (a machine problem — the gates that need it read nothing), rc 4 a stale
+            # certified IR, rc 5 a file this repository authors, rc 6 a traced run none of whose
+            # kernels ran (below). All must dominate a co-occurring `quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
             # the three warm categories route identically: a gate report is the most specific,

@@ -572,8 +572,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # `device_trace`) reads a kernel marked by the `global` attribute and resolves a mark to the
     # declarator before its parameter list. A bump rather than a re-pin of execute-6 so that an
     # execute-6 run certified before this gate existed (none yet) is re-derived under it: the
-    # gate itself is the validator's, outside this tuple.
-    "execute-7": "847ca881d462af9454ca5e42eb8a67c85372380b9456c5ab3241495ed6718558",
+    # gate itself is the validator's, outside this tuple. Re-pinned within PR-3's review (round
+    # 3, before any run was stamped execute-7): comments in `_execute_inproc` only.
+    "execute-7": "6817439f559b6e9beed9428d9245ab5916e598f7d84ea190270041798950b39a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

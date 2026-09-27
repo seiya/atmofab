@@ -176,7 +176,9 @@ the summary's rows (`kernel_instances`):
      launches none of the kernels it defines, or every launch it makes fails on its own account
      (an invalid launch configuration, such as more threads per block than the device allows —
      CUDA runs no kernel for such a launch; not measured under the trace). `--rederive generate`. These reach this class too, because the gate sees no kernel either
-     way; the category is terminal because the measured case is the site's.
+     way; the category is terminal because the measured case is the site's. `--rederive`
+     applies to the run's target only: for a `--with-deps` closure member, run that member as
+     the target.
 - Some defined kernels have no row: an ordinary violation (`post_execute_violation`), routed back
   to `Generate` with the names. A kernel the model defines did not execute in any case the run
   covers — dead, launched only on a path the cases do not take, or launched with a configuration
