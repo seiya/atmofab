@@ -26124,5 +26124,291 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         v = self._generate(self._MODEL, public_api=self._public_api(interfaces=_OMIT))
         self.assertTrue(any(isinstance(x, vps.StaleDependencyIRViolation) for x in v), v)
 
+
+class DeviceKernelExecutionGateTests(unittest.TestCase):
+    """`_validate_device_kernel_execution` (issue #307, post_execute): on a node whose target's
+    parallel backend declares `device_trace`, every kernel the node's sources define must have
+    executed on the device in the traced run. No kernel at all is the terminal class (exit 6);
+    some kernels missing is an ordinary violation. The summary must be the one the recorded
+    summary command wrote."""
+
+    _NODE = "component__k__0.1.0"
+    _RUN = "run_20260927_001"
+    _KERNELS = ("__global__ void flux_kernel(double* x, long n) { x[0] = 1.0; }\n"
+                "__global__ void update_kernel(double* x) {}\n")
+    _FULL_CSV = ('Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),'
+                 'StdDev (ns),Name\n'
+                 '60.0,600,3,200,200,100,300,10,"flux_kernel(double *, long)"\n'
+                 '40.0,400,2,200,200,100,300,10,"(anonymous namespace)::update_kernel(double *)"\n')
+
+    @staticmethod
+    def _cuda_profile():
+        from tools.tests.target_fixtures import profile_with
+        return profile_with(hardware={"class": "gpu"},
+                            toolchain={"language": "cuda_cpp", "compiler": "nvcc"},
+                            parallel={"backend": "cuda"})
+
+    @staticmethod
+    def _summary_argv() -> list[str]:
+        """The command the CONDUCTOR runs for the summary — the launch seam's, not the gate's
+        own derivation — so the two cannot drift apart unseen (a dual read of one fact)."""
+        from tools.host_execution import launch_shape
+        shape = launch_shape(DeviceKernelExecutionGateTests._cuda_profile(),
+                             SimpleNamespace(site_id="gpu_site", executes=("gpu",)))
+        assert shape.trace is not None
+        return list(shape.trace.summary_argv)
+
+    def _tree(self, repo: Path, *, sources: dict[str, str] | None = None,
+              csv_text: str | None = _FULL_CSV, ref: object = "default",
+              record: dict | None = None) -> tuple[vps.NodeExecution, Path]:
+        pipeline_dir = repo / "workspace" / "pipelines" / self._NODE / "cpp_gpu" / "k_001"
+        node_dir = pipeline_dir / "runs" / self._RUN / self._NODE
+        src_dir = pipeline_dir / "source" / "src_001" / "src"
+        src_dir.mkdir(parents=True)
+        node_dir.mkdir(parents=True)
+        for name, text in (sources if sources is not None
+                           else {"k_model.cu": self._KERNELS}).items():
+            (src_dir / name).write_text(text, encoding="utf-8")
+        if csv_text is not None:
+            (node_dir / "kernel_trace.csv").write_text(csv_text, encoding="utf-8")
+        log_ref = (node_dir / "command_log.jsonl").relative_to(repo).as_posix()
+        rec = {"command_id": "trace-1", "tool_name": "run_program", "ok": True,
+               "command": self._summary_argv()}
+        rec.update(record or {})
+        (node_dir / "command_log.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+        if ref == "default":
+            ref = {"artifact": "kernel_trace.csv", "command_id": "trace-1",
+                   "command_log_ref": log_ref}
+        meta = {"status": "pass"}
+        if ref is not None:
+            meta["kernel_trace"] = ref
+        _write_json(node_dir / "trial_meta.json", meta)
+        execution = vps.NodeExecution(node_key="component/k@0.1.0", node_dir=node_dir,
+                                      exec_dir=node_dir.parent, pipeline_dir=pipeline_dir)
+        return execution, src_dir
+
+    def _gate(self, *, target="cuda", **tree) -> list[str]:
+        profile = self._cuda_profile() if target == "cuda" else target
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            execution, src_dir = self._tree(repo, **tree)
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_pipeline_target",
+                                            return_value=profile) as seam:
+                vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
+            seam.assert_called_once_with(repo, execution.pipeline_dir)
+        return violations
+
+    def test_every_defined_kernel_with_an_instance_passes(self) -> None:
+        self.assertEqual([], self._gate())
+
+    def test_a_defined_kernel_the_trace_never_saw_is_a_violation_naming_it(self) -> None:
+        csv = self._FULL_CSV.splitlines()
+        only_flux = "\n".join(csv[:2]) + "\n"
+        violations = self._gate(csv_text=only_flux)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("never executed on the device: ['update_kernel']", violations[0])
+        self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+        self.assertEqual(1, vps._exit_code_for_violations(violations))
+        # A row with zero instances is a kernel that did not run, not one that did.
+        zero = only_flux + '0.0,0,0,0,0,0,0,0,"update_kernel(double *)"\n'
+        self.assertIn("['update_kernel']", self._gate(csv_text=zero)[0])
+
+    def test_no_kernel_data_with_kernels_defined_is_the_absent_class(self) -> None:
+        header_only = self._FULL_CSV.splitlines()[0] + "\n"
+        for csv_text in ("", "  \n", header_only):
+            with self.subTest(csv_text=csv_text):
+                violations = self._gate(csv_text=csv_text)
+                self.assertEqual(1, len(violations), violations)
+                self.assertIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+                self.assertIn("['flux_kernel', 'update_kernel']", violations[0])
+                self.assertIn("tools/site_smoke.py", violations[0])
+                self.assertIn("--rederive generate", violations[0])
+                self.assertEqual(vps.DEVICE_KERNELS_ABSENT_EXIT_CODE,
+                                 vps._exit_code_for_violations(violations))
+                self.assertEqual(6, vps.DEVICE_KERNELS_ABSENT_EXIT_CODE)
+
+    def test_no_kernels_defined_requires_nothing(self) -> None:
+        """A `"model": "none"` source or a harness defines no kernel: nothing is required, with
+        or without a trace — the rule is "what is defined must run"."""
+        host_only = {"k_model.cu": "void f(double* x) { x[0] = 1.0; }\n"
+                                   "// __global__ void commented(double* x);\n"
+                                   'const char* s = "__global__ void quoted(int*)";\n'}
+        for tree in ({}, {"csv_text": ""}, {"csv_text": None, "ref": None}):
+            with self.subTest(tree=tree):
+                self.assertEqual([], self._gate(sources=host_only, **tree))
+
+    def test_a_target_without_the_capability_is_not_asked(self) -> None:
+        """The checked-in CPU target's parallel backend declares no trace: a CUDA-looking source
+        and no trace at all are nothing to it."""
+        self.assertNotIn("device_trace", backend_registry.get(
+            "parallel", _TP.parallel_backend).backend_provides)
+        self.assertEqual([], self._gate(target=_TP, csv_text=None, ref=None))
+        # Control: the same tree under the traced target is refused.
+        self.assertNotEqual([], self._gate(csv_text=None, ref=None))
+
+    def test_a_missing_summary_is_a_violation(self) -> None:
+        violations = self._gate(csv_text=None)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("the device trace summary is missing", violations[0])
+        self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+
+    def test_a_summary_without_provenance_in_the_log_is_a_violation(self) -> None:
+        """The summary counts only as the recorded summary command's output: a record missing,
+        pointing elsewhere, failed, of another tool, or of another command is refused — and an
+        empty summary behind such a record is NOT the terminal class (the trace is not shown
+        to be the run's)."""
+        bad = (
+            {"ref": None},
+            {"ref": "kernel_trace.csv"},
+            {"ref": {"artifact": "other.csv", "command_id": "trace-1",
+                     "command_log_ref": "x"}},
+            {"record": {"command_id": "other"}},
+            {"record": {"ok": False}},
+            {"record": {"tool_name": "run_quality_checks"}},
+            {"record": {"command": ["sh", "-c", "cat forged.csv"]}},
+        )
+        for tree in bad:
+            for csv_text in (self._FULL_CSV, ""):
+                with self.subTest(tree=tree, csv_text=bool(csv_text)):
+                    violations = self._gate(csv_text=csv_text, **tree)
+                    self.assertEqual(1, len(violations), violations)
+                    self.assertIn("nothing here says the summary was written by it",
+                                  violations[0])
+                    self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+        # A log ref that is not the canonical one beside trial_meta, even to a valid record.
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            execution, src_dir = self._tree(repo)
+            elsewhere = repo / "workspace" / "elsewhere.jsonl"
+            shutil.copy(execution.node_dir / "command_log.jsonl", elsewhere)
+            meta = json.loads((execution.node_dir / "trial_meta.json").read_text())
+            meta["kernel_trace"]["command_log_ref"] = "workspace/elsewhere.jsonl"
+            _write_json(execution.node_dir / "trial_meta.json", meta)
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_pipeline_target",
+                                            return_value=self._cuda_profile()):
+                vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
+            self.assertEqual(1, len(violations), violations)
+            self.assertIn("nothing here says the summary was written by it", violations[0])
+
+    def test_an_unreadable_summary_is_a_violation(self) -> None:
+        violations = self._gate(csv_text="Kernel,Count\nflux_kernel,3\n")
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("has no column(s)", violations[0])
+        self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+
+    def test_the_checks_source_s_kernels_are_required_too(self) -> None:
+        """Every `.cu` the node's src dir holds is read, not the model file alone."""
+        sources = {"k_model.cu": self._KERNELS,
+                   "k_checks.cu": "__global__ void check_kernel(const double* x) {}\n",
+                   "sub/extra.cu": "__global__ void extra_kernel(int* y) {}\n"}
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            execution, src_dir = self._tree(repo, sources={"k_model.cu": self._KERNELS})
+            (src_dir / "k_checks.cu").write_text(sources["k_checks.cu"], encoding="utf-8")
+            (src_dir / "sub").mkdir()
+            (src_dir / "sub" / "extra.cu").write_text(sources["sub/extra.cu"], encoding="utf-8")
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_pipeline_target",
+                                            return_value=self._cuda_profile()):
+                vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("['check_kernel', 'extra_kernel']", violations[0])
+
+    def test_only_the_target_language_s_sources_are_read(self) -> None:
+        """The node's sources are the files with the language's source suffixes
+        (`MODULE_SOURCE_SUFFIXES`): a note or a stray file naming a kernel is not a definition,
+        and a language whose sources hold none (a CPU language under this backend) gives none
+        rather than a missing reader."""
+        stray = {"k_model.cu": self._KERNELS,
+                 "NOTES.txt": "__global__ void ghost_kernel(int* y) {}\n",
+                 "k_model.cu.bak": "__global__ void backup_kernel(int* y) {}\n"}
+        self.assertEqual([], self._gate(sources=stray))
+        from tools.tests.target_fixtures import profile_with
+        fortran_cuda = profile_with(parallel={"backend": "cuda"})
+        self.assertEqual([], self._gate(
+            target=fortran_cuda, sources={"k_model.f90": "module m\nend module m\n",
+                                          "k_model.cu": self._KERNELS},
+            csv_text=None, ref=None))
+
+    def test_template_and_namespaced_rows_count_for_their_base_name(self) -> None:
+        sources = {"k_model.cu": "namespace ns {\n__global__ void flux_kernel(double* x) {}\n}\n"
+                                 "template <class T> __global__ void update_kernel(T* x) {}\n"}
+        csv = self._FULL_CSV.splitlines()[0] + "\n" + \
+            '50,1,1,1,1,1,1,0,"ns::flux_kernel(double *)"\n' \
+            '25,1,1,1,1,1,1,0,"void update_kernel<double>(T1 *)"\n' \
+            '25,1,1,1,1,1,1,0,"void update_kernel<float>(T1 *)"\n'
+        self.assertEqual([], self._gate(sources=sources, csv_text=csv))
+
+    def test_the_absent_code_ranks_below_stale_ir_and_host_authored(self) -> None:
+        absent = vps.DeviceKernelsAbsentViolation("kernel_trace.csv: none ran")
+        stale = vps.StaleDependencyIRViolation("ir: stale")
+        host = vps._as_host_authored("x_runner.cu: boom", "some.producer")
+        plain = "an ordinary violation"
+        for violations, expected in (
+                ([absent, stale], vps.STALE_DEPENDENCY_IR_EXIT_CODE),
+                ([stale, absent], vps.STALE_DEPENDENCY_IR_EXIT_CODE),
+                ([absent, host], vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE),
+                ([host, absent], vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE),
+                ([plain, absent], vps.DEVICE_KERNELS_ABSENT_EXIT_CODE),
+                ([absent, plain], vps.DEVICE_KERNELS_ABSENT_EXIT_CODE),
+                ([plain], 1)):
+            with self.subTest(violations=[type(v).__name__ for v in violations]):
+                self.assertEqual(expected, vps._exit_code_for_violations(violations))
+
+    def test_the_cli_answers_6_in_a_real_subprocess(self) -> None:
+        """Through the real CLI at `--stage post_execute`, with the target read from the
+        fixture repository rather than patched: the gate is wired into the per-execution
+        checks, the violation keeps its type to `main`, and `--help` documents the code."""
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            _seed_shape_expr_schema_into(repo)
+            _create_minimal_execution_tree(
+                repo, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+                extra_sources={"k_model.cu": self._KERNELS})
+            # The fixture's target, now traced: same id, a CUDA parallel backend.
+            install_target_profile(repo, profile_with(
+                FORTRAN_CPU, hardware={"class": "gpu"},
+                toolchain={"language": "cuda_cpp", "compiler": "nvcc"},
+                parallel={"backend": "cuda"}))
+            pipeline_dir = (repo / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                            / _TARGET_ID / "shallow-water2d_20260415_001")
+            node_dir = pipeline_dir / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
+            log = node_dir / "command_log.jsonl"
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"command_id": "trace-1", "tool_name": "run_program",
+                                     "ok": True, "command": self._summary_argv()}) + "\n")
+            meta = json.loads((node_dir / "trial_meta.json").read_text(encoding="utf-8"))
+            meta["kernel_trace"] = {"artifact": "kernel_trace.csv", "command_id": "trace-1",
+                                    "command_log_ref": log.relative_to(repo).as_posix()}
+            _write_json(node_dir / "trial_meta.json", meta)
+            cli = [sys.executable, str(Path(vps.__file__).resolve()), "--repo-root", str(repo),
+                   "--workspace-root", "workspace", "--stage", "post_execute",
+                   "--pipeline-root", str(pipeline_dir), "--run-id", "run_test_001"]
+            here = str(Path(vps.__file__).resolve().parent.parent)
+            results = {}
+            for label, csv_text in (("empty", ""), ("full", self._FULL_CSV)):
+                (node_dir / "kernel_trace.csv").write_text(csv_text, encoding="utf-8")
+                results[label] = subprocess.run(cli, cwd=here, capture_output=True, text=True,
+                                                check=False)
+        empty = results["empty"]
+        self.assertEqual(vps.DEVICE_KERNELS_ABSENT_EXIT_CODE, empty.returncode,
+                         (empty.stdout, empty.stderr))
+        self.assertIn("recorded no kernel on the device", empty.stdout)
+        # Control: the same tree with the kernels in the summary is not 6, and no finding
+        # names the summary (whatever else this fixture's other gates find).
+        full = results["full"]
+        self.assertNotEqual(vps.DEVICE_KERNELS_ABSENT_EXIT_CODE, full.returncode)
+        self.assertNotIn("kernel_trace", full.stdout)
+        helped = subprocess.run([sys.executable, str(Path(vps.__file__).resolve()), "--help"],
+                                capture_output=True, text=True, check=True)
+        self.assertIn(f"  {vps.DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none",
+                      helped.stdout)
+
 if __name__ == "__main__":
     unittest.main()

@@ -135,3 +135,40 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
 - nsys's progress lines go to the binary's stdout and its warnings to the binary's stderr
   (`Device-side CUDA Event completion trace …` at the site, CPU-sampling warnings here), so
   `stdout.log` and `stderr.log` carry them. They are audit logs that no gate and no judge reads.
+
+## 5. The gate that reads it
+
+The `post_execute` gate (`_validate_device_kernel_execution` in
+`tools/validate_pipeline_semantics.py`) compares the kernels the node's own sources define
+(`defined_kernels` over every `.cu` under its `src/`; a dependency's sources are not there) with
+the summary's rows (`kernel_instances`):
+
+- Every defined kernel has an instance: pass. A node whose sources define no kernel (a plan
+  declaring `"model": "none"`, the harness) is asked nothing.
+- The summary records no kernel at all: exit code 6, `device_kernels_absent`, terminal. The
+  measured case is issue #307's: binaries built with nvcc's default architecture, every launch of
+  which failed at the site (`the provided PTX was compiled with an unsupported toolchain`), and a
+  model that recomputed the result on the host passed `Validate`. #306 made an unstated gpu
+  architecture `-arch=all` (`spec/targets/cpp_gpu.yaml`). To recover:
+  1. Build a minimal kernel here with the target's compiler and flags, and run it at the site
+     under the trace (`tools/site_smoke.py --target <target_id> --gpu --ship <binary> --cmd '…'`
+     with §1's two commands; issue #307 comment 5851969504 shows the commands). An empty summary
+     with `SKIPPED: … does not contain CUDA kernel data.` reproduces the failure. A minimal kernel
+     that checks `cudaGetLastError()` after its launch and prints `cudaGetErrorString` names the
+     cause; the node's own binary need not print anything.
+  2. Fix the device, the driver or the target's `hardware.architecture` / toolchain, then
+     `--resume`.
+  3. If the minimal kernel runs and the node's still does not, the model launches none of the
+     kernels it defines: `--rederive generate`.
+- Some defined kernels have no row: an ordinary violation (`post_execute_violation`), routed back
+  to `Generate` with the names. The model defines a kernel that no case the run covers launches —
+  dead, or launched only on a path the cases do not take — and either launches it where a case
+  reaches it or removes it.
+- The summary is read only when `trial_meta.json#kernel_trace` names a successful `run_program`
+  record of §1's summary command in the node's `command_log.jsonl`; a missing summary, a summary
+  without that record, or one the reader refuses (`SummaryUnreadable`) is an ordinary violation.
+
+Two limits of the comparison: kernels of two namespaces with one base name are one name here
+(§4), so one of them running satisfies both; and a `__global__` in a region the preprocessor
+removes (`#if 0`) is read as defined, so it fails the run (fail-closed). The gate does not ask
+which case launched a kernel.

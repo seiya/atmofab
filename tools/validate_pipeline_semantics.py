@@ -5895,11 +5895,18 @@ def _exit_code_for_violations(violations: list[str]) -> int:
     (`test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`) and through the
     real CLI on an M3c node
     (`test_a_stale_certified_ir_on_an_m3c_node_answers_4_over_5_in_a_real_subprocess`).
+
+    6 (no kernel ran on the device, issue #307) comes after both: a stale IR or a wrong
+    host-authored file is a cause the operator fixes FIRST, and either can be why the kernels did
+    not run. It precedes `1` for the same reason 4 and 5 do — a warm retry meets the same device.
+    Pinned by `test_the_absent_code_ranks_below_stale_ir_and_host_authored`.
     """
     if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
         return STALE_DEPENDENCY_IR_EXIT_CODE
     if any(isinstance(v, HostAuthoredArtifactViolation) for v in violations):
         return HOST_AUTHORED_ARTIFACT_EXIT_CODE
+    if any(isinstance(v, DeviceKernelsAbsentViolation) for v in violations):
+        return DEVICE_KERNELS_ABSENT_EXIT_CODE
     return 1
 
 
@@ -6186,6 +6193,120 @@ def _validate_run_program_inputs(
                     f"'s bin directory ({_build_bin_abs!s}). Mixed-build "
                     f"attribution is not permitted."
                 )
+
+
+def _validate_device_kernel_execution(
+    repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
+) -> None:
+    """Issue #307: on a node whose target's parallel backend declares `device_trace`, every
+    kernel the node's sources define must have executed on the device in the traced run.
+
+    The run is traced at `Validate.execute` (`host_execution.launch_shape`), and the conductor
+    promotes the trace's per-kernel summary to `<node_dir>/kernel_trace.csv` with the command
+    that wrote it in `trial_meta.json#kernel_trace`. The kernels REQUIRED are the ones the
+    source defines (the parallel backend's `defined_kernels` over every source of the target's
+    language under `src_dir` — a dependency's source is not there);
+    the kernels that RAN are the summary's rows (`kernel_instances`). Both spellings are the
+    backend's; this function holds names and counts.
+
+    Whether the gate applies is decided by the pipeline's TARGET, never by the record: a run
+    whose `trial_meta` says nothing about a trace is refused, not exempted. A node whose
+    sources define no kernel is asked nothing — a plan declaring `"model": "none"`, a harness —
+    since the rule is "what is defined must run", and the plan's honesty is `Generate.verify`
+    G6's.
+
+    Two failure shapes, routed differently (`_exit_code_for_violations`):
+
+    * the summary records NO kernel while the sources define some: `DeviceKernelsAbsentViolation`
+      (exit 6, terminal). The measured cause is the environment — every launch of #306's billed
+      run failed because the site's device and driver could not run the binary as built — and a
+      warm Generate retry rebuilds nothing that changes that. The content cause (every kernel dead) is what the `Generate.gate` presence
+      floor and verify G6 hold first;
+    * some defined kernels have no row: an ordinary violation, a content failure routed back to
+      Generate — the model defines a kernel the cases do not launch.
+
+    A summary that is missing, unreadable, or not provably written by the recorded summary
+    command is an ordinary violation too: the conductor refuses a failed or absent summary
+    before this gate runs (`deterministic_validate_error`), so reaching one here is a record
+    that disagrees with that path."""
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    if target is None:
+        return  # refused by `_validate_pipeline_targets_resolve`
+    backend = target.parallel_backend
+    if "device_trace" not in backend_registry.get("parallel", backend).backend_provides:
+        return
+    trace = backend_registry.capability_module("parallel", backend, "device_trace")
+    # A language without a source reader has already been refused on this src_dir
+    # (`_validate_generate_outputs`), hence the discarded sink.
+    source_reading = _language_source_reading(target.toolchain["language"], src_dir, [])
+    if source_reading is None:
+        return
+    # Every regular source of the target's language under `src/`, at any depth, links not
+    # followed: the suffixes are the language's (`MODULE_SOURCE_SUFFIXES`, part of the capability
+    # contract), so a language without kernels gives none rather than a missing reader.
+    suffixes = {str(x).lower() for x in source_reading.MODULE_SOURCE_SUFFIXES}
+    defined: set[str] = set()
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.suffix.lower() in suffixes:
+            defined.update(
+                trace.defined_kernels(path.read_text(encoding="utf-8", errors="ignore")))
+    if not defined:
+        return
+
+    trial_meta_path = execution.node_dir / "trial_meta.json"
+    if not trial_meta_path.exists():
+        return  # no run record; `_validate_trial_meta` reports it
+    try:
+        data = _read_json(trial_meta_path)
+    except (OSError, ValueError):
+        return  # an unreadable record; `_validate_trial_meta` reports it
+    if not isinstance(data, dict):
+        return
+    summary = execution.node_dir / host_execution.KERNEL_TRACE_ARTIFACT
+    ref = data.get("kernel_trace")
+    expected_argv = [str(a) for a in trace.summary_argv(host_execution.KERNEL_TRACE_STEM)]
+    record = None
+    if (isinstance(ref, dict) and ref.get("artifact") == host_execution.KERNEL_TRACE_ARTIFACT
+            and isinstance(ref.get("command_id"), str)
+            and ref.get("command_log_ref") == _canonical_log_ref_for_run_program(
+                trial_meta_path, repo_root)):
+        record = _find_command_log_record(repo_root, ref["command_id"], ref["command_log_ref"])
+    if (record is None or record.get("tool_name") != "run_program"
+            or record.get("ok") is not True or record.get("command") != expected_argv):
+        violations.append(
+            f"{trial_meta_path}: kernel_trace must name {host_execution.KERNEL_TRACE_ARTIFACT!r} "
+            f"and a successful run_program record in this node's command log whose command is "
+            f"the target's trace summary {expected_argv!r} (got {ref!r}); a run of this target "
+            f"is traced at Validate.execute, and nothing here says the summary was written by it")
+        return
+    if not summary.is_file():
+        violations.append(
+            f"{summary}: the device trace summary is missing — a run of this target is traced "
+            f"at Validate.execute and the conductor promotes the summary here")
+        return
+    try:
+        instances = trace.kernel_instances(summary.read_text(encoding="utf-8", errors="replace"))
+    except trace.SummaryUnreadable as exc:
+        violations.append(f"{summary}: {exc}")
+        return
+    if instances is None:
+        violations.append(DeviceKernelsAbsentViolation(
+            f"{summary}: the traced run recorded no kernel on the device, while the node's "
+            f"sources define {sorted(defined)}. Either no launch reached the device — check the "
+            f"device and driver at the site that ran it against the toolchain the binary was "
+            f"built with (`tools/site_smoke.py --target <target_id> --gpu --ship <the built "
+            f"binary>`), then `--resume` — or the model launches none of the kernels it defines "
+            f"(then `--rederive generate`). A GPU implementation none of whose kernels ran is "
+            f"not certified; see docs/backends/parallel/{backend}/DEVICE_TRACE.md"))
+        return
+    never = sorted(k for k in defined if instances.get(k, 0) < 1)
+    if never:
+        violations.append(
+            f"{summary}: kernels the node's sources define never executed on the device: "
+            f"{never} (kernels the trace recorded: {sorted(instances)}). Every kernel the model "
+            f"defines must be launched by at least one case the run covers — one launched only "
+            f"on a path no case takes did not run — so launch it on a path the cases take, or "
+            f"remove it")
 
 
 def _validate_quality_check_commands(
@@ -9328,6 +9449,27 @@ class HostAuthoredArtifactViolation(str):
     """
 
 
+#: `main`'s exit code when a traced run recorded no kernel on the device while the node's sources
+#: define some (`_validate_device_kernel_execution`, issue #307). The measured cause is the
+#: environment — a binary the site's device and driver could not run, whose every launch
+#: failed — which no re-authored source clears, so the conductor routes it TERMINAL (`device_kernels_absent`).
+#: A run in which SOME defined kernels ran is an ordinary violation (1): that is the model's.
+#: Distinct from 0/1/2/3/4/5, so a caller tells all seven apart without reading the output.
+DEVICE_KERNELS_ABSENT_EXIT_CODE = 6
+
+
+class DeviceKernelsAbsentViolation(str):
+    """A violation string whose TYPE says the traced run executed no kernel on the device.
+
+    Same channel as :class:`StaleDependencyIRViolation` and :class:`HostAuthoredArtifactViolation`:
+    the message embeds a path, so nothing scans it; ``main`` maps the presence of an instance to
+    :data:`DEVICE_KERNELS_ABSENT_EXIT_CODE`. Constructed at one site, the branch that read an
+    empty kernel summary against a non-empty set of defined kernels. The same LIMIT holds: a
+    rebuilt ``violations`` list drops the type back to exit code 1, which
+    ``test_the_cli_answers_6_in_a_real_subprocess`` would catch.
+    """
+
+
 def _as_host_authored(violation: str, producer: str) -> HostAuthoredArtifactViolation:
     """Wrap one violation as host-authored and append the sentence that says what to do.
 
@@ -10507,6 +10649,10 @@ def _validate_impl(
                 known_case_ids=_case_ids_for_execution(repo_root, execution),
             )
         _validate_run_program_inputs(repo_root, execution, violations)
+        # Per execution, not per source: each run carries its own trace (issue #307).
+        if in_scope_src_dir is not None:
+            _validate_device_kernel_execution(
+                repo_root, execution, in_scope_src_dir, violations)
         _validate_quality_check_commands(repo_root, execution, violations)
         _validate_tests_verdict_summary_consistency(
             repo_root, execution, violations, require_verdict=require_verdict
@@ -10712,10 +10858,13 @@ def main(argv: list[str] | None = None) -> int:
             "IR — re-certify, do not re-author\n"
             f"  {HOST_AUTHORED_ARTIFACT_EXIT_CODE}  a violation's subject is a file this "
             "repository authors, not the leaf — fix the producer\n"
+            f"  {DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none of the kernels "
+            "the node defines — check the device\n"
             "\n"
-            "Codes 3, 4 and 5 name conditions no re-authored source can clear, so a caller\n"
-            "routes them TERMINAL. They are answered by the branch that knows; nothing in the\n"
-            "output text carries the decision.\n"
+            "A caller routes codes 3 to 6 TERMINAL: 3, 4 and 5 name conditions no re-authored\n"
+            "source can clear, and 6 one whose measured cause is the site's device and\n"
+            "driver, which a retry meets again. They are answered by the branch that knows;\n"
+            "nothing in the output text carries the decision.\n"
         ),
     )
     parser.add_argument("--repo-root", default=".")

@@ -517,9 +517,17 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # written beside it pinned only that one, so the set the route actually consulted had no witness
 # — which is why the rule is now a property of the mechanism instead of a list.
 # Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
+#
+# `device_kernels_absent` (rc 6, issue #307) is this set's own: the traced run executed none of
+# the kernels the node's sources define. The measured cause is the environment — #306's billed
+# run certified a GPU model whose every launch had failed because the site's device and driver
+# could not run the binary as built — and a warm Generate retry changes neither, so it is terminal; the operator checks the
+# site (`tools/site_smoke.py --gpu`) and resumes. The content cause (a model that launches none
+# of its kernels) is what `Generate.gate`'s presence floor and verify G6 hold before a run is
+# reached. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
-     "host_authored_artifact_violation"}
+     "host_authored_artifact_violation", "device_kernels_absent"}
 )
 
 # The categories `GATE_FAILURE_TERMINAL` carries that Validate.execute has no counterpart for.
@@ -530,6 +538,10 @@ VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
 GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
     {"host_rendered_lint_findings", "lint_finding_unattributed"}
 )
+
+# The categories `VALIDATE_EXECUTE_FAILURE_TERMINAL` carries that Generate.gate has no
+# counterpart for: a run's device trace exists only at Validate.execute (issue #307).
+EXECUTE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset({"device_kernels_absent"})
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
 # no-category `validate_execute_fail` restart reason and of the per-test predicate reasons
@@ -11311,7 +11323,11 @@ class Conductor:
             # that the day this stage reports one, it fails closed rather than arriving as a warm
             # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
             # from the `problem` model gates that post_execute runs.
+            #
+            # rc 6 IS reachable, and is this stage's own: the traced run executed none of the
+            # kernels the node defines (`_validate_device_kernel_execution`, issue #307).
             from tools.validate_pipeline_semantics import (
+                DEVICE_KERNELS_ABSENT_EXIT_CODE,
                 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                 HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                 STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -11322,6 +11338,8 @@ class Conductor:
                 failure_category = "stale_dependency_ir"
             elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                 failure_category = "host_authored_artifact_violation"
+            elif gate.returncode == DEVICE_KERNELS_ABSENT_EXIT_CODE:
+                failure_category = "device_kernels_absent"
             elif gate.returncode != 0:
                 failure_category = "post_execute_violation"
             elif snapshot_gap:
@@ -12428,7 +12446,10 @@ class Conductor:
         # pre_judge gate reports one, it fails closed rather than being graded by the bullet
         # rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
+        # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
+        # post_execute stage already passed, so it is reached only if the two stages disagree.
         from tools.validate_pipeline_semantics import (
+            DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -12437,6 +12458,7 @@ class Conductor:
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
             STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
             HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
+            DEVICE_KERNELS_ABSENT_EXIT_CODE: "device_kernels_absent",
         }.get(gate.returncode)
         if terminal_category:
             self._write_run_node_meta(refs, "post_judge_meta.json", {

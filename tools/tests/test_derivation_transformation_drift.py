@@ -565,7 +565,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # And in round 3: `host_execution.launch_argv_prefix`, the prefix the post-execute gate admits;
     # and the summary failure's message names the backend's document (round 4: not the run
     # directory, which the tmp cleanup removes); trace.py cites the site measurement.
-    "execute-6": "3cddccc0691a4d702b6bae0cd7e7aa05fadc4efaad92e6404188e54fc0222d20",
+    # Re-pinned in issue #307 PR-3, before any run was stamped execute-6 (none in the workspace):
+    # `_execute_inproc` maps the post_execute validator's new exit code 6 to the terminal
+    # `device_kernels_absent`. No validator before PR-3 answered 6, so what the pinned code
+    # produced for any earlier answer is unchanged; the gate itself is the validator's, outside
+    # this tuple.
+    "execute-6": "0ccc055055c1059c71636bd6878d9114c55efffc8d3e0ba11befe65b0fbbfa9c",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
