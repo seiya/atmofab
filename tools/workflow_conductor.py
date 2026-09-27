@@ -1552,6 +1552,7 @@ def build_launch_request(
     pure_context: dict[str, str] | None = None,
     pure_shape: str = "",
     pure_language: str = "",
+    pure_parallel: str = "",
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1885,6 +1886,9 @@ def build_launch_request(
         # renderer holds the request and no target.
         if pure_language:
             req["pure_language"] = pure_language
+        # ...and the target parallel backend its `{{parallel:<name>}}` markers are (issue #316).
+        if pure_parallel:
+            req["pure_parallel"] = pure_parallel
         if pure_context is not None:
             req["pure_context"] = dict(pure_context)
     return req
@@ -5455,6 +5459,12 @@ class Conductor:
         and Validate's judge reads output documents, so neither is told one."""
         return str(self.target.toolchain["language"]) if phase == "generate" else ""
 
+    def _pure_parallel(self, phase: str) -> str:
+        """The parallel backend a pure launch of `phase` composes its template for: the
+        target's, on the phase whose templates carry `{{parallel:<name>}}` markers (`generate`),
+        for the reason `_pure_language` gives."""
+        return str(self.target.parallel_backend) if phase == "generate" else ""
+
     def _checks_abi_binding_text(self) -> str:
         """The target language's binding of the checks-module contract (`checks_abi`), whole.
 
@@ -7581,6 +7591,7 @@ class Conductor:
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
                 pure_language=self._pure_language(phase),
+                pure_parallel=self._pure_parallel(phase),
                 # On a warm reuse repair the resumed session already holds the context, so it is
                 # omitted — but ONLY when the validator's exemption holds (warm + reuse +
                 # findings). A cold launch, or a cold-fallback repair (session GC'd), carries the
@@ -8393,6 +8404,7 @@ class Conductor:
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
                 pure_language=self._pure_language(phase),
+                pure_parallel=self._pure_parallel(phase),
                 # Same context-omission rule as the producer: a warm reuse repair's resumed session
                 # already holds the context (the validator exempts it); a cold launch or a
                 # cold-fallback repair (session GC'd) carries the full context.

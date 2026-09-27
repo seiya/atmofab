@@ -9,6 +9,8 @@ Submodules, by capability. Each is imported below so a caller that reached this 
 * `directives` — the `parallel_directives` capability: the `Generate.static` presence floor (when
   it applies, how a directive is spelled in a node's language, when a lowering plan declines the
   model).
+* `prompts` — the `prompt_fragments` capability: the text a pure `generate` template's
+  `{{parallel:<name>}}` markers are replaced with.
 """
 
 from tools.backends.parallel.openmp import (
@@ -16,4 +18,7 @@ from tools.backends.parallel.openmp import (
 )
 from tools.backends.parallel.openmp import (
     execution as execution,  # noqa: F401  (re-export)
+)
+from tools.backends.parallel.openmp import (
+    prompts as prompts,  # noqa: F401  (re-export)
 )

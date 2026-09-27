@@ -625,7 +625,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # target — `trial_meta.json#environment.ranks`, `quality_check.json#comparison.{reference,
     # candidate}.ranks` and, under a launcher, `environment.platform.parallel_runtime`. A bump:
     # a certified execute-7 record has none of them, and the post-execute gate reads them.
-    "execute-8": "f144238e30606cab3371c69c987cfd6463472b0c4330ae6ec85878bebbc4a417",
+    # Re-pinned by R4-c PR-2 (issue #316): the `parallel/openmp` record and package — members
+    # through the registry's launch capabilities — gain `prompt_fragments` and its `prompts`
+    # re-export. Neither is read by the launch, so what Validate.execute produces is unchanged.
+    "execute-8": "fedfe66b22fa9804fb518c733129e3fc9ffb467a4a28481af6f37c318c05eb62",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

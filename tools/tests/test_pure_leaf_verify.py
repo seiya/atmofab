@@ -846,6 +846,8 @@ class PureVerifySubstepTests(unittest.TestCase):
         import tools.orchestration_runtime as ort
         for request in c.requests:
             self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
+            # ...and the parallel backend its `{{parallel:<name>}}` markers are (issue #316).
+            self.assertEqual(request.get("pure_parallel"), c.target.parallel_backend)
             ort._pure_launch_template(request)  # composes, i.e. does not raise
 
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
@@ -1224,6 +1226,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         import tools.orchestration_runtime as ort
         req = {"leaf_mode": "pure", "step": "generate", "substep": "verify",
                "pure_language": "fortran",
+               "pure_parallel": "openmp",
                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
         text = ort._pure_output_contract_text(req)
         self.assertTrue(text.startswith("Output contract"))

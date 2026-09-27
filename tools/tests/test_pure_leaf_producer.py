@@ -2304,6 +2304,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         req = {
             "leaf_mode": "pure", "step": "generate", "substep": "generate",
             "pure_language": "fortran",
+            "pure_parallel": "openmp",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "repair_findings": "capability_requirements missing",
@@ -3245,6 +3246,7 @@ class PureHarnessShapeTests(unittest.TestCase):
             # as `run_substep` passes it: the harness template carries a language fragment
             # since the R4-b PR-4 preconditions (issue #289)
             pure_language=self.c._pure_language("generate"),
+            pure_parallel=self.c._pure_parallel("generate"),
             pure_context=self.c._build_pure_harness_context(self.refs))
         self.assertEqual(req["pure_shape"], "harness")
         self.assertNotIn("runner_host_authored", req)

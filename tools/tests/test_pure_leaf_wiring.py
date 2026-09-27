@@ -180,6 +180,7 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
         "leaf_mode": "pure",
         # The target language the generate templates are composed for (issue #289).
         "pure_language": "fortran",
+        "pure_parallel": "openmp",
         "agent_model": "opus",
         # DERIVED from the step, not fixed: `build`'s child is a `step` agent, and
         # record-launch refuses a role that disagrees with `STEP_REQUIRED_CHILD_AGENT`. The
@@ -1401,6 +1402,10 @@ class PureRenderTests(unittest.TestCase):
         # `cuda_cpp` component / problem node's producer and reviewer are handed.
         ("tools/prompt_templates/backends/language/cuda_cpp/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/language/cuda_cpp/generate_verify.txt", None, None),
+        # Issue #316 (R4-c PR-2): the parallel model's fragment files, composed after the
+        # language's into the physics producer's and reviewer's templates.
+        ("tools/prompt_templates/backends/parallel/openmp/generate_generate.txt", None, None),
+        ("tools/prompt_templates/backends/parallel/openmp/generate_verify.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify_harness.txt",
          None, None),
         # Round 5 found the tuple short of its own docstring twice over.
@@ -1969,7 +1974,8 @@ class PureRenderTests(unittest.TestCase):
                 kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
                           runner_host_authored=True,
                           # The conductor names the target language on a generate launch only.
-                          pure_language=("fortran" if step == "generate" else ""))
+                          pure_language=("fortran" if step == "generate" else ""),
+                          pure_parallel=("openmp" if step == "generate" else ""))
                 extra: dict = {}
                 if shape in self._RENDER_COLD_SHAPES:
                     kw["pure_context"] = ctx
@@ -3270,3 +3276,135 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
                          FORTRAN_CPU.toolchain["language"])
         for phase in ("compile", "validate"):
             self.assertEqual(wc.Conductor._pure_language(holder, phase), "", phase)
+
+
+class ParallelFragmentCompositionTests(unittest.TestCase):
+    """The generate templates carry `{{parallel:<name>}}` markers the host composes with the
+    target parallel backend's `prompt_fragments`, after the language's (issue #316, R4-c PR-2).
+    A backend that declares no fragments composes every marker to nothing; every other failure
+    is a NAMED refusal, as for a language."""
+
+    _KEYS = ("pure generate.generate", "pure generate.verify")
+    #: The opening words of the OpenMP floor paragraph in each template (the fragment's text).
+    _OPENMP_FLOOR = {
+        "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
+        "pure generate.verify": "on a `component`/`problem` node whose target is cpu+openmp+",
+    }
+
+    @staticmethod
+    def _openmp_section(key: str) -> str:
+        raw = ort._load_launch_prompt_templates()[key]
+        stem = ort._PROMPT_TEMPLATE_FILES[key].removeprefix("pure_").removesuffix(".txt")
+        return ort.backend_registry.capability_module(
+            "parallel", "openmp", "prompt_fragments").fragments(stem)[
+                ort._PARALLEL_FRAGMENT_RE.findall(raw)[0]]
+
+    def _compose(self, key: str, language: str, parallel: object) -> str:
+        return ort._compose_fragments(
+            ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
+            {"pure_language": language, "pure_parallel": parallel})
+
+    def test_each_generate_template_carries_one_marker_right_after_its_language_marker(
+            self) -> None:
+        for key, name in (("pure generate.generate", "target_lowering_floor"),
+                          ("pure generate.verify", "checklist_g6_floor_scope")):
+            with self.subTest(template=key):
+                raw = ort._load_launch_prompt_templates()[key]
+                self.assertEqual(ort._PARALLEL_FRAGMENT_RE.findall(raw), [name])
+                self.assertIn(f"{{{{language:{name}}}}}{{{{parallel:{name}}}}}", raw)
+
+    def test_no_other_template_carries_a_parallel_marker(self) -> None:
+        for key, raw in ort._load_launch_prompt_templates().items():
+            if key not in self._KEYS:
+                with self.subTest(template=key):
+                    self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(raw))
+
+    def test_the_openmp_floor_reaches_a_fortran_openmp_leaf_and_no_other(self) -> None:
+        for key in self._KEYS:
+            with self.subTest(template=key):
+                composed = composed_pure_template(key)
+                self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(composed))
+                self.assertNotIn("{{", composed)
+                self.assertIn(self._OPENMP_FLOOR[key], composed)
+                self.assertIn("!$omp", composed)
+                # A model that declares no fragments says nothing: the marker composes away,
+                # and the OpenMP paragraph — which the language fragment used to carry for
+                # every Fortran target — is not stated for a model it does not govern.
+                for parallel in ("none", "mpi"):
+                    other = self._compose(key, "fortran", parallel)
+                    self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(other), parallel)
+                    self.assertNotIn(self._OPENMP_FLOOR[key], other, parallel)
+                    self.assertNotIn("!$omp", other, parallel)
+                    # ...and the rest of the prompt is the OpenMP one with the paragraph out.
+                    self.assertEqual(other, composed.replace(self._openmp_section(key), ""),
+                                     parallel)
+
+    def test_composition_refuses_every_way_it_can_fail(self) -> None:
+        template = "a {{parallel:target_lowering_floor}} b"
+        for absent in ("", None, "  "):
+            with self.subTest(parallel=absent):
+                with self.assertRaises(ValueError) as caught:
+                    ort._compose_parallel_fragments(
+                        template, "pure_generate_generate.txt", absent)
+                self.assertIn("carries no `pure_parallel`", str(caught.exception))
+        # An open-vocabulary token with no record is refused rather than composed to nothing.
+        with self.assertRaises(ValueError) as caught:
+            ort._compose_parallel_fragments(template, "pure_generate_generate.txt", "zz_model")
+        self.assertIn("cannot be composed for parallel backend 'zz_model'", str(caught.exception))
+        # A backend that declares `prompt_fragments`: a marker it defines no section for, and a
+        # template it has no fragment file for, are both refused.
+        with self.assertRaises(ValueError) as caught:
+            ort._compose_parallel_fragments(
+                "a {{parallel:no_such_rule}} b", "pure_generate_generate.txt", "openmp")
+        self.assertIn("parallel backend 'openmp' defines no fragment for no_such_rule",
+                      str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            ort._compose_parallel_fragments(template, "pure_validate_judge.txt", "openmp")
+        self.assertIn("cannot be composed for parallel backend 'openmp'", str(caught.exception))
+        self.assertIn("no openmp prompt fragments for 'validate_judge'", str(caught.exception))
+        # A template with no marker asks nothing — no backend is needed to render it.
+        self.assertEqual("plain", ort._compose_parallel_fragments("plain", "x.txt", None))
+
+    def test_a_backend_without_fragments_composes_to_nothing_and_one_with_them_does_not(
+            self) -> None:
+        """The empty-string answer is decided by the REGISTRY's declaration, per value: the
+        cases below are every declared `parallel` value, so a new one is classified here."""
+        template = "a{{parallel:target_lowering_floor}}b"
+        for backend in ort.backend_registry.backend_ids("parallel"):
+            with self.subTest(parallel=backend):
+                composed = ort._compose_parallel_fragments(
+                    template, "pure_generate_generate.txt", backend)
+                if ort.backend_registry.provides("parallel", backend, "prompt_fragments"):
+                    self.assertNotEqual(composed, "ab")
+                else:
+                    self.assertEqual(composed, "ab")
+        self.assertTrue(ort.backend_registry.provides("parallel", "openmp", "prompt_fragments"))
+
+    def test_the_render_refuses_a_generate_launch_that_names_no_parallel_backend(self) -> None:
+        req = _pure_request("generate")
+        req.pop("pure_parallel")
+        with self.assertRaises(ValueError) as caught:
+            ort.prepare_launch_request_payload(req)
+        self.assertIn("carries no `pure_parallel`", str(caught.exception))
+
+    def test_a_malformed_parallel_backend_is_refused_by_the_validator(self) -> None:
+        for bad in ("", "  ", 3):
+            with self.subTest(pure_parallel=bad):
+                req = _pure_request("generate", pure_parallel=bad)
+                with self.assertRaises(ValueError) as caught:
+                    ort._validate_pure_launch_request_payload(req)
+                self.assertIn("pure_parallel must be a non-empty string", str(caught.exception))
+
+    def test_the_conductor_names_the_target_parallel_backend_on_a_generate_launch_only(
+            self) -> None:
+        from types import SimpleNamespace
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        from tools import target_profile as tp
+        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        for profile in (FORTRAN_CPU, cuda):
+            holder = SimpleNamespace(target=profile)
+            self.assertEqual(wc.Conductor._pure_parallel(holder, "generate"),
+                             profile.parallel_backend)
+            for phase in ("compile", "validate"):
+                self.assertEqual(wc.Conductor._pure_parallel(holder, phase), "", phase)
+        self.assertNotEqual(FORTRAN_CPU.parallel_backend, cuda.parallel_backend)
