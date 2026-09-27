@@ -37,9 +37,9 @@ member. One LIMIT, stated rather than implied:
 A parallel backend that declares `compiler_wrapper` (issue #316) adds its wrapper: the build
 control file's compiler variable and the syntax stage's `argv[0]` are that program, so it is
 needed from the first `Generate.gate`. `parallel_toolchain_problems` then asks the two questions
-a resolved wrapper can still fail: whether it compiles the backend's binding canary, and — when
-the backend's launcher resolves too — whether a program it builds, started under that launcher,
-runs as one run.
+a resolved wrapper can still fail: whether it compiles the backend's binding canary, and — for a
+run that starts the binary under the backend's launcher with more than one rank, when the
+launcher resolves — whether a program it builds, started under that launcher, runs as one run.
 
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
@@ -197,6 +197,21 @@ def _parallel_capability_module(backend_id: str, capability: str):
 BINDING_CANARY_TIMEOUT_SEC = 120
 
 
+#: How much of a refusing launcher's message a problem carries: its HEAD, which is where a
+#: launcher states why it refused (Open MPI 4.1.2 opens a 1398-byte slot refusal with "There are
+#: not enough slots available in the system to satisfy the 2 slots" and closes it with advice
+#: about options; its last 600 characters held none of the diagnosis, measured round 3).
+LAUNCHER_MESSAGE_HEAD_CHARS = 1500
+
+
+def _head(text: str) -> str:
+    """`text` stripped and cut to `LAUNCHER_MESSAGE_HEAD_CHARS`, marking a cut."""
+    text = text.strip()
+    if len(text) <= LAUNCHER_MESSAGE_HEAD_CHARS:
+        return text
+    return text[:LAUNCHER_MESSAGE_HEAD_CHARS] + " [...]"
+
+
 def _canary_run(argv: list[str], cwd: str) -> subprocess.CompletedProcess | str:
     """Run one canary command; its completed process, or why it could not run."""
     try:
@@ -283,7 +298,7 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
         if isinstance(launched, str) or launched.returncode != 0:
             detail = launched if isinstance(launched, str) else (
                 f"exit {launched.returncode}: "
-                f"{(launched.stderr or launched.stdout or '').strip()[-600:]}")
+                f"{_head(launched.stderr or launched.stdout or '')}")
             return [f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
                     f"{ranks} ranks is started the same way at Validate.execute"]
         problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "")

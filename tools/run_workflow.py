@@ -3010,13 +3010,14 @@ def _run_main(
     from tools.host_prerequisites import parallel_toolchain_problems
 
     # The launch half is asked of a run that starts the binary under the launcher: one that
-    # reaches `Validate`, or drives a dependency there (`--with-deps` drives every member to
-    # `Validate` unless the run stops at `Compile`).
+    # reaches `Validate`, or drives a dependency there — a `--with-deps` run, or the resume of
+    # one (`resume_is_closure`, which takes no `--with-deps`), drives every member to
+    # `Validate` unless it stops at `Compile` (`_run_with_dependency_closure`).
     from tools.target_profile import NON_EXECUTING_PHASES
 
     phase = str(until_phase or "").strip().lower()
-    launches = phase not in NON_EXECUTING_PHASES or (
-        bool(getattr(args, "with_deps", False)) and phase != "compile")
+    drives_closure = bool(getattr(args, "with_deps", False)) or resume_is_closure
+    launches = phase not in NON_EXECUTING_PHASES or (drives_closure and phase != "compile")
     toolchain_problems = parallel_toolchain_problems(
         _host_probe_selection(target_profile), launches=launches, ranks=target_profile.ranks)
     if toolchain_problems:

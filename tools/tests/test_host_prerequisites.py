@@ -744,6 +744,18 @@ class ParallelToolchainTests(unittest.TestCase):
         self.assertIn(f"with {ranks} processes did not complete (exit 3: There are not enough "
                       f"slots available)", problems[0])
         self.assertNotIn("one mpi installation", problems[0])
+        # A long refusal keeps its HEAD, where a launcher states why (round 3: Open MPI's
+        # slot refusal opens with the reason and closes with option advice).
+        filler = "x" * (hp.LAUNCHER_MESSAGE_HEAD_CHARS * 2)
+        self._program("inst", self.launcher.EXECUTABLE,
+                      f'echo "There are not enough slots available" >&2; echo "{filler}" >&2; '
+                      'exit 1')
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertGreater(len(filler), hp.LAUNCHER_MESSAGE_HEAD_CHARS)
+        self.assertIn("(exit 1: There are not enough slots available", problems[0])
+        self.assertIn("[...]", problems[0])
+        self.assertLess(len(problems[0]), hp.LAUNCHER_MESSAGE_HEAD_CHARS + 600)
         self._program("inst", self.launcher.EXECUTABLE, "exec /usr/bin/tail -f /dev/null")
         with self._path("inst"), mock.patch.object(hp, "BINDING_CANARY_TIMEOUT_SEC", 1):
             problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)

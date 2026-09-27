@@ -3349,6 +3349,44 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(closure_kwargs["rederive"], frozenset({"build"}))
 
+    def test_a_closure_resume_is_asked_the_launch_half_of_the_toolchain_probe(self) -> None:
+        """Issue #316 round 3: the resume of a `--with-deps` run takes no `--with-deps`, and the
+        closure driver still takes every member to Validate unless the closure stops at
+        Compile — so the startup probe must be told the run launches, as the fresh
+        `--with-deps` run it resumes was."""
+        from tools import host_prerequisites
+        for closure_until, expected in (("Build", True), ("Validate", True),
+                                        ("Compile", False)):
+            seen: list[bool] = []
+
+            def problems(selection, *, launches, ranks, seen=seen):
+                seen.append(launches)
+                return []
+
+            with self.subTest(closure_until=closure_until), \
+                    tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                self._seed_closure_target_specs(repo_root)
+                self._seed_resumable_orchestration(
+                    repo_root, "orch_target", spec_ref="spec/component/c",
+                    until_phase=closure_until, mode="dev", backend="claude",
+                    source_dependency_ref="spec/component/c/deps.yaml",
+                    invocation={
+                        "closure_id": "orch_target",
+                        "closure_target_spec_ref": "spec/problem/a",
+                        "closure_until_phase": closure_until,
+                    },
+                )
+                with mock.patch.object(host_prerequisites, "parallel_toolchain_problems",
+                                       problems):
+                    code, closure_kwargs, _ = self._run_main_with_closure_spy(
+                        ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"])
+                self.assertEqual(code, 0)
+                self.assertIsNotNone(closure_kwargs, "should enter the closure driver")
+                self.assertEqual(closure_kwargs["until_phase"], closure_until)
+                self.assertEqual(seen, [expected])
+
     def test_resume_without_closure_uses_single_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
