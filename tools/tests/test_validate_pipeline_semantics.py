@@ -26222,8 +26222,9 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
                 self.assertEqual(1, len(violations), violations)
                 self.assertIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
                 self.assertIn("['flux_kernel', 'update_kernel']", violations[0])
-                self.assertIn("tools/site_smoke.py", violations[0])
-                self.assertIn("--rederive generate", violations[0])
+                self.assertIn("DEVICE_TRACE.md §5", violations[0])
+                self.assertIn("`--resume`", violations[0])
+                self.assertIn("`--rederive generate`", violations[0])
                 self.assertEqual(vps.DEVICE_KERNELS_ABSENT_EXIT_CODE,
                                  vps._exit_code_for_violations(violations))
                 self.assertEqual(6, vps.DEVICE_KERNELS_ABSENT_EXIT_CODE)

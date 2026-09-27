@@ -160,16 +160,23 @@ the summary's rows (`kernel_instances`):
   which failed at the site (`the provided PTX was compiled with an unsupported toolchain`), and a
   model that recomputed the result on the host passed `Validate`. #306 made an unstated gpu
   architecture `-arch=all` (`spec/targets/cpp_gpu.yaml`). To recover:
-  1. Build a minimal kernel here with the target's compiler and flags, and run it at the site
-     under the trace (`tools/site_smoke.py --target <target_id> --gpu --ship <binary> --cmd '…'`
-     with §1's two commands; issue #307 comment 5851969504 shows the commands). An empty summary
-     with `SKIPPED: … does not contain CUDA kernel data.` reproduces the failure. A minimal kernel
-     that checks `cudaGetLastError()` after its launch and prints `cudaGetErrorString` names the
-     cause; the node's own binary need not print anything.
+  1. Build a minimal kernel here with the target's compiler and flags — one that checks
+     `cudaGetLastError()` after its launch and prints `cudaGetErrorString`, so it names the cause;
+     the node's own binary need not print anything — and run it under §1's two commands where
+     the run executed. At the local site that is a scratch directory on this host
+     (`tools/site_smoke.py` refuses the local site). At a remote one it is
+     `tools/site_smoke.py --target <target_id> --gpu --ship <binary> --cmd 'cd "$JOB" && <§1's
+     two commands>'`: without `--cmd` the job only prints `OK` and the host name, and without
+     `--gpu` the site's device is not recorded (issue #307 comment 5851969504 shows the commands
+     run that way). An empty summary with `SKIPPED: … does not contain CUDA kernel data.`
+     reproduces the failure.
   2. Fix the device, the driver or the target's `hardware.architecture` / toolchain, then
      `--resume`.
-  3. If the minimal kernel runs and the node's still does not, the model launches none of the
-     kernels it defines: `--rederive generate`.
+  3. If the minimal kernel runs and the node's still does not, the cause is the model's: it
+     launches none of the kernels it defines, or every launch it makes fails on its own account
+     (an invalid launch configuration, such as more threads per block than the device allows —
+     CUDA runs no kernel for such a launch; not measured under the trace). `--rederive generate`. These reach this class too, because the gate sees no kernel either
+     way; the category is terminal because the measured case is the site's.
 - Some defined kernels have no row: an ordinary violation (`post_execute_violation`), routed back
   to `Generate` with the names. The model defines a kernel that no case the run covers launches —
   dead, or launched only on a path the cases do not take — and either launches it where a case

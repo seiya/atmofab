@@ -521,9 +521,11 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `device_kernels_absent` (rc 6, issue #307) is this set's own: the traced run executed none of
 # the kernels the node's sources define. The measured cause is the environment — #306's billed
 # run certified a GPU model whose every launch had failed because the site's device and driver
-# could not run the binary as built — and a warm Generate retry changes neither, so it is terminal; the operator checks the
-# site (`tools/site_smoke.py --gpu`) and resumes. The content cause (a model that launches none
-# of its kernels) is what `Generate.gate`'s presence floor and verify G6 hold before a run is
+# could not run the binary as built — and a warm Generate retry changes neither, so it is
+# terminal; the operator runs a minimal kernel where the run executed and resumes. A model whose
+# every launch fails on its own account (an invalid launch configuration) reaches this class too;
+# the remedy names `--rederive generate` for it, as it does for a model that launches none of
+# its kernels, which `Generate.gate`'s presence floor and verify G6 hold before a run is
 # reached. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",

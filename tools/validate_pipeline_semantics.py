@@ -6220,8 +6220,10 @@ def _validate_device_kernel_execution(
     * the summary records NO kernel while the sources define some: `DeviceKernelsAbsentViolation`
       (exit 6, terminal). The measured cause is the environment — every launch of #306's billed
       run failed because the site's device and driver could not run the binary as built — and a
-      warm Generate retry rebuilds nothing that changes that. The content cause (every kernel dead) is what the `Generate.gate` presence
-      floor and verify G6 hold first;
+      warm Generate retry rebuilds nothing that changes that. Two content causes reach it too:
+      every kernel dead, which the `Generate.gate` presence floor and verify G6 hold first, and
+      every launch failing on the model's own account (an invalid launch configuration), which
+      nothing before the run holds; the remedy names `--rederive generate` for both;
     * some defined kernels have no row: an ordinary violation, a content failure routed back to
       Generate — the model defines a kernel the cases do not launch.
 
@@ -6292,12 +6294,14 @@ def _validate_device_kernel_execution(
     if instances is None:
         violations.append(DeviceKernelsAbsentViolation(
             f"{summary}: the traced run recorded no kernel on the device, while the node's "
-            f"sources define {sorted(defined)}. Either no launch reached the device — check the "
-            f"device and driver at the site that ran it against the toolchain the binary was "
-            f"built with (`tools/site_smoke.py --target <target_id> --gpu --ship <the built "
-            f"binary>`), then `--resume` — or the model launches none of the kernels it defines "
-            f"(then `--rederive generate`). A GPU implementation none of whose kernels ran is "
-            f"not certified; see docs/backends/parallel/{backend}/DEVICE_TRACE.md"))
+            f"sources define {sorted(defined)}. Either the site's device and driver cannot run "
+            f"a kernel built with this toolchain — run a minimal kernel there under the trace, "
+            f"fix the site or the target, then `--resume` — or the model launches none of the "
+            f"kernels it defines, or every launch it makes fails on its own account (an invalid "
+            f"launch configuration) — then `--rederive generate`. "
+            f"docs/backends/parallel/{backend}/DEVICE_TRACE.md §5 gives the procedure for the "
+            f"local site and a remote one. A GPU implementation none of whose kernels ran is not "
+            f"certified"))
         return
     never = sorted(k for k in defined if instances.get(k, 0) < 1)
     if never:
