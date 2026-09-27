@@ -572,7 +572,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # this tuple.
     # And in PR-3 round 1: `defined_kernels` reads an attribute naming `global` as the keyword
     # (a reader no execute calls; the module is in the tuple as `device_trace`).
-    "execute-6": "b052d64cf32af84dde4b5045f2a291017076a0b31ff6649c100f9dda0c441a6c",
+    # And in round 2: `defined_kernels` resolves a mark to the declarator before the parameter
+    # list that follows it, and matches attributes by balanced brackets and by name.
+    "execute-6": "847ca881d462af9454ca5e42eb8a67c85372380b9456c5ab3241495ed6718558",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

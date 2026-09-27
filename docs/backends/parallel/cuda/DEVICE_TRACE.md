@@ -83,10 +83,20 @@ The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `M
   `SKIPPED: kernel_trace.sqlite does not contain CUDA kernel data.` and the exit code says
   nothing. The reader answers `None` for it (and for a header with no row).
 
-`defined_kernels` reads a CUDA C++ source for the names of the `__global__` functions it defines
-or declares, over the language backend's code view (comments and literal contents masked), with
-`__attribute__((…))`, `[[…]]` and the CUDA attributes `__launch_bounds__(…)`, `__cluster_dims__(…)` and `__maxnreg__(…)` blanked (by name: a kernel may be named `__k__`) so their parenthesis is not
-taken for the parameter list.
+`defined_kernels` reads a CUDA C++ source for the names of the kernels it defines or declares,
+over the language backend's code view (comments and literal contents masked):
+
+- A kernel is marked by the keyword `__global__` or by an attribute whose NAME is `global`
+  (`[[gnu::global]]`, `__attribute__((global))`; an argument that mentions `global` does not
+  count). Every other attribute — `[[…]]`, `__attribute__((…))`, `__launch_bounds__(…)`,
+  `__cluster_dims__(…)`, `__maxnreg__(…)`, the last three by name since a kernel may be named
+  `__k__` — is blanked with its balanced brackets, so its parenthesis is not taken for a
+  parameter list.
+- The name is the declarator before the first parameter list after the mark, read back from that
+  list: nvcc accepts the mark ahead of the return type, between the return type and the name, or
+  between the name and the list (`void k __global__ (int *)`, `auto k [[gnu::global]] (int *) ->
+  void`), and a parenthesized name (`__global__ void (k)(int *)`) — each measured to give an
+  entry symbol (issue #307 PR-3 rounds 1 and 2).
 
 Measured: on Nsight Systems 2026.3.2 without a GPU (issue #307 plan §0-2), and at the `cpp_gpu`
 site on Nsight Systems 2025.1.3 with an L40S (issue #307 comment 5851969504): the columns, the
