@@ -1597,13 +1597,92 @@ class DeviceTraceTests(unittest.TestCase):
         self.assertIn("stem_x", prefix)
         self.assertIn("--force-overwrite=true", prefix)
         summary = cuda_trace.summary_argv("stem_x")
-        self.assertEqual(summary[0], cuda_trace.EXECUTABLES[0])
+        # The stats command proper follows the fresh-output wrapper (below).
+        self.assertIn(cuda_trace.EXECUTABLES[0], summary)
+        self.assertEqual(summary[summary.index(cuda_trace.EXECUTABLES[0]) + 1], "stats")
         # It reads the report the prefix wrote, and writes under the same stem.
         self.assertEqual(summary[-1], "stem_x.nsys-rep")
         self.assertEqual(summary[summary.index("-o") + 1], "stem_x")
         for flag in ("--force-export=true", "--force-overwrite=true"):
             self.assertIn(flag, summary)
         self.assertEqual(summary[summary.index("-f") + 1], "csv")
+
+    def _run_summary(self, tmp: Path, fake_stats: str) -> subprocess.CompletedProcess:
+        """Run the real `summary_argv` in `tmp` with a stand-in for the trace's program on PATH,
+        whose body is `fake_stats` (a shell script)."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        fake = bindir / cuda_trace.EXECUTABLES[0]
+        fake.write_text("#!/bin/sh\n" + fake_stats)
+        fake.chmod(0o755)
+        import os
+        env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+        return subprocess.run(list(cuda_trace.summary_argv("kernel_trace")), cwd=tmp, env=env,
+                              capture_output=True, text=True, check=False)
+
+    def test_the_summary_command_empties_its_path_before_the_stats_run(self) -> None:
+        """Round 1: a READ-ONLY file at the summary's path survives `nsys stats
+        --force-overwrite=true`, which then exits 0 (measured on 2026.3.2). The command removes
+        whatever is there first, so a stats run that writes nothing leaves NO file (which the
+        host refuses) rather than the binary's."""
+        name = cuda_trace.summary_file("kernel_trace")
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            forged = tmp / name
+            forged.write_text("Instances,Name\n5,step_kernel(double *)\n")
+            forged.chmod(0o444)
+            # A stats run that fails to write, exiting 0 — the measured shape.
+            proc = self._run_summary(tmp, 'echo "ERROR: Unable to open output file"\nexit 0\n')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(forged.exists())
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # And the stats run is what writes it, with its own argv after the wrapper's.
+            proc = self._run_summary(
+                tmp, f'printf "%s\\n" "$@" > argv.txt; printf "Instances,Name\\n" > {name}\n')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((tmp / name).read_text(), "Instances,Name\n")
+            argv = (tmp / "argv.txt").read_text().splitlines()
+            full = cuda_trace.summary_argv("kernel_trace")
+            self.assertEqual(argv, list(full[full.index(cuda_trace.EXECUTABLES[0]) + 1:]))
+
+    def test_a_summary_path_that_cannot_be_emptied_fails_the_command(self) -> None:
+        name = cuda_trace.summary_file("kernel_trace")
+        import os
+        # Root unlinks inside a read-only directory, so that shape is only a refusal for others.
+        shapes = ("directory",) + (("read-only directory",) if os.geteuid() != 0 else ())
+        for shape in shapes:
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                if shape == "directory":
+                    (tmp / name).mkdir()
+                else:
+                    (tmp / name).write_text("Instances,Name\n5,k(int *)\n")
+                ran = tmp / "stats_ran"
+                bindir_holder = tmp / "holder"
+                bindir_holder.mkdir()
+                if shape == "read-only directory":
+                    run = tmp / "run"
+                    run.mkdir()
+                    (tmp / name).rename(run / name)
+                    run.chmod(0o555)
+                    cwd = run
+                else:
+                    cwd = tmp
+                import os
+                fake = bindir_holder / cuda_trace.EXECUTABLES[0]
+                fake.write_text(f"#!/bin/sh\ntouch {ran}\nexit 0\n")
+                fake.chmod(0o755)
+                env = {**os.environ,
+                       "PATH": f"{bindir_holder}{os.pathsep}{os.environ['PATH']}"}
+                try:
+                    proc = subprocess.run(list(cuda_trace.summary_argv("kernel_trace")),
+                                          cwd=cwd, env=env, capture_output=True, text=True,
+                                          check=False)
+                finally:
+                    cwd.chmod(0o755)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertFalse(ran.exists(), "the stats run must not start")
 
     def test_the_summary_file_is_what_the_stats_command_writes(self) -> None:
         # Measured on both versions: `-o X` with this report writes `X_cuda_gpu_kern_sum.csv`.

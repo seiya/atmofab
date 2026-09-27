@@ -555,7 +555,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # records it in `trial_meta.json#kernel_trace`, and a failed or missing summary is a
     # `deterministic_validate_error`. The tuple gained the `device_trace` capability
     # (`_LAUNCH_CAPABILITIES`). What an `openmp` / `none` target's execute runs is unchanged.
-    "execute-6": "42f117504d0414a60b7107055d4ddfd4fd4615fb181ff02a9e7e6300045b8fa4",
+    # Re-pinned within PR-2's review (round 1), before any run was stamped execute-6: the summary
+    # command empties its output path before the stats run (a read-only file there survived it).
+    "execute-6": "075d2ad0d6f434ae9cff64930f21d0d5e5c8a2ff1e0a73ac837f5270f1f89c72",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

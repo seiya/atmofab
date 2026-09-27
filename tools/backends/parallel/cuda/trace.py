@@ -13,8 +13,9 @@ site's 2025.1.3), and `docs/backends/parallel/cuda/DEVICE_TRACE.md` states it fo
   relative to its cwd.
 * `nsys stats -r cuda_gpu_kern_sum -f csv -o <stem> …` writes `<stem>_cuda_gpu_kern_sum.csv`. A
   report holding no kernel data (no launch reached the device) gives an EMPTY file and exit 0, so
-  the exit code says nothing about kernels. `--force-overwrite=true` replaces a file already at
-  that path (a forged one was replaced on both versions).
+  the exit code says nothing about kernels. `--force-overwrite=true` replaces a writable file
+  already at that path (a forged one was replaced on both versions) and NOT a read-only one,
+  which survives with exit 0 — hence `summary_argv` empties the path first.
 * The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `Med (ns)`,
   `Min (ns)`, `Max (ns)`, `StdDev (ns)`, `Name`. `Name` is demangled: `k(double *, long)`,
   `ns::k(int *)`, one row per template instantiation `void k<double>(T1 *)`. A kernel that never
@@ -45,11 +46,26 @@ def profile_argv_prefix(stem: str) -> tuple[str, ...]:
     return ("nsys", "profile", "-t", "cuda", "-o", stem, "--force-overwrite=true")
 
 
+#: What the summary command runs first: remove whatever is at the summary's path, and fail when
+#: that cannot be done. `$1` is the path; the rest is the stats argv, exec'd in its place.
+_FRESH_OUTPUT_SCRIPT = 'rm -f -- "$1" || exit 1; shift; exec "$@"'
+
+
 def summary_argv(stem: str) -> tuple[str, ...]:
     """The command that reads `<stem>.nsys-rep` in the cwd and writes the per-kernel summary
     (`summary_file(stem)`). `--force-export=true` rebuilds the intermediate database rather than
-    reusing one already there, and `--force-overwrite=true` replaces a summary already there."""
-    return ("nsys", "stats", "-r", _SUMMARY_REPORT, "-f", "csv", "-o", stem,
+    reusing one already there.
+
+    The summary's path is emptied by the command itself before `nsys stats` runs, and a path that
+    cannot be emptied (a directory, a directory that is not writable) fails it. The binary ran in
+    the same directory just before, and `--force-overwrite=true` does not cover what it could
+    leave there: measured on 2026.3.2, a READ-ONLY file at the summary's path survives the stats
+    command, which prints `ERROR: Unable to open output file for writing` and exits 0 — so the
+    file read afterwards would be the binary's, not the trace's (issue #307 PR-2 round 1). Done
+    in the command rather than by the host so that one argv carries it to both the local run and
+    the remote job, where no host step runs between the two commands."""
+    return ("sh", "-c", _FRESH_OUTPUT_SCRIPT, "kernel-trace-summary", summary_file(stem),
+            "nsys", "stats", "-r", _SUMMARY_REPORT, "-f", "csv", "-o", stem,
             "--force-export=true", "--force-overwrite=true", f"{stem}{_REPORT_SUFFIX}")
 
 

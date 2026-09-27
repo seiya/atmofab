@@ -14,7 +14,8 @@ remote one), in this order:
 
 ```
 nsys profile -t cuda -o kernel_trace --force-overwrite=true <binary> --cases <spec.ir.yaml> <case_id>...
-nsys stats -r cuda_gpu_kern_sum -f csv -o kernel_trace --force-export=true --force-overwrite=true kernel_trace.nsys-rep
+sh -c 'rm -f -- "$1" || exit 1; shift; exec "$@"' kernel-trace-summary kernel_trace_cuda_gpu_kern_sum.csv \
+  nsys stats -r cuda_gpu_kern_sum -f csv -o kernel_trace --force-export=true --force-overwrite=true kernel_trace.nsys-rep
 make test    # the quality check, unchanged and untraced
 ```
 
@@ -25,9 +26,13 @@ make test    # the quality check, unchanged and untraced
   `X_cuda_gpu_kern_sum.csv`). The conductor promotes it to the run node's `kernel_trace.csv` and
   records the command that wrote it as `trial_meta.json#kernel_trace`. The `.nsys-rep` report
   and its `.sqlite` export are not kept.
-- `--force-export=true` rebuilds the export rather than reusing one already there, and
-  `--force-overwrite=true` replaces a summary already at that path: a file written there before
-  the command ran does not survive it.
+- `--force-export=true` rebuilds the export rather than reusing one already there. The summary
+  command first removes whatever is at the summary's path, and fails when it cannot (a directory
+  there, a directory that is not writable): `--force-overwrite=true` replaces a WRITABLE file at
+  that path but not a read-only one, which survives while `nsys stats` prints
+  `ERROR: Unable to open output file for writing` and exits 0 (measured on 2026.3.2). The binary
+  ran in the same directory just before, so without the removal the file read afterwards could be
+  the binary's. The removal is part of the command, so the remote job carries it too.
 - A summary command that exits non-zero, or exits 0 without writing the file, fails the substep
   as `deterministic_validate_error`: it is host tooling, not the kernel.
 - `trial_meta.json#environment.launch.argv_prefix` records the `nsys profile …` prefix, and the
@@ -72,7 +77,8 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
 - Kernels of two namespaces with one base name are counted as one.
 - The quality check (`make test`) is not traced.
 - `perf.json` comes from the traced run: the runner's wall-clock is its own clock around the
-  cases (a `steady_clock` read at the top of `main`, `tools/backends/language/cuda_cpp/runner.py`),
+  cases (a `steady_clock` read after the arguments are parsed and before the first case,
+  `tools/backends/language/cuda_cpp/runner.py`),
   so the profiler's process start-up and its report generation are outside it, and the tracing
   cost of the process's CUDA calls — its initialisation at the first call included — is inside
   it.
