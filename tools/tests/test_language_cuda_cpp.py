@@ -1794,6 +1794,66 @@ class DeviceTraceTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(cuda_trace.defined_kernels(text), (name,))
 
+    def test_an_attribute_naming_global_marks_a_kernel(self) -> None:
+        """nvcc makes a kernel of a function carrying the `global` attribute without the keyword
+        (issue #307 PR-3 round 1; each spelling below measured on nvcc: an entry symbol in the
+        object). Unread, such a kernel was required by nothing, so a producer told a kernel never
+        ran could respell it and the gate would ask nothing of it. An attribute naming anything
+        else is still blanked, `globals` included."""
+        for attribute in ("[[gnu::global]]", "[[ gnu :: global ]]",
+                          "[[gnu::global, gnu::noinline]]", "__attribute__((global))"):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(cuda_trace.defined_kernels(
+                    f"namespace m {{\n{attribute} void step_k(double* x, long n) {{}}\n}}\n"),
+                    ("step_k",))
+        for attribute in ("[[nodiscard]]", "[[gnu::globals]]", "__attribute__((noinline))",
+                          "[[gnu::global_k]]"):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(
+                    cuda_trace.defined_kernels(f"{attribute} int host_f(int* x) {{}}\n"), ())
+
+    def test_a_mark_anywhere_before_the_parameter_list_marks_its_declarator(self) -> None:
+        """Round 2: nvcc makes a kernel of a function whose mark — the keyword or the attribute —
+        stands after the return type or after the NAME, before the parameter list (each
+        declaration below measured: an entry symbol in the object, or for the template one a
+        clean compile), and of a parenthesized name. Reading the name forward from the mark read
+        none of them; the name is read back from the parameter list."""
+        for text in ("void k __global__ (int* p) {}\n",
+                     "void __global__ k(int* p) {}\n",
+                     "static void __global__ k(int* p) {}\n",
+                     "void [[gnu::global]] k(int* p) {}\n",
+                     "void k [[gnu::global]] (int* p) {}\n",
+                     "auto k [[gnu::global]] (int* p) -> void {}\n",
+                     "template <class T> void k [[gnu::global]] (T* p) {}\n",
+                     "void __global__ (k)(int* p) {}\n",
+                     "__global__ void (k)(int* p) {}\n",
+                     "__global__ void __launch_bounds__(((256))) k(int* p) {}\n",
+                     # An attribute whose argument carries its own brackets does not end early.
+                     "[[gnu::global, gnu::aligned(alignof(int[1]))]] void k(int* p) {}\n"):
+            with self.subTest(text=text):
+                self.assertEqual(cuda_trace.defined_kernels(text), ("k",))
+
+    def test_a_mark_with_no_parameter_list_in_its_declaration_names_nothing(self) -> None:
+        """The declarator is looked for only up to the end of the mark's own declaration: a
+        mark that reaches `;`, `{` or `}` before any parameter list names nothing, rather than
+        the function the NEXT declaration declares (round 2: both halves of that stop were
+        unpinned, and dropping either made `helper` a kernel below)."""
+        for text in ("[[gnu::global]] int counter;\nvoid helper(int* x) {}\n",
+                     "namespace n { [[gnu::global]] }\nvoid helper(int* x) {}\n",
+                     "struct S { int a [[gnu::global]]; };\nvoid helper(int* x) {}\n"):
+            with self.subTest(text=text):
+                self.assertEqual(cuda_trace.defined_kernels(text), ())
+
+    def test_an_attribute_argument_naming_global_is_not_a_mark(self) -> None:
+        """Only the attribute's NAME decides: a helper aligned by a constant called `global` is
+        not a kernel (round 2: reading every identifier in the attribute made it one, and a
+        correct run would have been refused for a helper the trace never lists)."""
+        text = ("constexpr int global = 16;\n"
+                "[[gnu::aligned(global)]] __device__ void helper(int* x) {}\n"
+                "__attribute__((aligned(global))) int buffer[4];\n"
+                "__global__ void k(int* x) {}\n")
+        self.assertEqual(cuda_trace.defined_kernels(text), ("k",))
+
     def test_the_registry_serves_the_trace(self) -> None:
         self.assertIs(registry.capability_module("parallel", "cuda", "device_trace"), cuda_trace)
         for value in ("openmp", "none"):

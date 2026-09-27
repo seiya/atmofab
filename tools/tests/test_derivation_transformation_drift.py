@@ -566,6 +566,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # and the summary failure's message names the backend's document (round 4: not the run
     # directory, which the tmp cleanup removes); trace.py cites the site measurement.
     "execute-6": "3cddccc0691a4d702b6bae0cd7e7aa05fadc4efaad92e6404188e54fc0222d20",
+    # execute-7 (issue #307, PR-3): the post-execute validator answers exit code 6 when a traced
+    # run executed none of the kernels the node defines, and `_execute_inproc` maps it to the
+    # terminal `device_kernels_absent`; the device trace's `defined_kernels` (in the tuple as
+    # `device_trace`) reads a kernel marked by the `global` attribute and resolves a mark to the
+    # declarator before its parameter list. A bump rather than a re-pin of execute-6 so that an
+    # execute-6 run certified before this gate existed (none yet) is re-derived under it: the
+    # gate itself is the validator's, outside this tuple. Re-pinned within PR-3's review (round
+    # 3, before any run was stamped execute-7): comments in `_execute_inproc` only.
+    "execute-7": "6817439f559b6e9beed9428d9245ab5916e598f7d84ea190270041798950b39a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

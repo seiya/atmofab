@@ -16435,13 +16435,20 @@ class DeterministicBuildTest(unittest.TestCase):
         # restating either. Equality of the remainder is what used to be pinned; the difference
         # is pinned by name, so adding a category to `GATE_FAILURE_TERMINAL` without deciding
         # which side it belongs on still fails here.
+        # Issue #307 made the difference two-sided: `EXECUTE_ONLY_TERMINAL_CATEGORIES` names
+        # what the execute set carries that the gate set has no counterpart for.
         self.assertEqual(
             wc.GATE_FAILURE_TERMINAL - wc.GATE_ONLY_TERMINAL_CATEGORIES,
-            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - wc.EXECUTE_ONLY_TERMINAL_CATEGORIES)
         self.assertEqual(
             frozenset(),
             wc.GATE_ONLY_TERMINAL_CATEGORIES & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+        self.assertEqual(
+            frozenset(),
+            wc.EXECUTE_ONLY_TERMINAL_CATEGORIES & wc.GATE_FAILURE_TERMINAL)
         self.assertLess(wc.GATE_ONLY_TERMINAL_CATEGORIES, wc.GATE_FAILURE_TERMINAL)
+        self.assertLess(wc.EXECUTE_ONLY_TERMINAL_CATEGORIES,
+                        wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         # QUANTIFIED OVER BOTH SETS, not over the execute one alone. Splitting the terminal
         # categories in two made the gate-only half exempt from every assertion below, and a
         # review round measured it: adding `quality_check_mismatch` — a key of
@@ -16759,8 +16766,11 @@ class DeterministicBuildTest(unittest.TestCase):
         # front-end error); rc 4 and rc 5 are not reachable from post_execute today — both are
         # wired so the day a post_execute gate reports one it fails closed rather than arriving
         # warm. rc 5 (issue #112) is a violation whose subject is a file this repository authors.
+        # rc 6 (issue #307) is reachable here and nowhere earlier: the traced run executed none
+        # of the kernels the node defines.
         import tempfile
         from tools.validate_pipeline_semantics import (
+            DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -16769,7 +16779,8 @@ class DeterministicBuildTest(unittest.TestCase):
                               "static_frontend_unavailable"),
                              (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                              "host_authored_artifact_violation")):
+                              "host_authored_artifact_violation"),
+                             (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
             with tempfile.TemporaryDirectory() as td:
                 out, meta = self._b1_execute(
                     Path(td), self._B1_IR_MINIMAL,
@@ -19722,6 +19733,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
         import tempfile
         from tools.validate_pipeline_semantics import (
+            DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -19733,7 +19745,8 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                               "static_frontend_unavailable"),
                              (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                              "host_authored_artifact_violation")):
+                              "host_authored_artifact_violation"),
+                             (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
             with tempfile.TemporaryDirectory() as td:
                 repo, refs = Path(td), self._refs()
                 (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)

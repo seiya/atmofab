@@ -152,33 +152,126 @@ def base_kernel_name(demangled: str) -> str:
     return last.rsplit("::", 1)[-1]
 
 
-# Attributes that may stand between `__global__` and the kernel's name and carry a parenthesis the
-# name pattern would otherwise stop at: `__attribute__((…))`, `[[…]]`, and the CUDA ones spelled
-# `__name__(…)` — BY NAME, since a kernel may itself be named `__k__` (round 2: a pattern for any
-# `__name__(` blanked that kernel). One level of nested parentheses is allowed in each.
-_CUDA_ATTRIBUTES = ("__launch_bounds__", "__cluster_dims__", "__maxnreg__")
-_ATTRIBUTE_RE = re.compile(
-    r"\b__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)"
-    r"|\b(?:" + "|".join(_CUDA_ATTRIBUTES) + r")\s*\((?:[^()]|\([^()]*\))*\)"
-    r"|\[\[(?:[^\[\]])*\]\]")
-# `__global__`, then anything up to the first `(` that is not a statement or body boundary, and
-# the name before that `(` — optionally with a template argument list (an explicit
-# specialization). The lazy gap lets the return type, `static`, `inline` and a qualifier (`ns::`)
-# sit between.
-_GLOBAL_RE = re.compile(r"\b__global__\b[^;{}()]*?\b([A-Za-z_]\w*)\s*(?:<[^;{}()]*>)?\s*\(")
+# Attributes spelled `__name__(…)` that CUDA reads, BY NAME — a kernel may itself be named
+# `__k__` (round 2 of PR-2: a pattern for any `__name__(` blanked that kernel) — and the GNU form.
+# Each is blanked with its whole balanced argument list, so its parenthesis is not taken for a
+# parameter list.
+_PAREN_ATTRIBUTES = ("__attribute__", "__launch_bounds__", "__cluster_dims__", "__maxnreg__")
+_PAREN_ATTRIBUTE_RE = re.compile(r"\b(" + "|".join(_PAREN_ATTRIBUTES) + r")\s*\(")
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*")
+_KERNEL_MARK = "__global__"
+_KERNEL_MARK_RE = re.compile(r"\b__global__\b")
+_OPEN = {"(": ")", "[": "]", "{": "}"}
+
+
+def _balanced_end(code: str, at: int) -> int:
+    """The index just past the bracket group opening at `code[at]` (`(`, `[` or `{`), nested
+    groups of any of the three kinds included; `len(code)` when it does not close."""
+    stack: list[str] = []
+    for i in range(at, len(code)):
+        ch = code[i]
+        if ch in _OPEN:
+            stack.append(_OPEN[ch])
+        elif stack and ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                return i + 1
+    return len(code)
+
+
+def _names_global(attribute_list: str) -> bool:
+    """Whether a comma-separated attribute list names the `global` attribute: some item whose
+    NAME (the part before its argument list, last `::` segment, underscores stripped) is
+    `global`. An argument that merely mentions `global` (`[[gnu::aligned(global)]]`) is not."""
+    item, depth, items = [], 0, []
+    for ch in attribute_list:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append("".join(item))
+            item = []
+        else:
+            item.append(ch)
+    items.append("".join(item))
+    for it in items:
+        head = it.split("(", 1)[0].strip()
+        if head and head.rsplit("::", 1)[-1].strip().strip("_") == "global":
+            return True
+    return False
+
+
+def _mark_attributes(code: str) -> str:
+    """`code` with every attribute replaced, at its own length, by `__global__` when it names
+    the `global` attribute and by blanks otherwise. nvcc makes a kernel of a function declared
+    `[[gnu::global]]`, `[[ gnu :: global ]]`, `[[gnu::global, gnu::noinline]]` or
+    `__attribute__((global))` (each measured: an entry symbol in the object), none of which
+    carries the keyword — so here the attribute, not the keyword, is what marks a kernel (issue
+    #307 PR-3 round 1). Each attribute is matched with its balanced brackets, so an argument
+    carrying its own brackets (`gnu::aligned(alignof(int[1]))`) does not end it early (round 2).
+    Every attribute naming `global` is at least as long as the mark (`[[global]]` is 10)."""
+    out = list(code)
+    i = 0
+    while i < len(code):
+        if code.startswith("[[", i):
+            end = _balanced_end(code, i)
+            inner = code[i + 2:max(i + 2, end - 2)]
+        else:
+            match = _PAREN_ATTRIBUTE_RE.match(code, i)
+            if match is None or (i and (code[i - 1].isalnum() or code[i - 1] == "_")):
+                i += 1
+                continue
+            end = _balanced_end(code, match.end() - 1)
+            inner = code[match.end():end - 1]
+            if match.group(1) == "__attribute__":
+                inner = inner.strip()
+                inner = inner[1:-1] if inner.startswith("(") and inner.endswith(")") else inner
+            else:
+                inner = ""
+        span = end - i
+        mark = _KERNEL_MARK if _names_global(inner) and span >= len(_KERNEL_MARK) else ""
+        out[i:end] = mark + " " * (span - len(mark))
+        i = end
+    return "".join(out)
+
+
+def _declarator_name(code: str, mark_start: int, mark_end: int) -> str | None:
+    """The name of the function a kernel mark belongs to: the declarator before the first
+    parameter list that follows the mark in the same declaration. The mark may stand anywhere
+    before that list — ahead of the return type, between it and the name, or between the name
+    and the list (`void k __global__ (int*)`, `auto k [[gnu::global]] (int*) -> void`; each
+    measured to be a kernel on nvcc, round 2) — so the name is read back from the list, not
+    forward from the mark. A parenthesized name (`__global__ void (k)(int*)`) is the one
+    inside. None when no parameter list follows before the declaration ends."""
+    k = mark_end
+    while k < len(code) and code[k] not in "(;{}":
+        k += 1
+    if k >= len(code) or code[k] != "(":
+        return None
+    close = _balanced_end(code, k)
+    inner = code[k + 1:close - 1].strip()
+    rest = code[close:].lstrip()
+    if _IDENTIFIER_RE.fullmatch(inner) and inner != _KERNEL_MARK and rest.startswith("("):
+        return inner
+    start = max(code.rfind(c, 0, mark_start) for c in ";{}") + 1
+    head = _strip_trailing_group(code[start:k], "<", ">")
+    names = [t for t in _IDENTIFIER_RE.findall(head) if t != _KERNEL_MARK]
+    return names[-1] if names else None
 
 
 def defined_kernels(text: str) -> tuple[str, ...]:
     """The names of the `__global__` functions the CUDA C++ source `text` defines or declares, in
     order, each once. Read over the language backend's code view (comments and literal contents
-    masked) and with the attributes above blanked, so a `__global__` in a comment or a string is
-    not one and an attribute's parenthesis is not taken for the parameter list."""
+    masked, so a `__global__` in a comment or a string is not one), with every attribute naming
+    `global` read as the keyword and every other attribute blanked (`_mark_attributes`), and each
+    mark resolved to its declarator (`_declarator_name`)."""
     from tools.backends import registry
     reader = registry.capability_module("language", "cuda_cpp", "source_reading")
-    code = _ATTRIBUTE_RE.sub(lambda m: " " * len(m.group(0)), reader.code_view(text))
+    code = _mark_attributes(reader.code_view(text))
     names: list[str] = []
-    for match in _GLOBAL_RE.finditer(code):
-        name = match.group(1)
-        if name not in names:
+    for match in _KERNEL_MARK_RE.finditer(code):
+        name = _declarator_name(code, match.start(), match.end())
+        if name is not None and name not in names:
             names.append(name)
     return tuple(names)

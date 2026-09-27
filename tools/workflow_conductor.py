@@ -517,9 +517,19 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # written beside it pinned only that one, so the set the route actually consulted had no witness
 # — which is why the rule is now a property of the mechanism instead of a list.
 # Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
+#
+# `device_kernels_absent` (rc 6, issue #307) is this set's own: the traced run executed none of
+# the kernels the node's sources define. The measured cause is the environment — #306's billed
+# run certified a GPU model whose every launch had failed because the site's device and driver
+# could not run the binary as built — and a warm Generate retry changes neither, so it is
+# terminal; the operator runs a minimal kernel where the run executed and resumes. A model that
+# launches no kernel on the cases' paths, or whose every launch fails on its own account (an
+# invalid launch configuration), reaches this class too, and the remedy names
+# `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
+# run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable",
-     "host_authored_artifact_violation"}
+     "host_authored_artifact_violation", "device_kernels_absent"}
 )
 
 # The categories `GATE_FAILURE_TERMINAL` carries that Validate.execute has no counterpart for.
@@ -530,6 +540,10 @@ VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
 GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
     {"host_rendered_lint_findings", "lint_finding_unattributed"}
 )
+
+# The categories `VALIDATE_EXECUTE_FAILURE_TERMINAL` carries that Generate.gate has no
+# counterpart for: a run's device trace exists only at Validate.execute (issue #307).
+EXECUTE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset({"device_kernels_absent"})
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
 # no-category `validate_execute_fail` restart reason and of the per-test predicate reasons
@@ -11283,7 +11297,7 @@ class Conductor:
                     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
-            # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the two
+            # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the
             # terminal categories, a fail_closed) and the (bounded) excerpt becomes the repair
             # leaf's findings, so the violation text that failed the run is what the leaf gets to
             # fix. The runner runtime-error branch above returns BEFORE any trial_meta is written
@@ -11291,10 +11305,11 @@ class Conductor:
             # (cold-restart) kind.
             #
             # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
-            # two leading branches read the post_execute validator's DEDICATED EXIT CODES, which
-            # say the failure is not the leaf's: rc 3 is an uninstalled structure front end (a
-            # machine problem — the gates that need it read nothing), rc 4 a stale certified IR. Both
-            # must dominate a co-occurring `quality_check`/snapshot symptom, because those
+            # four leading branches read the post_execute validator's DEDICATED EXIT CODES, which
+            # say the failure is not the leaf's to repair: rc 3 is an uninstalled structure front
+            # end (a machine problem — the gates that need it read nothing), rc 4 a stale
+            # certified IR, rc 5 a file this repository authors, rc 6 a traced run none of whose
+            # kernels ran (below). All must dominate a co-occurring `quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
             # the three warm categories route identically: a gate report is the most specific,
@@ -11311,7 +11326,11 @@ class Conductor:
             # that the day this stage reports one, it fails closed rather than arriving as a warm
             # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
             # from the `problem` model gates that post_execute runs.
+            #
+            # rc 6 IS reachable, and is this stage's own: the traced run executed none of the
+            # kernels the node defines (`_validate_device_kernel_execution`, issue #307).
             from tools.validate_pipeline_semantics import (
+                DEVICE_KERNELS_ABSENT_EXIT_CODE,
                 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                 HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                 STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -11322,6 +11341,8 @@ class Conductor:
                 failure_category = "stale_dependency_ir"
             elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                 failure_category = "host_authored_artifact_violation"
+            elif gate.returncode == DEVICE_KERNELS_ABSENT_EXIT_CODE:
+                failure_category = "device_kernels_absent"
             elif gate.returncode != 0:
                 failure_category = "post_execute_violation"
             elif snapshot_gap:
@@ -12373,12 +12394,13 @@ class Conductor:
         `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
         issue #176 (no run ever reached it), so both graded classes terminalize.
 
-        Two exit codes are answered BEFORE the bullets are read at all, because they say the
+        Four exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
-        is not installed) and rc 4 (a stale certified IR). Their bullets describe a
-        machine or IR condition, and the severity rules classify by artifact PATH — so left to
-        the bullet path they would be classified as if they were conformance findings. Both
-        write `disposition: "fail_closed"` with
+        is not installed), rc 4 (a stale certified IR), rc 5 (a file this repository authors)
+        and rc 6 (a traced run none of whose kernels executed, issue #307). Their bullets
+        describe a machine, IR, producer or device condition, and the severity rules classify by
+        artifact PATH — so left to the bullet path they would be classified as if they were
+        conformance findings. All write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
@@ -12428,7 +12450,10 @@ class Conductor:
         # pre_judge gate reports one, it fails closed rather than being graded by the bullet
         # rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
+        # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
+        # post_execute stage already passed, so it is reached only if the two stages disagree.
         from tools.validate_pipeline_semantics import (
+            DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
@@ -12437,6 +12462,7 @@ class Conductor:
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
             STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
             HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
+            DEVICE_KERNELS_ABSENT_EXIT_CODE: "device_kernels_absent",
         }.get(gate.returncode)
         if terminal_category:
             self._write_run_node_meta(refs, "post_judge_meta.json", {
@@ -13241,9 +13267,10 @@ class Conductor:
                 # Generate-retry-first cycle rather than immediately re-escalating because
                 # a stale count is still >= 2.
                 #
-                # The trial_meta read is hoisted ABOVE the counter because the two TERMINAL
-                # categories have to be answered before anything counts or escalates. A machine
-                # problem (no front end) or a stale certified IR is not evidence that the IR is
+                # The trial_meta read is hoisted ABOVE the counter because the TERMINAL
+                # categories (`VALIDATE_EXECUTE_FAILURE_TERMINAL`) have to be answered before
+                # anything counts or escalates. A machine problem (no front end, a device none of
+                # whose kernels ran) or a stale certified IR is not evidence that the IR is
                 # the wrong side of an IR-rooted mismatch, so counting it toward C2 would let two
                 # of them reopen Compile — rebuilding the IR and everything downstream over a
                 # condition no regeneration touches. It is not repairable by any leaf either, so

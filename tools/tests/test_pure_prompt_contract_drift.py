@@ -674,7 +674,25 @@ PINNED: dict[str, str] = {
     # version being a member of the compile, generate and validate transformation tuples
     # (`tools/derivation.py` `transformation_versions`) — every node's Compile, Generate and
     # Validate keys move, the Fortran nodes' included.
-    "pure-51": "7c422cfc53f5a8477c7fca0e56b215828d9d1e0ff04cc5bc07cc24c717317deb",}
+    "pure-51": "7c422cfc53f5a8477c7fca0e56b215828d9d1e0ff04cc5bc07cc24c717317deb",
+    # pure-52 (issue #307 PR-3): the `cuda_cpp` fragments say what the device-trace gate cannot
+    # see — the presence floor asks only that a kernel exist, so `generate.verify`'s G6 scope now
+    # fails a parallelizable loop the plan names that runs on the host (beside a stub kernel, or
+    # behind a branch the cases never leave), and a plan that drops such a loop without saying
+    # why; the producer's `target_lowering_floor` says each launch must do its loop's work and
+    # that a kernel the trace never saw is launched where the cases reach it with a valid launch
+    # configuration, and removed only when its work is not needed, never moved to a host loop.
+    # Composed for `fortran`, every `pure_*.txt` is byte-identical to origin/main 696886c5's
+    # (measured by composing each through `_compose_language_fragments` in both trees); for
+    # `cuda_cpp`, exactly `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The
+    # bump's usual side effects apply to every language, as pure-51's comment above states.
+    # Re-pinned within PR-3's review (round 4, before any record carried pure-52): G6 fails a loop
+    # the plan PUTS ON THE DEVICE that runs on the host, and holds a loop the plan keeps on the
+    # host like a declared `none` (a reason about the loop itself) — round 3's wording also
+    # failed a loop a plan named on the host WITH a reason (the real advdiff1d_linear plan's
+    # ghost copy), and exempted only a loop dropped from the plan; the producer is told what
+    # such a reason is.
+    "pure-52": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",}
 
 
 def _contract_tuple() -> dict[str, object]:

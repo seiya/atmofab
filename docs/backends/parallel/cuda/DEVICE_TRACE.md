@@ -83,10 +83,20 @@ The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `M
   `SKIPPED: kernel_trace.sqlite does not contain CUDA kernel data.` and the exit code says
   nothing. The reader answers `None` for it (and for a header with no row).
 
-`defined_kernels` reads a CUDA C++ source for the names of the `__global__` functions it defines
-or declares, over the language backend's code view (comments and literal contents masked), with
-`__attribute__((…))`, `[[…]]` and the CUDA attributes `__launch_bounds__(…)`, `__cluster_dims__(…)` and `__maxnreg__(…)` blanked (by name: a kernel may be named `__k__`) so their parenthesis is not
-taken for the parameter list.
+`defined_kernels` reads a CUDA C++ source for the names of the kernels it defines or declares,
+over the language backend's code view (comments and literal contents masked):
+
+- A kernel is marked by the keyword `__global__` or by an attribute whose NAME is `global`
+  (`[[gnu::global]]`, `__attribute__((global))`; an argument that mentions `global` does not
+  count). Every other attribute — `[[…]]`, `__attribute__((…))`, `__launch_bounds__(…)`,
+  `__cluster_dims__(…)`, `__maxnreg__(…)`, the last three by name since a kernel may be named
+  `__k__` — is blanked with its balanced brackets, so its parenthesis is not taken for a
+  parameter list.
+- The name is the declarator before the first parameter list after the mark, read back from that
+  list: nvcc accepts the mark ahead of the return type, between the return type and the name, or
+  between the name and the list (`void k __global__ (int *)`, `auto k [[gnu::global]] (int *) ->
+  void`), and a parenthesized name (`__global__ void (k)(int *)`) — each measured to give an
+  entry symbol (issue #307 PR-3 rounds 1 and 2).
 
 Measured: on Nsight Systems 2026.3.2 without a GPU (issue #307 plan §0-2), and at the `cpp_gpu`
 site on Nsight Systems 2025.1.3 with an L40S (issue #307 comment 5851969504): the columns, the
@@ -135,3 +145,53 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
 - nsys's progress lines go to the binary's stdout and its warnings to the binary's stderr
   (`Device-side CUDA Event completion trace …` at the site, CPU-sampling warnings here), so
   `stdout.log` and `stderr.log` carry them. They are audit logs that no gate and no judge reads.
+
+## 5. The gate that reads it
+
+The `post_execute` gate (`_validate_device_kernel_execution` in
+`tools/validate_pipeline_semantics.py`) compares the kernels the node's own sources define
+(`defined_kernels` over every `.cu` under its `src/`; a dependency's sources are not there) with
+the summary's rows (`kernel_instances`):
+
+- Every defined kernel has an instance: pass. A node whose sources define no kernel (a plan
+  declaring `"model": "none"`, the harness) is asked nothing.
+- The summary records no kernel at all: exit code 6, `device_kernels_absent`, terminal. The
+  measured case is issue #307's: binaries built with nvcc's default architecture, every launch of
+  which failed at the site (`the provided PTX was compiled with an unsupported toolchain`), and a
+  model that recomputed the result on the host passed `Validate`. #306 made an unstated gpu
+  architecture `-arch=all` (`spec/targets/cpp_gpu.yaml`). To recover:
+  1. Build a minimal kernel here with the target's compiler and flags — one that checks
+     `cudaGetLastError()` after its launch and prints `cudaGetErrorString`, so it names the cause;
+     the node's own binary need not print anything — and run it under §1's two commands where
+     the run executed. At the local site that is a scratch directory on this host
+     (`tools/site_smoke.py` refuses the local site). At a remote one it is
+     `tools/site_smoke.py --target <target_id> --gpu --ship <binary> --cmd 'cd "$JOB" && <§1's
+     two commands>'`: without `--cmd` the job only prints `OK` and the host name, and without
+     `--gpu` the site's device is not recorded (issue #307 comment 5851969504 shows the commands
+     run that way). An empty summary with `SKIPPED: … does not contain CUDA kernel data.`
+     reproduces the failure.
+  2. Fix the device, the driver or the target's `hardware.architecture` / toolchain, then
+     `--resume`.
+  3. If the minimal kernel runs and the node's still does not, the cause is the model's: it
+     launches none of the kernels it defines, or every launch it makes fails on its own account
+     (an invalid launch configuration, such as more threads per block than the device allows —
+     CUDA runs no kernel for such a launch; not measured under the trace). `--rederive generate`. These reach this class too, because the gate sees no kernel either
+     way; the category is terminal because the measured case is the site's. `--rederive`
+     applies to the run's target only: for a `--with-deps` closure member, run that member as
+     the target.
+- Some defined kernels have no row: an ordinary violation (`post_execute_violation`), routed back
+  to `Generate` with the names. A kernel the model defines did not execute in any case the run
+  covers — dead, launched only on a path the cases do not take, or launched with a configuration
+  the device refuses (CUDA runs no kernel for such a launch; not measured under the trace). The
+  producer launches it where a case reaches it, with a configuration the device accepts, or
+  removes it only if its work is not needed. Moving the work to a host loop is what
+  `generate.verify` refuses (G6: a loop the plan puts on the device runs there, and a loop kept
+  on the host needs a reason about the loop itself) and this gate cannot see.
+- The summary is read only when `trial_meta.json#kernel_trace` names a successful `run_program`
+  record of §1's summary command in the node's `command_log.jsonl`; a missing summary, a summary
+  without that record, or one the reader refuses (`SummaryUnreadable`) is an ordinary violation.
+
+Two limits of the comparison: kernels of two namespaces with one base name are one name here
+(§4), so one of them running satisfies both; and a `__global__` in a region the preprocessor
+removes (`#if 0`) is read as defined, so it fails the run (fail-closed). The gate does not ask
+which case launched a kernel.
