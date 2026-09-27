@@ -1834,6 +1834,17 @@ class DeviceTraceTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(cuda_trace.defined_kernels(text), ("k",))
 
+    def test_a_mark_with_no_parameter_list_in_its_declaration_names_nothing(self) -> None:
+        """The declarator is looked for only up to the end of the mark's own declaration: a
+        mark that reaches `;`, `{` or `}` before any parameter list names nothing, rather than
+        the function the NEXT declaration declares (round 2: both halves of that stop were
+        unpinned, and dropping either made `helper` a kernel below)."""
+        for text in ("[[gnu::global]] int counter;\nvoid helper(int* x) {}\n",
+                     "namespace n { [[gnu::global]] }\nvoid helper(int* x) {}\n",
+                     "struct S { int a [[gnu::global]]; };\nvoid helper(int* x) {}\n"):
+            with self.subTest(text=text):
+                self.assertEqual(cuda_trace.defined_kernels(text), ())
+
     def test_an_attribute_argument_naming_global_is_not_a_mark(self) -> None:
         """Only the attribute's NAME decides: a helper aligned by a constant called `global` is
         not a kernel (round 2: reading every identifier in the attribute made it one, and a
