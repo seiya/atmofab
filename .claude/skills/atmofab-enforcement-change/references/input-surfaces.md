@@ -292,6 +292,27 @@ Two follow-through facts worth keeping beside the rule:
   check is over a SET of binds, enumerate the set from the code that emits the binds, not from
   the name the check was given.**
 
+### An installation is not a path (issue #316)
+
+R4-c PR-1's startup probe had to refuse an MPI launcher (`mpirun`) and compiler wrapper
+(`mpif90`) that belong to different installations: a binary linked by one installation's
+wrapper and started by another's launcher runs each process alone, as rank 0 of 1, and exits 0
+(measured both directions between Intel MPI 2021.10 and Open MPI 4.1.2). The first form compared
+`dirname(shutil.which(...))` of the two. Round 1 broke it with no exotic input: Debian's
+alternatives switch `mpirun` and the wrapper as separate groups, both in `/usr/bin`, so a host
+with two installations shows ONE directory — reproduced with symlinks, the probe returned `[]`
+and the pair's binary printed `rank 0 of 1` twice. `realpath` does not rescue it (both resolve
+into `/usr/bin/*.openmpi` / `*.mpich`). This is 9-c's rule one step further: there, identity was
+the inode or the mount behind a path; here the thing has no path at all. What closed it asks the
+pair what it DOES — build a two-line program with the wrapper, start it under the launcher with 2
+processes, require both to report a run of 2 — and deleting the directory rule also stopped it
+refusing one installation reached through two directories. **The follow-through cost two more
+rounds**, and they are the price of any behavioural probe: it runs things, so it must be asked
+only of runs that will run them (round 2: a Build-only run and a one-rank run were refused over
+a launcher they never use, and a host with one slot over a two-process canary; round 3: the
+`--resume` of a `--with-deps` run was not asked at all), and it can fail for reasons that are not
+the property (a launcher refusing too few slots was reported as a pairing problem).
+
 ## Surface 9-b — a host write outside every child window (issue #177)
 
 The certification stamp of issue #177 writes `artifact_hashes` into a stage meta at
