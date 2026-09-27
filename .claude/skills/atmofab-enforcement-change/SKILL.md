@@ -474,7 +474,13 @@ recipes are in `references/input-surfaces.md`:
   running → change shape" fired at round 3 there and the shape still needed two more rounds,
   because each identity instrument sees one alias class; enumerate the classes (lexical,
   symlink, bind mount) FIRST and pick the instrument that sees all of them, or state which one
-  it does not see and why. **And enumerate the BINDS the check must cover from the code that
+  it does not see and why. **When the thing is not a file at all — an installation, the
+  runtime a binary links against — no comparison of paths establishes it, identity or
+  spelling: ask it what it DOES.** Issue #316 checked that an MPI launcher and compiler wrapper
+  were one installation by comparing their directories; Debian's alternatives put two
+  installations' programs in one `/usr/bin`. What replaced it builds a program with the one and
+  runs it under the other (`references/input-surfaces.md` §Surface 9-c, "an installation").
+  **And enumerate the BINDS the check must cover from the code that
   emits them, not from the check's name**: issue #227 rewrote this rule in three consecutive
   rounds — keyed on the exempt root, then on the mount point, then on where the checkout
   APPEARS — and only the third round noticed the check had never run over the system
@@ -663,6 +669,15 @@ that could not converge in principle).
   by the hook (rc=0, measured) and the tool then matches nothing. **Silent empty is the worst
   answer a boundary can give** — indistinguishable from a true negative, so the leaf reports
   absence and stops. When a remedy is a conjunction, say so, and say what doing one half produces
+- **A refusal that carries ANOTHER PROGRAM's message keeps its HEAD, and one reason is not all
+  the reasons.** A tool states why it refused near its start and ends with generic advice; a
+  `[-N:]` cut keeps the advice and drops the diagnosis, and a fixture with a one-line fake
+  message cannot see the difference (`atmofab-review-loop`'s threshold rule: the fixture must
+  straddle the cut). And a refusal that blames one cause for every failure of a step (a failed
+  launch reported as "the two programs are from different installations") sends the reader to
+  fix what is already right: split the branches by what the observation can actually tell
+  apart. Issue #316 shipped the second, and then the first inside the fix for it;
+  `references/failure-routing.md` §"A refusal that quotes another program"
 
 ### 4. Tests pin properties
 

@@ -471,6 +471,12 @@ when a rule does not obviously apply:
    `tools/primary_evidence.py`, the compile-inlined documents, the conductor methods it names)
    moves its pin on ANY byte, and PR #257 shipped a three-line comment commit whose message said
    the sweep was closed while the suite was red on that pin until the next round found it.
+   **The drift pins are not the only reader of prose, so "the files this edit touches" is not
+   the suite to run.** The backend-boundary token ratchet counts technology tokens in
+   neutral-core docstrings and comments: issue #316 PR-1 wrote a language's name into a gate's
+   docstring in a prose-only fix commit, ran the drift file and the per-file suites, and four
+   commits went by with the full suite red on `TokenRatchetTests` until the next full run.
+   Run the WHOLE suite after every commit — it is half a minute at `-n 16`.
 
 4. **Leave the list of surfaces you touched** in the commit message or the pull request. That is where
    reviewers attack from.
@@ -535,7 +541,12 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   which is the only
   countermeasure in this section that does not depend on the reviewer reading it; the wording
   below is what to hand over anyway, because a refusal that arrives after the agent has already
-  chosen to poll still costs the round:
+  chosen to poll still costs the round. **It matches the token anywhere in the command line — a
+  heredoc, a Python string, a test fixture's shell body — and refuses the WHOLE command, so
+  nothing in it runs, an edit included.** Issue #316 lost an edit that way: a fixture needed a
+  wrapper that hangs, spelled with a sleep inside a `python3 - <<'PY'` edit. For a fixture
+  program that must block, use one that is not a sleep (`exec /usr/bin/tail -f /dev/null`), and
+  put a long edit in a file with Write rather than in the command:
   - **Forbid the MECHANISM, not the behaviour, and forbid it by name.** "No background polling"
     was in the prompt of the agent that produced 144 orphaned shells in 36 minutes and returned
     no report. What worked, measured over the two rounds after it — zero orphans — was four

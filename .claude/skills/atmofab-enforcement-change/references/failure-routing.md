@@ -226,3 +226,21 @@ that was never the cause (`orch_20260916T081200Z_5139f6c9`).
   the terminal class, and rc 4 outranks rc 5, so `HostAuthoredArtifactExitCodeTests` answered 4 on
   every row. The `_exit_code` docstring's "the two terminal shapes cannot co-occur on a real node"
   was false from that commit on and had to be rewritten with the reason the order still holds.
+
+## A refusal that quotes another program (2026-09-28, issue #316)
+
+R4-c PR-1's startup probe starts a two-process launch canary under the MPI launcher. Round 2
+split its failures: a launch that did not complete is the launcher's own refusal and says
+nothing about the pairing the probe exists for, so it should carry the launcher's message and
+not the "use one installation" remedy. The fix kept `(stderr or stdout).strip()[-600:]`. Open MPI
+4.1.2's refusal on a host with one slot is 1398 bytes: "There are not enough slots available in
+the system to satisfy the 2 slots…" in its first lines, then a numbered list of ways to add
+slots and `--oversubscribe` advice. The event therefore read `did not complete (exit 1: not
+provided) 3. Resource manager …`, the diagnosis cut away and the surviving advice naming a flag
+the operator cannot pass. Two round-3 reviewers found it independently, both by running the real
+launcher; the test's fake launcher printed one line, which fits in any cut. Fix: keep the head
+(`LAUNCHER_MESSAGE_HEAD_CHARS`, a cut marked `[...]`), and a fake message longer than the cut
+with the reason at its start. Before that, round 2's own finding was the other half of the
+rule: every launch failure had been reported with the pairing remedy, which does not converge
+when the pairing is correct.
+
