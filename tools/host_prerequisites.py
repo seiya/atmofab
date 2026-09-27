@@ -266,14 +266,14 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
             [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source))
                             for a in wrapper.BINDING_CANARY_ARGV)], scratch)
         if isinstance(completed, str):
-            return [f"parallel/{parallel}: the binding canary could not be compiled with "
-                    f"{wrapper_path} ({completed})"]
+            return [(f"parallel/{parallel}: the binding canary could not be compiled with "
+                    f"{wrapper_path} ({completed})")]
         if completed.returncode != 0:
             tail = (completed.stderr or completed.stdout or "").strip()[-400:]
-            return [f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
+            return [(f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
                     f"this backend's harness uses (rc={completed.returncode}: {tail}); resolve "
                     f"the wrapper and the launcher to a {parallel} installation that provides "
-                    f"it for the target's compiler"]
+                    f"it for the target's compiler")]
         if launcher is None or launcher_path is None or not launches or ranks <= 1:
             return []
         source = Path(scratch) / str(launcher.LAUNCH_CANARY_FILENAME)
@@ -286,8 +286,8 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
             detail = built if isinstance(built, str) else (
                 f"rc={built.returncode}: "
                 f"{(built.stderr or built.stdout or '').strip()[-400:]}")
-            return [f"parallel/{parallel}: {wrapper_path} does not build the launch canary "
-                    f"({detail})"]
+            return [(f"parallel/{parallel}: {wrapper_path} does not build the launch canary "
+                    f"({detail})")]
         canary_ranks = int(launcher.LAUNCH_CANARY_RANKS)
         launched = _canary_run([*launcher.argv_prefix(canary_ranks), str(exe)], scratch)
         started = (f"a program built with {wrapper_path} and started under {launcher_path} "
@@ -299,13 +299,13 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
             detail = launched if isinstance(launched, str) else (
                 f"exit {launched.returncode}: "
                 f"{_head(launched.stderr or launched.stdout or '')}")
-            return [f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
-                    f"{ranks} ranks is started the same way at Validate.execute"]
+            return [(f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
+                    f"{ranks} ranks is started the same way at Validate.execute")]
         problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "")
         if problem is not None:
-            return [f"parallel/{parallel}: {started} did not run as one run: {problem}. The "
+            return [(f"parallel/{parallel}: {started} did not run as one run: {problem}. The "
                     f"launcher and the compiler wrapper must come from one {parallel} "
-                    f"installation"]
+                    f"installation")]
     return []
 
 
