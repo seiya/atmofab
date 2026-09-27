@@ -6883,6 +6883,10 @@ def _allowed_output_paths_for_launch(
                 # (moved off the judge substep, below). Without this, record_launch for the
                 # deterministic execute substep would reject its own allowed_output_paths.
                 "verdict.json",
+                # Issue #307: the device trace's per-kernel summary, promoted by execute for a
+                # target whose parallel backend declares `device_trace`
+                # (`host_execution.KERNEL_TRACE_ARTIFACT`).
+                "kernel_trace.csv",
             }
             return rel_under_node in allowed_files or rel_under_node.startswith("raw/")
         if step_token == "validate" and substep_token == "judge":

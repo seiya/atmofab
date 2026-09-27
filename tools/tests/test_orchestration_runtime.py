@@ -2132,6 +2132,35 @@ shell_tool                       stable             true
         self.assertEqual(
             _allowed_output_paths_for_launch(request_payload=judge_ok), [sem])
 
+    def test_phase_contract_admits_the_traced_execute_request(self) -> None:
+        """Issue #307: the execute request `build_launch_request` builds for a traced target —
+        the real one, not a stub — passes the REAL phase-contract check, so record-launch does
+        not refuse every `cuda` Validate.execute before it runs (round 1 found it did: the
+        conductor tests mock `runtime`, which never reaches this function). The summary's name
+        is the conductor's constant; and it is execute's alone — a judge may not declare it."""
+        import tools.workflow_conductor as wc
+        from tools.host_execution import KERNEL_TRACE_ARTIFACT
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        refs = wc.NodeRefs(target_id="fortran_cpu", node_key="component/spec_x@0.1.0",
+                           spec_path="spec/component/spec_x", ir_id="x_1", pipeline_id="x_1",
+                           source_id="src_20260101_001", binary_id="bin_20260101_001",
+                           run_id="run_20260101_001", source_binary_id="bin_20260101_001")
+        for traced in (True, False):
+            with self.subTest(traced=traced):
+                req = wc.build_launch_request(
+                    refs, step="validate", substep="execute", orchestration_id="o",
+                    orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
+                    workflow_mode="dev", case_ids=("c_alpha",), device_trace=traced)
+                outs = _allowed_output_paths_for_launch(request_payload=req)
+                summary = f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"
+                self.assertEqual(summary in outs, traced)
+        judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
+                 "pipeline_ref": refs.pipeline_ref, "node_key": refs.node_key,
+                 "allowed_output_paths": [f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"]}
+        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+            _allowed_output_paths_for_launch(request_payload=judge)
+
     # `test_phase_contract_compile_generate_admits_only_conductor_declaration` stood here until
     # Z4 (issue #171). It drove the CAPTURED agentic `compile.generate` request through
     # `_allowed_output_paths_for_launch` and pinned that record-launch admits exactly the two
