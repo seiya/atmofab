@@ -1891,9 +1891,13 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
     performance record states the process count the target runs (`execution.ranks`), and the
     quality check records the run as that many ranks and its `make test` re-run as one.
 
-    The runner reports `parallelism.mpi_ranks` from the harness's own process count, so a launch
-    that started the binary as that many independent one-process runs — a launcher of another
-    installation, a prefix dropped on the way — shows here as a count that is not the profile's.
+    The comparison is worth what `parallelism.mpi_ranks`'s WRITER counts. It detects a launch
+    that started the binary as independent one-process runs — a launcher of another
+    installation, a prefix dropped on the way — only when the runner writes the process count
+    the harness observes at run time; a runner that wrote the profile's count would make it
+    compare the profile with itself. The Fortran runner writes a literal 1 today, which this
+    refuses for every launcher target with more than one rank; the runner a launcher target
+    runs is the distributed variant of issue #316 PR-4, which writes the harness's count.
     The shape checks of both files are `_validate_execution_json_outputs` and
     `_validate_raw_evidence`; this reads only the members it compares, and a member that is
     missing or of the wrong type is a violation here too, since the comparison cannot hold. A

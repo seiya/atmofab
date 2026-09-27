@@ -492,7 +492,7 @@ PINNED_RENDER: dict[str, str] = {
     # parent against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "94046feb37cff31b532d41675a22fd0c9ae5d3b2f82af834cd4b1b1c3795ef92",
+    "render-6": "577bbb7f6cd32a9000b59a403e43b7ef0389830478d13a15dc7915a1b24dbf55",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -622,7 +622,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # target — `trial_meta.json#environment.ranks`, `quality_check.json#comparison.{reference,
     # candidate}.ranks` and, under a launcher, `environment.platform.parallel_runtime`. A bump:
     # a certified execute-7 record has none of them, and the post-execute gate reads them.
-    "execute-8": "0e275855da82e3d464a98093b5b46c72a7f905a448dd5f5ea14d630cf2ea3c46",
+    "execute-8": "f144238e30606cab3371c69c987cfd6463472b0c4330ae6ec85878bebbc4a417",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -38,7 +38,7 @@ make test                                                           # the qualit
 | `trial_meta.json#environment.launch.argv_prefix` | `["mpirun", "-n", "<ranks>"]`; the post-execute gate admits this prefix only (`host_execution.launch_argv_prefix`) |
 | `trial_meta.json#environment.ranks` | the profile's `execution.ranks` |
 | `trial_meta.json#environment.platform.parallel_runtime` | the first line of `mpirun --version`, `null` when it cannot be read; recorded, not interpreted |
-| `perf.json#parallelism.mpi_ranks` | the process count the harness reports; the post-execute gate requires it to equal `execution.ranks` |
+| `perf.json#parallelism.mpi_ranks` | the process count the runner writes; the post-execute gate requires it to equal `execution.ranks`. It detects a launch that started independent one-process runs only when the runner writes the count the harness observes at run time; the distributed runner variant (issue #316 PR-4) does, the Fortran runner before it writes `1` |
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`; the post-execute gate requires both |
 | build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` | `mpif90`, and the first line of `mpif90 -show`: the runtime installation the binary links against. A change of installation is another build |
 
