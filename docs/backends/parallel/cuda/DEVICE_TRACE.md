@@ -178,9 +178,12 @@ the summary's rows (`kernel_instances`):
      CUDA runs no kernel for such a launch; not measured under the trace). `--rederive generate`. These reach this class too, because the gate sees no kernel either
      way; the category is terminal because the measured case is the site's.
 - Some defined kernels have no row: an ordinary violation (`post_execute_violation`), routed back
-  to `Generate` with the names. The model defines a kernel that no case the run covers launches —
-  dead, or launched only on a path the cases do not take — and either launches it where a case
-  reaches it or removes it.
+  to `Generate` with the names. A kernel the model defines did not execute in any case the run
+  covers — dead, launched only on a path the cases do not take, or launched with a configuration
+  the device refuses (CUDA runs no kernel for such a launch; not measured under the trace). The
+  producer launches it where a case reaches it, with a configuration the device accepts, or
+  removes it only if its work is not needed; moving the work to a host loop is a host fallback,
+  which `generate.verify` refuses (G6) and this gate cannot see.
 - The summary is read only when `trial_meta.json#kernel_trace` names a successful `run_program`
   record of §1's summary command in the node's `command_log.jsonl`; a missing summary, a summary
   without that record, or one the reader refuses (`SummaryUnreadable`) is an ordinary violation.

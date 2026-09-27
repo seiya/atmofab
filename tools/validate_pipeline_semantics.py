@@ -6308,9 +6308,12 @@ def _validate_device_kernel_execution(
         violations.append(
             f"{summary}: kernels the node's sources define never executed on the device: "
             f"{never} (kernels the trace recorded: {sorted(instances)}). Every kernel the model "
-            f"defines must be launched by at least one case the run covers — one launched only "
-            f"on a path no case takes did not run — so launch it on a path the cases take, or "
-            f"remove it")
+            f"defines must execute in at least one case the run covers: one launched only on a "
+            f"path no case takes did not run, and neither did one whose launch failed (a launch "
+            f"configuration the device refuses, such as more threads per block than it allows). "
+            f"Launch it where the cases reach it, with a configuration the device accepts, doing "
+            f"its loop's work; remove it only if that work is not needed — moving the work to a "
+            f"host loop instead is a host fallback, which the reviewer refuses")
 
 
 def _validate_quality_check_commands(

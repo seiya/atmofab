@@ -26210,6 +26210,11 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         self.assertIn("never executed on the device: ['update_kernel']", violations[0])
         self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
         self.assertEqual(1, vps._exit_code_for_violations(violations))
+        # The text a warm Generate repair reads (round 3): a failed launch is named as a cause,
+        # and removal is bounded — the work must not move to the host.
+        self.assertIn("whose launch failed", violations[0])
+        self.assertIn("remove it only if that work is not needed", violations[0])
+        self.assertIn("moving the work to a host loop instead is a host fallback", violations[0])
         # A row with zero instances is a kernel that did not run, not one that did.
         zero = only_flux + '0.0,0,0,0,0,0,0,0,"update_kernel(double *)"\n'
         self.assertIn("['update_kernel']", self._gate(csv_text=zero)[0])
