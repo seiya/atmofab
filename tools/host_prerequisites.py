@@ -127,6 +127,9 @@ def resolve_launch_axis_selection(target) -> dict[str, str]:
         # value, and it is the language backend's (`bundle_facts`); see the constant's comment.
         "compiler": str(backend_registry.capability_module(
             "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER),
+        # What the machine that executes the binary needs beyond it is the parallel backend's
+        # (`execution_executables`, issue #307); the host's build tools do not read it.
+        "parallel": target.parallel_backend,
     }
 
 
@@ -166,13 +169,24 @@ def required_host_executables(
     return tuple(found)
 
 
+def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:
+    """The programs the machine that EXECUTES the binary needs beyond the binary itself, for the
+    resolved selection: the parallel backend's device trace's (`host_execution.
+    execution_executables`, issue #307), none for a backend that declares no trace. Asked of a
+    remote site through `required_site_executables`, and of this host when the local site
+    executes the run (`run_workflow._sites_rejection`)."""
+    from tools.host_execution import execution_executables as _for_backend
+
+    return _for_backend(selection["parallel"])
+
+
 def required_site_executables(selection: dict[str, str], *, scheduler: str) -> tuple[str, ...]:
     """The programs a remote execution site must have for a job of the resolved selection
     (issue #293): what the job script itself needs beyond the POSIX utilities
     (`remote_execution.REMOTE_EXECUTABLES`), the build system, whose test target the quality
-    check runs there, and what the site's `scheduler` runs the job under
-    (`remote_execution.scheduler_executables`). Read out of the tables that run them, like
-    `required_host_executables`."""
+    check runs there, what the binary runs under (`execution_executables`, issue #307), and
+    what the site's `scheduler` runs the job under (`remote_execution.scheduler_executables`).
+    Read out of the tables that run them, like `required_host_executables`."""
     from tools.remote_execution import REMOTE_EXECUTABLES, scheduler_executables
 
     server = _build_runtime_server()
@@ -180,7 +194,7 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str) -> t
     _require_implemented("build_system", build_system)
     found: list[str] = []
     for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system),
-                       *scheduler_executables(scheduler)):
+                       *execution_executables(selection), *scheduler_executables(scheduler)):
         if executable not in found:
             found.append(executable)
     return tuple(found)

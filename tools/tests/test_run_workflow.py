@@ -10132,6 +10132,45 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["required"], required)
         self.assertEqual(calls, [])
 
+    def test_the_local_site_is_asked_for_what_the_binary_runs_under(self) -> None:
+        """Issue #307: when this host executes the run, the program a traced binary runs under
+        (the parallel backend's `device_trace`) is asked here at launch — not found after the
+        build, at `Validate.execute`. Only for a run that reaches Validate, and only of a backend
+        that declares a trace."""
+        from tools.backends import registry
+        from tools.execution_sites import SitesConfig
+        from tools.tests.target_fixtures import profile_with
+        tracer = registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES
+        self.assertTrue(tracer)
+        cuda = profile_with(parallel={"backend": "cuda"})
+        real_which = shutil.which
+        asked: list[str] = []
+
+        def which_without_tracer(name, *a, **k):
+            asked.append(name)
+            return None if name in tracer else real_which(name, *a, **k)
+
+        with mock.patch.object(run_workflow.shutil, "which", side_effect=which_without_tracer):
+            refused = run_workflow._sites_rejection(self.repo_root, cuda, "validate")
+            self.assertIsInstance(refused, dict)
+            self.assertEqual(refused["reason"], "missing_required_site_tools")
+            self.assertEqual((refused["site"], refused["missing"], refused["required"]),
+                             ("local", list(tracer), list(tracer)))
+            self.assertIn("Validate.execute", refused["detail"])
+            asked.clear()
+            for until, target in (("build", cuda), ("generate", cuda),
+                                  ("validate", profile_with(parallel={"backend": "openmp"})),
+                                  ("validate", profile_with(parallel={"backend": "none"}))):
+                with self.subTest(until=until, backend=target.parallel_backend):
+                    self.assertIsInstance(
+                        run_workflow._sites_rejection(self.repo_root, target, until),
+                        SitesConfig)
+            self.assertEqual([a for a in asked if a in tracer], [])
+        with mock.patch.object(run_workflow.shutil, "which",
+                               side_effect=lambda name, *a, **k: f"/opt/{name}"):
+            self.assertIsInstance(run_workflow._sites_rejection(self.repo_root, cuda, "validate"),
+                                  SitesConfig)
+
     def test_a_scheduler_site_is_asked_for_the_schedulers_program(self) -> None:
         """A `slurm` site's login must resolve the program its jobs run under; one that has
         every other program the job needs is refused naming that one alone."""

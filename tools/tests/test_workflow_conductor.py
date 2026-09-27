@@ -15593,6 +15593,53 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(qc_env["BIN"], "spec_x_runner")
             self.assertEqual(seen[1]["command"], ["make", "test"])
 
+    def test_execute_inproc_traced_payload_survives_the_real_mcp_validators(self) -> None:
+        """The traced run (issue #307): the prefixed binary command and the summary command
+        cross the real `run_program` validation and reach the subprocess layer, in order, before
+        the quality check."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        from tools.host_execution import launch_shape
+        target = self._traced_target()
+        shape = launch_shape(target)
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={},
+                             target_profile=target)
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            seen: list[dict] = []
+
+            def fake_run_command(**kwargs):
+                seen.append(kwargs)
+                if len(seen) == 2:
+                    Path(kwargs["cwd"], shape.trace.summary_file).write_text("", "utf-8")
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": f"cid{len(seen)}"}
+
+            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                try:
+                    c._execute_inproc(refs, "child-1")
+                except Exception:
+                    pass  # downstream promotion/gates are irrelevant here
+
+            self.assertEqual(len(seen), 3, seen)
+            self.assertEqual(seen[0]["command"][:len(shape.argv_prefix)], list(shape.argv_prefix))
+            self.assertEqual(seen[1]["command"], list(shape.trace.summary_argv))
+            self.assertEqual(seen[1]["cwd"], seen[0]["cwd"])
+            self.assertEqual(seen[2]["command"], ["make", "test"])
+
     def test_execute_inproc_records_the_host_platform_in_trial_meta(self) -> None:
         """`trial_meta.json#environment.platform` (issue #250): the machine the evidence was
         produced on — RECORDED, not keyed; the validate derivation inputs carry no host
@@ -15700,6 +15747,182 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(env["execution_site"], {
                 "site": "local", "host": None, "scheduler": "none", "job_id": None,
                 "remote_dir": None, "queue_wait_ms": 0})
+
+    # --- the device trace (issue #307) ----------------------------------------------------
+
+    #: A target whose parallel backend declares `device_trace`, on the class the local site
+    #: executes by default, so the traced path runs in-process with no site configuration.
+    @staticmethod
+    def _traced_target():
+        from tools.tests.target_fixtures import profile_with
+        return profile_with(parallel={"backend": "cuda"})
+
+    def _drive_traced_execute(self, target, *, trace_result=None, write_summary=True,
+                              run_ok=True, stale=None):
+        """Run `_execute_inproc` for `target` with the server's two tools faked, through
+        `_run_deterministic_substep` (so a raise arrives as the substep's transport failure).
+        The fake `run_program` answers the binary's run, then — when the target is traced — the
+        summary command, writing `SUMMARY` where the shape says the command writes it."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        from tools.host_execution import launch_shape
+        shape = launch_shape(target)
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        repo = Path(td.name)
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                               orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={},
+                               target_profile=target)
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+            run_id="run_1", source_binary_id="bin_1")
+        (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+        (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+            "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+        (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+        node_dir = repo / refs.run_node_dir()
+        if stale is not None:
+            node_dir.mkdir(parents=True, exist_ok=True)
+            (node_dir / "kernel_trace.csv").write_text(stale, encoding="utf-8")
+        calls: list[tuple[str, dict]] = []
+
+        def fake_run_program(args):
+            run_tmp = Path(args["project_dir"])
+            if not calls or calls[-1][0] != "run":
+                calls.append(("run", dict(args)))
+                (run_tmp / "diagnostics.json").write_text(
+                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                (run_tmp / "perf.json").write_text("{}", encoding="utf-8")
+                return {"ok": run_ok, "command_id": "R", "return_code": 0 if run_ok else 1}
+            calls.append(("trace", dict(args)))
+            if write_summary:
+                (run_tmp / shape.trace.summary_file).write_text(self.SUMMARY, encoding="utf-8")
+            return trace_result or {"ok": True, "command_id": "T", "return_code": 0}
+
+        def fake_qc(args):
+            calls.append(("qc", dict(args)))
+            qc_tmp = Path(args["env"]["RUNDIR"])
+            qc_tmp.mkdir(parents=True, exist_ok=True)
+            (qc_tmp / "diagnostics.json").write_text(
+                json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+            return {"ok": True, "command_id": "Q"}
+
+        with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
+             mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
+             mock.patch.object(subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "", "")):
+            result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
+        return result, calls, node_dir, shape, repo, refs
+
+    SUMMARY = "Instances,Name\n2,k(double *, long)\n"
+
+    def test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it(self) -> None:
+        target = self._traced_target()
+        result, calls, node_dir, shape, repo, refs = self._drive_traced_execute(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(shape.trace)
+        self.assertEqual([tag for tag, _ in calls], ["run", "trace", "qc"])
+        run, trace = calls[0][1], calls[1][1]
+        # The binary runs under the trace's prefix; the summary runs bare, in the run's cwd.
+        self.assertEqual(run["command"][:len(shape.argv_prefix)], list(shape.argv_prefix))
+        self.assertTrue(shape.argv_prefix)
+        self.assertEqual(trace["command"], list(shape.trace.summary_argv))
+        self.assertEqual(trace["project_dir"], run["project_dir"])
+        self.assertEqual(trace["env"], {})
+        self.assertEqual(trace["command_log_path"], run["command_log_path"])
+        # The summary is promoted under its neutral name, byte for byte.
+        self.assertEqual((node_dir / "kernel_trace.csv").read_text("utf-8"), self.SUMMARY)
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        self.assertEqual(trial["kernel_trace"], {
+            "artifact": "kernel_trace.csv", "command_id": "T",
+            "command_log_ref": f"{refs.run_node_dir()}/command_log.jsonl"})
+        # Kept out of `source_command_ref`, whose run_program entry is the binary's run.
+        self.assertEqual(trial["source_command_ref"]["run_program"]["command_id"], "R")
+        self.assertEqual(trial["environment"]["launch"], shape.record())
+        self.assertEqual(set(trial["environment"]),
+                         {"target_id", "target_class", "backend", "threads_per_rank", "launch",
+                          "platform", "execution_site"})
+
+    def test_execute_inproc_an_untraced_target_runs_no_summary(self) -> None:
+        from tools.tests.target_fixtures import profile_with
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                result, calls, node_dir, shape, _, _ = self._drive_traced_execute(
+                    profile_with(parallel={"backend": backend}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(shape.trace)
+                self.assertEqual([tag for tag, _ in calls], ["run", "qc"])
+                self.assertFalse((node_dir / "kernel_trace.csv").exists())
+                trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+                self.assertNotIn("kernel_trace", trial)
+
+    def test_execute_inproc_a_failing_trace_summary_is_a_deterministic_validate_error(
+            self) -> None:
+        """The summary is host tooling reading a run that succeeded: its failure is no leaf's,
+        so it fails the substep as transport, without a trial_meta a classifier would route
+        back to Generate. A failed summary stops the quality check (as the remote job's chain
+        does); a summary that exited 0 and wrote nothing is found after it, on both paths."""
+        for trace_result, write_summary, needle, ran in (
+                ({"ok": False, "command_id": "T", "return_code": 1, "stderr": "boom-tail"},
+                 True, "kernel_trace_summary_failed: rc=1", ["run", "trace"]),
+                ({"ok": True, "command_id": "T", "return_code": 0}, False,
+                 "kernel_trace_summary_missing", ["run", "trace", "qc"])):
+            with self.subTest(needle=needle):
+                result, calls, node_dir, _, repo, _ = self._drive_traced_execute(
+                    self._traced_target(), trace_result=trace_result,
+                    write_summary=write_summary)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("deterministic_validate_error", result.stderr)
+                self.assertIn(needle, result.stderr)
+                # The operator is told which document to read — not a run directory, which the
+                # agent run's tmp cleanup removes when the substep ends (round 4).
+                self.assertIn("docs/backends/parallel/cuda/DEVICE_TRACE.md §1", result.stderr)
+                self.assertNotIn(str(repo / "workspace" / "tmp"), result.stderr)
+                self.assertEqual([tag for tag, _ in calls], ran)
+                self.assertFalse((node_dir / "trial_meta.json").exists())
+                self.assertFalse((node_dir / "kernel_trace.csv").exists())
+        self.assertIn("boom-tail", self._drive_traced_execute(
+            self._traced_target(),
+            trace_result={"ok": False, "return_code": 1, "stderr": "boom-tail"})[0].stderr)
+
+    def test_execute_inproc_a_failed_run_runs_no_summary_and_keeps_no_stale_one(self) -> None:
+        """A runner failure stays the content failure it was (no trace summary runs after it),
+        and a previous attempt's summary in the node dir is cleared, so nothing reads it."""
+        result, calls, node_dir, _, _, _ = self._drive_traced_execute(
+            self._traced_target(), run_ok=False, stale="Instances,Name\n9,forged(int *)\n")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("[run_program failed: runtime_error]", result.stderr)
+        self.assertEqual([tag for tag, _ in calls], ["run"])
+        self.assertFalse((node_dir / "kernel_trace.csv").exists())
+
+    def test_a_traced_target_declares_the_summary_as_an_execute_deliverable(self) -> None:
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+            run_id="run_1", source_binary_id="bin_1")
+        kw = dict(step="validate", substep="execute", orchestration_id="o",
+                  orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
+                  workflow_mode="dev", case_ids=("c_alpha",))
+        traced = wc.build_launch_request(refs, device_trace=True, **kw)["allowed_output_paths"]
+        bare = wc.build_launch_request(refs, **kw)["allowed_output_paths"]
+        self.assertEqual(set(traced) - set(bare), {f"{refs.run_node_dir()}/kernel_trace.csv"})
+        # And the conductor asks the target's parallel record whether its execute is traced.
+        import tempfile
+        from tools.tests.target_fixtures import profile_with
+        with tempfile.TemporaryDirectory() as td:
+            for backend, expected in (("cuda", True), ("openmp", False), ("none", False)):
+                c = _TargetedConductor(repo_root=Path(td), orchestration_id="t",
+                                       orchestration_agent_run_id="x",
+                                       llm_config=_cfg("claude"), env={},
+                                       target_profile=profile_with(
+                                           parallel={"backend": backend}))
+                with self.subTest(backend=backend):
+                    self.assertIs(c._traces_execution(), expected)
 
     def test_execute_inproc_refuses_a_class_this_host_cannot_run_on_before_running(
             self) -> None:
@@ -20969,6 +21192,28 @@ class LeafUsageRecordingTests(unittest.TestCase):
                         any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json") for p in outs),
                         authored, outs)
                 self.assertEqual(bool(req.get("runner_host_authored")), authored)
+
+    def test_validate_execute_owes_the_trace_summary_only_from_a_traced_target(self) -> None:
+        """Issue #307, pinned at the handler: `run_substep` asks the conductor whether the
+        target's execute is traced, so the execute launch request it records lists
+        `kernel_trace.csv` exactly when it is. The direct `build_launch_request` row beside
+        `test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it` cannot see
+        this wiring."""
+        from unittest import mock
+        for traced in (True, False):
+            with self.subTest(traced=traced):
+                c = self._conductor(wc.ProcResult(0, "", ""))
+                with mock.patch.object(wc.Conductor, "_traces_execution",
+                                       return_value=traced), \
+                     mock.patch.object(c, "read_case_ids", return_value=("c_alpha",)), \
+                     mock.patch.object(c, "_read_evidence_artifacts",
+                                       return_value=("state_snapshots",)):
+                    c.run_substep(self._refs(), "validate", "execute")
+                req = [cap["--request-json"] for sub, cap in c.calls
+                       if sub == "record-launch"][-1]
+                self.assertEqual(req["substep"], "execute")
+                self.assertEqual(any(p.endswith("/kernel_trace.csv")
+                                     for p in req["allowed_output_paths"]), traced)
 
     def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no

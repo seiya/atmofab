@@ -85,6 +85,7 @@ linter (`registry.linter_for_language`) and the compiler (the language backend's
 |---|---|---|
 | `nvcc` | the CUDA compiler driver, in three roles: the `static lint` tool (`linter/nvcc`, every warning an error), the mandatory `Generate.gate` syntax-only stage, and the `NVCC` the build control file pins. Supported versions: `>=13.0,<14.0` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
 | `make` | the build system `Build` drives via MCP `compile_project` | `Build` |
+| `nsys` | Nsight Systems: the device trace `Validate.execute` runs the binary under, whose per-kernel summary it keeps as `kernel_trace.csv` (issue #307; `docs/backends/parallel/cuda/DEVICE_TRACE.md`). Needed where the run EXECUTES, not where it builds: asked of the site below, and of this host only when the local site executes the run. Measured on 2025.1.3 and 2026.3.2 | `Validate.execute`, after the build |
 
 The probe lists `nvcc` once, under its first role. It comes with the CUDA toolkit, which also
 supplies the runtime the build links; a machine with no GPU builds with it (the `gpu` class runs
@@ -151,7 +152,9 @@ Read from `./sites.yaml` once the checks above pass (issue #293; the file's shap
 `sites_config_*` rule are in [docs/ORCHESTRATION.md](ORCHESTRATION.md) §Execution sites). Without
 the file every target runs here, at `local`, and nothing in this section applies beyond the site
 half of `target_profile_invalid`. The rows below the first two apply only to a run that reaches
-`Validate` for a target the file maps to a REMOTE site. A `--with-deps` run is asked them again
+`Validate` for a target the file maps to a REMOTE site, except `missing_required_site_tools`,
+which a run that reaches `Validate` at the LOCAL site is asked too, for the programs the binary
+runs under (below). A `--with-deps` run is asked them again
 before each dependency member it runs, because a member is driven to `Validate` whatever phase
 the run stops at; a run with no member left to run that stops earlier contacts no site.
 
@@ -161,7 +164,7 @@ the run stops at; a run with no member left to run that stops earlier contacts n
 | `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes` |
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
-| `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only |
+| `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, what the target's parallel backend runs the binary under (the device trace's program, in the `cpp_gpu` tool table above), and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only. At the local site (`"site": "local"`) it is the parallel backend's programs alone, looked up on this host's `PATH` (`host_prerequisites.execution_executables`) |
 | `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here. Asked before the two rows below, whose remedies would be work on the wrong site |
 | `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), or its login prints to stdout (scp fails on that) |
 

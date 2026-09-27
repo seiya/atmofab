@@ -203,8 +203,10 @@ def build_tuple() -> dict[str, str]:
 #: at all, are read off the registry records by `tools/host_execution.py`. And what a site's
 #: scheduler runs a job under (issue #293 PR-4), read the same way by
 #: `tools/remote_execution._submission`: the prefix decides which machine runs the commands and
-#: with what allocation, as the hardware class's module decides the device probe.
-_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit"})
+#: with what allocation, as the hardware class's module decides the device probe. And the device
+#: trace a parallel model's binary runs under (issue #307), read the same way: its prefix and its
+#: summary command are what `Validate.execute` runs.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit", "device_trace"})
 _LAUNCH_AXES = ("parallel", "hardware", "scheduler")
 
 
@@ -444,7 +446,11 @@ PINNED_RENDER: dict[str, str] = {
     # outputs is the profile's sha256, which now carries the default (`target_profile.
     # _fill_default_architecture`), so no certified output is reused under a key whose render
     # would differ; the Fortran render is untouched.
-    "render-5": "89677df047a44ae7fa69c74e5681db1e7ccd04e9132a381ad8aef97420921797",
+    # Re-pinned (issue #307, PR-2), behaviour-preserving for the render: `tools/host_execution.py`
+    # (digested whole for `perf_parallelism`) gained the device-trace launch half, which the
+    # execute body reads and no renderer calls; `perf_parallelism` is unchanged. Re-pinned again in
+    # that PR's round 3 for `launch_argv_prefix`, which the post-execute gate reads.
+    "render-5": "35c326ad415d8a4635380ad6424bcee2294e2096a137497745b65f024abf0d3d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -543,6 +549,23 @@ PINNED_EXECUTE: dict[str, str] = {
     # `perf_parallelism`, which the CUDA C++ runner renderer reads for its perf line and the
     # execute body does not call; `launch_shape` is unchanged.
     "execute-5": "44aaabf0ccd5337cdd91dc87577891b3c9621cbf83f7e10c07fdced176ab3e7f",
+    # execute-6 (issue #307, PR-2): a binary whose parallel backend declares `device_trace` (CUDA)
+    # runs under Nsight Systems — the launch shape's `argv_prefix` — and a third command writes
+    # the trace's per-kernel summary between the run and the quality check, locally and in the
+    # remote job; `Validate.execute` promotes it to `kernel_trace.csv` (a new deliverable) and
+    # records it in `trial_meta.json#kernel_trace`, and a failed or missing summary is a
+    # `deterministic_validate_error`. The tuple gained the `device_trace` capability
+    # (`_LAUNCH_CAPABILITIES`). What an `openmp` / `none` target's execute runs is unchanged.
+    # Re-pinned within PR-2's review (round 1), before any run was stamped execute-6: the summary
+    # command empties its output path before the stats run (a read-only file there survived it);
+    # and `defined_kernels` blanks every CUDA `__name__(…)` attribute, a reader no execute calls.
+    # And in round 2: the summary command requires the export database a readable report gives
+    # (an unreadable one exits 0 with an empty summary); `defined_kernels` blanks the CUDA
+    # attributes by name; and comments in `tools/remote_execution.py` name the binary the gate binds.
+    # And in round 3: `host_execution.launch_argv_prefix`, the prefix the post-execute gate admits;
+    # and the summary failure's message names the backend's document (round 4: not the run
+    # directory, which the tmp cleanup removes); trace.py cites the site measurement.
+    "execute-6": "3cddccc0691a4d702b6bae0cd7e7aa05fadc4efaad92e6404188e54fc0222d20",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -48,6 +48,23 @@ class LaunchSelectionTests(unittest.TestCase):
         other.doc["toolchain"] = {**other.doc["toolchain"], "build_system": "no_such_bs"}
         self.assertEqual(hp.resolve_launch_axis_selection(other)["build_system"], "no_such_bs")
 
+    def test_the_parallel_backend_decides_what_the_executing_machine_needs(self) -> None:
+        """Issue #307: the selection carries the target's parallel backend, and the programs
+        the executing machine needs beyond the binary are that backend's trace's — nothing for
+        a backend that declares none. The host's build tools do not read it."""
+        from tools.tests.target_fixtures import profile_with
+
+        cuda = profile_with(parallel={"backend": "cuda"})
+        selection = hp.resolve_launch_axis_selection(cuda)
+        self.assertEqual(selection["parallel"], "cuda")
+        self.assertEqual(hp.execution_executables(selection), tuple(
+            backend_registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES))
+        self.assertTrue(hp.execution_executables(selection))
+        self.assertEqual(hp.execution_executables(_SELECTION), ())
+        self.assertEqual(_SELECTION["parallel"], FORTRAN_CPU.parallel_backend)
+        self.assertEqual(hp.required_host_executables(selection),
+                         hp.required_host_executables(_SELECTION))
+
     def test_the_linter_comes_from_the_language_to_preset_mapping_the_gate_uses(self) -> None:
         """The same registry answer `_gate_lint_check` reads. A second copy would send the probe
         after a linter the gate never runs, which is the whole failure mode this check exists to

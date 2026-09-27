@@ -48,6 +48,7 @@ import yaml
 
 from tools.backends import registry as backend_registry
 from tools.execution_sites import Site
+from tools.host_execution import KERNEL_TRACE_ARTIFACT
 from tools.target_profile import (
     TargetProfile,
     pipeline_ref_for,
@@ -1527,6 +1528,7 @@ def build_launch_request(
     exe_name: str | None = None,
     makefile_host_authored: bool = False,
     runner_host_authored: bool = False,
+    device_trace: bool = False,
     repair: dict[str, str] | None = None,
     resolved_dependencies: tuple[dict[str, str], ...] = (),
     dependency_surface: tuple[dict[str, Any], ...] = (),
@@ -1549,6 +1551,8 @@ def build_launch_request(
     per direct dep, from `_resolve_dependency_facts`); when non-empty they are attached for
     the LLM (generate / validate) leaves so the rendered `<dependency_facts>` block lets a
     judge skip the filesystem lookup. They never gate (pure module function, no FS access).
+    device_trace says the target's binary runs under a device trace (validate.execute only),
+    whose per-kernel summary execute promotes to `kernel_trace.csv` (issue #307).
     """
     spec = refs.spec_path
     role = child_agent_role(step)
@@ -1773,6 +1777,10 @@ def build_launch_request(
                     if runner_host_authored:
                         outs.append(f"{rundir}/raw/state_snapshots/initial/{cid}.json")
                 outs.append(f"{rundir}/raw/state_snapshots/snapshot_schema.json")
+            # A target whose parallel backend declares `device_trace` runs the binary under the
+            # trace, and execute promotes the trace's per-kernel summary (issue #307).
+            if device_trace:
+                outs.append(f"{rundir}/{KERNEL_TRACE_ARTIFACT}")
             outs += [
                 f"{rundir}/stdout.log",
                 f"{rundir}/stderr.log",
@@ -10738,6 +10746,12 @@ class Conductor:
                 out.append(str(e["artifact"]))
         return out
 
+    def _traces_execution(self) -> bool:
+        """True when the target's parallel backend runs its binary under a device trace
+        (`device_trace`, issue #307), so Validate.execute delivers `kernel_trace.csv`."""
+        return "device_trace" in backend_registry.get(
+            "parallel", self.target.parallel_backend).backend_provides
+
     def _promote_run_evidence(self, run_tmp: Path, node_dir: Path,
                               artifacts: list[str]) -> list[str]:
         """Promote the runner's `run/` output to the canonical run node dir.
@@ -10979,7 +10993,9 @@ class Conductor:
         # run_id rotation (_ensure_fresh_producer_id) already gives each attempt a fresh dir,
         # making this a no-op in practice; enforcing it here removes the reliance on that
         # external invariant for two correctness-critical routing decisions.
-        for _stale in ("verdict.json", "trial_meta.json"):
+        # The device trace's summary (issue #307) is cleared for the same reason: the gate that
+        # reads it must never read a previous attempt's.
+        for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT):
             _prev = node_dir / _stale
             if _prev.exists():
                 _prev.unlink()
@@ -11031,8 +11047,19 @@ class Conductor:
                 "repo_root": str(self.repo_root),
                 **attribution,
             })
+            # 1b. The device trace's summary (issue #307), in the run's cwd, after a run that
+            #     succeeded and before the quality check — the order the remote job runs them in.
+            res_trace = tool_run_program({
+                "project_dir": str(run_tmp),
+                "command": list(launch.trace.summary_argv),
+                "env": {},
+                "command_log_path": str(cmd_log),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                "repo_root": str(self.repo_root),
+                **attribution,
+            }) if launch.trace is not None and res_run.get("ok") else None
             # 2. run_quality_checks (make_test re-run; output to a SEPARATE tmp), only after a
-            #    run that succeeded.
+            #    run (and its trace summary) that succeeded.
             res_qc = tool_run_quality_checks({
                 "project_dir": str(src_dir),
                 "preset": "make_test",
@@ -11041,7 +11068,7 @@ class Conductor:
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 "repo_root": str(self.repo_root),
                 **attribution,
-            }) if res_run.get("ok") else None
+            }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
             platform_record = local_platform_record(launch.platform_probe)
             site_record: dict[str, Any] = {
                 "site": launch.site, "host": None, "scheduler": DIRECT_SCHEDULER,
@@ -11064,6 +11091,14 @@ class Conductor:
             control_file = str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
             run_argv, qc_env = commands(f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml",
                                         f"{jdir}/bin", f"{jdir}/qc_run", f"{jdir}/build")
+            # The device trace's summary runs between the two, in the run's directory (issue
+            # #307); the job runs a command only after every earlier one exited 0.
+            trace_commands = () if launch.trace is None else (
+                CommandSpec(tag="trace", tool_name="run_program",
+                            argv=tuple(launch.trace.summary_argv),
+                            cwd=f"{jdir}/run", record_cwd=str(run_tmp), env={},
+                            timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
+                            capture_limit=_FULL_CAPTURE_LIMIT),)
             result = execute_job(JobRequest(
                 site=site, job_dir=jdir,
                 ship={f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
@@ -11073,6 +11108,7 @@ class Conductor:
                                 cwd=f"{jdir}/run", record_cwd=str(run_tmp),
                                 env=dict(launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
                                 command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                    *trace_commands,
                     CommandSpec(tag="qc", tool_name="run_quality_checks",
                                 argv=tuple(quality_check_command("make_test")),
                                 cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
@@ -11089,12 +11125,43 @@ class Conductor:
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.move(str(result.collected / name), str(dest))
-            res_run, res_qc = result.results
+            if launch.trace is None:
+                res_run, res_qc = result.results
+                res_trace = None
+            else:
+                res_run, res_trace, res_qc = result.results
             platform_record = result.platform
             site_record = result.site_record
 
         stdout = res_run.get("stdout", "") or ""
         stderr = res_run.get("stderr", "") or ""
+        # The trace summary is host tooling reading a run that succeeded: a failure of it, or a
+        # summary it did not write, is not the kernel's failure and no leaf's to repair, so it
+        # raises (`deterministic_validate_error`) rather than routing the node back to Generate.
+        trace_ref: dict[str, Any] | None = None
+        if launch.trace is not None and res_run.get("ok"):
+            # What the operator reads: the summary's own stderr (above, in the message) and the
+            # backend's document, which says what each failure means and how to reproduce it —
+            # the run directory is removed with the rest of this agent run's tmp root when the
+            # substep ends (`orchestration_runtime._cleanup_agent_tmp_root`), so nothing here
+            # can point at the report.
+            where = (f"(see docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 "
+                     f"for what this means and how to reproduce it, then --resume)")
+            if res_trace is None or not res_trace.get("ok"):
+                detail = "did not run" if res_trace is None else (
+                    f"rc={res_trace.get('return_code')} {res_trace.get('error') or ''} "
+                    f"{(res_trace.get('stderr') or '')[-400:]}".strip())
+                raise RuntimeError(f"kernel_trace_summary_failed: {detail} {where}")
+            summary = run_tmp / launch.trace.summary_file
+            if not summary.is_file():
+                raise RuntimeError(
+                    f"kernel_trace_summary_missing: {launch.trace.summary_file} was not written "
+                    f"by {shlex.join(launch.trace.summary_argv)} {where}")
+            node_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(summary, node_dir / KERNEL_TRACE_ARTIFACT)
+            trace_ref = {"artifact": KERNEL_TRACE_ARTIFACT,
+                         "command_id": res_trace.get("command_id"),
+                         "command_log_ref": self._rel(cmd_log)}
         if not res_run.get("ok") or res_qc is None:
             # Runtime error is a CONTENT failure (buggy generated code): rc 0 so run_phase
             # routes it via the validate tables / diagnostician, not transport fail_closed.
@@ -11152,6 +11219,9 @@ class Conductor:
                                        "command_log_ref": self._rel(qc_cmd_log)},
             },
             "raw_artifact_refs": raw_refs,
+            # The device trace's per-kernel summary and the command that wrote it (issue #307):
+            # kept apart from `source_command_ref`, whose `run_program` entry is the binary's run.
+            **({"kernel_trace": trace_ref} if trace_ref is not None else {}),
             "environment": {
                 "target_id": target.target_id,
                 "target_class": target_class,
@@ -11410,6 +11480,7 @@ class Conductor:
             # host-rendered glue (which writes the `initial/` captures) — Z6, issue #255.
             runner_host_authored=(
                 phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
+            device_trace=(phase == "validate" and self._traces_execution()),
             repair=repair,
             resolved_dependencies=resolved_dependencies,
             dependency_surface=dependency_surface,

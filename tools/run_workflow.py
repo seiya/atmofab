@@ -194,13 +194,15 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     did not come back), `site_machine_mismatch` (the shipped binary is built here, so the site
     must be this machine type — asked first of the probe's answers, since the remedy for any
     other is wasted on the wrong site), `missing_required_site_tools` and `site_unusable`
-    (`remote_execution.SiteProbe.problems`). `sites_config`, when
+    (`remote_execution.SiteProbe.problems`); for the local site, when it executes the run,
+    `missing_required_site_tools` for a program the binary runs under that this host lacks
+    (`host_prerequisites.execution_executables`, issue #307). `sites_config`, when
     given, is the configuration `main` already loaded: a closure member is gated against it, with
     the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
     import platform as _platform
 
     from tools.execution_sites import SitesConfigError, load_sites, site_violations
-    from tools.host_prerequisites import required_site_executables
+    from tools.host_prerequisites import execution_executables, required_site_executables
     from tools.remote_execution import (
         TRANSPORT_EXECUTABLES,
         RemoteExecutionError,
@@ -224,7 +226,24 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            "docs/ORCHESTRATION.md §Execution sites)"),
                 "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     site = sites_config.site_for(target_profile.target_id)
-    if site.is_local or str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
+    if str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
+        return sites_config
+    if site.is_local:
+        # This host executes the run: `site_violations` above refused a local site that does
+        # not execute the target's class, so what is left to ask is what the binary runs under
+        # (a device trace's program, issue #307) — which `Validate.execute` would otherwise
+        # fail on after the build.
+        required_local = execution_executables(_host_probe_selection(target_profile))
+        missing_local = [exe for exe in required_local if shutil.which(exe) is None]
+        if missing_local:
+            return {"status": "fail", "reason": "missing_required_site_tools",
+                    "site": site.site_id, "missing": missing_local,
+                    "required": list(required_local),
+                    "detail": (f"site {site.site_id} (this host) lacks "
+                               f"{', '.join(missing_local)} on PATH, which target "
+                               f"{target_profile.target_id}'s binary runs under at "
+                               f"Validate.execute (see docs/RUNBOOK.md#0-1)"),
+                    "docs_ref": "docs/RUNBOOK.md#0-1"}
         return sites_config
     missing_transport = [exe for exe in TRANSPORT_EXECUTABLES if shutil.which(exe) is None]
     if missing_transport:

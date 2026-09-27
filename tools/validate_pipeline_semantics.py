@@ -26,6 +26,8 @@ try:
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
+    # The launch seam, for the launch prefix a target's binary runs under (issue #307).
+    from tools import host_execution
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -71,6 +73,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
+    # The launch seam, for the launch prefix a target's binary runs under (issue #307).
+    from tools import host_execution
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -6024,8 +6028,9 @@ def _validate_run_program_inputs(
         trial_meta_path, repo_root
     )
     # Bind run_program executable to trial_meta's source_build_id. The matched
-    # record's `cwd` field (project_dir) or absolute argv[0] must resolve
-    # under `<pipeline>/build/<source_build_id>/bin/`. Otherwise an execute
+    # record's executable — the argument after the recorded launch prefix — must
+    # resolve, absolute or against the record's `cwd`, under
+    # `<pipeline>/binary/<source_binary_id>/bin/`. Otherwise an execute
     # could attribute results to one build while running a sibling build's
     # binary (mixed-build attribution forge).
     _trial_source_build_id = data.get("source_binary_id")
@@ -6037,6 +6042,41 @@ def _validate_run_program_inputs(
             / _trial_source_build_id.strip()
             / "bin"
         ).resolve()
+
+    # The launch prefix the binary ran under (`environment.launch.argv_prefix`, written by the
+    # host from `tools/host_execution.py`; issue #307 puts a device trace there). The binary is
+    # the first argument AFTER it. A record without `environment.launch` predates the launch
+    # seam and ran under none; one whose prefix is not a list of strings says nothing the
+    # binding below can use, and is refused.
+    _launch = (data.get("environment") or {}).get("launch") \
+        if isinstance(data.get("environment"), dict) else None
+    _argv_prefix: list[str] | None = []
+    if isinstance(_launch, dict) and "argv_prefix" in _launch:
+        _raw_prefix = _launch.get("argv_prefix")
+        if isinstance(_raw_prefix, list) and all(isinstance(a, str) for a in _raw_prefix):
+            _argv_prefix = list(_raw_prefix)
+        else:
+            _argv_prefix = None
+            violations.append(
+                f"{trial_meta_path}: environment.launch.argv_prefix must be a list of strings "
+                f"(got {_raw_prefix!r}); the binary a run_program record ran cannot be located "
+                f"after it")
+    # A non-empty prefix is admitted only as the one the pipeline's TARGET runs its binary under
+    # (`host_execution.launch_argv_prefix`): taken on the record's word, any program named in it
+    # would run in front of the build's binary unbound (round 3: a recorded `[<other>]` or
+    # `["sh", "-c", …]` passed here, where origin/main refused the same command). An EMPTY
+    # prefix is every record written before issue #307 and every untraced target's.
+    if _argv_prefix:
+        _target = _pipeline_target(repo_root, execution.pipeline_dir)
+        _expected = (list(host_execution.launch_argv_prefix(_target.parallel_backend))
+                     if _target is not None else None)
+        if _argv_prefix != _expected:
+            violations.append(
+                f"{trial_meta_path}: environment.launch.argv_prefix {_argv_prefix!r} is not the "
+                f"launch prefix of this pipeline's target "
+                f"({'unresolved' if _expected is None else repr(_expected)}); the binary a "
+                f"run_program record ran cannot be bound after it")
+            _argv_prefix = None
 
     for entry in _iter_command_ref_entries(source_command_ref):
         command_id = entry.get("command_id")
@@ -6099,10 +6139,21 @@ def _validate_run_program_inputs(
 
         # Bind to source_build_id: the executed binary must live under the
         # declared build's bin/ directory. Resolve via the matched record's
-        # `cwd` (project_dir) or argv[0] absolute path. Relative argv[0]
+        # `cwd` (project_dir) or the executable's absolute path; the executable is the
+        # argument after the recorded launch prefix (issue #307). A relative one
         # (e.g. `./simulate`) is resolved against `cwd`.
         if _build_bin_abs is not None and command:
-            executable = command[0]
+            if _argv_prefix is None:
+                continue
+            if command[:len(_argv_prefix)] != _argv_prefix:
+                violations.append(
+                    f"{trial_meta_path}:run_program command_id={command_id} command must "
+                    f"begin with the recorded launch prefix {_argv_prefix!r} "
+                    f"(environment.launch.argv_prefix); got {command[:len(_argv_prefix)]!r}"
+                )
+                continue
+            executable = (command[len(_argv_prefix)]
+                          if len(command) > len(_argv_prefix) else None)
             cwd_val = matched.get("cwd")
             cwd_path: Path | None = None
             if isinstance(cwd_val, str) and cwd_val.strip():

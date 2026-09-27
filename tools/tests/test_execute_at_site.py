@@ -297,6 +297,106 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
             self.assertEqual(env["platform"]["site"], "gpu_box")
 
 
+#: A stand-in for the device trace's program at the site (issue #307), installed under the name
+#: the backend's `EXECUTABLES` gives it. Its profiling form runs the rest of its argv after the
+#: first `FAKE_TRACE_PREFIX_LEN` arguments (the prefix minus the program) and returns its status;
+#: its summary form writes `$FAKE_TRACE_CSV` to `$FAKE_TRACE_SUMMARY` in its cwd, and the export
+#: database the stats run writes for a readable report (the last argument's stem + `.sqlite`),
+#: and exits `$FAKE_TRACE_RC`.
+_FAKE_TRACER = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import os, subprocess, sys
+    args = sys.argv[1:]
+    n = int(os.environ["FAKE_TRACE_PREFIX_LEN"])
+    if args[:1] == [os.environ["FAKE_TRACE_PROFILE_WORD"]]:
+        sys.exit(subprocess.run(args[n:]).returncode)
+    with open(os.environ["FAKE_TRACE_SUMMARY"], "w") as f:
+        f.write(os.environ.get("FAKE_TRACE_CSV", ""))
+    with open(os.path.splitext(args[-1])[0] + ".sqlite", "w") as f:
+        f.write("db")
+    sys.exit(int(os.environ.get("FAKE_TRACE_RC") or 0))
+''')
+
+
+class ExecuteTracedAtARemoteSiteTests(unittest.TestCase):
+    """The device trace in the remote job (issue #307): the binary runs under the trace's prefix,
+    the summary is the job's second command, in the run directory, and its file comes home with
+    the collected run directory to be promoted."""
+
+    CSV = "Instances,Name\n3,k(double *, long)\n"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.n = _Node(self._tmp.name, target=profile_with(parallel={"backend": "cuda"}))
+        self.shape = launch_shape(self.n.target, self.n.site)
+        self.assertIsNotNone(self.shape.trace)
+        trace = registry.capability_module("parallel", "cuda", "device_trace")
+        self.site_bin = self.n.root / "site_bin"
+        self.site_bin.mkdir()
+        tracer = self.site_bin / trace.EXECUTABLES[0]
+        tracer.write_text(_FAKE_TRACER)
+        tracer.chmod(0o755)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def knobs(self, **extra: str) -> dict[str, str]:
+        return {"SHIM_SSH_PATH": f"{self.site_bin}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_TRACE_PREFIX_LEN": str(len(self.shape.argv_prefix) - 1),
+                "FAKE_TRACE_PROFILE_WORD": self.shape.argv_prefix[1],
+                "FAKE_TRACE_SUMMARY": self.shape.trace.summary_file,
+                "FAKE_TRACE_CSV": self.CSV, **extra}
+
+    def test_the_trace_is_the_second_command_of_the_job_and_its_summary_comes_home(
+            self) -> None:
+        n = self.n
+        out = n.execute(**self.knobs())
+        self.assertEqual(out["returncode"], 0, out)
+        job = f"{n.workdir}/orch_1/arid-1"
+        run_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "run"
+        # The runner ran, under the prefix, in the job's run directory.
+        self.assertEqual(json.loads((run_tmp / "argv.json").read_text())["cwd"], f"{job}/run")
+        run_log = n.log_entries(n.node_dir / "command_log.jsonl")
+        self.assertEqual([e["tool_name"] for e in run_log], ["run_program", "run_program"])
+        binary_run, summary = run_log
+        prefix = list(self.shape.argv_prefix)
+        self.assertEqual(binary_run["command"][:len(prefix)], prefix)
+        self.assertEqual(binary_run["command"][len(prefix)], str(n.binary.resolve()))
+        self.assertEqual(summary["command"], list(self.shape.trace.summary_argv))
+        self.assertEqual((summary["cwd"], summary["site"]["remote_cwd"]),
+                         (str(run_tmp), f"{job}/run"))
+        self.assertEqual(summary["env_override_keys"], [])
+        self.assertEqual([e["tool_name"] for e in n.log_entries(n.src / "command_log.jsonl")],
+                         ["run_quality_checks"])
+        # Promoted under its neutral name, and recorded apart from the binary's run.
+        self.assertEqual((n.node_dir / "kernel_trace.csv").read_text(), self.CSV)
+        trial = json.loads((n.node_dir / "trial_meta.json").read_text())
+        self.assertEqual(trial["kernel_trace"]["command_id"], summary["command_id"])
+        self.assertEqual(trial["source_command_ref"]["run_program"]["command_id"],
+                         binary_run["command_id"])
+        self.assertEqual(trial["environment"]["launch"]["argv_prefix"], prefix)
+
+    def test_a_failing_summary_is_a_deterministic_validate_error_and_the_check_does_not_run(
+            self) -> None:
+        n = self.n
+        result = n.substep(**self.knobs(FAKE_TRACE_RC="2"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("deterministic_validate_error", result.stderr)
+        self.assertIn("kernel_trace_summary_failed: rc=2", result.stderr)
+        self.assertEqual(n.log_entries(n.src / "command_log.jsonl"), [])
+        self.assertFalse((n.node_dir / "trial_meta.json").exists())
+        self.assertFalse((n.node_dir / "kernel_trace.csv").exists())
+
+    def test_a_failing_runner_under_the_trace_runs_no_summary(self) -> None:
+        n = self.n
+        out = n.execute(**self.knobs(RUNNER_RC="3"))
+        self.assertEqual(out["returncode"], 0)
+        self.assertIn("[run_program failed: runtime_error]", out["stderr"])
+        run_log = n.log_entries(n.node_dir / "command_log.jsonl")
+        self.assertEqual([(e["tool_name"], e["return_code"]) for e in run_log],
+                         [("run_program", 3)])
+
+
 class ExecuteAtTheLocalSiteTests(unittest.TestCase):
     """A local site — the default with no `sites.yaml`, or one that lists more classes — runs
     in-process through the server and contacts nothing."""

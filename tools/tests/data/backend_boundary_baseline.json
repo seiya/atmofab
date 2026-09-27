@@ -68,7 +68,8 @@
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3,
-      "make-control-file": 1
+      "make-control-file": 1,
+      "parallel-trace": 2
     },
     "docs/SPEC.md": {
       "fortran": 1,

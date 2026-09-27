@@ -13015,6 +13015,189 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 violations,
             )
 
+    _NO_LAUNCH = object()
+    #: `prefix` value meaning "the whole command the record carries".
+    _WHOLE_COMMAND = object()
+
+    def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix,
+                            target_prefix=None, _real_seam: bool = False) -> list[str]:
+        """The minimal execution tree with `trial_meta.environment.launch.argv_prefix` set to
+        `prefix` (no `environment` at all when `_NO_LAUNCH`) and the run_program record's command led by
+        `command_prefix` (issue #307: a device trace is a launch prefix)."""
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root,
+            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text="module m\nimplicit none\nend module m\n",
+            runner_text="program r\nimplicit none\nend program r\n",
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+        )
+        node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                    / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                    / "problem__shallow_water2d__0.3.0")
+        trial_meta_path = node_dir / "trial_meta.json"
+        trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
+        # The record in PRODUCTION's shape: the binary by its absolute path, run from the
+        # execute's run directory — not from the build's bin/, where a RELATIVE first argument
+        # would resolve under the build whichever argument the validator took for the binary
+        # (round 1: a mutant binding `command[0]` survived the fixture's `./simulate` in bin/).
+        binary = (node_dir.parents[2] / "binary" / trial_meta["source_binary_id"] / "bin"
+                  / "simulate")
+        self.assertTrue(binary.is_file(), binary)
+        run_cwd = repo_root / "workspace" / "tmp" / "arid-1" / "run"
+        run_cwd.mkdir(parents=True, exist_ok=True)
+        log_path = node_dir / "command_log.jsonl"
+        recs = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        for rec in recs:
+            if rec.get("tool_name") == "run_program":
+                self.assertEqual(rec["command"][0], "./simulate")
+                rec["command"] = [*command_prefix, str(binary), *rec["command"][1:]]
+                rec["cwd"] = str(run_cwd)
+                if prefix is self._WHOLE_COMMAND:
+                    prefix = list(rec["command"])
+        log_path.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+        if prefix is not self._NO_LAUNCH:
+            trial_meta["environment"] = {"launch": {"argv_prefix": prefix, "env": {}}}
+        _write_json(trial_meta_path, trial_meta)
+        # The fixture's target launches bare; `target_prefix` stands in for a target whose
+        # parallel backend runs its binary under one (the seam's answer, patched where the
+        # validator asks it). By default it is the recorded prefix, so a row varies the command.
+        if _real_seam:
+            return validate(repo_root=repo_root, workspace_root="workspace")
+        if target_prefix is None:
+            target_prefix = prefix if isinstance(prefix, list) else []
+        from unittest import mock
+        with mock.patch.object(vps.host_execution, "launch_argv_prefix",
+                               return_value=tuple(target_prefix)) as seam:
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+        if isinstance(prefix, list) and prefix and all(isinstance(a, str) for a in prefix):
+            seam.assert_called_with(_TP.parallel_backend)
+        return violations
+
+    @staticmethod
+    def _binding_violations(violations: list[str]) -> list[str]:
+        return [v for v in violations
+                if "must resolve under" in v or "launch prefix" in v
+                or "argv_prefix must be" in v]
+
+    def test_run_program_command_may_carry_the_recorded_launch_prefix(self) -> None:
+        """Issue #307: the binary is the first argument AFTER the recorded launch prefix, so a
+        traced run binds to its build like an untraced one."""
+        # RELATIVE, as the host writes it: resolved against the run directory, the prefix's
+        # first argument lies outside the build, so taking it for the binary is refused.
+        prefix = ["tracer", "profile", "-o", "kernel_trace"]
+        for recorded, carried in ((prefix, prefix), ([], []), (self._NO_LAUNCH, [])):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
+                                                      command_prefix=carried)
+                self.assertEqual(self._binding_violations(violations), [])
+
+    def test_a_prefix_the_command_does_not_carry_is_a_violation(self) -> None:
+        """A recorded prefix the run_program command does not begin with is refused, and so is a
+        command carrying a prefix the record does not state: without it the prefix's first
+        argument is taken for the binary."""
+        tracer = "tracer"
+        for recorded, carried, needle in (
+                ([tracer, "profile"], [], "must begin with the recorded launch prefix"),
+                ([tracer, "profile"], [tracer, "other"],
+                 "must begin with the recorded launch prefix"),
+                ([], [tracer, "profile"], "must resolve under"),
+                (self._NO_LAUNCH, [tracer, "profile"], "must resolve under")):
+            with self.subTest(recorded=recorded, carried=carried), \
+                    tempfile.TemporaryDirectory() as tmp:
+                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
+                                                      command_prefix=carried)
+                self.assertTrue(any(needle in v for v in violations), violations)
+
+    def test_a_prefix_that_is_only_the_whole_command_names_no_binary(self) -> None:
+        """A command that IS the prefix has no binary after it: refused, not read past."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            violations = self._launch_prefix_tree(repo_root, prefix=self._WHOLE_COMMAND,
+                                                  command_prefix=[])
+            self.assertTrue(any("must resolve under" in v and "None" in v
+                                for v in violations), violations)
+
+    def test_a_recorded_prefix_that_is_not_the_targets_is_a_violation(self) -> None:
+        """Round 3 (disclosure axis): taken on the record's word, a recorded prefix lets any
+        program run in front of the build's binary — `[<other>]` or `["sh", "-c", …]` passed
+        where origin/main refused the same command. A non-empty prefix must be the one the
+        pipeline's target runs its binary under; an empty one needs no target answer."""
+        target = ["tracer", "profile", "-o", "kernel_trace"]
+        for recorded in (["/usr/bin/other"], ["sh", "-c", "exec \"$0\" \"$@\""],
+                         ["tracer", "profile"], [*target, "--extra"]):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
+                                                      command_prefix=recorded,
+                                                      target_prefix=target)
+                self.assertTrue(any("is not the launch prefix of this pipeline's target" in v
+                                    for v in violations), violations)
+                self.assertFalse(any("must resolve under" in v for v in violations))
+        # The real seam answers the checked-in fixture target: it launches bare, so a recorded
+        # prefix is refused, and an empty one is not asked about.
+        from tools.host_execution import launch_argv_prefix
+        self.assertEqual(launch_argv_prefix(_TP.parallel_backend), ())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                        / "problem__shallow_water2d__0.3.0")
+            trial_meta = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+            trial_meta["environment"] = {"launch": {"argv_prefix": ["./simulate"], "env": {}}}
+            _write_json(node_dir / "trial_meta.json", trial_meta)
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("is not the launch prefix of this pipeline's target ([])" in v
+                                for v in violations), violations)
+
+    def test_a_traced_target_binds_through_the_real_seam(self) -> None:
+        """Round 4: every other prefix row patches the seam, so none observed the validator
+        asking the REAL `launch_argv_prefix` with the TARGET's backend (a mutant asking it for
+        `openmp`, and one returning `()` from the seam, both survived). Here the pipeline's target
+        resolves to a traced backend and the seam is the real one: the traced run's own prefix
+        binds, a record carrying none is not asked about (every pre-#307 record of such a
+        target), and a target that does not resolve refuses a non-empty prefix."""
+        from unittest import mock
+        from tools.host_execution import launch_argv_prefix
+        from tools.tests.target_fixtures import profile_with
+        cuda = profile_with(parallel={"backend": "cuda"})
+        traced = list(launch_argv_prefix("cuda"))
+        self.assertTrue(traced)
+        for target, recorded, carried, refused in (
+                (cuda, traced, traced, False),
+                (cuda, [], [], False),
+                (cuda, self._NO_LAUNCH, [], False),
+                (None, traced, traced, True)):
+            with self.subTest(target=None if target is None else target.parallel_backend,
+                              recorded=recorded if recorded is not self._NO_LAUNCH else "none"), \
+                    tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(vps, "_pipeline_target", return_value=target):
+                violations = self._real_seam_tree(Path(tmp), prefix=recorded,
+                                                  command_prefix=carried)
+                self.assertEqual(
+                    any("is not the launch prefix of this pipeline's target" in v
+                        for v in violations), refused, violations)
+                self.assertEqual(self._binding_violations(violations) != [], refused,
+                                 violations)
+
+    def _real_seam_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
+        """`_launch_prefix_tree` without its seam patch: the validator asks the real one."""
+        return self._launch_prefix_tree(repo_root, prefix=prefix, command_prefix=command_prefix,
+                                        _real_seam=True)
+
+    def test_a_non_list_prefix_is_a_violation(self) -> None:
+        for bad in ("tracer profile", [1, "x"], {"a": 1}, None):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                violations = self._launch_prefix_tree(Path(tmp), prefix=bad, command_prefix=[])
+                self.assertTrue(any("argv_prefix must be a list of strings" in v
+                                    for v in violations), violations)
+
     def test_run_program_rejects_failed_record(self) -> None:
         """A run_program record with ok!=true cannot serve as evidence."""
         with tempfile.TemporaryDirectory() as tmp:

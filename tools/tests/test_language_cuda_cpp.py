@@ -30,6 +30,7 @@ from tools.backends.language.cuda_cpp import syntax as cpp_syntax
 from tools.backends.linter.nvcc import lint as nvcc_lint
 from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
+from tools.backends.parallel.cuda import trace as cuda_trace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -1572,6 +1573,232 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertTrue(prompts.runner_output_document().startswith("# Runner output"))
         abi = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
         self.assertIn("## 5. CUDA C++ legality and gate guards", abi)
+
+
+class DeviceTraceTests(unittest.TestCase):
+    """The `device_trace` capability (issue #307): what a binary runs under, what file the summary
+    command writes, and the two readers the post_execute kernel gate uses."""
+
+    #: The summary the `cpp_gpu` site's Nsight Systems 2025.1.3 wrote for a probe binary built
+    #: `-arch=all` (issue #307 comment 5851969504), verbatim: a comma-bearing name is quoted, a
+    #: template kernel has one row per instantiation, a namespaced one is qualified, and the
+    #: kernel the probe defined and never launched (`never_k`) has no row.
+    SITE_SUMMARY = (
+        "Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),"
+        "Name\n"
+        '51.4,3040,2,1520.0,1520.0,1312,1728,294.2,"plain_k(double *, long)"\n'
+        "16.8,992,1,992.0,992.0,992,992,0.0,void tmpl_k<double>(T1 *)\n"
+        "16.8,992,1,992.0,992.0,992,992,0.0,void tmpl_k<int>(T1 *)\n"
+        "15.1,896,1,896.0,896.0,896,896,0.0,ns::ns_k(int *)\n")
+
+    def test_the_profile_prefix_and_the_summary_command_name_the_stem(self) -> None:
+        prefix = cuda_trace.profile_argv_prefix("stem_x")
+        self.assertEqual(prefix[0], cuda_trace.EXECUTABLES[0])
+        self.assertIn("stem_x", prefix)
+        self.assertIn("--force-overwrite=true", prefix)
+        summary = cuda_trace.summary_argv("stem_x")
+        # The stats command proper follows the fresh-output wrapper (below).
+        self.assertIn(cuda_trace.EXECUTABLES[0], summary)
+        self.assertEqual(summary[summary.index(cuda_trace.EXECUTABLES[0]) + 1], "stats")
+        # It reads the report the prefix wrote, and writes under the same stem.
+        self.assertEqual(summary[-1], "stem_x.nsys-rep")
+        self.assertEqual(summary[summary.index("-o") + 1], "stem_x")
+        for flag in ("--force-export=true", "--force-overwrite=true"):
+            self.assertIn(flag, summary)
+        self.assertEqual(summary[summary.index("-f") + 1], "csv")
+
+    def _run_summary(self, tmp: Path, fake_stats: str) -> subprocess.CompletedProcess:
+        """Run the real `summary_argv` in `tmp` with a stand-in for the trace's program on PATH,
+        whose body is `fake_stats` (a shell script)."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        fake = bindir / cuda_trace.EXECUTABLES[0]
+        fake.write_text("#!/bin/sh\n" + fake_stats)
+        fake.chmod(0o755)
+        import os
+        env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+        return subprocess.run(list(cuda_trace.summary_argv("kernel_trace")), cwd=tmp, env=env,
+                              capture_output=True, text=True, check=False)
+
+    #: The export database a readable report's stats run writes beside the summary.
+    DB = "kernel_trace.sqlite"
+
+    def test_the_summary_command_empties_its_path_before_the_stats_run(self) -> None:
+        """Round 1: a READ-ONLY file at the summary's path survives `nsys stats
+        --force-overwrite=true`, which then exits 0 (measured on 2026.3.2). The command removes
+        whatever is there first, so a stats run that writes nothing leaves NO file (which the
+        host refuses) rather than the binary's."""
+        name = cuda_trace.summary_file("kernel_trace")
+        self.assertIn(self.DB, cuda_trace.summary_argv("kernel_trace"))
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            forged = tmp / name
+            forged.write_text("Instances,Name\n5,step_kernel(double *)\n")
+            forged.chmod(0o444)
+            # A stats run that exports the report but fails to write the summary, exiting 0 —
+            # the measured shape.
+            proc = self._run_summary(
+                tmp, f'echo x > {self.DB}; echo "ERROR: Unable to open output file"\nexit 0\n')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(forged.exists())
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # And the stats run is what writes it, with its own argv after the wrapper's.
+            proc = self._run_summary(
+                tmp, f'printf "%s\\n" "$@" > argv.txt; printf "Instances,Name\\n" > {name}; '
+                     f'echo x > {self.DB}\n')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((tmp / name).read_text(), "Instances,Name\n")
+            argv = (tmp / "argv.txt").read_text().splitlines()
+            full = cuda_trace.summary_argv("kernel_trace")
+            self.assertEqual(argv, list(full[full.index(cuda_trace.EXECUTABLES[0]) + 1:]))
+
+    def test_a_stats_run_that_exports_nothing_fails_the_command(self) -> None:
+        """Round 2: a report that is not readable (truncated, or other bytes) makes the stats
+        run exit 0 with an EMPTY summary — the shape of "no kernel data" — and no export database
+        (measured on 2026.3.2). The command fails when the database is absent after the run, and
+        one the binary left beforehand is removed first, so it cannot stand in for the export.
+        The stats run's own failure passes through with its code."""
+        name = cuda_trace.summary_file("kernel_trace")
+        for left_behind in (False, True):
+            with self.subTest(left_behind=left_behind), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                if left_behind:
+                    (tmp / self.DB).write_text("forged")
+                    (tmp / self.DB).chmod(0o444)
+                proc = self._run_summary(tmp, f": > {name}\nexit 0\n")
+                self.assertEqual(proc.returncode, 3, proc.stderr)
+                self.assertIn("was not exported", proc.stderr)
+                self.assertFalse((tmp / self.DB).exists())
+        with tempfile.TemporaryDirectory() as raw:
+            proc = self._run_summary(Path(raw), "exit 7\n")
+            self.assertEqual(proc.returncode, 7)
+        with tempfile.TemporaryDirectory() as raw:
+            proc = self._run_summary(Path(raw), f": > {name}; echo x > {self.DB}\nexit 0\n")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_a_summary_path_that_cannot_be_emptied_fails_the_command(self) -> None:
+        name = cuda_trace.summary_file("kernel_trace")
+        import os
+        # Root unlinks inside a read-only directory, so that shape is only a refusal for others.
+        shapes = ("directory",) + (("read-only directory",) if os.geteuid() != 0 else ())
+        for shape in shapes:
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                if shape == "directory":
+                    (tmp / name).mkdir()
+                else:
+                    (tmp / name).write_text("Instances,Name\n5,k(int *)\n")
+                ran = tmp / "stats_ran"
+                bindir_holder = tmp / "holder"
+                bindir_holder.mkdir()
+                if shape == "read-only directory":
+                    run = tmp / "run"
+                    run.mkdir()
+                    (tmp / name).rename(run / name)
+                    run.chmod(0o555)
+                    cwd = run
+                else:
+                    cwd = tmp
+                import os
+                fake = bindir_holder / cuda_trace.EXECUTABLES[0]
+                fake.write_text(f"#!/bin/sh\ntouch {ran}\nexit 0\n")
+                fake.chmod(0o755)
+                env = {**os.environ,
+                       "PATH": f"{bindir_holder}{os.pathsep}{os.environ['PATH']}"}
+                try:
+                    proc = subprocess.run(list(cuda_trace.summary_argv("kernel_trace")),
+                                          cwd=cwd, env=env, capture_output=True, text=True,
+                                          check=False)
+                finally:
+                    cwd.chmod(0o755)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertFalse(ran.exists(), "the stats run must not start")
+
+    def test_the_summary_file_is_what_the_stats_command_writes(self) -> None:
+        # Measured on both versions: `-o X` with this report writes `X_cuda_gpu_kern_sum.csv`.
+        report = cuda_trace.summary_argv("s")[cuda_trace.summary_argv("s").index("-r") + 1]
+        self.assertEqual(cuda_trace.summary_file("s"), f"s_{report}.csv")
+        self.assertEqual(cuda_trace.summary_file("kernel_trace"),
+                         "kernel_trace_cuda_gpu_kern_sum.csv")
+
+    def test_an_empty_summary_is_no_kernel_data(self) -> None:
+        for text in ("", "\n", "  \n\n"):
+            with self.subTest(text=text):
+                self.assertIsNone(cuda_trace.kernel_instances(text))
+        header_only = self.SITE_SUMMARY.splitlines(keepends=True)[0]
+        self.assertIsNone(cuda_trace.kernel_instances(header_only))
+
+    def test_instances_are_summed_per_base_name(self) -> None:
+        self.assertEqual(cuda_trace.kernel_instances(self.SITE_SUMMARY),
+                         {"plain_k": 2, "tmpl_k": 2, "ns_k": 1})
+        # The columns are read by NAME: a reordered header reads the same.
+        rows = list(__import__("csv").reader(self.SITE_SUMMARY.splitlines()))
+        reordered = "\n".join(",".join(f'"{c}"' for c in reversed(r)) for r in rows)
+        self.assertEqual(cuda_trace.kernel_instances(reordered),
+                         {"plain_k": 2, "tmpl_k": 2, "ns_k": 1})
+
+    def test_base_kernel_name_strips_what_the_demangler_adds(self) -> None:
+        for demangled, base in (("k(double *, long)", "k"), ("ns::k(int *)", "k"),
+                                ("void k<double>(T1 *)", "k"),
+                                ("void a::b::k<pair<int, int>>(T1 *, T2)", "k"),
+                                ("(anonymous namespace)::k(int *)", "k"),
+                                ("k", "k"), ("  k(void)  ", "k")):
+            with self.subTest(demangled=demangled):
+                self.assertEqual(cuda_trace.base_kernel_name(demangled), base)
+
+    def test_a_summary_without_the_columns_is_unreadable(self) -> None:
+        for text in ("Time (%),Total Time (ns),Count,Name\n1,2,3,k(int *)\n",
+                     "Time (%),Instances,Kernel\n1,2,k(int *)\n",
+                     "Instances,Name\nmany,k(int *)\n",
+                     "Instances,Name\n-1,k(int *)\n",
+                     "Instances,Name\n3,\n"):
+            with self.subTest(text=text), self.assertRaises(cuda_trace.SummaryUnreadable):
+                cuda_trace.kernel_instances(text)
+        self.assertTrue(issubclass(cuda_trace.SummaryUnreadable, ValueError))
+
+    def test_defined_kernels_reads_definitions_declarations_and_templates_over_code_only(
+            self) -> None:
+        src = (
+            "// __global__ void in_comment(int*)\n"
+            "/* __global__ void in_block(int*) */\n"
+            'const char* s = "__global__ void in_string(int*)";\n'
+            "__device__ double helper(double x) { return x; }\n"
+            "__global__ void plain_k(double* x, long n) { x[0] = n; }\n"
+            "static __global__ void static_k(int* x) {}\n"
+            "template <class T> __global__ void tmpl_k(T* x);\n"
+            "template <> __global__ void tmpl_k<double>(double* x) {}\n"
+            "__global__ void __launch_bounds__(256) bounded_k(int* x) {}\n"
+            "__global__ __attribute__((noinline)) void attr_k(int* x) {}\n"
+            "__global__ void ns::qualified_k(int* x) {}\n"
+            'extern "C" __global__ void c_k(void) {}\n'
+            "__global__\nvoid\nsplit_k(\n  int* x) {}\n"
+            "__global__ void plain_k(double* x, long n);\n")
+        self.assertEqual(cuda_trace.defined_kernels(src),
+                         ("plain_k", "static_k", "tmpl_k", "bounded_k", "attr_k",
+                          "qualified_k", "c_k", "split_k"))
+        self.assertEqual(cuda_trace.defined_kernels("__device__ int f(int x);\nint main() {}\n"),
+                         ())
+        # One construct per row, where the rows above would hide it: an explicit specialization
+        # read alone (above, the primary template already named `tmpl_k`), the bracketed and
+        # the other CUDA `__name__(…)` attributes, each of which carries a parenthesis.
+        for text, name in (
+                ("template <> __global__ void spec_k<double>(double* x) {}\n", "spec_k"),
+                ('__global__ [[deprecated("old")]] void dep_k(int* x) {}\n', "dep_k"),
+                ("__global__ void __cluster_dims__(2, 1, 1) cl_k(int* x) {}\n", "cl_k"),
+                ("__global__ void __maxnreg__(32) reg_k(int* x) {}\n", "reg_k"),
+                ("__global__ void __launch_bounds__(128, 2) lb_k(int* x) {}\n", "lb_k"),
+                ("__global__ void __launch_bounds__((N), 2) nested_k(int* x) {}\n", "nested_k"),
+                # A kernel whose own name is spelled like an attribute is a kernel.
+                ("__global__ void __k__(int* x) {}\n", "__k__")):
+            with self.subTest(text=text):
+                self.assertEqual(cuda_trace.defined_kernels(text), (name,))
+
+    def test_the_registry_serves_the_trace(self) -> None:
+        self.assertIs(registry.capability_module("parallel", "cuda", "device_trace"), cuda_trace)
+        for value in ("openmp", "none"):
+            with self.subTest(value=value):
+                self.assertFalse(registry.provides("parallel", value, "device_trace"))
 
 
 class SyntaxStagingTests(unittest.TestCase):

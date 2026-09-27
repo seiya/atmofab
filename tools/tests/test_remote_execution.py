@@ -1110,11 +1110,25 @@ class SchedulerTests(unittest.TestCase):
         from tools.host_prerequisites import required_site_executables
         self.assertEqual(rx.scheduler_executables("slurm"), ("srun",))
         self.assertEqual(rx.scheduler_executables("none"), ())
-        selection = {"build_system": "make"}
+        selection = {"build_system": "make", "parallel": "openmp"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
                          ("timeout", "make", "srun"))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
                          ("timeout", "make"))
+
+    def test_the_launch_probe_asks_for_what_the_binary_runs_under(self) -> None:
+        """A parallel backend that declares `device_trace` (issue #307) adds its trace's
+        programs, after the build system and before the scheduler's; one that declares none adds
+        nothing (above)."""
+        from tools.backends import registry
+        from tools.host_prerequisites import required_site_executables
+        trace = registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES
+        self.assertTrue(trace)
+        selection = {"build_system": "make", "parallel": "cuda"}
+        self.assertEqual(required_site_executables(selection, scheduler="slurm"),
+                         ("timeout", "make", *trace, "srun"))
+        self.assertEqual(required_site_executables(selection, scheduler="none"),
+                         ("timeout", "make", *trace))
 
 
 class ScriptTests(unittest.TestCase):
