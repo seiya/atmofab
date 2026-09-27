@@ -128,6 +128,80 @@ class LaunchShapeTests(unittest.TestCase):
         self.assertEqual(list(shape.record()["env"]), ["A", "B"])
 
 
+class DeviceTraceLaunchTests(unittest.TestCase):
+    """The trace half of the launch shape (issue #307): a parallel backend that declares
+    `device_trace` puts its profiling argv in front of the binary and names the summary command
+    and file; one that declares none launches bare."""
+
+    CUDA_GPU = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                            parallel={"backend": "cuda"})
+
+    def _gpu_site(self):
+        from tools.execution_sites import Site
+
+        return Site("gpu_box", ("gpu",), host="box", workdir="/w")
+
+    def test_a_cuda_launch_runs_under_the_device_trace_and_names_its_summary(self) -> None:
+        trace = registry.capability_module("parallel", "cuda", "device_trace")
+        shape = he.launch_shape(self.CUDA_GPU, self._gpu_site())
+        self.assertEqual(shape.argv_prefix, tuple(trace.profile_argv_prefix(he.KERNEL_TRACE_STEM)))
+        self.assertEqual(shape.argv_prefix[0], trace.EXECUTABLES[0])
+        self.assertIsNotNone(shape.trace)
+        self.assertEqual(shape.trace.summary_argv, tuple(trace.summary_argv(he.KERNEL_TRACE_STEM)))
+        self.assertEqual(shape.trace.summary_file, trace.summary_file(he.KERNEL_TRACE_STEM))
+        # The binary follows the prefix, and the record carries it.
+        self.assertEqual(shape.command(["bin", "--cases"])[len(shape.argv_prefix):],
+                         ["bin", "--cases"])
+        self.assertEqual(shape.record()["argv_prefix"], list(shape.argv_prefix))
+
+    def test_the_stem_is_the_seams_constant(self) -> None:
+        """The prefix and the summary are asked with ONE stem, so the summary reads the report
+        the prefix wrote; a backend handed a different stem must show it."""
+        calls: list[tuple[str, str]] = []
+
+        def spy(name):
+            return lambda stem: (calls.append((name, stem)), (f"{name}:{stem}",))[1]
+
+        fake = types.SimpleNamespace(profile_argv_prefix=spy("p"), summary_argv=spy("s"),
+                                     summary_file=lambda stem: f"f:{stem}", EXECUTABLES=("zz",))
+        real = registry.capability_module
+
+        def capability_module(axis, backend_id, capability):
+            return fake if capability == "device_trace" else real(axis, backend_id, capability)
+
+        with mock.patch.object(registry, "capability_module", side_effect=capability_module):
+            shape = he.launch_shape(self.CUDA_GPU, self._gpu_site())
+            executables = he.execution_executables("cuda")
+        self.assertEqual(calls, [("p", he.KERNEL_TRACE_STEM), ("s", he.KERNEL_TRACE_STEM)])
+        self.assertEqual(shape.argv_prefix, (f"p:{he.KERNEL_TRACE_STEM}",))
+        self.assertEqual(shape.trace, he.TraceShape((f"s:{he.KERNEL_TRACE_STEM}",),
+                                                    f"f:{he.KERNEL_TRACE_STEM}"))
+        self.assertEqual(executables, ("zz",))
+
+    def test_openmp_and_none_have_no_trace(self) -> None:
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                shape = he.launch_shape(profile_with(parallel={"backend": backend}))
+                self.assertEqual((shape.argv_prefix, shape.trace), ((), None))
+                self.assertEqual(he.execution_executables(backend), ())
+
+    def test_execution_executables_are_the_backends(self) -> None:
+        self.assertEqual(he.execution_executables("cuda"), tuple(registry.capability_module(
+            "parallel", "cuda", "device_trace").EXECUTABLES))
+        self.assertTrue(he.execution_executables("cuda"))
+
+    def test_a_withdrawn_declaration_launches_bare(self) -> None:
+        """The dispatch reads the record: withdrawing `device_trace` from cuda's removes the
+        prefix, the summary and the executables together."""
+        record = registry.get("parallel", "cuda")
+        withdrawn = record._replace(
+            backend_provides=record.backend_provides - {"device_trace"})
+        with mock.patch.dict(registry._BACKENDS, {("parallel", "cuda"): withdrawn}):
+            shape = he.launch_shape(self.CUDA_GPU, self._gpu_site())
+            self.assertEqual(he.execution_executables("cuda"), ())
+        self.assertEqual((shape.argv_prefix, shape.trace), ((), None))
+
+
 class LocalPlatformRecordTests(unittest.TestCase):
     """`local_platform_record` (issue #293; `workflow_conductor._host_platform_record` until
     then): every fact that cannot be read is `None`, never a refusal."""

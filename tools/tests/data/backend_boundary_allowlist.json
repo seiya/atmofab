@@ -105,6 +105,7 @@
     "make-control-file": "makefile",
     "make-variable": "\\bFFLAGS\\b|\\bCFLAGS\\b|\\bLDFLAGS\\b|\\bOBJDIR\\b",
     "parallel-construct": "do\\s+concurrent",
-    "parallel-directive": "!\\$omp"
+    "parallel-directive": "!\\$omp",
+    "parallel-trace": "\\bnsys\\b|\\bnsight\\b"
   }
 }

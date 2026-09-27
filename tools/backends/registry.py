@@ -297,6 +297,15 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "record (`parallelism`, read by the host-rendered runner through "
         "`host_execution.perf_parallelism`).",
     ),
+    "device_trace": (
+        ("parallel",),
+        ("A binary built for this parallel model is run under a device trace at "
+         "`Validate.execute`, and the trace's per-kernel summary is read: the argv prefix the "
+         "binary runs under, the command that writes the summary and the file it writes, the "
+         "programs the executing site needs for both, and the readers of the summary and of a "
+         "source's kernel names (issue #307). A value that does not declare it is launched "
+         "without a trace. Asked only of a run that reaches `Validate`."),
+    ),
     "job_submit": (
         ("scheduler",),
         "The host knows how a job script is run as one job at a site running this scheduler: "
@@ -348,6 +357,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "signatures": "signatures",
     "interface_header": "header",
     "job_submit": "submit",
+    "device_trace": "trace",
 }
 
 
@@ -501,10 +511,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend("parallel", "none", None,
                 core_provides=frozenset({"parallel_directives", "execution_env"})),
         # CUDA (issue #289, R4-b PR-4): its launch environment is empty, and its presence floor
-        # asks a GPU model source with counted loops for a kernel.
+        # asks a GPU model source with counted loops for a kernel. Since issue #307 its binary
+        # runs under a device trace whose per-kernel summary `Validate.execute` keeps.
         Backend(
             "parallel", "cuda", "tools.backends.parallel.cuda",
-            backend_provides=frozenset({"execution_env", "parallel_directives"}),
+            backend_provides=frozenset({"execution_env", "parallel_directives",
+                                        "device_trace"}),
         ),
         # `cpu` is the class THIS host is: `Validate.execute` launches the binary in-process
         # (`workflow_conductor._execute_inproc` through `tools/host_execution.py`), and that path

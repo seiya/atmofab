@@ -30,6 +30,7 @@ from tools.backends.language.cuda_cpp import syntax as cpp_syntax
 from tools.backends.linter.nvcc import lint as nvcc_lint
 from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
+from tools.backends.parallel.cuda import trace as cuda_trace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -1572,6 +1573,108 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertTrue(prompts.runner_output_document().startswith("# Runner output"))
         abi = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
         self.assertIn("## 5. CUDA C++ legality and gate guards", abi)
+
+
+class DeviceTraceTests(unittest.TestCase):
+    """The `device_trace` capability (issue #307): what a binary runs under, what file the summary
+    command writes, and the two readers the post_execute kernel gate uses."""
+
+    #: The summary the `cpp_gpu` site's Nsight Systems 2025.1.3 wrote for a probe binary built
+    #: `-arch=all` (issue #307 comment 5851969504), verbatim: a comma-bearing name is quoted, a
+    #: template kernel has one row per instantiation, a namespaced one is qualified, and the
+    #: kernel the probe defined and never launched (`never_k`) has no row.
+    SITE_SUMMARY = (
+        "Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),"
+        "Name\n"
+        '51.4,3040,2,1520.0,1520.0,1312,1728,294.2,"plain_k(double *, long)"\n'
+        "16.8,992,1,992.0,992.0,992,992,0.0,void tmpl_k<double>(T1 *)\n"
+        "16.8,992,1,992.0,992.0,992,992,0.0,void tmpl_k<int>(T1 *)\n"
+        "15.1,896,1,896.0,896.0,896,896,0.0,ns::ns_k(int *)\n")
+
+    def test_the_profile_prefix_and_the_summary_command_name_the_stem(self) -> None:
+        prefix = cuda_trace.profile_argv_prefix("stem_x")
+        self.assertEqual(prefix[0], cuda_trace.EXECUTABLES[0])
+        self.assertIn("stem_x", prefix)
+        self.assertIn("--force-overwrite=true", prefix)
+        summary = cuda_trace.summary_argv("stem_x")
+        self.assertEqual(summary[0], cuda_trace.EXECUTABLES[0])
+        # It reads the report the prefix wrote, and writes under the same stem.
+        self.assertEqual(summary[-1], "stem_x.nsys-rep")
+        self.assertEqual(summary[summary.index("-o") + 1], "stem_x")
+        for flag in ("--force-export=true", "--force-overwrite=true"):
+            self.assertIn(flag, summary)
+        self.assertEqual(summary[summary.index("-f") + 1], "csv")
+
+    def test_the_summary_file_is_what_the_stats_command_writes(self) -> None:
+        # Measured on both versions: `-o X` with this report writes `X_cuda_gpu_kern_sum.csv`.
+        report = cuda_trace.summary_argv("s")[cuda_trace.summary_argv("s").index("-r") + 1]
+        self.assertEqual(cuda_trace.summary_file("s"), f"s_{report}.csv")
+        self.assertEqual(cuda_trace.summary_file("kernel_trace"),
+                         "kernel_trace_cuda_gpu_kern_sum.csv")
+
+    def test_an_empty_summary_is_no_kernel_data(self) -> None:
+        for text in ("", "\n", "  \n\n"):
+            with self.subTest(text=text):
+                self.assertIsNone(cuda_trace.kernel_instances(text))
+        header_only = self.SITE_SUMMARY.splitlines(keepends=True)[0]
+        self.assertIsNone(cuda_trace.kernel_instances(header_only))
+
+    def test_instances_are_summed_per_base_name(self) -> None:
+        self.assertEqual(cuda_trace.kernel_instances(self.SITE_SUMMARY),
+                         {"plain_k": 2, "tmpl_k": 2, "ns_k": 1})
+        # The columns are read by NAME: a reordered header reads the same.
+        rows = list(__import__("csv").reader(self.SITE_SUMMARY.splitlines()))
+        reordered = "\n".join(",".join(f'"{c}"' for c in reversed(r)) for r in rows)
+        self.assertEqual(cuda_trace.kernel_instances(reordered),
+                         {"plain_k": 2, "tmpl_k": 2, "ns_k": 1})
+
+    def test_base_kernel_name_strips_what_the_demangler_adds(self) -> None:
+        for demangled, base in (("k(double *, long)", "k"), ("ns::k(int *)", "k"),
+                                ("void k<double>(T1 *)", "k"),
+                                ("void a::b::k<pair<int, int>>(T1 *, T2)", "k"),
+                                ("(anonymous namespace)::k(int *)", "k"),
+                                ("k", "k"), ("  k(void)  ", "k")):
+            with self.subTest(demangled=demangled):
+                self.assertEqual(cuda_trace.base_kernel_name(demangled), base)
+
+    def test_a_summary_without_the_columns_is_unreadable(self) -> None:
+        for text in ("Time (%),Total Time (ns),Count,Name\n1,2,3,k(int *)\n",
+                     "Time (%),Instances,Kernel\n1,2,k(int *)\n",
+                     "Instances,Name\nmany,k(int *)\n",
+                     "Instances,Name\n-1,k(int *)\n",
+                     "Instances,Name\n3,\n"):
+            with self.subTest(text=text), self.assertRaises(cuda_trace.SummaryUnreadable):
+                cuda_trace.kernel_instances(text)
+        self.assertTrue(issubclass(cuda_trace.SummaryUnreadable, ValueError))
+
+    def test_defined_kernels_reads_definitions_declarations_and_templates_over_code_only(
+            self) -> None:
+        src = (
+            "// __global__ void in_comment(int*)\n"
+            "/* __global__ void in_block(int*) */\n"
+            'const char* s = "__global__ void in_string(int*)";\n'
+            "__device__ double helper(double x) { return x; }\n"
+            "__global__ void plain_k(double* x, long n) { x[0] = n; }\n"
+            "static __global__ void static_k(int* x) {}\n"
+            "template <class T> __global__ void tmpl_k(T* x);\n"
+            "template <> __global__ void tmpl_k<double>(double* x) {}\n"
+            "__global__ void __launch_bounds__(256) bounded_k(int* x) {}\n"
+            "__global__ __attribute__((noinline)) void attr_k(int* x) {}\n"
+            "__global__ void ns::qualified_k(int* x) {}\n"
+            'extern "C" __global__ void c_k(void) {}\n'
+            "__global__\nvoid\nsplit_k(\n  int* x) {}\n"
+            "__global__ void plain_k(double* x, long n);\n")
+        self.assertEqual(cuda_trace.defined_kernels(src),
+                         ("plain_k", "static_k", "tmpl_k", "bounded_k", "attr_k",
+                          "qualified_k", "c_k", "split_k"))
+        self.assertEqual(cuda_trace.defined_kernels("__device__ int f(int x);\nint main() {}\n"),
+                         ())
+
+    def test_the_registry_serves_the_trace(self) -> None:
+        self.assertIs(registry.capability_module("parallel", "cuda", "device_trace"), cuda_trace)
+        for value in ("openmp", "none"):
+            with self.subTest(value=value):
+                self.assertFalse(registry.provides("parallel", value, "device_trace"))
 
 
 class SyntaxStagingTests(unittest.TestCase):

@@ -20,6 +20,12 @@ backstop of the launch gate: the class's record must declare `execution` (the re
 there is code), and the site must list the class in its `executes` (the machine half — there is
 a machine). `LaunchShape.platform_probe` is the argv a class's package names to identify its
 device at the site, recorded as `platform.gpu`.
+
+A parallel backend that declares `device_trace` (issue #307) runs the binary under a device trace:
+its profiling argv is `LaunchShape.argv_prefix`, and `LaunchShape.trace` is the command that
+writes the trace's per-kernel summary in the run's working directory and the file it writes, which
+`Validate.execute` runs after the binary and promotes as `KERNEL_TRACE_ARTIFACT`. The spellings are
+the backend's; this module holds them as opaque tokens.
 """
 
 from __future__ import annotations
@@ -37,6 +43,10 @@ from tools.backends import registry
 LOCAL_SITE = "local"
 #: Seconds the local device probe may take; one that hangs records `null`.
 PROBE_TIMEOUT_SEC = 60
+#: The stem a device trace is written under, relative to the run's cwd (issue #307).
+KERNEL_TRACE_STEM = "kernel_trace"
+#: The node-dir name the conductor promotes a device trace's per-kernel summary to.
+KERNEL_TRACE_ARTIFACT = "kernel_trace.csv"
 
 
 class LaunchUnavailable(RuntimeError):
@@ -51,18 +61,30 @@ class LaunchUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class TraceShape:
+    """The second half of a traced launch: `summary_argv` runs in the run's cwd after the binary
+    and before the quality check, and writes `summary_file` there (relative to that cwd)."""
+
+    summary_argv: tuple[str, ...]
+    summary_file: str
+
+
+@dataclass(frozen=True)
 class LaunchShape:
     """How one binary is launched: `argv_prefix` goes in front of the binary's own argv, `env`
     is a set of OVERRIDES — at `local` handed to `run_program`, which merges them over the host
     process's own environment, and at a remote site set by the job script over the site's
     non-interactive login environment (`tools/remote_execution.py`), so a variable this does not
     set is inherited from wherever the binary runs — and `site` names where it runs. `platform_probe` is the argv that identifies the class's device where it
-    runs, None for a class that names none."""
+    runs, None for a class that names none. `trace` is the summary half of a device trace when
+    the parallel backend declares `device_trace` (its profiling half is `argv_prefix`), None
+    otherwise."""
 
     argv_prefix: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     site: str = LOCAL_SITE
     platform_probe: tuple[str, ...] | None = None
+    trace: TraceShape | None = None
 
     def command(self, argv: list[str]) -> list[str]:
         """The full command line for a binary invoked as `argv`."""
@@ -104,10 +126,37 @@ def _platform_probe(hardware_class: str) -> tuple[str, ...] | None:
     return tuple(str(a) for a in module.PLATFORM_PROBE)
 
 
+def _device_trace(parallel_backend: str) -> tuple[tuple[str, ...], TraceShape | None]:
+    """The argv prefix and summary half of the device trace a binary built for
+    `parallel_backend` runs under: its package's `device_trace` answer, written under
+    `KERNEL_TRACE_STEM`, when its record declares the capability; no prefix and no trace
+    otherwise (issue #307)."""
+    if "device_trace" not in registry.get("parallel", parallel_backend).backend_provides:
+        return (), None
+    module = registry.capability_module("parallel", parallel_backend, "device_trace")
+    prefix = tuple(str(a) for a in module.profile_argv_prefix(KERNEL_TRACE_STEM))
+    return prefix, TraceShape(
+        summary_argv=tuple(str(a) for a in module.summary_argv(KERNEL_TRACE_STEM)),
+        summary_file=str(module.summary_file(KERNEL_TRACE_STEM)))
+
+
+def execution_executables(parallel_backend: str) -> tuple[str, ...]:
+    """The programs the machine that executes a binary built for `parallel_backend` needs
+    beyond the binary itself: its device trace's (`device_trace`), none for a value that
+    declares no trace."""
+    if "device_trace" not in registry.get("parallel", parallel_backend).backend_provides:
+        return ()
+    module = registry.capability_module("parallel", parallel_backend, "device_trace")
+    return tuple(str(e) for e in module.EXECUTABLES)
+
+
 def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
     """The launch shape of a binary built for `profile` (a `target_profile.TargetProfile`) at
     `site` (an `execution_sites.Site`; None is the local site with its default `executes`, the
     configuration with no `sites.yaml`).
+
+    The argv prefix and `trace` are the parallel backend's device trace when it declares one
+    (`_device_trace`), none otherwise.
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
     a site whose `executes` does not list the class, and a parallel backend whose record does not
@@ -129,8 +178,9 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
             f"hardware.class: {profile.hardware_class} is not executed at site {site_id}, "
             f"which executes {', '.join(executes)}")
     env = _execution_env(profile.parallel_backend, profile.threads_per_rank)
-    return LaunchShape(argv_prefix=(), env=env, site=site_id,
-                       platform_probe=_platform_probe(profile.hardware_class))
+    argv_prefix, trace = _device_trace(profile.parallel_backend)
+    return LaunchShape(argv_prefix=argv_prefix, env=env, site=site_id,
+                       platform_probe=_platform_probe(profile.hardware_class), trace=trace)
 
 
 def perf_parallelism(target: dict[str, Any]) -> tuple[int, int, int]:

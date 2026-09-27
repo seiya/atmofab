@@ -1,0 +1,149 @@
+"""The `device_trace` capability of the CUDA parallel backend (issue #307).
+
+The one place this repository spells Nsight Systems: how a binary is run under it, how its
+per-kernel summary is asked for and what file that writes, which programs the site that executes
+the binary needs, and how the summary and a CUDA C++ source are read for kernel names. The neutral
+core holds what this returns as opaque tokens (`tools/host_execution.py`: an argv prefix, a summary
+argv, a file name) and the name -> instance-count mapping the reader returns.
+
+Measured (issue #307 plan §0-2 on Nsight Systems 2026.3.2; comment 5851969504 on the `cpp_gpu`
+site's 2025.1.3), and `docs/backends/parallel/cuda/DEVICE_TRACE.md` states it for a reader:
+
+* `nsys profile … -o <stem>` returns the application's exit code and writes `<stem>.nsys-rep`
+  relative to its cwd.
+* `nsys stats -r cuda_gpu_kern_sum -f csv -o <stem> …` writes `<stem>_cuda_gpu_kern_sum.csv`. A
+  report holding no kernel data (no launch reached the device) gives an EMPTY file and exit 0, so
+  the exit code says nothing about kernels. `--force-overwrite=true` replaces a file already at
+  that path (a forged one was replaced on both versions).
+* The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `Med (ns)`,
+  `Min (ns)`, `Max (ns)`, `StdDev (ns)`, `Name`. `Name` is demangled: `k(double *, long)`,
+  `ns::k(int *)`, one row per template instantiation `void k<double>(T1 *)`. A kernel that never
+  ran has no row.
+
+Stdlib only, plus the language backend's masking asked through the registry.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import re
+
+#: The programs the site that executes the binary must resolve
+#: (`host_prerequisites.execution_executables` adds them to the launch probe).
+EXECUTABLES: tuple[str, ...] = ("nsys",)
+
+_REPORT_SUFFIX = ".nsys-rep"
+_SUMMARY_REPORT = "cuda_gpu_kern_sum"
+_NAME_COLUMN = "Name"
+_INSTANCES_COLUMN = "Instances"
+
+
+def profile_argv_prefix(stem: str) -> tuple[str, ...]:
+    """The argv the binary runs under: a CUDA trace written to `<stem>.nsys-rep` in the cwd,
+    replacing one already there. The application's own exit code is what this returns."""
+    return ("nsys", "profile", "-t", "cuda", "-o", stem, "--force-overwrite=true")
+
+
+def summary_argv(stem: str) -> tuple[str, ...]:
+    """The command that reads `<stem>.nsys-rep` in the cwd and writes the per-kernel summary
+    (`summary_file(stem)`). `--force-export=true` rebuilds the intermediate database rather than
+    reusing one already there, and `--force-overwrite=true` replaces a summary already there."""
+    return ("nsys", "stats", "-r", _SUMMARY_REPORT, "-f", "csv", "-o", stem,
+            "--force-export=true", "--force-overwrite=true", f"{stem}{_REPORT_SUFFIX}")
+
+
+def summary_file(stem: str) -> str:
+    """The file `summary_argv(stem)` writes, relative to its cwd (measured: `-o X` writes
+    `X_cuda_gpu_kern_sum.csv`)."""
+    return f"{stem}_{_SUMMARY_REPORT}.csv"
+
+
+class SummaryUnreadable(ValueError):
+    """A non-empty summary this reader cannot read: a header without the two columns it reads,
+    or an instance count that is not a non-negative integer (an Nsight Systems whose CSV shape
+    drifted from the measured one)."""
+
+
+def kernel_instances(text: str) -> dict[str, int] | None:
+    """The summary `text` as base kernel name -> summed instance count, or `None` when it records
+    no kernel: an empty (or blank) file, which is what a report with no kernel data gives
+    (measured), or a header with no row. Rows of one base name are summed — a template kernel has
+    one row per instantiation. Raises `SummaryUnreadable` for a shape it cannot read."""
+    if not text.strip():
+        return None
+    reader = csv.DictReader(io.StringIO(text))
+    fields = reader.fieldnames or []
+    missing = [c for c in (_NAME_COLUMN, _INSTANCES_COLUMN) if c not in fields]
+    if missing:
+        raise SummaryUnreadable(
+            f"the kernel summary's header {fields!r} has no column(s) {missing!r}")
+    counts: dict[str, int] = {}
+    for row in reader:
+        name = (row.get(_NAME_COLUMN) or "").strip()
+        raw = (row.get(_INSTANCES_COLUMN) or "").strip()
+        if not name or not raw.isdigit():
+            raise SummaryUnreadable(
+                f"the kernel summary has a row without a kernel name and a non-negative integer "
+                f"instance count: {row!r}")
+        base = base_kernel_name(name)
+        counts[base] = counts.get(base, 0) + int(raw)
+    return counts or None
+
+
+def _strip_trailing_group(text: str, open_ch: str, close_ch: str) -> str:
+    """`text` without one balanced `open_ch … close_ch` group at its end, if it ends with one."""
+    text = text.rstrip()
+    if not text.endswith(close_ch):
+        return text
+    depth = 0
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == close_ch:
+            depth += 1
+        elif text[i] == open_ch:
+            depth -= 1
+            if depth == 0:
+                return text[:i].rstrip()
+    return text
+
+
+def base_kernel_name(demangled: str) -> str:
+    """The unqualified name of a demangled kernel: `k(double *, long)` -> `k`, `ns::k(int *)` ->
+    `k`, `void k<double>(T1 *)` -> `k`, `(anonymous namespace)::k(int *)` -> `k`. Removes the
+    trailing parameter list and template argument list (each matched from the end, so a
+    parenthesis inside a qualifier is not taken for them), then keeps the last blank-separated
+    word and its last `::` segment."""
+    name = _strip_trailing_group(demangled.strip(), "(", ")")
+    name = _strip_trailing_group(name, "<", ">")
+    words = name.split()
+    last = words[-1] if words else name
+    return last.rsplit("::", 1)[-1]
+
+
+# Attributes that may stand between `__global__` and the kernel's name and carry a parenthesis the
+# name pattern would otherwise stop at: `__launch_bounds__(…)`, `__attribute__((…))`, `[[…]]`.
+_ATTRIBUTE_RE = re.compile(
+    r"\b__launch_bounds__\s*\([^()]*\)"
+    r"|\b__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)"
+    r"|\[\[(?:[^\[\]])*\]\]")
+# `__global__`, then anything up to the first `(` that is not a statement or body boundary, and
+# the name before that `(` — optionally with a template argument list (an explicit
+# specialization). The lazy gap lets the return type, `static`, `inline` and a qualifier (`ns::`)
+# sit between.
+_GLOBAL_RE = re.compile(r"\b__global__\b[^;{}()]*?\b([A-Za-z_]\w*)\s*(?:<[^;{}()]*>)?\s*\(")
+
+
+def defined_kernels(text: str) -> tuple[str, ...]:
+    """The names of the `__global__` functions the CUDA C++ source `text` defines or declares, in
+    order, each once. Read over the language backend's code view (comments and literal contents
+    masked) and with the attributes above blanked, so a `__global__` in a comment or a string is
+    not one and an attribute's parenthesis is not taken for the parameter list."""
+    from tools.backends import registry
+    reader = registry.capability_module("language", "cuda_cpp", "source_reading")
+    code = _ATTRIBUTE_RE.sub(lambda m: " " * len(m.group(0)), reader.code_view(text))
+    names: list[str] = []
+    for match in _GLOBAL_RE.finditer(code):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return tuple(names)

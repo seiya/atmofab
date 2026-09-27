@@ -203,8 +203,10 @@ def build_tuple() -> dict[str, str]:
 #: at all, are read off the registry records by `tools/host_execution.py`. And what a site's
 #: scheduler runs a job under (issue #293 PR-4), read the same way by
 #: `tools/remote_execution._submission`: the prefix decides which machine runs the commands and
-#: with what allocation, as the hardware class's module decides the device probe.
-_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit"})
+#: with what allocation, as the hardware class's module decides the device probe. And the device
+#: trace a parallel model's binary runs under (issue #307), read the same way: its prefix and its
+#: summary command are what `Validate.execute` runs.
+_LAUNCH_CAPABILITIES = frozenset({"execution", "execution_env", "job_submit", "device_trace"})
 _LAUNCH_AXES = ("parallel", "hardware", "scheduler")
 
 
@@ -444,7 +446,10 @@ PINNED_RENDER: dict[str, str] = {
     # outputs is the profile's sha256, which now carries the default (`target_profile.
     # _fill_default_architecture`), so no certified output is reused under a key whose render
     # would differ; the Fortran render is untouched.
-    "render-5": "89677df047a44ae7fa69c74e5681db1e7ccd04e9132a381ad8aef97420921797",
+    # Re-pinned (issue #307, PR-2), behaviour-preserving for the render: `tools/host_execution.py`
+    # (digested whole for `perf_parallelism`) gained the device-trace launch half, which the
+    # execute body reads and no renderer calls; `perf_parallelism` is unchanged.
+    "render-5": "83133b5cb5540b2a6b2ecbc533c9043749ae4ffc331a62872b09bec027676f32",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -543,6 +548,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # `perf_parallelism`, which the CUDA C++ runner renderer reads for its perf line and the
     # execute body does not call; `launch_shape` is unchanged.
     "execute-5": "44aaabf0ccd5337cdd91dc87577891b3c9621cbf83f7e10c07fdced176ab3e7f",
+    # execute-6 (issue #307, PR-2): a binary whose parallel backend declares `device_trace` (CUDA)
+    # runs under Nsight Systems — the launch shape's `argv_prefix` — and a third command writes
+    # the trace's per-kernel summary between the run and the quality check, locally and in the
+    # remote job; `Validate.execute` promotes it to `kernel_trace.csv` (a new deliverable) and
+    # records it in `trial_meta.json#kernel_trace`, and a failed or missing summary is a
+    # `deterministic_validate_error`. The tuple gained the `device_trace` capability
+    # (`_LAUNCH_CAPABILITIES`). What an `openmp` / `none` target's execute runs is unchanged.
+    "execute-6": "42f117504d0414a60b7107055d4ddfd4fd4615fb181ff02a9e7e6300045b8fa4",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

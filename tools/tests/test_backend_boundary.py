@@ -311,6 +311,10 @@ _TOKEN_CLASSES: dict[str, str] = {
     # parallel
     "parallel-directive": r"!\$omp",
     "parallel-construct": r"do\s+concurrent",
+    # The device trace a parallel model's binary runs under (issue #307): the program's name and
+    # its product name. Bounded on both sides, since the class is matched without case and
+    # `insight` is ordinary English.
+    "parallel-trace": r"\bnsys\b|\bnsight\b",
 }
 
 _COMPILED = {name: re.compile(pattern, re.IGNORECASE) for name, pattern in _TOKEN_CLASSES.items()}
@@ -1713,6 +1717,8 @@ class TokenClassReachTests(unittest.TestCase):
         "parallel-directive": (("!$omp parallel do",), ("$omp parallel do",)),
         "parallel-construct": (("do concurrent (i=1:n)", "do  concurrent (i=1:n)"),
                                ("run these concurrently",)),
+        "parallel-trace": (("nsys profile -t cuda", "Nsight Systems 2025.1"),
+                           ("insight", "nsysfoo", "the_nsys_run")),
     }
 
     def test_every_declared_class_has_a_probe(self) -> None:
@@ -2219,7 +2225,11 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
                       "checks_abi", "source_reading", "signatures", "parallel_directives",
-                      "interface_header", "job_submit"}
+                      "interface_header", "job_submit", "device_trace"}
+        # `device_trace` joined them with issue #307: `tools/host_execution.py` asks
+        # `capability_module` for the parallel backend's trace when it composes a launch shape
+        # and lists the programs the executing machine needs; the conductor asks the record
+        # whether execute delivers the trace's summary (`_traces_execution`).
         # `job_submit` joined them with issue #293 PR-4: the remote executor asks
         # `missing_capability_reason` / `capability_module` for the site's scheduler
         # (`remote_execution._submission`) when it renders a job and when the launch probe lists
@@ -2569,6 +2579,12 @@ class RegistryConsistencyTests(unittest.TestCase):
             "render_node", "render_from_graph", "classify_build_failure", "validate_src_dir",
             "validate_test_no_relink", "validate_test_invokes_cases"),
         ("parallel", "parallel_directives"): ("presence_floor", "lowering_plan_declines"),
+        # Issue #307: the launch seam's trace half (`tools/host_execution.py`), and the readers
+        # of the summary and of a source's kernels that the post_execute kernel gate reads (its
+        # PR-3; declared here with the module, which carries them from PR-2).
+        ("parallel", "device_trace"): (
+            "EXECUTABLES", "profile_argv_prefix", "summary_argv", "summary_file",
+            "kernel_instances", "SummaryUnreadable", "defined_kernels"),
     }
 
     def test_every_other_package_capability_carries_the_contract_its_readers_use(self) -> None:

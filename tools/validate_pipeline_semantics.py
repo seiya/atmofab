@@ -6038,6 +6038,25 @@ def _validate_run_program_inputs(
             / "bin"
         ).resolve()
 
+    # The launch prefix the binary ran under (`environment.launch.argv_prefix`, written by the
+    # host from `tools/host_execution.py`; issue #307 puts a device trace there). The binary is
+    # the first argument AFTER it. A record without `environment.launch` predates the launch
+    # seam and ran under none; one whose prefix is not a list of strings says nothing the
+    # binding below can use, and is refused.
+    _launch = (data.get("environment") or {}).get("launch") \
+        if isinstance(data.get("environment"), dict) else None
+    _argv_prefix: list[str] | None = []
+    if isinstance(_launch, dict) and "argv_prefix" in _launch:
+        _raw_prefix = _launch.get("argv_prefix")
+        if isinstance(_raw_prefix, list) and all(isinstance(a, str) for a in _raw_prefix):
+            _argv_prefix = list(_raw_prefix)
+        else:
+            _argv_prefix = None
+            violations.append(
+                f"{trial_meta_path}: environment.launch.argv_prefix must be a list of strings "
+                f"(got {_raw_prefix!r}); the binary a run_program record ran cannot be located "
+                f"after it")
+
     for entry in _iter_command_ref_entries(source_command_ref):
         command_id = entry.get("command_id")
         log_ref = entry.get("command_log_ref") or entry.get("command_log_path")
@@ -6102,7 +6121,17 @@ def _validate_run_program_inputs(
         # `cwd` (project_dir) or argv[0] absolute path. Relative argv[0]
         # (e.g. `./simulate`) is resolved against `cwd`.
         if _build_bin_abs is not None and command:
-            executable = command[0]
+            if _argv_prefix is None:
+                continue
+            if command[:len(_argv_prefix)] != _argv_prefix:
+                violations.append(
+                    f"{trial_meta_path}:run_program command_id={command_id} command must "
+                    f"begin with the recorded launch prefix {_argv_prefix!r} "
+                    f"(environment.launch.argv_prefix); got {command[:len(_argv_prefix)]!r}"
+                )
+                continue
+            executable = (command[len(_argv_prefix)]
+                          if len(command) > len(_argv_prefix) else None)
             cwd_val = matched.get("cwd")
             cwd_path: Path | None = None
             if isinstance(cwd_val, str) and cwd_val.strip():

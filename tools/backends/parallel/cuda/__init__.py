@@ -6,6 +6,9 @@ Submodules, by capability:
   model is launched with (none of its own).
 * `directives` — the `parallel_directives` capability: the `Generate.static` presence floor for a
   CUDA C++ model source built for a GPU.
+* `trace` — the `device_trace` capability: the trace a binary runs under at `Validate.execute`,
+  the command that writes its per-kernel summary, and the readers of that summary and of a
+  source's kernel names (issue #307).
 """
 
 from tools.backends.parallel.cuda import (
@@ -13,4 +16,7 @@ from tools.backends.parallel.cuda import (
 )
 from tools.backends.parallel.cuda import (
     execution as execution,  # re-export
+)
+from tools.backends.parallel.cuda import (
+    trace as trace,  # re-export
 )
