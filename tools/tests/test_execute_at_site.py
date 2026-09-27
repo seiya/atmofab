@@ -300,8 +300,9 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
 #: A stand-in for the device trace's program at the site (issue #307), installed under the name
 #: the backend's `EXECUTABLES` gives it. Its profiling form runs the rest of its argv after the
 #: first `FAKE_TRACE_PREFIX_LEN` arguments (the prefix minus the program) and returns its status;
-#: its summary form writes `$FAKE_TRACE_CSV` to `$FAKE_TRACE_SUMMARY` in its cwd and exits
-#: `$FAKE_TRACE_RC`.
+#: its summary form writes `$FAKE_TRACE_CSV` to `$FAKE_TRACE_SUMMARY` in its cwd, and the export
+#: database the stats run writes for a readable report (the last argument's stem + `.sqlite`),
+#: and exits `$FAKE_TRACE_RC`.
 _FAKE_TRACER = textwrap.dedent('''\
     #!/usr/bin/env python3
     import os, subprocess, sys
@@ -311,6 +312,8 @@ _FAKE_TRACER = textwrap.dedent('''\
         sys.exit(subprocess.run(args[n:]).returncode)
     with open(os.environ["FAKE_TRACE_SUMMARY"], "w") as f:
         f.write(os.environ.get("FAKE_TRACE_CSV", ""))
+    with open(os.path.splitext(args[-1])[0] + ".sqlite", "w") as f:
+        f.write("db")
     sys.exit(int(os.environ.get("FAKE_TRACE_RC") or 0))
 ''')
 

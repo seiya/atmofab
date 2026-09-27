@@ -1620,31 +1620,62 @@ class DeviceTraceTests(unittest.TestCase):
         return subprocess.run(list(cuda_trace.summary_argv("kernel_trace")), cwd=tmp, env=env,
                               capture_output=True, text=True, check=False)
 
+    #: The export database a readable report's stats run writes beside the summary.
+    DB = "kernel_trace.sqlite"
+
     def test_the_summary_command_empties_its_path_before_the_stats_run(self) -> None:
         """Round 1: a READ-ONLY file at the summary's path survives `nsys stats
         --force-overwrite=true`, which then exits 0 (measured on 2026.3.2). The command removes
         whatever is there first, so a stats run that writes nothing leaves NO file (which the
         host refuses) rather than the binary's."""
         name = cuda_trace.summary_file("kernel_trace")
+        self.assertIn(self.DB, cuda_trace.summary_argv("kernel_trace"))
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             forged = tmp / name
             forged.write_text("Instances,Name\n5,step_kernel(double *)\n")
             forged.chmod(0o444)
-            # A stats run that fails to write, exiting 0 — the measured shape.
-            proc = self._run_summary(tmp, 'echo "ERROR: Unable to open output file"\nexit 0\n')
+            # A stats run that exports the report but fails to write the summary, exiting 0 —
+            # the measured shape.
+            proc = self._run_summary(
+                tmp, f'echo x > {self.DB}; echo "ERROR: Unable to open output file"\nexit 0\n')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertFalse(forged.exists())
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             # And the stats run is what writes it, with its own argv after the wrapper's.
             proc = self._run_summary(
-                tmp, f'printf "%s\\n" "$@" > argv.txt; printf "Instances,Name\\n" > {name}\n')
+                tmp, f'printf "%s\\n" "$@" > argv.txt; printf "Instances,Name\\n" > {name}; '
+                     f'echo x > {self.DB}\n')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual((tmp / name).read_text(), "Instances,Name\n")
             argv = (tmp / "argv.txt").read_text().splitlines()
             full = cuda_trace.summary_argv("kernel_trace")
             self.assertEqual(argv, list(full[full.index(cuda_trace.EXECUTABLES[0]) + 1:]))
+
+    def test_a_stats_run_that_exports_nothing_fails_the_command(self) -> None:
+        """Round 2: a report that is not readable (truncated, or other bytes) makes the stats
+        run exit 0 with an EMPTY summary — the shape of "no kernel data" — and no export database
+        (measured on 2026.3.2). The command fails when the database is absent after the run, and
+        one the binary left beforehand is removed first, so it cannot stand in for the export.
+        The stats run's own failure passes through with its code."""
+        name = cuda_trace.summary_file("kernel_trace")
+        for left_behind in (False, True):
+            with self.subTest(left_behind=left_behind), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                if left_behind:
+                    (tmp / self.DB).write_text("forged")
+                    (tmp / self.DB).chmod(0o444)
+                proc = self._run_summary(tmp, f": > {name}\nexit 0\n")
+                self.assertEqual(proc.returncode, 3, proc.stderr)
+                self.assertIn("was not exported", proc.stderr)
+                self.assertFalse((tmp / self.DB).exists())
+        with tempfile.TemporaryDirectory() as raw:
+            proc = self._run_summary(Path(raw), "exit 7\n")
+            self.assertEqual(proc.returncode, 7)
+        with tempfile.TemporaryDirectory() as raw:
+            proc = self._run_summary(Path(raw), f": > {name}; echo x > {self.DB}\nexit 0\n")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_a_summary_path_that_cannot_be_emptied_fails_the_command(self) -> None:
         name = cuda_trace.summary_file("kernel_trace")

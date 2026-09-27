@@ -16,6 +16,9 @@ site's 2025.1.3), and `docs/backends/parallel/cuda/DEVICE_TRACE.md` states it fo
   the exit code says nothing about kernels. `--force-overwrite=true` replaces a writable file
   already at that path (a forged one was replaced on both versions) and NOT a read-only one,
   which survives with exit 0 — hence `summary_argv` empties the path first.
+* A report that is not readable (truncated, or not a report) also exits 0 with an empty summary,
+  and writes no `<stem>.sqlite`; a readable one writes it (on 2025.1.3 too: the site's stats run
+  named `kernel_trace.sqlite`). `summary_argv` requires it.
 * The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `Med (ns)`,
   `Min (ns)`, `Max (ns)`, `StdDev (ns)`, `Name`. `Name` is demangled: `k(double *, long)`,
   `ns::k(int *)`, one row per template instantiation `void k<double>(T1 *)`. A kernel that never
@@ -46,26 +49,38 @@ def profile_argv_prefix(stem: str) -> tuple[str, ...]:
     return ("nsys", "profile", "-t", "cuda", "-o", stem, "--force-overwrite=true")
 
 
-#: What the summary command runs first: remove whatever is at the summary's path, and fail when
-#: that cannot be done. `$1` is the path; the rest is the stats argv, exec'd in its place.
-_FRESH_OUTPUT_SCRIPT = 'rm -f -- "$1" || exit 1; shift; exec "$@"'
+#: The summary command's frame around the stats run. `$1` is the summary's path, `$2` the export
+#: database's; the rest is the stats argv. Both paths are emptied first (failing when that cannot
+#: be done); after the stats run exits 0 the export database must exist, since the stats run
+#: writes it for any readable report and for no other (measured below), and its exit code does
+#: not tell the two apart.
+_FRESH_OUTPUT_SCRIPT = (
+    'out=$1; db=$2; rm -f -- "$out" "$db" || exit 1; shift 2; "$@" || exit; '
+    '[ -s "$db" ] || { echo "kernel-trace-summary: the report was not exported: $db is '
+    'missing" >&2; exit 3; }')
 
 
 def summary_argv(stem: str) -> tuple[str, ...]:
     """The command that reads `<stem>.nsys-rep` in the cwd and writes the per-kernel summary
-    (`summary_file(stem)`). `--force-export=true` rebuilds the intermediate database rather than
-    reusing one already there.
+    (`summary_file(stem)`). `--force-export=true` rebuilds the export database (`<stem>.sqlite`)
+    rather than reusing one already there.
 
-    The summary's path is emptied by the command itself before `nsys stats` runs, and a path that
-    cannot be emptied (a directory, a directory that is not writable) fails it. The binary ran in
-    the same directory just before, and `--force-overwrite=true` does not cover what it could
-    leave there: measured on 2026.3.2, a READ-ONLY file at the summary's path survives the stats
-    command, which prints `ERROR: Unable to open output file for writing` and exits 0 — so the
-    file read afterwards would be the binary's, not the trace's (issue #307 PR-2 round 1). Done
-    in the command rather than by the host so that one argv carries it to both the local run and
-    the remote job, where no host step runs between the two commands."""
+    Two things the stats run's exit code does not say, both measured on 2026.3.2, are said by
+    the frame around it (`_FRESH_OUTPUT_SCRIPT`):
+
+    * A READ-ONLY file at the summary's path survives the stats run, which prints
+      `ERROR: Unable to open output file for writing` and exits 0 — so the file read afterwards
+      would be whatever the binary left there (issue #307 PR-2 round 1). The summary's path is
+      emptied first, and a path that cannot be emptied fails the command.
+    * A report that is not a readable one (truncated, or any other bytes) exits 0 with an EMPTY
+      summary — the shape of "no kernel data" — and writes no export database; a readable report
+      writes one, with kernel data or without (round 2). The export database's path is emptied
+      first too, and a stats run after which it does not exist fails the command (exit 3).
+
+    Done in the command rather than by the host so that one argv carries it to both the local
+    run and the remote job, where no host step runs between the two commands."""
     return ("sh", "-c", _FRESH_OUTPUT_SCRIPT, "kernel-trace-summary", summary_file(stem),
-            "nsys", "stats", "-r", _SUMMARY_REPORT, "-f", "csv", "-o", stem,
+            f"{stem}.sqlite", "nsys", "stats", "-r", _SUMMARY_REPORT, "-f", "csv", "-o", stem,
             "--force-export=true", "--force-overwrite=true", f"{stem}{_REPORT_SUFFIX}")
 
 

@@ -14,7 +14,7 @@ remote one), in this order:
 
 ```
 nsys profile -t cuda -o kernel_trace --force-overwrite=true <binary> --cases <spec.ir.yaml> <case_id>...
-sh -c 'rm -f -- "$1" || exit 1; shift; exec "$@"' kernel-trace-summary kernel_trace_cuda_gpu_kern_sum.csv \
+sh -c '<frame>' kernel-trace-summary kernel_trace_cuda_gpu_kern_sum.csv kernel_trace.sqlite \
   nsys stats -r cuda_gpu_kern_sum -f csv -o kernel_trace --force-export=true --force-overwrite=true kernel_trace.nsys-rep
 make test    # the quality check, unchanged and untraced
 ```
@@ -26,13 +26,21 @@ make test    # the quality check, unchanged and untraced
   `X_cuda_gpu_kern_sum.csv`). The conductor promotes it to the run node's `kernel_trace.csv` and
   records the command that wrote it as `trial_meta.json#kernel_trace`. The `.nsys-rep` report
   and its `.sqlite` export are not kept.
-- `--force-export=true` rebuilds the export rather than reusing one already there. The summary
-  command first removes whatever is at the summary's path, and fails when it cannot (a directory
-  there, a directory that is not writable): `--force-overwrite=true` replaces a WRITABLE file at
-  that path but not a read-only one, which survives while `nsys stats` prints
-  `ERROR: Unable to open output file for writing` and exits 0 (measured on 2026.3.2). The binary
-  ran in the same directory just before, so without the removal the file read afterwards could be
-  the binary's. The removal is part of the command, so the remote job carries it too.
+- `--force-export=true` rebuilds the export database (`kernel_trace.sqlite`) rather than reusing
+  one already there. The frame around the stats run (`_FRESH_OUTPUT_SCRIPT` in the code) says
+  what the stats run's exit code does not, both measured on 2026.3.2:
+  - it first removes whatever is at the summary's path and at the database's, and fails when it
+    cannot (a directory there, a directory that is not writable): `--force-overwrite=true`
+    replaces a WRITABLE file at the summary's path but not a read-only one, which survives while
+    `nsys stats` prints `ERROR: Unable to open output file for writing` and exits 0. The binary
+    ran in the same directory just before, so without the removal the file read afterwards could
+    be the binary's;
+  - after a stats run that exited 0 it requires the database: a readable report is exported,
+    with kernel data or without, and a report that is not readable (truncated, or other bytes)
+    is not — while the stats run still exits 0 and writes an EMPTY summary, the same bytes as
+    "no kernel data". Without the database the frame exits 3.
+
+  The frame is part of the command, so the remote job carries it too.
 - A summary command that exits non-zero, or exits 0 without writing the file, fails the substep
   as `deterministic_validate_error`: it is host tooling, not the kernel.
 - `trial_meta.json#environment.launch.argv_prefix` records the `nsys profile …` prefix, and the
@@ -88,8 +96,8 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
 - The report's path is not emptied before the run, because the binary runs inside the profiling
   command. A READ-ONLY file the binary leaves at `kernel_trace.nsys-rep` survives: measured on
   2026.3.2, `nsys profile` then writes its report under `/tmp/nsys-<user>/`, exits 0, and the
-  summary reads the binary's file. A file that is not a valid report fails the summary
-  (`deterministic_validate_error`); passing it off as one would take writing a valid report
+  summary reads the binary's file. A file that is not a readable report fails the summary (no
+  export database, exit 3, `deterministic_validate_error`); passing it off as one would take writing a valid report
   whose kernel records name the model's kernels, from a source whose file I/O `Generate.gate`
   already refuses. Recorded, not closed.
 - nsys's progress lines go to the binary's stdout, so `stdout.log` carries them. It is an audit
