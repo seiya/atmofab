@@ -492,7 +492,7 @@ PINNED_RENDER: dict[str, str] = {
     # parent against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "577bbb7f6cd32a9000b59a403e43b7ef0389830478d13a15dc7915a1b24dbf55",
+    "render-6": "df637f0639819ca2a583a4538754bb13eeb532e028cc640b5526374e05f2d9c3",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -527,7 +527,10 @@ PINNED_BUILD: dict[str, str] = {
     # the Fortran binding is unchanged, so its staging is too), and the sha-checked copy moved
     # into `_copy_bound_file` (joins the tuple). The one certified `cuda_cpp` build — the
     # harness — has no closure to stage.
-    "build-1": "3b2650dbcdf7458db9f476f80f2edb835d88df3ade0dc1ff40ac0700719c20fa",
+    # Re-pinned (issue #316, R4-c PR-1), behaviour-preserving: a comment in `_build_inproc`
+    # (what `binary_meta.json#compiler` records under a compiler wrapper). The build's command
+    # and its toolchain identity for every existing target are unchanged.
+    "build-1": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

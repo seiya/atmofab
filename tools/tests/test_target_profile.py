@@ -401,6 +401,33 @@ class LaunchGateTests(unittest.TestCase):
             self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
                 repo, toolchain__compiler="gfortran")), [])
 
+    def test_a_compiler_wrapper_of_another_languages_compiler_is_refused(self) -> None:
+        """Issue #316: the wrapper runs one compiler (`WRAPPED_COMPILER`) and the build pins it
+        whatever the language, so a target whose language compiles with another is refused —
+        at every phase, since the build itself would be wrong. A language the wrapper does
+        compile passes."""
+        from tools.backends import registry
+        wrapped = registry.capability_module("parallel", "mpi", "compiler_wrapper").WRAPPED_COMPILER
+        cuda = {"language": "cuda_cpp", "standard": "c++17"}
+        cuda_compiler = registry.capability_module(
+            "language", "cuda_cpp", "bundle_facts").DEFAULT_COMPILER
+        self.assertNotEqual(wrapped, cuda_compiler)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            profile = self._profile(repo, parallel__backend="mpi",
+                                    toolchain__language="cuda_cpp",
+                                    toolchain__standard="c++17")
+            self.assertEqual(profile.toolchain["language"], cuda["language"])
+            for phase in (None, "build"):
+                with self.subTest(phase=phase):
+                    self.assertIn(
+                        f"parallel.backend: mpi's compiler wrapper runs {wrapped}, and "
+                        f"toolchain.language cuda_cpp compiles with {cuda_compiler}",
+                        tp.target_profile_violations(repo.root, profile, until_phase=phase))
+            fortran = tp.target_profile_violations(
+                repo.root, self._profile(repo, parallel__backend="mpi"))
+            self.assertFalse([v for v in fortran if "compiler wrapper runs" in v], fortran)
+
     def test_the_execution_half_is_asked_of_a_run_that_reaches_validate_only(self) -> None:
         """Issue #289: a class this repository cannot launch can be BUILT for, not run.
 

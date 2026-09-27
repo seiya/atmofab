@@ -560,6 +560,21 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
             out.append(f"toolchain.compiler: {tc['compiler']} is pinned, and parallel backend "
                        f"{profile.parallel_backend} compiles through its compiler wrapper; "
                        f"remove the pin")
+    # A compiler wrapper runs ONE compiler (`WRAPPED_COMPILER`), and the build pins the control
+    # file's compiler variable to it whatever the language: a target whose language compiles
+    # with another would build its sources with the wrapper's compiler (issue #316).
+    if backend_registry.unimplemented_reason("parallel", profile.parallel_backend) is None and \
+            "compiler_wrapper" in backend_registry.get(
+                "parallel", profile.parallel_backend).backend_provides and \
+            backend_registry.provides("language", tc["language"], "bundle_facts"):
+        wrapped = str(backend_registry.capability_module(
+            "parallel", profile.parallel_backend, "compiler_wrapper").WRAPPED_COMPILER)
+        compiler = str(backend_registry.capability_module(
+            "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
+        if wrapped != compiler:
+            out.append(f"parallel.backend: {profile.parallel_backend}'s compiler wrapper runs "
+                       f"{wrapped}, and toolchain.language {tc['language']} compiles with "
+                       f"{compiler}")
     try:
         harness_nk = harness_node_key_for_target(repo_root, profile)
     except TargetProfileError as exc:

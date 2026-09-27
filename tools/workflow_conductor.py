@@ -9647,8 +9647,11 @@ class Conductor:
             # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
-            # The target the binary was built for, and the compiler the control file pins (the
-            # target profile's, else the host default) with the first versioned line of its `--version`:
+            # The target the binary was built for, and the compiler it was compiled with (the
+            # target profile's pin, else the host default; under a parallel backend's compiler
+            # wrapper, the compiler the wrapper runs — the wrapper and the runtime it links are
+            # the build key's `compiler_wrapper` / `parallel_runtime`, issue #316) with the
+            # first versioned line of its `--version`:
             # the toolchain identity the build derivation key hashes (issues #250, #284),
             # recorded on the binary it built. `compile_project` itself answers neither — make
             # picks the compiler — so this is resolved the way the key resolves it, from the
