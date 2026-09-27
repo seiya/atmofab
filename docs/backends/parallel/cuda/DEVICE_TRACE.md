@@ -100,5 +100,14 @@ executes the run (asked with `shutil.which` at launch, same reason). A run that 
   export database, exit 3, `deterministic_validate_error`); passing it off as one would take writing a valid report
   whose kernel records name the model's kernels, from a source whose file I/O `Generate.gate`
   already refuses. Recorded, not closed.
-- nsys's progress lines go to the binary's stdout, so `stdout.log` carries them. It is an audit
-  log that no gate and no judge reads.
+- A binary that cannot be started at all (not executable, a bad interpreter, missing) makes
+  `nsys profile` exit 1 (measured on 2026.3.2; run bare, the same binary gives 126 / 127, which
+  the remote executor refuses as a host failure, `remote_execution.LAUNCH_CODES`). So under the trace such a binary routes as the
+  runner's failure. Build's binary is executable at its own site (the launch probe's machine
+  check, scp keeping the mode), and no run has reached this.
+- The profiler's start-up and its report writing share the run's time bound
+  (`RUN_PROGRAM_TIMEOUT_SEC`) with the binary: a run near that bound times out under the trace
+  first. Not measured; today's runs take seconds.
+- nsys's progress lines go to the binary's stdout and its warnings to the binary's stderr
+  (`Device-side CUDA Event completion trace …` at the site, CPU-sampling warnings here), so
+  `stdout.log` and `stderr.log` carry them. They are audit logs that no gate and no judge reads.

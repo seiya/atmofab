@@ -560,8 +560,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # and `defined_kernels` blanks every CUDA `__name__(…)` attribute, a reader no execute calls.
     # And in round 2: the summary command requires the export database a readable report gives
     # (an unreadable one exits 0 with an empty summary); `defined_kernels` blanks the CUDA
-    # attributes by name.
-    "execute-6": "f8a0d201215660590b1bba49f97d61c2ebec52ed30f4ed5028cfba9ca0a4f6b9",
+    # attributes by name; and comments in `tools/remote_execution.py` name the binary the gate binds.
+    "execute-6": "378628c88a93d26872a2e7b80a9ff2db69868bc92dbbc64dea28461db07b595b",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

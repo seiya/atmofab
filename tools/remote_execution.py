@@ -9,7 +9,8 @@ ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh 
 job directory back with scp, and then writes the same log entries itself — through the server's
 own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
 §Execution sites). An entry's `command` names each shipped file by its LOCAL source, because the
-post-execute gate binds `command[0]` to the node's own build `bin/`; the argv the site executed
+post-execute gate binds the binary — the argument after the recorded launch prefix — to the
+node's own build `bin/`; the argv the site executed
 is the entry's `site.remote_command`. Its `cwd` is the command's `record_cwd`, the local
 directory it stands for (the gate requires a quality check's to be the node's source `src/`),
 and the site's is `site.remote_cwd`.
@@ -771,8 +772,8 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
 
     # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
     #    `command` names each shipped file by its LOCAL source, so the entry says which of this
-    #    host's artifacts ran — `_validate_run_program_inputs` binds `command[0]` to the node's
-    #    own build `bin/` — and `site.remote_command` is the argv as the site executed it; `cwd`
+    #    host's artifacts ran — `_validate_run_program_inputs` binds the binary, the argument
+    #    after the recorded launch prefix, to the node's own build `bin/` — and `site.remote_command` is the argv as the site executed it; `cwd`
     #    is the command's `record_cwd` for the same reason, and `site.remote_cwd` the site's.
     server = _server()
     local_of = {f"{remote}/{rel}": str(src) for rel, src in request.ship.items()}

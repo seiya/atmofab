@@ -21194,7 +21194,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         target's execute is traced, so the execute launch request it records lists
         `kernel_trace.csv` exactly when it is. The direct `build_launch_request` row beside
         `test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it` cannot see
-        this wiring. Only the validate phase asks: a build request lists no such path."""
+        this wiring."""
         from unittest import mock
         for traced in (True, False):
             with self.subTest(traced=traced):

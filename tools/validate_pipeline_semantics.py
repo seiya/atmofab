@@ -6024,8 +6024,9 @@ def _validate_run_program_inputs(
         trial_meta_path, repo_root
     )
     # Bind run_program executable to trial_meta's source_build_id. The matched
-    # record's `cwd` field (project_dir) or absolute argv[0] must resolve
-    # under `<pipeline>/build/<source_build_id>/bin/`. Otherwise an execute
+    # record's executable — the argument after the recorded launch prefix — must
+    # resolve, absolute or against the record's `cwd`, under
+    # `<pipeline>/binary/<source_binary_id>/bin/`. Otherwise an execute
     # could attribute results to one build while running a sibling build's
     # binary (mixed-build attribution forge).
     _trial_source_build_id = data.get("source_binary_id")
@@ -6118,7 +6119,8 @@ def _validate_run_program_inputs(
 
         # Bind to source_build_id: the executed binary must live under the
         # declared build's bin/ directory. Resolve via the matched record's
-        # `cwd` (project_dir) or argv[0] absolute path. Relative argv[0]
+        # `cwd` (project_dir) or the executable's absolute path; the executable is the
+        # argument after the recorded launch prefix (issue #307). A relative one
         # (e.g. `./simulate`) is resolved against `cwd`.
         if _build_bin_abs is not None and command:
             if _argv_prefix is None:
