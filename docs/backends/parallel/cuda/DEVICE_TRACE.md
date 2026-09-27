@@ -108,10 +108,20 @@ without, the second with an empty summary.
 
 ## 3. What the site must provide
 
-`nsys` on the PATH of the machine that executes the run: a remote site's non-interactive login
-(the launch probe asks it, `missing_required_site_tools`), or this host when the local site
-executes the run (asked with `shutil.which` at launch, same reason). A run that stops before
-`Validate` is asked nothing. The version range measured is §2's.
+`nsys` on the PATH of the machine that executes the run:
+
+- this host, when the local site executes the run (asked with `shutil.which` at launch,
+  `missing_required_site_tools`);
+- a remote site with `scheduler: none`, whose non-interactive login runs the job (the launch
+  probe asks it, same reason);
+- a remote site with a batch scheduler, whose COMPUTE node runs the binary: the launch probe
+  does not ask the login, which need not have `nsys` (the `cpp_gpu` site's login node has none,
+  its compute nodes do; measured 2026-09-27, issue #307 PR-4). The job script asks for it on
+  the compute node before the run, and a missing one fails the job (`job script: nsys is missing
+  or not executable`, a transport `fail_closed`, retried by `--resume`) after the build, not at
+  launch.
+
+A run that stops before `Validate` is asked nothing. The version range measured is §2's.
 
 ## 4. What it does not do
 

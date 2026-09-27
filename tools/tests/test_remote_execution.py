@@ -1118,15 +1118,18 @@ class SchedulerTests(unittest.TestCase):
 
     def test_the_launch_probe_asks_for_what_the_binary_runs_under(self) -> None:
         """A parallel backend that declares `device_trace` (issue #307) adds its trace's
-        programs, after the build system and before the scheduler's; one that declares none adds
-        nothing (above)."""
+        programs after the build system — at a site that runs the job on the login the probe
+        reaches. A batch scheduler runs the binary on another node, where the job script asks
+        for it (below); the login is not asked (issue #307 PR-4: the `cpp_gpu` site's login
+        node has no trace program, its compute nodes do). One that declares none adds nothing
+        (above)."""
         from tools.backends import registry
         from tools.host_prerequisites import required_site_executables
         trace = registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES
         self.assertTrue(trace)
         selection = {"build_system": "make", "parallel": "cuda"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
-                         ("timeout", "make", *trace, "srun"))
+                         ("timeout", "make", "srun"))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
                          ("timeout", "make", *trace))
 
