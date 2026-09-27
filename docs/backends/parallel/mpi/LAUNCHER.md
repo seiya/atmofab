@@ -40,7 +40,7 @@ make test                                                           # the qualit
 | `trial_meta.json#environment.platform.parallel_runtime` | the first line of `mpirun --version`, `null` when it cannot be read; recorded, not interpreted |
 | `perf.json#parallelism.mpi_ranks` | the process count the runner writes; the post-execute gate requires it to equal `execution.ranks`. It detects a launch that started independent one-process runs only when the runner writes the count the harness observes at run time; the distributed runner variant (issue #316 PR-4) does, the Fortran runner before it writes `1` |
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`; the post-execute gate requires both |
-| build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` | `mpif90`, and the first line of `mpif90 -show`: the runtime installation the binary links against. A change of installation is another build |
+| build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` / `toolchain.compiler_version` | `mpif90`; the first line of `mpif90 -show`, the runtime installation the binary links against; and the compiler's version asked as `mpif90 --version`, which the wrapper passes to the compiler it is configured with. A change of installation or of that compiler is another build. The syntax stage's recorded `compiler_version` is asked the same way |
 
 ## 3. Requirements on the host
 

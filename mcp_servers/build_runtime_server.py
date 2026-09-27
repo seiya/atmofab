@@ -1536,7 +1536,11 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     )
     return result | {
         "compiler": compiler,
-        "compiler_version": _syntax_compiler_version(tuple(adapter.VERSION_ARGV)),
+        # Through the wrapper when the stage ran through it: the wrapper runs the compiler IT is
+        # configured with, which need not be the one this name resolves to on PATH.
+        "compiler_version": _syntax_compiler_version(
+            tuple(adapter.VERSION_ARGV) if wrapper is None
+            else tuple(wrapper.wrap(adapter.VERSION_ARGV))),
         "std": std,
         "openmp": openmp,
         "skipped": False,

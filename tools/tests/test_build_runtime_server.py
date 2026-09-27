@@ -277,6 +277,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
             self.mod.tool_run_syntax_check(
                 {"project_dir": str(d), "compiler": "gfortran", "std": "f2008", **extra})
         argv = run_mock.call_args_list[0].args[0]
+        self._last_version_argv = [c.args[0] for c in run_mock.call_args_list[1:]]
         return argv[0], argv, [c.args[0] for c in which.call_args_list]
 
     def test_a_compiler_wrapper_backend_runs_the_stage_through_its_wrapper(self) -> None:
@@ -292,6 +293,12 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertEqual(wrapped[1:], plain[1:])
         self.assertIn(wrapper.COMPILER_WRAPPER, wrapped_which)
         self.assertNotIn(wrapper.COMPILER_WRAPPER, plain_which)
+        # The recorded version is asked through the wrapper too (round 2): it runs the compiler
+        # it is configured with. The probe is cached per argv, so clear it for this row.
+        self.mod._syntax_compiler_version.cache_clear()
+        self._argv0_for(parallel_backend="mpi")
+        self.assertIn(list(wrapper.wrap(_gfortran_syntax().VERSION_ARGV)),
+                      self._last_version_argv)
         # A backend that declares no wrapper, and a token with no record, run the adapter's.
         for backend in ("openmp", "none", "zz_no_such_model"):
             with self.subTest(parallel_backend=backend):
