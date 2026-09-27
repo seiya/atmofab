@@ -306,6 +306,25 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
          "source's kernel names (issue #307). A value that does not declare it is launched "
          "without a trace. Asked only of a run that reaches `Validate`."),
     ),
+    "launcher": (
+        ("parallel",),
+        ("The host knows the program that starts this parallel model's ranks and the argv it "
+         "takes in front of the binary (`argv_prefix(ranks)`), the programs the executing "
+         "machine needs for it, and the probe whose first line names the runtime it belongs to "
+         "(issue #316; `tools/host_execution.py` composes the prefix, the backend spells it). A "
+         "value that does not declare it runs its binary as one process, and a profile asking "
+         "for more ranks than one is refused (`target_profile.hardware_violations`). A binary "
+         "built here is bound to this host's runtime of the model, so a target whose backend "
+         "declares it runs at the local site only (`execution_sites.site_violations`)."),
+    ),
+    "compiler_wrapper": (
+        ("parallel",),
+        ("The program that stands in for the target's compiler when this parallel model's "
+         "runtime must be found at compile and link: the build control file's compiler "
+         "variable and the syntax stage's argv[0] (issue #316). The `compiler` axis' adapter — "
+         "its flags and its diagnostics — is unchanged; only the program it runs through is "
+         "this one."),
+    ),
     "job_submit": (
         ("scheduler",),
         "The host knows how a job script is run as one job at a site running this scheduler: "
@@ -358,6 +377,8 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "interface_header": "header",
     "job_submit": "submit",
     "device_trace": "trace",
+    "launcher": "launcher",
+    "compiler_wrapper": "wrapper",
 }
 
 
@@ -517,6 +538,13 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             "parallel", "cuda", "tools.backends.parallel.cuda",
             backend_provides=frozenset({"execution_env", "parallel_directives",
                                         "device_trace"}),
+        ),
+        # MPI (issue #316, R4-c): the binary runs under the launcher the package spells, with
+        # the profile's rank count, and is compiled through the runtime's compiler wrapper. Its
+        # presence floor (`parallel_directives`) arrives with the validator wiring that reads it.
+        Backend(
+            "parallel", "mpi", "tools.backends.parallel.mpi",
+            backend_provides=frozenset({"execution_env", "launcher", "compiler_wrapper"}),
         ),
         # `cpu` is the class THIS host is: `Validate.execute` launches the binary in-process
         # (`workflow_conductor._execute_inproc` through `tools/host_execution.py`), and that path

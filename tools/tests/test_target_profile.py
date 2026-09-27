@@ -125,6 +125,22 @@ class CheckedInProfileTests(unittest.TestCase):
                 REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
                 until_phase=phase), [], phase)
 
+    def test_the_checked_in_profiles_are_byte_unchanged_by_the_optional_rank_count(self) -> None:
+        """Issue #316: `execution.ranks` is optional with a default of 1 so that no existing
+        profile's document — and so no sha256, and no Generate / Build / Validate key of its
+        target — moves. The digests are the ones at origin/main fcced0b6, before the key
+        existed; a profile edited on purpose updates its row here."""
+        expected = {
+            "cpp_gpu": "sha256:5d7efb15cbc7c40eb63a9c541bce3600e9c418e7f444813a8456ec13a7d4140b",
+            "fortran_cpu": "sha256:24e5b2f02d275829459b2d7e93d575370821347366936c6311b1d65262c3bfd4",
+        }
+        got = {tid: tp.load_target_profile(REPO_ROOT, tid).sha256 for tid in expected}
+        self.assertEqual(got, expected)
+        for tid in expected:
+            profile = tp.load_target_profile(REPO_ROOT, tid)
+            self.assertNotIn("ranks", profile.doc["execution"])
+            self.assertEqual(profile.ranks, 1)
+
     def test_the_hash_is_over_content_not_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
@@ -255,6 +271,19 @@ class LoaderTests(unittest.TestCase):
                 self.assertIn("threads_per_rank", reason)
                 self.assertIn("single-thread reference", reason)
 
+    def test_the_rank_count_is_optional_and_a_positive_integer(self) -> None:
+        """Issue #316: `execution.ranks` defaults to 1 and, when stated, is an integer >= 1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            self.assertEqual(tp.load_target_profile(repo.root, "t1").ranks, 1)
+            repo.write("t1", execution__ranks=4)
+            self.assertEqual(tp.load_target_profile(repo.root, "t1").ranks, 4)
+        for bad in (0, -2, True, 2.0, "4"):
+            with self.subTest(ranks=bad):
+                self.assertIn("execution.ranks: must be an integer >= 1",
+                              self._refusal(execution__ranks=bad))
+
     def test_a_bool_is_not_an_integer(self) -> None:
         """`True == 1` in Python, so an `isinstance(int)` check alone accepts it."""
         self.assertIn("target_profile_version", self._refusal(target_profile_version=True))
@@ -335,6 +364,69 @@ class LaunchGateTests(unittest.TestCase):
                     # reason is worded differently).
                     if dotted != "parallel__backend":
                         self.assertIn("is not a declared", violations[0])
+
+    def test_more_ranks_than_one_need_a_launcher_at_every_phase(self) -> None:
+        """Issue #316: without a launcher the binary runs as one process whatever the profile
+        says. Asked of every run, a Build-only one included: the count is part of the target."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            for backend in ("openmp", "none"):
+                profile = self._profile(repo, parallel__backend=backend, execution__ranks=2)
+                for phase in (None, "build", "validate"):
+                    with self.subTest(backend=backend, phase=phase):
+                        violations = tp.target_profile_violations(repo.root, profile,
+                                                                  until_phase=phase)
+                        self.assertIn(f"execution.ranks: 2 ranks need a launcher, and parallel "
+                                      f"backend {backend} declares none", violations)
+            # One rank needs none; a launcher backend takes any count.
+            self.assertEqual(tp.target_profile_violations(
+                repo.root, self._profile(repo, execution__ranks=1)), [])
+            for ranks in (1, 4):
+                with self.subTest(backend="mpi", ranks=ranks):
+                    self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                        repo, parallel__backend="mpi", execution__ranks=ranks)), [])
+
+    def test_a_compiler_pin_with_a_compiler_wrapper_is_refused(self) -> None:
+        """Issue #316: a backend that compiles through its compiler wrapper runs it in the
+        compiler's place, so a pinned `toolchain.compiler` names a compiler nothing runs. The
+        same pin without a wrapper is accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            violations = tp.target_profile_violations(repo.root, self._profile(
+                repo, parallel__backend="mpi", toolchain__compiler="gfortran"))
+            self.assertTrue(any(v.startswith("toolchain.compiler: gfortran is pinned, and "
+                                             "parallel backend mpi compiles through its "
+                                             "compiler wrapper") for v in violations),
+                            violations)
+            self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                repo, toolchain__compiler="gfortran")), [])
+
+    def test_a_compiler_wrapper_of_another_languages_compiler_is_refused(self) -> None:
+        """Issue #316: the wrapper runs one compiler (`WRAPPED_COMPILER`) and the build pins it
+        whatever the language, so a target whose language compiles with another is refused —
+        at every phase, since the build itself would be wrong. A language the wrapper does
+        compile passes."""
+        from tools.backends import registry
+        wrapped = registry.capability_module("parallel", "mpi", "compiler_wrapper").WRAPPED_COMPILER
+        cuda = {"language": "cuda_cpp", "standard": "c++17"}
+        cuda_compiler = registry.capability_module(
+            "language", "cuda_cpp", "bundle_facts").DEFAULT_COMPILER
+        self.assertNotEqual(wrapped, cuda_compiler)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            profile = self._profile(repo, parallel__backend="mpi",
+                                    toolchain__language="cuda_cpp",
+                                    toolchain__standard="c++17")
+            self.assertEqual(profile.toolchain["language"], cuda["language"])
+            for phase in (None, "build"):
+                with self.subTest(phase=phase):
+                    self.assertIn(
+                        f"parallel.backend: mpi's compiler wrapper runs {wrapped}, and "
+                        f"toolchain.language cuda_cpp compiles with {cuda_compiler}",
+                        tp.target_profile_violations(repo.root, profile, until_phase=phase))
+            fortran = tp.target_profile_violations(
+                repo.root, self._profile(repo, parallel__backend="mpi"))
+            self.assertFalse([v for v in fortran if "compiler wrapper runs" in v], fortran)
 
     def test_the_execution_half_is_asked_of_a_run_that_reaches_validate_only(self) -> None:
         """Issue #289: a class this repository cannot launch can be BUILT for, not run.

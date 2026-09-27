@@ -2225,7 +2225,14 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
                       "checks_abi", "source_reading", "signatures", "parallel_directives",
-                      "interface_header", "job_submit", "device_trace"}
+                      "interface_header", "job_submit", "device_trace", "launcher",
+                      "compiler_wrapper"}
+        # `launcher` and `compiler_wrapper` joined them with issue #316: `tools/host_execution.py`
+        # asks the record and `capability_module` for the launcher when it composes a launch
+        # shape and lists the executing machine's programs, and the site gate asks it; the
+        # conductor, the build-runtime server's syntax stage, the syntax-evidence certification,
+        # the build key and the launch probe ask `provides` / `capability_module` for the
+        # wrapper.
         # `device_trace` joined them with issue #307: `tools/host_execution.py` asks
         # `capability_module` for the parallel backend's trace when it composes a launch shape
         # and lists the programs the executing machine needs; the conductor asks the record
@@ -2585,6 +2592,16 @@ class RegistryConsistencyTests(unittest.TestCase):
         ("parallel", "device_trace"): (
             "EXECUTABLES", "profile_argv_prefix", "summary_argv", "summary_file",
             "kernel_instances", "SummaryUnreadable", "defined_kernels"),
+        # Issue #316: the launch seam's launcher half, the site gate and the launch probe.
+        ("parallel", "launcher"): ("EXECUTABLE", "EXECUTABLES", "RUNTIME_PROBE", "argv_prefix",
+                                   "LAUNCH_CANARY_RANKS", "LAUNCH_CANARY_SOURCE",
+                                   "LAUNCH_CANARY_FILENAME", "LAUNCH_CANARY_BUILD_ARGV",
+                                   "launch_canary_problem"),
+        # Issue #316: the build control file, the syntax stage and its certification, the build
+        # key and the launch probe.
+        ("parallel", "compiler_wrapper"): (
+            "COMPILER_WRAPPER", "WRAPPED_COMPILER", "SHOW_ARGV", "wrap", "BINDING_CANARY_SOURCE",
+            "BINDING_CANARY_FILENAME", "BINDING_CANARY_ARGV"),
     }
 
     def test_every_other_package_capability_carries_the_contract_its_readers_use(self) -> None:

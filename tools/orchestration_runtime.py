@@ -2338,7 +2338,15 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     (`READS_ARCHITECTURE`; the CUDA C++ rules compile with `-arch=`, issue #289 R4-b PR-4): the
     target id and the profile's other fields do not move when only the architecture does, and the
     source the build reads may be byte-identical across the change, so without it a build for
-    the old architecture was reused. A language whose rules do not read it keeps the key it had."""
+    the old architecture was reused. A language whose rules do not read it keeps the key it had.
+
+    A parallel backend that declares `compiler_wrapper` (issue #316) adds two members — the
+    wrapper, which is the program the build runs in the compiler's place, and the first line of
+    its `SHOW_ARGV` output (`parallel_runtime`, `None` when it cannot be read), which names the
+    runtime installation the binary links against — and asks `compiler_version` through the
+    wrapper, which runs the compiler it is configured with — neither the compiler's version nor the
+    target's fields change when only that installation does. A backend that declares none keeps
+    the key it had."""
     tc = target.toolchain
     server = _build_runtime_server_module()
     compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
@@ -2361,6 +2369,19 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
             backend_registry.capability_module(
                 "language", tc["language"], "control_file").READS_ARCHITECTURE:
         identity["architecture"] = (target.doc.get("hardware") or {}).get("architecture")
+    if backend_registry.provides("parallel", target.parallel_backend, "compiler_wrapper"):
+        from tools.host_execution import probe_first_line
+
+        wrapper = backend_registry.capability_module(
+            "parallel", target.parallel_backend, "compiler_wrapper")
+        identity["compiler_wrapper"] = str(wrapper.COMPILER_WRAPPER)
+        # The version of the compiler the WRAPPER runs, asked through it: a wrapper configured
+        # with a compiler other than the one `compiler` resolves to on PATH would otherwise key
+        # the build by the wrong compiler, and an in-place upgrade of the wrapped one would move
+        # neither this line's old value nor `parallel_runtime`.
+        identity["compiler_version"] = server._syntax_compiler_version(
+            tuple(str(a) for a in wrapper.wrap((compiler, "--version"))))
+        identity["parallel_runtime"] = probe_first_line(tuple(str(a) for a in wrapper.SHOW_ARGV))
     return identity
 
 

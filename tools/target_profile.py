@@ -75,7 +75,7 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "toolchain": (frozenset({"language", "standard", "build_system"}),
                   frozenset({"compiler", "linker"})),
     "parallel": (frozenset({"backend"}), frozenset()),
-    "execution": (frozenset({"threads_per_rank"}), frozenset()),
+    "execution": (frozenset({"threads_per_rank"}), frozenset({"ranks"})),
     "harness": (frozenset({"infrastructure_id", "version_constraint"}), frozenset()),
 }
 
@@ -114,6 +114,13 @@ class TargetProfile:
     @property
     def threads_per_rank(self) -> int:
         return int(self.doc["execution"]["threads_per_rank"])
+
+    @property
+    def ranks(self) -> int:
+        """The processes a run starts (`execution.ranks`, issue #316); 1 when the profile states
+        none, which is every profile written before it existed — so their documents, and the
+        sha256 taken over them, are unchanged."""
+        return int(self.doc["execution"].get("ranks", 1))
 
     @property
     def harness(self) -> dict[str, str]:
@@ -295,6 +302,10 @@ def _shape_violations(doc: Any) -> list[str]:
             out.append(f"execution.threads_per_rank: must be 1 until Validate.execute runs a "
                        f"separate single-thread reference for the quality check "
                        f"(phase_04_validate.md §4-2), got {threads}")
+    if isinstance(execution, dict) and "ranks" in execution:
+        ranks = execution["ranks"]
+        if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks < 1:
+            out.append(f"execution.ranks: must be an integer >= 1, got {ranks!r}")
     harness = doc.get("harness")
     if isinstance(harness, dict) and "version_constraint" in harness:
         constraint = harness["version_constraint"]
@@ -472,6 +483,11 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     profile was loaded (`_fill_default_architecture`); the operator pins one only when the build
     must target a particular device.
 
+    `execution.ranks` above 1 needs a parallel backend that declares `launcher` (issue #316):
+    without one the binary runs as one process whatever the profile says, and the run would be
+    recorded as the rank count nothing ran with. Asked of every run, since the count is part of
+    what the target is.
+
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
     requires the class to declare `execution` and the parallel backend to declare
@@ -499,6 +515,11 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
                 not facts.ARCHITECTURE_PATTERN.fullmatch(str(architecture)):
             out.append(f"hardware.architecture: {architecture!r} is not a {hardware_class} "
                        f"architecture (pattern {facts.ARCHITECTURE_PATTERN.pattern})")
+    if profile.ranks != 1 and backend_registry.unimplemented_reason(
+            "parallel", profile.parallel_backend) is None and not backend_registry.provides(
+            "parallel", profile.parallel_backend, "launcher"):
+        out.append(f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel "
+                   f"backend {profile.parallel_backend} declares none")
     if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:
         for axis, value, capability, where in (
                 ("hardware", hardware_class, "execution", "hardware.class"),
@@ -533,6 +554,27 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
         reason = backend_registry.unimplemented_reason("compiler", tc["compiler"])
         if reason is not None:
             out.append(f"toolchain.compiler: {reason}")
+        # The build and the syntax stage run the backend's compiler wrapper in the compiler's
+        # place (issue #316), so a pin would name a compiler nothing runs.
+        if backend_registry.provides("parallel", profile.parallel_backend, "compiler_wrapper"):
+            out.append(f"toolchain.compiler: {tc['compiler']} is pinned, and parallel backend "
+                       f"{profile.parallel_backend} compiles through its compiler wrapper; "
+                       f"remove the pin")
+    # A compiler wrapper runs ONE compiler (`WRAPPED_COMPILER`), and the build pins the control
+    # file's compiler variable to it whatever the language: a target whose language compiles
+    # with another would build its sources with the wrapper's compiler (issue #316).
+    if backend_registry.unimplemented_reason("parallel", profile.parallel_backend) is None and \
+            "compiler_wrapper" in backend_registry.get(
+                "parallel", profile.parallel_backend).backend_provides and \
+            backend_registry.provides("language", tc["language"], "bundle_facts"):
+        wrapped = str(backend_registry.capability_module(
+            "parallel", profile.parallel_backend, "compiler_wrapper").WRAPPED_COMPILER)
+        compiler = str(backend_registry.capability_module(
+            "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
+        if wrapped != compiler:
+            out.append(f"parallel.backend: {profile.parallel_backend}'s compiler wrapper runs "
+                       f"{wrapped}, and toolchain.language {tc['language']} compiles with "
+                       f"{compiler}")
     try:
         harness_nk = harness_node_key_for_target(repo_root, profile)
     except TargetProfileError as exc:

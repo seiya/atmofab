@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "spec/schema/targets/target_profile.schema.json",
   "title": "Target profile",
-  "description": "The whole-document shape of a target profile, `spec/targets/<target_id>.yaml`: the operator-authored description of what one run builds for — one value per target axis (hardware class, toolchain, parallel model, execution shape) and the harness a node built for that target runs over. Read by `tools/run_workflow.py --target` at launch, before anything runs; no leaf chooses or edits it. Every axis value is an opaque lowercase token that the host asks the backend registry about and never interprets itself. This schema is a DECLARATIVE COPY: the loader holds the same key sets as constants (`PROFILE_SHAPE`) and enforces them without this file, and `tools/tests/test_target_profile.py` pins the two copies together. The rules draft-07 cannot carry live in `tools/target_profile.py`: the loader requires `target_id` to equal the file stem (and refuses a non-integral `threads_per_rank` such as `2.0`, which draft-07's `integer` admits); the launch gate (`target_profile_violations`) requires the harness to resolve to an `infrastructure` spec in `spec/registry/spec_catalog.yaml` and each axis value to be one this repository implements.",
+  "description": "The whole-document shape of a target profile, `spec/targets/<target_id>.yaml`: the operator-authored description of what one run builds for — one value per target axis (hardware class, toolchain, parallel model, execution shape) and the harness a node built for that target runs over. Read by `tools/run_workflow.py --target` at launch, before anything runs; no leaf chooses or edits it. Every axis value is an opaque lowercase token that the host asks the backend registry about and never interprets itself. This schema is a DECLARATIVE COPY: the loader holds the same key sets as constants (`PROFILE_SHAPE`) and enforces them without this file, and `tools/tests/test_target_profile.py` pins the two copies together. The rules draft-07 cannot carry live in `tools/target_profile.py`: the loader requires `target_id` to equal the file stem (and refuses a non-integral `threads_per_rank` or `ranks` such as `2.0`, which draft-07's `integer` admits); the launch gate (`target_profile_violations`) requires the harness to resolve to an `infrastructure` spec in `spec/registry/spec_catalog.yaml` and each axis value to be one this repository implements.",
   "x-canonical-validator": "tools/target_profile.py:load_target_profile",
   "x-canonical-doc": "docs/GLOSSARY.md",
   "type": "object",
@@ -49,7 +49,8 @@
       "additionalProperties": false,
       "required": ["threads_per_rank"],
       "properties": {
-        "threads_per_rank": {"type": "integer", "minimum": 1, "maximum": 1}
+        "threads_per_rank": {"type": "integer", "minimum": 1, "maximum": 1},
+        "ranks": {"type": "integer", "minimum": 1, "description": "The processes a run starts; 1 when absent. Above 1 it needs a parallel backend that declares `launcher` (checked by the launch gate, `target_profile.hardware_violations`, not by this schema)."}
       }
     },
     "harness": {
@@ -72,7 +73,8 @@
     {"target_id": "Fortran-CPU", "why": "not a lowercase identifier"},
     {"toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make", "flags": "-O2"}, "why": "unknown key: the toolchain is closed"},
     {"execution": {"threads_per_rank": 0}, "why": "at least one thread"},
-    {"execution": {"threads_per_rank": 4}, "why": "Validate.execute's run is the single-thread reference of the quality check (phase_04_validate.md 4-2) until a separate serial reference run exists"}
+    {"execution": {"threads_per_rank": 4}, "why": "Validate.execute's run is the single-thread reference of the quality check (phase_04_validate.md 4-2) until a separate serial reference run exists"},
+    {"execution": {"threads_per_rank": 1, "ranks": 0}, "why": "at least one rank"}
   ],
-  "x-forbidden-examples-note": "The schema rejects all four on its own. The loader additionally rejects a `target_id` that is not the file stem; the launch gate (`target_profile_violations`) rejects a harness the catalog does not resolve."
+  "x-forbidden-examples-note": "The schema rejects all five on its own. The launch gate additionally rejects `ranks` above 1 for a parallel backend that declares no `launcher`. The loader additionally rejects a `target_id` that is not the file stem; the launch gate (`target_profile_violations`) rejects a harness the catalog does not resolve."
 }

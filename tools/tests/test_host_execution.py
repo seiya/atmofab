@@ -202,6 +202,119 @@ class DeviceTraceLaunchTests(unittest.TestCase):
         self.assertEqual((shape.argv_prefix, shape.trace), ((), None))
 
 
+class LauncherLaunchTests(unittest.TestCase):
+    """The launcher half of the launch shape (issue #316): a parallel backend that declares
+    `launcher` starts the binary's ranks with the profile's `execution.ranks`, outermost in the
+    prefix; its programs join the executing machine's; a launcher target runs at `local` only;
+    more ranks than one need a launcher."""
+
+    MPI4 = profile_with(parallel={"backend": "mpi"},
+                        execution={"threads_per_rank": 1, "ranks": 4})
+
+    @staticmethod
+    def _site(site_id: str, *executes: str):
+        from tools.execution_sites import Site
+
+        if site_id == he.LOCAL_SITE:
+            return Site(site_id, tuple(executes))
+        return Site(site_id, tuple(executes), host="box", workdir="/w")
+
+    def test_the_prefix_is_the_launchers_with_the_profiles_rank_count(self) -> None:
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        for ranks in (1, 3, 4):
+            with self.subTest(ranks=ranks):
+                profile = profile_with(parallel={"backend": "mpi"},
+                                       execution={"threads_per_rank": 1, "ranks": ranks})
+                shape = he.launch_shape(profile)
+                self.assertEqual(shape.argv_prefix, tuple(launcher.argv_prefix(ranks)))
+                self.assertEqual(he.launch_argv_prefix("mpi", ranks), shape.argv_prefix)
+                self.assertEqual(shape.runtime_probe, tuple(launcher.RUNTIME_PROBE))
+                self.assertIsNone(shape.trace)
+                self.assertEqual(shape.env, {})
+        # A profile stating no count is one rank — under the launcher all the same.
+        one = profile_with(parallel={"backend": "mpi"})
+        self.assertNotIn("ranks", one.doc["execution"])
+        self.assertEqual(he.launch_shape(one).argv_prefix, tuple(launcher.argv_prefix(1)))
+
+    def test_a_backend_without_a_launcher_has_no_prefix_and_no_runtime_probe(self) -> None:
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                shape = he.launch_shape(profile_with(parallel={"backend": backend}))
+                self.assertEqual((shape.argv_prefix, shape.runtime_probe), ((), None))
+                self.assertEqual(he.launch_argv_prefix(backend, 1), ())
+                self.assertFalse(he.declares_launcher(backend))
+        self.assertTrue(he.declares_launcher("mpi"))
+        self.assertFalse(he.declares_launcher("zz_no_such_model"))
+
+    def test_the_launcher_goes_outside_a_device_trace(self) -> None:
+        """No backend declares both today; the order is fixed so the day one does, the trace
+        runs per rank under the launcher rather than tracing the launcher itself."""
+        record = registry.get("parallel", "mpi")
+        both = record._replace(backend_provides=record.backend_provides | {"device_trace"})
+        fake_trace = types.SimpleNamespace(
+            profile_argv_prefix=lambda stem: ("zz-trace", stem), summary_argv=lambda stem: (),
+            summary_file=lambda stem: stem, EXECUTABLES=("zz-trace",))
+        real = registry.capability_module
+
+        def capability_module(axis, backend_id, capability):
+            if capability == "device_trace":
+                return fake_trace
+            return real(axis, backend_id, capability)
+
+        with mock.patch.dict(registry._BACKENDS, {("parallel", "mpi"): both}), \
+                mock.patch.object(registry, "capability_module", side_effect=capability_module):
+            prefix = he.launch_argv_prefix("mpi", 2)
+            shape = he.launch_shape(profile_with(parallel={"backend": "mpi"},
+                                                 execution={"threads_per_rank": 1, "ranks": 2}))
+            executables = he.execution_executables("mpi")
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        self.assertEqual(prefix, (*launcher.argv_prefix(2), "zz-trace", he.KERNEL_TRACE_STEM))
+        self.assertEqual(shape.argv_prefix, prefix)
+        self.assertEqual(executables, (*launcher.EXECUTABLES, "zz-trace"))
+
+    def test_the_launchers_programs_are_the_executing_machines(self) -> None:
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        self.assertEqual(he.execution_executables("mpi"), tuple(launcher.EXECUTABLES))
+        self.assertTrue(he.execution_executables("mpi"))
+
+    def test_a_launcher_target_runs_at_local_only(self) -> None:
+        """The backstop of the site gate (`execution_sites.site_violations`): a remote site is
+        refused whatever it executes and however many ranks the profile runs."""
+        for profile in (self.MPI4, profile_with(parallel={"backend": "mpi"})):
+            with self.subTest(ranks=profile.ranks):
+                with self.assertRaises(he.LaunchUnavailable) as ctx:
+                    he.launch_shape(profile, self._site("cluster", "cpu"))
+                self.assertIn("runs its binary under a launcher", str(ctx.exception))
+                self.assertIn("site cluster", str(ctx.exception))
+        # The local site, named or not, runs it.
+        self.assertEqual(he.launch_shape(self.MPI4, self._site(he.LOCAL_SITE, "cpu")).site,
+                         he.LOCAL_SITE)
+        self.assertEqual(he.launch_shape(self.MPI4).site, he.LOCAL_SITE)
+
+    def test_more_ranks_than_one_need_a_launcher(self) -> None:
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                profile = profile_with(parallel={"backend": backend},
+                                       execution={"threads_per_rank": 1, "ranks": 2})
+                with self.assertRaises(he.LaunchUnavailable) as ctx:
+                    he.launch_shape(profile)
+                self.assertIn("execution.ranks: 2 ranks need a launcher", str(ctx.exception))
+
+    def test_perf_parallelism_states_the_profiles_rank_count(self) -> None:
+        cpu = profile_with(parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4})
+        self.assertEqual(he.perf_parallelism(cpu.doc), (4, 1, 0))
+        # A class with `perf_facts` answers the per-rank half; the count is still the profile's.
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"},
+                           execution={"threads_per_rank": 1, "ranks": 3})
+        facts = registry.capability_module("hardware", "gpu", "perf_facts")
+        _ranks, per_rank, devices = facts.parallelism(1)
+        self.assertEqual(he.perf_parallelism(gpu.doc), (3, per_rank, devices))
+        # And a profile stating none is one rank, as every profile before issue #316.
+        self.assertEqual(he.perf_parallelism(FORTRAN_CPU.doc)[0], 1)
+
+
 class LocalPlatformRecordTests(unittest.TestCase):
     """`local_platform_record` (issue #293; `workflow_conductor._host_platform_record` until
     then): every fact that cannot be read is `None`, never a refusal."""
@@ -233,6 +346,18 @@ class LocalPlatformRecordTests(unittest.TestCase):
                       ("zz-no-such-program-anywhere",)):
             with self.subTest(probe=probe):
                 self.assertIsNone(he.local_platform_record(probe)["gpu"])
+
+    def test_a_runtime_probe_adds_the_parallel_runtime_line(self) -> None:
+        import sys
+
+        ok = (sys.executable, "-c", "print('Runtime X 4.1'); print('more')")
+        record = he.local_platform_record(runtime_probe=ok)
+        self.assertEqual(record["parallel_runtime"], "Runtime X 4.1")
+        self.assertIsNone(record["gpu"])
+        failing = (sys.executable, "-c", "raise SystemExit(1)")
+        self.assertIsNone(he.local_platform_record(runtime_probe=failing)["parallel_runtime"])
+        # No probe, no key: a launch without a launcher records what it always recorded.
+        self.assertNotIn("parallel_runtime", he.local_platform_record())
 
     def test_a_probe_that_hangs_records_none(self) -> None:
         import subprocess

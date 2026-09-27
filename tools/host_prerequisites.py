@@ -34,6 +34,13 @@ member. One LIMIT, stated rather than implied:
   `MANDATORY_SYNTAX_COMPILER` whatever the profile says, and a skipped mandatory stage is a
   `Generate.gate` fail_closed rather than a silent pass.
 
+A parallel backend that declares `compiler_wrapper` (issue #316) adds its wrapper: the build
+control file's compiler variable and the syntax stage's `argv[0]` are that program, so it is
+needed from the first `Generate.gate`. `parallel_toolchain_problems` then asks the two questions
+a resolved wrapper can still fail: whether it compiles the backend's binding canary, and — for a
+run that starts the binary under the backend's launcher with more than one rank, when the
+launcher resolves — whether a program it builds, started under that launcher, runs as one run.
+
 The mid-run gates stay as the backstop. This is an earlier detector, not a replacement.
 """
 
@@ -166,13 +173,147 @@ def required_host_executables(
     _require_implemented("compiler", compiler)
     add("compiler", compiler, server.syntax_compiler_executable(compiler))
 
+    # The program that stands in for the compiler at build and at the syntax stage (issue #316).
+    parallel = selection.get("parallel")
+    wrapper = _parallel_capability_module(parallel, "compiler_wrapper") if parallel else None
+    if wrapper is not None:
+        add("parallel", parallel, str(wrapper.COMPILER_WRAPPER))
+
     return tuple(found)
+
+
+def _parallel_capability_module(backend_id: str, capability: str):
+    """The package module of `backend_id`'s `capability`, None when its record does not declare
+    it in a package."""
+    from tools.backends import registry as backend_registry
+
+    _require_implemented("parallel", backend_id)
+    if capability not in backend_registry.get("parallel", backend_id).backend_provides:
+        return None
+    return backend_registry.capability_module("parallel", backend_id, capability)
+
+
+#: Seconds each canary command (a compile, a build, a launch) may take.
+BINDING_CANARY_TIMEOUT_SEC = 120
+
+
+#: How much of a refusing launcher's message a problem carries: its HEAD, which is where a
+#: launcher states why it refused (Open MPI 4.1.2 opens a 1398-byte slot refusal with "There are
+#: not enough slots available in the system to satisfy the 2 slots" and closes it with advice
+#: about options; its last 600 characters held none of the diagnosis, measured round 3).
+LAUNCHER_MESSAGE_HEAD_CHARS = 1500
+
+
+def _head(text: str) -> str:
+    """`text` stripped and cut to `LAUNCHER_MESSAGE_HEAD_CHARS`, marking a cut."""
+    text = text.strip()
+    if len(text) <= LAUNCHER_MESSAGE_HEAD_CHARS:
+        return text
+    return text[:LAUNCHER_MESSAGE_HEAD_CHARS] + " [...]"
+
+
+def _canary_run(argv: list[str], cwd: str) -> subprocess.CompletedProcess | str:
+    """Run one canary command; its completed process, or why it could not run."""
+    try:
+        return subprocess.run(argv, text=True, capture_output=True, check=False,
+                              timeout=BINDING_CANARY_TIMEOUT_SEC, cwd=cwd,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+
+
+def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
+                                ranks: int) -> list[str]:
+    """What is wrong with the parallel backend's compiler wrapper this host resolves, beyond its
+    presence (`missing_host_executables` asks that first): empty for a backend that declares no
+    `compiler_wrapper`, and for a wrapper this host does not resolve. Two canaries, both the
+    backend's, run in a scratch directory:
+
+    * The wrapper must compile `BINDING_CANARY_SOURCE` syntax-only (`BINDING_CANARY_ARGV`): an
+      installation whose wrapper cannot compile the language binding this backend's harness
+      uses fails every node's syntax stage, the first of them after `Compile` and
+      `Generate.generate` have been billed.
+    * When the run LAUNCHES the binary (`launches`: it, or a dependency it drives, reaches
+      `Validate`) with more than one rank, and the backend declares `launcher` and this host
+      resolves it, a program built with the wrapper (`LAUNCH_CANARY_SOURCE`,
+      `LAUNCH_CANARY_BUILD_ARGV`) and started under the launcher with `LAUNCH_CANARY_RANKS`
+      must report ONE run of that many processes (`launch_canary_problem`). A run that stops
+      before `Validate` starts nothing under the launcher, and a one-rank run is one process
+      whichever installation starts it, so neither is asked: a launcher that cannot start two
+      processes here must not refuse them. A launcher of another installation starts processes that each
+      run alone and exit 0, and the node's own run would show it only after a billed Build.
+      This asks the pair what it DOES: where the two programs sit says nothing, since one
+      directory can hold two installations' programs (Debian's alternatives switch the
+      launcher and the wrapper separately, both in `/usr/bin`). Asked only when the binding
+      canary passed, since the launch canary is written in that binding.
+    """
+    parallel = selection.get("parallel")
+    if not parallel:
+        return []
+    wrapper = _parallel_capability_module(parallel, "compiler_wrapper")
+    if wrapper is None:
+        return []
+    wrapper_exe = str(wrapper.COMPILER_WRAPPER)
+    wrapper_path = shutil.which(wrapper_exe)
+    if wrapper_path is None:
+        return []
+    launcher = _parallel_capability_module(parallel, "launcher")
+    launcher_path = shutil.which(str(launcher.EXECUTABLE)) if launcher is not None else None
+    with tempfile.TemporaryDirectory(prefix="atmofab_parallel_canary_") as scratch:
+        source = Path(scratch) / str(wrapper.BINDING_CANARY_FILENAME)
+        source.write_text(str(wrapper.BINDING_CANARY_SOURCE), encoding="utf-8")
+        completed = _canary_run(
+            [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source))
+                            for a in wrapper.BINDING_CANARY_ARGV)], scratch)
+        if isinstance(completed, str):
+            return [(f"parallel/{parallel}: the binding canary could not be compiled with "
+                    f"{wrapper_path} ({completed})")]
+        if completed.returncode != 0:
+            tail = (completed.stderr or completed.stdout or "").strip()[-400:]
+            return [(f"parallel/{parallel}: {wrapper_path} does not compile the language binding "
+                    f"this backend's harness uses (rc={completed.returncode}: {tail}); resolve "
+                    f"the wrapper and the launcher to a {parallel} installation that provides "
+                    f"it for the target's compiler")]
+        if launcher is None or launcher_path is None or not launches or ranks <= 1:
+            return []
+        source = Path(scratch) / str(launcher.LAUNCH_CANARY_FILENAME)
+        source.write_text(str(launcher.LAUNCH_CANARY_SOURCE), encoding="utf-8")
+        exe = Path(scratch) / "launch_canary"
+        built = _canary_run(
+            [wrapper_exe, *(str(a).format(scratch=scratch, source=str(source), exe=str(exe))
+                            for a in launcher.LAUNCH_CANARY_BUILD_ARGV)], scratch)
+        if isinstance(built, str) or built.returncode != 0:
+            detail = built if isinstance(built, str) else (
+                f"rc={built.returncode}: "
+                f"{(built.stderr or built.stdout or '').strip()[-400:]}")
+            return [(f"parallel/{parallel}: {wrapper_path} does not build the launch canary "
+                    f"({detail})")]
+        canary_ranks = int(launcher.LAUNCH_CANARY_RANKS)
+        launched = _canary_run([*launcher.argv_prefix(canary_ranks), str(exe)], scratch)
+        started = (f"a program built with {wrapper_path} and started under {launcher_path} "
+                   f"with {canary_ranks} processes")
+        # A launch that did not complete is the launcher's own refusal (too few slots, a user
+        # it will not run as, a hang): its message is the diagnosis, and it says nothing about
+        # the pairing. Only a launch that completed and reported the wrong run sizes does.
+        if isinstance(launched, str) or launched.returncode != 0:
+            detail = launched if isinstance(launched, str) else (
+                f"exit {launched.returncode}: "
+                f"{_head(launched.stderr or launched.stdout or '')}")
+            return [(f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
+                    f"{ranks} ranks is started the same way at Validate.execute")]
+        problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "")
+        if problem is not None:
+            return [(f"parallel/{parallel}: {started} did not run as one run: {problem}. The "
+                    f"launcher and the compiler wrapper must come from one {parallel} "
+                    f"installation")]
+    return []
 
 
 def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:
     """The programs the machine that EXECUTES the binary needs beyond the binary itself, for the
-    resolved selection: the parallel backend's device trace's (`host_execution.
-    execution_executables`, issue #307), none for a backend that declares no trace. Asked of a
+    resolved selection: the parallel backend's launcher's and device trace's
+    (`host_execution.execution_executables`; issues #316, #307), none for a backend that
+    declares neither. Asked of a
     remote site through `required_site_executables`, and of this host when the local site
     executes the run (`run_workflow._sites_rejection`)."""
     from tools.host_execution import execution_executables as _for_backend

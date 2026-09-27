@@ -96,6 +96,10 @@ _DECLARED_ENVIRONMENT_SKIPS = {
     "the installed linter is outside the measured version range":
         "a linter is installed, but not a build the declared rule set was measured on, so it "
         "must not decide a verdict (the launch probe refuses it for the same reason)",
+    "no MPI installation whose wrapper compiles the binding canary":
+        "no MPI compiler wrapper and launcher of one installation, able to compile the mpi "
+        "backend's binding canary with the target's compiler, is on this host's PATH or in "
+        "/usr/bin; the CI image installs none (issue #316)",
     "bwrap / user namespaces not available":
         "the sandbox runtime is absent or unprivileged user namespaces are disabled",
     "backend CLI not installed on this host":

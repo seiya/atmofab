@@ -1365,6 +1365,21 @@ def syntax_language(adapter: Any) -> Any:
         "language", adapter.LANGUAGE, "syntax_promotions")
 
 
+def syntax_compiler_wrapper(parallel_backend: str | None, compiler: str) -> Any:
+    """The `compiler_wrapper` module a syntax stage of `compiler` runs through for a target
+    built for `parallel_backend`, None when the backend declares no wrapper or the wrapper runs
+    another compiler (issue #316). An unknown backend declares nothing, as the registry's
+    `provides` answers it; the launch gate is what refuses one."""
+    if not parallel_backend:
+        return None
+    registry = _backend_registry()
+    backend = parallel_backend.strip().lower()
+    if not registry.provides("parallel", backend, "compiler_wrapper"):
+        return None
+    wrapper = registry.capability_module("parallel", backend, "compiler_wrapper")
+    return wrapper if str(wrapper.WRAPPED_COMPILER) == compiler else None
+
+
 def syntax_compiler_executable(compiler: str) -> str:
     """The host executable a registered syntax-check adapter launches.
 
@@ -1412,6 +1427,12 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     `compiler` and `std` are REQUIRED: both are the caller's target facts (the language's
     mandatory syntax compiler, the profile's `toolchain.standard`), and a default here would
     be one language's spelling in a tool that serves every language.
+
+    `parallel_backend` (optional, the profile's `parallel.backend`) names a backend whose
+    `compiler_wrapper` stands in for the compiler (issue #316): when it declares one and this
+    stage's `compiler` is the one the wrapper runs (`WRAPPED_COMPILER`), the command's `argv[0]`
+    is the wrapper, so the model files of the backend's runtime are found. Replacing the program
+    that runs is decided HERE, from the registry, never from a caller-supplied program name.
     """
     project_dir = str(args.get("project_dir", "."))
     _refuse_retired_arguments(args, "run_syntax_check")
@@ -1439,8 +1460,13 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     architecture = args.get("architecture")
     if architecture is not None and not isinstance(architecture, str):
         raise ValueError("architecture must be a string")
+    parallel_backend = args.get("parallel_backend")
+    if parallel_backend is not None and (
+            not isinstance(parallel_backend, str) or not parallel_backend.strip()):
+        raise ValueError("parallel_backend must be a non-empty string")
 
     adapter = syntax_adapter(compiler)
+    wrapper = syntax_compiler_wrapper(parallel_backend, compiler)
     language = syntax_language(adapter)
 
     sources = args.get("sources")
@@ -1465,7 +1491,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check",
                              suffixes=suffixes, language=str(adapter.LANGUAGE))
 
-    executable = str(adapter.EXECUTABLE)
+    executable = str(adapter.EXECUTABLE) if wrapper is None else str(wrapper.COMPILER_WRAPPER)
     if shutil.which(executable) is None:
         return {
             "ok": True,
@@ -1496,6 +1522,8 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         standard=std, scratch_dir=_SYNTAX_SCRATCH_DIR_NAME, openmp=openmp,
         promotions=tuple(language.PROMOTED_WARNINGS), architecture=architecture,
         sources=ordered_sources)
+    if wrapper is not None:
+        command = list(wrapper.wrap(command))
     result = _run_command(
         command=command,
         cwd=project_dir,
@@ -1508,7 +1536,11 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     )
     return result | {
         "compiler": compiler,
-        "compiler_version": _syntax_compiler_version(tuple(adapter.VERSION_ARGV)),
+        # Through the wrapper when the stage ran through it: the wrapper runs the compiler IT is
+        # configured with, which need not be the one this name resolves to on PATH.
+        "compiler_version": _syntax_compiler_version(
+            tuple(adapter.VERSION_ARGV) if wrapper is None
+            else tuple(wrapper.wrap(adapter.VERSION_ARGV))),
         "std": std,
         "openmp": openmp,
         "skipped": False,
@@ -1707,6 +1739,13 @@ TOOLS: dict[str, Tool] = {
                         "The target profile's hardware.architecture. An adapter whose "
                         "compiler takes a device architecture passes it; one that has none "
                         "accepts it and does not read it."
+                    ),
+                },
+                "parallel_backend": {
+                    "type": "string",
+                    "description": (
+                        "The target profile's parallel.backend. When its record declares "
+                        "compiler_wrapper for this compiler, the stage runs through the wrapper."
                     ),
                 },
                 "sources": {

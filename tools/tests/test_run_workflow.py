@@ -3349,6 +3349,44 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(closure_kwargs["rederive"], frozenset({"build"}))
 
+    def test_a_closure_resume_is_asked_the_launch_half_of_the_toolchain_probe(self) -> None:
+        """Issue #316 round 3: the resume of a `--with-deps` run takes no `--with-deps`, and the
+        closure driver still takes every member to Validate unless the closure stops at
+        Compile — so the startup probe must be told the run launches, as the fresh
+        `--with-deps` run it resumes was."""
+        from tools import host_prerequisites
+        for closure_until, expected in (("Build", True), ("Validate", True),
+                                        ("Compile", False)):
+            seen: list[bool] = []
+
+            def problems(selection, *, launches, ranks, seen=seen):
+                seen.append(launches)
+                return []
+
+            with self.subTest(closure_until=closure_until), \
+                    tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                self._seed_closure_target_specs(repo_root)
+                self._seed_resumable_orchestration(
+                    repo_root, "orch_target", spec_ref="spec/component/c",
+                    until_phase=closure_until, mode="dev", backend="claude",
+                    source_dependency_ref="spec/component/c/deps.yaml",
+                    invocation={
+                        "closure_id": "orch_target",
+                        "closure_target_spec_ref": "spec/problem/a",
+                        "closure_until_phase": closure_until,
+                    },
+                )
+                with mock.patch.object(host_prerequisites, "parallel_toolchain_problems",
+                                       problems):
+                    code, closure_kwargs, _ = self._run_main_with_closure_spy(
+                        ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"])
+                self.assertEqual(code, 0)
+                self.assertIsNotNone(closure_kwargs, "should enter the closure driver")
+                self.assertEqual(closure_kwargs["until_phase"], closure_until)
+                self.assertEqual(seen, [expected])
+
     def test_resume_without_closure_uses_single_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -4256,6 +4294,63 @@ class RunWorkflowTests(unittest.TestCase):
         """Sanity check of the same kind as the CLI-tool one below: if this fails, the machine
         running the suite could not run a workflow."""
         self.assertEqual(run_workflow._check_required_host_tools(_TP_RW), [])
+
+    def test_main_fails_fast_when_the_parallel_toolchain_is_unusable(self) -> None:
+        """Issue #316: a compiler wrapper that resolves but cannot build the backend's nodes (or
+        a launcher of another installation) is refused at startup, before any orchestration
+        state is touched — asked with the run's own probe selection, whose `parallel` member is
+        the target's backend."""
+        from tools import host_prerequisites
+
+        seen: list[tuple[dict[str, str], bool, int]] = []
+
+        def problems(selection, *, launches, ranks):
+            seen.append((dict(selection), launches, ranks))
+            return ["parallel/zz: the wrapper does not compile the binding"]
+
+        original_problems = host_prerequisites.parallel_toolchain_problems
+        original_runtime = run_workflow._runtime_command
+        host_prerequisites.parallel_toolchain_problems = problems  # type: ignore[assignment]
+        run_workflow._runtime_command = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+            AssertionError("orchestration_runtime must not be invoked"))
+        try:
+            buf = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
+                code = run_workflow.main([
+                    *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
+                    "--target", _TARGET_ID])
+            # The same launch ending at Validate starts the binary: asked the launch half.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Validate"
+                run_workflow.main([*argv, "--stdout-format", "jsonl", "--target", _TARGET_ID])
+            # A Build that drives its dependencies (`--with-deps`) takes them to Validate.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Build"
+                run_workflow.main([*argv, "--with-deps", "--stdout-format", "jsonl",
+                                   "--target", _TARGET_ID])
+            # And a Build that does not, starts nothing.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Build"
+                run_workflow.main([*argv, "--stdout-format", "jsonl", "--target", _TARGET_ID])
+        finally:
+            host_prerequisites.parallel_toolchain_problems = original_problems  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("reason"), "parallel_toolchain_unusable")
+        self.assertEqual(payload.get("problems"),
+                         ["parallel/zz: the wrapper does not compile the binding"])
+        self.assertIn("the wrapper does not compile the binding", payload.get("detail", ""))
+        self.assertEqual(seen[0][0]["parallel"], _TP_RW.parallel_backend)
+        # A run that stops at Compile or Build starts nothing; one that ends at Validate, or a
+        # Build that drives its dependencies there, does. The rank count is the profile's.
+        self.assertEqual([entry[1:] for entry in seen],
+                         [(False, _TP_RW.ranks), (True, _TP_RW.ranks), (True, _TP_RW.ranks),
+                          (False, _TP_RW.ranks)])
 
     def test_main_fails_fast_when_a_required_host_tool_is_of_an_unmeasured_version(self) -> None:
         """The VERSION half of the same family (issue #111).
@@ -7993,7 +8088,8 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # `target_changed_on_resume` — one site, the reason carried by the exception).
         # 16 -> 17: issue #293's execution-site refusal — one site, the event built by
         # `_sites_rejection`, whose docstring lists the reasons it carries.
-        self.assertEqual(len(helper_calls), 17)
+        # 17 -> 18: issue #316's parallel-toolchain refusal (`parallel_toolchain_unusable`).
+        self.assertEqual(len(helper_calls), 18)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -10185,6 +10281,48 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["missing"], ["srun"])
         self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
         self.assertEqual(calls, [])
+
+    def test_a_launcher_target_at_a_remote_site_is_told_to_run_at_local(self) -> None:
+        """Issue #316: the refusal's remedy is the one an operator acts on, so it must name the
+        site that CAN run a launcher target — `local` — not only "a site that executes the
+        class", which this remote site does. Asked before any probe reaches the site."""
+        from tools.tests.target_fixtures import profile_with
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        mpi = profile_with(fixture, parallel={"backend": "mpi"})
+        self._remote()
+        with self._env():
+            refused = run_workflow._sites_rejection(self.repo_root, mpi, "validate")
+        self.assertEqual(refused["reason"], "target_profile_invalid")
+        self.assertIn("runs its binary under a launcher", refused["detail"])
+        self.assertIn("`local` for a target whose parallel backend runs a launcher",
+                      refused["detail"])
+        self.assertEqual(self._probes(), [])
+
+    def test_the_local_site_refuses_more_ranks_than_this_process_may_run_on(self) -> None:
+        """Issue #316: one rank per CPU this process may be scheduled on. The count is read from
+        the affinity mask (the machine may have more CPUs than the process is allowed). A
+        backend with no launcher program keeps this row off this host's PATH; the rank count is
+        what is under test, and the launch gate's own refusal of such a profile is
+        `test_target_profile.py`'s."""
+        from tools.execution_sites import SitesConfig
+        from tools.tests.target_fixtures import profile_with
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        three = profile_with(fixture, parallel={"backend": "none"},
+                             execution={"threads_per_rank": 1, "ranks": 3})
+        with mock.patch.object(run_workflow.os, "sched_getaffinity", return_value={0, 1}):
+            refused = run_workflow._sites_rejection(self.repo_root, three, "validate")
+            self.assertIsInstance(run_workflow._sites_rejection(
+                self.repo_root, profile_with(three, execution={"threads_per_rank": 1,
+                                                               "ranks": 2}),
+                "validate"), SitesConfig)
+            # A run that stops before Validate starts no rank.
+            self.assertIsInstance(run_workflow._sites_rejection(
+                self.repo_root, three, "build"), SitesConfig)
+        self.assertEqual(refused["reason"], "site_unfit_for_ranks")
+        self.assertEqual((refused["ranks"], refused["available_cpus"]), (3, 2))
+        self.assertIn("runs 3 ranks", refused["detail"])
 
     def test_a_scheduler_site_is_not_asked_for_what_the_binary_runs_under(self) -> None:
         """Issue #307 PR-4: a batch scheduler runs the binary on another node, and the program a

@@ -12,6 +12,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -612,6 +613,211 @@ class NeutralCoreTests(unittest.TestCase):
             name: rx.findall(source) for name, rx in _COMPILED.items() if rx.search(source)
         }
         self.assertEqual(hits, {})
+
+
+class ParallelToolchainTests(unittest.TestCase):
+    """Issue #316: a parallel backend that declares `compiler_wrapper` adds its wrapper to what
+    the host must have, and `parallel_toolchain_problems` asks what a resolved wrapper can still
+    get wrong. Driven with real programs on a scratch PATH — the probe resolves and RUNS them, so
+    a mocked `which` would say nothing about what production does on a host without them."""
+
+    _MPI: ClassVar[dict[str, str]] = {**_SELECTION, "parallel": "mpi"}
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.wrapper = backend_registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        self.launcher = backend_registry.capability_module("parallel", "mpi", "launcher")
+
+    def _program(self, directory: str, name: str, body: str) -> Path:
+        path = self.root / directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def _path(self, *directories: str):
+        # Only the scratch directories: this host's own PATH may carry a real launcher or
+        # wrapper (the development machine does), which would answer for the fake one.
+        return mock.patch.dict("os.environ", {"PATH": ":".join(
+            str(self.root / d) for d in directories)})
+
+    def test_the_wrapper_is_a_host_requirement_of_a_wrapper_backend_only(self) -> None:
+        required = hp.required_host_executables(self._MPI)
+        self.assertIn(hp.HostExecutable("parallel", "mpi", self.wrapper.COMPILER_WRAPPER),
+                      required)
+        self.assertEqual([i for i in hp.required_host_executables(_SELECTION)
+                          if i.axis == "parallel"], [])
+
+    def test_a_backend_without_a_wrapper_has_no_problems_and_runs_nothing(self) -> None:
+        import subprocess
+
+        with mock.patch.object(subprocess, "run") as run:
+            self.assertEqual(hp.parallel_toolchain_problems(_SELECTION, launches=True, ranks=2), [])
+        run.assert_not_called()
+
+    def test_an_unresolved_wrapper_is_left_to_the_missing_tools_refusal(self) -> None:
+        with self._path("empty"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2), [])
+
+    def _wrapper(self, directory: str = "inst", *, syntax_rc: int = 0, log: Path | None = None
+                 ) -> None:
+        """A wrapper that answers the binding canary with `syntax_rc` and "builds" the launch
+        canary as a script printing the run size its launcher hands it (`FAKE_SIZE`)."""
+        record = f'printf "%s\\n" "$@" >> {log}; ' if log else ""
+        self._program(directory, self.wrapper.COMPILER_WRAPPER, (
+            f'{record}case "$1" in -fsyntax-only) exit {syntax_rc};; esac; '
+            f'printf \'#!/bin/sh\\necho "atmofab-mpi-size $FAKE_SIZE"\\n\' > "$4"; '
+            '/bin/chmod +x "$4"'))
+
+    def _launcher(self, directory: str, size: int, rc: int = 0) -> None:
+        """A launcher `-n N exe` that runs the program N times, each told the run has `size`
+        processes."""
+        self._program(directory, self.launcher.EXECUTABLE, (
+            f'n=$2; exe=$3; i=0; while [ $i -lt $n ]; do FAKE_SIZE={size} "$exe"; '
+            f'i=$((i+1)); done; exit {rc}'))
+
+    def test_one_installation_passes_and_is_asked_the_backends_own_argv(self) -> None:
+        """The wrapper is handed the binding canary's argv over the canary written into a
+        scratch directory, then the launch canary's build argv; the launcher is handed the
+        backend's prefix for `LAUNCH_CANARY_RANKS` — all recorded by the programs themselves."""
+        log = self.root / "argv.log"
+        self._wrapper(log=log)
+        ranks = self.launcher.LAUNCH_CANARY_RANKS
+        self._launcher("inst", ranks)
+        with self._path("inst"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2), [])
+        argv = log.read_text(encoding="utf-8").splitlines()
+        syntax = argv[:len(self.wrapper.BINDING_CANARY_ARGV)]
+        build = argv[len(syntax):]
+        self.assertEqual(syntax[:2], ["-fsyntax-only", "-J"])
+        self.assertEqual(Path(syntax[3]).name, self.wrapper.BINDING_CANARY_FILENAME)
+        self.assertEqual(Path(syntax[3]).parent, Path(syntax[2]))
+        self.assertEqual(len(build), len(self.launcher.LAUNCH_CANARY_BUILD_ARGV))
+        self.assertEqual(Path(build[-1]).name, self.launcher.LAUNCH_CANARY_FILENAME)
+        self.assertEqual(build[2], "-o")
+
+    def test_a_wrapper_that_does_not_compile_the_canary_is_refused_with_its_output(self) -> None:
+        self._program("inst", self.wrapper.COMPILER_WRAPPER,
+                      'echo "Fatal Error: Reading module mpi_f08.mod: Unexpected EOF" >&2; exit 1')
+        self._launcher("inst", self.launcher.LAUNCH_CANARY_RANKS)
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("does not compile the language binding", problems[0])
+        self.assertIn("rc=1", problems[0])
+        self.assertIn("Unexpected EOF", problems[0])
+
+    def test_a_launcher_whose_processes_do_not_form_one_run_is_refused(self) -> None:
+        """Each process reporting a run of one — the shape a launcher of another installation
+        gives, exit 0 — is refused WHEREVER the two programs sit: in one directory (as
+        Debian's alternatives place two installations) as well as in two."""
+        ranks = self.launcher.LAUNCH_CANARY_RANKS
+        for layout in (("inst", "inst"), ("one", "two")):
+            with self.subTest(layout=layout):
+                self._wrapper(layout[0])
+                self._launcher(layout[1], 1)
+                with self._path(*layout):
+                    problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(f"with {ranks} processes did not run as one run", problems[0])
+                self.assertIn(f"reported run sizes {['1'] * ranks}", problems[0])
+        # Two directories that form one run are not refused.
+        self._launcher("two", ranks)
+        with self._path("one", "two"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2), [])
+
+    def test_a_launch_that_fails_or_a_build_that_fails_is_refused(self) -> None:
+        """A launch that does not complete is the LAUNCHER's refusal (too few slots, a user it
+        will not run as): the problem carries its own message and does not blame the pairing,
+        which a completed launch alone can show."""
+        ranks = self.launcher.LAUNCH_CANARY_RANKS
+        self._wrapper()
+        self._program("inst", self.launcher.EXECUTABLE,
+                      'echo "There are not enough slots available" >&2; exit 3')
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(f"with {ranks} processes did not complete (exit 3: There are not enough "
+                      f"slots available)", problems[0])
+        self.assertNotIn("one mpi installation", problems[0])
+        # A long refusal keeps its HEAD, where a launcher states why (round 3: Open MPI's
+        # slot refusal opens with the reason and closes with option advice).
+        filler = "x" * (hp.LAUNCHER_MESSAGE_HEAD_CHARS * 2)
+        self._program("inst", self.launcher.EXECUTABLE,
+                      f'echo "There are not enough slots available" >&2; echo "{filler}" >&2; '
+                      'exit 1')
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertGreater(len(filler), hp.LAUNCHER_MESSAGE_HEAD_CHARS)
+        self.assertIn("(exit 1: There are not enough slots available", problems[0])
+        self.assertIn("[...]", problems[0])
+        self.assertLess(len(problems[0]), hp.LAUNCHER_MESSAGE_HEAD_CHARS + 600)
+        self._program("inst", self.launcher.EXECUTABLE, "exec /usr/bin/tail -f /dev/null")
+        with self._path("inst"), mock.patch.object(hp, "BINDING_CANARY_TIMEOUT_SEC", 1):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("did not complete (", problems[0])
+        self.assertIn("timed out", problems[0])
+        self.assertNotIn("one mpi installation", problems[0])
+        self._program("inst", self.wrapper.COMPILER_WRAPPER,
+                      'case "$1" in -fsyntax-only) exit 0;; esac; echo "link failed" >&2; exit 2')
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("does not build the launch canary (rc=2: link failed)", problems[0])
+
+    def test_a_canary_command_that_hangs_is_refused_not_waited_on(self) -> None:
+        """Each canary command is bounded (`BINDING_CANARY_TIMEOUT_SEC`); one that does not
+        return within it, or that cannot be started, is a problem rather than a hang or a
+        traceback."""
+        self._program("inst", self.wrapper.COMPILER_WRAPPER, "exec /usr/bin/tail -f /dev/null")
+        with self._path("inst"), mock.patch.object(hp, "BINDING_CANARY_TIMEOUT_SEC", 1):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("the binding canary could not be compiled", problems[0])
+        self.assertIn("timed out after 1 second", problems[0])
+        # And a wrapper that cannot be executed at all (no interpreter).
+        path = self.root / "inst" / self.wrapper.COMPILER_WRAPPER
+        path.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+        with self._path("inst"):
+            problems = hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("the binding canary could not be compiled", problems[0])
+
+    def test_the_launch_canary_is_asked_only_of_a_run_that_launches_more_than_one_rank(
+            self) -> None:
+        """A run that starts nothing under the launcher (it stops before Validate), and a
+        one-rank run (one process whichever installation starts it), are asked the binding
+        canary alone: a launcher of another installation — which the launch canary refuses —
+        does not refuse them."""
+        self._wrapper()
+        self._launcher("inst", 1)
+        with self._path("inst"):
+            self.assertTrue(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2))
+            self.assertTrue(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=4))
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=False, ranks=4),
+                             [])
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=1),
+                             [])
+        # The binding canary is asked of them all.
+        self._wrapper(syntax_rc=1)
+        with self._path("inst"):
+            for launches, ranks in ((False, 4), (True, 1)):
+                with self.subTest(launches=launches, ranks=ranks):
+                    self.assertIn("does not compile the language binding",
+                                  hp.parallel_toolchain_problems(
+                                      self._MPI, launches=launches, ranks=ranks)[0])
+
+    def test_an_absent_launcher_leaves_the_canary_to_decide(self) -> None:
+        """A Build-only run needs no launcher on this host; the local site's launch probe asks
+        for it when the run executes (`run_workflow._sites_rejection`)."""
+        self._wrapper()
+        with self._path("inst"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=2), [])
 
 
 if __name__ == "__main__":

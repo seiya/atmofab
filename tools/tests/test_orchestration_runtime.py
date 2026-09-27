@@ -24587,6 +24587,55 @@ class DerivationInputsTests(unittest.TestCase):
             for arch in ("sm_80", "sm_90")]
         self.assertEqual(["sm_80", "sm_90"], [i["architecture"] for i in ids])
 
+    def test_a_compiler_wrapper_joins_the_build_toolchain_with_its_runtime_line(self) -> None:
+        """Issue #316: a backend that compiles through its compiler wrapper adds the wrapper and
+        the first line of its `SHOW_ARGV` output — the runtime installation the binary links
+        against — so switching installations is another build; any other backend's identity
+        has neither member (its key is the one it had). The probe is a real process: a program
+        on a scratch PATH answering the wrapper's name."""
+        import os
+        from unittest import mock
+
+        from tools.backends import registry
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        plain = ort._target_toolchain_identity(FORTRAN_CPU)
+        self.assertNotIn("compiler_wrapper", plain)
+        self.assertNotIn("parallel_runtime", plain)
+        mpi = profile_with(parallel={"backend": "mpi"})
+        ids = []
+        # The version probe is cached per argv for the process: a row that ran the real wrapper
+        # earlier would answer this one.
+        cached = ort._build_runtime_server_module()._syntax_compiler_version
+        cached.cache_clear()
+        self.addCleanup(cached.cache_clear)
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / wrapper.COMPILER_WRAPPER
+            for install in ("/opt/one/lib", "/opt/two/lib"):
+                # `--version` passes through to the compiler the wrapper runs, which is not the
+                # one `gfortran` resolves to on PATH.
+                program.write_text(
+                    "#!/bin/sh\n"
+                    "if [ \"$1\" = --version ]; then echo 'GNU Fortran (wrapped) 99.1.0'; "
+                    "exit 0; fi\n"
+                    f"echo 'gfortran -L{install} -lx'\necho more\n", encoding="utf-8")
+                program.chmod(0o755)
+                with mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ['PATH']}"}):
+                    ids.append(ort._target_toolchain_identity(mpi))
+        self.assertEqual([i["compiler_wrapper"] for i in ids], [wrapper.COMPILER_WRAPPER] * 2)
+        self.assertEqual([i["parallel_runtime"] for i in ids],
+                         ["gfortran -L/opt/one/lib -lx", "gfortran -L/opt/two/lib -lx"])
+        # The version is the WRAPPED compiler's, asked through the wrapper (Codex, round 2).
+        self.assertEqual([i["compiler_version"] for i in ids],
+                         ["GNU Fortran (wrapped) 99.1.0"] * 2)
+        self.assertNotEqual(plain["compiler_version"], ids[0]["compiler_version"])
+        # Everything else is the target's, as for any backend.
+        self.assertEqual({k: v for k, v in ids[0].items()
+                          if k not in ("compiler_wrapper", "parallel_runtime", "backend",
+                                       "compiler_version")},
+                         {k: v for k, v in plain.items()
+                          if k not in ("backend", "compiler_version")})
+
     def test_an_upstream_binds_by_the_recomputed_hash_never_the_stamped_one(self) -> None:
         """Round-3 mutant: `_meta_output_hash` returning a stamped `output_hash` when present
         survived. The stamped key is a RECORD; what a downstream key binds is recomputed from

@@ -13068,11 +13068,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         if target_prefix is None:
             target_prefix = prefix if isinstance(prefix, list) else []
         from unittest import mock
-        with mock.patch.object(vps.host_execution, "launch_argv_prefix",
+        with mock.patch.object(vps.host_execution, "launch_argv_prefix", autospec=True,
                                return_value=tuple(target_prefix)) as seam:
             violations = validate(repo_root=repo_root, workspace_root="workspace")
         if isinstance(prefix, list) and prefix and all(isinstance(a, str) for a in prefix):
-            seam.assert_called_with(_TP.parallel_backend)
+            seam.assert_called_with(_TP.parallel_backend, _TP.ranks)
         return violations
 
     @staticmethod
@@ -13137,7 +13137,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # The real seam answers the checked-in fixture target: it launches bare, so a recorded
         # prefix is refused, and an empty one is not asked about.
         from tools.host_execution import launch_argv_prefix
-        self.assertEqual(launch_argv_prefix(_TP.parallel_backend), ())
+        self.assertEqual(launch_argv_prefix(_TP.parallel_backend, _TP.ranks), ())
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -13167,13 +13167,31 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         from tools.host_execution import launch_argv_prefix
         from tools.tests.target_fixtures import profile_with
         cuda = profile_with(parallel={"backend": "cuda"})
-        traced = list(launch_argv_prefix("cuda"))
+        traced = list(launch_argv_prefix("cuda", 1))
         self.assertTrue(traced)
+        # Issue #316: a launcher target's prefix carries ITS rank count, so the same launcher
+        # with another count is not the target's prefix.
+        mpi = profile_with(parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4})
+        launched = list(launch_argv_prefix("mpi", 4))
+        other_count = list(launch_argv_prefix("mpi", 3))
+        # A one-rank launcher target runs under the launcher all the same, so a record of it
+        # with no prefix is not its run.
+        mpi1 = profile_with(parallel={"backend": "mpi"},
+                            execution={"threads_per_rank": 1, "ranks": 1})
+        self.assertTrue(launched)
+        self.assertNotEqual(launched, other_count)
         for target, recorded, carried, refused in (
                 (cuda, traced, traced, False),
                 (cuda, [], [], False),
                 (cuda, self._NO_LAUNCH, [], False),
-                (None, traced, traced, True)):
+                (None, traced, traced, True),
+                (mpi, launched, launched, False),
+                (mpi, other_count, other_count, True),
+                (mpi1, list(launch_argv_prefix("mpi", 1)), list(launch_argv_prefix("mpi", 1)),
+                 False),
+                (mpi1, [], [], False),
+                (mpi1, self._NO_LAUNCH, [], False)):
             with self.subTest(target=None if target is None else target.parallel_backend,
                               recorded=recorded if recorded is not self._NO_LAUNCH else "none"), \
                     tempfile.TemporaryDirectory() as tmp, \
@@ -13185,6 +13203,16 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                         for v in violations), refused, violations)
                 self.assertEqual(self._binding_violations(violations) != [], refused,
                                  violations)
+                # The fixture's perf record states one rank: a launcher target running four is
+                # refused through `validate()` itself, and no other target is asked.
+                self.assertEqual(
+                    any("parallelism.mpi_ranks is" in v for v in violations),
+                    target is mpi, violations)
+                # An empty or absent prefix is refused for a launcher target only.
+                bare = recorded is self._NO_LAUNCH or recorded == []
+                self.assertEqual(
+                    any("environment.launch.argv_prefix is empty" in v for v in violations),
+                    bare and target in (mpi, mpi1), violations)
 
     def _real_seam_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
         """`_launch_prefix_tree` without its seam patch: the validator asks the real one."""
@@ -14014,6 +14042,145 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             self.assertTrue(
                 any("canonical MCP audit log placement" in v for v in violations),
                 violations)
+
+    def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:
+        """Issue #316: under a launcher, the run's performance record states the target's rank
+        count and the quality check records the run as that many ranks and the `make test`
+        re-run as one. A target without a launcher is not asked. Driven over each member
+        missing, of the wrong type and of the wrong value."""
+        from unittest import mock
+
+        from tools.tests.target_fixtures import profile_with
+        mpi = profile_with(parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4})
+
+        def run(target, perf, quality) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                node_dir = Path(tmp) / "node"
+                node_dir.mkdir()
+                if perf is not None:
+                    _write_json(node_dir / "perf.json", perf)
+                if quality is not None:
+                    _write_json(node_dir / "quality_check.json", quality)
+                execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node_dir,
+                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=target):
+                    vps._validate_launched_ranks(Path(tmp), execution, violations)
+                return violations
+
+        def quality(reference, candidate):
+            return {"comparison": {"reference": {"ranks": reference},
+                                   "candidate": {"ranks": candidate}}}
+
+        good_perf = {"parallelism": {"mpi_ranks": 4}}
+        self.assertEqual(run(mpi, good_perf, quality(4, 1)), [])
+        for perf, needle in (({"parallelism": {"mpi_ranks": 1}}, "mpi_ranks is 1"),
+                             ({"parallelism": {"mpi_ranks": True}}, "mpi_ranks is True"),
+                             ({"parallelism": {}}, "mpi_ranks is None"),
+                             ({}, "mpi_ranks is None"),
+                             (None, "mpi_ranks is None"),
+                             ([4], "mpi_ranks is None")):
+            with self.subTest(perf=perf):
+                violations = run(mpi, perf, quality(4, 1))
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn(needle, violations[0])
+                self.assertIn("runs 4 rank(s) under mpi's launcher", violations[0])
+        for q, needle in ((quality(1, 1), "comparison.reference.ranks is 1, expected 4"),
+                          (quality(4, 4), "comparison.candidate.ranks is 4, expected 1"),
+                          (quality(4, True), "comparison.candidate.ranks is True"),
+                          ({"comparison": {}}, "comparison.reference.ranks is None"),
+                          (None, "comparison.reference.ranks is None")):
+            with self.subTest(quality=q):
+                self.assertTrue(any(needle in v for v in run(mpi, good_perf, q)))
+        # Not asked of a target without a launcher, nor of one that does not resolve (the
+        # target-resolution gate refuses that pipeline).
+        for target in (_TP, None):
+            with self.subTest(target=target and target.parallel_backend):
+                self.assertEqual(run(target, {}, None), [])
+
+    def test_the_syntax_stage_of_a_wrapper_target_is_certified_through_its_wrapper(
+            self) -> None:
+        """Issue #316: the pipeline's target decides the program a stage's record must have run.
+        A target whose parallel backend declares `compiler_wrapper` certifies a stage whose
+        argv[0] is the wrapper and refuses the bare compiler; every other target — and a
+        pipeline whose target does not resolve — refuses the wrapper."""
+        from unittest import mock
+
+        from tools.backends import registry
+        from tools.tests.target_fixtures import profile_with
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        mpi = profile_with(parallel={"backend": "mpi"})
+        for target, argv0, certified in (
+                (mpi, wrapper.COMPILER_WRAPPER, True),
+                (mpi, f"/opt/x/bin/{wrapper.COMPILER_WRAPPER}", True),
+                (mpi, "gfortran", False),
+                (_TP, wrapper.COMPILER_WRAPPER, False),
+                (_TP, "gfortran", True),
+                (None, wrapper.COMPILER_WRAPPER, False)):
+            name = None if target is None else target.parallel_backend
+            with self.subTest(target=name, argv0=argv0), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                log_rel = self._seed_syntax_command_log(repo_root, [{
+                    "command_id": "a", "tool_name": "run_syntax_check",
+                    "command": [argv0, "-fsyntax-only", "x.f90"], "ok": True,
+                }])
+                meta_path = self._syntax_evidence_fixture(repo_root, {
+                    "checked_at": "t", "source_id": "src_x", "ok": True,
+                    "stages": [{"compiler": "gfortran", "status": "pass",
+                                "command_id": "a", "command_log_ref": log_rel}],
+                })
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=target):
+                    vps._validate_generate_syntax_command_logs(
+                        repo_root, meta_path, {"verification_status": "pass"}, "fortran",
+                        violations)
+                mismatch = [v for v in violations
+                            if "logged command does not match compiler" in v]
+                self.assertEqual(mismatch == [], certified, violations)
+                if certified:
+                    self.assertEqual(violations, [])
+
+    def test_a_stage_of_a_compiler_the_wrapper_does_not_run_is_held_to_its_adapter(
+            self) -> None:
+        """Round 2 (mutant O7: `_stage_executable` wrapping EVERY registered compiler survived):
+        under a wrapper target, only the stage of `WRAPPED_COMPILER` is expected to have run
+        through the wrapper; an optional stage of another registered compiler ran as its own
+        adapter spells it, and a record of it naming the wrapper is refused."""
+        from unittest import mock
+
+        from tools.backends import registry
+        from tools.tests.target_fixtures import profile_with
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        other = next(c for c in registry.backend_ids("compiler")
+                     if c != wrapper.WRAPPED_COMPILER
+                     and registry.provides("compiler", c, "syntax_check"))
+        other_exe = registry.capability_module("compiler", other, "syntax_check").EXECUTABLE
+        mpi = profile_with(parallel={"backend": "mpi"})
+        for argv0, certified in ((other_exe, True), (wrapper.COMPILER_WRAPPER, False)):
+            with self.subTest(argv0=argv0), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                log_rel = self._seed_syntax_command_log(repo_root, [
+                    {"command_id": "a", "tool_name": "run_syntax_check",
+                     "command": [wrapper.COMPILER_WRAPPER, "-fsyntax-only", "x.f90"],
+                     "ok": True},
+                    {"command_id": "b", "tool_name": "run_syntax_check",
+                     "command": [argv0, "x.f90"], "ok": True},
+                ])
+                meta_path = self._syntax_evidence_fixture(repo_root, {
+                    "checked_at": "t", "source_id": "src_x", "ok": True,
+                    "stages": [
+                        {"compiler": wrapper.WRAPPED_COMPILER, "status": "pass",
+                         "command_id": "a", "command_log_ref": log_rel},
+                        {"compiler": other, "status": "pass",
+                         "command_id": "b", "command_log_ref": log_rel}],
+                })
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=mpi):
+                    vps._validate_generate_syntax_command_logs(
+                        repo_root, meta_path, {"verification_status": "pass"}, "fortran",
+                        violations)
+                self.assertEqual(violations == [], certified, violations)
 
     def test_validate_generate_syntax_certifies_at_static_without_pass(self) -> None:
         # Like lint: the cert runs whenever the conductor evidence exists, not only on a
