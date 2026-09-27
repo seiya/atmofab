@@ -659,7 +659,19 @@ PINNED: dict[str, str] = {
     # version whose tuple returns to these bytes collides here (`test_no_empty_version_bump`),
     # exactly as it would have with the entry unedited. Round 3 of that change's review
     # measured the loss without it (restoring main's templates under a new version passed).
-    "pure-50@3c117410": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",}
+    "pure-50@3c117410": "25f1d92a66cb004d69e3283680c00ec04dc2f2d0849bd1e84280122380451671",
+    # pure-51 (issue #307 PR-1): the `cuda_cpp` physics fragments forbid a host fallback — the
+    # producer's `target_lowering_floor` says a failed CUDA call is a failure of the operation
+    # and that `Validate.execute` traces the run on the device (every kernel the sources define
+    # must execute), and `generate.verify`'s G6 scope fails a fallback whatever the plan. A
+    # bump, not an in-place re-pin: unlike the pure-50 re-pins, a prompt that has been composed
+    # (R4-b PR-6's billed `cuda_cpp` run) now reads differently. Composed for `fortran`, every
+    # `pure_*.txt` is byte-identical to origin/main 6f5582ba's (measured by composing each
+    # through `_compose_language_fragments` in both trees); for `cuda_cpp`, exactly
+    # `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The bump's usual side
+    # effects apply to every language: `_resolve_exemplar_source` stops offering pure-50
+    # exemplars, and a `generate` run under pure-50 cannot be `--resume`d across it.
+    "pure-51": "f21a5170d825254a70cb51f7f071cda33d83840c08bc5930d13910ecd03db0fa",}
 
 
 def _contract_tuple() -> dict[str, object]:
