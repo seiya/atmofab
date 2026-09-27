@@ -12,7 +12,7 @@ Fortran code, `mpi_f08`. An installation whose wrapper cannot compile a `use mpi
 cannot build the harness, and it is not rare: Intel MPI 2021.10 ships no gfortran `mpi_f08`
 module (its gfortran module directory holds `mpi.mod` alone of the two), and its wrapper then
 reads the other compiler's module file and fails (measured 2026-09-27, issue #316). The host asks
-it at startup with `BINDING_CANARY_SOURCE` (`host_prerequisites.mpi_toolchain_problems`), before
+it at startup with `BINDING_CANARY_SOURCE` (`host_prerequisites.parallel_toolchain_problems`), before
 anything is billed.
 
 `SHOW_ARGV`'s output — the compile-and-link command the wrapper would run — identifies the runtime

@@ -488,11 +488,11 @@ PINNED_RENDER: dict[str, str] = {
     # control file's compiler is chosen by `workflow_conductor.build_compiler` (the parallel
     # backend's compiler wrapper when it declares one; no checked-in target's does), the
     # language rules accept `compiler_wrapper`, and `host_execution.perf_parallelism` takes the
-    # rank count from the profile (1 for every checked-in profile). Measured at this commit's
-    # parent against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
+    # rank count from the profile (1 for every checked-in profile). Measured on the working tree
+    # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "df637f0639819ca2a583a4538754bb13eeb532e028cc640b5526374e05f2d9c3",
+    "render-6": "679d5cab4299f216581eaa1598a113dea558122c9f2783ecbc769c9cc33fefac",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

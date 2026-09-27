@@ -282,8 +282,9 @@ def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
 
 def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:
     """The programs the machine that EXECUTES the binary needs beyond the binary itself, for the
-    resolved selection: the parallel backend's device trace's (`host_execution.
-    execution_executables`, issue #307), none for a backend that declares no trace. Asked of a
+    resolved selection: the parallel backend's launcher's and device trace's
+    (`host_execution.execution_executables`; issues #316, #307), none for a backend that
+    declares neither. Asked of a
     remote site through `required_site_executables`, and of this host when the local site
     executes the run (`run_workflow._sites_rejection`)."""
     from tools.host_execution import execution_executables as _for_backend

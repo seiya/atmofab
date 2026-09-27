@@ -223,9 +223,11 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     violations = site_violations(sites_config, target_profile, until_phase=until_phase)
     if violations:
         return {"status": "fail", "reason": "target_profile_invalid",
-                "detail": ("; ".join(violations) + " — map the target to a site that executes "
-                           "it in sites.yaml (docs/examples/sites.example.yaml; "
-                           "docs/ORCHESTRATION.md §Execution sites)"),
+                "detail": ("; ".join(violations) + " — map the target in sites.yaml to a site "
+                           "that can run it: one that executes its hardware class, and "
+                           "`local` for a target whose parallel backend runs a launcher "
+                           "(docs/examples/sites.example.yaml; docs/ORCHESTRATION.md "
+                           "§Execution sites)"),
                 "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     site = sites_config.site_for(target_profile.target_id)
     if str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
