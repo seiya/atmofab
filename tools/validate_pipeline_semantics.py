@@ -26,6 +26,8 @@ try:
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
+    # The launch seam, for the launch prefix a target's binary runs under (issue #307).
+    from tools import host_execution
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -71,6 +73,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
     # for its dispatch functions only — the renderer itself is never named here.
     from tools import host_render
+    # The launch seam, for the launch prefix a target's binary runs under (issue #307).
+    from tools import host_execution
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -6057,6 +6061,22 @@ def _validate_run_program_inputs(
                 f"{trial_meta_path}: environment.launch.argv_prefix must be a list of strings "
                 f"(got {_raw_prefix!r}); the binary a run_program record ran cannot be located "
                 f"after it")
+    # A non-empty prefix is admitted only as the one the pipeline's TARGET runs its binary under
+    # (`host_execution.launch_argv_prefix`): taken on the record's word, any program named in it
+    # would run in front of the build's binary unbound (round 3: a recorded `[<other>]` or
+    # `["sh", "-c", …]` passed here, where origin/main refused the same command). An EMPTY
+    # prefix is every record written before issue #307 and every untraced target's.
+    if _argv_prefix:
+        _target = _pipeline_target(repo_root, execution.pipeline_dir)
+        _expected = (list(host_execution.launch_argv_prefix(_target.parallel_backend))
+                     if _target is not None else None)
+        if _argv_prefix != _expected:
+            violations.append(
+                f"{trial_meta_path}: environment.launch.argv_prefix {_argv_prefix!r} is not the "
+                f"launch prefix of this pipeline's target "
+                f"({'unresolved' if _expected is None else repr(_expected)}); the binary a "
+                f"run_program record ran cannot be bound after it")
+            _argv_prefix = None
 
     for entry in _iter_command_ref_entries(source_command_ref):
         command_id = entry.get("command_id")

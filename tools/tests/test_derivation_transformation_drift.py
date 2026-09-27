@@ -448,8 +448,9 @@ PINNED_RENDER: dict[str, str] = {
     # would differ; the Fortran render is untouched.
     # Re-pinned (issue #307, PR-2), behaviour-preserving for the render: `tools/host_execution.py`
     # (digested whole for `perf_parallelism`) gained the device-trace launch half, which the
-    # execute body reads and no renderer calls; `perf_parallelism` is unchanged.
-    "render-5": "83133b5cb5540b2a6b2ecbc533c9043749ae4ffc331a62872b09bec027676f32",
+    # execute body reads and no renderer calls; `perf_parallelism` is unchanged. Re-pinned again in
+    # that PR's round 3 for `launch_argv_prefix`, which the post-execute gate reads.
+    "render-5": "35c326ad415d8a4635380ad6424bcee2294e2096a137497745b65f024abf0d3d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -561,7 +562,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # And in round 2: the summary command requires the export database a readable report gives
     # (an unreadable one exits 0 with an empty summary); `defined_kernels` blanks the CUDA
     # attributes by name; and comments in `tools/remote_execution.py` name the binary the gate binds.
-    "execute-6": "378628c88a93d26872a2e7b80a9ff2db69868bc92dbbc64dea28461db07b595b",
+    # And in round 3: `host_execution.launch_argv_prefix`, the prefix the post-execute gate admits.
+    "execute-6": "48e3313ab68839b130d465e7aec1a8b42c57336e0c275ef1b6caa79b821c86ec",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

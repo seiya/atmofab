@@ -13019,7 +13019,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
     #: `prefix` value meaning "the whole command the record carries".
     _WHOLE_COMMAND = object()
 
-    def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
+    def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix,
+                            target_prefix=None) -> list[str]:
         """The minimal execution tree with `trial_meta.environment.launch.argv_prefix` set to
         `prefix` (no `environment` at all when `_NO_LAUNCH`) and the run_program record's command led by
         `command_prefix` (issue #307: a device trace is a launch prefix)."""
@@ -13059,7 +13060,18 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         if prefix is not self._NO_LAUNCH:
             trial_meta["environment"] = {"launch": {"argv_prefix": prefix, "env": {}}}
         _write_json(trial_meta_path, trial_meta)
-        return validate(repo_root=repo_root, workspace_root="workspace")
+        # The fixture's target launches bare; `target_prefix` stands in for a target whose
+        # parallel backend runs its binary under one (the seam's answer, patched where the
+        # validator asks it). By default it is the recorded prefix, so a row varies the command.
+        if target_prefix is None:
+            target_prefix = prefix if isinstance(prefix, list) else []
+        from unittest import mock
+        with mock.patch.object(vps.host_execution, "launch_argv_prefix",
+                               return_value=tuple(target_prefix)) as seam:
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+        if isinstance(prefix, list) and prefix and all(isinstance(a, str) for a in prefix):
+            seam.assert_called_with(_TP.parallel_backend)
+        return violations
 
     @staticmethod
     def _binding_violations(violations: list[str]) -> list[str]:
@@ -13103,6 +13115,43 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = self._launch_prefix_tree(repo_root, prefix=self._WHOLE_COMMAND,
                                                   command_prefix=[])
             self.assertTrue(any("must resolve under" in v and "None" in v
+                                for v in violations), violations)
+
+    def test_a_recorded_prefix_that_is_not_the_targets_is_a_violation(self) -> None:
+        """Round 3 (disclosure axis): taken on the record's word, a recorded prefix lets any
+        program run in front of the build's binary — `[<other>]` or `["sh", "-c", …]` passed
+        where origin/main refused the same command. A non-empty prefix must be the one the
+        pipeline's target runs its binary under; an empty one needs no target answer."""
+        target = ["tracer", "profile", "-o", "kernel_trace"]
+        for recorded in (["/usr/bin/other"], ["sh", "-c", "exec \"$0\" \"$@\""],
+                         ["tracer", "profile"], [*target, "--extra"]):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
+                                                      command_prefix=recorded,
+                                                      target_prefix=target)
+                self.assertTrue(any("is not the launch prefix of this pipeline's target" in v
+                                    for v in violations), violations)
+                self.assertFalse(any("must resolve under" in v for v in violations))
+        # The real seam answers the checked-in fixture target: it launches bare, so a recorded
+        # prefix is refused, and an empty one is not asked about.
+        from tools.host_execution import launch_argv_prefix
+        self.assertEqual(launch_argv_prefix(_TP.parallel_backend), ())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                        / "problem__shallow_water2d__0.3.0")
+            trial_meta = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+            trial_meta["environment"] = {"launch": {"argv_prefix": ["./simulate"], "env": {}}}
+            _write_json(node_dir / "trial_meta.json", trial_meta)
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("is not the launch prefix of this pipeline's target ([])" in v
                                 for v in violations), violations)
 
     def test_a_non_list_prefix_is_a_violation(self) -> None:

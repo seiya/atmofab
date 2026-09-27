@@ -140,6 +140,13 @@ def _device_trace(parallel_backend: str) -> tuple[tuple[str, ...], TraceShape | 
         summary_file=str(module.summary_file(KERNEL_TRACE_STEM)))
 
 
+def launch_argv_prefix(parallel_backend: str) -> tuple[str, ...]:
+    """The argv prefix a binary built for `parallel_backend` runs under (`launch_shape`'s
+    `argv_prefix`): its device trace's, none for a value that declares no trace. The post-execute
+    gate admits a recorded prefix only when it is this one."""
+    return _device_trace(parallel_backend)[0]
+
+
 def execution_executables(parallel_backend: str) -> tuple[str, ...]:
     """The programs the machine that executes a binary built for `parallel_backend` needs
     beyond the binary itself: its device trace's (`device_trace`), none for a value that
