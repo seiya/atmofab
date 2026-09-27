@@ -670,7 +670,10 @@ PINNED: dict[str, str] = {
     # through `_compose_language_fragments` in both trees); for `cuda_cpp`, exactly
     # `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The bump's usual side
     # effects apply to every language: `_resolve_exemplar_source` stops offering pure-50
-    # exemplars, and a `generate` run under pure-50 cannot be `--resume`d across it.
+    # exemplars, a `generate` run under pure-50 cannot be `--resume`d across it, and — the
+    # version being a member of the compile, generate and validate transformation tuples
+    # (`tools/derivation.py` `transformation_versions`) — every node's Compile, Generate and
+    # Validate keys move, the Fortran nodes' included.
     "pure-51": "7c422cfc53f5a8477c7fca0e56b215828d9d1e0ff04cc5bc07cc24c717317deb",}
 
 
