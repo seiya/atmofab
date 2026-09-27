@@ -14141,6 +14141,47 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 if certified:
                     self.assertEqual(violations, [])
 
+    def test_a_stage_of_a_compiler_the_wrapper_does_not_run_is_held_to_its_adapter(
+            self) -> None:
+        """Round 2 (mutant O7: `_stage_executable` wrapping EVERY registered compiler survived):
+        under a wrapper target, only the stage of `WRAPPED_COMPILER` is expected to have run
+        through the wrapper; an optional stage of another registered compiler ran as its own
+        adapter spells it, and a record of it naming the wrapper is refused."""
+        from unittest import mock
+
+        from tools.backends import registry
+        from tools.tests.target_fixtures import profile_with
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        other = next(c for c in registry.backend_ids("compiler")
+                     if c != wrapper.WRAPPED_COMPILER
+                     and registry.provides("compiler", c, "syntax_check"))
+        other_exe = registry.capability_module("compiler", other, "syntax_check").EXECUTABLE
+        mpi = profile_with(parallel={"backend": "mpi"})
+        for argv0, certified in ((other_exe, True), (wrapper.COMPILER_WRAPPER, False)):
+            with self.subTest(argv0=argv0), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                log_rel = self._seed_syntax_command_log(repo_root, [
+                    {"command_id": "a", "tool_name": "run_syntax_check",
+                     "command": [wrapper.COMPILER_WRAPPER, "-fsyntax-only", "x.f90"],
+                     "ok": True},
+                    {"command_id": "b", "tool_name": "run_syntax_check",
+                     "command": [argv0, "x.f90"], "ok": True},
+                ])
+                meta_path = self._syntax_evidence_fixture(repo_root, {
+                    "checked_at": "t", "source_id": "src_x", "ok": True,
+                    "stages": [
+                        {"compiler": wrapper.WRAPPED_COMPILER, "status": "pass",
+                         "command_id": "a", "command_log_ref": log_rel},
+                        {"compiler": other, "status": "pass",
+                         "command_id": "b", "command_log_ref": log_rel}],
+                })
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=mpi):
+                    vps._validate_generate_syntax_command_logs(
+                        repo_root, meta_path, {"verification_status": "pass"}, "fortran",
+                        violations)
+                self.assertEqual(violations == [], certified, violations)
+
     def test_validate_generate_syntax_certifies_at_static_without_pass(self) -> None:
         # Like lint: the cert runs whenever the conductor evidence exists, not only on a
         # verify pass (post_generate runs in generate.gate (its static check) BEFORE verify).
