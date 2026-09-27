@@ -15879,10 +15879,10 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("deterministic_validate_error", result.stderr)
                 self.assertIn(needle, result.stderr)
-                # The operator is told where the report is kept and which document to read.
-                run_tmp = repo / "workspace" / "tmp" / "child-1" / "run"
-                self.assertIn(f"the run directory {run_tmp} keeps the report", result.stderr)
+                # The operator is told which document to read — not a run directory, which the
+                # agent run's tmp cleanup removes when the substep ends (round 4).
                 self.assertIn("docs/backends/parallel/cuda/DEVICE_TRACE.md §1", result.stderr)
+                self.assertNotIn(str(repo / "workspace" / "tmp"), result.stderr)
                 self.assertEqual([tag for tag, _ in calls], ran)
                 self.assertFalse((node_dir / "trial_meta.json").exists())
                 self.assertFalse((node_dir / "kernel_trace.csv").exists())

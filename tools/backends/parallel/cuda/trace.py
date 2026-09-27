@@ -17,8 +17,9 @@ site's 2025.1.3), and `docs/backends/parallel/cuda/DEVICE_TRACE.md` states it fo
   already at that path (a forged one was replaced on both versions) and NOT a read-only one,
   which survives with exit 0 — hence `summary_argv` empties the path first.
 * A report that is not readable (truncated, or not a report) also exits 0 with an empty summary,
-  and writes no `<stem>.sqlite`; a readable one writes it (on 2025.1.3 too: the site's stats run
-  named `kernel_trace.sqlite`). `summary_argv` requires it.
+  and writes no `<stem>.sqlite`; a readable one writes it, with kernel data or without — on
+  2025.1.3 too, measured at the site with `summary_argv` itself (issue #307 comment 5852641160).
+  `summary_argv` requires it.
 * The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `Med (ns)`,
   `Min (ns)`, `Max (ns)`, `StdDev (ns)`, `Name`. `Name` is demangled: `k(double *, long)`,
   `ns::k(int *)`, one row per template instantiation `void k<double>(T1 *)`. A kernel that never

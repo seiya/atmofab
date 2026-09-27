@@ -43,16 +43,22 @@ make test    # the quality check, unchanged and untraced
   The frame is part of the command, so the remote job carries it too.
 - A summary command that exits non-zero, or exits 0 without writing the file, fails the substep
   as `deterministic_validate_error`: it is host tooling, not the kernel. The failure reads
-  `kernel_trace_summary_failed: rc=<n> <stderr tail>` or `kernel_trace_summary_missing: …`, and
-  names the run directory (`workspace/tmp/<agent_run_id>/run/`, collected from the site for a
-  remote run), which keeps `kernel_trace.nsys-rep` and whatever the summary left. What to check,
-  by what the failure says:
-  - `rc=3` with `the report was not exported`: the report in that directory is not a readable
-    one. Run the `nsys stats` part of the command above by hand there to see why.
-  - `rc=1` with `nsys stats`'s usage text: there is no report in that directory. The profiler
-    writes it under `/tmp/nsys-<user>/` instead when the report's path is taken (§4).
+  `kernel_trace_summary_failed: rc=<n> <the command's stderr tail>` or
+  `kernel_trace_summary_missing: …`. The run's working directory does NOT survive it: the agent
+  run's tmp root is removed when the substep ends, report included. What the failure says:
+  - `rc=3` with `the report was not exported`: the report at `kernel_trace.nsys-rep` is not a
+    readable one. Either the profiler did not finish writing it, or the path was taken by a
+    read-only file the binary left — then the profiler wrote the real report under
+    `/tmp/nsys-<user>/` on the machine that ran it, and exited 0 (§4).
+  - `rc=1` with `nsys stats`'s usage text: there was no report at that path — nothing was
+    written, or a directory took the path (the profiler again wrote under `/tmp/nsys-<user>/`).
   - `rc=1` with an `rm` error: the summary's path could not be emptied — a directory there, or a
     run directory that is not writable (the frame, above).
+
+  To see it happen, run the two commands of this section by hand against the node's built binary
+  and its `spec.ir.yaml`: in a scratch directory for the local site, or at a remote site with
+  `tools/site_smoke.py --target <target_id> --ship <binary> --ship <spec.ir.yaml> --cmd '…'`,
+  whose job directory is `$JOB` (issue #307 comment 5852641160 shows the commands run that way).
 
   A missing `nsys` fails earlier, at the run itself: locally
   `No such file or directory: 'nsys'`, at a remote site `job script: nsys is missing or not
@@ -85,7 +91,10 @@ taken for the parameter list.
 Measured: on Nsight Systems 2026.3.2 without a GPU (issue #307 plan §0-2), and at the `cpp_gpu`
 site on Nsight Systems 2025.1.3 with an L40S (issue #307 comment 5851969504): the columns, the
 name forms above, the overwrite of a file placed at the summary's path, and the empty file for a
-binary built for another device architecture, whose every launch failed.
+binary built for another device architecture, whose every launch failed. The summary command as
+this repository runs it (§1, frame included) was run at the same site afterwards (issue #307
+comment 5852641160): exit 0 with the export database for a report with kernel data and for one
+without, the second with an empty summary.
 
 ## 3. What the site must provide
 

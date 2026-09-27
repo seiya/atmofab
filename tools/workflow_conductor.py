@@ -11140,12 +11140,13 @@ class Conductor:
         # raises (`deterministic_validate_error`) rather than routing the node back to Generate.
         trace_ref: dict[str, Any] | None = None
         if launch.trace is not None and res_run.get("ok"):
-            # Where the operator looks: the run directory keeps the trace's report and whatever
-            # the summary left, and the backend's document says what each failure means.
-            where = (f"(the run directory {run_tmp} keeps the report; see "
-                     f"docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 for "
-                     f"what to check, then "
-                     f"--resume)")
+            # What the operator reads: the summary's own stderr (above, in the message) and the
+            # backend's document, which says what each failure means and how to reproduce it —
+            # the run directory is removed with the rest of this agent run's tmp root when the
+            # substep ends (`orchestration_runtime._cleanup_agent_tmp_root`), so nothing here
+            # can point at the report.
+            where = (f"(see docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 "
+                     f"for what this means and how to reproduce it, then --resume)")
             if res_trace is None or not res_trace.get("ok"):
                 detail = "did not run" if res_trace is None else (
                     f"rc={res_trace.get('return_code')} {res_trace.get('error') or ''} "
