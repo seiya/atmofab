@@ -698,8 +698,10 @@ PINNED: dict[str, str] = {
     # new `{{parallel:<name>}}` marker placed right after each language marker. Every one of the
     # 12 launch templates, composed for the two checked-in targets (`fortran` + `openmp`,
     # `cuda_cpp` + `cuda`), is byte-identical to origin/main b37ce9a6's (measured by composing
-    # each in both trees). A composition for `fortran` + `none` or `fortran` + `mpi` now omits
-    # the OpenMP paragraph it used to carry; no target profile names either pair.
+    # each in both trees). Two templates (`pure_generate_generate.txt`, `pure_generate_verify.txt`)
+    # compose differently for pairs no target profile names: `fortran` + `none` and `fortran` +
+    # `mpi` now omit the OpenMP paragraph the Fortran fragment used to carry, and `cuda_cpp` +
+    # `openmp` now carries it (its sentences are conditioned on a `fortran` language).
     "pure-52": "81d1b0d712a5872f2c0a336a9ccef7a59cf3d62bdaf1c258f64db0a4a3ea0ffd",}
 
 

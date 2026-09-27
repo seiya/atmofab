@@ -625,9 +625,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # target — `trial_meta.json#environment.ranks`, `quality_check.json#comparison.{reference,
     # candidate}.ranks` and, under a launcher, `environment.platform.parallel_runtime`. A bump:
     # a certified execute-7 record has none of them, and the post-execute gate reads them.
-    # Re-pinned by R4-c PR-2 (issue #316): the `parallel/openmp` record and package — members
-    # through the registry's launch capabilities — gain `prompt_fragments` and its `prompts`
-    # re-export. Neither is read by the launch, so what Validate.execute produces is unchanged.
+    # Re-pinned by R4-c PR-2 (issue #316): one member moved, the `parallel/openmp` package's
+    # `__init__.py` (hashed as the `execution_env` package), which now also re-exports the
+    # `prompts` module. The launch imports that package and so imports `prompts` too, and reads
+    # nothing from it; the record's member is unchanged, because the tuple keeps only launch
+    # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
+    # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
     "execute-8": "fedfe66b22fa9804fb518c733129e3fc9ffb467a4a28481af6f37c318c05eb62",
 }
 PINNED_VERDICT: dict[str, str] = {
