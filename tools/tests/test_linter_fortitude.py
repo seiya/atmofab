@@ -624,6 +624,20 @@ class ProseCouplingTests(unittest.TestCase):
         "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
     )
 
+    @classmethod
+    def _whole_file_scan(cls) -> list[str]:
+        """`_LEAF_READ_FILES` plus every backend prompt-fragment file, DERIVED from the
+        directory: the host composes each into a template a leaf reads, and a fragment that moves
+        between backends must not leave the scan by moving. Issue #316 (R4-c PR-2) moved the
+        OpenMP floor paragraph out of a Fortran fragment listed in `_SITES` into
+        `backends/parallel/openmp/`, and until this row read the derived set, a copyable
+        directive planted there was green (measured) while the same one planted before the move
+        was red."""
+        fragments = sorted(
+            str(path.relative_to(REPO_ROOT))
+            for path in (REPO_ROOT / "tools" / "prompt_templates" / "backends").rglob("*.txt"))
+        return list(dict.fromkeys((*cls._LEAF_READ_FILES, *fragments)))
+
     #: The EXCLUDED codes a leaf-read document may still name. `C003` must be nameable: the
     #: documents changed what they say about it, and a rule change stated without naming the rule
     #: is not a statement. The others must not be — a leaf-read region naming `S241` was measured
@@ -702,8 +716,17 @@ class ProseCouplingTests(unittest.TestCase):
         disabled, so every such spelling is either inert or a finding — there is no correct one.
         """
         directive = re.compile(r"allow\(\s*[A-Z]{1,5}[0-9]{3}")
-        for path, _anchor, _lines, _outside in self._SITES:
+        # The files the docstring below names — every leaf-read file, not only the regioned
+        # sites. Until issue #316 this loop read `_SITES` alone and `_LEAF_READ_FILES` was
+        # read by nothing. A listed file the tree does not carry fails its own row rather than
+        # shrinking the scan.
+        scanned = self._whole_file_scan()
+        self.assertTrue(
+            any(path.startswith("tools/prompt_templates/backends/parallel/") for path in scanned),
+            "no parallel-backend fragment is scanned; the derivation observes nothing there")
+        for path in scanned:
             with self.subTest(path=path):
+                self.assertTrue((REPO_ROOT / path).is_file(), f"{path} is listed but missing")
                 text = (REPO_ROOT / path).read_text()
                 hits = directive.findall(text)
                 self.assertEqual(
