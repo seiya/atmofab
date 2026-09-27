@@ -137,10 +137,11 @@ def base_kernel_name(demangled: str) -> str:
 
 
 # Attributes that may stand between `__global__` and the kernel's name and carry a parenthesis the
-# name pattern would otherwise stop at: `__launch_bounds__(…)`, `__attribute__((…))`, `[[…]]`.
+# name pattern would otherwise stop at: `__attribute__((…))`, `[[…]]`, and the CUDA ones spelled
+# `__name__(…)` (`__launch_bounds__`, `__cluster_dims__`, `__maxnreg__`).
 _ATTRIBUTE_RE = re.compile(
-    r"\b__launch_bounds__\s*\([^()]*\)"
-    r"|\b__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)"
+    r"\b__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)"
+    r"|\b__\w+__\s*\([^()]*\)"
     r"|\[\[(?:[^\[\]])*\]\]")
 # `__global__`, then anything up to the first `(` that is not a statement or body boundary, and
 # the name before that `(` — optionally with a template argument list (an explicit

@@ -556,8 +556,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # `deterministic_validate_error`. The tuple gained the `device_trace` capability
     # (`_LAUNCH_CAPABILITIES`). What an `openmp` / `none` target's execute runs is unchanged.
     # Re-pinned within PR-2's review (round 1), before any run was stamped execute-6: the summary
-    # command empties its output path before the stats run (a read-only file there survived it).
-    "execute-6": "075d2ad0d6f434ae9cff64930f21d0d5e5c8a2ff1e0a73ac837f5270f1f89c72",
+    # command empties its output path before the stats run (a read-only file there survived it);
+    # and `defined_kernels` blanks every CUDA `__name__(…)` attribute, a reader no execute calls.
+    "execute-6": "56dbc9f38412d547c503a6c34ac62772ad7c4b508035661e559fa581a0ab2b1a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

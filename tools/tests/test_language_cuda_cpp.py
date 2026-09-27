@@ -1748,6 +1748,17 @@ class DeviceTraceTests(unittest.TestCase):
                           "qualified_k", "c_k", "split_k"))
         self.assertEqual(cuda_trace.defined_kernels("__device__ int f(int x);\nint main() {}\n"),
                          ())
+        # One construct per row, where the rows above would hide it: an explicit specialization
+        # read alone (above, the primary template already named `tmpl_k`), the bracketed and
+        # the other CUDA `__name__(…)` attributes, each of which carries a parenthesis.
+        for text, name in (
+                ("template <> __global__ void spec_k<double>(double* x) {}\n", "spec_k"),
+                ('__global__ [[deprecated("old")]] void dep_k(int* x) {}\n', "dep_k"),
+                ("__global__ void __cluster_dims__(2, 1, 1) cl_k(int* x) {}\n", "cl_k"),
+                ("__global__ void __maxnreg__(32) reg_k(int* x) {}\n", "reg_k"),
+                ("__global__ void __launch_bounds__(128, 2) lb_k(int* x) {}\n", "lb_k")):
+            with self.subTest(text=text):
+                self.assertEqual(cuda_trace.defined_kernels(text), (name,))
 
     def test_the_registry_serves_the_trace(self) -> None:
         self.assertIs(registry.capability_module("parallel", "cuda", "device_trace"), cuda_trace)
