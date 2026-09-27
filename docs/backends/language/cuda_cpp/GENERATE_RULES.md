@@ -77,6 +77,15 @@ for it: the run is traced on the device, and a kernel the node's sources define 
 fails the run (issue #307). Measured on R4-b PR-6's billed run: a flux component with such a
 fallback passed Validate at a site where every kernel launch failed.
 
+Neither the floor nor the trace sees whether a kernel does its loop's work: the floor asks that a
+kernel exist, and the trace that each defined kernel ran at least once. A parallelizable loop the
+plan names that the source computes on the host — beside a stub kernel, or behind a branch that
+sends every case the run covers to the host (a size threshold above them) — and a plan that drops
+such a loop to keep it on the host without saying why, are `generate.verify`'s to fail (G6). The
+producer is told the same, and told that a kernel the trace never saw is launched where the cases
+reach it with a launch configuration the device accepts, and removed only when its work is not
+needed, never moved to a host loop (issue #307 PR-3).
+
 ## 5. The `problem` model gates
 
 The Fortran binding's three gates, read over the namespace-scope function definitions of the

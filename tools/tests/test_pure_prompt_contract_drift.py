@@ -674,7 +674,19 @@ PINNED: dict[str, str] = {
     # version being a member of the compile, generate and validate transformation tuples
     # (`tools/derivation.py` `transformation_versions`) — every node's Compile, Generate and
     # Validate keys move, the Fortran nodes' included.
-    "pure-51": "7c422cfc53f5a8477c7fca0e56b215828d9d1e0ff04cc5bc07cc24c717317deb",}
+    "pure-51": "7c422cfc53f5a8477c7fca0e56b215828d9d1e0ff04cc5bc07cc24c717317deb",
+    # pure-52 (issue #307 PR-3): the `cuda_cpp` fragments say what the device-trace gate cannot
+    # see — the presence floor asks only that a kernel exist, so `generate.verify`'s G6 scope now
+    # fails a parallelizable loop the plan names that runs on the host (beside a stub kernel, or
+    # behind a branch the cases never leave), and a plan that drops such a loop without saying
+    # why; the producer's `target_lowering_floor` says each launch must do its loop's work and
+    # that a kernel the trace never saw is launched where the cases reach it with a valid launch
+    # configuration, and removed only when its work is not needed, never moved to a host loop.
+    # Composed for `fortran`, every `pure_*.txt` is byte-identical to origin/main 696886c5's
+    # (measured by composing each through `_compose_language_fragments` in both trees); for
+    # `cuda_cpp`, exactly `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The
+    # bump's usual side effects apply to every language, as pure-51's comment above states.
+    "pure-52": "9ca29060064d8f0c186f8849cd28dec69cdd88302b7f02ee5e4b2f42e9ed5926",}
 
 
 def _contract_tuple() -> dict[str, object]:
