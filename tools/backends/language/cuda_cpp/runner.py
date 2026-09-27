@@ -371,12 +371,18 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # handler of the leaf's sources runs after the harness has written the run's outputs (round
     # 3 of this change's review — a C++ program otherwise runs them after `main` returns, and a
     # model source's destructor rewrote `diagnostics.json` there with every gate green).
+    # `std::_Exit` also skips the exit hook through which a CUDA profiler flushes its kernel
+    # records, so a trace of the run held no kernel and the device-kernel gate refused a node
+    # whose kernels ran (issue #307, measured at a gpu site with the profiler the trace uses).
+    # `cudaDeviceReset` flushes them first; it runs no code of the node's sources.
     a("// Every exit ends here: flush, then end the process with no destructor or exit handler of")
-    a("// the node's sources running after the harness has written the run's outputs.")
+    a("// the node's sources running after the harness has written the run's outputs. The device")
+    a("// reset first hands a profiler tracing the run the kernel records it would otherwise lose.")
     a("[[noreturn]] void finish(int code) {")
     a("  std::cout.flush();")
     a("  std::cerr.flush();")
     a("  std::fflush(nullptr);")
+    a("  (void)cudaDeviceReset();")
     a("  std::_Exit(code);")
     a("}")
     a("")

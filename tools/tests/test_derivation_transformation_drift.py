@@ -451,6 +451,13 @@ PINNED_RENDER: dict[str, str] = {
     # execute body reads and no renderer calls; `perf_parallelism` is unchanged. Re-pinned again in
     # that PR's round 3 for `launch_argv_prefix`, which the post-execute gate reads.
     "render-5": "35c326ad415d8a4635380ad6424bcee2294e2096a137497745b65f024abf0d3d",
+    # Bumped (issue #307): the CUDA C++ runner's `finish` resets the device before `std::_Exit`.
+    # `_Exit` skipped the exit hook through which the kernel trace's profiler flushes, so the
+    # trace of a node whose kernels ran held none (measured at the gpu site). A bump, not a
+    # re-pin: certified `cuda_cpp` physics outputs carry the old runner, and a reused one would
+    # be refused by the device-kernel gate again. Every node's Generate key moves; the Fortran
+    # render is unchanged.
+    "render-6": "33523967701b69094b4512b995d3e2044da023ed46628580491d3fcf3dcb537f",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
