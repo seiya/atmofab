@@ -215,16 +215,14 @@ together with the bundle's `target_lowering_plan.parallelization`.
     language's statements. R4-b PR-4 cleared the leftovers a `cuda_cpp` leaf would read (the Compile
     phase contract's statement spellings, the `harness` template's import keyword); what remains is listed in
     `TODO.md` (the prompt-templates row).
-  - **A language may omit `runner_render` alone.** `cuda_cpp` (issue #289, R4-b PR-4) declares
-    `LANGUAGE_CAPABILITIES_EVERY_NODE`, the language half of `control_file` and
-    `interface_header`, and not `runner_render`: its `infrastructure` harness — whose leaf authors
-    the model and the runner, while the host authors the build control file and the
-    published-surface header — runs, and a `component` / `problem` node of it is refused at
-    launch. The control-file half is not optional for any language a node is built in: a bundle
-    has no shape without a host-authored control file (`Conductor._bundle_shape`), and the leaf
-    may not author one. Each `source_reading` gate only a physics node reaches is a REFUSAL in
-    that backend rather than a pass, so a caller that reaches one anyway is not handed a
-    certification of a source nothing read.
+  - **A language may omit `runner_render` alone.** The registry allows it, and a language that
+    does runs only its `infrastructure` harness — whose leaf authors the model and the runner,
+    while the host authors the build control file (and, for `cuda_cpp`, the published-surface
+    header) — with a `component` / `problem` node of it refused at launch. `cuda_cpp` was that
+    shape from issue #289 R4-b PR-4 until PR-6 declared `runner_render` (its runner and checks
+    header over `harness_cpp_gpu`); no declared language is that shape today. The control-file
+    half is not optional for any language a node is built in: a bundle has no shape without a
+    host-authored control file (`Conductor._bundle_shape`), and the leaf may not author one.
   - **`interface_header`** is the one capability a language declares when its sources are
     compiled against another's DECLARATIONS: the host renders them from the node's IR
     `public_api` and writes them beside the bundle's files (`Conductor._write_interface_header`),

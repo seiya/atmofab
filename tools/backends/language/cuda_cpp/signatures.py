@@ -300,19 +300,26 @@ def _stanzas(decls: cpp_decls.Declarations, namespace: tuple[str, ...] | None) -
     # parameter TYPES do — a declaration may leave its parameters unnamed or name them otherwise,
     # which C++ allows — so the overload test compares types only, and the stanza compared
     # against §5.1 (which pins the names) is the DEFINITION's when there is one.
-    by_name: dict[str, set[tuple[str, ...]]] = {}
+    by_name: dict[str, dict[tuple[str, ...], str]] = {}
     for fn in decls.functions:
         if not here(fn.namespace):
             continue
-        by_name.setdefault(fn.name, set()).add(
-            tuple(stanza_atoms([fn.returns, *(ptype for ptype, _n in fn.params)])))
+        spelled = f"{fn.returns}({', '.join(ptype for ptype, _n in fn.params)})"
+        by_name.setdefault(fn.name, {}).setdefault(
+            tuple(stanza_atoms([fn.returns, *(ptype for ptype, _n in fn.params)])), spelled)
         if fn.name not in ops or fn.defined:
             ops[fn.name] = _function_stanza(fn)
     for name, variants in sorted(by_name.items()):
         if len(variants) > 1:
+            # The types are compared as SPELLED, so an alias and the type it names (`dp` and
+            # `double`) are two signatures here even where the compiler would call them one:
+            # the message shows each spelling so the author can see which one to copy.
+            shown = "; ".join(f"`{v}`" for v in variants.values())
             errors.append(
                 f"procedure '{name}' is declared with {len(variants)} different signatures (an "
-                "overload, or a declaration that disagrees with its definition)")
+                "overload, or a declaration that disagrees with its definition): "
+                f"{shown} — spell every declaration's types exactly as the header declares "
+                "them, an alias such as `dp` included, not the type it names")
     types: dict[str, list[str]] = {}
     for st in decls.structs:
         if not here(st.namespace):
@@ -504,11 +511,40 @@ def _rank_of(ctype: str) -> int:
     return 1 if "std::vector<" in ctype else 0
 
 
+# The words of a lowered type that name nothing a namespace declares: the fundamental types and
+# the qualifiers. Every other unqualified identifier in a published parameter type is a name of
+# the dependency's own header (`dp`, a published `struct`, an `interfaces` alias).
+_TYPE_KEYWORDS = frozenset({
+    "const", "volatile", "unsigned", "signed", "short", "long", "int", "double", "float", "char",
+    "bool", "void", "auto", "struct", "__restrict__"})
+
+
+def _qualified_type(ctype: str, namespace: tuple[str, ...]) -> str:
+    """`ctype` with every unqualified header name qualified by `namespace`, so a consumer that
+    copies it from its prompt names `dep_model::dp` rather than an identifier its own translation
+    unit does not declare. A name already qualified (`atmofab::View`, `std::vector`), a namespace
+    name before `::`, a keyword and a number are left alone."""
+    if not namespace:
+        return ctype
+    prefix = "::".join(namespace) + "::"
+
+    def qualify(m: re.Match[str]) -> str:
+        word = m.group(0)
+        before, after = ctype[:m.start()].rstrip(), ctype[m.end():].lstrip()
+        if word in _TYPE_KEYWORDS or before.endswith("::") or after.startswith("::"):
+            return word
+        return prefix + word
+
+    return re.sub(r"\b[A-Za-z_]\w*\b", qualify, ctype)
+
+
 def published_interface(source_text: str, name: str) -> dict[str, Any] | None:
     """The call-site interface of the function `name` a certified source defines: its header as
     one line, its argument order, and each argument's type and rank (`rank` read off the lowered
     type: a view's rank, 1 for a `std::vector`, else 0). None when it is not defined. Never
-    raises."""
+    raises. A type is shown as a CONSUMER must spell it: a name the dependency's header declares
+    (`dp`, a published type) is qualified by the function's namespace (`_qualified_type`), since
+    the consumer's own sources declare no such name."""
     try:
         decls = cpp_decls.read(source_text)
     except Exception:  # noqa: BLE001 - orientation only (the caller's contract)
@@ -517,11 +553,12 @@ def published_interface(source_text: str, name: str) -> dict[str, Any] | None:
     if len(candidates) != 1:
         return None
     fn = candidates[0]
-    params = ", ".join(f"{t} {n}".strip() for t, n in fn.params)
+    typed = [(_qualified_type(t, fn.namespace), n) for t, n in fn.params]
+    params = ", ".join(f"{t} {n}".strip() for t, n in typed)
     return {
-        "interface": f"{fn.returns} {fn.name}({params})",
-        "argument_order": [n for _t, n in fn.params],
-        "arguments": [{"name": n, "type": t, "rank": _rank_of(t)} for t, n in fn.params],
+        "interface": f"{_qualified_type(fn.returns, fn.namespace)} {fn.name}({params})",
+        "argument_order": [n for _t, n in typed],
+        "arguments": [{"name": n, "type": t, "rank": _rank_of(t)} for t, n in typed],
     }
 
 

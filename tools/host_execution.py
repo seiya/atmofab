@@ -133,6 +133,22 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
                        platform_probe=_platform_probe(profile.hardware_class))
 
 
+def perf_parallelism(target: dict[str, Any]) -> tuple[int, int, int]:
+    """`(mpi_ranks, threads_per_rank, gpu_devices)` a run of `target` (a target profile DOCUMENT,
+    `TargetProfile.doc`) states in its performance record — what a host-rendered runner passes the
+    harness's `write_perf`. A hardware class that declares `perf_facts` answers it
+    (`parallelism`); one that declares none is one rank of the profile's threads on no device,
+    which is what the in-process CPU launch runs. Pure; raises `KeyError` / `ValueError` for a
+    document without the two fields, which the profile loader requires."""
+    hardware_class = str(target["hardware"]["class"])
+    threads = int(target["execution"]["threads_per_rank"])
+    if "perf_facts" in registry.get("hardware", hardware_class).backend_provides:
+        facts = registry.capability_module("hardware", hardware_class, "perf_facts")
+        ranks, per_rank, devices = facts.parallelism(threads)
+        return (int(ranks), int(per_rank), int(devices))
+    return (1, threads, 0)
+
+
 def local_platform_record(probe: tuple[str, ...] | None = None) -> dict[str, str | None]:
     """The machine a local Validate run executed on, for `trial_meta.json#environment.platform`:
     `platform.machine()`, `platform.node()`, the CPU model name from `/proc/cpuinfo`, and the

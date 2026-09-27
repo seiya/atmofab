@@ -2531,7 +2531,10 @@ class RegistryConsistencyTests(unittest.TestCase):
                           # the validator show a leaf, in the runner language's words.
                           "checks_abi_publication_violation",
                           "bound_state_publication_violation", "hidden_bound_state_remedy",
-                          "state_binding_module_reason", "state_binding_storage_reason"),
+                          "state_binding_module_reason", "state_binding_storage_reason",
+                          # Issue #289, R4-b PR-6: the header that declares the checks ABI for a
+                          # language whose checks source does not carry its own declarations.
+                          "render_checks_header"),
         # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
         # and the make control-file gate take off a language's source reader; what the §5.1
         # gates and the dependency-fact resolver take off its signature module; and what the

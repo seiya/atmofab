@@ -14391,6 +14391,8 @@ class WriteRunnerTest(unittest.TestCase):
         runner.render_runner = lambda ir, spec_id, harness, target: f"! rendered by zz for {spec_id}\n"
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
+        runner.render_checks_header = lambda ir, spec_id: (f"{spec_id}_checks.zzh",
+                                                            f"// declared for {spec_id}\n")
         other.runner = runner
         # The names the host gives this language's files are its `bundle_facts` (issue #289).
         other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
@@ -14412,7 +14414,11 @@ class WriteRunnerTest(unittest.TestCase):
                 c._write_runner(refs)
             text = (repo / refs.source_dir() / "src"
                     / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
+            # The checks header the backend renders is written beside the runner (R4-b PR-6).
+            header = (repo / refs.source_dir() / "src"
+                      / f"{self.SID}_checks.zzh").read_text(encoding="utf-8")
         self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
+        self.assertEqual(f"// declared for {self.SID}\n", header)
 
     def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
         """The clauses added to fix the previous round, which were themselves unobserved.
@@ -17781,6 +17787,47 @@ class DeterministicSyntaxTest(unittest.TestCase):
         self.assertIn("harness_mod.f90", seen["leaf"])
         # The host-rendered runner is the file the probe exists to leave out.
         self.assertNotIn("adv1d_runner.f90", seen["leaf"])
+
+    def test_the_syntax_leaf_probe_carries_the_host_headers_the_leaf_includes(self) -> None:
+        """A host-rendered HEADER is context the leaf's sources include, not a subject of the
+        probe (issue #289, R4-b PR-6): the `cuda_cpp` checks source includes the checks header
+        and the model its published-surface header, so a probe without them fails for a reason
+        that is not the leaf's source and records `leaf` falsely. Asserted on the directory the
+        probe was handed; the host-rendered runner still stays out."""
+        import tempfile
+        from unittest import mock
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            src = repo / refs.source_dir() / "src"
+            (src / "adv1d_checks.cuh").write_text("// host\n", encoding="utf-8")
+            (src / "adv1d_leaf.cuh").write_text("// not host\n", encoding="utf-8")
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
+            base = self._attributing_syntax(leaf_probe_ok=True)
+
+            def _fn(args):
+                pd = Path(str(args.get("project_dir", "")))
+                if pd.name.endswith("_leaf_probe"):
+                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
+                return base(args)
+
+            from tools.backends.language.fortran import syntax as fortran_syntax
+            with self._patch_syntax(_fn), mock.patch.object(
+                    fortran_syntax, "STAGED_SUFFIXES",
+                    (*fortran_syntax.STAGED_SUFFIXES, ".cuh")), mock.patch.object(
+                    wc.Conductor, "_host_rendered_src_names",
+                    return_value=frozenset({"adv1d_runner.f90", "adv1d_checks.cuh",
+                                            "Makefile"})):
+                out = c._gate_syntax_check(refs, "child-1")
+        self.assertEqual(out["attribution"], "unattributed_interaction")
+        self.assertIn("adv1d_checks.cuh", seen["leaf"])
+        self.assertNotIn("adv1d_leaf.cuh", seen["leaf"])  # not host: the probe copies no more
+        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
+        self.assertNotIn("Makefile", seen["leaf"])
 
     def test_a_skipped_leaf_probe_records_unprobed_rather_than_blaming_the_leaf(self) -> None:
         """`unprobed` is a distinct answer from `leaf`, and only one of them is true.
@@ -21347,3 +21394,247 @@ class ConductTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class CudaCppPhysicsHostFilesTest(unittest.TestCase):
+    """The host files a `cuda_cpp` physics node's Generate carries beside the leaf's (issue #289,
+    R4-b PR-6): the checks header `_write_runner` renders, and each closure member's interface
+    header `_write_dependency_headers` copies into `src/` and `_stage_dependency_sources` stages
+    into the object directory — both from the BOUND file, sha-checked. And the gates attribute
+    all of them to the host (`_host_rendered_src_names`)."""
+
+    SID = "boundary_x"
+    DEP = "component/dep_a@0.1.0"
+    HARNESS = "infrastructure/harness_cpp_gpu@0.1.0"
+
+    def _conductor(self, repo: Path, target: str = "cpp_gpu") -> _FakeConductor:
+        from tools import target_profile as tp
+        c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                           orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                           env={}, target_profile=tp.load_target_profile(REPO_ROOT, target))
+        c.calls = []
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(target_id="cpp_gpu",
+            node_key=f"component/{self.SID}@0.1.0", spec_path=f"spec/component/{self.SID}",
+            ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
+
+    def _seed(self, repo: Path, refs: wc.NodeRefs) -> None:
+        import yaml as _yaml
+
+        from tools.tests.test_fortran_runner import _boundary_ir
+        ir = _boundary_ir()
+        ir.pop("impl_defaults", None)
+        ir["dependency"]["direct_deps"] = [{"node_key": self.DEP}]
+        ir_dir = repo / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "spec.ir.yaml").write_text(_yaml.safe_dump(ir), encoding="utf-8")
+
+    def _bindings(self, repo: Path) -> list[dict]:
+        """A certified-looking source directory per closure member, and its binding."""
+        out = []
+        for nk in (self.HARNESS, self.DEP):
+            sid = wc.spec_id_of(nk)
+            src = repo / "workspace" / "certified" / sid / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / f"{sid}_model.cu").write_text(f"// {sid} model\n", encoding="utf-8")
+            (src / f"{sid}_model.cuh").write_text(f"// {sid} header\n", encoding="utf-8")
+            rel = f"workspace/certified/{sid}/src"
+            out.append({
+                "node_key": nk, "pipeline_ref": "p", "source_id": "s", "output_hash": "h",
+                "model_source_ref": f"{rel}/{sid}_model.cu",
+                "model_source_sha256": hashlib.sha256(
+                    (src / f"{sid}_model.cu").read_bytes()).hexdigest(),
+                "interface_header_ref": f"{rel}/{sid}_model.cuh",
+                "interface_header_sha256": hashlib.sha256(
+                    (src / f"{sid}_model.cuh").read_bytes()).hexdigest()})
+        return out
+
+    def test_every_host_file_is_attributed_to_the_host(self) -> None:
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            with mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
+                                   return_value=[self.HARNESS, self.DEP]):
+                names = c._host_rendered_src_names(refs)
+            self.assertEqual({f"{self.SID}_runner.cu", f"{self.SID}_checks.cuh", "Makefile",
+                              f"{self.SID}_model.cuh", "harness_cpp_gpu_model.cuh",
+                              "dep_a_model.cuh"}, set(names))
+
+    def test_a_fortran_node_gains_no_host_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=f"component/{self.SID}@0.1.0",
+                               spec_path=f"spec/component/{self.SID}", ir_id="i1",
+                               pipeline_id="p1", source_id="s1", binary_id="b1")
+            self._seed(repo, refs)
+            c = self._conductor(repo, "fortran_cpu")
+            self.assertIsNone(c._checks_header(refs))
+            self.assertEqual({f"{self.SID}_runner.f90", "Makefile"},
+                             set(c._host_rendered_src_names(refs)))
+            c._phase_closure_bindings[(refs.node_key, "generate")] = [{"node_key": self.DEP}]
+            c._write_dependency_headers(refs)  # no interface_header: a no-op
+            self.assertFalse((repo / refs.source_dir() / "src").exists())
+
+    def test_the_checks_header_is_the_renderer_s(self) -> None:
+        from tools.backends.language.cuda_cpp import runner as cpp_runner
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._seed(repo, refs)
+            import yaml as _yaml
+            ir = _yaml.safe_load((repo / refs.ir_ref / "spec.ir.yaml").read_text())
+            self.assertEqual(cpp_runner.render_checks_header(ir, self.SID),
+                             self._conductor(repo)._checks_header(refs))
+
+    def test_the_dependency_headers_are_the_bound_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            c._phase_closure_bindings[(refs.node_key, "generate")] = self._bindings(repo)
+            c._write_dependency_headers(refs)
+            src = repo / refs.source_dir() / "src"
+            self.assertEqual("// dep_a header\n", (src / "dep_a_model.cuh").read_text())
+            self.assertEqual("// harness_cpp_gpu header\n",
+                             (src / "harness_cpp_gpu_model.cuh").read_text())
+            self.assertFalse((src / "dep_a_model.cu").exists())
+            # A certified directory rewritten under the running attempt is refused.
+            (repo / "workspace/certified/dep_a/src/dep_a_model.cuh").write_text("// other\n")
+            with self.assertRaisesRegex(RuntimeError, "refusing to compile bytes"):
+                c._write_dependency_headers(refs)
+            # A binding with no header, for a language whose sources include one, is refused.
+            bindings = self._bindings(repo)
+            del bindings[1]["interface_header_ref"]
+            c._phase_closure_bindings[(refs.node_key, "generate")] = bindings
+            with self.assertRaisesRegex(RuntimeError, "bound no interface header"):
+                c._write_dependency_headers(refs)
+
+    def test_build_stages_each_header_beside_its_source(self) -> None:
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            c._phase_closure_bindings[(refs.node_key, "build")] = self._bindings(repo)
+            obj = repo / "workspace" / "tmp" / "arid" / "build"
+            with mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
+                                   return_value=[self.HARNESS, self.DEP]):
+                staged = c._stage_dependency_sources(refs, obj, phase="build")
+                self.assertEqual([self.HARNESS, self.DEP], [b["node_key"] for b in staged])
+                self.assertEqual({"harness_cpp_gpu_model.cu", "harness_cpp_gpu_model.cuh",
+                                  "dep_a_model.cu", "dep_a_model.cuh"},
+                                 {p.name for p in obj.iterdir()})
+                (repo / "workspace/certified/dep_a/src/dep_a_model.cuh").write_text("// x\n")
+                with self.assertRaisesRegex(RuntimeError, "dep_a_model.cuh hashes to"):
+                    c._stage_dependency_sources(refs, obj, phase="build")
+
+    def test_run_phase_routes_a_refused_header_copy_to_fail_closed(self) -> None:
+        from unittest import mock
+
+        from tools.tests.orchestration_fixtures import ensure_spec_entry
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._seed(repo, refs)
+            ensure_spec_entry(repo, self.HARNESS)
+            ensure_spec_entry(repo, self.DEP)
+            c = self._conductor(repo)
+            with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                   return_value=False), \
+                    mock.patch.object(wc.Conductor, "_phase_derivation",
+                                      return_value={"derivation_key": "k",
+                                                    "derivation_inputs": {}}), \
+                    mock.patch.object(wc.Conductor, "_write_dependency_headers",
+                                      side_effect=RuntimeError("header drift")):
+                outcome = c.run_phase(refs, "generate")
+            self.assertEqual(outcome.status, "fail")
+            self.assertEqual(outcome.decision.action, "fail_closed")
+            self.assertEqual(outcome.decision.reason, "generate_dependency_headers_failed")
+
+
+@unittest.skipUnless(shutil.which("nvcc"), "the CUDA compiler driver is not installed")
+class CudaCppLintAttributionTest(unittest.TestCase):
+    """Decision 10 of issue #289's R4-b PR-6 plan: the lint attribution needs no new rule for a
+    host-rendered runner that includes the checks header and the harness header. Both headers are
+    host files of a suffix the linter is not handed, so they are copied to BOTH probes as
+    context (`_attribute_lint_findings`), and the runner compiles alone in the host probe — a
+    finding in the leaf's checks source is the leaf's, one in the runner is the host's. Measured
+    with the real linter over a real render."""
+
+    SID = "prob_rank"
+
+    def setUp(self) -> None:
+        # `_attribute_lint_findings` imports the build-runtime server from the checkout it runs
+        # in; the fixture repository is a scratch directory, so the real one is put on the path.
+        import sys
+        server_dir = str(REPO_ROOT / "mcp_servers")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+
+    def _tree(self, src: Path, *, leaf_finding: bool, host_finding: bool) -> set[str]:
+        from tools.backends.language.cuda_cpp import header as cpp_header
+        from tools.backends.language.cuda_cpp import runner as cpp_runner
+        from tools.tests import test_language_cuda_cpp_runner as fixtures
+        ir = fixtures._smoke_ir()
+        runner = cpp_runner.render_runner(ir, self.SID, "harness_cpp_gpu",
+                                          target=fixtures.GPU_TARGET)
+        if host_finding:
+            runner = runner.replace("int main(int argc, char** argv) {",
+                                    "int main(int argc, char** argv) {\n  int unused_host = 0;")
+        checks = fixtures._checks_stub(self.SID, cpp_runner._bound_state(ir))
+        if leaf_finding:
+            checks = checks.replace("void get_time(double& t) { t = 0.5; }",
+                                    "void get_time(double& t) { int unused_leaf = 0; t = 0.5; }")
+        name, text = cpp_runner.render_checks_header(ir, self.SID)
+        files = {
+            f"{self.SID}_runner.cu": runner,
+            name: text,
+            "harness_cpp_gpu_model.cuh": cpp_header.render(
+                "harness_cpp_gpu", fixtures._harness_public_api()),
+            f"{self.SID}_model.cuh": cpp_header.render(self.SID, {}),
+            f"{self.SID}_checks.cu": checks,
+            f"{self.SID}_model.cu": f'#include "{self.SID}_model.cuh"\n'
+                                    f"namespace {self.SID}_model {{\n"
+                                    f"void {self.SID}__step(double& x) {{ x = 1.0; }}\n}}\n",
+        }
+        src.mkdir(parents=True, exist_ok=True)
+        for rel, body in files.items():
+            (src / rel).write_text(body, encoding="utf-8")
+        return {f"{self.SID}_runner.cu", name, "harness_cpp_gpu_model.cuh",
+                f"{self.SID}_model.cuh", "Makefile"}
+
+    def _attribute(self, *, leaf_finding: bool, host_finding: bool) -> tuple[str, str | None]:
+        from unittest import mock
+
+        from tools import target_profile as tp
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(target_id="cpp_gpu", node_key=f"problem/{self.SID}@0.1.0",
+                               spec_path=f"spec/problem/{self.SID}", ir_id="i1",
+                               pipeline_id="p1", source_id="s1", binary_id="b1")
+            host = self._tree(repo / refs.source_dir() / "src", leaf_finding=leaf_finding,
+                              host_finding=host_finding)
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                               env={}, target_profile=tp.load_target_profile(REPO_ROOT, "cpp_gpu"))
+            with mock.patch.object(wc.Conductor, "_host_rendered_src_names",
+                                   return_value=frozenset(host)):
+                return c._attribute_lint_findings(refs, "child-lint", "nvcc", [])
+
+    def test_a_finding_in_the_leaf_s_checks_source_is_the_leaf_s(self) -> None:
+        category, excerpt = self._attribute(leaf_finding=True, host_finding=False)
+        self.assertEqual("lint_findings", category)
+        self.assertIn("unused_leaf", excerpt or "")
+        self.assertNotIn("unused_host", excerpt or "")
+
+    def test_a_finding_in_the_rendered_runner_is_the_host_s(self) -> None:
+        category, excerpt = self._attribute(leaf_finding=False, host_finding=True)
+        self.assertEqual("host_rendered_lint_findings", category)
+        self.assertIn("unused_host", excerpt or "")

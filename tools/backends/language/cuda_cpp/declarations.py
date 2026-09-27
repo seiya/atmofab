@@ -53,6 +53,9 @@ class Function:
     params: tuple[tuple[str, str], ...]
     defined: bool
     line: int
+    #: The definition's body — the text between its braces, masked and with every directive line
+    #: blanked (`read`'s own view) — or "" for a declaration. The `problem` model gates read it.
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,10 +152,12 @@ def _drop_top_level_const(ctype: str) -> str:
     """A BY-VALUE parameter's type without a top-level `const`, which is not part of a function's
     type (`void f(const double x)` declares `void f(double)`); a reference or a pointer keeps its
     `const`, which is."""
-    if ctype.endswith(("&", "*")):
-        return ctype
-    if ctype.endswith("*const"):
-        return ctype[:-len("const")]  # `T* const` (normalized `T*const`): a const pointer value
+    if "*" in ctype or "&" in ctype:
+        # A pointer or a reference keeps the `const` of what it points to; only a `const` of the
+        # pointer VALUE itself (`T* const`, normalized `T*const`) is top-level. A qualifier after
+        # the `*` (`const T* __restrict__`) does not make the pointee writable (round 5 of this
+        # change's review: the element's `const` was dropped from exactly that spelling).
+        return re.sub(r"(?<=[*&])const$", "", ctype)
     ctype = ctype.removesuffix(" const")
     return ctype.removeprefix("const ")
 
@@ -207,7 +212,7 @@ _TYPEDEF_RE = re.compile(rf"^\s*typedef\s+(?P<target>.+?)\s*(?P<name>{_IDENT})\s
 
 
 def _function_from(head_and_params: str, qualifiers: str, namespace: tuple[str, ...],
-                   defined: bool, line: int) -> Function | None:
+                   defined: bool, line: int, body: str = "") -> Function | None:
     """A function from the statement text up to and including its parameter list, or None when
     the statement is not a function declarator."""
     text = _strip_standard_attributes(head_and_params)
@@ -234,7 +239,7 @@ def _function_from(head_and_params: str, qualifiers: str, namespace: tuple[str, 
     name = qualified.split("::")[-1]
     scope = tuple(qualified.split("::")[:-1])
     return Function(name=name, namespace=namespace + scope, head=head, returns=returns,
-                    params=params, defined=defined, line=line)
+                    params=params, defined=defined, line=line, body=body)
 
 
 def _members(body: str) -> tuple[tuple[str, str], ...]:
@@ -365,7 +370,7 @@ def read(text: str) -> Declarations:
                 head_text = _strip_standard_attributes(item).strip()
                 close = head_text.rfind(")")
                 fn = _function_from(head_text[:close + 1], head_text[close + 1:], namespace(),
-                                    True, line)
+                                    True, line, code[i + 1:end - 1])
                 if fn is not None:
                     out.functions.append(fn)
                 i = end
@@ -427,10 +432,28 @@ def _statement(raw: str, namespace: tuple[str, ...], line: int, out: Declaration
             if fn is not None:
                 out.functions.append(fn)
                 return
-    m = re.search(rf"({_IDENT})\s*(?:\[[^\]]*\]\s*)*$", before_eq.strip())
-    if m is not None and before_eq.strip()[:m.start()].strip():
+    declarator = _without_brace_initializer(before_eq.strip())
+    m = re.search(rf"({_IDENT})\s*(?:\[[^\]]*\]\s*)*$", declarator)
+    if m is not None and declarator[:m.start()].strip():
         out.variables.append(Variable(name=m.group(1), namespace=namespace,
                                       statement=normalize(text), line=line))
+
+
+def _without_brace_initializer(text: str) -> str:
+    """`text` without a trailing brace initializer (`std::vector<double> u{}`, `int n{64}`,
+    `double a[2]{{1, 2}}`): the declarator ends before it. Text that does not end in a balanced
+    `{...}` is returned as it is."""
+    if not text.endswith("}"):
+        return text
+    depth = 0
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == "}":
+            depth += 1
+        elif text[i] == "{":
+            depth -= 1
+            if depth == 0:
+                return text[:i].rstrip()
+    return text
 
 
 def _last_param_close(text: str) -> int:

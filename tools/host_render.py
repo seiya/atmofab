@@ -139,6 +139,19 @@ def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_
     return _module(language).render_runner(ir, spec_id, harness_spec_id, target=target)
 
 
+def render_checks_header(language: Any, ir: dict[str, Any], spec_id: str
+                         ) -> tuple[str, str] | None:
+    """`(basename, text)` of the header that DECLARES the checks ABI for the leaf's checks
+    source to define, or None for a language whose checks module carries its own declarations.
+
+    A language that compiles each source on its own and checks no variable's type across them
+    at link (CUDA C++) needs the declarations rendered once and included by both the runner and
+    the leaf's checks source, so a definition of another type is a compile error instead of a
+    silent mismatch; the host writes the header beside the runner (issue #289, R4-b PR-6).
+    Deterministic and pure; raises `RenderError` for an IR `render_runner` refuses too."""
+    return _module(language).render_checks_header(ir, spec_id)
+
+
 def assert_harness_pin(
     language: Any,
     ir: dict[str, Any],

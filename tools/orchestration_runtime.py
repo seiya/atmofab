@@ -2949,7 +2949,8 @@ def _resolve_certified_closure_binding(
     consumer stages and links right now, identified and hashed.
 
     Returns `({node_key, pipeline_ref, source_id, model_source_ref, model_source_sha256,
-    output_hash}, None)` on success and `(None, <reason>)` otherwise. Pure and NEVER
+    output_hash}, None)` on success — plus `interface_header_ref` / `interface_header_sha256` for
+    a language that declares `interface_header` — and `(None, <reason>)` otherwise. Pure and NEVER
     raises; the reason is phrased as the build precondition it is (the dependency closure
     must be certified first), because the conductor re-raises it verbatim as a transport
     fail_closed.
@@ -2986,18 +2987,36 @@ def _resolve_certified_closure_binding(
         digest = hashlib.sha256(model_src.read_bytes()).hexdigest()
     except Exception as exc:  # noqa: BLE001 - unreadable staged source is a precondition failure
         return (None, f"cannot read the certified model source of {node_key}: {exc}")
-    return (
-        {
-            "node_key": node_key,
-            "pipeline_ref": sel.pipeline_ref,
-            "source_id": sel.source_id,
-            "model_source_ref": _normalize_rel_posix(
-                model_src.relative_to(repo_root).as_posix()),
-            "model_source_sha256": digest,
-            "output_hash": sel.output_hash,
-        },
-        None,
-    )
+    binding: dict[str, Any] = {
+        "node_key": node_key,
+        "pipeline_ref": sel.pipeline_ref,
+        "source_id": sel.source_id,
+        "model_source_ref": _normalize_rel_posix(model_src.relative_to(repo_root).as_posix()),
+        "model_source_sha256": digest,
+        "output_hash": sel.output_hash,
+    }
+    # A language whose consumers compile against a host-rendered HEADER of the dependency's
+    # published surface (`interface_header`, issue #289) binds that header too: it is the file
+    # beside the certified model source, rendered when the dependency was generated — the
+    # declarations the dependency's own Build compiled — and it is COPIED, never re-rendered, so
+    # what a consumer compiles against is what the dependency was certified with (R4-b PR-6). A
+    # language without one reads a published surface off the defining source itself, and binds
+    # no key, so its binding is unchanged.
+    language = resolver.target.toolchain["language"]
+    if backend_registry.provides("language", language, "interface_header"):
+        header_module = backend_registry.capability_module(
+            "language", language, "interface_header")
+        header = model_src.parent / header_module.basename(_parse_node_key_strict(node_key)[1])
+        try:
+            header_digest = hashlib.sha256(header.read_bytes()).hexdigest()
+        except Exception as exc:  # noqa: BLE001 - an absent header is a precondition failure
+            return (None, (f"cannot read the certified interface header of {node_key} beside "
+                           f"its model source ({exc}); the dependency's Generate writes it — "
+                           f"re-certify the dependency (run_workflow.py --with-deps)"))
+        binding["interface_header_ref"] = _normalize_rel_posix(
+            header.relative_to(repo_root).as_posix())
+        binding["interface_header_sha256"] = header_digest
+    return (binding, None)
 
 
 def _resolve_dependency_facts(

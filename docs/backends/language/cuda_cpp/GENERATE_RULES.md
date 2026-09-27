@@ -10,10 +10,10 @@
 
 ## Scope
 
-The CUDA C++ backend serves the `infrastructure` harness node of a `cpp_gpu`-style target, whose
-leaf authors the model and the runner. A `component` or `problem` node of this language is refused
-at launch, because the host renders no CUDA C++ runner (`tools/backends/language/cuda_cpp/source.py`
-states which gates are refused and why).
+The CUDA C++ backend serves every node of a `cpp_gpu`-style target: the `infrastructure` harness,
+whose leaf authors the model and the runner, and the `component` / `problem` nodes, whose leaf
+authors the model and the checks source while the host renders the runner and the checks header
+over the certified harness (`tools/backends/language/cuda_cpp/runner.py`, issue #289 R4-b PR-6).
 
 ## 1. Lint idioms
 
@@ -42,8 +42,21 @@ transport `fail_closed`.
 - The model source is `<spec_id>_model.cu`: it includes the host-rendered
   `<spec_id>_model.cuh` and defines the published operations in `namespace <spec_id>_model`
   (`BUNDLE_BINDING.md` §1).
-- The runner includes the same header. Dependency use by a consumer model is a physics node's,
-  and is not bound (Scope).
+- The runner includes the same header; on a physics node it is host-rendered and includes the
+  harness's header and `<spec_id>_checks.cuh` (`CHECKS_ABI.md` §1).
+- A consumer model uses each direct dependency the way the build links it
+  (`source.validate_dependency_operations`): it includes the dependency's host-rendered
+  `"<dep>_model.cuh"` (the host copies it into `src/` at Generate start and stages it into the
+  object directory at Build), defines no `<dep>__*` function, and calls at least one
+  `<dep>__<op>` operation — qualified `<dep>_model::` or not — from a function body.
+- A `problem` node's header declares nothing of its operation (its IR has no signatures), so its
+  checks source declares the operation itself, in namespace `<spec_id>_model`, with exactly the
+  model's definition types; another spelling is refused (`checks_harness_isolation_violations`)
+  before it would be a link error at Build.
+- Neither the model nor the checks source includes or names the harness, and the checks source
+  does no file I/O; no leaf source — the model and every helper included — names a file stream
+  or stream buffer, a file opener, renamer or deleter, a command runner, an exit handler
+  registration or `asm`, called or not (`CHECKS_ABI.md` §4); the runner ends with `std::_Exit`.
 
 ## 4. The parallel presence floor
 
@@ -54,5 +67,39 @@ over the code only (`tools/backends/parallel/cuda/directives.py`). The floor doe
 
 ## 5. The `problem` model gates
 
-Not bound (Scope): the gate refuses a `problem` or `component` model source of this language
-rather than passing it unread.
+The Fortran binding's three gates, read over the namespace-scope function definitions of the
+model source (`source.run_problem_model_gates`); a source whose brackets do not balance is
+refused rather than read in part. A parameter is an OUTPUT when the function can write through
+it — a non-const reference, a pointer to non-const, a non-const `atmofab::View` — and a returned
+value is one more output, whether or not its `return` names anything.
+
+- **Literal outputs.** A function every one of whose output parameters is assigned whole
+  (`out = ...;`) only from literals, none depending on an input, is refused; a compound
+  `out += ...;` reads the output's previous value and so depends on an input.
+- **Dependency dataflow.** What a dependency call writes must reach an output through
+  assignments. Its candidates are the names whose storage the call's actuals hand over — at the
+  operation's output parameters as the dependency's header `<dep>_model.cuh` beside the model
+  declares them, or, without the header, at every position minus `const` / `constexpr` names and
+  functions this file defines — minus the enclosing function's parameters and names assigned
+  before the call by an assignment statement — a declaration's initializer is not one, as in the
+  Fortran binding (an inert call's inputs). An actual's names are its storage (`u`, `&u`,
+  `u[i]`, `u.data()`), else every plain name it mentions (a pointer, `as_view(u)`, `w.flux`).
+  The closure runs backward from the outputs over assignments `lhs = rhs` (a target's base name,
+  `u[i]`, `u.data[i]` and `v.data` included), over a view or
+  pointer made to point into another name's storage (`View<...> v{u.data(), ...}`,
+  `double* p = u.data();` make `u` take `v` / `p`), and — past the Fortran binding, which follows
+  no call — over calls whose parameter directions the types state: a function or kernel the model
+  source defines, a dependency operation, `cudaMemcpy` / `cudaMemcpyAsync` (each output actual
+  takes the input actuals its callee's BODY lets reach it — a function the model source defines
+  is summarized from its body, to a fixed point; a dependency operation from its declaration,
+  every input; a copy from its source argument alone). A view built in place carries its first
+  element only (`View<...>{p, {n}}` carries `p`, not the extent `n`). A call to anything else —
+  a template, which the declaration reader does not read, included — is not followed. The check
+  is PER CALL: at least one of the names each dependency call writes must reach an output, and
+  when the operation's header gives it an ARRAY output (a non-const view, an owning array or
+  vector reference, a pointer), one of its array outputs — a guard flag reaching `ok` does not
+  stand for a discarded flux. The Fortran binding pools the candidates of every call; neither
+  checks every written name, and `Generate.verify` G5 is the authority on the rest.
+- **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
+  more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
+  pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
