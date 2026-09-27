@@ -66,9 +66,10 @@ over the code only (`tools/backends/parallel/cuda/directives.py`). The floor doe
 `infrastructure` node.
 
 A failed CUDA call is a failure of the operation: it frees what it allocated and returns without
-the result, so the case's checks see an operation that did not compute. It is not reported
-through the IR's input guard, whose formula is the IR's, over the inputs; and the runner does not
-read `case_run`'s `ok` (`runner.py`). A host fallback — a path that recomputes a kernel's
+the result (a checks callback still assigns its `out` arguments). It is not reported through the
+IR's input guard, whose formula is the IR's, over the inputs, and the runner does not read
+`case_run`'s `ok` (`runner.py`) — so whether a case's checks notice the missing result depends on
+what its outputs held, and the device trace below is what holds the rule. A host fallback — a path that recomputes a kernel's
 result on the host when an allocation, copy, launch or synchronize fails — is forbidden: it makes a
 run whose kernels never executed produce correct-looking state. The producer is told (rule
 `target_lowering_floor`), `generate.verify` holds it (checklist G6), and `Validate.execute` reads
