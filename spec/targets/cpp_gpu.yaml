@@ -2,8 +2,9 @@
 # harness a node built for this target runs over. Loader and gate: tools/target_profile.py.
 # Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
 #
-# `hardware.architecture` is left out, so the device compiler builds for its default
-# architecture. To build for a particular GPU, add its compute capability, e.g.
+# `hardware.architecture` is left out, so the profile is given the gpu class's default at load,
+# `all`: the device compiler builds device code for every architecture it supports (`-arch=all`). To build for a particular GPU only, add its compute
+# capability, e.g.
 # `architecture: sm_90` (the grammar is tools/backends/hardware/gpu/perf.py).
 target_profile_version: 1
 target_id: cpp_gpu

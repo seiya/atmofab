@@ -326,7 +326,29 @@ def load_target_profile(repo_root: Path, target_id: str) -> TargetProfile:
             f"target_id: {doc['target_id']!r} is not the file stem {target_id!r}")
     if violations:
         raise TargetProfileError("target_profile_invalid", f"{rel}: {'; '.join(violations)}")
+    _fill_default_architecture(doc)
     return TargetProfile(target_id=target_id, doc=doc, sha256=sha256_hex(canonical_json_bytes(doc)))
+
+
+def _fill_default_architecture(doc: dict[str, Any]) -> None:
+    """Give a profile that states no `hardware.architecture` its class's default, when the
+    class's `perf_facts` declare one (`DEFAULT_ARCHITECTURE`; the GPU class's is `all`, device
+    code for every architecture the compiler supports). Filled BEFORE the profile's `sha256` is
+    taken, so the default is part of the target's identity: a change of it moves the Generate,
+    Build and Validate keys of that target alone, as editing the file would. A class this
+    repository does not implement is left as it is; `hardware_violations` refuses it at launch."""
+    from tools.backends import registry as backend_registry
+
+    hardware = doc["hardware"]
+    hardware_class = hardware["class"]
+    if "architecture" in hardware or \
+            backend_registry.unimplemented_reason("hardware", hardware_class) is not None or \
+            "perf_facts" not in backend_registry.get("hardware", hardware_class).backend_provides:
+        return
+    default = getattr(backend_registry.capability_module(
+        "hardware", hardware_class, "perf_facts"), "DEFAULT_ARCHITECTURE", None)
+    if default is not None:
+        hardware["architecture"] = default
 
 
 def harness_node_key_for_target(repo_root: Path, profile: TargetProfile) -> str:
@@ -446,8 +468,9 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     The class must be one this repository implements, and its `architecture`, when the profile
     states one, must satisfy the class's `perf_facts` when the class states them (a class that
     states none leaves it a recorded token, as every class did before the `hardware` axis
-    existed). An absent `architecture` is the compiler's default: the operator pins one only when
-    the build must target a particular device.
+    existed). An absent `architecture` was given the class's `DEFAULT_ARCHITECTURE` when the
+    profile was loaded (`_fill_default_architecture`); the operator pins one only when the build
+    must target a particular device.
 
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It

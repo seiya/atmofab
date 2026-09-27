@@ -439,7 +439,12 @@ PINNED_RENDER: dict[str, str] = {
     # And in round 5: the CUDA C++ runner defers every harness write (snapshots included) to
     # after the node's last callback. Only the `cuda_cpp` physics runner moved; the Fortran
     # render over the same 148 IRs is byte-identical to origin/main 4f81d082 (re-measured).
-    "render-5": "2d0339a22f9318ae2cb39c2a34e54669fa7564bad3b83f0654b6a6d7ab0b6b0d",
+    # And once more: the `gpu` class's `perf_facts` gained `DEFAULT_ARCHITECTURE` (`all`) and
+    # admit `all`; `parallelism` and every rendered byte are unchanged. What moves the `cpp_gpu`
+    # outputs is the profile's sha256, which now carries the default (`target_profile.
+    # _fill_default_architecture`), so no certified output is reused under a key whose render
+    # would differ; the Fortran render is untouched.
+    "render-5": "89677df047a44ae7fa69c74e5681db1e7ccd04e9132a381ad8aef97420921797",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
