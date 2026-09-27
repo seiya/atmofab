@@ -570,7 +570,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # `device_kernels_absent`. No validator before PR-3 answered 6, so what the pinned code
     # produced for any earlier answer is unchanged; the gate itself is the validator's, outside
     # this tuple.
-    "execute-6": "0ccc055055c1059c71636bd6878d9114c55efffc8d3e0ba11befe65b0fbbfa9c",
+    # And in PR-3 round 1: `defined_kernels` reads an attribute naming `global` as the keyword
+    # (a reader no execute calls; the module is in the tuple as `device_trace`).
+    "execute-6": "b052d64cf32af84dde4b5045f2a291017076a0b31ff6649c100f9dda0c441a6c",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

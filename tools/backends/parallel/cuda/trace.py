@@ -168,14 +168,34 @@ _ATTRIBUTE_RE = re.compile(
 _GLOBAL_RE = re.compile(r"\b__global__\b[^;{}()]*?\b([A-Za-z_]\w*)\s*(?:<[^;{}()]*>)?\s*\(")
 
 
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*")
+_KERNEL_MARK = "__global__"
+
+
+def _blank_attribute(match: re.Match[str]) -> str:
+    """An attribute's replacement, of its own length: `__global__` when the attribute names the
+    `global` attribute, blank otherwise. nvcc makes a kernel of a function declared
+    `[[gnu::global]]`, `[[ gnu :: global ]]`, `[[gnu::global, gnu::noinline]]` or
+    `__attribute__((global))` (each measured: an entry symbol in the object), none of which
+    carries the keyword — so the attribute, not the keyword, is what marks a kernel here
+    (issue #307 PR-3 round 1). Decided by the identifiers it contains, not by a list of
+    spellings; every spelling that names `global` is at least as long as the mark."""
+    text = match.group(0)
+    names = {t.strip("_") for t in _IDENTIFIER_RE.findall(text)}
+    if "global" in names and len(text) >= len(_KERNEL_MARK):
+        return _KERNEL_MARK + " " * (len(text) - len(_KERNEL_MARK))
+    return " " * len(text)
+
+
 def defined_kernels(text: str) -> tuple[str, ...]:
     """The names of the `__global__` functions the CUDA C++ source `text` defines or declares, in
     order, each once. Read over the language backend's code view (comments and literal contents
     masked) and with the attributes above blanked, so a `__global__` in a comment or a string is
-    not one and an attribute's parenthesis is not taken for the parameter list."""
+    not one and an attribute's parenthesis is not taken for the parameter list. An attribute
+    naming `global` is read as the keyword (`_blank_attribute`)."""
     from tools.backends import registry
     reader = registry.capability_module("language", "cuda_cpp", "source_reading")
-    code = _ATTRIBUTE_RE.sub(lambda m: " " * len(m.group(0)), reader.code_view(text))
+    code = _ATTRIBUTE_RE.sub(_blank_attribute, reader.code_view(text))
     names: list[str] = []
     for match in _GLOBAL_RE.finditer(code):
         name = match.group(1)

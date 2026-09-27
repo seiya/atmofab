@@ -1794,6 +1794,24 @@ class DeviceTraceTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(cuda_trace.defined_kernels(text), (name,))
 
+    def test_an_attribute_naming_global_marks_a_kernel(self) -> None:
+        """nvcc makes a kernel of a function carrying the `global` attribute without the keyword
+        (issue #307 PR-3 round 1; each spelling below measured on nvcc: an entry symbol in the
+        object). Unread, such a kernel was required by nothing, so a producer told a kernel never
+        ran could respell it and the gate would ask nothing of it. An attribute naming anything
+        else is still blanked, `globals` included."""
+        for attribute in ("[[gnu::global]]", "[[ gnu :: global ]]",
+                          "[[gnu::global, gnu::noinline]]", "__attribute__((global))"):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(cuda_trace.defined_kernels(
+                    f"namespace m {{\n{attribute} void step_k(double* x, long n) {{}}\n}}\n"),
+                    ("step_k",))
+        for attribute in ("[[nodiscard]]", "[[gnu::globals]]", "__attribute__((noinline))",
+                          "[[gnu::global_k]]"):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(
+                    cuda_trace.defined_kernels(f"{attribute} int host_f(int* x) {{}}\n"), ())
+
     def test_the_registry_serves_the_trace(self) -> None:
         self.assertIs(registry.capability_module("parallel", "cuda", "device_trace"), cuda_trace)
         for value in ("openmp", "none"):

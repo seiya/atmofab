@@ -26334,6 +26334,15 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         self.assertEqual(1, len(violations), violations)
         self.assertIn("['check_kernel', 'extra_kernel']", violations[0])
 
+    def test_a_kernel_marked_by_the_global_attribute_is_required(self) -> None:
+        """Round 1: respelling a kernel the trace never saw as `[[gnu::global]]` (a kernel to
+        nvcc, no keyword in the text) must not take it out of what is required."""
+        sources = {"k_model.cu": self._KERNELS
+                   + "[[gnu::global]] void respelled_kernel(double* x) {}\n"}
+        violations = self._gate(sources=sources)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("never executed on the device: ['respelled_kernel']", violations[0])
+
     def test_a_linked_source_is_not_read(self) -> None:
         """A symbolic link under `src/` is not one of the node's sources, whatever it names."""
         with tempfile.TemporaryDirectory() as t:
