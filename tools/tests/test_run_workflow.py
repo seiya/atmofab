@@ -10224,6 +10224,23 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
         self.assertEqual(calls, [])
 
+    def test_a_launcher_target_at_a_remote_site_is_told_to_run_at_local(self) -> None:
+        """Issue #316: the refusal's remedy is the one an operator acts on, so it must name the
+        site that CAN run a launcher target — `local` — not only "a site that executes the
+        class", which this remote site does. Asked before any probe reaches the site."""
+        from tools.tests.target_fixtures import profile_with
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        mpi = profile_with(fixture, parallel={"backend": "mpi"})
+        self._remote()
+        with self._env():
+            refused = run_workflow._sites_rejection(self.repo_root, mpi, "validate")
+        self.assertEqual(refused["reason"], "target_profile_invalid")
+        self.assertIn("runs its binary under a launcher", refused["detail"])
+        self.assertIn("`local` for a target whose parallel backend runs a launcher",
+                      refused["detail"])
+        self.assertEqual(self._probes(), [])
+
     def test_the_local_site_refuses_more_ranks_than_this_process_may_run_on(self) -> None:
         """Issue #316: one rank per CPU this process may be scheduled on. The count is read from
         the affinity mask (the machine may have more CPUs than the process is allowed). A
