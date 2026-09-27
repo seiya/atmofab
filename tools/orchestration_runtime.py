@@ -9870,8 +9870,9 @@ def _compose_parallel_fragments(template: str, template_file: str, parallel: Any
     backend's fragment of that name (`prompt_fragments` on the `parallel` axis). A template with
     no marker is returned unchanged and asks nothing.
 
-    A backend that does not declare `prompt_fragments` — `none`, and any model with no rules to
-    add — composes every marker to the EMPTY string. That is the one difference from
+    A backend that does not declare `prompt_fragments` — `none`, and any model whose rules the
+    template does not take from it (a model whose floor one language's fragment already states)
+    — composes every marker to the EMPTY string. That is the one difference from
     `_compose_language_fragments`, and it is deliberate: a parallel model's text is an ADDED
     rule, stated for the model whose gate enforces it, where a language's text is the rules the
     gates hold every node to, which a prompt without them contradicts. So "declares nothing"
