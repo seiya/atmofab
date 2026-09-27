@@ -13263,9 +13263,10 @@ class Conductor:
                 # Generate-retry-first cycle rather than immediately re-escalating because
                 # a stale count is still >= 2.
                 #
-                # The trial_meta read is hoisted ABOVE the counter because the two TERMINAL
-                # categories have to be answered before anything counts or escalates. A machine
-                # problem (no front end) or a stale certified IR is not evidence that the IR is
+                # The trial_meta read is hoisted ABOVE the counter because the TERMINAL
+                # categories (`VALIDATE_EXECUTE_FAILURE_TERMINAL`) have to be answered before
+                # anything counts or escalates. A machine problem (no front end, a device none of
+                # whose kernels ran) or a stale certified IR is not evidence that the IR is
                 # the wrong side of an IR-rooted mismatch, so counting it toward C2 would let two
                 # of them reopen Compile — rebuilding the IR and everything downstream over a
                 # condition no regeneration touches. It is not repairable by any leaf either, so
