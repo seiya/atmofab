@@ -26276,6 +26276,24 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
                     self.assertIn("nothing here says the summary was written by it",
                                   violations[0])
                     self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+        # Each conjunct alone, the rest of the record intact: the artifact name, and a missing
+        # command id matched against a log record that carries none (`None == None` would
+        # otherwise find it — the conductor writes `res_trace.get("command_id")`).
+        for mutate, record in (
+                (lambda ref: ref.update(artifact="other.csv"), None),
+                (lambda ref: ref.update(command_id=None), {"command_id": None})):
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as t:
+                repo = Path(t)
+                execution, src_dir = self._tree(repo, record=record)
+                meta = json.loads((execution.node_dir / "trial_meta.json").read_text())
+                mutate(meta["kernel_trace"])
+                _write_json(execution.node_dir / "trial_meta.json", meta)
+                violations: list[str] = []
+                with unittest.mock.patch.object(vps, "_pipeline_target",
+                                                return_value=self._cuda_profile()):
+                    vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
+                self.assertEqual(1, len(violations), violations)
+                self.assertIn("nothing here says the summary was written by it", violations[0])
         # A log ref that is not the canonical one beside trial_meta, even to a valid record.
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t)
@@ -26315,6 +26333,20 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
                 vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
         self.assertEqual(1, len(violations), violations)
         self.assertIn("['check_kernel', 'extra_kernel']", violations[0])
+
+    def test_a_linked_source_is_not_read(self) -> None:
+        """A symbolic link under `src/` is not one of the node's sources, whatever it names."""
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            execution, src_dir = self._tree(repo)
+            elsewhere = repo / "elsewhere.cu"
+            elsewhere.write_text("__global__ void linked_kernel(int* y) {}\n", encoding="utf-8")
+            (src_dir / "linked.cu").symlink_to(elsewhere)
+            violations: list[str] = []
+            with unittest.mock.patch.object(vps, "_pipeline_target",
+                                            return_value=self._cuda_profile()):
+                vps._validate_device_kernel_execution(repo, execution, src_dir, violations)
+        self.assertEqual([], violations)
 
     def test_only_the_target_language_s_sources_are_read(self) -> None:
         """The node's sources are the files with the language's source suffixes
