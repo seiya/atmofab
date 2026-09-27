@@ -3387,6 +3387,22 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
             ort.prepare_launch_request_payload(req)
         self.assertIn("carries no `pure_parallel`", str(caught.exception))
 
+    def test_the_cold_repair_lifts_refuse_rather_than_drop_the_paragraphs(self) -> None:
+        """A cold repair turn lifts the output contract and the authoring rules out of the
+        COMPOSED template (`_pure_template_paragraph`). A composition that fails there must
+        refuse, as the cold launch does: both lifts catch `KeyError` / `OSError` to mean "no
+        such template or paragraph", and a `ValueError` swallowed with them would ship the
+        repair turn without either paragraph. Asked of both fields the composer needs."""
+        for field in ("pure_parallel", "pure_language"):
+            for lift in (ort._pure_output_contract_text, ort._pure_authoring_rules_text):
+                with self.subTest(field=field, lift=lift.__name__):
+                    req = _pure_request("generate")
+                    self.assertTrue(lift(req))  # composes with the field present
+                    req.pop(field)
+                    with self.assertRaises(ValueError) as caught:
+                        lift(req)
+                    self.assertIn(f"carries no `{field}`", str(caught.exception))
+
     def test_a_malformed_parallel_backend_is_refused_by_the_validator(self) -> None:
         for bad in ("", "  ", 3):
             with self.subTest(pure_parallel=bad):
