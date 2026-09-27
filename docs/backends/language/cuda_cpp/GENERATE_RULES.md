@@ -65,12 +65,14 @@ with counted `for` loops must define or launch at least one kernel (`__global__`
 over the code only (`tools/backends/parallel/cuda/directives.py`). The floor does not run on an
 `infrastructure` node.
 
-A failed CUDA call is a failure of the operation, reported through the IR's failure path (its
-guard flag or `ok`, its fail-closed output). A host fallback — a path that recomputes a kernel's
+A failed CUDA call is a failure of the operation: it frees what it allocated and returns without
+the result, so the case's checks see an operation that did not compute. It is not reported
+through the IR's input guard, whose formula is the IR's, over the inputs; and the runner does not
+read `case_run`'s `ok` (`runner.py`). A host fallback — a path that recomputes a kernel's
 result on the host when an allocation, copy, launch or synchronize fails — is forbidden: it makes a
 run whose kernels never executed produce correct-looking state. The producer is told (rule
 `target_lowering_floor`), `generate.verify` holds it (checklist G6), and `Validate.execute` reads
-for it: the run is traced on the device, and a kernel the node's sources define that never executed
+for it: the run is traced on the device, and a kernel the node's sources define that no case executed
 fails the run (issue #307). Measured on R4-b PR-6's billed run: a flux component with such a
 fallback passed Validate at a site where every kernel launch failed.
 

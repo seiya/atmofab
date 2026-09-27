@@ -671,7 +671,7 @@ PINNED: dict[str, str] = {
     # `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The bump's usual side
     # effects apply to every language: `_resolve_exemplar_source` stops offering pure-50
     # exemplars, and a `generate` run under pure-50 cannot be `--resume`d across it.
-    "pure-51": "f21a5170d825254a70cb51f7f071cda33d83840c08bc5930d13910ecd03db0fa",}
+    "pure-51": "0801275c882db48b4d4d1bcd6eec6ae14b8e94e2998d825c1e13f0cb92ac1c2b",}
 
 
 def _contract_tuple() -> dict[str, object]:
