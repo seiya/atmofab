@@ -13016,6 +13016,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             )
 
     _NO_LAUNCH = object()
+    #: `prefix` value meaning "the whole command the record carries".
+    _WHOLE_COMMAND = object()
 
     def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
         """The minimal execution tree with `trial_meta.environment.launch.argv_prefix` set to
@@ -13034,16 +13036,29 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                     / "problem__shallow_water2d__0.3.0")
         trial_meta_path = node_dir / "trial_meta.json"
         trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-        if prefix is not self._NO_LAUNCH:
-            trial_meta["environment"] = {"launch": {"argv_prefix": prefix, "env": {}}}
-        _write_json(trial_meta_path, trial_meta)
+        # The record in PRODUCTION's shape: the binary by its absolute path, run from the
+        # execute's run directory — not from the build's bin/, where a RELATIVE first argument
+        # would resolve under the build whichever argument the validator took for the binary
+        # (round 1: a mutant binding `command[0]` survived the fixture's `./simulate` in bin/).
+        binary = (node_dir.parents[2] / "binary" / trial_meta["source_binary_id"] / "bin"
+                  / "simulate")
+        self.assertTrue(binary.is_file(), binary)
+        run_cwd = repo_root / "workspace" / "tmp" / "arid-1" / "run"
+        run_cwd.mkdir(parents=True, exist_ok=True)
         log_path = node_dir / "command_log.jsonl"
         recs = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()]
         for rec in recs:
             if rec.get("tool_name") == "run_program":
-                rec["command"] = [*command_prefix, *rec["command"]]
+                self.assertEqual(rec["command"][0], "./simulate")
+                rec["command"] = [*command_prefix, str(binary), *rec["command"][1:]]
+                rec["cwd"] = str(run_cwd)
+                if prefix is self._WHOLE_COMMAND:
+                    prefix = list(rec["command"])
         log_path.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+        if prefix is not self._NO_LAUNCH:
+            trial_meta["environment"] = {"launch": {"argv_prefix": prefix, "env": {}}}
+        _write_json(trial_meta_path, trial_meta)
         return validate(repo_root=repo_root, workspace_root="workspace")
 
     @staticmethod
@@ -13055,6 +13070,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
     def test_run_program_command_may_carry_the_recorded_launch_prefix(self) -> None:
         """Issue #307: the binary is the first argument AFTER the recorded launch prefix, so a
         traced run binds to its build like an untraced one."""
+        # RELATIVE, as the host writes it: resolved against the run directory, the prefix's
+        # first argument lies outside the build, so taking it for the binary is refused.
         prefix = ["tracer", "profile", "-o", "kernel_trace"]
         for recorded, carried in ((prefix, prefix), ([], []), (self._NO_LAUNCH, [])):
             with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
@@ -13066,9 +13083,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         """A recorded prefix the run_program command does not begin with is refused, and so is a
         command carrying a prefix the record does not state: without it the prefix's first
         argument is taken for the binary."""
-        # Absolute, as the host writes a traced command's first argument is not: the fixture's
-        # record runs in the build's bin/, so a RELATIVE unrecorded prefix would resolve there.
-        tracer = "/opt/tracer/bin/tracer"
+        tracer = "tracer"
         for recorded, carried, needle in (
                 ([tracer, "profile"], [], "must begin with the recorded launch prefix"),
                 ([tracer, "profile"], [tracer, "other"],
@@ -13085,9 +13100,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         """A command that IS the prefix has no binary after it: refused, not read past."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            violations = self._launch_prefix_tree(repo_root, prefix=["./simulate",
-                                                                     "workspace/spec.ir.yaml",
-                                                                     "workspace/outdir"],
+            violations = self._launch_prefix_tree(repo_root, prefix=self._WHOLE_COMMAND,
                                                   command_prefix=[])
             self.assertTrue(any("must resolve under" in v and "None" in v
                                 for v in violations), violations)
