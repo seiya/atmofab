@@ -21189,6 +21189,28 @@ class LeafUsageRecordingTests(unittest.TestCase):
                         authored, outs)
                 self.assertEqual(bool(req.get("runner_host_authored")), authored)
 
+    def test_validate_execute_owes_the_trace_summary_only_from_a_traced_target(self) -> None:
+        """Issue #307, pinned at the handler: `run_substep` asks the conductor whether the
+        target's execute is traced, so the execute launch request it records lists
+        `kernel_trace.csv` exactly when it is. The direct `build_launch_request` row beside
+        `test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it` cannot see
+        this wiring. Only the validate phase asks: a build request lists no such path."""
+        from unittest import mock
+        for traced in (True, False):
+            with self.subTest(traced=traced):
+                c = self._conductor(wc.ProcResult(0, "", ""))
+                with mock.patch.object(wc.Conductor, "_traces_execution",
+                                       return_value=traced), \
+                     mock.patch.object(c, "read_case_ids", return_value=("c_alpha",)), \
+                     mock.patch.object(c, "_read_evidence_artifacts",
+                                       return_value=("state_snapshots",)):
+                    c.run_substep(self._refs(), "validate", "execute")
+                req = [cap["--request-json"] for sub, cap in c.calls
+                       if sub == "record-launch"][-1]
+                self.assertEqual(req["substep"], "execute")
+                self.assertEqual(any(p.endswith("/kernel_trace.csv")
+                                     for p in req["allowed_output_paths"]), traced)
+
     def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no
         longer reconstructs anything, so a path that leaves `usage` absent silently loses the
