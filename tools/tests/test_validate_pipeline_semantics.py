@@ -13020,7 +13020,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
     _WHOLE_COMMAND = object()
 
     def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix,
-                            target_prefix=None) -> list[str]:
+                            target_prefix=None, _real_seam: bool = False) -> list[str]:
         """The minimal execution tree with `trial_meta.environment.launch.argv_prefix` set to
         `prefix` (no `environment` at all when `_NO_LAUNCH`) and the run_program record's command led by
         `command_prefix` (issue #307: a device trace is a launch prefix)."""
@@ -13063,6 +13063,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # The fixture's target launches bare; `target_prefix` stands in for a target whose
         # parallel backend runs its binary under one (the seam's answer, patched where the
         # validator asks it). By default it is the recorded prefix, so a row varies the command.
+        if _real_seam:
+            return validate(repo_root=repo_root, workspace_root="workspace")
         if target_prefix is None:
             target_prefix = prefix if isinstance(prefix, list) else []
         from unittest import mock
@@ -13153,6 +13155,41 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("is not the launch prefix of this pipeline's target ([])" in v
                                 for v in violations), violations)
+
+    def test_a_traced_target_binds_through_the_real_seam(self) -> None:
+        """Round 4: every other prefix row patches the seam, so none observed the validator
+        asking the REAL `launch_argv_prefix` with the TARGET's backend (a mutant asking it for
+        `openmp`, and one returning `()` from the seam, both survived). Here the pipeline's target
+        resolves to a traced backend and the seam is the real one: the traced run's own prefix
+        binds, a record carrying none is not asked about (every pre-#307 record of such a
+        target), and a target that does not resolve refuses a non-empty prefix."""
+        from unittest import mock
+        from tools.host_execution import launch_argv_prefix
+        from tools.tests.target_fixtures import profile_with
+        cuda = profile_with(parallel={"backend": "cuda"})
+        traced = list(launch_argv_prefix("cuda"))
+        self.assertTrue(traced)
+        for target, recorded, carried, refused in (
+                (cuda, traced, traced, False),
+                (cuda, [], [], False),
+                (cuda, self._NO_LAUNCH, [], False),
+                (None, traced, traced, True)):
+            with self.subTest(target=None if target is None else target.parallel_backend,
+                              recorded=recorded if recorded is not self._NO_LAUNCH else "none"), \
+                    tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(vps, "_pipeline_target", return_value=target):
+                violations = self._real_seam_tree(Path(tmp), prefix=recorded,
+                                                  command_prefix=carried)
+                self.assertEqual(
+                    any("is not the launch prefix of this pipeline's target" in v
+                        for v in violations), refused, violations)
+                self.assertEqual(self._binding_violations(violations) != [], refused,
+                                 violations)
+
+    def _real_seam_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
+        """`_launch_prefix_tree` without its seam patch: the validator asks the real one."""
+        return self._launch_prefix_tree(repo_root, prefix=prefix, command_prefix=command_prefix,
+                                        _real_seam=True)
 
     def test_a_non_list_prefix_is_a_violation(self) -> None:
         for bad in ("tracer profile", [1, "x"], {"a": 1}, None):
