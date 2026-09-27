@@ -559,8 +559,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # command empties its output path before the stats run (a read-only file there survived it);
     # and `defined_kernels` blanks every CUDA `__name__(…)` attribute, a reader no execute calls.
     # And in round 2: the summary command requires the export database a readable report gives
-    # (an unreadable one exits 0 with an empty summary).
-    "execute-6": "35dc81e4e7b07b62f3835de6356cbd02036197d128da38cfa991460498ff2317",
+    # (an unreadable one exits 0 with an empty summary); `defined_kernels` blanks the CUDA
+    # attributes by name.
+    "execute-6": "f8a0d201215660590b1bba49f97d61c2ebec52ed30f4ed5028cfba9ca0a4f6b9",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

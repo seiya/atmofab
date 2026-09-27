@@ -64,7 +64,7 @@ The CSV's columns are `Time (%)`, `Total Time (ns)`, `Instances`, `Avg (ns)`, `M
 
 `defined_kernels` reads a CUDA C++ source for the names of the `__global__` functions it defines
 or declares, over the language backend's code view (comments and literal contents masked), with
-`__attribute__((…))`, `[[…]]` and the CUDA attributes spelled `__name__(…)` (`__launch_bounds__`, `__cluster_dims__`, `__maxnreg__`) blanked so their parenthesis is not
+`__attribute__((…))`, `[[…]]` and the CUDA attributes `__launch_bounds__(…)`, `__cluster_dims__(…)` and `__maxnreg__(…)` blanked (by name: a kernel may be named `__k__`) so their parenthesis is not
 taken for the parameter list.
 
 Measured: on Nsight Systems 2026.3.2 without a GPU (issue #307 plan §0-2), and at the `cpp_gpu`

@@ -1787,7 +1787,10 @@ class DeviceTraceTests(unittest.TestCase):
                 ('__global__ [[deprecated("old")]] void dep_k(int* x) {}\n', "dep_k"),
                 ("__global__ void __cluster_dims__(2, 1, 1) cl_k(int* x) {}\n", "cl_k"),
                 ("__global__ void __maxnreg__(32) reg_k(int* x) {}\n", "reg_k"),
-                ("__global__ void __launch_bounds__(128, 2) lb_k(int* x) {}\n", "lb_k")):
+                ("__global__ void __launch_bounds__(128, 2) lb_k(int* x) {}\n", "lb_k"),
+                ("__global__ void __launch_bounds__((N), 2) nested_k(int* x) {}\n", "nested_k"),
+                # A kernel whose own name is spelled like an attribute is a kernel.
+                ("__global__ void __k__(int* x) {}\n", "__k__")):
             with self.subTest(text=text):
                 self.assertEqual(cuda_trace.defined_kernels(text), (name,))
 
