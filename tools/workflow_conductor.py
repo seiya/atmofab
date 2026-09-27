@@ -12394,12 +12394,13 @@ class Conductor:
         `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
         issue #176 (no run ever reached it), so both graded classes terminalize.
 
-        Two exit codes are answered BEFORE the bullets are read at all, because they say the
+        Four exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
-        is not installed) and rc 4 (a stale certified IR). Their bullets describe a
-        machine or IR condition, and the severity rules classify by artifact PATH — so left to
-        the bullet path they would be classified as if they were conformance findings. Both
-        write `disposition: "fail_closed"` with
+        is not installed), rc 4 (a stale certified IR), rc 5 (a file this repository authors)
+        and rc 6 (a traced run none of whose kernels executed, issue #307). Their bullets
+        describe a machine, IR, producer or device condition, and the severity rules classify by
+        artifact PATH — so left to the bullet path they would be classified as if they were
+        conformance findings. All write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE

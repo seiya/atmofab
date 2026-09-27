@@ -26237,6 +26237,20 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
                                  vps._exit_code_for_violations(violations))
                 self.assertEqual(6, vps.DEVICE_KERNELS_ABSENT_EXIT_CODE)
 
+    def test_a_trace_holding_only_other_nodes_kernels_is_the_partial_class(self) -> None:
+        """A `problem` node links its dependencies, so its trace carries their kernels. When
+        none of the node's OWN kernels ran but a dependency's did, that is the node's content
+        failure — the ordinary class, warm to Generate — not the terminal "no kernel reached
+        the device" (round 4: treating "none of ours ran" as absent survived every row)."""
+        header = self._FULL_CSV.splitlines()[0]
+        deps_only = (header + "\n"
+                     + '100,5,5,1,1,1,1,0,"(anonymous namespace)::face_flux_kernel(double *)"\n')
+        violations = self._gate(csv_text=deps_only)
+        self.assertEqual(1, len(violations), violations)
+        self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
+        self.assertEqual(1, vps._exit_code_for_violations(violations))
+        self.assertIn("['flux_kernel', 'update_kernel']", violations[0])
+
     def test_no_kernels_defined_requires_nothing(self) -> None:
         """A `"model": "none"` source or a harness defines no kernel: nothing is required, with
         or without a trace — the rule is "what is defined must run"."""
