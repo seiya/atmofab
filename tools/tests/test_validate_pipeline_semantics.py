@@ -26343,6 +26343,16 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         self.assertEqual(1, len(violations), violations)
         self.assertIn("never executed on the device: ['respelled_kernel']", violations[0])
 
+    def test_a_source_with_non_ascii_text_is_read(self) -> None:
+        """A comment in another script is ordinary in a generated source; the file is still one
+        of the node's sources and its kernels are required (round 1: a mutant that skipped
+        non-ASCII files survived)."""
+        sources = {"k_model.cu": "// 流束カーネル — flux\n" + self._KERNELS
+                   + "__global__ void extra_kernel(double* x) {}  // 未使用\n"}
+        violations = self._gate(sources=sources)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("['extra_kernel']", violations[0])
+
     def test_a_linked_source_is_not_read(self) -> None:
         """A symbolic link under `src/` is not one of the node's sources, whatever it names."""
         with tempfile.TemporaryDirectory() as t:
