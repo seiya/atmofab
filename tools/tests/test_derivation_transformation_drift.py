@@ -562,8 +562,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # And in round 2: the summary command requires the export database a readable report gives
     # (an unreadable one exits 0 with an empty summary); `defined_kernels` blanks the CUDA
     # attributes by name; and comments in `tools/remote_execution.py` name the binary the gate binds.
-    # And in round 3: `host_execution.launch_argv_prefix`, the prefix the post-execute gate admits.
-    "execute-6": "48e3313ab68839b130d465e7aec1a8b42c57336e0c275ef1b6caa79b821c86ec",
+    # And in round 3: `host_execution.launch_argv_prefix`, the prefix the post-execute gate admits;
+    # and the summary failure's message names the run directory and the backend's document.
+    "execute-6": "d8b3ac786927f59316b4bebcc93e853919e1421e693391ab07ac69ec9a2923c6",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

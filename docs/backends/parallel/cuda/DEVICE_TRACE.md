@@ -42,7 +42,22 @@ make test    # the quality check, unchanged and untraced
 
   The frame is part of the command, so the remote job carries it too.
 - A summary command that exits non-zero, or exits 0 without writing the file, fails the substep
-  as `deterministic_validate_error`: it is host tooling, not the kernel.
+  as `deterministic_validate_error`: it is host tooling, not the kernel. The failure reads
+  `kernel_trace_summary_failed: rc=<n> <stderr tail>` or `kernel_trace_summary_missing: …`, and
+  names the run directory (`workspace/tmp/<agent_run_id>/run/`, collected from the site for a
+  remote run), which keeps `kernel_trace.nsys-rep` and whatever the summary left. What to check,
+  by what the failure says:
+  - `rc=3` with `the report was not exported`: the report in that directory is not a readable
+    one. Run the `nsys stats` part of the command above by hand there to see why.
+  - `rc=1` with `nsys stats`'s usage text: there is no report in that directory. The profiler
+    writes it under `/tmp/nsys-<user>/` instead when the report's path is taken (§4).
+  - `rc=1` with an `rm` error: the summary's path could not be emptied — a directory there, or a
+    run directory that is not writable (the frame, above).
+
+  A missing `nsys` fails earlier, at the run itself: locally
+  `No such file or directory: 'nsys'`, at a remote site `job script: nsys is missing or not
+  executable` — both of which the launch probe refuses at start (§3). Every one of these is a
+  transport `fail_closed`, which `--resume` retries (`docs/ORCHESTRATION.md` §Execution sites).
 - `trial_meta.json#environment.launch.argv_prefix` records the `nsys profile …` prefix, and the
   post-execute gate binds the binary AFTER it to the node's build.
 

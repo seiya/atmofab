@@ -11140,16 +11140,22 @@ class Conductor:
         # raises (`deterministic_validate_error`) rather than routing the node back to Generate.
         trace_ref: dict[str, Any] | None = None
         if launch.trace is not None and res_run.get("ok"):
+            # Where the operator looks: the run directory keeps the trace's report and whatever
+            # the summary left, and the backend's document says what each failure means.
+            where = (f"(the run directory {run_tmp} keeps the report; see "
+                     f"docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 for "
+                     f"what to check, then "
+                     f"--resume)")
             if res_trace is None or not res_trace.get("ok"):
                 detail = "did not run" if res_trace is None else (
                     f"rc={res_trace.get('return_code')} {res_trace.get('error') or ''} "
-                    f"{(res_trace.get('stderr') or '')[-400:]}")
-                raise RuntimeError(f"kernel_trace_summary_failed: {detail}".strip())
+                    f"{(res_trace.get('stderr') or '')[-400:]}".strip())
+                raise RuntimeError(f"kernel_trace_summary_failed: {detail} {where}")
             summary = run_tmp / launch.trace.summary_file
             if not summary.is_file():
                 raise RuntimeError(
                     f"kernel_trace_summary_missing: {launch.trace.summary_file} was not written "
-                    f"by {shlex.join(launch.trace.summary_argv)}")
+                    f"by {shlex.join(launch.trace.summary_argv)} {where}")
             node_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(summary, node_dir / KERNEL_TRACE_ARTIFACT)
             trace_ref = {"artifact": KERNEL_TRACE_ARTIFACT,
