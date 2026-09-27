@@ -207,7 +207,8 @@ def _canary_run(argv: list[str], cwd: str) -> subprocess.CompletedProcess | str:
         return str(exc)
 
 
-def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
+def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
+                                ranks: int) -> list[str]:
     """What is wrong with the parallel backend's compiler wrapper this host resolves, beyond its
     presence (`missing_host_executables` asks that first): empty for a backend that declares no
     `compiler_wrapper`, and for a wrapper this host does not resolve. Two canaries, both the
@@ -217,10 +218,14 @@ def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
       installation whose wrapper cannot compile the language binding this backend's harness
       uses fails every node's syntax stage, the first of them after `Compile` and
       `Generate.generate` have been billed.
-    * When the backend also declares `launcher` and this host resolves it, a program built with
-      the wrapper (`LAUNCH_CANARY_SOURCE`, `LAUNCH_CANARY_BUILD_ARGV`) and started under the
-      launcher with `LAUNCH_CANARY_RANKS` must report ONE run of that many processes
-      (`launch_canary_problem`). A launcher of another installation starts processes that each
+    * When the run LAUNCHES the binary (`launches`: it, or a dependency it drives, reaches
+      `Validate`) with more than one rank, and the backend declares `launcher` and this host
+      resolves it, a program built with the wrapper (`LAUNCH_CANARY_SOURCE`,
+      `LAUNCH_CANARY_BUILD_ARGV`) and started under the launcher with `LAUNCH_CANARY_RANKS`
+      must report ONE run of that many processes (`launch_canary_problem`). A run that stops
+      before `Validate` starts nothing under the launcher, and a one-rank run is one process
+      whichever installation starts it, so neither is asked: a launcher that cannot start two
+      processes here must not refuse them. A launcher of another installation starts processes that each
       run alone and exit 0, and the node's own run would show it only after a billed Build.
       This asks the pair what it DOES: where the two programs sit says nothing, since one
       directory can hold two installations' programs (Debian's alternatives switch the
@@ -254,7 +259,7 @@ def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
                     f"this backend's harness uses (rc={completed.returncode}: {tail}); resolve "
                     f"the wrapper and the launcher to a {parallel} installation that provides "
                     f"it for the target's compiler"]
-        if launcher is None or launcher_path is None:
+        if launcher is None or launcher_path is None or not launches or ranks <= 1:
             return []
         source = Path(scratch) / str(launcher.LAUNCH_CANARY_FILENAME)
         source.write_text(str(launcher.LAUNCH_CANARY_SOURCE), encoding="utf-8")
@@ -268,15 +273,24 @@ def parallel_toolchain_problems(selection: dict[str, str]) -> list[str]:
                 f"{(built.stderr or built.stdout or '').strip()[-400:]}")
             return [f"parallel/{parallel}: {wrapper_path} does not build the launch canary "
                     f"({detail})"]
-        ranks = int(launcher.LAUNCH_CANARY_RANKS)
-        launched = _canary_run([*launcher.argv_prefix(ranks), str(exe)], scratch)
-        problem = (launched if isinstance(launched, str) else
-                   launcher.launch_canary_problem(launched.returncode, launched.stdout or ""))
+        canary_ranks = int(launcher.LAUNCH_CANARY_RANKS)
+        launched = _canary_run([*launcher.argv_prefix(canary_ranks), str(exe)], scratch)
+        started = (f"a program built with {wrapper_path} and started under {launcher_path} "
+                   f"with {canary_ranks} processes")
+        # A launch that did not complete is the launcher's own refusal (too few slots, a user
+        # it will not run as, a hang): its message is the diagnosis, and it says nothing about
+        # the pairing. Only a launch that completed and reported the wrong run sizes does.
+        if isinstance(launched, str) or launched.returncode != 0:
+            detail = launched if isinstance(launched, str) else (
+                f"exit {launched.returncode}: "
+                f"{(launched.stderr or launched.stdout or '').strip()[-600:]}")
+            return [f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
+                    f"{ranks} ranks is started the same way at Validate.execute"]
+        problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "")
         if problem is not None:
-            return [f"parallel/{parallel}: a program built with {wrapper_path} and started "
-                    f"under {launcher_path} with {ranks} processes did not run as one run: "
-                    f"{problem}. The launcher and the compiler wrapper must come from one "
-                    f"{parallel} installation"]
+            return [f"parallel/{parallel}: {started} did not run as one run: {problem}. The "
+                    f"launcher and the compiler wrapper must come from one {parallel} "
+                    f"installation"]
     return []
 
 

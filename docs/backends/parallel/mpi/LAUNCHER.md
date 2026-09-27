@@ -52,8 +52,13 @@ make test                                                           # the qualit
   separately, both in `/usr/bin` — so the startup probe asks what the pair DOES: it builds
   `LAUNCH_CANARY_SOURCE` with `mpif90`, starts it with `mpirun -n 2`, and refuses the run
   (`parallel_toolchain_unusable`) unless both processes report a run of 2
-  (`host_prerequisites.parallel_toolchain_problems`). Asked when `mpirun` resolves; a run that
-  stops before `Validate` on a host without it is asked the binding canary only.
+  (`host_prerequisites.parallel_toolchain_problems`). Asked only of a run that starts the
+  binary under the launcher with more than one rank — one that reaches `Validate`, or drives a
+  dependency there (`--with-deps` unless it stops at `Compile`), for a profile whose
+  `execution.ranks` is above 1 — and when `mpirun` resolves: a one-rank run is one process
+  whichever installation starts it. A launch that does not complete (too few slots, a user
+  the launcher will not run as, a hang) is refused with the launcher's own message, not as a
+  pairing problem.
 - The wrapper compiles a `use mpi_f08` source with the target's compiler. The harness uses the
   `mpi_f08` binding. An installation whose `mpi_f08` module is built for another compiler cannot
   build it: Intel MPI 2021.10 ships its `mpi_f08` module for the Intel compilers only, and its

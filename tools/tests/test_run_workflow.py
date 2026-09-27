@@ -4264,10 +4264,10 @@ class RunWorkflowTests(unittest.TestCase):
         the target's backend."""
         from tools import host_prerequisites
 
-        seen: list[dict[str, str]] = []
+        seen: list[tuple[dict[str, str], bool, int]] = []
 
-        def problems(selection):
-            seen.append(dict(selection))
+        def problems(selection, *, launches, ranks):
+            seen.append((dict(selection), launches, ranks))
             return ["parallel/zz: the wrapper does not compile the binding"]
 
         original_problems = host_prerequisites.parallel_toolchain_problems
@@ -4281,6 +4281,22 @@ class RunWorkflowTests(unittest.TestCase):
                 code = run_workflow.main([
                     *_seed_launch_repo(Path(tmp)), "--stdout-format", "jsonl",
                     "--target", _TARGET_ID])
+            # The same launch ending at Validate starts the binary: asked the launch half.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Validate"
+                run_workflow.main([*argv, "--stdout-format", "jsonl", "--target", _TARGET_ID])
+            # A Build that drives its dependencies (`--with-deps`) takes them to Validate.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Build"
+                run_workflow.main([*argv, "--with-deps", "--stdout-format", "jsonl",
+                                   "--target", _TARGET_ID])
+            # And a Build that does not, starts nothing.
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+                argv = _seed_launch_repo(Path(tmp))
+                argv[1] = "Build"
+                run_workflow.main([*argv, "--stdout-format", "jsonl", "--target", _TARGET_ID])
         finally:
             host_prerequisites.parallel_toolchain_problems = original_problems  # type: ignore[assignment]
             run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
@@ -4291,8 +4307,12 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(payload.get("problems"),
                          ["parallel/zz: the wrapper does not compile the binding"])
         self.assertIn("the wrapper does not compile the binding", payload.get("detail", ""))
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0]["parallel"], _TP_RW.parallel_backend)
+        self.assertEqual(seen[0][0]["parallel"], _TP_RW.parallel_backend)
+        # A run that stops at Compile or Build starts nothing; one that ends at Validate, or a
+        # Build that drives its dependencies there, does. The rank count is the profile's.
+        self.assertEqual([entry[1:] for entry in seen],
+                         [(False, _TP_RW.ranks), (True, _TP_RW.ranks), (True, _TP_RW.ranks),
+                          (False, _TP_RW.ranks)])
 
     def test_main_fails_fast_when_a_required_host_tool_is_of_an_unmeasured_version(self) -> None:
         """The VERSION half of the same family (issue #111).

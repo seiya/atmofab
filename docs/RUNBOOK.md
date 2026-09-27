@@ -155,8 +155,12 @@ not enough, and two things are asked next, before anything is billed
 
 - the wrapper compiles the backend's binding canary syntax-only — the language binding the
   backend's harness uses, with the target's compiler;
-- when the backend's `launcher` resolves too, a program the wrapper builds, started under the
-  launcher with two processes, runs as ONE run of two. A launcher of another installation
+- for a run that starts the binary under the backend's `launcher` with more than one rank (it,
+  or a dependency `--with-deps` drives, reaches `Validate`) and when the launcher resolves, a
+  program the wrapper builds, started under the launcher with two processes, runs as ONE run
+  of two. A launch that does not complete is refused with the launcher's own message (too few
+  slots, a user it will not run as); only a completed launch reporting the wrong run sizes is
+  a pairing problem. A launcher of another installation
   starts processes that each run alone and exit 0, which the node's own run would show only
   after a billed `Build`. Where the two programs sit is not asked: one directory can hold two
   installations' programs.

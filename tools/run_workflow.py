@@ -3009,7 +3009,16 @@ def _run_main(
     # nodes can be built with is asked next (issue #316), still before anything is billed.
     from tools.host_prerequisites import parallel_toolchain_problems
 
-    toolchain_problems = parallel_toolchain_problems(_host_probe_selection(target_profile))
+    # The launch half is asked of a run that starts the binary under the launcher: one that
+    # reaches `Validate`, or drives a dependency there (`--with-deps` drives every member to
+    # `Validate` unless the run stops at `Compile`).
+    from tools.target_profile import NON_EXECUTING_PHASES
+
+    phase = str(until_phase or "").strip().lower()
+    launches = phase not in NON_EXECUTING_PHASES or (
+        bool(getattr(args, "with_deps", False)) and phase != "compile")
+    toolchain_problems = parallel_toolchain_problems(
+        _host_probe_selection(target_profile), launches=launches, ranks=target_profile.ranks)
     if toolchain_problems:
         _emit_unlogged_event(
             {
