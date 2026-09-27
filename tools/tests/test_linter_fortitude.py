@@ -580,9 +580,10 @@ class ProseCouplingTests(unittest.TestCase):
          "## 2. The syntax stage"),
         # `skills/workflow-generate-generate/SKILL.md` was a regioned site until Z4 (issue
         # #171) deleted it with the agentic leaf. The producer that replaced it reads
-        # `tools/prompt_templates/pure_generate_generate.txt`, already a row below, and the
-        # `harness` shape's producer template states the same contract by inlining
-        # `CHECKS_MODULE_CONTRACT.md` §5 — also a row below. No site is lost.
+        # `tools/prompt_templates/pure_generate_generate.txt`, whose lint rules are the Fortran
+        # fragment row below (and the whole file is in `_whole_file_scan` since issue #316), and
+        # the `harness` shape's producer template states the same contract through the Fortran
+        # checks-ABI binding's §5 — also a row below. No site is lost.
         # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
         # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
         # defect, one file over, found by the round-3 attack axis.
@@ -626,17 +627,35 @@ class ProseCouplingTests(unittest.TestCase):
 
     @classmethod
     def _whole_file_scan(cls) -> list[str]:
-        """`_LEAF_READ_FILES` plus every backend prompt-fragment file, DERIVED from the
-        directory: the host composes each into a template a leaf reads, and a fragment that moves
-        between backends must not leave the scan by moving. Issue #316 (R4-c PR-2) moved the
-        OpenMP floor paragraph out of a Fortran fragment listed in `_SITES` into
-        `backends/parallel/openmp/`, and until this row read the derived set, a copyable
-        directive planted there was green (measured) while the same one planted before the move
-        was red."""
-        fragments = sorted(
+        """`_LEAF_READ_FILES` plus every launch-prompt template file — the neutral `pure_*.txt`
+        templates and the backend fragments composed into them — DERIVED from the directory.
+        Every one of them reaches a leaf, and a fragment that moves between backends must not
+        leave the scan by moving: issue #316 (R4-c PR-2) moved the OpenMP floor paragraph out of
+        a Fortran fragment listed in `_SITES` into `backends/parallel/openmp/`, and until this
+        row read a derived set, a copyable directive planted there was green (measured) while the
+        same one planted before the move was red. The derivation is pinned by
+        `test_the_whole_file_scan_covers_every_leaf_read_file_and_template`."""
+        templates = sorted(
             str(path.relative_to(REPO_ROOT))
-            for path in (REPO_ROOT / "tools" / "prompt_templates" / "backends").rglob("*.txt"))
-        return list(dict.fromkeys((*cls._LEAF_READ_FILES, *fragments)))
+            for path in (REPO_ROOT / "tools" / "prompt_templates").rglob("*.txt"))
+        return list(dict.fromkeys((*cls._LEAF_READ_FILES, *templates)))
+
+    def test_the_whole_file_scan_covers_every_leaf_read_file_and_template(self) -> None:
+        """The scan's two sources, each asserted whole: the named leaf-read files, and every
+        template file under `tools/prompt_templates/`, enumerated here by `os.walk` rather than
+        by the derivation's own `rglob`, so narrowing the derivation (to one subdirectory, or to
+        one of its two halves) is red rather than a smaller scan."""
+        import os
+        scanned = set(self._whole_file_scan())
+        self.assertEqual(set(self._LEAF_READ_FILES) - scanned, set())
+        templates = {
+            str((Path(root) / name).relative_to(REPO_ROOT))
+            for root, _dirs, files in os.walk(REPO_ROOT / "tools" / "prompt_templates")
+            for name in files if name.endswith(".txt")}
+        for half in ("tools/prompt_templates/pure_", "tools/prompt_templates/backends/language/",
+                     "tools/prompt_templates/backends/parallel/"):
+            self.assertTrue(any(path.startswith(half) for path in templates), half)
+        self.assertEqual(templates - scanned, set())
 
     #: The EXCLUDED codes a leaf-read document may still name. `C003` must be nameable: the
     #: documents changed what they say about it, and a rule change stated without naming the rule
@@ -721,9 +740,6 @@ class ProseCouplingTests(unittest.TestCase):
         # read by nothing. A listed file the tree does not carry fails its own row rather than
         # shrinking the scan.
         scanned = self._whole_file_scan()
-        self.assertTrue(
-            any(path.startswith("tools/prompt_templates/backends/parallel/") for path in scanned),
-            "no parallel-backend fragment is scanned; the derivation observes nothing there")
         for path in scanned:
             with self.subTest(path=path):
                 self.assertTrue((REPO_ROOT / path).is_file(), f"{path} is listed but missing")
