@@ -10186,6 +10186,44 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
         self.assertEqual(calls, [])
 
+    def test_a_scheduler_site_is_not_asked_for_what_the_binary_runs_under(self) -> None:
+        """Issue #307 PR-4: a batch scheduler runs the binary on another node, and the program a
+        traced binary runs under need not be on the login the probe reaches (the `cpp_gpu`
+        site's login node has none; its compute nodes do). Through the real probe: a `slurm`
+        site whose login lacks the trace program is NOT refused at launch, and a `none` site,
+        which runs the job on that login, is — naming the program."""
+        from tools.backends import registry
+        from tools.execution_sites import SitesConfig
+        from tools.tests.target_fixtures import profile_with
+        tracer = list(registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES)
+        self.assertTrue(tracer)
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        # The fixture's own target, so `sites.yaml` maps it to the remote site: a profile under
+        # another id falls to the local site, where this host's PATH answers instead.
+        cuda = profile_with(fixture, parallel={"backend": "cuda"})
+        self.assertEqual(cuda.target_id, "t_a")
+        bare = Path(self._tmp.name) / "bare_trace"
+        bare.mkdir()
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        (bare / "srun").symlink_to(shutil.which("true"))
+        for tool in tracer:
+            self.assertFalse((bare / tool).exists())
+        self._remote(scheduler="slurm")
+        with self._env(SHIM_SSH_PATH=str(bare)):
+            self.assertIsInstance(
+                run_workflow._sites_rejection(self.repo_root, cuda, "validate"), SitesConfig)
+        # The probe did run, at the remote site, and did not ask for the trace program.
+        probes = self._probes()
+        self.assertTrue(probes)
+        self.assertFalse(any(tool in " ".join(p) for p in probes for tool in tracer), probes)
+        self._remote(scheduler="none")
+        with self._env(SHIM_SSH_PATH=str(bare)):
+            refused = run_workflow._sites_rejection(self.repo_root, cuda, "validate")
+        self.assertEqual(refused["reason"], "missing_required_site_tools")
+        self.assertEqual(refused["missing"], tracer)
+
     def test_a_site_whose_workdir_cannot_be_made_is_refused_at_launch(self) -> None:
         blocker = Path(self._tmp.name) / "blocker"
         blocker.write_text("a file")
