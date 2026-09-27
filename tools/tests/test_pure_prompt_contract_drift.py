@@ -686,7 +686,13 @@ PINNED: dict[str, str] = {
     # (measured by composing each through `_compose_language_fragments` in both trees); for
     # `cuda_cpp`, exactly `pure_generate_generate.txt` and `pure_generate_verify.txt` differ. The
     # bump's usual side effects apply to every language, as pure-51's comment above states.
-    "pure-52": "9ca29060064d8f0c186f8849cd28dec69cdd88302b7f02ee5e4b2f42e9ed5926",}
+    # Re-pinned within PR-3's review (round 4, before any record carried pure-52): G6 fails a loop
+    # the plan PUTS ON THE DEVICE that runs on the host, and holds a loop the plan keeps on the
+    # host like a declared `none` (a reason about the loop itself) — round 3's wording also
+    # failed a loop a plan named on the host WITH a reason (the real advdiff1d_linear plan's
+    # ghost copy), and exempted only a loop dropped from the plan; the producer is told what
+    # such a reason is.
+    "pure-52": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",}
 
 
 def _contract_tuple() -> dict[str, object]:

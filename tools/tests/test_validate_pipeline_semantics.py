@@ -26214,7 +26214,10 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         # and removal is bounded — the work must not move to the host.
         self.assertIn("whose launch failed", violations[0])
         self.assertIn("remove it only if that work is not needed", violations[0])
-        self.assertIn("moving the work to a host loop instead is a host fallback", violations[0])
+        self.assertIn("Moving the work to a host loop instead is refused by the reviewer",
+                      violations[0])
+        # Not the prompts' HOST FALLBACK, which is recomputing after a FAILED CUDA call (round 4).
+        self.assertNotIn("host fallback", violations[0])
         # A row with zero instances is a kernel that did not run, not one that did.
         zero = only_flux + '0.0,0,0,0,0,0,0,0,"update_kernel(double *)"\n'
         self.assertIn("['update_kernel']", self._gate(csv_text=zero)[0])

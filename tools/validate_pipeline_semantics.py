@@ -6314,8 +6314,10 @@ def _validate_device_kernel_execution(
             f"path no case takes did not run, and neither did one whose launch failed (a launch "
             f"configuration the device refuses, such as more threads per block than it allows). "
             f"Launch it where the cases reach it, with a configuration the device accepts, doing "
-            f"its loop's work; remove it only if that work is not needed — moving the work to a "
-            f"host loop instead is a host fallback, which the reviewer refuses")
+            f"its loop's work; remove it only if that work is not needed. Moving the work to a "
+            f"host loop instead is refused by the reviewer: a loop the plan puts on the device "
+            f"runs there, and a reason for keeping a loop on the host must be about the loop "
+            f"itself, not about this gate or a run in which the kernel did not execute")
 
 
 def _validate_quality_check_commands(
