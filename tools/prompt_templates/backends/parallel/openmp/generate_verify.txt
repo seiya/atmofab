@@ -1,0 +1,7 @@
+# The OpenMP parallel fragments of `tools/prompt_templates/pure_generate_verify.txt`.
+# Each `@@ <name>` section replaces the template's `{{parallel:<name>}}` marker VERBATIM
+# (the section body, without the newline that precedes the next header). Loaded by
+# `tools/backends/parallel/openmp/prompts.py`; lines before the first header are comments.
+
+@@ checklist_g6_floor_scope
+Scope your judgment: on a `component`/`problem` node whose target is cpu+openmp+fortran, whose plan does not explicitly decline OpenMP and whose source has counted `do` loops, the "not one `!$omp` anywhere" case is already settled deterministically by the `Generate.gate` static check before you see the source, so judge whether the directives present COVER the loops the plan names and carry its schedule — not whether any exist. That floor does not run on any other node kind, on a whole-array model source, on a model source using `do concurrent`, on a model source with a `do` header that wraps before it can be classified (`do &`), or when the plan's parallelization explicitly names `none` or some other model, so in those cases existence is still yours to judge. A declared `none` is the producer's own claim, and the deterministic floor trusts it: hold it to the loops, and a plan that says `none` over loops that are plainly parallelizable is itself the finding.

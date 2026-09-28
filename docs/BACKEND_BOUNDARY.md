@@ -188,8 +188,12 @@ together with the bundle's `target_lowering_plan.parallelization`.
     the language's `syntax_promotions` (issue #289): a language that declares none is a transport
     `fail_closed` there and a certification violation, not a pass-through. The generate prompts
     carry a language's rules only as its `prompt_fragments`, composed by the request's
-    `pure_language`; the checks-module contract is neutral and its binding is the language's
-    `checks_abi`. Which linter a language is linted with is each linter backend's `LANGUAGES`
+    `pure_language`; a parallel backend's `prompt_fragments` is composed after them by
+    `pure_parallel` (issue #316). A parallel model's rules go there; the `cuda` floor alone was
+    left in the `cuda_cpp` language fragment, because the one checked-in `cuda_cpp` target runs
+    `cuda` and moving it would only widen the byte-identity check of that change. The
+    checks-module contract is neutral and its binding is the language's `checks_abi`. Which
+    linter a language is linted with is each linter backend's `LANGUAGES`
     (`registry.linter_for_language`).
   - **Every deterministic gate that READS a node's source reads it through the target
     language's backend** (issue #289, R4-b PR-3): the model-source, checks-source, runner-output

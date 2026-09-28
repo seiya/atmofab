@@ -211,13 +211,17 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "leaves are shown beside the neutral contract.",
     ),
     "prompt_fragments": (
-        ("language",),
+        ("language", "parallel"),
         "The pure `generate` prompts have this value's authoring and review rules to carry: the "
-        "neutral templates mark where a language's rules go (`{{language:<name>}}`), and the "
-        "backend supplies the text (`fragments(<template>)`), plus the runner-output binding "
+        "neutral templates mark where a language's rules go (`{{language:<name>}}`) and where a "
+        "parallel model's go (`{{parallel:<name>}}`), and the backend supplies the text "
+        "(`fragments(<template>)`); a language also supplies the runner-output binding "
         "inlined after the runner-output contract (`runner_output_document()`). Without it "
-        "those templates cannot be composed for a node of this value, and its launch is "
-        "refused rather than sent another language's rules.",
+        "a LANGUAGE's templates cannot be composed for a node of this value, and its launch is "
+        "refused rather than sent another language's rules; a PARALLEL value that does not "
+        "declare it composes its markers to nothing. A parallel model's rules belong in its "
+        "own fragments; the `cuda` floor alone was left in the `cuda_cpp` language fragment "
+        "(issue #316).",
     ),
     "source_reading": (
         ("language",),
@@ -509,10 +513,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # Extracted for its launch environment (issue #289, R4-b PR-1): the thread-count
         # variables the runtime reads are this model's knowledge, and until then the build-runtime
         # server set them itself, for `hardware.class == cpu` alone. Its directive knowledge — the
-        # Generate presence floor — followed in R4-b PR-3.
+        # Generate presence floor — followed in R4-b PR-3. The floor's prompt text moved out of
+        # the language fragments into its `prompt_fragments` in R4-c PR-2 (issue #316).
         Backend(
             "parallel", "openmp", "tools.backends.parallel.openmp",
-            backend_provides=frozenset({"execution_env", "parallel_directives"}),
+            backend_provides=frozenset({"execution_env", "parallel_directives",
+                                        "prompt_fragments"}),
         ),
         # A node that declares no parallel model. It exists as a member so the axis has a
         # spelling for "serial" alongside its open vocabulary, and it carries the capability

@@ -692,7 +692,22 @@ PINNED: dict[str, str] = {
     # failed a loop a plan named on the host WITH a reason (the real advdiff1d_linear plan's
     # ghost copy), and exempted only a loop dropped from the plan; the producer is told what
     # such a reason is.
-    "pure-52": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",}
+    # Re-pinned in place by R4-c PR-2 (issue #316), on the pure-50 re-pins' ground: the OpenMP
+    # presence-floor text moved VERBATIM out of the Fortran fragments (`target_lowering_floor`,
+    # `checklist_g6_floor_scope`, both now empty) into `backends/parallel/openmp/`, composed by a
+    # new `{{parallel:<name>}}` marker placed right after each language marker. Every one of the
+    # 12 launch templates, composed for the two checked-in targets (`fortran` + `openmp`,
+    # `cuda_cpp` + `cuda`), is byte-identical to origin/main b37ce9a6's (measured by composing
+    # each in both trees). Two templates (`pure_generate_generate.txt`, `pure_generate_verify.txt`)
+    # compose differently for pairs no target profile names: `fortran` + `none` and `fortran` +
+    # `mpi` now omit the OpenMP paragraph the Fortran fragment used to carry, and `cuda_cpp` +
+    # `openmp` now carries it (its sentences are conditioned on a `fortran` language).
+    "pure-52": "81d1b0d712a5872f2c0a336a9ccef7a59cf3d62bdaf1c258f64db0a4a3ea0ffd",
+    # ...and the digest `pure-52` SHIPPED with (origin/main b37ce9a6), kept as a history entry on
+    # `pure-50@3c117410`'s ground: a later version whose tuple returns to these bytes collides here
+    # (`test_no_empty_version_bump`). Without it, reverting R4-c PR-2's move under a new version
+    # passed (measured in that PR's review, round 3).
+    "pure-52@b37ce9a6": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",}
 
 
 def _contract_tuple() -> dict[str, object]:

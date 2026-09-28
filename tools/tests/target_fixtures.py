@@ -103,10 +103,13 @@ def pipe_ref(node_key_safe: str, pipeline_id: str, target_id: str = TARGET_ID) -
 
 def composed_pure_template(key: str, profile: TargetProfile = FORTRAN_CPU) -> str:
     """The pure launch template `key` (an `_PROMPT_TEMPLATE_FILES` key, e.g.
-    `"pure generate.generate"`) composed for `profile`'s language — the text a leaf of that
-    target reads, and what a test pinning a template's wording must read since issue #289 moved
-    the language's rules into `tools/prompt_templates/backends/language/<id>/`."""
+    `"pure generate.generate"`) composed for `profile`'s language and parallel backend — the
+    text a leaf of that target reads, and what a test pinning a template's wording must read
+    since issue #289 moved the language's rules into
+    `tools/prompt_templates/backends/language/<id>/` (and issue #316 the parallel model's into
+    `tools/prompt_templates/backends/parallel/<id>/`)."""
     from tools import orchestration_runtime as ort
-    return ort._compose_language_fragments(
+    return ort._compose_fragments(
         ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
-        profile.toolchain["language"])
+        {"pure_language": profile.toolchain["language"],
+         "pure_parallel": profile.parallel_backend})

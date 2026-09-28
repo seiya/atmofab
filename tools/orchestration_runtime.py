@@ -9860,16 +9860,80 @@ def _compose_language_fragments(template: str, template_file: str, language: Any
     return _LANGUAGE_FRAGMENT_RE.sub(lambda m: sections[m.group(1)], template)
 
 
+#: A neutral template's marker for a place the target's PARALLEL MODEL's rules go (issue #316,
+#: R4-c PR-2). Composed after the language's markers, and for the same reasons.
+_PARALLEL_FRAGMENT_RE = re.compile(r"\{\{parallel:([a-z0-9_]+)\}\}")
+
+
+def _compose_parallel_fragments(template: str, template_file: str, parallel: Any) -> str:
+    """`template` with every `{{parallel:<name>}}` marker replaced by the target parallel
+    backend's fragment of that name (`prompt_fragments` on the `parallel` axis). A template with
+    no marker is returned unchanged and asks nothing.
+
+    A backend that does not declare `prompt_fragments` — `none`, and a model whose rules are not
+    (yet) in its own fragments — composes every marker to the EMPTY string. That is the one difference from
+    `_compose_language_fragments`, and it is deliberate: a parallel model's text is an ADDED
+    rule, stated for the model whose gate enforces it, where a language's text is the rules the
+    gates hold every node to, which a prompt without them contradicts. So "declares nothing"
+    here means "says nothing", and is not a refusal.
+
+    Every other failure RAISES a named `ValueError`: no parallel backend on the request, a value
+    the registry has no record for, a backend that declares `prompt_fragments` and defines no
+    fragment for a marker (or has no fragment file for the template). The alternative to those
+    refusals is a prompt composed for a model the host did not name."""
+    markers = set(_PARALLEL_FRAGMENT_RE.findall(template))
+    if not markers:
+        return template
+    backend = str(parallel or "").strip().lower()
+    if not backend:
+        raise ValueError(
+            f"pure launch request carries no `pure_parallel`, and its template {template_file} "
+            f"holds parallel fragments ({', '.join(sorted(markers))}) — the host must name the "
+            f"target parallel backend the prompt is composed for")
+    # `unimplemented_reason`, not `unsupported_reason`: the axis is open-vocabulary, so a token
+    # with no record is "accepted" by membership, and composing it to nothing would say nothing
+    # for a model nobody has described.
+    reason = backend_registry.unimplemented_reason("parallel", backend)
+    if reason is not None:
+        raise ValueError(
+            f"pure launch prompt {template_file} cannot be composed for parallel backend "
+            f"{backend!r}: {reason}")
+    if not backend_registry.provides("parallel", backend, "prompt_fragments"):
+        return _PARALLEL_FRAGMENT_RE.sub("", template)
+    try:
+        module = backend_registry.capability_module("parallel", backend, "prompt_fragments")
+        sections = module.fragments(template_file.removeprefix("pure_").removesuffix(".txt"))
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+            ValueError) as exc:
+        raise ValueError(
+            f"pure launch prompt {template_file} cannot be composed for parallel backend "
+            f"{backend!r}: {exc}") from None
+    missing = sorted(markers - set(sections))
+    if missing:
+        raise ValueError(
+            f"pure launch prompt {template_file}: parallel backend {backend!r} defines no "
+            f"fragment for {', '.join(missing)}")
+    return _PARALLEL_FRAGMENT_RE.sub(lambda m: sections[m.group(1)], template)
+
+
+def _compose_fragments(template: str, template_file: str, request_payload: dict[str, Any]) -> str:
+    """`template` composed for the request's target: its language's fragments, then its parallel
+    backend's."""
+    return _compose_parallel_fragments(
+        _compose_language_fragments(template, template_file, request_payload.get("pure_language")),
+        template_file, request_payload.get("pure_parallel"))
+
+
 def _pure_launch_template(request_payload: dict[str, Any]) -> str:
-    """The launch template this pure request renders, composed for its `pure_language`.
+    """The launch template this pure request renders, composed for its `pure_language` and
+    `pure_parallel`.
 
     The ONE place a pure launch template is read by name, so the cold launch, the cold-repair
     paragraph lift and the output-contract lift all see the same composed text. `KeyError`
     when no template matches the request (each caller decides what that means)."""
     name = _pure_launch_template_name(request_payload)
     template = _load_launch_prompt_templates()[name]
-    return _compose_language_fragments(
-        template, _PROMPT_TEMPLATE_FILES[name], request_payload.get("pure_language"))
+    return _compose_fragments(template, _PROMPT_TEMPLATE_FILES[name], request_payload)
 
 
 def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
@@ -11195,6 +11259,13 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_language must be a non-empty string when present; "
             f"got {language!r}")
+    # The target parallel backend its `{{parallel:<name>}}` markers are composed for (issue
+    # #316), refused when malformed on the same ground.
+    parallel = request_payload.get("pure_parallel")
+    if parallel is not None and not (isinstance(parallel, str) and parallel.strip()):
+        raise ValueError(
+            f"pure launch request pure_parallel must be a non-empty string when present; "
+            f"got {parallel!r}")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
