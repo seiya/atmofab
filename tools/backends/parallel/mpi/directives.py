@@ -53,10 +53,15 @@ _FORBIDDEN_STATEMENT_RE = re.compile(
 # (`x%mpi_count(1)` is the leaf's own component).
 _FORBIDDEN_REFERENCE_RE = re.compile(r"(?<![\w%])mpi_\w*\s*\(", re.IGNORECASE)
 
-# A call of the harness's partition or halo exchange, by its harness name: a `call` statement,
-# or the action of a one-line logical `if` (`if (n > 0) call h__partition(...)`).
-_DISTRIBUTING_CALL_RE = re.compile(
-    r"^(?:if\s*\(.*\)\s*)?call\s+\w+__(?:partition|exchange_halo_r[1-4])\b", re.IGNORECASE)
+def _distributing_call_re(harness_spec_id: str) -> re.Pattern[str]:
+    """A call of the target harness's partition or halo exchange, by its harness name — the
+    harness's own prefix, and only the operations it publishes (§3.3: `exchange_halo_r1` /
+    `_r2`) — as a `call` statement or the action of a one-line logical `if`
+    (`if (n > 0) call h__partition(...)`). Round 3 of the PR's review found the prefix read as
+    any identifier, so a leaf's own `<spec_id>__partition` counted."""
+    return re.compile(
+        rf"^(?:if\s*\(.*\)\s*)?call\s+{re.escape(harness_spec_id)}__"
+        rf"(?:partition|exchange_halo_r[12])\b", re.IGNORECASE)
 
 # An assignment (or a declaration's initializer) of a bound array's partition axis; `(?!=)`
 # keeps a comparison `sb_u_axis == 0` out. The value is read up to the next top-level comma.
@@ -79,9 +84,9 @@ def _code_statements(text: str) -> list[tuple[str, str]]:
 class PresenceFloor:
     """What the floor asks of one (language, hardware class) pair: a whole-node judgment."""
 
-    #: `node_violations(model_texts=, checks_texts=, plan=, bound_arrays=)` → the findings,
-    #: each naming a file. `bound_arrays` is the node's bound array variables (the IR's
-    #: snapshot variables of rank >= 1).
+    #: `node_violations(model_texts=, checks_texts=, plan=, bound_arrays=, harness_spec_id=)` →
+    #: the findings, each naming a file. `bound_arrays` is the node's bound array variables (the
+    #: IR's snapshot variables of rank >= 1); `harness_spec_id` is the target's harness.
     node_violations: Any
 
 
@@ -109,7 +114,8 @@ def lowering_plan_declines(plan: Any) -> bool:
 
 
 def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[Path, str],
-                            plan: Any, bound_arrays: Iterable[str]) -> list[str]:
+                            plan: Any, bound_arrays: Iterable[str],
+                            harness_spec_id: str) -> list[str]:
     statements = {path: _code_statements(text)
                   for path, text in [*model_texts.items(), *checks_texts.items()]}
     out: list[str] = []
@@ -139,15 +145,17 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
             "\"model\": \"none\" in the plan's parallelization the answer, with the reason "
             "stated; the independent reviewer holds that declaration to the kernel")
         return out
-    if not any(_DISTRIBUTING_CALL_RE.match(masked)
+    distributing = _distributing_call_re(harness_spec_id)
+    if not any(distributing.match(masked)
                for stmts in statements.values() for _raw, masked in stmts):
         out.append(
             f"{first}: the target profile resolves to MPI and the plan declares distributed "
-            "state, but neither the model nor the checks source calls the harness's "
-            "`<harness>__partition` or `<harness>__exchange_halo_r<k>` — the owned range of "
+            f"state, but neither the model nor the checks source calls the harness's "
+            f"`{harness_spec_id}__partition` or `{harness_spec_id}__exchange_halo_r1` / `_r2` "
+            "— the owned range of "
             "each rank comes from the partition, and a stencil reads its neighbours' cells "
             "through the halo exchange. Call them by their harness names (a statement "
-            "`call <harness>__partition(...)`; a renamed alias is not recognized)")
+            f"`call {harness_spec_id}__partition(...)`; a renamed alias is not recognized)")
     # Only the axis of a BOUND array counts, and only where the checks module sets it: a
     # variable named like one that no capture reads (`sb_tmp_axis = 1`) distributes nothing
     # (round 1 of the PR's review built that shape and it passed).
@@ -163,8 +171,9 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
             f"({', '.join(sorted(arrays)) or 'none declared'}) to anything but 0, so every "
             "bound array is captured as replicated and nothing the run records is "
             "distributed. Set `sb_<var>_axis` to the axis a partitioned array is split along, "
-            "with `sb_<var>_lo` / `sb_<var>_hi` / `sb_<var>_glo` describing this rank's owned "
-            "cells (the host-rendered runner's comment states the binding)")
+            "with `sb_<var>_lo` / `sb_<var>_hi` / `sb_<var>_glo` describing the cells this rank "
+            "contributes to the global array (the host-rendered runner's comment states the "
+            "binding)")
     return out
 
 

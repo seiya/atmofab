@@ -426,8 +426,8 @@ starts and ends the runtime, gathers every partitioned bound array onto rank 0 b
 captured, and writes on rank 0 only. What a bundle states to be driven this way is
 `target_lowering_plan.state_residency: distributed` with `distributed_state@1` among its
 `capability_requirements` (the residency coupling below); what its checks module publishes for
-each bound array — the axis it is partitioned along and the positions and global index of the
-cells a rank owns — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
+each bound array — the axis it is partitioned along and which cells of the global array a rank
+contributes, with the global index of the first — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
 fixed by the same convention as the bound state itself, so the bundle carries no name of it.
 
 ### The manifest document

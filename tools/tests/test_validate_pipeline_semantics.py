@@ -23241,7 +23241,9 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             from tools.tests.target_fixtures import install_target_profile, profile_with
-            install_target_profile(repo_root, profile_with(parallel={"backend": "mpi"}))
+            install_target_profile(repo_root, profile_with(
+                parallel={"backend": "mpi"},
+                harness={"infrastructure_id": "harness_fortran_cpu_mpi"}))
             # The node's bound state: `u` is its one bound array, `t` a scalar.
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
             (repo_root / ir_ref).mkdir(parents=True)
@@ -23325,6 +23327,17 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 v = self._run(model=model, checks=checks)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("neither the model nor the checks source calls the harness's", v[0])
+                self.assertIn("harness_fortran_cpu_mpi__partition", v[0])
+        # Only the TARGET harness's operations, and only those it publishes (round 3): the
+        # leaf's own `<spec_id>__partition`, another prefix, and an `exchange_halo_r3` do not.
+        for call in ("call dep_base__partition(n, glo, ghi)",
+                     "call harness_fortran_cpu__partition(n, glo, ghi)",
+                     "call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)"):
+            with self.subTest(call=call):
+                v = self._run(model=model, checks=self._CHECKS.replace(
+                    "call harness_fortran_cpu_mpi__partition(n, glo, ghi)", call))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("neither the model nor the checks source calls", v[0])
         # The action of a one-line logical `if` is a call too.
         self.assertEqual(self._run(model=model, checks=self._CHECKS.replace(
             "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n",
