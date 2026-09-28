@@ -6241,7 +6241,7 @@ class Conductor:
         delegates."""
         from tools.codegen_bundle import (
             pure_bundle_contract_violation, harness_provided_capabilities,
-            published_operations_from_ir, snapshot_variables_from_ir)
+            published_operations_from_ir, snapshot_variable_entries_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # Capability negotiation against the target's harness, resolved by the same
         # `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
@@ -6254,7 +6254,7 @@ class Conductor:
             shape=(self._bundle_shape(refs) or ""),
             language=self._read_toolchain(refs)["language"],
             runner_basename=self._runner_basename(refs),
-            ir_snapshot_variables=snapshot_variables_from_ir(ir),
+            ir_snapshot_variables=snapshot_variable_entries_from_ir(ir),
             harness_provided=provided, harness_label=harness_nk,
             build_graph=lambda d: self._build_pure_bundle_graph(refs, d),
             ir_published_operations=published_operations_from_ir(ir))

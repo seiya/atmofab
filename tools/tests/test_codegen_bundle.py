@@ -3208,6 +3208,13 @@ class PureStateBindingLayerTests(unittest.TestCase):
                 ir_published_operations=None)
 
         mpi = "infrastructure/harness_fortran_cpu_mpi@0.1.0"
+        # What the two production callers pass (`snapshot_variable_entries_from_ir`), not a
+        # hand-built list: round 1 found the callers passing bare names, which left this layer
+        # with no array to ask about — `test_the_conductor_passes_the_shapes` pins the caller.
+        ir = {"io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}
+        self.assertEqual(cb.snapshot_variable_entries_from_ir(ir), vars_)
+        self.assertEqual(cb.snapshot_variables_from_ir(ir), ["q", "s"])
         self.assertIsNone(run(published, mpi))
         r = run(with_s, mpi)
         self.assertEqual(r[0], "bundle_checks_abi_violation")
@@ -3216,6 +3223,36 @@ class PureStateBindingLayerTests(unittest.TestCase):
         for harness in ("infrastructure/harness_fortran_cpu@0.7.0", None, "harness_fortran_cpu_mpi"):
             with self.subTest(harness=harness):
                 self.assertIsNone(run(with_s, harness))
+
+    def test_the_conductor_passes_the_shapes(self) -> None:
+        """The conductor's acceptance entry hands the contract the IR's `{name, shape_expr}`
+        entries, so the distributed-metadata half sees which variables are arrays."""
+        from types import SimpleNamespace
+        from unittest import mock
+        from tools import workflow_conductor as wc
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            ir_ref = "workspace/ir/problem__bx__0.1.0/ir_1"
+            (root / ir_ref).mkdir(parents=True)
+            vars_ = [{"name": "q", "shape_expr": "[8]"}]
+            import yaml
+            (root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump({"io_contract": {
+                "raw_requirements": {"required_evidence": [
+                    {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}))
+            holder = SimpleNamespace(
+                repo_root=root,
+                _pure_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.1.0",
+                _bundle_shape=lambda refs: "m3c",
+                _read_toolchain=lambda refs: {"language": "fortran"},
+                _runner_basename=lambda refs: "bx_runner.f90",
+                _build_pure_bundle_graph=lambda refs, d: None)
+            refs = SimpleNamespace(ir_ref=ir_ref, node_key=self._NK, spec_id="bx")
+            with mock.patch.object(cb, "pure_bundle_contract_violation",
+                                   autospec=True, return_value=None) as spy:
+                wc.Conductor._pure_bundle_violations(holder, refs, {})
+        self.assertEqual(spy.call_args.kwargs["ir_snapshot_variables"], vars_)
+        self.assertEqual(spy.call_args.kwargs["harness_label"],
+                         "infrastructure/harness_fortran_cpu_mpi@0.1.0")
 
     def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
         # The ABI layer: a binding whose storage the module does not `public ::` is a `use`

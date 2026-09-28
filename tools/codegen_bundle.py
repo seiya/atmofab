@@ -1954,12 +1954,22 @@ def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
     the gate requires bound is the set the runner imports from. A missing section yields `[]`,
     which the M3c layer refuses (an M3c node always declares snapshots — the renderer fails
     closed on the same absence)."""
+    return [entry["name"] for entry in snapshot_variable_entries_from_ir(ir)]
+
+
+def snapshot_variable_entries_from_ir(ir: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """`snapshot_variables_from_ir`'s variables as `{name, shape_expr}` — what the two callers of
+    `pure_bundle_contract_violation` pass, because the acceptance layer asks the ranks too: over a
+    harness that runs the program as several ranks, each bound ARRAY brings partition metadata
+    the checks module must publish (issue #316). A bare name list leaves that half with no array
+    to ask about, which is how it shipped at first (R4-c PR-4 round 1)."""
     if not isinstance(ir, collections.abc.Mapping):
         return []
     io = ir.get("io_contract")
     rr = io.get("raw_requirements") if isinstance(io, collections.abc.Mapping) else None
     entries = rr.get("required_evidence") if isinstance(rr, collections.abc.Mapping) else None
-    out: list[str] = []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for e in (entries if isinstance(entries, list) else []):
         if not isinstance(e, collections.abc.Mapping) or e.get("artifact") != "state_snapshots":
             continue
@@ -1967,8 +1977,9 @@ def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
         variables = schema.get("variables") if isinstance(schema, collections.abc.Mapping) else None
         for v in (variables if isinstance(variables, list) else []):
             if isinstance(v, collections.abc.Mapping) and isinstance(v.get("name"), str) \
-                    and v["name"].strip() and v["name"].strip() not in out:
-                out.append(v["name"].strip())
+                    and v["name"].strip() and v["name"].strip() not in seen:
+                seen.add(v["name"].strip())
+                out.append({"name": v["name"].strip(), "shape_expr": v.get("shape_expr")})
         break
     return out
 

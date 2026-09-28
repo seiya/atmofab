@@ -10354,7 +10354,7 @@ def _validate_post_generate_bundle(
         return
     from tools.codegen_bundle import (
         pure_bundle_contract_violation, harness_provided_capabilities, derive_build_graph,
-        published_operations_from_ir, snapshot_variables_from_ir)
+        published_operations_from_ir, snapshot_variable_entries_from_ir)
     try:
         doc = _read_json(bundle_path)
     except json.JSONDecodeError:
@@ -10419,7 +10419,7 @@ def _validate_post_generate_bundle(
         doc, node_key=node_key, spec_id=spec_id,
         shape=(shape or ""), language=str(toolchain.get("language") or ""),
         runner_basename=runner_basename,
-        ir_snapshot_variables=snapshot_variables_from_ir(ir),
+        ir_snapshot_variables=snapshot_variable_entries_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))
     if contract is not None:
