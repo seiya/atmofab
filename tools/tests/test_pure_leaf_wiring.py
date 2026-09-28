@@ -3319,7 +3319,14 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
                 with self.subTest(template=key):
                     self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(raw))
 
-    def test_the_openmp_floor_reaches_a_fortran_openmp_leaf_and_no_other(self) -> None:
+    def test_the_openmp_floor_reaches_a_fortran_openmp_leaf_and_no_other_fortran_leaf(
+            self) -> None:
+        """The OpenMP paragraph reaches a `fortran` + `openmp` leaf, and a `fortran` leaf of a
+        model with no fragments (`none`, `mpi`) gets the same prompt without it. NOT asserted:
+        another language with `openmp` — `cuda_cpp` + `openmp` composes the paragraph, whose
+        sentences are conditioned on a `fortran` language; no target profile names that pair.
+        The `mpi` half is expected to turn red when `mpi` declares its own fragments (R4-c
+        PR-4): replace it then with that model's paragraph."""
         for key in self._KEYS:
             with self.subTest(template=key):
                 composed = composed_pure_template(key)
