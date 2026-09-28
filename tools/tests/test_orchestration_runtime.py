@@ -21340,7 +21340,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # partition variables a checks module publishes beside each bound array on a harness
         # that runs the program as several ranks. It is inlined into the `m3c` reviewer, which
         # cannot judge a distributed checks module without it. Measured 12759 on the branch.
-        "docs/backends/language/fortran/CHECKS_ABI.md": 13200,
+        # Raised 13200->13500 in the same PR's round 2: which cells a rank contributes when the
+        # IR's shape includes the domain's boundary ghost cells. Measured 13216.
+        "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
         "docs/backends/language/fortran/RUNNER_OUTPUT.md": 4800,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).

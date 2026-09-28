@@ -172,8 +172,8 @@ PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
 #: The per-variable module variables a checks module publishes beside each bound ARRAY on a
 #: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §Distributed binding): the
 #: axis the array is partitioned along (0 = replicated, rank 0's copy is the global value), the
-#: local positions of the cells this rank owns along it, and the global index of the first of
-#: them. Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
+#: indices, in the array's own bounds, of the cells this rank contributes to the global array
+#: along it, and the global index of the first of them. Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
 DISTRIBUTED_BINDING_SUFFIXES: tuple[str, ...] = ("axis", "lo", "hi", "glo")
 
 
@@ -939,13 +939,16 @@ def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
         "  ! case_setup sets on every rank for that rank's copy: the axis <var> is partitioned",
         "  ! along (0 = replicated: every rank holds the global array and rank 0's is written),",
         "  ! the indices lo..hi, in the array's own declared bounds, of the cells this rank",
-        "  ! owns along it, ghost cells excluded (hi < lo when it owns none, and the array is",
-        "  ! allocated all the same), and the global index (from 1) of the cell at index lo.",
-        "  ! Only the partitioned axis may carry ghost cells: every other axis holds exactly",
-        "  ! its global extent. capture_state gathers each partitioned array onto rank 0, and",
-        "  ! the harness's gather stops the run unless the ranks' owned ranges tile the global",
-        "  ! extent. The halo exchange takes an array whose partitioned axis holds ng ghost",
-        "  ! cells, the owned cells, then ng ghost cells. A",
+        "  ! contributes along it to the GLOBAL array - the array as the IR's shape_expr",
+        "  ! declares it - and the global index (from 1, in that shape) of the cell at lo.",
+        "  ! A halo cell (a copy of a neighbour's cell) is never contributed; when the",
+        "  ! declared shape includes the domain's boundary ghost cells, the first rank",
+        "  ! contributes the leading ones and the last rank the trailing ones. hi < lo when a",
+        "  ! rank contributes nothing, and the array is allocated all the same. Every other",
+        "  ! axis holds exactly the extent the declared shape gives it. capture_state gathers",
+        "  ! each partitioned array onto rank 0, and the harness's gather stops the run unless",
+        "  ! the contributed ranges tile the global extent. The halo exchange takes an array",
+        "  ! whose partitioned axis holds ng halo cells, the owned cells, then ng halo cells. A",
         "  ! scalar is replicated. case_run reports the cells THIS rank updated (the runner",
         "  ! sums them), and checks_compute / metric_compute run on every rank, rank 0's",
         "  ! results being written. A physics source may use the harness module for these",
