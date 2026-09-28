@@ -222,6 +222,15 @@ that exact substitution. **Re-measure at the commit you are about to NAME, not a
 re-measure them together at the end**; a commit message cannot be fixed afterwards, so either
 mark the number as measured at a point or rewrite it in the final round.
 
+**A new EXCEPTION to a prohibition is a change of that rule, and it must reach every statement
+of the prohibition, not only the gate.** On a leaf-read surface a prohibition left absolute
+beside a text that requires the excepted act makes declining the task the leaf's cheapest
+resolution, and the reviewer's own inlined contract then reads as endorsing the decline: issue
+#316 PR-4 relaxed "a physics source never `use`s the harness" in the checks-source gate and the
+MPI fragment, and left it absolute in the Fortran fragment's rule (a), the neutral checks
+contract §4 and the Fortran binding §4 — two documents on the reviewer's transport, one on the
+producer's — until round 1 found the contradiction by rendering both prompts.
+
 **3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3 is a
 discipline, and it failed four consecutive rounds on issue #71 **after it had been diagnosed**
 (carried, not found: the narrowing round discovered no record defect of its own, so "four rounds
