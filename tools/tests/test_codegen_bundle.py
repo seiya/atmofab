@@ -282,6 +282,22 @@ class CapabilityNegotiationTest(unittest.TestCase):
             cb.unsatisfied_capability_requirements(["state_registration@2"], provided),
             ["state_registration@2"])
 
+    def test_distributed_state_is_provided_by_the_mpi_harness_alone(self) -> None:
+        # Issue #316 (R4-c PR-3): a `distributed` bundle's requirement set is satisfied by the
+        # harness of the process-parallel target and by no other; the single-process harnesses
+        # keep the set they had, so their consumers' negotiation is unchanged.
+        distributed = ["sync_single_case@1", "distributed_state@1", cb.STATE_REGISTRATION_TOKEN]
+        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.1.0")
+        self.assertEqual(cb.unsatisfied_capability_requirements(distributed, mpi), [])
+        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.1.0"):
+            with self.subTest(harness=single):
+                provided = cb.harness_provided_capabilities(single)
+                self.assertEqual(provided,
+                                 frozenset({"sync_single_case@1", cb.STATE_REGISTRATION_TOKEN}))
+                self.assertEqual(
+                    cb.unsatisfied_capability_requirements(distributed, provided),
+                    ["distributed_state@1"])
+
     def test_version_skew_is_unsatisfied_no_ordering_is_assumed(self) -> None:
         # @2 is NOT satisfied by a harness providing @1: compatibility is declared by
         # adding a token to a manifest, never inferred from version ordering.
@@ -2293,7 +2309,8 @@ class ContractPlumbingTest(unittest.TestCase):
         # would then false-fail on at the next bump — the failure it must report is a stale
         # MANIFEST, never a stale assertion.
         self.assertEqual({node_key.rsplit("@", 1)[0] for node_key in harnesses},
-                         {"infrastructure/harness_fortran_cpu", "infrastructure/harness_cpp_gpu"},
+                         {"infrastructure/harness_fortran_cpu", "infrastructure/harness_cpp_gpu",
+                          "infrastructure/harness_fortran_cpu_mpi"},
                          "the parsed harness set is not the expected harness set: either the "
                          "catalog entry stopped parsing (fix the parser) or a harness was "
                          "added/renamed (fix THIS assertion) — never the manifest")

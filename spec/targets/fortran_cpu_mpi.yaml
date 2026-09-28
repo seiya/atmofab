@@ -1,0 +1,24 @@
+# Target profile (issue #316, R4-c). Operator-authored data: one value per target axis, and the
+# harness a node built for this target runs over. Loader and gate: tools/target_profile.py.
+# Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
+#
+# `execution.ranks` is the number of processes the parallel backend's launcher starts for the
+# Validate run; the quality check re-runs the same cases as one process. A launcher target runs at
+# the local site only (docs/backends/parallel/mpi/LAUNCHER.md §4).
+target_profile_version: 1
+target_id: fortran_cpu_mpi
+hardware:
+  class: cpu
+  architecture: x86_64
+toolchain:
+  language: fortran
+  standard: f2008
+  build_system: make
+parallel:
+  backend: mpi
+execution:
+  threads_per_rank: 1
+  ranks: 4
+harness:
+  infrastructure_id: harness_fortran_cpu_mpi
+  version_constraint: ">=0.1.0 <1.0.0"

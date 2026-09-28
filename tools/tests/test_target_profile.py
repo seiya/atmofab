@@ -68,7 +68,7 @@ _DELETE = object()
 
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
-        self.assertEqual(tp.list_target_ids(REPO_ROOT), ["cpp_gpu", "fortran_cpu"])
+        self.assertEqual(tp.list_target_ids(REPO_ROOT), ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi"])
         profile = tp.resolve_run_target(REPO_ROOT, "fortran_cpu")
         self.assertEqual(profile.target_id, "fortran_cpu")
         self.assertRegex(profile.sha256, r"^sha256:[0-9a-f]{64}$")
@@ -86,7 +86,7 @@ class CheckedInProfileTests(unittest.TestCase):
         with self.assertRaises(tp.TargetProfileError) as cm:
             tp.resolve_run_target(REPO_ROOT, None)
         self.assertEqual(cm.exception.reason, "target_required")
-        self.assertIn("cpp_gpu, fortran_cpu", cm.exception.detail)
+        self.assertIn("cpp_gpu, fortran_cpu, fortran_cpu_mpi", cm.exception.detail)
 
     def test_the_checked_in_gpu_profile_builds_its_harness_and_stops_before_validate(self) -> None:
         """Issue #289 (R4-b PR-5): `cpp_gpu` passes the launch gate for its own harness through
@@ -124,6 +124,28 @@ class CheckedInProfileTests(unittest.TestCase):
             self.assertEqual(tp.target_profile_violations(
                 REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
                 until_phase=phase), [], phase)
+
+    def test_the_checked_in_mpi_profile_launches_four_ranks_over_its_own_harness(self) -> None:
+        """Issue #316 (R4-c PR-3): `fortran_cpu_mpi` names the `mpi` parallel backend with four
+        ranks and the distributed-state harness, and passes the launch gate for that harness at
+        every phase, Validate included — `mpi` declares the launcher its ranks need. The site half
+        admits it at the local site with no `sites.yaml`: a `cpu` class, and a launcher target at
+        `local`."""
+        from tools.execution_sites import LOCAL_DEFAULT_EXECUTES, Site, SitesConfig, site_violations
+        from tools.host_execution import LOCAL_SITE
+
+        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
+        self.assertEqual((profile.hardware_class, profile.parallel_backend, profile.ranks,
+                          profile.threads_per_rank), ("cpu", "mpi", 4, 1))
+        self.assertEqual(profile.toolchain["language"], "fortran")
+        self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
+        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.1.0")
+        for phase in sorted(tp.NON_EXECUTING_PHASES) + ["validate"]:
+            self.assertEqual(tp.target_profile_violations(
+                REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
+        no_file = SitesConfig(sites={LOCAL_SITE: Site(LOCAL_SITE, LOCAL_DEFAULT_EXECUTES)})
+        self.assertEqual(site_violations(no_file, profile, until_phase="validate"), [])
 
     def test_the_checked_in_profiles_are_byte_unchanged_by_the_optional_rank_count(self) -> None:
         """Issue #316: `execution.ranks` is optional with a default of 1 so that no existing

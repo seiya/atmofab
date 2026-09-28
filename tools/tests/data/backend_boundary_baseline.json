@@ -16,7 +16,7 @@
     },
     "README.md": {
       "compiler-driver": 3,
-      "fortran": 5,
+      "fortran": 6,
       "linter-cppcheck": 1,
       "linter-fortitude": 1,
       "linter-ruff": 1
@@ -50,7 +50,7 @@
       "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
-      "fortran": 4
+      "fortran": 7
     },
     "docs/ORCHESTRATION.md": {
       "compiler-driver": 1,
@@ -62,7 +62,7 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 16,
+      "fortran": 18,
       "fortran-module-file": 2,
       "fortran-suffix": 1,
       "linter-cppcheck": 3,
@@ -80,7 +80,7 @@
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 4,
+      "fortran": 9,
       "fortran-intent": 1,
       "fortran-kind": 1,
       "fortran-subroutine": 1,
@@ -180,7 +180,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 13,
+      "fortran": 14,
       "fortran-subroutine": 6,
       "fortran-suffix": 1,
       "make-control-file": 6
