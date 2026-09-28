@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_time_update_2d_ssprk2`
-- `spec_version`: `0.4.0`
+- `spec_version`: `0.4.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
@@ -165,7 +165,7 @@ Forbid automatic switching of the time-integration method.
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/tests.md`, with `test_profile_version` of `0.3.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/tests.md`, with `test_profile_version` of `0.4.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `ceil` (when used in the `dt` rule) is made explicit as a non-differentiable operation.

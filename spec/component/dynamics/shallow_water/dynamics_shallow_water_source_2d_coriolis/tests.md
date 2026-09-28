@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_source_2d_coriolis_l0`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_source_2d_coriolis`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.1.1`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/controlled_spec.md`
 
 ## 1. Test purpose
@@ -25,23 +25,24 @@ This suite verifies the published `operation` `dynamics_shallow_water_source_2d_
 
 ## 5. Diagnostics contract
 - Require outputting `checks.zero_f`, `checks.pointwise`, `checks.energy_neutral`, and `checks.input_guard` in `diagnostics.json`.
+- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
 - `test_id`: `l0_zero_f_gives_zero_source_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `f=0` in every row, every component of `S` is exactly `0` at every cell (component-wise max `|S| == 0`).
+  - `judgment`: with `f=0` in every row, every component of `S` is exactly `0` at every cell (component-wise max `|S| == 0`). The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_pointwise_formula_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with the row-dependent `f` of §2, satisfy `S(1,i,j) = 0`, `S(2,i,j) = f(j)*hv(i,j)`, and `S(3,i,j) = -f(j)*hu(i,j)` at every cell within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`).
+  - `judgment`: with the row-dependent `f` of §2, satisfy `S(1,i,j) = 0`, `S(2,i,j) = f(j)*hv(i,j)`, and `S(3,i,j) = -f(j)*hu(i,j)` at every cell within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_energy_neutral_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with the row-dependent `f` of §2, satisfy `hu(i,j)*S(2,i,j) + hv(i,j)*S(3,i,j) = 0` at every cell within an absolute tolerance of `1e-12` (max over cells of the absolute value `<= 1e-12`): the discrete evidence that the source does no work.
+  - `judgment`: with the row-dependent `f` of §2, satisfy `hu(i,j)*S(2,i,j) + hv(i,j)*S(3,i,j) = 0` at every cell within an absolute tolerance of `1e-12` (max over cells of the absolute value `<= 1e-12`): the discrete evidence that the source does no work. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_invalid_ncomp_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`

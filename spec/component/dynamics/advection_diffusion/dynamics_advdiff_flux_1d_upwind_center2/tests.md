@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_advdiff_flux_1d_upwind_center2_l0`
-- `test_profile_version`: `0.2.0`
+- `test_profile_version`: `0.3.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advdiff_flux_1d_upwind_center2`
-- `spec_ref.spec_version`: `0.3.0`
+- `spec_ref.spec_version`: `0.3.1`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md`
 
 ## 1. Test purpose
@@ -26,28 +26,29 @@ This suite verifies the published `operation` `dynamics_advdiff_flux_1d_upwind_c
 ## 5. Diagnostics contract
 - Require outputting `checks.flux_adv_consistency`, `checks.flux_dif_consistency`, `checks.seam_consistency`, and `checks.input_guard` in `diagnostics.json`.
 - When `guard_pass` is false, `flux_adv` and `flux_dif` are undefined (`controlled_spec.md` §4): only `checks.input_guard` is evaluated, and every other check reports status `na` without reading those outputs.
+- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
 - `test_id`: `l0_constant_state_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with a constant-field input (ghost cells included), satisfy `flux_dif=0` and `flux_adv=a*u_const` at all `nx + 1` faces, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`).
+  - `judgment`: with a constant-field input (ghost cells included), satisfy `flux_dif=0` and `flux_adv=a*u_const` at all `nx + 1` faces, each within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
 - `test_id`: `l0_linear_state_diff_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with a linear-field input (ghost cells included, so the field needs no periodicity), `flux_dif` is uniform over all `nx + 1` faces: `max(flux_dif) - min(flux_dif) <= 1e-12`.
+  - `judgment`: with a linear-field input (ghost cells included, so the field needs no periodicity), `flux_dif` is uniform over all `nx + 1` faces: `max(flux_dif) - min(flux_dif) <= 1e-12`. The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
 - `test_id`: `l0_face_formula_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with the fixed inputs `nx=4`, `ng=2`, `a=2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, and the ghost-extended field `u = [0.3, 1.7, 0.2, 2.9, 1.1, 0.4, 3.6, 2.2]` (elements `1 … 8`, i.e. $u_{-2}\dots u_{5}$; $u_j$ is element `j + 3`), the outputs equal `flux_adv = [3.4, 0.4, 5.8, 2.2, 0.8]` and `flux_dif = [0.9, -1.62, 1.08, 0.42, -1.92]` (element `j + 2` is face $j+1/2$, $j=-1,\dots,3$, from the §3 formulas) within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). On these values every omission of `a`, `nu`, or `1/dx`, a reversed sign, a face shifted by one or two cells, an ignored `ng`, and every pairwise combination of these deviates by at least `0.9` at some face.
+  - `judgment`: with the fixed inputs `nx=4`, `ng=2`, `a=2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, and the ghost-extended field `u = [0.3, 1.7, 0.2, 2.9, 1.1, 0.4, 3.6, 2.2]` (elements `1 … 8`, i.e. $u_{-2}\dots u_{5}$; $u_j$ is element `j + 3`), the outputs equal `flux_adv = [3.4, 0.4, 5.8, 2.2, 0.8]` and `flux_dif = [0.9, -1.62, 1.08, 0.42, -1.92]` (element `j + 2` is face $j+1/2$, $j=-1,\dots,3$, from the §3 formulas) within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). On these values every omission of `a`, `nu`, or `1/dx`, a reversed sign, a face shifted by one or two cells, an ignored `ng`, and every pairwise combination of these deviates by at least `0.9` at some face. The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
 - `test_id`: `l0_periodic_seam_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with a non-constant interior field and periodic ghost cells $u_{-1}=u_{nx-1}$, $u_{nx}=u_0$, the left seam face $F_{-1/2}$ (element `1`) and the right seam face $F_{nx-1/2}$ (element `nx + 1`) are exactly equal in `flux_adv` and in `flux_dif` (difference `== 0`). The two faces are the same expression applied to the same values, so a nonzero difference means one seam face was produced by a different path, or is missing.
+  - `judgment`: with a non-constant interior field and periodic ghost cells $u_{-1}=u_{nx-1}$, $u_{nx}=u_0$, the left seam face $F_{-1/2}$ (element `1`) and the right seam face $F_{nx-1/2}$ (element `nx + 1`) are exactly equal in `flux_adv` and in `flux_dif` (difference `== 0`). The two faces are the same expression applied to the same values, so a nonzero difference means one seam face was produced by a different path, or is missing. The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
 - `test_id`: `l0_invalid_a_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`

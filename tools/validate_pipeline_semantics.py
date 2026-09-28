@@ -241,6 +241,10 @@ TEST_ID_HEADING_PATTERN = re.compile(r"^###\s+\d+-\d+\.\s+`([^`]+)`\s*$")
 # like `- `pass_when`:` / `- `suite.pass_rule`:`.
 TEST_ID_BULLET_PATTERN = re.compile(r"^-\s+`test_id`\s*:\s*`([^`]+)`")
 TEST_OUTCOME_VALUES = {"pass", "fail", "xfail", "skipped", "blocked"}
+#: The sentence with which a `tests.md` test applies the cross-target judgment
+#: (`docs/TESTS.md` §Cross-target judgment, issue #324). "The cross-target judgment is not
+#: applied" does not contain it.
+CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
 # Bundled schema lives next to this validator; used as the canonical fallback
 # when no target repo_root is in scope (tests, ad-hoc invocation) and as the
 # default canonical reference for the validator's pinned rules.
@@ -3209,6 +3213,35 @@ def _parse_test_ids_from_tests_md(tests_path: Path) -> list[str]:
         seen.add(test_id)
         test_ids.append(test_id)
     return test_ids
+
+
+def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
+    """The `tests.md` test ids whose definition applies the cross-target judgment
+    (`CROSS_TARGET_JUDGMENT_PHRASE`), or None when the file cannot be read. A test's definition
+    runs from its id declaration (either form `_parse_test_ids_from_tests_md` reads) to the next
+    declaration or `## ` heading; its lines are joined with whitespace collapsed, so a sentence
+    wrapped across lines still counts."""
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    blocks: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = TEST_ID_HEADING_PATTERN.match(line) or TEST_ID_BULLET_PATTERN.match(line)
+        if match:
+            current = match.group(1).strip() or None
+            if current is not None:
+                blocks.setdefault(current, [])
+            continue
+        if line.startswith("## "):
+            current = None
+            continue
+        if current is not None:
+            blocks[current].append(line)
+    return {tid for tid, lines in blocks.items()
+            if CROSS_TARGET_JUDGMENT_PHRASE in " ".join(" ".join(lines).split())}
 
 
 # Matches a top-level numbered controlled_spec heading `## <n>. Title`. The `(?:\s|$)`
@@ -9844,6 +9877,11 @@ def _validate_test_predicates(
     per-test judgment reduced to the runner's own ``verdict.overall`` — cannot arise once every
     condition, a ``verdict.*`` one included, is conjoined with a host-evaluated predicate.
 
+    Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
+    the set is pinned separately — every test whose ``tests.md`` definition contains
+    ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one cross-target predicate, and no other
+    test carries one (``_parse_cross_target_judged_test_ids``).
+
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
     to re-author the predicates."""
     from tools.verdict_evaluator import validate_predicate_schema
@@ -9978,6 +10016,34 @@ def _validate_test_predicates(
     # only; the same-quantity and can-fail judgments are Compile.verify's (V3).
     for msg in coverage_violations(predicates, io_contract.get("primary_predicates")):
         violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
+
+    # Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
+    # the coverage gate cannot see one omitted — and an IR without one binds no comparand, so a
+    # disagreeing variant certifies. Pin the SET: every test whose tests.md definition applies
+    # the cross-target judgment carries at least one cross-target predicate, and no other test
+    # carries one. Which variables, normaliser and threshold is V3 (v)'s judgment.
+    if tests_path is not None and _is_readable_file(tests_path):
+        judged = _parse_cross_target_judged_test_ids(tests_path)
+        if judged is not None:
+            from tools.primary_evidence import is_cross_target_predicate
+            primary = io_contract.get("primary_predicates")
+            crossed = {
+                p["test_id"].strip()
+                for p in (primary if isinstance(primary, list) else [])
+                if is_cross_target_predicate(p) and isinstance(p.get("test_id"), str)
+            }
+            for tid in sorted(judged - crossed):
+                violations.append(
+                    f"{derived_path}:io_contract.primary_predicates: tests.md applies the "
+                    f"cross-target judgment to test '{tid}' ('{CROSS_TARGET_JUDGMENT_PHRASE}') "
+                    "and no cross-target predicate of that test transcribes it: add one entry "
+                    f"with test_id '{tid}' per variable the judgment names, comparing "
+                    "final.<var> with comparand.final.<var> (phase_01_compile.md V3 (v))")
+            for tid in sorted(crossed - judged):
+                violations.append(
+                    f"{derived_path}:io_contract.primary_predicates: a cross-target predicate "
+                    f"(one reading comparand.) has test_id '{tid}', whose tests.md definition "
+                    "does not apply the cross-target judgment: remove it")
 
 
 def _validate_ir_source_refs_tests(

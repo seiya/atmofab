@@ -1238,6 +1238,37 @@ class CompileContractCouplingTest(unittest.TestCase):
         self.assertEqual(pe.FUNCTIONS["min"], pe.FUNCTIONS["max"])
         self.assertIn(f"rank ≤ {pe.FUNCTIONS['roll'][1] - 1}", block)
 
+    def test_the_grammar_version_and_the_comparand_root_are_the_code(self):
+        """Issue #324 (R4-d PR-2): the block states the module's GRAMMAR_VERSION, and it names
+        the cross-target root the parser accepts, in both capture points, on the names lines."""
+        text = self._DOC.read_text(encoding="utf-8")
+        self.assertIn(f"GRAMMAR_VERSION {pe.GRAMMAR_VERSION} — gated", text)
+        names = text[text.index("  #   names       "):text.index("  #   functions   ")]
+        spelled = " / ".join(f"{pe._COMPARAND}.{p}.<var>" for p in pe.CAPTURE_POINTS)
+        self.assertIn(spelled, names)
+
+    def test_the_worked_cross_target_translation_is_a_cross_target_predicate(self):
+        """The worked translation the leaf copies parses, reads the comparand AND this run's
+        own state (so the gate accepts it), and is symmetric: swapping the two variants'
+        roles leaves its value unchanged on any pair of states."""
+        import re
+        text = self._DOC.read_text(encoding="utf-8")
+        at = text.index("  #   cross-target agreement")
+        expr = re.search(r'expr: "([^"]+)"', text[at:at + 600]).group(1)
+        refs = pe.expr_names(pe.parse_expr(expr))
+        self.assertTrue(pe.predicate_reads_comparand(refs, {}))
+        self.assertTrue(pe.predicate_reads_state(refs, {}, {"u"}))
+        swapped = (expr.replace("comparand.final.u", "\0").replace("final.u", "comparand.final.u")
+                   .replace("\0", "final.u"))
+        a, b = np.array([1.0, -2.0, 3.0]), np.array([1.5, -2.0, 2.0])
+        env = pe.CaseEnv(case_id="c", initial=None, final={"u": a}, inputs={}, coordinates={})
+        cenv = pe.CaseEnv(case_id="c", initial=None, final={"u": b}, inputs={}, coordinates={})
+        one = pe.evaluate(pe.parse_expr(expr), env, comparand_env=cenv)
+        two = pe.evaluate(pe.parse_expr(swapped), env, comparand_env=cenv)
+        self.assertNotEqual(swapped, expr)
+        self.assertAlmostEqual(float(one), float(two))
+        self.assertAlmostEqual(float(one), 1.0 / 3.0)
+
 
 # ----------------------------------------------------------------------------------- CLI
 

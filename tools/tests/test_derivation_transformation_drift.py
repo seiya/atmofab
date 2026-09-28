@@ -407,6 +407,15 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # and the spec_id rule's "f2008 63-character limit" (now the shortest identifier bound an
     # implemented language backend declares, still 63). No rule's bound or character set moved.
     "compile-docs-6": "853ccc0b0fb4f0a2fdf756fc113f59cfe36f2487c673b75804d289bf436d1c63",
+    # R4-d PR-2 (issue #324): `phase_01_compile.md` states grammar 3's `comparand.` names, the
+    # cross-target transcription (a primary predicate only, no condition, outside COVERAGE), its
+    # worked translation and V3 (v) — a compile leaf reading it authors cross-target predicates
+    # from a tests.md cross-target judgment, so the key moves.
+    # Re-pinned in round 1 (the version is new on this branch): the header and V3 (v) state the
+    # compile gate's transcription-set check. Re-pinned in round 3: V3 (v) says a normaliser that
+    # reads the other named variables is not "a different variable" (a clarification; the
+    # adoption run's IRs were compiled under the round-1 text and are unchanged by it).
+    "compile-docs-7": "64673aef2dd4db32ff77d2445c584f59617fdec8b3ec0de85e0091a7f875240e",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

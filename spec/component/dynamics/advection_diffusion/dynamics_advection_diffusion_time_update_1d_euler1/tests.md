@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_advection_diffusion_time_update_1d_euler1_l0`
-- `test_profile_version`: `0.2.0`
+- `test_profile_version`: `0.3.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
-- `spec_ref.spec_version`: `0.3.0`
+- `spec_ref.spec_version`: `0.3.1`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/controlled_spec.md`
 
 ## 1. Test purpose
@@ -25,18 +25,19 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_time
 ## 5. Diagnostics contract
 - Require outputting `checks.zero_tendency_invariance`, `checks.formula_consistency`, and `checks.input_guard` in `diagnostics.json`.
 - When `guard_pass` is false, `u_np1` is undefined (`controlled_spec.md` §4): only `checks.input_guard` is evaluated, and every other check reports status `na` without reading `u_np1`.
+- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
 - `test_id`: `l0_zero_tendency_invariance_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with `L_flux = 0` and a non-uniform `u_n`, satisfy `u^{n+1}=u^n` exactly (difference `== 0`): $u+\Delta t\cdot 0$ is $u$ itself.
+  - `judgment`: with `L_flux = 0` and a non-uniform `u_n`, satisfy `u^{n+1}=u^n` exactly (difference `== 0`): $u+\Delta t\cdot 0$ is $u$ itself. The cross-target judgment is applied: `cross_target_state_agreement` over `u_np1` is `<= 1e-12`.
 - `test_id`: `l0_single_step_formula_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with the fixed inputs `nx=4`, `u_n = [0.3, 1.7, 0.2, 2.9]`, `L_flux = [1.1, -0.4, 3.6, -2.2]`, `dt=0.1`, the output equals `u_np1 = [0.41, 1.66, 0.56, 2.68]` (`u_n + dt*L_flux`) within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`). On these values an update that drops `dt`, reverses the sign of `L_flux`, uses `dt^2`, ignores `L_flux`, or reads `L_flux` or `u_n` one cell shifted deviates by at least `0.3` at some cell.
+  - `judgment`: with the fixed inputs `nx=4`, `u_n = [0.3, 1.7, 0.2, 2.9]`, `L_flux = [1.1, -0.4, 3.6, -2.2]`, `dt=0.1`, the output equals `u_np1 = [0.41, 1.66, 0.56, 2.68]` (`u_n + dt*L_flux`) within an absolute tolerance of `1e-12` (max deviation `<= 1e-12`). On these values an update that drops `dt`, reverses the sign of `L_flux`, uses `dt^2`, ignores `L_flux`, or reads `L_flux` or `u_n` one cell shifted deviates by at least `0.3` at some cell. The cross-target judgment is applied: `cross_target_state_agreement` over `u_np1` is `<= 1e-12`.
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`

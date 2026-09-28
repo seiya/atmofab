@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_flux_2d_rusanov_p0`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.2.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
@@ -139,7 +139,7 @@ Forbid automatic switching of the reconstruction order and the implicit applicat
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `max` and `abs` are made explicit as non-differentiable operations.

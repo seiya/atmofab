@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy_l0`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy`
-- `spec_ref.spec_version`: `0.2.0`
+- `spec_ref.spec_version`: `0.2.1`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/controlled_spec.md`
 
 ## 1. Test purpose
@@ -24,18 +24,19 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_boun
 
 ## 5. Diagnostics contract
 - Require outputting `checks.left_wrap`, `checks.right_wrap`, and `checks.input_guard` in `diagnostics.json`.
+- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
 - `test_id`: `l0_periodic_left_wrap_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: after applying, satisfy `u_{-1}=u_{nx-1}`.
+  - `judgment`: after applying, satisfy `u_{-1}=u_{nx-1}`. The cross-target judgment is applied: `cross_target_state_agreement` over `u_out` is `<= 1e-12`.
 - `test_id`: `l0_periodic_right_wrap_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: after applying, satisfy `u_{nx}=u_0`.
+  - `judgment`: after applying, satisfy `u_{nx}=u_0`. The cross-target judgment is applied: `cross_target_state_agreement` over `u_out` is `<= 1e-12`.
 - `test_id`: `l0_invalid_nx_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`
