@@ -9877,6 +9877,11 @@ def _validate_test_predicates(
     per-test judgment reduced to the runner's own ``verdict.overall`` — cannot arise once every
     condition, a ``verdict.*`` one included, is conjoined with a host-evaluated predicate.
 
+    Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
+    the set is pinned separately — every test whose ``tests.md`` definition contains
+    ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one cross-target predicate, and no other
+    test carries one (``_parse_cross_target_judged_test_ids``).
+
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
     to re-author the predicates."""
     from tools.verdict_evaluator import validate_predicate_schema

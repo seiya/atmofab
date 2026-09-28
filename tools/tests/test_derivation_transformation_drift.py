@@ -412,8 +412,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # worked translation and V3 (v) — a compile leaf reading it authors cross-target predicates
     # from a tests.md cross-target judgment, so the key moves.
     # Re-pinned in round 1 (the version is new on this branch): the header and V3 (v) state the
-    # compile gate's transcription-set check.
-    "compile-docs-7": "06e5c86945ccc28e85377b587955435af6c938537810af9006692879588614ca",
+    # compile gate's transcription-set check. Re-pinned in round 3: V3 (v) says a normaliser that
+    # reads the other named variables is not "a different variable" (a clarification; the
+    # adoption run's IRs were compiled under the round-1 text and are unchanged by it).
+    "compile-docs-7": "64673aef2dd4db32ff77d2445c584f59617fdec8b3ec0de85e0091a7f875240e",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
