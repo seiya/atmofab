@@ -14,7 +14,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d
-    spec_version: 0.4.2
+    spec_version: 0.4.3
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -25,7 +25,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d_channel
-    spec_version: 0.2.0
+    spec_version: 0.2.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -79,7 +79,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_flux_2d_rusanov_p0
-    spec_version: 0.2.0
+    spec_version: 0.2.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -90,7 +90,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_boundary_2d_periodic_copy
-    spec_version: 0.2.0
+    spec_version: 0.2.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -101,7 +101,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_time_update_2d_ssprk2
-    spec_version: 0.4.0
+    spec_version: 0.4.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -112,7 +112,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_boundary_2d_channel_mirror
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -123,7 +123,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_source_2d_coriolis
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -134,7 +134,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_time_update_2d_rk4
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -145,7 +145,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_reconstruction_2d_muscl_mc
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -156,7 +156,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_flux_2d_rusanov
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -167,7 +167,7 @@ specs:
 
   - spec_kind: component
     spec_id: dynamics_shallow_water_source_2d_tc4_forcing
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: dynamics
     family: shallow_water

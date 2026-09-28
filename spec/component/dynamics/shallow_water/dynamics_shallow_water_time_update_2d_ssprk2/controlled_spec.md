@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_time_update_2d_ssprk2`
-- `spec_version`: `0.4.0`
+- `spec_version`: `0.4.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`

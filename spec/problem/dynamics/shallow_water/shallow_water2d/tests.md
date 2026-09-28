@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_baseline`
-- `test_profile_version`: `0.2.1`
+- `test_profile_version`: `0.3.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d`
-- `spec_ref.spec_version`: `0.4.2`
+- `spec_ref.spec_version`: `0.4.3`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
@@ -183,6 +183,12 @@ $$
 \quad \eta=h+z_b
 $$
 
+`cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For each of the state variables `h`, `hu`, and `hv` at $t_{end}$ of a case, with $q$ that variable and $q^{ref}$ the same variable at $t_{end}$ of the same case in the other variant,
+$$
+\mathrm{cross\_target\_state\_agreement}=\frac{\max_{i,j} |q_{i,j}-q^{ref}_{i,j}|}{\max(\max_{i,j}|q_{i,j}|,\ \max_{i,j}|q^{ref}_{i,j}|,\ 1)}
+$$
+It is evaluated by the host from the captured state, against each other variant separately and for each variable separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+
 ### 5-5. Default thresholds
 - $\mathrm{cfl.max} \le 1.0$
 - $h_{min} \ge 5.0e{-2}$
@@ -194,6 +200,7 @@ $$
 - `lake_rest.max_velocity \le 1.0e{-12}`
 - `lake_rest.max_surface_deviation \le 1.0e{-12}`
 - `symmetry_h_l2_rel \le 2.0e{-11}`
+- $\mathrm{cross\_target\_state\_agreement} \le 1.0e{-10}$ for each of `h`, `hu`, and `hv`
 
 ## 6. Test definitions
 ### 6-1. `l1_refinement_mass_and_positivity`
@@ -212,6 +219,7 @@ $$
   - The theoretical-comparison judgment is not applied. The non-application basis is "because it is a case with topography".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-2. `l1_refinement_linear_wave`
 - `level`: `L1`
@@ -229,6 +237,7 @@ $$
   - The theoretical-comparison judgment is applied. `analytic_h_l2_rel` applies a per-case threshold, and `convergence_order` requires $\ge 0.80$ for both.
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-3. `l2_lake_at_rest_invariance`
 - `level`: `L2`
@@ -244,6 +253,7 @@ $$
   - The lake-at-rest invariance judgment is applied. It requires `lake_rest.max_velocity \le 1.0e{-12}` and `lake_rest.max_surface_deviation \le 1.0e{-12}`.
   - The theoretical-comparison judgment is not applied. The non-application basis is "because it is a topography lake-at-rest case".
   - The translation-equivariance judgment is not applied. The non-application basis is "because it is a single-case verification".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-4. `l2_long_run_mass_conservation`
 - `level`: `L2`
@@ -259,6 +269,7 @@ $$
   - The theoretical-comparison judgment is not applied. The non-application basis is "because it is a topography long-time case".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-5. `l3_topography_forced_response_stability`
 - `level`: `L3`
@@ -274,6 +285,7 @@ $$
   - The theoretical-comparison judgment is not applied. The non-application basis is "because the theoretical solution is not used in a case with topography".
   - The translation-equivariance judgment is not applied. The non-application basis is "because equivariance is not required in this test for a case with topography".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-6. `l3_translation_equivariance`
 - `level`: `L3`
@@ -290,6 +302,7 @@ $$
   - The translation-equivariance judgment is applied. The evaluation expression is `symmetry_h_l2_rel`, and the threshold is $\le 2.0e{-11}$.
   - The theoretical-comparison judgment is not applied. The non-application basis is "because `oblique_mode` is outside the target of the theoretical-agreement judgment".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-7. `l0_cfl_guard_xfail`
 - `level`: `L0`
@@ -307,6 +320,7 @@ $$
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the can-continue-execution evaluation is done before the theoretical-agreement judgment".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is not applied. The non-application basis is "because the state an unstable case leaves at $t_{end}$ is not a result two variants must agree on".
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when all applicable checks are `pass`.

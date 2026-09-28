@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_channel_baseline`
-- `test_profile_version`: `0.2.0`
+- `test_profile_version`: `0.3.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d_channel`
-- `spec_ref.spec_version`: `0.2.0`
+- `spec_ref.spec_version`: `0.2.1`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md`
 
 ## 1. Test purpose
@@ -193,6 +193,12 @@ $$
 
 `convergence_order` is a cross-case reduction, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, over `errors.steady_h.l2_rel_tend` for `chan_tc2_ref` and `chan_tc3_ref` and over `errors.mms_h.l2_rel_tend` for `chan_tc4_ref`, and is accumulated only over the target cases of the test that judges it, within one family. It is emitted as a per-case field of the finer case of each pair: `chan_tc2_ref_n064_dts100`, `chan_tc3_ref_n064_dts100` and `chan_tc4_ref_n064_dts100` carry `convergence.n032_to_n064.l2_order`, and `chan_tc2_ref_n128_dts100`, `chan_tc3_ref_n128_dts100` and `chan_tc4_ref_n128_dts100` carry `convergence.n064_to_n128.l2_order`. The cases preceding the one that completes a reduction omit that field; the override cases `chan_tc2_ref_n128_dts100_tend5d`, `chan_tc4_ref_n128_dts100_tend5d` and `chan_tc4_ref_n032_dts100_half` are not members of a refinement pair and omit both.
 
+`cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For each of the state variables `h`, `hu`, and `hv` at $t_{end}$ of a case, with $q$ that variable and $q^{ref}$ the same variable at $t_{end}$ of the same case in the other variant,
+$$
+\mathrm{cross\_target\_state\_agreement}=\frac{\max_{i,j} |q_{i,j}-q^{ref}_{i,j}|}{\max(\max_{i,j}|q_{i,j}|,\ \max_{i,j}|q^{ref}_{i,j}|,\ 1)}
+$$
+It is evaluated by the host from the captured state, against each other variant separately and for each variable separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+
 ### 5-5. Default thresholds
 The thresholds are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #265, phase-2 calibration comment): the per-case `l2` bands are about 0.5 and 1.5 times the reference values, the `v_max_abs` bounds 1.49 to 1.73 times, and the order bounds 0.31 to 1.12 below the reference orders. The reference `l2` orders are 1.91 / 2.13 for `tc2_zonal_uniform`, 2.32 / 2.58 for `tc3_compact_jet` and 1.93 / 2.72 for `tc4_translating_low`; the order of the second pair exceeds two for all three profiles, and the bounds take that spread.
 - $\mathrm{cfl.max} \le 1.0$, and `run.n_step` equals the §3 $\mathrm{n\_step}$ of the case (an integer; judged as $|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$)
@@ -206,6 +212,7 @@ The thresholds are calibrated against an independent reference implementation of
 - `time_pair_h_l2_rel` is judged as a two-sided band $[1.60e{-8},\ 2.05e{-8}]$ on `chan_tc4_ref_n032_dts100_half` (reference `1.818e-8`; 0.88 and 1.13 times it — narrower than the other bands, because the value moves only by round-off under a conforming implementation, 2-8), as two distinct judged quantities, each with its own host-evaluated corroborant.
 - `symmetry_h_l2_rel` $\le 2.0e{-11}$ (the shift is a whole number of cells and every operation of the scheme is translation-covariant, so the residual is round-off)
 - `decay_ratio` is judged as a two-sided band $[0.38,\ 0.95]$ at `nx=64` (reference `0.7666`; the lower bound is about 0.5 times it, and the upper bound is set below the ratio `1.000` of an update without the `x`-interface flux, 2-6). The lower and the upper bound are two distinct judged quantities, each with its own host-evaluated corroborant.
+- $\mathrm{cross\_target\_state\_agreement} \le 1.0e{-10}$ for each of `h`, `hu`, and `hv`
 
 ## 6. Test definitions
 ### 6-1. `l0_tc2_initial_state_matches_analytic`
@@ -224,6 +231,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-2. `l0_tc3_initial_jet_matches_analytic`
 - `level`: `L0`
@@ -241,6 +249,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-3. `l1_tc2_refinement_steady_geostrophic`
 - `level`: `L1`
@@ -260,6 +269,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-4. `l1_tc3_refinement_compact_jet`
 - `level`: `L1`
@@ -279,6 +289,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-5. `l2_tc2_long_run`
 - `level`: `L2`
@@ -296,6 +307,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-6. `l3_x_translation_equivariance_and_wave_decay`
 - `level`: `L3`
@@ -314,6 +326,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The theoretical-comparison judgment is not applied. The non-application basis is "because `tc2_zonal_perturbed` has no steady reference (2-4)".
   - The wall-normal-velocity judgment at $t_{end}$ is not applied. The non-application basis is "because the perturbation excites $v$ by design; the wall-normal velocity of the steady profiles is judged in 6-3 to 6-5".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-7. `l0_cfl_guard_xfail`
 - `level`: `L0`
@@ -333,6 +346,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the initial state is uniform in `x`".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
+  - The cross-target judgment is not applied. The non-application basis is "because the state an unstable case leaves at $t_{end}$ is not a result two variants must agree on".
 
 ### 6-8. `l0_tc4_initial_state_matches_analytic`
 - `level`: `L0`
@@ -350,6 +364,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The wall-normal-velocity judgment is not applied. The non-application basis is "because the low's $v$ is non-zero by design (2-5)".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the `x`-structure of `tc4_translating_low` is the low's, judged through the manufactured solution".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-9. `l1_tc4_refinement_translating_low`
 - `level`: `L1`
@@ -369,6 +384,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-8".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the `x`-structure of `tc4_translating_low` is the low's, judged through the manufactured solution".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-10. `l2_tc4_long_run`
 - `level`: `L2`
@@ -386,6 +402,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-8".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the `x`-structure of `tc4_translating_low` is the low's, judged through the manufactured solution".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-11. `l3_tc4_time_refinement_pair`
 - `level`: `L3`
@@ -405,6 +422,7 @@ The thresholds are calibrated against an independent reference implementation of
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-8".
   - The translation-equivariance judgment is not applied. The non-application basis is "because the translation pair is not run".
   - The `x`-structure judgment is not applied. The non-application basis is "because the `x`-structure of `tc4_translating_low` is the low's, judged through the manufactured solution".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when all applicable checks are `pass`.

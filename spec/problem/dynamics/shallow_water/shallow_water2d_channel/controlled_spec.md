@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_channel`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.2.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`

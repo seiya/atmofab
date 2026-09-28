@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_boundary_2d_channel_mirror_l0`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_boundary_2d_channel_mirror`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.1.1`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/controlled_spec.md`
 
 ## 1. Test purpose
@@ -25,28 +25,29 @@ This suite verifies the published `operation` `dynamics_shallow_water_boundary_2
 
 ## 5. Diagnostics contract
 - Require outputting `checks.x_wrap`, `checks.y_even_mirror`, `checks.y_odd_mirror`, `checks.corner`, and `checks.input_guard` in `diagnostics.json`.
+- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
 - `test_id`: `l0_periodic_x_wrap_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on every normal case, for every interior row `j` and every `k` in `1..ng`, the `x` ghost cells satisfy `U_out(k,j) = U_in(k+nx,j)` and `U_out(ng+nx+k,j) = U_in(ng+k,j)` exactly, and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly.
+  - `judgment`: on every normal case, for every interior row `j` and every `k` in `1..ng`, the `x` ghost cells satisfy `U_out(k,j) = U_in(k+nx,j)` and `U_out(ng+nx+k,j) = U_in(ng+k,j)` exactly, and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_wall_even_mirror_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `odd_at_wall=false`, on every normal case, for every interior column `i` and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,ng-k+1) = U_in(i,ng+k)` and `U_out(i,ng+ny+k) = U_in(i,ng+ny-k+1)` exactly (the ghost value equals the mirrored interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly.
+  - `judgment`: with `odd_at_wall=false`, on every normal case, for every interior column `i` and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,ng-k+1) = U_in(i,ng+k)` and `U_out(i,ng+ny+k) = U_in(i,ng+ny-k+1)` exactly (the ghost value equals the mirrored interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_wall_odd_mirror_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `odd_at_wall=true`, on every normal case, for every interior column `i` and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,ng-k+1) = -U_in(i,ng+k)` and `U_out(i,ng+ny+k) = -U_in(i,ng+ny-k+1)` exactly (the ghost value equals the negated mirrored interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly (the sign reversal applies to the ghost cells only).
+  - `judgment`: with `odd_at_wall=true`, on every normal case, for every interior column `i` and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,ng-k+1) = -U_in(i,ng+k)` and `U_out(i,ng+ny+k) = -U_in(i,ng+ny-k+1)` exactly (the ghost value equals the negated mirrored interior value of the input), and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly (the sign reversal applies to the ghost cells only). The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_corner_defined_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: with `odd_at_wall=true`, on every normal case, the corner ghost cells are the `y` mirror of the `x`-periodic images: for every `k` and `m` in `1..ng`, `U_out(k,ng-m+1) = -U_in(k+nx,ng+m)`, `U_out(ng+nx+k,ng-m+1) = -U_in(ng+k,ng+m)`, `U_out(k,ng+ny+m) = -U_in(k+nx,ng+ny-m+1)`, and `U_out(ng+nx+k,ng+ny+m) = -U_in(ng+k,ng+ny-m+1)` exactly (at `ng=1` these are `U_out(1,1) = -U_in(1+nx,2)`, `U_out(nx_total,1) = -U_in(2,2)`, `U_out(1,ny_total) = -U_in(1+nx,1+ny)`, and `U_out(nx_total,ny_total) = -U_in(2,1+ny)`); no corner cell holds the `U_in` sentinel value.
+  - `judgment`: with `odd_at_wall=true`, on every normal case, the corner ghost cells are the `y` mirror of the `x`-periodic images: for every `k` and `m` in `1..ng`, `U_out(k,ng-m+1) = -U_in(k+nx,ng+m)`, `U_out(ng+nx+k,ng-m+1) = -U_in(ng+k,ng+m)`, `U_out(k,ng+ny+m) = -U_in(k+nx,ng+ny-m+1)`, and `U_out(ng+nx+k,ng+ny+m) = -U_in(ng+k,ng+ny-m+1)` exactly (at `ng=1` these are `U_out(1,1) = -U_in(1+nx,2)`, `U_out(nx_total,1) = -U_in(2,2)`, `U_out(1,ny_total) = -U_in(1+nx,1+ny)`, and `U_out(nx_total,ny_total) = -U_in(2,1+ny)`); no corner cell holds the `U_in` sentinel value. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_invalid_ny_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`

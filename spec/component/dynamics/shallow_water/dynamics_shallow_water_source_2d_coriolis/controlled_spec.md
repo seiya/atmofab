@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_source_2d_coriolis`
-- `spec_version`: `0.1.0`
+- `spec_version`: `0.1.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`

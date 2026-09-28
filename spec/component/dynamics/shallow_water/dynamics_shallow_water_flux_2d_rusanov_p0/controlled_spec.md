@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_flux_2d_rusanov_p0`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.2.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
