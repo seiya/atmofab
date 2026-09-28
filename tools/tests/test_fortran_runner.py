@@ -2409,10 +2409,15 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
         # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo` / `sb_u_hi` are
         # indices in the array's own bounds, which the runner shifts to the gather's positions.
         zero_based = _DIST_CHECKS_STUB
+        # `w` is declared from 0 along its PARTITIONED axis (2), so the shift must read the lower
+        # bound along the binding's axis, not along axis 1 (round-2 mutant M1).
         for old, new in (("allocate(u(nloc + 2), w(3, nloc), c(2))",
-                          "allocate(u(0:nloc + 1), w(3, nloc), c(2))"),
+                          "allocate(u(0:nloc + 1), w(3, 0:nloc - 1), c(2))"),
                          ("u(i + 1) = real(glo + i - 1, dp)", "u(i) = real(glo + i - 1, dp)"),
+                         ("w(j, i) = real(100 * j + glo + i - 1, dp)",
+                          "w(j, i - 1) = real(100 * j + glo + i - 1, dp)"),
                          ("sb_u_lo = 2", "sb_u_lo = 1"), ("sb_u_hi = nloc + 1", "sb_u_hi = nloc"),
+                         ("sb_w_lo = 1", "sb_w_lo = 0"), ("sb_w_hi = nloc", "sb_w_hi = nloc - 1"),
                          ("sum(u(2:nloc + 1))", "sum(u(1:nloc))")):
             self.assertEqual(zero_based.count(old), 1, old)
             zero_based = zero_based.replace(old, new)

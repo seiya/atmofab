@@ -23236,7 +23236,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                "    sb_u_axis = 1\n  end subroutine\nend module\n")
 
     def _run(self, model: str | None = None, checks: str | None = None, *,
-             plan: object = None, node_key: str = "component/dep_base@0.1.0") -> list[str]:
+             plan: object = None, node_key: str = "component/dep_base@0.1.0",
+             array: str = "u") -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             from tools.tests.target_fixtures import install_target_profile, profile_with
@@ -23248,7 +23249,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 "meta": {"spec_kind": "component", "spec_id": "dep_base"},
                 "io_contract": {"raw_requirements": {"required_evidence": [
                     {"artifact": "state_snapshots", "schema": {"variables": [
-                        {"name": "u", "shape_expr": "[8]"},
+                        {"name": array, "shape_expr": "[8]"},
                         {"name": "t", "shape_expr": "scalar"}]}}]}}}), encoding="utf-8")
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
@@ -23354,9 +23355,11 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                       checks=self._CHECKS.replace("sb_u_axis = 1", "x = 0"))
         self.assertEqual(len(v), 1, v)
         self.assertIn("never sets the partition axis", v[0])
-        # The bound array's name is compared as Fortran compares identifiers.
+        # The bound array's name is compared as Fortran compares identifiers, on both sides:
+        # the corpus declares upper-case snapshot names (`U`, `U_in`).
         self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1", "SB_U_AXIS = 1")),
                          [])
+        self.assertEqual(self._run(array="U"), [])
         # A declaration's initializer is a setting too.
         self.assertEqual(self._run(checks=self._CHECKS.replace(
             "sb_u_axis = 1", "x = 0").replace("contains", "  integer :: sb_u_axis = 1\ncontains")),
