@@ -66,6 +66,17 @@ Names, and where each resolves:
   kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
   reduction: a convergence order needs the coarse case's state, coordinates and inputs; a
   translation pair needs the base case's state).
+- ``comparand.initial.<var>`` / ``comparand.final.<var>`` (grammar 3, issue #324) — the same
+  capture read in the same case of ANOTHER TARGET's certified variant of this node: the
+  comparand run the host selected (`orchestration_runtime.resolve_comparands`) and bound into
+  the validate key by the hash of its snapshot bytes. A predicate that names one is a
+  CROSS-TARGET predicate: it is evaluated once per comparand, it must read this run's own
+  state too (a comparison of the comparand with a constant values nothing this run produced),
+  and it is no corroborant — `coverage_violations` does not count it, because it has no
+  secondary condition (generated code cannot read another target's state) and because it
+  holds vacuously on a target with no comparand. `comparand.inputs` / `comparand.<coordinate>`
+  are not names (the comparand shares this run's IR, so they would be this case's own), and
+  `comparand` does not combine with `at('<case>')` in either order.
 - a `bind` name — a named sub-expression, evaluated in `bind` order; a bind may reference
   only the binds written before it (acyclic by construction).
 - ``pi`` / ``e``.
@@ -92,8 +103,9 @@ A primary predicate ranges over EXACTLY the `target_cases` of its test's `test_p
 entry — the gate pins set equality and `evaluate_verdict` re-checks it — so a corroborant
 cannot quietly cover the easiest case of a test alone.
 
-Pure with respect to the conductor: reads the run node directory it is given and nothing
-else, like `tools/raw_evidence_excerpt.py`. `evaluate_verdict` never reads a file; it takes
+Pure with respect to the conductor: reads the run node directory it is given, and the
+comparand run node directories it is handed, and nothing else, like
+`tools/raw_evidence_excerpt.py`. `evaluate_verdict` never reads a file; it takes
 the list this module returns.
 """
 
@@ -104,6 +116,7 @@ import ast
 import json
 import math
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -114,7 +127,7 @@ from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolv
 #: The version of the expression grammar: the allowed `ast` nodes, the function table, the
 #: name roots and the broadcasting rule. Bumped when any of them changes; recorded on every
 #: evaluated predicate so a verdict says which grammar valued it.
-GRAMMAR_VERSION = 2
+GRAMMAR_VERSION = 3
 
 #: `quantity` names: lowercase identifiers with dots, the same shape as a metric address.
 #: ONE definition, in the evaluator that reads it on the secondary side too.
@@ -142,6 +155,11 @@ CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 CAPTURE_POINTS: tuple[str, str] = ("initial", "final")
 _INPUTS_ROOT = "inputs"
 _AT = "at"
+#: The root of a cross-target reference (grammar 3): `comparand.initial.<var>` /
+#: `comparand.final.<var>`.
+_COMPARAND = "comparand"
+#: Every identifier the grammar reserves as a root; a coordinate or a bind may not take one.
+_ROOTS: tuple[str, ...] = CAPTURE_POINTS + (_INPUTS_ROOT, _AT, _COMPARAND)
 
 _BINOPS: dict[type, str] = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
                             ast.Pow: "**"}
@@ -162,10 +180,12 @@ class PrimaryEvidenceError(ValueError):
 class NameRef(NamedTuple):
     """One name an expression references, as the resolver sees it.
 
-    ``kind`` is ``capture`` (``initial.<var>`` / ``final.<var>``), ``inputs`` (``name`` is
-    the dotted path under ``inputs``), or ``name`` (a bare identifier: a coordinate, a bind or
-    a constant). ``case`` is None for the predicate's own case, else the ``at('<case>')``
-    case; under ``at()`` a ``name`` is a coordinate only."""
+    ``kind`` is ``capture`` (``initial.<var>`` / ``final.<var>``), ``comparand``
+    (``comparand.initial.<var>`` / ``comparand.final.<var>``: the same capture in the
+    comparand run), ``inputs`` (``name`` is the dotted path under ``inputs``), or ``name`` (a
+    bare identifier: a coordinate, a bind or a constant). ``case`` is None for the predicate's
+    own case, else the ``at('<case>')`` case; under ``at()`` a ``name`` is a coordinate only,
+    and a ``comparand`` reference never has one."""
     kind: str
     name: str
     point: str | None = None
@@ -214,7 +234,7 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
         _check_node(node.operand, refs, depth + 1)
         return
     if isinstance(node, ast.Name):
-        if node.id in CAPTURE_POINTS or node.id in (_INPUTS_ROOT, _AT):
+        if node.id in _ROOTS:
             raise PrimaryEvidenceError(
                 f"{node.id!r} is a name root, not a value (write {node.id}.<name>)"
                 if node.id != _AT else "at('<case_id>') must be followed by .initial.<variable>"
@@ -229,6 +249,15 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
                     f"{root.id}.{'.'.join(attrs)}: a capture reference is exactly "
                     f"{root.id}.<variable>")
             refs.append(NameRef("capture", attrs[0], point=root.id))
+            return
+        if isinstance(root, ast.Name) and root.id == _COMPARAND:
+            if len(attrs) != 2 or attrs[0] not in CAPTURE_POINTS:
+                raise PrimaryEvidenceError(
+                    f"{_COMPARAND}.{'.'.join(attrs)}: a cross-target reference is exactly "
+                    f"{_COMPARAND}.initial.<variable> or {_COMPARAND}.final.<variable> (the "
+                    "comparand shares this run's IR, so its inputs and coordinates are this "
+                    "case's own)")
+            refs.append(NameRef("comparand", attrs[1], point=attrs[0]))
             return
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             refs.append(NameRef("inputs", ".".join(attrs)))
@@ -245,13 +274,18 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
             if case_id != case_id.strip():
                 raise PrimaryEvidenceError(
                     f"at({case_id!r}): a case_id carries no surrounding whitespace")
+            if attrs and attrs[0] == _COMPARAND:
+                raise PrimaryEvidenceError(
+                    f"at({case_id!r}).{'.'.join(attrs)}: a cross-target reference does not "
+                    "combine with at('<case_id>'); it reads the comparand in the case being "
+                    "evaluated")
             if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
                 refs.append(NameRef("capture", attrs[1], point=attrs[0], case=case_id))
                 return
             if len(attrs) >= 2 and attrs[0] == _INPUTS_ROOT:
                 refs.append(NameRef("inputs", ".".join(attrs[1:]), case=case_id))
                 return
-            if len(attrs) == 1 and attrs[0] not in CAPTURE_POINTS + (_INPUTS_ROOT,):
+            if len(attrs) == 1 and attrs[0] not in _ROOTS:
                 refs.append(NameRef("name", attrs[0], case=case_id))
                 return
             raise PrimaryEvidenceError(
@@ -260,7 +294,7 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
                 "at('<case_id>').inputs.<path> or at('<case_id>').<coordinate>")
         raise PrimaryEvidenceError(
             f"attribute chain rooted at {ast.dump(root)} is not admitted (roots: "
-            f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, at('<case_id>'))")
+            f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, at('<case_id>'), {_COMPARAND})")
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
             raise PrimaryEvidenceError("only a named function may be called")
@@ -342,6 +376,86 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
             return True
         frontier.extend(r.name for r in refs if r.kind == "name" and r.name in bind_refs)
     return False
+
+
+def predicate_reads_comparand(expr_refs: list[NameRef],
+                              bind_refs: dict[str, list[NameRef]]) -> bool:
+    """Whether a predicate reads a `comparand.` capture ANYWHERE — in `expr` or in any `bind`,
+    reached or not — i.e. whether it is a CROSS-TARGET predicate. Unlike `predicate_reads_state`
+    this does not follow reachability: every bind of a predicate is evaluated, so a bind that
+    reads the comparand needs one bound whether `expr` uses it or not."""
+    return any(r.kind == "comparand" for refs in (expr_refs, *bind_refs.values()) for r in refs)
+
+
+def _predicate_refs(pred: dict[str, Any]) -> tuple[list[NameRef], dict[str, list[NameRef]]]:
+    """`(expr refs, bind name -> refs)` of one predicate; raises `PrimaryEvidenceError` on an
+    expression outside the grammar. A `bind` that is not a mapping contributes nothing here:
+    the gate refuses it, and `evaluate_binds` records it on the predicate per case."""
+    bind = pred.get("bind")
+    bind_refs = ({str(k): expr_names(parse_expr(t)) for k, t in bind.items()}
+                 if isinstance(bind, dict) else {})
+    return expr_names(parse_expr(pred.get("expr"))), bind_refs
+
+
+def is_cross_target_predicate(pred: Any) -> bool:
+    """Whether one `primary_predicates[]` entry is a cross-target predicate. A malformed
+    entry (not a mapping, an expression outside the grammar) answers False here: the Compile
+    gate refuses it, and `evaluate_primary_predicates` raises on it."""
+    if not isinstance(pred, dict):
+        return False
+    try:
+        expr_refs, bind_refs = _predicate_refs(pred)
+    except PrimaryEvidenceError:
+        return False
+    return predicate_reads_comparand(expr_refs, bind_refs)
+
+
+def cross_target_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
+    """The cross-target entries of an IR's `io_contract.primary_predicates`, in order. The
+    validate key carries a `comparand` member exactly when this is non-empty."""
+    return [p for p in primary_predicates(ir) if is_cross_target_predicate(p)]
+
+
+class ComparandEvidence(NamedTuple):
+    """One comparand bound into a validate key: another target's certified run of the same
+    node over the same IR. `run_dir` is the run node directory (absolute) the captures are
+    read from; `evidence` is `comparand_evidence_sha256(run_dir)` at selection time."""
+    target_id: str
+    pipeline_ref: str
+    run_id: str
+    run_dir: Path
+    evidence: str
+
+    def detail(self) -> dict[str, str]:
+        return {"target_id": self.target_id, "pipeline_ref": self.pipeline_ref,
+                "run_id": self.run_id, "evidence": self.evidence}
+
+
+#: The host-authored file under `raw/state_snapshots/` that is not a capture: the snapshot
+#: schema the conductor writes from the IR. Excluded from the comparand evidence hash — it is
+#: not state the comparand's kernel produced.
+SNAPSHOT_SCHEMA_FILENAME = "snapshot_schema.json"
+
+
+def comparand_evidence_sha256(run_dir: Path) -> str:
+    """The identity of a comparand run's captures: sha256 over every `*.json` under
+    `run_dir/raw/state_snapshots/` (recursively, `snapshot_schema.json` excluded), in order of
+    the path relative to that directory, each contributing `<path>\\0<byte length>\\0<bytes>`.
+    Raises `PrimaryEvidenceError` when there is no capture at all."""
+    import hashlib
+    sdir = Path(run_dir) / "raw" / "state_snapshots"
+    files = sorted(
+        (p.relative_to(sdir).as_posix(), p) for p in (sdir.rglob("*.json") if sdir.is_dir()
+                                                       else ())
+        if p.is_file() and p.relative_to(sdir).as_posix() != SNAPSHOT_SCHEMA_FILENAME)
+    if not files:
+        raise PrimaryEvidenceError(f"{sdir}: no state snapshot capture to bind as a comparand")
+    h = hashlib.sha256()
+    for rel, path in files:
+        data = path.read_bytes()
+        h.update(rel.encode("utf-8") + b"\0" + str(len(data)).encode("ascii") + b"\0")
+        h.update(data)
+    return "sha256:" + h.hexdigest()
 
 
 # ----------------------------------------------------------------------------- environment
@@ -475,7 +589,7 @@ def coordinate_arrays(schema: dict[str, Any], inputs: Any,
             raise PrimaryEvidenceError("coordinates[] entries must be mappings with a name")
         name = spec["name"].strip()
         if not name.isidentifier() or name in CONSTANTS or name in FUNCTIONS \
-                or name in CAPTURE_POINTS or name in (_INPUTS_ROOT, _AT):
+                or name in _ROOTS:
             raise PrimaryEvidenceError(
                 f"coordinates[{name!r}].name must be an identifier that is not a grammar name")
         axis = spec.get("axis")
@@ -705,12 +819,12 @@ def _call(name: str, args: list[Any]) -> Any:
 
 
 def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
-               binds: dict[str, Any]) -> Any:
+               binds: dict[str, Any], cenv: CaseEnv | None = None) -> Any:
     if isinstance(node, ast.Constant):
         return _finite(float(node.value), f"constant {node.value!r}")
     if isinstance(node, ast.BinOp):
-        left = _eval_node(node.left, env, at_envs, binds)
-        right = _eval_node(node.right, env, at_envs, binds)
+        left = _eval_node(node.left, env, at_envs, binds, cenv)
+        right = _eval_node(node.right, env, at_envs, binds, cenv)
         sym = _BINOPS[type(node.op)]
         _shape_compatible(left, right, f"operator {sym}")
         with np.errstate(all="ignore"):
@@ -726,7 +840,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
                 out = np.power(left, right)
         return _finite(out, f"operator {sym}")
     if isinstance(node, ast.UnaryOp):
-        return -_eval_node(node.operand, env, at_envs, binds)
+        return -_eval_node(node.operand, env, at_envs, binds, cenv)
     if isinstance(node, ast.Name):
         if node.id in binds:
             return binds[node.id]
@@ -741,6 +855,11 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
             return _capture_value(env, root.id, attrs[0])
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             return resolve_input_value(env.inputs, ".".join(attrs))
+        if isinstance(root, ast.Name) and root.id == _COMPARAND:
+            if cenv is None:
+                raise PrimaryEvidenceError(
+                    f"{_COMPARAND}.{'.'.join(attrs)}: no comparand is bound for this evaluation")
+            return _capture_value(cenv, attrs[0], attrs[1], who="the comparand")
         assert _is_at_call(root) and isinstance(root, ast.Call)
         case_id = str(root.args[0].value)  # type: ignore[attr-defined]
         if case_id not in at_envs:
@@ -756,21 +875,21 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         raise PrimaryEvidenceError(f"at({case_id!r}).{attrs[0]}: not a coordinate of that case")
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
-        args = [_eval_node(a, env, at_envs, binds) for a in node.args]
+        args = [_eval_node(a, env, at_envs, binds, cenv) for a in node.args]
         return _finite(_call(node.func.id, args), f"{node.func.id}()")
     raise PrimaryEvidenceError(f"{type(node).__name__} is not admitted")  # unreachable past parse
 
 
-def _capture_value(env: CaseEnv, point: str, var: str) -> Any:
+def _capture_value(env: CaseEnv, point: str, var: str, *, who: str = "this run") -> Any:
     table = env.initial if point == "initial" else env.final
     if table is None:
         raise PrimaryEvidenceError(
-            f"{point}.{var}: case {env.case_id!r} has no initial capture "
+            f"{point}.{var}: case {env.case_id!r} of {who} has no initial capture "
             "(raw/state_snapshots/initial/<case_id>.json is absent: a node whose own runner "
             "writes the snapshots writes none)")
     if var not in table:
         raise PrimaryEvidenceError(
-            f"{point}.{var}: not captured in case {env.case_id!r}")
+            f"{point}.{var}: not captured in case {env.case_id!r} of {who}")
     return table[var]
 
 
@@ -784,11 +903,13 @@ _ARITHMETIC_ERRORS = (ZeroDivisionError, OverflowError, ValueError, FloatingPoin
 
 
 def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] | None = None,
-             binds: dict[str, Any] | None = None) -> Any:
-    """Evaluate a parsed expression in ``env``. Returns a float or a float64 array. Raises
-    only `PrimaryEvidenceError`."""
+             binds: dict[str, Any] | None = None,
+             comparand_env: CaseEnv | None = None) -> Any:
+    """Evaluate a parsed expression in ``env``; a ``comparand.`` name reads
+    ``comparand_env`` (the same case in the comparand run), and raises when none is given.
+    Returns a float or a float64 array. Raises only `PrimaryEvidenceError`."""
     try:
-        return _eval_node(tree.body, env, at_envs or {}, binds or {})
+        return _eval_node(tree.body, env, at_envs or {}, binds or {}, comparand_env)
     except PrimaryEvidenceError:
         raise   # already named by this module (and a ValueError subclass: keep it verbatim)
     except _ARITHMETIC_ERRORS as exc:
@@ -796,7 +917,8 @@ def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] 
             f"evaluation failed: {type(exc).__name__}: {str(exc)[:200]}") from None
 
 
-def evaluate_binds(bind: Any, env: CaseEnv, at_envs: dict[str, CaseEnv]) -> dict[str, Any]:
+def evaluate_binds(bind: Any, env: CaseEnv, at_envs: dict[str, CaseEnv],
+                   comparand_env: CaseEnv | None = None) -> dict[str, Any]:
     """Evaluate a predicate's `bind` mapping in order; each entry sees the earlier ones."""
     out: dict[str, Any] = {}
     if bind is None:
@@ -806,10 +928,10 @@ def evaluate_binds(bind: Any, env: CaseEnv, at_envs: dict[str, CaseEnv]) -> dict
     for name, text in bind.items():
         if not isinstance(name, str) or not name.isidentifier():
             raise PrimaryEvidenceError(f"bind name {name!r} is not an identifier")
-        if name in CONSTANTS or name in FUNCTIONS or name in CAPTURE_POINTS \
-                or name in (_INPUTS_ROOT, _AT) or name in env.coordinates:
+        if name in CONSTANTS or name in FUNCTIONS or name in _ROOTS or name in env.coordinates:
             raise PrimaryEvidenceError(f"bind name {name!r} shadows a grammar name")
-        out[name] = evaluate(parse_expr(text), env, at_envs=at_envs, binds=out)
+        out[name] = evaluate(parse_expr(text), env, at_envs=at_envs, binds=out,
+                             comparand_env=comparand_env)
     return out
 
 
@@ -863,18 +985,32 @@ def primary_predicates(ir: dict[str, Any]) -> list[Any]:
     return preds if isinstance(preds, list) else []
 
 
-def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[str, Any]]:
+def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
+                                comparands: Sequence[ComparandEvidence] = ()
+                                ) -> list[dict[str, Any]]:
     """Evaluate every `io_contract.primary_predicates[]` entry of ``ir`` against the captures
     under ``run_dir``. Returns one record per predicate, in order::
 
-        {test_id, quantity, expr, op, scope, target_cases, grammar_version, satisfied, kind,
+        {test_id, quantity, expr, op, scope, target_cases, cases_read, grammar_version,
+         comparands, satisfied, kind,
          evaluated: [{case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
 
     ``kind`` is ``pass`` / ``physics`` (a comparison was false) / ``structural`` (the
-    expression could not be evaluated: `PrimaryEvidenceError`). An empty list when the IR
-    declares no primary predicate. A predicate whose own shape is malformed (no test_id, no
-    quantity, no expr, an inadmissible op or scope) raises `PrimaryEvidenceError` — the Compile
-    gate refuses those, so reaching one here is a defect of the certified IR."""
+    expression could not be evaluated: `PrimaryEvidenceError`) / ``no_comparand``. An empty
+    list when the IR declares no primary predicate. A predicate whose own shape is malformed
+    (no test_id, no quantity, no expr, an inadmissible op or scope) raises
+    `PrimaryEvidenceError` — the Compile gate refuses those, so reaching one here is a defect
+    of the certified IR.
+
+    A CROSS-TARGET predicate (`predicate_reads_comparand`, grammar 3) is evaluated once per
+    entry of ``comparands`` — the other targets' certified runs the validate key bound — and
+    per target case, each ``evaluated[]`` element naming its ``comparand`` target id; the
+    record's ``comparands`` lists the comparand runs (`ComparandEvidence.detail`). A mismatch
+    against one comparand stops that comparand's cases and the rest are still evaluated; a
+    structural error on any comparand makes the record ``structural``. With no comparand at
+    all the record is ``kind: no_comparand``, satisfied, with nothing evaluated — the first
+    variant of a node has no reference, and the record says so rather than looking like a
+    comparison that held. Every other predicate's record carries ``comparands: []``."""
     preds = primary_predicates(ir)
     if not preds:
         return []
@@ -883,14 +1019,15 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
         raise PrimaryEvidenceError(
             "primary_predicates declared but the IR has no state_snapshots evidence entry")
     cases = _cases_by_id(ir)
-    env_cache: dict[str, CaseEnv] = {}
+    env_cache: dict[tuple[str, str], CaseEnv] = {}
+    comparand_list = list(comparands)
 
-    def env_for(cid: str) -> CaseEnv:
-        if cid not in env_cache:
+    def env_for(cid: str, where: Path = Path(run_dir), key: str = "") -> CaseEnv:
+        if (key, cid) not in env_cache:
             if cid not in cases:
                 raise PrimaryEvidenceError(f"case {cid!r} is not in case.test_case_set")
-            env_cache[cid] = load_case_env(run_dir, cases[cid], schema)
-        return env_cache[cid]
+            env_cache[(key, cid)] = load_case_env(where, cases[cid], schema)
+        return env_cache[(key, cid)]
 
     out: list[dict[str, Any]] = []
     for idx, pred in enumerate(preds):
@@ -912,13 +1049,12 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
             if key in pred:
                 raise PrimaryEvidenceError(f"{loc}: {key} is not a primary predicate key")
         tree = parse_expr(pred.get("expr"))
-        bind = pred.get("bind")
-        bind_refs = ({str(k): expr_names(parse_expr(t)) for k, t in bind.items()}
-                     if isinstance(bind, dict) else {})
-        if not predicate_reads_state(expr_names(tree), bind_refs, set(schema_variables(schema))):
+        expr_refs, bind_refs = _predicate_refs(pred)
+        if not predicate_reads_state(expr_refs, bind_refs, set(schema_variables(schema))):
             raise PrimaryEvidenceError(
                 f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
                 "expr or a bind expr reaches")
+        cross = predicate_reads_comparand(expr_refs, bind_refs)
         scope, contexts = _predicate_scope(pred, loc)
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
@@ -928,34 +1064,48 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path) -> list[dict[
             # evaluator can re-check the coverage rule against the records it is handed
             "cases_read": sorted(cases_read({**pred, "target_cases": targets}) or []),
             "grammar_version": GRAMMAR_VERSION,
+            "comparands": [c.detail() for c in comparand_list] if cross else [],
             "satisfied": True, "kind": "pass", "evaluated": [],
         }
-        for cid in contexts:
-            try:
-                env = env_for(cid)
-                at_envs = {t: env_for(t) for t in targets}
-                binds = evaluate_binds(pred.get("bind"), env, at_envs)
-                value = _scalar(evaluate(tree, env, at_envs=at_envs, binds=binds),
-                                f"{loc}.expr")
-                present, rhs = _resolve_value(pred.get("value"), cid)
-                if not present:
-                    raise PrimaryEvidenceError(f"{loc}.value.per_case has no entry for {cid!r}")
-                if not _is_number(rhs) or not math.isfinite(rhs):
-                    raise PrimaryEvidenceError(f"{loc}.value for {cid!r} is not a finite number")
-                ok = _apply_op(value, op, rhs)
-                record["evaluated"].append({"case": cid, "value": value, "rhs": rhs,
-                                            "satisfied": bool(ok)})
-                if not ok:
+        if cross and not comparand_list:
+            record["kind"] = "no_comparand"
+            out.append(record)
+            continue
+        # one pass per comparand for a cross-target predicate; one, with none, otherwise
+        passes: list[ComparandEvidence | None] = list(comparand_list) if cross else [None]
+        for comp in passes:
+            for cid in contexts:
+                tag = {"comparand": comp.target_id} if comp is not None else {}
+                try:
+                    env = env_for(cid)
+                    at_envs = {t: env_for(t) for t in targets}
+                    cenv = (env_for(cid, comp.run_dir, f"comparand:{comp.target_id}")
+                            if comp is not None else None)
+                    binds = evaluate_binds(pred.get("bind"), env, at_envs, cenv)
+                    value = _scalar(evaluate(tree, env, at_envs=at_envs, binds=binds,
+                                             comparand_env=cenv), f"{loc}.expr")
+                    present, rhs = _resolve_value(pred.get("value"), cid)
+                    if not present:
+                        raise PrimaryEvidenceError(
+                            f"{loc}.value.per_case has no entry for {cid!r}")
+                    if not _is_number(rhs) or not math.isfinite(rhs):
+                        raise PrimaryEvidenceError(
+                            f"{loc}.value for {cid!r} is not a finite number")
+                    ok = _apply_op(value, op, rhs)
+                    record["evaluated"].append({**tag, "case": cid, "value": value, "rhs": rhs,
+                                                "satisfied": bool(ok)})
+                    if not ok:
+                        record["satisfied"] = False
+                        if record["kind"] != "structural":
+                            record["kind"] = "physics"
+                        break
+                except PrimaryEvidenceError as exc:
+                    record["evaluated"].append({**tag, "case": cid, "satisfied": False,
+                                                "reason": "evaluation_error",
+                                                "error": str(exc)[:400]})
                     record["satisfied"] = False
-                    record["kind"] = "physics"
+                    record["kind"] = "structural"
                     break
-            except PrimaryEvidenceError as exc:
-                record["evaluated"].append({"case": cid, "satisfied": False,
-                                            "reason": "evaluation_error",
-                                            "error": str(exc)[:400]})
-                record["satisfied"] = False
-                record["kind"] = "structural"
-                break
         out.append(record)
     return out
 
@@ -979,7 +1129,10 @@ def validate_primary_predicate_schema(
     cases), parses `expr` and every `bind` under the closed grammar, and resolves every name:
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
     number or a rectangular numeric list in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
-    an `at('<case>')` case is one of the predicate's own target cases. `coordinates[]` is
+    an `at('<case>')` case is one of the predicate's own target cases; a
+    `comparand.<point>.<var>` (grammar 3) names a snapshot schema variable or the time
+    variable, like a capture, and the predicate that reads one must read this run's own state
+    as well (the state rule below counts only this run's captures). `coordinates[]` is
     resolved against every declared case, since every case is captured. With
     ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a
     predicate's `target_cases` must equal its test's as a set: a corroborant over a subset
@@ -1087,8 +1240,8 @@ def validate_primary_predicate_schema(
                     if not isinstance(name, str) or not name.isidentifier():
                         v.append(f"{loc}.bind name {name!r} is not an identifier")
                         continue
-                    if name in CONSTANTS or name in FUNCTIONS or name in CAPTURE_POINTS \
-                            or name in (_INPUTS_ROOT, _AT) or name in coord_names:
+                    if name in CONSTANTS or name in FUNCTIONS or name in _ROOTS \
+                            or name in coord_names:
                         v.append(f"{loc}.bind name {name!r} shadows a grammar name")
                     exprs.append((f"{loc}.bind.{name}", name, text))
                     bind_names.append(name)
@@ -1116,10 +1269,11 @@ def validate_primary_predicate_schema(
                     v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
                              f"target_cases ({sorted(targets)})")
                     continue
-                if ref.kind == "capture":
+                if ref.kind in ("capture", "comparand"):
                     if ref.name not in capture_names:
-                        v.append(f"{eloc}: {ref.point}.{ref.name} is not a snapshot schema "
-                                 f"variable ({sorted(capture_names)})")
+                        prefix = f"{_COMPARAND}." if ref.kind == "comparand" else ""
+                        v.append(f"{eloc}: {prefix}{ref.point}.{ref.name} is not a snapshot "
+                                 f"schema variable ({sorted(capture_names)})")
                 elif ref.kind == "inputs":
                     for cid in ([ref.case] if ref.case is not None else targets):
                         case = cases.get(cid)
@@ -1143,7 +1297,8 @@ def validate_primary_predicate_schema(
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, set(variables)):
             v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
                      "expr or a bind expr reaches: a corroborant values the state the kernel "
-                     "produced")
+                     "produced (a comparand.<point>.<var> is another target's state, not this "
+                     "run's)")
     return v
 
 
@@ -1194,7 +1349,12 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
     `Compile.verify`'s judgment (V3). Malformed entries are left to the two schema gates
     that run before this one: a condition with no `quantity` is skipped here (the secondary
     schema gate refuses it), and so is a primary predicate with no `test_id` or `quantity`,
-    a malformed scope or an unparsable expression (each covers nothing)."""
+    a malformed scope or an unparsable expression (each covers nothing).
+
+    A CROSS-TARGET predicate (`is_cross_target_predicate`) covers nothing either, whatever its
+    `test_id` and `quantity` (issue #324): it compares this run with another target's, holds
+    vacuously on a target with no comparand (`kind: no_comparand`), and so cannot stand in for
+    a corroborant of this run's own secondary evidence."""
     if not isinstance(test_predicates, list):
         return []
     if not isinstance(primary_predicates, list):
@@ -1207,6 +1367,8 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
             continue
         test_id, quantity = pred.get("test_id"), pred.get("quantity")
         if not (isinstance(test_id, str) and isinstance(quantity, str)):
+            continue
+        if is_cross_target_predicate(pred):
             continue
         read = cases_read(pred)
         if read is None:
@@ -1276,12 +1438,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="the IR directory (holding spec.ir.yaml) or the file itself")
     parser.add_argument("--run", required=True, type=Path,
                         help="the run node directory holding raw/state_snapshots/")
+    parser.add_argument("--comparand", action="append", default=[], metavar="TARGET_ID=RUN_DIR",
+                        help="bind another target's run node directory as a comparand of the "
+                             "cross-target predicates (repeatable; the host's own selection is "
+                             "orchestration_runtime.resolve_comparands)")
     args = parser.parse_args(argv)
     try:
         ir = _read_ir(args.ir)
         if not (Path(args.run) / "raw" / "state_snapshots").is_dir():
             raise PrimaryEvidenceError(f"{args.run}: no raw/state_snapshots directory")
-        records = evaluate_primary_predicates(ir, args.run)
+        comparands: list[ComparandEvidence] = []
+        for item in args.comparand:
+            target_id, sep, run = str(item).partition("=")
+            if not sep or not target_id.strip() or not run.strip():
+                raise PrimaryEvidenceError(f"--comparand {item!r}: expected TARGET_ID=RUN_DIR")
+            run_path = Path(run.strip())
+            comparands.append(ComparandEvidence(
+                target_id=target_id.strip(), pipeline_ref="", run_id=run_path.parent.name,
+                run_dir=run_path, evidence=comparand_evidence_sha256(run_path)))
+        records = evaluate_primary_predicates(ir, args.run, comparands=comparands)
     except PrimaryEvidenceError as exc:
         print(json.dumps({"error": str(exc)}, indent=2))
         return 2

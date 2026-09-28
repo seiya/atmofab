@@ -95,6 +95,17 @@ _QUANTITY_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 _KIND_PASS = "pass"
 _KIND_PHYSICS = "physics"      # a diagnostics value was present but the comparison was false
 _KIND_STRUCTURAL = "structural"  # a required diagnostics ref was absent/unresolvable (contract gap)
+#: A cross-target primary record with no comparand bound (issue #324): satisfied, nothing
+#: evaluated — the first variant of a node has no reference.
+_KIND_NO_COMPARAND = "no_comparand"
+
+
+def is_cross_target_record(rec: dict[str, Any]) -> bool:
+    """Whether a primary record (`tools.primary_evidence.evaluate_primary_predicates`) is a
+    CROSS-TARGET one: it lists the comparand runs it was evaluated against, or it is the
+    `no_comparand` record of a cross-target predicate with none bound. Every other record
+    carries `comparands: []` (or, written before grammar 3, no such key)."""
+    return rec.get("kind") == _KIND_NO_COMPARAND or bool(rec.get("comparands"))
 
 
 class PredicateError(ValueError):
@@ -394,8 +405,19 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     ``basis.primary`` = its records and ``basis.corroboration`` (``agree`` / ``disagree`` /
     ``unevaluated``); a record's ``structural`` kind folds into ``structural_violation``, a
     ``physics`` one into ``physics_fail``. A record whose ``test_id`` no predicate carries raises
-    ``PredicateError``. With ``primary`` None or empty the output is byte-identical to the
-    pre-Z6 one (no ``primary`` / ``corroboration`` key is written).
+    ``PredicateError``. With ``primary`` None or empty no ``primary`` / ``corroboration`` key
+    is written.
+
+    A CROSS-TARGET record (`is_cross_target_record`, issue #324) fails its test like any other
+    unsatisfied record (a ``no_comparand`` one is satisfied), and is no corroborant:
+    ``basis.corroboration`` compares the ``pass_when`` result with the test's OTHER records
+    only, and the coverage re-check does not count it. ``own_verdict`` is the verdict this run
+    earns with every cross-target record left out — the reduction of the per-test statuses the
+    run's own evidence gives — and is what makes a run eligible as another target's comparand
+    (`orchestration_runtime.resolve_comparands`): a variant that fails its own tests is no
+    reference, while one that passes them and disagrees with another variant fails
+    ``self_verdict`` here and stays a reference there, so a disagreement stops the
+    certification of both.
 
     The judge leaf no longer authors this — it authors ``semantic_review.json`` only.
     """
@@ -417,10 +439,12 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         if run_id is not None:
             doc["run_id"] = run_id
         doc["self_verdict"] = "fail"
+        doc["own_verdict"] = "fail"
         doc["failure_class"] = "structural_violation"
         doc["per_test"] = []
         return doc
     per_test: list[dict[str, Any]] = []
+    own_statuses: list[str] = []
     saw_structural = False
     saw_physics = False
     for pred in predicates:
@@ -430,8 +454,11 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         if not isinstance(test_id, str) or not test_id.strip():
             raise PredicateError("test_predicates entry missing a non-empty test_id")
         status, kind, basis = evaluate_predicate(pred, diagnostics)
+        own_status = status
         records = primary_by_test.pop(test_id.strip(), None)
         if records:
+            own = [r for r in records if not is_cross_target_record(r)]
+            cross = [r for r in records if is_cross_target_record(r)]
             for rec in records:
                 # The Compile gate pins this; re-checked here so a record over a subset of the
                 # test's cases never reads as corroboration of the whole test.
@@ -449,7 +476,7 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                 q = cond.get("quantity")
                 if not isinstance(q, str):
                     continue
-                same = [r for r in records if r.get("quantity") == q]
+                same = [r for r in own if r.get("quantity") == q]
                 if not same:
                     continue   # the gate's coverage rule owns an uncovered quantity
                 if isinstance(cond.get("case"), str) and not cond.get("per_case"):
@@ -462,19 +489,33 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                         f"no primary record for {test_id.strip()!r} quantity {q!r} reads every "
                         f"case the condition on {cond.get('ref')!r} holds in")
             secondary_ok = bool(basis.get("satisfied"))
-            primary_ok = all(bool(r.get("satisfied")) for r in records)
-            structural = any(r.get("kind") == _KIND_STRUCTURAL for r in records)
+            primary_ok = all(bool(r.get("satisfied")) for r in own)
+            structural = any(r.get("kind") == _KIND_STRUCTURAL for r in own)
             basis["primary"] = records
             # An evidence GAP on EITHER side is neither agreement nor disagreement: a record
             # the host could not value, or a diagnostics ref the checks module never emitted,
-            # says nothing about whether the two halves concur (rounds 3 and 4).
-            if structural or kind == _KIND_STRUCTURAL:
-                basis["corroboration"] = "unevaluated"
-            else:
-                basis["corroboration"] = "agree" if secondary_ok == primary_ok else "disagree"
+            # says nothing about whether the two halves concur (rounds 3 and 4). A test whose
+            # every record is cross-target has no corroborant to compare (the Compile gate
+            # refuses that shape for a test with a condition).
+            if own:
+                if structural or kind == _KIND_STRUCTURAL:
+                    basis["corroboration"] = "unevaluated"
+                else:
+                    basis["corroboration"] = ("agree" if secondary_ok == primary_ok
+                                              else "disagree")
             if not primary_ok:
                 status = "fail"
                 if structural:
+                    kind = _KIND_STRUCTURAL
+                elif kind == _KIND_PASS:
+                    kind = _KIND_PHYSICS
+            own_status = status
+            # The cross-target records (issue #324): a disagreement with another target's
+            # certified variant, or a comparand the host could not value, fails the test —
+            # but not `own_verdict`, which is read off `own_status`.
+            if not all(bool(r.get("satisfied")) for r in cross):
+                status = "fail"
+                if any(r.get("kind") == _KIND_STRUCTURAL for r in cross):
                     kind = _KIND_STRUCTURAL
                 elif kind == _KIND_PASS:
                     kind = _KIND_PHYSICS
@@ -483,6 +524,7 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         elif kind == _KIND_PHYSICS:
             saw_physics = True
         per_test.append({"test_id": test_id.strip(), "status": status, "basis": basis})
+        own_statuses.append(own_status)
     if primary_by_test:
         # A primary record for a test no predicate carries would silently judge nothing;
         # Compile pins primary test_ids ⊆ tests.md == predicate test_ids, so this is an IR defect.
@@ -490,21 +532,8 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
             f"primary_predicates name test_id(s) with no test_predicates entry: "
             f"{sorted(primary_by_test)}")
 
-    counts = {"pass": 0, "fail": 0, "xfail": 0, "skipped": 0, "blocked": 0}
-    for item in per_test:
-        st = item["status"]
-        if st in counts:
-            counts[st] += 1
-
-    # self_verdict reduce — identical rule to the post_judge derivation
-    # (_author_derived_validate_artifacts): fail if any fail/blocked; else xfail iff every
-    # non-skipped entry is xfail; else pass.
-    if counts["fail"] > 0 or counts["blocked"] > 0:
-        self_verdict = "fail"
-    elif counts["xfail"] > 0 and counts["pass"] == 0:
-        self_verdict = "xfail"
-    else:
-        self_verdict = "pass"
+    self_verdict = _reduce_statuses([item["status"] for item in per_test])
+    own_verdict = _reduce_statuses(own_statuses)
 
     if not saw_structural and not saw_physics:
         failure_class = "pass"
@@ -519,9 +548,25 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     if run_id is not None:
         doc["run_id"] = run_id
     doc["self_verdict"] = self_verdict
+    doc["own_verdict"] = own_verdict
     doc["failure_class"] = failure_class
     doc["per_test"] = per_test
     return doc
+
+
+def _reduce_statuses(statuses: list[str]) -> str:
+    """self_verdict reduce — identical rule to the post_judge derivation
+    (_author_derived_validate_artifacts): fail if any fail/blocked; else xfail iff every
+    non-skipped entry is xfail; else pass."""
+    counts = {"pass": 0, "fail": 0, "xfail": 0, "skipped": 0, "blocked": 0}
+    for st in statuses:
+        if st in counts:
+            counts[st] += 1
+    if counts["fail"] > 0 or counts["blocked"] > 0:
+        return "fail"
+    if counts["xfail"] > 0 and counts["pass"] == 0:
+        return "xfail"
+    return "pass"
 
 
 # --------------------------------------------------------------------------- schema

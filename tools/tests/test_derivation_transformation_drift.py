@@ -313,6 +313,14 @@ def verdict_tuple() -> dict[str, str]:
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
+        # R4-d (issue #324): the comparand selection policy (`zero_base_architecture.md`'s
+        # "comparand selection policy version", folded into this transformation) — which other
+        # target's run a cross-target predicate reads, and the verdicts that make one eligible
+        # — and the `aggregate_verdict.json#cross_target` record the derived author writes.
+        "orchestration_runtime.resolve_comparands": _source_digest(ort.resolve_comparands),
+        "orchestration_runtime.COMPARAND_OWN_VERDICTS":
+            hashlib.sha256(json.dumps(sorted(ort.COMPARAND_OWN_VERDICTS)).encode()).hexdigest(),
+        "workflow_conductor._verdict_cross_target": _source_digest(wc._verdict_cross_target),
     }
 
 
@@ -722,6 +730,14 @@ PINNED_VERDICT: dict[str, str] = {
     # block no longer names it), so an aggregate is `blocked` when the harness is not validated
     # for the run's target. The evaluator is unchanged.
     "verdict-5": "1a84ff04e23f79b8158c9a2a9a6524185cee4de9e7d6fa898a7c8727160f643b",
+    # verdict-6 (issue #324, R4-d PR-1): grammar 3 — a primary predicate may read
+    # `comparand.initial.<var>` / `comparand.final.<var>`, another target's certified run of
+    # the node, evaluated per comparand the validate key bound; every record carries
+    # `comparands` and `grammar_version: 3`, `verdict.json` gains `own_verdict`, a cross-target
+    # record is no corroborant, and `aggregate_verdict.json` gains `cross_target` for a verdict
+    # with one. The tuple gains the comparand selection (`resolve_comparands`, its verdict set)
+    # and the aggregate's reader of the cross-target records.
+    "verdict-6": "5a4378f470df845c8284baf66b53e22e24bff817b6c4cc950dadcc1f957c2314",
 }
 
 

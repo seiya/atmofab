@@ -1285,7 +1285,11 @@ class DerivationResolver:
     tree and keyed with its profile, and a closure member is selected for the same target as
     its consumer (one run is one target). Compile is target-free and answers without one. A
     resolver with no target refuses every pipeline phase by name (`target_unresolved`) rather
-    than guessing which target the caller meant."""
+    than guessing which target the caller meant.
+
+    The one exception to "one resolver, one target" is `resolve_comparands` (issue #324): a
+    validate key with a cross-target predicate binds OTHER targets' certified builds, and the
+    resolver it builds for each lives and dies inside that function."""
 
     def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None,
                  target: TargetProfile | None = None) -> None:
@@ -2213,7 +2217,12 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #             ir — the compile output hash (the case set and the predicates);
 #             spec.tests — the judge reads `tests.md`;
 #             run_policy — the execution policy `_execute_inproc` imposes: `{target_id,
-#               profile, threads_per_rank, preset}`.
+#               profile, threads_per_rank, preset}`;
+#             comparand[] — ONLY when the IR has a cross-target primary predicate (issue
+#               #324): `{target_id, evidence}` of every other target's certified variant the
+#               predicate is evaluated against (`resolve_comparands`), `evidence` being the
+#               hash of that run's captured snapshot bytes. A comparand that appears or whose
+#               captures change moves this key (`derivation_key_mismatch:comparand...`).
 #
 # Generate, Build and Validate are `node_key × target` facts (issue #284): their outputs live
 # under `workspace/pipelines/<safe>/<target_id>/`, every closure member is selected for the
@@ -2499,6 +2508,122 @@ def _pipeline_closure_for_key(
             f"not resolve ({exc.detail})") from exc
 
 
+#: The `own_verdict` values that make a run another target's reference (issue #324).
+COMPARAND_OWN_VERDICTS: frozenset[str] = frozenset({"pass", "xfail"})
+
+
+def resolve_comparands(
+    repo_root: Path, *, node_key: str, ir_hash: str, target: TargetProfile,
+    spec_refs: Mapping[str, str] | None = None,
+) -> list[Any]:
+    """The comparands of `node_key`'s Validate on `target` (issue #324, R4-d): for every OTHER
+    declared target B (`list_target_ids`, in target-id order), B's certified variant of the
+    same node over the same IR, as a `primary_evidence.ComparandEvidence` — or nothing for B.
+
+    B contributes when `DerivationResolver(target=B).select(node_key, "build")` is certified
+    and B's certified Compile output is `ir_hash` (the IR this Validate runs; Compile is
+    target-free, so a B built from the current IR shares it — the check keeps a B built from
+    another IR out when this run's IR is not the standing one). Its comparand is the LATEST
+    run (`_freshness_key_from_id`) under the selected pipeline's `runs/` whose node directory
+    holds a `verdict.json` (the execute gate passed), whose `trial_meta.json#source_binary_id`
+    is the selected binary, whose `verdict.json#own_verdict` (a verdict written before
+    `own_verdict` existed has no cross-target record, so its `self_verdict` is the same value)
+    is in `COMPARAND_OWN_VERDICTS`, whose `semantic_review.json`, when present, decided `pass`,
+    and whose `validate_meta.json`, when present, is not revoked. A B with no such run
+    contributes nothing.
+
+    Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
+    whether B's own Validate is certified is never asked — B's verdict depends on this run's
+    evidence, so asking would recurse. This is the one place a resolver for a target other
+    than the run's is built, and it never leaves this function.
+
+    Raises `DerivationInputsUnresolvable` when the declared targets cannot be listed or one
+    of them does not load (a broken profile must not quietly drop a reference), and when an
+    eligible run holds no capture to hash."""
+    from tools.primary_evidence import (
+        ComparandEvidence,
+        PrimaryEvidenceError,
+        comparand_evidence_sha256,
+    )
+    from tools.target_profile import list_target_ids
+    node_key = node_key.strip()
+    try:
+        target_ids = list_target_ids(repo_root)
+    except TargetProfileError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: comparand: the declared targets do not list "
+            f"({exc.detail})") from exc
+    safe = _node_key_to_safe(node_key)
+    out: list[Any] = []
+    for tid in target_ids:
+        if tid == target.target_id:
+            continue
+        try:
+            other = load_target_profile(repo_root, tid)
+        except TargetProfileError as exc:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: comparand: target {tid} does not load "
+                f"({exc.detail})") from exc
+        resolver = DerivationResolver(repo_root, spec_refs=spec_refs, target=other)
+        build = resolver.select(node_key, "build")
+        if not (build.ok and build.pipeline_ref and build.binary_id):
+            continue
+        if resolver.select(node_key, "compile").output_hash != ir_hash:
+            continue
+        runs = repo_root / build.pipeline_ref / "runs"
+        best: tuple[tuple[str, int], str, Path] | None = None
+        for run in (runs.iterdir() if runs.is_dir() else ()):
+            rkey = _freshness_key_from_id(run.name)
+            node_dir = run / safe
+            if rkey is None or not node_dir.is_dir():
+                continue
+            verdict = _read_json_or_none(node_dir / "verdict.json")
+            trial = _read_json_or_none(node_dir / "trial_meta.json")
+            if not (isinstance(verdict, dict) and isinstance(trial, dict)):
+                continue
+            if trial.get("source_binary_id") != build.binary_id:
+                continue
+            own = verdict.get("own_verdict", verdict.get("self_verdict"))
+            if own not in COMPARAND_OWN_VERDICTS:
+                continue
+            review = _read_json_or_none(node_dir / "semantic_review.json")
+            if (node_dir / "semantic_review.json").exists() and not (
+                    isinstance(review, dict) and review.get("decision") == "pass"):
+                continue
+            meta = _read_json_or_none(node_dir / "validate_meta.json")
+            if isinstance(meta, dict) and meta.get("revoked"):
+                continue
+            if best is None or rkey > best[0]:
+                best = (rkey, run.name, node_dir)
+        if best is None:
+            continue
+        _rkey, run_id, node_dir = best
+        try:
+            evidence = comparand_evidence_sha256(node_dir)
+        except PrimaryEvidenceError as exc:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: comparand: {tid} run {run_id} of "
+                f"{node_key}: {exc}") from exc
+        out.append(ComparandEvidence(
+            target_id=tid, pipeline_ref=str(build.pipeline_ref), run_id=run_id,
+            run_dir=node_dir, evidence=evidence))
+    return out
+
+
+def _ir_cross_target_predicates(repo_root: Path, ir: str, node_key: str) -> list[Any]:
+    """`primary_evidence.cross_target_predicates` of the IR at `ir` (a repo-relative IR
+    directory); an IR that does not read is an unresolvable input."""
+    from tools.primary_evidence import cross_target_predicates
+    yaml = _require_yaml()
+    try:
+        doc = yaml.safe_load((repo_root / ir / "spec.ir.yaml").read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: validate derivation of {node_key}: "
+            f"{ir}/spec.ir.yaml does not read ({type(exc).__name__})") from exc
+    return cross_target_predicates(doc if isinstance(doc, dict) else {})
+
+
 def phase_derivation_inputs(
     repo_root: Path,
     *,
@@ -2637,7 +2762,7 @@ def phase_derivation_inputs(
 
     spec = need("spec_ref", spec_ref)
     binary = need("binary_ref", binary_ref)
-    return {
+    inputs: dict[str, Any] = {
         "binary": _certified_output_hash(
             repo_root, repo_root / binary / "binary_meta.json", what=f"{node_key} build"),
         "ir": ir_hash,
@@ -2652,6 +2777,14 @@ def phase_derivation_inputs(
             "preset": "make_test",
         },
     }
+    # The comparands a cross-target predicate reads (issue #324): present only when the IR
+    # has one, so every other node's key is what it was before R4-d.
+    if _ir_cross_target_predicates(repo_root, ir, node_key):
+        inputs["comparand"] = [
+            {"target_id": c.target_id, "evidence": c.evidence}
+            for c in resolve_comparands(repo_root, node_key=node_key, ir_hash=ir_hash,
+                                        target=target, spec_refs={node_key: spec})]
+    return inputs
 
 
 def phase_derivation(repo_root: Path, *, node_key: str, step: str, **refs: str | None) -> dict[str, Any]:

@@ -28212,3 +28212,188 @@ class InterfaceHeaderBindingTests(unittest.TestCase):
                 repo, "component/dep_a@0.1.0", resolver=self._resolver(stage, "fortran"))
             self.assertIsNone(err)
             self.assertEqual(self.FORTRAN_KEYS, set(binding))
+
+
+class ResolveComparandsTests(unittest.TestCase):
+    """R4-d (issue #324): `resolve_comparands` over a fixture store holding two targets'
+    certified chains of one node over one IR, and the validate key's `comparand` member.
+
+    Pinned per eligibility clause, each by a run that fails only that clause and would
+    otherwise be selected (it is the NEWEST run): no `verdict.json`, another binary, an
+    `own_verdict` of fail, a judge that did not pass, a revoked meta; and the fallback to
+    `self_verdict` for a verdict written before `own_verdict`. Also pinned: B's build not
+    certified, B's IR not this run's, a target that does not load, an eligible run with no
+    capture, the member's absence for an IR with no cross-target predicate, and the key
+    moving when a comparand appears and when its bytes change."""
+
+    NODE = "component/spec_x@0.1.0"
+    CROSS_IR = yaml.safe_dump({"io_contract": {"primary_predicates": [{
+        "test_id": "t", "quantity": "cross_target_state_agreement", "target_cases": ["a"],
+        "expr": "maxabs(final.u - comparand.final.u)", "op": "le", "value": 1e-12,
+        "per_case": True}]}})
+
+    def setUp(self) -> None:
+        from tools.tests.target_fixtures import SECOND_TARGET
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        self.b = SECOND_TARGET
+        patcher = accept_any_certified_ir()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _certify(self, target: Any, *, ir_text: str | None = None, through: str = "validate",
+                 orch: str = "orch_a") -> dict[str, str]:
+        """`certify_node` for `target`, then a capture in its run: a run the execute gate
+        passed always holds one, and the fixture's does not (a certified run with none is
+        refused as a comparand, loudly)."""
+        refs = certify_node(self.repo, orch, self.NODE, through=through, target=target,
+                            ir_text=ir_text if ir_text is not None else self.CROSS_IR)
+        if through == "validate":
+            sdir = (self.repo / refs["pipeline_ref"] / "runs" / "run_20260101_001"
+                    / refs["safe"] / "raw" / "state_snapshots")
+            sdir.mkdir(parents=True, exist_ok=True)
+            (sdir / "a.json").write_text('{"u": [1.0, 2.0]}')
+        return refs
+
+    def _run(self, refs: dict[str, str], run_id: str, *, verdict: dict | None,
+             binary_id: str | None = None, capture: str = '{"u": [1.0, 2.0]}',
+             review: dict | None = None, meta: dict | None = None) -> Path:
+        node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
+        (node / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+        (node / "raw" / "state_snapshots" / "a.json").write_text(capture)
+        (node / "raw" / "state_snapshots" / "initial" / "a.json").write_text('{"u": [0.0, 0.0]}')
+        (node / "trial_meta.json").write_text(json.dumps(
+            {"source_binary_id": binary_id or refs["binary_id"], "status": "pass"}))
+        if verdict is not None:
+            (node / "verdict.json").write_text(json.dumps(verdict))
+        if review is not None:
+            (node / "semantic_review.json").write_text(json.dumps(review))
+        if meta is not None:
+            (node / "validate_meta.json").write_text(json.dumps(meta))
+        return node
+
+    def _ir_hash(self) -> str:
+        sel = ort.DerivationResolver(self.repo, target=_TP).select(self.NODE, "compile")
+        self.assertTrue(sel.ok, sel.reason)
+        return str(sel.output_hash)
+
+    def _resolve(self, **kw: Any) -> list[Any]:
+        return ort.resolve_comparands(self.repo, node_key=self.NODE,
+                                      ir_hash=kw.pop("ir_hash", None) or self._ir_hash(),
+                                      target=_TP, **kw)
+
+    def _seed_b(self) -> dict[str, str]:
+        self._certify(_TP)
+        return self._certify(self.b, orch="orch_b")
+
+    def test_the_latest_eligible_run_of_the_other_target_is_selected(self) -> None:
+        from tools.primary_evidence import comparand_evidence_sha256
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        newest = self._run(b, "run_20260102_002", capture='{"u": [3.0, 4.0]}',
+                           verdict={"self_verdict": "fail", "own_verdict": "pass"})
+        [comp] = self._resolve()
+        self.assertEqual((comp.target_id, comp.run_id, comp.pipeline_ref),
+                         (self.b.target_id, "run_20260102_002", b["pipeline_ref"]))
+        self.assertEqual(comp.run_dir, newest)
+        self.assertEqual(comp.evidence, comparand_evidence_sha256(newest))
+
+    def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
+        good = {"self_verdict": "pass", "own_verdict": "pass"}
+        rows = [
+            ("no verdict", {"verdict": None}),
+            ("another binary", {"verdict": good, "binary_id": "bin_20260101_999"}),
+            ("own fail", {"verdict": {"self_verdict": "fail", "own_verdict": "fail"}}),
+            ("old verdict, self fail", {"verdict": {"self_verdict": "fail"}}),
+            ("judge failed", {"verdict": good, "review": {"decision": "fail"}}),
+            ("judge unreadable", {"verdict": good, "review": None}),
+            ("revoked", {"verdict": good, "meta": {"revoked": True}}),
+        ]
+        for label, kw in rows:
+            with self.subTest(label):
+                self.setUp()
+                b = self._seed_b()
+                self._run(b, "run_20260102_001", verdict=good)
+                node = self._run(b, "run_20260102_002", **kw)
+                if label == "judge unreadable":
+                    (node / "semantic_review.json").write_text("{not json")
+                self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_a_verdict_without_own_verdict_falls_back_to_self_verdict(self) -> None:
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail"})
+        self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_the_certified_fixture_run_itself_is_eligible(self) -> None:
+        """`certify_node` writes a passing verdict and a passing review, so its run is a
+        comparand — and the run target's OWN runs never are."""
+        self._seed_b()
+        self.assertEqual([(c.target_id, c.run_id) for c in self._resolve()],
+                         [(self.b.target_id, "run_20260101_001")])
+
+    def test_an_uncertified_build_or_another_ir_contributes_nothing(self) -> None:
+        self._certify(_TP)
+        b = self._certify(self.b, orch="orch_b", through="generate")
+        self.assertEqual(self._resolve(), [])
+        b = self._certify(self.b, orch="orch_b")
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        self.assertEqual(len(self._resolve()), 1)
+        self.assertEqual(self._resolve(ir_hash="sha256:" + "0" * 64), [])
+
+    def test_a_declared_target_that_does_not_load_is_unresolvable(self) -> None:
+        self._seed_b()
+        (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
+        with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                    "comparand: target broken_t does not load"):
+            self._resolve()
+
+    def test_an_eligible_run_with_no_capture_is_unresolvable(self) -> None:
+        b = self._seed_b()
+        node = self._run(b, "run_20260102_001",
+                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        shutil.rmtree(node / "raw")
+        with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "no state snapshot"):
+            self._resolve()
+
+    def test_the_validate_key_member(self) -> None:
+        from tools.orchestration_runtime import _phase_certified
+        a = self._certify(_TP)
+        spec = spec_ref_of(self.NODE)
+
+        def inputs() -> dict[str, Any]:
+            return ort.phase_derivation_inputs(
+                self.repo, node_key=self.NODE, step="validate", spec_ref=spec,
+                ir_ref=a["ir_ref"], binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}",
+                target=_TP)
+
+        self.assertEqual(inputs()["comparand"], [])
+        self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "validate",
+                                         target=_TP)[0])
+        b = self._certify(self.b, orch="orch_b")
+        node = self._run(b, "run_20260102_001",
+                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        [member] = inputs()["comparand"]
+        self.assertEqual(member["target_id"], self.b.target_id)
+        ok, detail = _phase_certified(self.repo, "orch_a", self.NODE, "validate", target=_TP)
+        self.assertEqual((ok, detail["reason"]), (False, "derivation_key_mismatch:comparand"))
+        # stamp A under the new key, then move B's bytes: the ELEMENT names itself
+        from tools.tests.orchestration_fixtures import stamp_derivation
+        stamp_derivation(self.repo, self.NODE, "validate",
+                         f"{a['pipeline_ref']}/runs/run_20260101_001/{a['safe']}/validate_meta.json",
+                         target=_TP, ir_ref=a["ir_ref"],
+                         binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}")
+        self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "validate",
+                                         target=_TP)[0])
+        (node / "raw" / "state_snapshots" / "a.json").write_text('{"u": [1.0, 2.5]}')
+        ok, detail = _phase_certified(self.repo, "orch_a", self.NODE, "validate", target=_TP)
+        self.assertEqual((ok, detail["reason"]),
+                         (False, "derivation_key_mismatch:comparand[0].evidence"))
+
+    def test_no_member_without_a_cross_target_predicate(self) -> None:
+        a = self._certify(_TP, ir_text=f"node_key: {self.NODE}\n")
+        inputs = ort.phase_derivation_inputs(
+            self.repo, node_key=self.NODE, step="validate", spec_ref=spec_ref_of(self.NODE),
+            ir_ref=a["ir_ref"], binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}",
+            target=_TP)
+        self.assertEqual(set(inputs), {"binary", "ir", "spec", "run_policy"})
