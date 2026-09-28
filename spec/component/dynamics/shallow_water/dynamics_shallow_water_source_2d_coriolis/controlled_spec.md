@@ -113,7 +113,7 @@ Forbid evaluating `f` from a profile or parameters inside this `component` (it r
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The operation is linear in `U` and holds no non-differentiable operation.

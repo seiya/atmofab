@@ -177,7 +177,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is Williamson et al. (1992, JCP 102, 211–224, DOI:10.1016/S0021-9991(05)80016-6) — Test Cases 2 and 3, equations (95) and (101)–(103), and the balance condition (114) reduced to the channel; Test Case 4, equations (116)–(130), mapped to the channel by replacing $\tan^2(d/2a)$ with $r^2/R_{low}^2$, the jet $\sin^{14}(2\theta)$ with $\sin^2(\pi y/L_y)$, and the translation rate $u_0/a$ of the centre's longitude with the speed $c_{tr}=u_{jet}\cos\theta_0$ of its position — LeVeque (2002), Toro (2009), and van Leer (1977) for the `MC` limiter.
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, `exp` (in $b(s)$, with its branch at $s=0$), the periodic-index wrap, the sign reversal at the wall, and the limiter of the reconstruction `component` (the branch on the sign of the product of the two one-sided differences, the `min` over the three slope candidates, and `sign`; that `component`'s §9) are made explicit as non-differentiable operations. `sin`, `cos` and `exp` in the prescribed flow of `tc4_translating_low` and its forcing are differentiable.

@@ -148,7 +148,7 @@ Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `sup
 Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_reconstruction_2d_muscl_mc/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_reconstruction_2d_muscl_mc/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The limiter is a non-differentiable operation and is made explicit as one: the branch on the sign of $ab$, the `min` over the three slope candidates, and `sign` are the discrete operations of §3.
