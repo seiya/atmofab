@@ -119,9 +119,10 @@ it serializes it. Beside every bound ARRAY `<name>` the module publishes (`publi
 under the same names) four default-integer variables, which `case_setup` sets on every rank for
 every case, a rejected one included: `sb_<name>_axis`, the axis `<name>` is partitioned along
 (`0` = replicated: every rank holds the whole array, and rank 0's copy is written);
-`sb_<name>_lo` / `sb_<name>_hi`, the positions along it, from `1`, of the cells this rank owns,
-ghost cells excluded (`hi < lo` when it owns none, the array still allocated); and
-`sb_<name>_glo`, the global index of position `lo`. A scalar is replicated. The harness's gather
+`sb_<name>_lo` / `sb_<name>_hi`, the indices along it, in the array's own declared bounds, of
+the cells this rank owns, ghost cells excluded (`hi < lo` when it owns none, the array still
+allocated); and `sb_<name>_glo`, the global index (from `1`) of the cell at `lo`. Only the
+partitioned axis may carry ghost cells. A scalar is replicated. The harness's gather
 stops the run unless the ranks' owned ranges tile the global extent. `case_run` reports the
 cells THIS rank updated; `checks_compute` / `metric_compute` run on every rank and rank 0's
 result is written, so a whole-field value is a harness reduction. A physics source `use`s the

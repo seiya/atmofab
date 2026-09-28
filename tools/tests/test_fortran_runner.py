@@ -2370,11 +2370,11 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
     scalar values are rank 0's, only one set of outputs is written, and the check that reduces
     over the ranks passes."""
 
-    def _build(self, d: Path) -> None:
+    def _build(self, d: Path, checks: str = _DIST_CHECKS_STUB) -> None:
         runner = render_runner(_distributed_ir(), DIST_SID, DIST_HARNESS,
                                target=_TARGET_PROFILE.doc)
         (d / f"{DIST_HARNESS}_model.f90").write_text(_DIST_HARNESS_STUB)
-        (d / f"{DIST_SID}_checks.f90").write_text(_DIST_CHECKS_STUB)
+        (d / f"{DIST_SID}_checks.f90").write_text(checks)
         (d / f"{DIST_SID}_runner.f90").write_text(runner)
         wrapper = f"{_MPI_PAIR}/mpif90"
         for src in (f"{DIST_HARNESS}_model.f90", f"{DIST_SID}_checks.f90",
@@ -2406,13 +2406,25 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
         prefixes: list[list[str]] = [[]]
         if len(os.sched_getaffinity(0)) >= 4:
             prefixes.append([f"{_MPI_PAIR}/mpirun", "-n", "4"])
-        for argv_prefix in prefixes:
-            with self.subTest(argv_prefix=argv_prefix), \
-                    tempfile.TemporaryDirectory() as td:
-                d = Path(td)
-                self._build(d)
-                (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-                self._run(d, argv_prefix)
+        # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo` / `sb_u_hi` are
+        # indices in the array's own bounds, which the runner shifts to the gather's positions.
+        zero_based = _DIST_CHECKS_STUB
+        for old, new in (("allocate(u(nloc + 2), w(3, nloc), c(2))",
+                          "allocate(u(0:nloc + 1), w(3, nloc), c(2))"),
+                         ("u(i + 1) = real(glo + i - 1, dp)", "u(i) = real(glo + i - 1, dp)"),
+                         ("sb_u_lo = 2", "sb_u_lo = 1"), ("sb_u_hi = nloc + 1", "sb_u_hi = nloc"),
+                         ("sum(u(2:nloc + 1))", "sum(u(1:nloc))")):
+            self.assertEqual(zero_based.count(old), 1, old)
+            zero_based = zero_based.replace(old, new)
+        for checks_name, checks in (("one-based", _DIST_CHECKS_STUB),
+                                    ("zero-based", zero_based)):
+            for argv_prefix in prefixes:
+                with self.subTest(checks=checks_name, argv_prefix=argv_prefix), \
+                        tempfile.TemporaryDirectory() as td:
+                    d = Path(td)
+                    self._build(d, checks)
+                    (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+                    self._run(d, argv_prefix)
 
 
 class DistributedRenderTest(unittest.TestCase):

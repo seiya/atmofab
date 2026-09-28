@@ -778,6 +778,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         # gather: allocated on rank 0 only).
         for r in array_ranks:
             a(f"    real(dp), allocatable :: g_r{r}({','.join(':' * r)})")
+        if array_ranks:
+            a("    integer :: off")
     a(f"    allocate(out({len(bound_vars)}))")
     for k, v in enumerate(bound_vars, start=1):
         rank = _rank_of_shape(schema_vars[v], v)
@@ -904,12 +906,17 @@ def _render_distributed_capture(a: Any, H: Any, k: int, v: str, rank: int) -> No
     a(f"            {sb}))")
     a("      end if")
     a("    else")
+    # `lo` / `hi` are indices in the array's OWN bounds along the axis (a leaf declares
+    # `u(0:n+1)` as readily as `u(n+2)`); the gather counts positions from 1, so the runner
+    # shifts them by the lower bound rather than asking the leaf to.
+    a(f"      off = lbound({sb}, &")
+    a(f"        {axis if rank >= 2 else 1}) - 1")
     a(f"      call {H(f'gather_r{rank}')}( &")
     a(f"        {sb}, &")
     if rank >= 2:
         a(f"        {axis}, &")
-    a(f"        {lo}, &")
-    a(f"        {hi}, &")
+    a(f"        {lo} - off, &")
+    a(f"        {hi} - off, &")
     a(f"        {glo}, &")
     a(f"        g_r{rank})")
     a("      if (rank == 0) then")
@@ -931,10 +938,14 @@ def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
         "  ! variables sb_<var>_axis, sb_<var>_lo, sb_<var>_hi and sb_<var>_glo, which",
         "  ! case_setup sets on every rank for that rank's copy: the axis <var> is partitioned",
         "  ! along (0 = replicated: every rank holds the global array and rank 0's is written),",
-        "  ! the positions lo..hi of the cells this rank owns along it (hi < lo when it owns",
-        "  ! none, and the array is allocated all the same), and the global index of position",
-        "  ! lo. capture_state gathers each partitioned array onto rank 0, and the harness's",
-        "  ! gather stops the run unless the ranks' owned ranges tile the global extent. A",
+        "  ! the indices lo..hi, in the array's own declared bounds, of the cells this rank",
+        "  ! owns along it, ghost cells excluded (hi < lo when it owns none, and the array is",
+        "  ! allocated all the same), and the global index (from 1) of the cell at index lo.",
+        "  ! Only the partitioned axis may carry ghost cells: every other axis holds exactly",
+        "  ! its global extent. capture_state gathers each partitioned array onto rank 0, and",
+        "  ! the harness's gather stops the run unless the ranks' owned ranges tile the global",
+        "  ! extent. The halo exchange takes an array whose partitioned axis holds ng ghost",
+        "  ! cells, the owned cells, then ng ghost cells. A",
         "  ! scalar is replicated. case_run reports the cells THIS rank updated (the runner",
         "  ! sums them), and checks_compute / metric_compute run on every rank, rank 0's",
         "  ! results being written. A physics source may use the harness module for these",
