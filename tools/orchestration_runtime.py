@@ -2529,7 +2529,8 @@ def resolve_comparands(
     is the selected binary, whose `verdict.json#own_verdict` (a verdict written before
     `own_verdict` existed has no cross-target record, so its `self_verdict` is the same value)
     is in `COMPARAND_OWN_VERDICTS`, whose `semantic_review.json`, when present, decided `pass`,
-    and whose `validate_meta.json`, when present, is not revoked. A B with no such run
+    and whose `validate_meta.json`, when present, is not revoked
+    (`verification_status: revoked`). A B with no such run
     contributes nothing.
 
     Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
@@ -2590,8 +2591,12 @@ def resolve_comparands(
             if (node_dir / "semantic_review.json").exists() and not (
                     isinstance(review, dict) and review.get("decision") == "pass"):
                 continue
+            # A revocation (`_revoke_stage_meta`, the one writer) rewrites the meta's status;
+            # any other status — a run failed by a cross-target disagreement included — keeps
+            # the run a reference.
             meta = _read_json_or_none(node_dir / "validate_meta.json")
-            if isinstance(meta, dict) and meta.get("revoked"):
+            if isinstance(meta, dict) and str(
+                    meta.get("verification_status", "")).strip().lower() == "revoked":
                 continue
             if best is None or rkey > best[0]:
                 best = (rkey, run.name, node_dir)

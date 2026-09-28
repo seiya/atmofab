@@ -28308,7 +28308,7 @@ class ResolveComparandsTests(unittest.TestCase):
             ("old verdict, self fail", {"verdict": {"self_verdict": "fail"}}),
             ("judge failed", {"verdict": good, "review": {"decision": "fail"}}),
             ("judge unreadable", {"verdict": good, "review": None}),
-            ("revoked", {"verdict": good, "meta": {"revoked": True}}),
+            ("revoked", {"verdict": good, "meta": {"verification_status": "pass"}}),
         ]
         for label, kw in rows:
             with self.subTest(label):
@@ -28318,6 +28318,10 @@ class ResolveComparandsTests(unittest.TestCase):
                 node = self._run(b, "run_20260102_002", **kw)
                 if label == "judge unreadable":
                     (node / "semantic_review.json").write_text("{not json")
+                if label == "revoked":
+                    # through the one production writer, not a hand-spelled meta
+                    ort._revoke_stage_meta(self.repo, node / "validate_meta.json",
+                                           reason="test", trigger_agent_run_id="t")
                 self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
     def test_a_verdict_without_own_verdict_falls_back_to_self_verdict(self) -> None:
