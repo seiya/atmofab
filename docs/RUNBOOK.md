@@ -443,6 +443,24 @@ What moves the key, and therefore re-derives: an edit to a node's `controlled_sp
 
 **Forcing a phase to run although it is certified** (`--rederive <phase>[,<phase>]`, target node only): the phase runs, its previous output stays eligible, and — once the new attempt passes — the newer output is the selected one (`selection policy` v1), so each later phase re-derives exactly when its key moved and skips when the forced phase reproduced its output byte for byte (a Build on a toolchain whose binary is not byte-reproducible — the checked-in target's compiler is not — therefore always re-runs Validate). A forced attempt that FAILS leaves the standing output selected and the node certified: a failed attempt is a record, not a decision about the output that stands (`docs/ORCHESTRATION.md` §13a), so a dependency whose forced attempt failed stays `ready` for its consumers; `revoke-artifact` it if that is not what you want. Recorded as `orchestration_meta.json#invocation.rederive` and as a `phase_rederive_forced` event; not auto-recovered on `--resume`.
 
+### Certifying one node on several targets (cross-target predicates)
+
+A node whose IR has a cross-target primary predicate ([issue #324](https://github.com/seiya/atmofab/issues/324), R4-d; `docs/workflow/phases/phase_04_validate.md`) compares its captured state with every other declared target's certified variant of the same node — its `comparand`s — and its validate `derivation key` binds each by the hash of that run's snapshot bytes (`docs/ORCHESTRATION.md` 13d). The first target to validate has no comparand, and its cross-target record says so (`kind: no_comparand`). A comparand that appears later, or whose captures change, re-derives the node's Validate on the other targets, and only Validate: `derivation_key_mismatch:comparand` when a target joined the list, `derivation_key_mismatch:comparand[<i>].evidence` when the `<i>`-th comparand's captures changed.
+
+To certify a node — or a `--with-deps` closure — on every target, run each target once, then re-run every target except the last, in the same order:
+
+```bash
+python3 tools/run_workflow.py <spec_ref> validate --with-deps --target <T1>
+python3 tools/run_workflow.py <spec_ref> validate --with-deps --target <T2>
+python3 tools/run_workflow.py <spec_ref> validate --with-deps --target <T3>
+python3 tools/run_workflow.py <spec_ref> validate --with-deps --target <T1>   # Validate only
+python3 tools/run_workflow.py <spec_ref> validate --with-deps --target <T2>   # Validate only
+```
+
+The last target already read every other one, and a re-run of the same binary writes byte-identical captures, so nothing it read moved; `check-phase-certified --step validate --target <T3>` confirms it. A variant is a comparand only while its OWN tests pass (`verdict.json#own_verdict`), so a disagreement between two variants fails both: each run's `[execute fail: verdict]` report names the comparand target and the value that exceeded the tolerance, and the ordinary Generate repair runs on each.
+
+Two transport `fail_closed` failures of `Validate.execute` belong to this mechanism, and neither is the kernel's; both surface as `deterministic_validate_error: …`: `comparand_evidence_moved:<target_id>` (another target's run changed the comparand's captures between this run's key and its verdict — `--resume`) and `comparand_unbound` (the verdict was reached without the phase-start binding, a conductor defect).
+
 ## 3-1. Resuming a failed workflow (`--resume`)
 
 **One-time cost when resuming onto sources written before the declared lint rule set landed
