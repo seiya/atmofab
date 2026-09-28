@@ -355,7 +355,7 @@ _CAPABILITY_TOKEN_RE = re.compile(CAPABILITY_TOKEN_PATTERN)
 CAPABILITY_VOCABULARY: frozenset[str] = frozenset({
     "sync_single_case",        # A6 minimum: the current harness_fortran_cpu ABI
     "async_device_resident",   # A6 reserved
-    "distributed_state",       # A6 reserved
+    "distributed_state",       # A6: the process-parallel harness (issue #316)
     "batched_cases",           # A6 reserved
     "full_state_capture",      # A4 / Z6 reserved
     "trusted_reductions",      # A4 / Z6 reserved
@@ -399,12 +399,22 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # runner reads every snapshot variable straight from the module-level storage of the bundle's
 # checks module and serializes it through `__emit_*` / `__write_snapshot` at the two capture
 # points, before any callback of that case — the harness source needs no new operation for it,
-# so the harness version is unchanged.
+# so the harness version is unchanged. `distributed_state@1` (issue #316, R4-c) is defined as the
+# distributed-state operations of the providing harness's §3.3 — the rank queries, the
+# block partition, the halo exchange, the gather onto rank 0 with its tile check, and the global
+# reductions — which the harness publishes after the `sync_single_case@1` block, together with
+# the rule that the writers are called on rank 0 only. Unlike `state_registration@1` it names
+# operations of the harness source, so its mechanical enforcer is the one `sync_single_case@1`
+# has: the harness's own `Generate.static` pin of §5.1 today, and the language backend's
+# `assert_harness_pin` once a host-rendered runner is built against that harness (PR-4 of the
+# issue; until then the renderer of its language targets the single-process harness alone).
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
     "infrastructure/harness_fortran_cpu@0.7.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
     "infrastructure/harness_cpp_gpu@0.1.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
+    "infrastructure/harness_fortran_cpu_mpi@0.1.0": frozenset(
+        {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@1"}),
 }
 
 

@@ -362,9 +362,9 @@ integer version. The version is part of the token, not a range.
 
 | capability | meaning |
 |---|---|
-| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`) |
+| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`) |
 | `async_device_resident` | device-resident state with asynchronous capture (reserved) |
-| `distributed_state` | distributed state across ranks (reserved) |
+| `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions (`harness_fortran_cpu_mpi`, [issue #316](https://github.com/seiya/atmofab/issues/316)) |
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
 | `full_state_capture` | the harness captures full snapshots itself (reserved, `A4`/`Z6`) |
 | `trusted_reductions` | the harness computes certified reductions over state (reserved, `A4`/`Z6`) |
@@ -390,6 +390,8 @@ the issue records this as a departure from `zero_base_architecture.md` §A4 as w
 ```
 "infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
 "infrastructure/harness_cpp_gpu@0.1.0":     {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_fortran_cpu_mpi@0.1.0": {"sync_single_case@1", "state_registration@1",
+                                                 "distributed_state@1"}
 ```
 
 `state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
@@ -402,12 +404,25 @@ The harness source needs no new operation for it, so the harness version is unch
 `sync_single_case@1` is defined as exactly the canonical interface block of
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
-target language by that language's backend; `harness_cpp_gpu@0.1.0` §5.1 is the same block.
+target language by that language's backend; `harness_cpp_gpu@0.1.0` §5.1 is the same block, and
+`harness_fortran_cpu_mpi@0.1.0` §5.1 begins with it.
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract
 adds a name for the ABI, not a second checker of it.
+
+`distributed_state@1` ([issue #316](https://github.com/seiya/atmofab/issues/316)) is defined as
+the distributed-state operations of `harness_fortran_cpu_mpi@0.1.0` §3.3, which that harness
+publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the block partition
+of a global index range, the halo exchange of an array partitioned along one axis, the gather of
+such an array onto rank 0 — which stops the program unless the ranks' owned ranges tile the global
+range with neither overlap nor gap — and the global reductions. It carries one rule for every
+caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
+values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
+`Generate.static` pin of §5.1 enforces the operations. No host-rendered runner consumes them yet;
+once the language backend renders one (issue #316 PR-4), its `assert_harness_pin` enforces them
+there too.
 
 ### The manifest document
 
