@@ -2495,6 +2495,16 @@ class DistributedRenderTest(unittest.TestCase):
         self.assertEqual(ir_content_violations(ir, DIST_SID, "harness_fortran_cpu"), [])
         self.assertEqual(len(ir_content_violations(ir, DIST_SID, DIST_HARNESS)), 1)
 
+    def test_no_distributed_operation_name_is_longer_than_the_bounded_core_ones(self) -> None:
+        """`_check_identifier_lengths` bounds the harness names against the plumbing's alone;
+        that covers the distributed operations only while none is longer than the longest
+        plumbing operation — pinned here, so adding a longer one turns this red."""
+        from tools.backends.language.fortran import runner as fortran_runner
+        longest = max(len(op) for op in fortran_runner._HARNESS_CORE_OPS)
+        for op in (*fortran_runner._DISTRIBUTED_RUNNER_OPS,
+                   *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
+            self.assertLessEqual(len(op), longest, op)
+
     def test_the_abi_comment_states_the_operations_a_physics_source_may_call(self) -> None:
         from tools.backends.language.fortran.runner import PHYSICS_CALLABLE_DISTRIBUTED_OPS
         text = self._render()

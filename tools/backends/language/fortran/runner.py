@@ -361,10 +361,10 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    distributed_ops = (
-        (*_DISTRIBUTED_RUNNER_OPS, *(f"gather_r{r}" for r in range(1, 5)))
-        if _is_distributed_harness(harness_spec_id) else ())
-    for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS, *distributed_ops):
+    # The distributed operations need no bound of their own: each name is shorter than
+    # `write_metrics_basis`, so a harness id they would not fit has already been refused here
+    # (`test_fortran_runner.DistributedRenderTest` pins the ordering).
+    for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
         name = _hname(harness_spec_id, sym)
         if len(name) > bundle.IDENTIFIER_MAX:
             raise RenderError(
