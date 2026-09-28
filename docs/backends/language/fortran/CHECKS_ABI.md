@@ -111,6 +111,27 @@ Publication is checked under the same scan as the ABI names: under a bare `priva
 published unless a `private ::` names it. A rejected case (`case_setup` returning
 `ok = .false.`) still leaves every bound array allocated to its declared shape.
 
+### 1-c. The distributed binding in Fortran
+
+On a target whose harness provides `distributed_state@1` (issue #316) every rank holds its own
+copy of the module's storage, and the runner gathers each partitioned array onto rank 0 before
+it serializes it. Beside every bound ARRAY `<name>` the module publishes (`public ::`, imported
+under the same names) four default-integer variables, which `case_setup` sets on every rank for
+every case, a rejected one included: `sb_<name>_axis`, the axis `<name>` is partitioned along
+(`0` = replicated: every rank holds the whole array, and rank 0's copy is written);
+`sb_<name>_lo` / `sb_<name>_hi`, the indices along it, in the array's own declared bounds, of
+the cells this rank contributes to the GLOBAL array — the array as the IR's `shape_expr`
+declares it — and `sb_<name>_glo`, the global index (from `1`, in that shape) of the cell at
+`lo`. A halo cell (a copy of a neighbour's) is never contributed; when the declared shape
+includes the domain's boundary ghost cells, the first rank contributes the leading ones and the
+last rank the trailing ones. `hi < lo` when a rank contributes nothing (the array still
+allocated), and every other axis holds exactly its declared extent. A scalar is replicated. The
+harness's gather stops the run unless the contributed ranges tile the global extent. `case_run` reports the
+cells THIS rank updated; `checks_compute` / `metric_compute` run on every rank and rank 0's
+result is written, so a whole-field value is a harness reduction. A physics source `use`s the
+harness only with an `only:` list of its distributed-state operations
+(`docs/backends/parallel/mpi/GENERATE_RULES.md`).
+
 ## 2. The semantics, spelled in Fortran
 
 The neutral §2 is procedure semantics; what it leaves to the language is the spelling of its
@@ -129,9 +150,10 @@ language-specific here.
 ## 4. Prohibitions in Fortran
 
 - **No `use harness_*`** in EITHER `<spec_id>_checks.f90` or `<spec_id>_model.f90`, in any
-  spelling (`use harness_...`, `use :: harness_...`, `use, non_intrinsic :: harness_...`).
-  The rendered runner is the sole `use harness_fortran_cpu_model` site. (The harness's
-  `<spec_id>_model.o` is linked via the closure, but the physics sources must not name it.)
+  spelling (`use harness_...`, `use :: harness_...`, `use, non_intrinsic :: harness_...`),
+  except §1-c's `use <harness>_model, only: <distributed-state operations>` on a harness that
+  offers them. The rendered runner is the sole site that uses the harness's plumbing. (The
+  harness's `<spec_id>_model.o` is linked via the closure.)
 - **No file I/O in the checks module** — no `open` / `write(unit=...)` to a file.
 
 ## 5. Fortran legality and gate guards

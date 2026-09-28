@@ -11,18 +11,27 @@ from __future__ import annotations
 import unittest
 
 from tools.backends import registry
-from tools.backends.parallel.mpi import execution, launcher, wrapper
+from tools.backends.parallel.mpi import (
+    directives,
+    execution,
+    launcher,
+    prompts,
+    wrapper,
+)
 
 
 class RecordTests(unittest.TestCase):
-    def test_the_record_declares_what_pr_1_implements_and_no_presence_floor_yet(self) -> None:
+    def test_the_record_declares_its_five_capabilities(self) -> None:
         record = registry.get("parallel", "mpi")
         self.assertEqual(record.backend_provides,
-                         frozenset({"execution_env", "launcher", "compiler_wrapper"}))
+                         frozenset({"execution_env", "launcher", "compiler_wrapper",
+                                    "parallel_directives", "prompt_fragments"}))
         self.assertEqual(record.core_provides, frozenset())
         # Each capability resolves to the submodule its CAPABILITY_MODULE_ATTR row names.
         for capability, module in (("execution_env", execution), ("launcher", launcher),
-                                   ("compiler_wrapper", wrapper)):
+                                   ("compiler_wrapper", wrapper),
+                                   ("parallel_directives", directives),
+                                   ("prompt_fragments", prompts)):
             with self.subTest(capability=capability):
                 self.assertIs(registry.capability_module("parallel", "mpi", capability), module)
 
@@ -167,3 +176,76 @@ class ExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PresenceFloorTests(unittest.TestCase):
+    """`directives` (R4-c PR-4): the floor is stated for Fortran on a CPU only, as a whole-node
+    judgment; the validator's rows (`test_validate_pipeline_semantics.MpiPresenceFloorGateTests`)
+    drive it through `_validate_parallel_presence_floor`."""
+
+    def test_the_floor_is_stated_for_fortran_on_a_cpu_alone(self) -> None:
+        floor = directives.presence_floor(language="fortran", hardware_class="cpu")
+        self.assertIsNotNone(floor)
+        self.assertTrue(callable(floor.node_violations))
+        for language, hardware_class in (("cuda_cpp", "cpu"), ("fortran", "gpu")):
+            self.assertIsNone(directives.presence_floor(language=language,
+                                                        hardware_class=hardware_class))
+
+    def test_only_an_explicit_other_model_declines(self) -> None:
+        for plan, declines in (
+                (None, False), ({}, False), ({"parallelization": "none"}, False),
+                ({"parallelization": {}}, False),
+                ({"parallelization": {"model": 3}}, False),
+                ({"parallelization": {"apply_to": "none"}}, False),
+                ({"parallelization": {"model": "mpi"}}, False),
+                ({"parallelization": {"model": "MPI_block_1d"}}, False),
+                ({"parallelization": {"model": "none"}}, True),
+                ({"parallelization": {"scheme": "serial"}}, True),
+                ({"parallelization": {"model": "openmp"}}, True),
+                ({"parallelization": {"model": "openmp", "kind": "mpi"}}, False)):
+            with self.subTest(plan=plan):
+                self.assertIs(directives.lowering_plan_declines(plan), declines)
+
+
+class PromptFragmentTests(unittest.TestCase):
+    def test_each_generate_template_has_its_section(self) -> None:
+        self.assertEqual(set(prompts.fragments("generate_generate")), {"target_lowering_floor"})
+        self.assertEqual(set(prompts.fragments("generate_verify")), {"checklist_g6_floor_scope"})
+        with self.assertRaises(ValueError):
+            prompts.fragments("compile_generate")
+
+
+class HarnessUseStatementTests(unittest.TestCase):
+    """Issue #316 round 1: the prohibition on a physics source naming the harness was stated
+    absolutely to both the producer (the Fortran fragment's rule (a)) and the reviewer (the
+    checks contract's §4 and its Fortran binding's §4) while the MPI rules required a harness
+    `use`. Each statement now carries the exception, and this holds them to it: a reversal to
+    the absolute form reddens it."""
+
+    def test_the_producer_is_told_the_exception_where_it_is_told_the_rule(self) -> None:
+        from tools import orchestration_runtime as ort
+        key = "pure generate.generate"
+        composed = ort._compose_fragments(
+            ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
+            {"pure_language": "fortran", "pure_parallel": "mpi"})
+        rule_a = composed[composed.index("(a) NEITHER your checks NOR your model source"):]
+        rule_a = rule_a[:rule_a.index("(b) ")]
+        self.assertIn("with ONE exception", rule_a)
+        self.assertIn("parallel rules in rule (7) name harness operations", rule_a)
+        # ...and rule (7), which it points at, precedes it and names the operations.
+        self.assertLess(composed.index("For a `cpu` target whose `parallel.backend` is `mpi`"),
+                        composed.index("(a) NEITHER your checks NOR your model source"))
+
+    def test_the_reviewer_is_told_the_exception_in_both_prohibitions(self) -> None:
+        from pathlib import Path
+
+        from tools.workflow_conductor import _checks_contract_abi_sections
+        root = Path(__file__).resolve().parents[2]
+        for rel, needle in (
+                ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
+                 "except to\n  the operations the harness offers a physics source"),
+                ("docs/backends/language/fortran/CHECKS_ABI.md",
+                 "except §1-c's `use <harness>_model, only: <distributed-state operations>`")):
+            with self.subTest(document=rel):
+                sections = _checks_contract_abi_sections((root / rel).read_text(encoding="utf-8"))
+                self.assertIn(needle, sections)

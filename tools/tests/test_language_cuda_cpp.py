@@ -815,6 +815,22 @@ class PhysicsGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual([], cpp_source.checks_harness_isolation_violations(
                 Path(tmp) / path.name, _CHECKS_SOURCE, []))
+            # The neutral caller passes what the renderer admits (issue #316): nothing, here.
+            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                Path(tmp) / path.name, _CHECKS_SOURCE, [], allowed_harness_uses={}))
+            with self.assertRaises(ValueError):
+                cpp_source.checks_harness_isolation_violations(
+                    Path(tmp) / path.name, _CHECKS_SOURCE, [],
+                    allowed_harness_uses={"harness_cpp_gpu_model": {"x"}})
+
+    def test_the_renderer_admits_no_physics_harness_use_and_no_distributed_state(
+            self) -> None:
+        """Issue #316: the two seam questions a distributed harness raises, answered for this
+        language's one harness — the checks-source gate asks them of every host-rendered node."""
+        from tools import host_render
+        self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu"), {})
+        self.assertEqual(host_render.distributed_state_names("cuda_cpp", "harness_cpp_gpu",
+                                                             ["u"]), [])
 
     def test_the_header_include_and_the_namespace_are_required(self) -> None:
         no_include = _CHECKS_SOURCE.replace('#include "p_checks.cuh"', "// #include \"p_checks.cuh\"")

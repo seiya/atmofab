@@ -151,10 +151,13 @@ value (`found` true), and `found` false for the earlier cases.
 
 ## 4. Prohibitions
 
-- **No reference to the harness module** from EITHER the checks module or the model. The
-  physics node never depends on the harness module at the source level — the rendered runner is
-  its sole consumer. (The harness's model object is linked via the dependency closure, but the
-  physics sources must not name it.)
+- **No reference to the harness module** from EITHER the checks module or the model, except to
+  the operations the harness offers a physics source: a harness that runs the program as several
+  ranks offers its distributed-state operations (the partition, the halo exchange, the rank
+  queries, the reductions; issue #316), which are how a distributed kernel reaches the runtime,
+  and the language binding says how they are named. Everything else the harness publishes — the
+  emitters and the writers — is the rendered runner's alone. (The harness's model object is
+  linked via the dependency closure.)
 - **No file I/O in the checks module** — no file is opened or written, and none of
   `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` appears in it,
   even as a comment or example string. Emission is the harness's exclusive job; the checks

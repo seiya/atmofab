@@ -131,8 +131,9 @@ def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_
     """The complete text of the node's runner source, rendered from the IR and the target.
 
     `target` is the run's target profile document (`TargetProfile.doc`, issue #284): the
-    runner's performance record names the hardware class and threads per rank the run is
-    executed with, which are the target's and not the IR's. Deterministic and pure. Raises
+    runner's performance record names the hardware class, threads per rank and devices the run
+    is executed with, which are the target's and not the IR's (the rank count is the run's own,
+    issue #316). Deterministic and pure. Raises
     `RenderError` for an IR the backend cannot faithfully render, and `RunnerRenderUnavailable`
     when `language` declares no renderer.
     """
@@ -234,3 +235,21 @@ def checks_public_names(language: Any) -> tuple[str, ...]:
     See `docs/workflow/CHECKS_MODULE_CONTRACT.md`.
     """
     return tuple(_module(language).CHECKS_PUBLIC_NAMES)
+
+
+def physics_harness_uses(language: Any, harness_spec_id: str) -> dict[str, frozenset[str]]:
+    """`{module: names}` a physics source of `language` may `use` from the harness
+    `harness_spec_id` — empty unless that harness runs the program as several ranks, whose
+    distributed-state operations a physics source reaches the runtime through (issue #316). The
+    backend that renders the runner over the harness is the one that knows which of its
+    operations are the runner's own."""
+    return dict(_module(language).physics_harness_uses(harness_spec_id))
+
+
+def distributed_state_names(language: Any, harness_spec_id: str,
+                            arrays: list[str]) -> list[str]:
+    """The partition metadata the checks module of `language` publishes for its bound ARRAYS
+    `arrays` when the runner over `harness_spec_id` gathers them (issue #316); empty for a
+    harness that runs the program as one process. The runner imports every one of them, so the
+    checks-source gate requires them published as it requires the bound state."""
+    return list(_module(language).distributed_state_names(harness_spec_id, arrays))

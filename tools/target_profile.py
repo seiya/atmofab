@@ -585,7 +585,34 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
             f"target_harness_mismatch: {node_key} is an infrastructure node, and target "
             f"{profile.target_id} runs over {harness_nk}; run a harness only for the target "
             f"whose harness it is")
+    out += _process_model_violations(profile, harness_nk)
     return out
+
+
+def _process_model_violations(profile: TargetProfile, harness_nk: str) -> list[str]:
+    """The parallel backend and the harness must agree on how many processes a program is
+    (issue #316): a backend that declares a `launcher` starts several, and only a harness that
+    provides `distributed_state` drives a program as several — the one that starts and ends the
+    runtime and gathers the state onto one rank; a distributed harness, conversely, needs the
+    launcher that starts its ranks. Either mismatch would certify nothing it claims: the runs of
+    a single-process harness under a launcher write every output once per process, and a
+    distributed harness run without one is a one-process program."""
+    from tools.backends import registry as backend_registry
+    from tools.codegen_bundle import capability_name, harness_provided_capabilities
+    if backend_registry.unimplemented_reason("parallel", profile.parallel_backend) is not None:
+        return []  # refused above, in the parallel axis' own words
+    launches = backend_registry.provides("parallel", profile.parallel_backend, "launcher")
+    distributed = any(capability_name(t) == "distributed_state"
+                      for t in (harness_provided_capabilities(harness_nk) or ()))
+    if launches and not distributed:
+        return [(f"parallel.backend: {profile.parallel_backend} starts the program as several "
+                 f"processes under its launcher, and harness {harness_nk} provides no "
+                 f"distributed_state capability to drive them; name a harness that does")]
+    if distributed and not launches:
+        return [(f"harness: {harness_nk} drives the program as several processes "
+                 f"(distributed_state), and parallel backend {profile.parallel_backend} declares "
+                 f"no launcher to start them; use a parallel backend that does")]
+    return []
 
 
 def resolve_run_target(repo_root: Path, requested: str | None, *,

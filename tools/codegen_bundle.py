@@ -405,9 +405,9 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # reductions — which the harness publishes after the `sync_single_case@1` block, together with
 # the rule that the writers are called on rank 0 only. Unlike `state_registration@1` it names
 # operations of the harness source, so its mechanical enforcer is the one `sync_single_case@1`
-# has: the harness's own `Generate.static` pin of §5.1 today, and the language backend's
-# `assert_harness_pin` once a host-rendered runner is built against that harness (PR-4 of the
-# issue; until then the renderer of its language targets the single-process harness alone).
+# has: the harness's own `Generate.static` pin of §5.1, and the language backend's
+# `assert_harness_pin` for the host-rendered runner built against that harness (PR-4 of the
+# issue: the runner gathers the partitioned state onto rank 0 and writes on rank 0 only).
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
     "infrastructure/harness_fortran_cpu@0.7.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
@@ -1691,7 +1691,7 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
 
 
 def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
-                             language: str) -> str | None:
+                             language: str, extra_bound: Sequence[str] = ()) -> str | None:
     """The fixed-ABI constraint on the bundle's checks module, or None.
 
     An M3c node's `<spec_id>_checks` module must publish the SAME fixed set of names for every
@@ -1834,8 +1834,11 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     # state-binding layer ran before this one and pinned the set of bindings to the IR's
     # snapshot variables, so reading them off the document here reads a set the host already
     # accepted. Reported after the procedure clause so an ABI defect is named first.
+    # `extra_bound` is the partition metadata a distributed runner imports beside the bound
+    # arrays (`host_render.distributed_state_names`, issue #316), held to the same rule.
     bound = [str(b.get("storage_symbol")) for b in (doc.get("state_bindings") or [])
              if isinstance(b, dict) and isinstance(b.get("storage_symbol"), str)]
+    bound += [str(n) for n in extra_bound]
     unpublished_state = unpublished_bound_state(str(match.get("content") or ""), spec_id, bound)
     if unpublished_state:
         try:
@@ -1951,12 +1954,22 @@ def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
     the gate requires bound is the set the runner imports from. A missing section yields `[]`,
     which the M3c layer refuses (an M3c node always declares snapshots — the renderer fails
     closed on the same absence)."""
+    return [entry["name"] for entry in snapshot_variable_entries_from_ir(ir)]
+
+
+def snapshot_variable_entries_from_ir(ir: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """`snapshot_variables_from_ir`'s variables as `{name, shape_expr}` — what the two callers of
+    `pure_bundle_contract_violation` pass, because the acceptance layer asks the ranks too: over a
+    harness that runs the program as several ranks, each bound ARRAY brings partition metadata
+    the checks module must publish (issue #316). A bare name list leaves that half with no array
+    to ask about, which is how it shipped at first (R4-c PR-4 round 1)."""
     if not isinstance(ir, collections.abc.Mapping):
         return []
     io = ir.get("io_contract")
     rr = io.get("raw_requirements") if isinstance(io, collections.abc.Mapping) else None
     entries = rr.get("required_evidence") if isinstance(rr, collections.abc.Mapping) else None
-    out: list[str] = []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for e in (entries if isinstance(entries, list) else []):
         if not isinstance(e, collections.abc.Mapping) or e.get("artifact") != "state_snapshots":
             continue
@@ -1964,8 +1977,9 @@ def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
         variables = schema.get("variables") if isinstance(schema, collections.abc.Mapping) else None
         for v in (variables if isinstance(variables, list) else []):
             if isinstance(v, collections.abc.Mapping) and isinstance(v.get("name"), str) \
-                    and v["name"].strip() and v["name"].strip() not in out:
-                out.append(v["name"].strip())
+                    and v["name"].strip() and v["name"].strip() not in seen:
+                seen.add(v["name"].strip())
+                out.append({"name": v["name"].strip(), "shape_expr": v.get("shape_expr")})
         break
     return out
 
@@ -2052,6 +2066,31 @@ def _m3c_state_binding_mismatch(
             return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — "
                     f"{reason(state_binding_storage_reason, sv)}; got {storage!r}")
     return None
+
+
+def _distributed_state_names(language: str, harness_node_key: str | None,
+                             shapes: Mapping[str, Any]) -> list[str]:
+    """The partition metadata the runner over the harness `harness_node_key` imports beside the
+    bound arrays among `shapes` (`host_render.distributed_state_names`): empty for a harness that
+    runs the program as one process, and for a variable whose shape is a scalar or does not parse
+    (the renderer refuses that IR itself). A backend that cannot state it yields nothing here —
+    the `Generate.gate` static check asks the same question and reports its failure."""
+    from tools import runner_ir
+    from tools.host_render import distributed_state_names
+    if not isinstance(harness_node_key, str) or "/" not in harness_node_key:
+        return []
+    harness_sid = harness_node_key.split("/", 1)[1].split("@", 1)[0]
+    arrays = []
+    for name, shape in shapes.items():
+        try:
+            if runner_ir.rank_of_shape(shape, name) >= 1:
+                arrays.append(name)
+        except Exception:  # noqa: BLE001, S112 - the renderer's own refusal
+            continue
+    try:
+        return distributed_state_names(language, harness_sid, arrays)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def pure_bundle_contract_violation(
@@ -2152,11 +2191,14 @@ def pure_bundle_contract_violation(
     # that already projected them, as strings. Accept both — a comprehension that kept only
     # `str` entries would silently yield an EMPTY set on a canonical IR and reject every bundle.
     snapshot_vars: list[str] = []
+    snapshot_shapes: dict[str, Any] = {}
     for v in ir_snapshot_variables:
         name = v if isinstance(v, str) else (
             v.get("name") if isinstance(v, collections.abc.Mapping) else None)
         if isinstance(name, str) and name.strip() and name.strip() not in snapshot_vars:
             snapshot_vars.append(name.strip())
+            if isinstance(v, collections.abc.Mapping):
+                snapshot_shapes[name.strip()] = v.get("shape_expr")
     bindings = [b for b in (doc.get("state_bindings") or []) if isinstance(b, dict)]
     if shape == "harness":
         # Backstop, not reached through the ordered contract today: `validate_bundle`'s
@@ -2181,7 +2223,9 @@ def pure_bundle_contract_violation(
         name_violation = m3c_literal_name_violation(doc, spec_id, language=language)
         if name_violation is not None:
             return ("bundle_assembly_collision", name_violation)
-        abi_violation = m3c_checks_abi_violation(doc, spec_id, language=language)
+        abi_violation = m3c_checks_abi_violation(
+            doc, spec_id, language=language,
+            extra_bound=_distributed_state_names(language, harness_label, snapshot_shapes))
         if abi_violation is not None:
             return ("bundle_checks_abi_violation", abi_violation)
     # L1c: a component's `operation` entrypoint symbols must equal its IR public_api published

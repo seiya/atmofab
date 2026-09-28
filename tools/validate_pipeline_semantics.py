@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 try:
     # The registry is the ONLY way this module reaches a language or build-system backend
@@ -1895,9 +1895,9 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
     that started the binary as independent one-process runs — a launcher of another
     installation, a prefix dropped on the way — only when the runner writes the process count
     the harness observes at run time; a runner that wrote the profile's count would make it
-    compare the profile with itself. The host-rendered CPU runner writes a literal 1 today,
-    which this refuses for every launcher target with more than one rank; the runner a launcher
-    target runs is the distributed variant of issue #316 PR-4, which writes the harness's count.
+    compare the profile with itself. The runner a launcher target runs is the distributed
+    variant (issue #316 PR-4: its harness provides `distributed_state`, which the launch gate
+    requires of a launcher target), and it writes the harness's `comm_size`.
     The shape checks of both files are `_validate_execution_json_outputs` and
     `_validate_raw_evidence`; this reads only the members it compares, and a member that is
     missing or of the wrong type is a violation here too, since the comparison cannot hold. A
@@ -2233,9 +2233,20 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
     return _m3c_language(ir, toolchain[0], toolchain[1])
 
 
+def _shape_rank_or_none(shape_expr: Any) -> int | None:
+    """The rank of a snapshot `shape_expr` as the runner renderer reads it, or None when it does
+    not parse — the render refuses that IR itself, so no binding is asked of it here."""
+    from tools import runner_ir
+    try:
+        return runner_ir.rank_of_shape(shape_expr, "")
+    except Exception:  # noqa: BLE001 - the renderer's refusal, reported by the render gate
+        return None
+
+
 def _validate_checks_source_files(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
-    violations: list[str], *, bound_state: Iterable[str] = (),
+    violations: list[str], *, bound_state: Mapping[str, str] | Iterable[str] = (),
+    harness_spec_id: str | None = None,
 ) -> None:
     """R1/M3c-β deterministic gate: an M3c physics node's leaf-authored
     ``<spec_id>_checks.f90`` must satisfy the fixed-ABI contract
@@ -2243,10 +2254,18 @@ def _validate_checks_source_files(
     ``module <spec_id>_checks``; it publishes every ABI name AND every bound state variable
     (``bound_state`` — the IR's snapshot variables, which the host-rendered runner imports as
     ``sb_<var> => <var>`` since Z6, issue #255); NEITHER the checks NOR
-    the model source ``use``s the harness (the physics sources never depend on it — the
-    host-rendered runner is the sole harness caller); the checks module does no file I/O
+    the model source ``use``s the harness (the host-rendered runner is the sole caller of its
+    plumbing — the one exception is below); the checks module does no file I/O
     (``open(``); and it writes no forbidden judge-artifact filename. A violation routes
-    back to Generate.generate to re-author the checks source."""
+    back to Generate.generate to re-author the checks source.
+
+    On a harness that runs the program as several ranks (`harness_spec_id`, the target's —
+    issue #316) two things change, both asked of the backend that renders the runner over it:
+    the checks module publishes each bound ARRAY's partition metadata as well
+    (`host_render.distributed_state_names`; `bound_state` maps each name to its `shape_expr`
+    for that, and a bare name list is read as having none), and a physics source may `use` the
+    harness for its distributed-state operations and nothing else
+    (`host_render.physics_harness_uses`)."""
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is None:
         return
@@ -2315,7 +2334,23 @@ def _validate_checks_source_files(
         violations.append(
             f"{checks_path}: checks module must publish the fixed ABI names "
             f"{list(checks_public_names)}; missing {missing}")
-    hidden = source_reading.unpublished_bound_state(text, spec_id, bound_state)
+    distributed_names: list[str] = []
+    harness_uses: dict[str, frozenset[str]] = {}
+    if abi_refusal is None and harness_spec_id:
+        arrays = [v for v, shape in (bound_state.items() if isinstance(bound_state, Mapping)
+                                     else ())
+                  if _shape_rank_or_none(shape) not in (None, 0)]
+        try:
+            distributed_names = host_render.distributed_state_names(
+                language, harness_spec_id, arrays)
+            harness_uses = host_render.physics_harness_uses(language, harness_spec_id)
+        except Exception as exc:  # noqa: BLE001
+            # The same containment as the seam entry above: a violation, never a raise.
+            violations.append(
+                f"{checks_path}: the distributed binding of harness {harness_spec_id!r} could "
+                f"not be stated for language {language!r} ({exc!r})")
+    hidden = source_reading.unpublished_bound_state(
+        text, spec_id, [*bound_state, *distributed_names])
     if hidden:
         # The remedy spells the runner's import of the variable, so the backend that renders
         # the runner states it (issue #289, R4-b PR-4). When that backend could not be reached
@@ -2332,7 +2367,7 @@ def _validate_checks_source_files(
         violations.append(f"{checks_path}: {remedy}")
 
     violations.extend(source_reading.checks_harness_isolation_violations(
-        checks_path, text, model_files))
+        checks_path, text, model_files, allowed_harness_uses=harness_uses))
     lowered = text.lower()
     for output_name in FORBIDDEN_RUNNER_OUTPUTS:
         if output_name in lowered:
@@ -2430,9 +2465,12 @@ def _validate_generate_outputs_for_generation(
             bundle=bundle, source_reading=source_reading,
         )
     if is_m3c:
+        pipeline_target = _pipeline_target(repo_root, execution.pipeline_dir)
         _validate_checks_source_files(
             execution, m3c_language, src_dir, model_files, violations,
-            bound_state=_state_snapshot_requirement_details(repo_root, execution)[0])
+            bound_state=_state_snapshot_requirement_details(repo_root, execution)[0],
+            harness_spec_id=(str(pipeline_target.harness.get("infrastructure_id") or "")
+                             if pipeline_target is not None else None))
 
     if dep_spec_ids:
         source_reading.validate_dependency_operations(
@@ -2608,6 +2646,25 @@ def _validate_parallel_presence_floor(
     except (OSError, json.JSONDecodeError):
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
     if not isinstance(bundle, dict):
+        return
+    # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: the checks module holds the
+    # partition, the model the halo exchange, and a forbidden direct use of the library does not
+    # depend on the plan) states its findings itself, over the model sources and the checks
+    # module together, and decides for itself what a declining plan exempts.
+    node_violations = getattr(floor, "node_violations", None)
+    if node_violations is not None:
+        spec_id = _spec_id_from_node_key(execution.node_key)
+        facts = _language_module(language, "bundle_facts", src_dir, [])
+        checks_path = (src_dir / facts.checks_basename(spec_id)
+                       if facts is not None and spec_id else None)
+        violations.extend(node_violations(
+            model_texts={f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files},
+            checks_texts=({checks_path: checks_path.read_text(encoding="utf-8", errors="ignore")}
+                          if checks_path is not None and checks_path.is_file() else {}),
+            plan=bundle.get("target_lowering_plan"),
+            bound_arrays=[v for v, shape in _state_snapshot_requirement_details(
+                repo_root, execution)[0].items() if _shape_rank_or_none(shape) not in (None, 0)],
+            harness_spec_id=str(target.harness.get("infrastructure_id") or "")))
         return
     if directives.lowering_plan_declines(bundle.get("target_lowering_plan")):
         return  # an explicit declaration G6 judges; the target's backend is the default
@@ -10300,7 +10357,7 @@ def _validate_post_generate_bundle(
         return
     from tools.codegen_bundle import (
         pure_bundle_contract_violation, harness_provided_capabilities, derive_build_graph,
-        published_operations_from_ir, snapshot_variables_from_ir)
+        published_operations_from_ir, snapshot_variable_entries_from_ir)
     try:
         doc = _read_json(bundle_path)
     except json.JSONDecodeError:
@@ -10365,7 +10422,7 @@ def _validate_post_generate_bundle(
         doc, node_key=node_key, spec_id=spec_id,
         shape=(shape or ""), language=str(toolchain.get("language") or ""),
         runner_basename=runner_basename,
-        ir_snapshot_variables=snapshot_variables_from_ir(ir),
+        ir_snapshot_variables=snapshot_variable_entries_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))
     if contract is not None:

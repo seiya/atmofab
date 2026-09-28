@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import yaml
@@ -64,6 +65,14 @@ class _ScratchRepo:
 
 
 _DELETE = object()
+
+
+def _distributed_harness_x() -> Any:
+    """The scratch catalog's harness, declared as providing `distributed_state@1`."""
+    from tools import codegen_bundle
+    return mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS, {
+        "infrastructure/harness_x@0.7.0": frozenset(
+            {"sync_single_case@1", "state_registration@1", "distributed_state@1"})})
 
 
 class CheckedInProfileTests(unittest.TestCase):
@@ -400,13 +409,47 @@ class LaunchGateTests(unittest.TestCase):
                                                                   until_phase=phase)
                         self.assertIn(f"execution.ranks: 2 ranks need a launcher, and parallel "
                                       f"backend {backend} declares none", violations)
-            # One rank needs none; a launcher backend takes any count.
+            # One rank needs none; a launcher backend takes any count (over a harness that
+            # drives several processes — `test_the_backend_and_the_harness_agree_on_processes`).
             self.assertEqual(tp.target_profile_violations(
                 repo.root, self._profile(repo, execution__ranks=1)), [])
-            for ranks in (1, 4):
-                with self.subTest(backend="mpi", ranks=ranks):
-                    self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
-                        repo, parallel__backend="mpi", execution__ranks=ranks)), [])
+            with _distributed_harness_x():
+                for ranks in (1, 4):
+                    with self.subTest(backend="mpi", ranks=ranks):
+                        self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                            repo, parallel__backend="mpi", execution__ranks=ranks)), [])
+
+    def test_the_backend_and_the_harness_agree_on_processes(self) -> None:
+        """Issue #316 (R4-c PR-4): a backend that declares a launcher needs a harness that
+        provides `distributed_state`, and such a harness needs a backend with a launcher. Both
+        directions are refused, at every phase; the agreeing pairs are accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            for phase in (None, "Build", "Validate"):
+                with self.subTest(phase=phase, direction="launcher without distributed"):
+                    violations = tp.target_profile_violations(
+                        repo.root, self._profile(repo, parallel__backend="mpi"),
+                        until_phase=phase)
+                    self.assertIn(
+                        "parallel.backend: mpi starts the program as several processes under "
+                        "its launcher, and harness infrastructure/harness_x@0.7.0 provides no "
+                        "distributed_state capability to drive them; name a harness that does",
+                        violations)
+                with self.subTest(phase=phase, direction="distributed without launcher"), \
+                        _distributed_harness_x():
+                    for backend in ("openmp", "none"):
+                        violations = tp.target_profile_violations(
+                            repo.root, self._profile(repo, parallel__backend=backend),
+                            until_phase=phase)
+                        self.assertIn(
+                            "harness: infrastructure/harness_x@0.7.0 drives the program as "
+                            "several processes (distributed_state), and parallel backend "
+                            f"{backend} declares no launcher to start them; use a parallel "
+                            "backend that does", violations)
+            with _distributed_harness_x():
+                self.assertEqual(tp.target_profile_violations(
+                    repo.root, self._profile(repo, parallel__backend="mpi")), [])
+            self.assertEqual(tp.target_profile_violations(repo.root, self._profile(repo)), [])
 
     def test_a_compiler_pin_with_a_compiler_wrapper_is_refused(self) -> None:
         """Issue #316: a backend that compiles through its compiler wrapper runs it in the

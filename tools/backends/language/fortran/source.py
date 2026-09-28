@@ -26,7 +26,7 @@ import bisect
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from tools.backends.language.fortran import lines as fortran_lines
 from tools.backends.language.fortran import structure as fortran_structure
@@ -2425,13 +2425,25 @@ def checks_module_declaration_violations(checks_path: Path, text: str, spec_id: 
 
 
 def checks_harness_isolation_violations(
-    checks_path: Path, text: str, model_files: list[Path]
+    checks_path: Path, text: str, model_files: list[Path],
+    *, allowed_harness_uses: Mapping[str, Iterable[str]] | None = None,
 ) -> list[str]:
     """The isolation half of the M3c checks-source gate: neither physics source `use`s the
     harness, and the checks module does no file I/O. `text` is the checks source's raw content;
-    each model source is read here."""
+    each model source is read here.
+
+    `allowed_harness_uses` (`{module: names}`, from the renderer of the target's harness,
+    `host_render.physics_harness_uses`) is the one exception: on a harness that runs the program
+    as several ranks a physics source reaches the runtime through the harness's distributed-state
+    operations (issue #316), so a `use` of THAT module is accepted when it carries an `only:`
+    list and every harness name the list reaches — the name itself, or the target of a rename
+    `local => name` — is one of those operations. Everything else stays refused: a `use` without
+    `only:` (it would reach the writers and emitters, whose output is the runner's alone, Z6), a
+    name outside the set, and any other harness module."""
     violations: list[str] = []
     logical = fortran_lines.fortran_logical_line_texts(text)
+    allowed = {str(m).lower(): frozenset(str(n).lower() for n in names)
+               for m, names in (allowed_harness_uses or {}).items()}
 
     # Neither the checks nor the model source may `use` the harness module. Tolerate the
     # optional `, <attr>` (e.g. `, intrinsic`) and `::` forms — `use harness_x`,
@@ -2444,12 +2456,23 @@ def checks_harness_isolation_violations(
     use_harness_re = re.compile(r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?harness_")
     for f in [checks_path, *model_files]:
         ftext = f.read_text(encoding="utf-8", errors="ignore")
-        if any(use_harness_re.match(stmt.strip())
-               for stmt in statements(ftext)):
+        uses = [stmt.strip() for stmt in statements(ftext) if use_harness_re.match(stmt.strip())]
+        refused = [u for u in uses if _harness_use_refusal(u, allowed) is not None]
+        if not refused:
+            continue
+        if not allowed:
             violations.append(
                 f"{f}: a physics source must not `use` the harness module — the physics "
                 "node never depends on the harness at the source level (the host-rendered "
                 "runner is the sole `use harness_*` site)")
+            continue
+        for use in refused:
+            violations.append(
+                f"{f}: `{use}` — {_harness_use_refusal(use, allowed)}. A physics source "
+                "may reach the harness only through its distributed-state operations, as "
+                "`use <module>, only: <names>` naming nothing else: "
+                + "; ".join(f"module {m}: {', '.join(sorted(n))}"
+                            for m, n in sorted(allowed.items())))
 
     # The checks module does no file I/O (emission is the harness/runner's exclusive job). Scan
     # string-masked statements: an `open(` call is code, so a quoted `'open('` in a message string
@@ -2464,6 +2487,35 @@ def checks_harness_isolation_violations(
 
 
 
+
+
+_HARNESS_USE_RE = re.compile(
+    r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?(\w+)\s*(.*)$", re.DOTALL)
+_ONLY_LIST_RE = re.compile(r"(?i)^,\s*only\s*:(.*)$", re.DOTALL)
+
+
+def _harness_use_refusal(use: str, allowed: Mapping[str, frozenset[str]]) -> str | None:
+    """Why the harness `use` statement `use` is refused, or None when `allowed` admits it (see
+    `checks_harness_isolation_violations`). Every identifier the `only:` list reaches is read —
+    each item's name, and each rename's target — so a spelling this reader does not know
+    (`operator(...)`, a generic) is refused rather than passed."""
+    m = _HARNESS_USE_RE.match(use)
+    if m is None:
+        return "it is not a `use` statement this gate can read"
+    module = m.group(1).lower()
+    if module not in allowed:
+        return f"module {module} is not a harness module a physics source may use"
+    only = _ONLY_LIST_RE.match(m.group(2).strip())
+    if only is None:
+        return "it has no `only:` list, so it reaches every name the harness publishes"
+    names = allowed[module]
+    for item in fortran_lines.split_top_level_commas(only.group(1)):
+        target = item.split("=>", 1)[-1].strip().lower()
+        if not target:
+            continue
+        if target not in names:
+            return f"`{item.strip()}` reaches `{target}`, which is not one of them"
+    return None
 
 
 def model_source_not_found_violation(

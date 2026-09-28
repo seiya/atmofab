@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -814,7 +815,10 @@ class MetricsRenderTest(unittest.TestCase):
         other = {**_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7},
                  "hardware": {"class": "gpu", "architecture": "a"}}
         other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other)
-        self.assertIn("walltime, 1, 7, 0)", other_txt)
+        # The rank and device counts are `host_execution.perf_parallelism`'s (issue #316): a
+        # class whose backend states one device per rank records it, where the renderer used
+        # to write 0 for every class.
+        self.assertIn("walltime, 1, 7, 1)", other_txt)
         self.assertIn("'gpu', &", other_txt)
         # rank-1 snapshot var -> bound `sb_u` + emit_array_r1
         self.assertIn("    sb_u => u", txt)
@@ -1385,8 +1389,8 @@ class HarnessPinTest(unittest.TestCase):
         # measured that: replacing the condition with `False` left the whole suite passing.
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, "harness_other", self.sigs, self.src)
-        self.assertIn("is not the pinned", str(cm.exception))
-        self.assertIn("the renderer only targets that harness", str(cm.exception))
+        self.assertIn("is not one this renderer targets", str(cm.exception))
+        self.assertIn("harness_fortran_cpu, harness_fortran_cpu_mpi", str(cm.exception))
 
     def test_embedded_interface_carrying_a_prototype_is_a_renderer_bug(self) -> None:
         # The pinned harness surface is 13 operations and 5 types and no interface PROTOTYPE
@@ -1397,7 +1401,9 @@ class HarnessPinTest(unittest.TestCase):
         with_proto = _HARNESS_V3_INTERFACE + (
             "\nabstract interface\n  subroutine ghost(x)\n    real, intent(in) :: x\n"
             "  end subroutine ghost\nend interface\n")
-        with mock.patch.object(fortran_runner, "_HARNESS_V3_INTERFACE", with_proto), \
+        pins = {**fortran_runner._HARNESS_PINS,
+                HARNESS: fortran_runner._HarnessPin(interface=with_proto, distributed=False)}
+        with mock.patch.object(fortran_runner, "_HARNESS_PINS", pins), \
                 self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
         self.assertIn("carries no interface prototype", str(cm.exception))
@@ -2109,3 +2115,493 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- the distributed variant (issue #316, R4-c PR-4) -------------------------------------------
+
+DIST_HARNESS = "harness_fortran_cpu_mpi"
+DIST_SID = "prob_dist"
+# A wrapper and a launcher of one installation, found as the backend's own tests find them.
+from tools.tests.test_parallel_mpi import _PAIR as _MPI_PAIR  # noqa: E402
+
+
+def _distributed_ir() -> dict:
+    """A problem IR over the four capture shapes of the distributed runner: a rank-1 array
+    partitioned along its only axis, a rank-2 array partitioned along axis 2, a replicated
+    rank-1 array (axis 0), and a scalar."""
+    return {
+        "meta": {"spec_id": DIST_SID, "spec_kind": "problem"},
+        "case": {"test_case_set": [{"case_id": "c0"}]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": [
+                {"artifact": "state_snapshots", "schema": {
+                    "variables": [
+                        {"name": "u", "shape_expr": "[10]"},
+                        {"name": "w", "shape_expr": "[3, 10]"},
+                        {"name": "c", "shape_expr": "[2]"},
+                        {"name": "s", "shape_expr": "scalar"},
+                    ],
+                    "time_variable": "t",
+                }},
+            ]},
+            "test_evidence_requirements": [
+                {"test_id": "c0", "required_raw_variables": ["u", "w", "c", "s"]},
+            ],
+            "diagnostics_contract": {
+                "checks": [{"id": "sum_u"}],
+                "verdict": {"fields": ["overall", "failed_checks"]},
+            },
+            "test_predicates": [
+                {"test_id": "c0", "expected_outcome": "pass", "target_cases": ["c0"]},
+            ],
+        },
+        "dependency": {"node_key": f"problem/{DIST_SID}@0.1.0", "direct_deps": []},
+    }
+
+
+# The single-process harness stub under the distributed harness's names, plus the operations the
+# distributed runner and the checks stub below call, over the library's `mpi` module (the one
+# binding every installation ships for this compiler; the certified harness uses `mpi_f08`, which
+# is its own business). The gathers place each rank's slab by its `glo`, as §3.3 requires; the
+# tile check is not reproduced — it is the harness's, not the runner's.
+_DIST_HARNESS_STUB = _HARNESS_STUB.replace("harness_fortran_cpu", DIST_HARNESS).replace(
+    "  private\n",
+    "  private\n"
+    f"  public :: {DIST_HARNESS}__init, {DIST_HARNESS}__finalize\n"
+    f"  public :: {DIST_HARNESS}__comm_rank, {DIST_HARNESS}__comm_size\n"
+    f"  public :: {DIST_HARNESS}__partition, {DIST_HARNESS}__reduce_sum\n"
+    f"  public :: {DIST_HARNESS}__reduce_sum_int\n"
+    f"  public :: {DIST_HARNESS}__gather_r1, {DIST_HARNESS}__gather_r2\n", 1).replace(
+    f"end module {DIST_HARNESS}_model\n",
+    textwrap.indent(textwrap.dedent(f"""\
+      subroutine {DIST_HARNESS}__init()
+        integer :: ierr
+        call mpi_init(ierr)
+      end subroutine {DIST_HARNESS}__init
+      subroutine {DIST_HARNESS}__finalize()
+        integer :: ierr
+        call mpi_finalize(ierr)
+      end subroutine {DIST_HARNESS}__finalize
+      function {DIST_HARNESS}__comm_rank() result(r)
+        integer :: r, ierr
+        call mpi_comm_rank(mpi_comm_world, r, ierr)
+      end function {DIST_HARNESS}__comm_rank
+      function {DIST_HARNESS}__comm_size() result(n)
+        integer :: n, ierr
+        call mpi_comm_size(mpi_comm_world, n, ierr)
+      end function {DIST_HARNESS}__comm_size
+      subroutine {DIST_HARNESS}__partition(n_global, glo, ghi)
+        integer, intent(in) :: n_global
+        integer, intent(out) :: glo, ghi
+        integer :: r, n, b, m, c
+        r = {DIST_HARNESS}__comm_rank()
+        n = {DIST_HARNESS}__comm_size()
+        b = n_global / n
+        m = mod(n_global, n)
+        c = b
+        if (r < m) c = b + 1
+        glo = r * b + min(r, m) + 1
+        ghi = glo + c - 1
+      end subroutine {DIST_HARNESS}__partition
+      function {DIST_HARNESS}__reduce_sum(x) result(s)
+        real(dp), intent(in) :: x
+        real(dp) :: s
+        integer :: ierr
+        call mpi_allreduce(x, s, 1, mpi_double_precision, mpi_sum, mpi_comm_world, ierr)
+      end function {DIST_HARNESS}__reduce_sum
+      function {DIST_HARNESS}__reduce_sum_int(i) result(s)
+        integer, intent(in) :: i
+        integer :: s, ierr
+        call mpi_allreduce(i, s, 1, mpi_integer, mpi_sum, mpi_comm_world, ierr)
+      end function {DIST_HARNESS}__reduce_sum_int
+      subroutine gather_slabs(buf, c, glo, width, g)
+        real(dp), intent(in) :: buf(:)
+        integer, intent(in) :: c, glo, width
+        real(dp), allocatable, intent(out) :: g(:, :)
+        integer :: n, k, ierr, total
+        integer, allocatable :: cs(:), glos(:), counts(:), displs(:)
+        real(dp), allocatable :: all(:)
+        n = {DIST_HARNESS}__comm_size()
+        allocate(cs(n), glos(n), counts(n), displs(n))
+        call mpi_allgather(c, 1, mpi_integer, cs, 1, mpi_integer, mpi_comm_world, ierr)
+        call mpi_allgather(glo, 1, mpi_integer, glos, 1, mpi_integer, mpi_comm_world, ierr)
+        counts = cs * width
+        displs(1) = 0
+        do k = 2, n
+          displs(k) = displs(k - 1) + counts(k - 1)
+        end do
+        total = sum(counts)
+        allocate(all(max(total, 1)))
+        call mpi_gatherv(buf, c * width, mpi_double_precision, all, counts, displs, &
+          mpi_double_precision, 0, mpi_comm_world, ierr)
+        if ({DIST_HARNESS}__comm_rank() /= 0) return
+        allocate(g(width, sum(cs)))
+        do k = 1, n
+          if (cs(k) > 0) g(:, glos(k):glos(k) + cs(k) - 1) = &
+            reshape(all(displs(k) + 1:displs(k) + counts(k)), [width, cs(k)])
+        end do
+      end subroutine gather_slabs
+      subroutine {DIST_HARNESS}__gather_r1(a, lo, hi, glo, g)
+        real(dp), intent(in) :: a(:)
+        integer, intent(in) :: lo, hi, glo
+        real(dp), allocatable, intent(out) :: g(:)
+        real(dp), allocatable :: g2(:, :)
+        call gather_slabs(a(lo:max(hi, lo - 1)), max(hi - lo + 1, 0), glo, 1, g2)
+        if (allocated(g2)) g = g2(1, :)
+      end subroutine {DIST_HARNESS}__gather_r1
+      subroutine {DIST_HARNESS}__gather_r2(a, axis, lo, hi, glo, g)
+        real(dp), intent(in) :: a(:, :)
+        integer, intent(in) :: axis, lo, hi, glo
+        real(dp), allocatable, intent(out) :: g(:, :)
+        real(dp), allocatable :: g2(:, :)
+        integer :: c
+        c = max(hi - lo + 1, 0)
+        if (axis == 2) then
+          call gather_slabs(reshape(a(:, lo:lo + c - 1), [size(a, 1) * c]), c, glo, &
+            size(a, 1), g)
+        else
+          call gather_slabs(reshape(transpose(a(lo:lo + c - 1, :)), [size(a, 2) * c]), c, &
+            glo, size(a, 2), g2)
+          if (allocated(g2)) g = transpose(g2)
+        end if
+      end subroutine {DIST_HARNESS}__gather_r2
+    """), "  ") + f"end module {DIST_HARNESS}_model\n", 1).replace(
+    "  use, intrinsic :: iso_fortran_env, only: real64\n",
+    "  use, intrinsic :: iso_fortran_env, only: real64\n  use mpi\n", 1)
+
+# The checks stub of `_distributed_ir`: `u` holds one ghost cell at each end around this rank's
+# owned block of 10 cells, `w` holds its owned columns of a 3 x 10 array, and each owned cell holds
+# its GLOBAL index (plus 100 per row of `w`), so the gathered arrays are known exactly whatever
+# the rank count. `c` is replicated. `case_run` reports this rank's own cell count.
+_DIST_CHECKS_STUB = textwrap.dedent(f"""\
+    module {DIST_SID}_checks
+      use, intrinsic :: iso_fortran_env, only: real64
+      use {DIST_HARNESS}_model, only: {DIST_HARNESS}__partition, &
+        {DIST_HARNESS}__reduce_sum
+      ! allow(C003)
+      implicit none
+      private
+      integer, parameter :: dp = real64
+      real(dp), allocatable :: u(:), w(:, :), c(:)
+      real(dp) :: s = 0.0_dp
+      integer :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo
+      integer :: sb_w_axis, sb_w_lo, sb_w_hi, sb_w_glo
+      integer :: sb_c_axis, sb_c_lo, sb_c_hi, sb_c_glo
+      integer :: nloc = 0
+      public :: case_setup, case_run, get_time, checks_compute, metric_compute
+      public :: u, w, c, s
+      public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo
+      public :: sb_w_axis, sb_w_lo, sb_w_hi, sb_w_glo
+      public :: sb_c_axis, sb_c_lo, sb_c_hi, sb_c_glo
+    contains
+      subroutine case_setup(case_id, ok)
+        character(len=*), intent(in) :: case_id
+        logical, intent(out) :: ok
+        integer :: glo, ghi, i, j
+        call {DIST_HARNESS}__partition(10, glo, ghi)
+        nloc = ghi - glo + 1
+        if (allocated(u)) deallocate(u)
+        if (allocated(w)) deallocate(w)
+        if (allocated(c)) deallocate(c)
+        allocate(u(nloc + 2), w(3, nloc), c(2))
+        u = -1.0_dp
+        do i = 1, nloc
+          u(i + 1) = real(glo + i - 1, dp)
+          do j = 1, 3
+            w(j, i) = real(100 * j + glo + i - 1, dp)
+          end do
+        end do
+        c = [7.0_dp, 8.0_dp]
+        s = 5.0_dp
+        sb_u_axis = 1
+        sb_u_lo = 2
+        sb_u_hi = nloc + 1
+        sb_u_glo = glo
+        sb_w_axis = 2
+        sb_w_lo = 1
+        sb_w_hi = nloc
+        sb_w_glo = glo
+        sb_c_axis = 0
+        sb_c_lo = 1
+        sb_c_hi = 2
+        sb_c_glo = 1
+        ok = len_trim(case_id) > 0
+      end subroutine case_setup
+      subroutine case_run(case_id, steps, cells_updated, ok)
+        character(len=*), intent(in) :: case_id
+        integer, intent(out) :: steps, cells_updated
+        logical, intent(out) :: ok
+        steps = 1
+        cells_updated = nloc
+        ok = len_trim(case_id) > 0
+      end subroutine case_run
+      subroutine get_time(t)
+        real(dp), intent(out) :: t
+        t = 0.0_dp
+      end subroutine get_time
+      subroutine checks_compute(case_id, check_id, status)
+        character(len=*), intent(in) :: case_id
+        character(len=*), intent(in) :: check_id
+        character(len=4), intent(out) :: status
+        status = 'fail'
+        if (len_trim(case_id) > 0 .and. check_id == 'sum_u' .and. &
+            {DIST_HARNESS}__reduce_sum(sum(u(2:nloc + 1))) == 55.0_dp) status = 'pass'
+      end subroutine checks_compute
+      subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
+        character(len=*), intent(in) :: case_id
+        character(len=*), intent(in) :: name
+        real(dp), intent(out) :: val
+        logical, intent(out) :: is_na
+        character(len=:), allocatable, intent(out) :: reason_na
+        logical, intent(out) :: found
+        val = 0.0_dp
+        is_na = .false.
+        reason_na = ''
+        found = len_trim(case_id) < 0 .and. len_trim(name) < 0
+      end subroutine metric_compute
+    end module {DIST_SID}_checks
+    """)
+
+
+@unittest.skipUnless(_MPI_PAIR, "no MPI installation whose wrapper compiles the binding canary")
+class DistributedRunnerSmokeTest(unittest.TestCase):
+    """The distributed runner compiled with the wrapper and run under the launcher at one and
+    at four processes: the gathered arrays are the global ones either way, the replicated and
+    scalar values are rank 0's, only one set of outputs is written, and the check that reduces
+    over the ranks passes."""
+
+    def _build(self, d: Path, checks: str = _DIST_CHECKS_STUB) -> None:
+        runner = render_runner(_distributed_ir(), DIST_SID, DIST_HARNESS,
+                               target=_TARGET_PROFILE.doc)
+        (d / f"{DIST_HARNESS}_model.f90").write_text(_DIST_HARNESS_STUB)
+        (d / f"{DIST_SID}_checks.f90").write_text(checks)
+        (d / f"{DIST_SID}_runner.f90").write_text(runner)
+        wrapper = f"{_MPI_PAIR}/mpif90"
+        for src in (f"{DIST_HARNESS}_model.f90", f"{DIST_SID}_checks.f90",
+                    f"{DIST_SID}_runner.f90"):
+            r = subprocess.run([wrapper, "-c", src], cwd=d, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        link = subprocess.run(
+            [wrapper, f"{DIST_HARNESS}_model.o", f"{DIST_SID}_checks.o",
+             f"{DIST_SID}_runner.o", "-o", "runner"], cwd=d, capture_output=True, text=True)
+        self.assertEqual(link.returncode, 0, link.stderr)
+
+    def _run(self, d: Path, argv_prefix: list[str]) -> None:
+        run = subprocess.run([*argv_prefix, "./runner", "--cases", "spec.ir.yaml", "c0"],
+                             cwd=d, capture_output=True, text=True, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        for name in ("initial/c0.json", "c0.json"):
+            snap = json.loads((d / "raw" / "state_snapshots" / name).read_text())
+            self.assertEqual(snap["u"], [float(i) for i in range(1, 11)], name)
+            self.assertEqual(snap["w"], [[float(100 * j + i) for i in range(1, 11)]
+                                         for j in (1, 2, 3)], name)
+            self.assertEqual(snap["c"], [7.0, 8.0], name)
+            self.assertEqual(snap["s"], 5.0, name)
+        # The stub's writer is not a JSON writer; the per-case status line is what it states.
+        self.assertIn('"sum_u": "pass"', (d / "diagnostics.json").read_text())
+
+    def test_one_process_and_four_ranks_capture_the_same_global_state(self) -> None:
+        # Four ranks over 10 cells (blocks of 3, 3, 2, 2) — no launcher option beyond
+        # `-n`, which every implementation shares; a host with fewer CPUs runs one process only.
+        prefixes: list[list[str]] = [[]]
+        if len(os.sched_getaffinity(0)) >= 4:
+            prefixes.append([f"{_MPI_PAIR}/mpirun", "-n", "4"])
+        # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo` / `sb_u_hi` are
+        # indices in the array's own bounds, which the runner shifts to the gather's positions.
+        zero_based = _DIST_CHECKS_STUB
+        # `w` is declared from 0 along its PARTITIONED axis (2), so the shift must read the lower
+        # bound along the binding's axis, not along axis 1 (round-2 mutant M1).
+        for old, new in (("allocate(u(nloc + 2), w(3, nloc), c(2))",
+                          "allocate(u(0:nloc + 1), w(3, 0:nloc - 1), c(2))"),
+                         ("u(i + 1) = real(glo + i - 1, dp)", "u(i) = real(glo + i - 1, dp)"),
+                         ("w(j, i) = real(100 * j + glo + i - 1, dp)",
+                          "w(j, i - 1) = real(100 * j + glo + i - 1, dp)"),
+                         ("sb_u_lo = 2", "sb_u_lo = 1"), ("sb_u_hi = nloc + 1", "sb_u_hi = nloc"),
+                         ("sb_w_lo = 1", "sb_w_lo = 0"), ("sb_w_hi = nloc", "sb_w_hi = nloc - 1"),
+                         ("sum(u(2:nloc + 1))", "sum(u(1:nloc))")):
+            self.assertEqual(zero_based.count(old), 1, old)
+            zero_based = zero_based.replace(old, new)
+        for checks_name, checks in (("one-based", _DIST_CHECKS_STUB),
+                                    ("zero-based", zero_based)):
+            for argv_prefix in prefixes:
+                with self.subTest(checks=checks_name, argv_prefix=argv_prefix), \
+                        tempfile.TemporaryDirectory() as td:
+                    d = Path(td)
+                    self._build(d, checks)
+                    (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+                    self._run(d, argv_prefix)
+
+
+class DistributedRenderTest(unittest.TestCase):
+    """The distributed variant's text (issue #316, R4-c PR-4): chosen by the harness, not the
+    target; the single-process variant is unchanged by it."""
+
+    def _render(self, harness: str = DIST_HARNESS, ir: dict | None = None) -> str:
+        return render_runner(_distributed_ir() if ir is None else ir, DIST_SID, harness,
+                             target=_TARGET_PROFILE.doc)
+
+    def test_the_variant_is_the_harnesss(self) -> None:
+        dist, single = self._render(), self._render("harness_fortran_cpu")
+        for needle in (f"call {DIST_HARNESS}__init()", f"call {DIST_HARNESS}__finalize()",
+                       f"rank = {DIST_HARNESS}__comm_rank()",
+                       f"cells_total = {DIST_HARNESS}__reduce_sum_int(cells_total)",
+                       f"{DIST_HARNESS}__comm_size(), {_TARGET_PROFILE.threads_per_rank}, 0)",
+                       f"call {DIST_HARNESS}__gather_r1( &", f"call {DIST_HARNESS}__gather_r2( &",
+                       "    sb_u_axis, &", "    sb_w_glo, &", "    sb_c_hi, &",
+                       "    call require_axis(sb_w_axis, 2, &", "  subroutine require_axis("):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, dist)
+                self.assertNotIn(needle.replace(DIST_HARNESS, "harness_fortran_cpu"), single)
+        # The axis guard's two bounds: 0 (replicated) up to the array's rank.
+        self.assertIn("    if (axis >= 0 .and. axis <= max_axis) return", dist)
+        # The single-process variant writes the one process it runs, never the profile's
+        # count, which the post-execute gate compares the record with (round 3).
+        three = render_runner(_distributed_ir(), DIST_SID, "harness_fortran_cpu", target={
+            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 1, "ranks": 3}})
+        self.assertIn("walltime, 1, 1, 0)", three)
+        # A scalar has no partition to import; the single-process perf line keeps its literal.
+        self.assertNotIn("sb_s_axis", dist)
+        self.assertIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", single)
+        self.assertNotIn("comm_size", single)
+
+    def test_every_write_is_rank_0s_and_every_collective_is_every_ranks(self) -> None:
+        # Walk the block `if`s: each pushes whether it is the rank-0 guard.
+        stack: list[bool] = []
+        guarded, collective = [], []
+        for line in self._render().splitlines():
+            code = line.strip()
+            if code.startswith("if (") and code.endswith(" then"):
+                stack.append(code == "if (rank == 0) then")
+                continue
+            if code in ("end if", "else"):
+                if code == "end if":
+                    stack.pop()
+                continue
+            under_guard = any(stack)
+            if (code.startswith("call ") and "__write_" in code) or (
+                    code.startswith("out(") and "__box(" in code):
+                guarded.append((code, under_guard))
+            if any(op in code for op in ("__gather_r", "__reduce_sum_int(", "__finalize(",
+                                         "call checks_compute(", "call case_run(",
+                                         "call capture_state(")):
+                collective.append((code, under_guard))
+        self.assertGreaterEqual(len(guarded), 5)
+        self.assertEqual([c for c, g in guarded if not g], [])
+        self.assertGreaterEqual(len(collective), 6)
+        self.assertEqual([c for c, g in collective if g], [])
+
+    def test_a_distributed_binding_name_that_cannot_be_published_is_refused(self) -> None:
+        ir = _distributed_ir()
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        long_name = "v" * 56   # `sb_<v>` fits, `sb_<v>_axis` does not
+        schema["variables"].append({"name": long_name, "shape_expr": "[10]"})
+        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
+            long_name)
+        with self.assertRaises(RenderError) as cm:
+            self._render(ir=ir)
+        self.assertIn(f"its distributed binding 'sb_{long_name}_axis' exceeds the 63-char "
+                      "identifier limit", str(cm.exception))
+        self.assertFalse(cm.exception.identity)
+        # The longest name whose metadata fits renders (each argument has its own line).
+        schema["variables"][-1]["name"] = "v" * 55
+        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"][-1] = \
+            "v" * 55
+        self.assertIn("sb_" + "v" * 55 + "_axis", self._render(ir=ir))
+        # A bound name that IS another's metadata cannot be published beside it.
+        ir = _distributed_ir()
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"].append({"name": "sb_u_lo", "shape_expr": "scalar"})
+        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
+            "sb_u_lo")
+        with self.assertRaises(RenderError) as cm:
+            self._render(ir=ir)
+        self.assertIn("is one identifier with another bound name", str(cm.exception))
+        self.assertEqual(ir_content_violations(ir, DIST_SID, "harness_fortran_cpu"), [])
+        self.assertEqual(len(ir_content_violations(ir, DIST_SID, DIST_HARNESS)), 1)
+
+    def test_no_distributed_operation_name_is_longer_than_the_bounded_core_ones(self) -> None:
+        """`_check_identifier_lengths` bounds the harness names against the plumbing's alone;
+        that covers the distributed operations only while none is longer than the longest
+        plumbing operation — pinned here, so adding a longer one turns this red."""
+        from tools.backends.language.fortran import runner as fortran_runner
+        longest = max(len(op) for op in fortran_runner._HARNESS_CORE_OPS)
+        for op in (*fortran_runner._DISTRIBUTED_RUNNER_OPS,
+                   *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
+            self.assertLessEqual(len(op), longest, op)
+
+    def test_the_abi_comment_states_the_operations_a_physics_source_may_call(self) -> None:
+        from tools.backends.language.fortran.runner import PHYSICS_CALLABLE_DISTRIBUTED_OPS
+        text = self._render()
+        for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS:
+            self.assertRegex(text, rf"  !   (?:subroutine|function) {DIST_HARNESS}__{op}\(")
+        for op in ("init", "finalize", "gather_r1", "write_snapshot"):
+            self.assertNotRegex(text, rf"  !   (?:subroutine|function) {DIST_HARNESS}__{op}\(")
+
+
+class HarnessPinTableTest(unittest.TestCase):
+    """The renderer's harness table, against the manifest and the harness spec."""
+
+    def test_the_distributed_column_is_the_manifests(self) -> None:
+        from tools.backends.language.fortran import runner as fortran_runner
+        from tools.codegen_bundle import HARNESS_CAPABILITY_MANIFESTS, capability_name
+        seen = set()
+        for node_key, provides in HARNESS_CAPABILITY_MANIFESTS.items():
+            sid = node_key.split("/", 1)[1].split("@", 1)[0]
+            if sid not in fortran_runner._HARNESS_PINS:
+                continue
+            seen.add(sid)
+            self.assertEqual(
+                fortran_runner._HARNESS_PINS[sid].distributed,
+                any(capability_name(t) == "distributed_state" for t in provides), node_key)
+        self.assertEqual(seen, set(fortran_runner._HARNESS_PINS))
+
+    def test_each_pinned_interface_is_its_harness_specs_section_5_1(self) -> None:
+        import yaml as _yaml
+        from tools.backends.language.fortran import runner as fortran_runner
+        from tools.backends.language.fortran.signatures import render_signatures_to_fortran
+        root = Path(__file__).resolve().parents[2]
+        for sid, pin in fortran_runner._HARNESS_PINS.items():
+            with self.subTest(harness=sid):
+                spec = (root / "spec/infrastructure/infra/harness" / sid
+                        / "controlled_spec.md").read_text(encoding="utf-8")
+                block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec, re.S).group(1)
+                rendered = render_signatures_to_fortran(_yaml.safe_load(block))
+                # The module parameters are pinned separately (`_HARNESS_V3_PARAMETERS`).
+                body = "\n".join(line for line in rendered.splitlines()
+                                  if not line.startswith("integer, parameter ::"))
+                self.assertEqual(body.strip(), pin.interface.strip())
+
+    def test_the_distributed_pin_holds_against_its_own_interface_and_names_what_it_used(
+            self) -> None:
+        from tools.backends.language.fortran import runner as fortran_runner
+        iface = fortran_runner._HARNESS_PINS[DIST_HARNESS].interface
+        struct = parse_signatures_from_fortran(iface)
+        sigs = [{"symbol": s["name"], "signature": s}
+                for s in [*struct["procedures"], *struct["types"]]]
+        source = ("  integer, parameter :: dp = real64\n"
+                  f"  integer, parameter :: case_id_len = {CASE_ID_LEN}\n" + iface)
+        assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, sigs, source)
+        for dropped in ("__gather_r2", "__init", "__partition", "__reduce_max"):
+            with self.subTest(dropped=dropped):
+                bad = [e for e in sigs if not e["symbol"].endswith(dropped)]
+                with self.assertRaises(RenderError) as cm:
+                    assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, bad, source)
+                self.assertIn(f"omits '{DIST_HARNESS}{dropped}'", str(cm.exception))
+        # The single-process pin asks none of them.
+        single = [e for e in sigs if "__init" not in e["symbol"]]
+        self.assertIsNone(fortran_runner.physics_harness_uses("harness_fortran_cpu").get(
+            "harness_fortran_cpu_model"))
+        self.assertTrue(single)
+
+    def test_the_seam_answers(self) -> None:
+        from tools.backends.language.fortran import runner as fortran_runner
+        uses = fortran_runner.physics_harness_uses(f" {DIST_HARNESS} ")
+        self.assertEqual(set(uses), {f"{DIST_HARNESS}_model"})
+        self.assertEqual(uses[f"{DIST_HARNESS}_model"], frozenset(
+            f"{DIST_HARNESS}__{op}" for op in fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS))
+        self.assertEqual(fortran_runner.physics_harness_uses("harness_fortran_cpu"), {})
+        self.assertEqual(fortran_runner.distributed_state_names(DIST_HARNESS, ["u", "w"]),
+                         ["sb_u_axis", "sb_u_lo", "sb_u_hi", "sb_u_glo",
+                          "sb_w_axis", "sb_w_lo", "sb_w_hi", "sb_w_glo"])
+        self.assertEqual(fortran_runner.distributed_state_names("harness_fortran_cpu", ["u"]),
+                         [])

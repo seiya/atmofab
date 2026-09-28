@@ -21336,7 +21336,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13600,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.
-        "docs/backends/language/fortran/CHECKS_ABI.md": 11900,
+        # Raised 11900->13200 (issue #316, R4-c PR-4): §1-c, the distributed binding — the four
+        # partition variables a checks module publishes beside each bound array on a harness
+        # that runs the program as several ranks. It is inlined into the `m3c` reviewer, which
+        # cannot judge a distributed checks module without it. Measured 12759 on the branch.
+        # Raised 13200->13500 in the same PR's round 2: which cells a rank contributes when the
+        # IR's shape includes the domain's boundary ghost cells. Measured 13216.
+        "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
         "docs/backends/language/fortran/RUNNER_OUTPUT.md": 4800,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).

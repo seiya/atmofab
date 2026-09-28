@@ -420,9 +420,15 @@ such an array onto rank 0 — which stops the program unless the ranks' owned ra
 range with neither overlap nor gap — and the global reductions. It carries one rule for every
 caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
-`Generate.static` pin of §5.1 enforces the operations. No host-rendered runner consumes them yet;
-once the language backend renders one (issue #316 PR-4), its `assert_harness_pin` enforces them
-there too.
+`Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
+`assert_harness_pin` for the host-rendered runner over that harness (issue #316 PR-4), which
+starts and ends the runtime, gathers every partitioned bound array onto rank 0 before it is
+captured, and writes on rank 0 only. What a bundle states to be driven this way is
+`target_lowering_plan.state_residency: distributed` with `distributed_state@1` among its
+`capability_requirements` (the residency coupling below); what its checks module publishes for
+each bound array — the axis it is partitioned along and which cells of the global array a rank
+contributes, with the global index of the first — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
+fixed by the same convention as the bound state itself, so the bundle carries no name of it.
 
 ### The manifest document
 
