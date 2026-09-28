@@ -1364,6 +1364,20 @@ class ComparandEvidenceHashTest(unittest.TestCase):
         final.rename(self.run.sdir / "b.json")
         self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root), h2)
 
+    def test_file_boundaries_are_framed(self) -> None:
+        """Two captures `a.json` = `1` and `b.json` = `2` concatenate, unframed, to the same
+        bytes as ONE capture `a.json` = `1b.json2`; the hash keeps the file sets apart."""
+        other = _RunDir()
+        self.addCleanup(other.cleanup)
+        for run in (self.run, other):
+            for path in run.sdir.rglob("*.json"):
+                path.unlink()
+        (self.run.sdir / "a.json").write_text("1")
+        (self.run.sdir / "b.json").write_text("2")
+        (other.sdir / "a.json").write_text("1b.json2")
+        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root),
+                            pe.comparand_evidence_sha256(other.root))
+
     def test_no_capture_raises(self) -> None:
         for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
             path.unlink()
@@ -1541,6 +1555,8 @@ class CrossTargetVerdictTest(unittest.TestCase):
         doc = self._verdict([MASS, SYM, CROSS], ["gpu"])
         self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
                          ("fail", "pass", "structural_violation"))
+        # the comparand's gap is not this run's: its own evidence still corroborates
+        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "agree")
 
     def test_no_comparand_passes(self) -> None:
         doc = self._verdict([MASS, SYM, CROSS], [])
@@ -1585,6 +1601,8 @@ class CrossTargetCliTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         cross = json.loads(out.getvalue())[1]
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
+        self.assertEqual(cross["comparands"][0]["evidence"],
+                         pe.comparand_evidence_sha256(runs["gpu"].root))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root)]), 0)
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
