@@ -12058,6 +12058,9 @@ end program shallow_water2d_runner
         rows = [
             (applied, [], ("tests.md applies the cross-target judgment to test 't1'",)),
             (applied, [self._CROSS], ()),
+            # a predicate that reads the comparand only through a bind is a cross-target one
+            (applied, [{**self._CROSS, "bind": {"r": "maxabs(comparand.final.h)"},
+                        "expr": "maxabs(final.h) - r"}], ()),
             (not_applied, [self._CROSS], ("test_id 't1', whose tests.md definition does not",)),
             (not_applied, [], ()),
             # wrapped across two lines, bullet form
