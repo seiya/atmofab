@@ -45,6 +45,18 @@ The evaluation result of `tests.md` is mapped to the relevant `node`'s `self_ver
 
 When there is an unnecessary section depending on the `spec_kind`, state `N/A` and the reason rather than omitting it.
 
+## Cross-target judgment
+A `problem` or `component` node generated for more than one target is also judged variant against variant ([issue #324](https://github.com/seiya/atmofab/issues/324)): in each target case, a state variable this target's run captured after the run is compared with the same variable, in the same case, of every other target's certified variant of the node (the `comparand`, `docs/GLOSSARY.md`). A test opts in with one judgment sentence of the form "The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `<variables>`, and the threshold is $\le v$", and §5 of the same `tests.md` defines the quantity. The definition every `tests.md` uses is, for one variable $q$ and one other variant $q^{ref}$,
+$$
+\mathrm{cross\_target\_state\_agreement}=\frac{\max_i |q_i-q^{ref}_i|}{\max(\max_i|q_i|,\ \max_i|q^{ref}_i|,\ 1)}
+$$
+over every element $i$ of the variable. The denominator is symmetric in the two variants, so which of them is the comparand does not decide the verdict, and its floor of `1` makes the bound an absolute one for a variable of magnitude below `1`.
+- The host evaluates it from the captured primary state, against each other variant separately. It has no `diagnostics.json` field and no secondary condition: the generated code of one target never sees another target's state.
+- On a target with no other certified variant it holds vacuously; with one, a disagreement fails the test on every variant whose Validate reads the other, because it does not say which of the two is wrong.
+- Name only variables whose value after the run the `Controlled Spec` defines in every target case of the test. Do not apply it to an `xfail` guard test: the state a refused or unstable case leaves is not a result two variants must agree on.
+- The threshold states how far two correct variants may drift apart (a contracted multiply-add, another summation order, a device math library); it is not an accuracy bound.
+- An `infrastructure` harness node does not carry it: each target has its own harness `spec`.
+
 ## Operations Rules
 - When a `Controlled Spec` change affects the judgment conditions, update `tests.md` in the same change.
 - For `xfail`, define `xfail_condition` and `pass_when` simultaneously.
