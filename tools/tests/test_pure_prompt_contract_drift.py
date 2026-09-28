@@ -715,7 +715,7 @@ PINNED: dict[str, str] = {
     # template no longer tells every producer that the harness manifest backs no residency but
     # `host` (false for the `fortran_cpu_mpi` manifest). The Fortran runner a distributed
     # harness renders (its ABI comment is part of what the producer reads) is new with it.
-    "pure-53": "7cfb967f8865d2e7b48c054b5c6d772e0b5c7e842dc11fbb9cea7a7e346f48b7",
+    "pure-53": "a1432f3ed39efd10cd644b36a7c0a1612f98adc9546df8a10024c8fdb288d047",
 }
 
 
