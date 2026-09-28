@@ -2447,6 +2447,13 @@ class DistributedRenderTest(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, dist)
                 self.assertNotIn(needle.replace(DIST_HARNESS, "harness_fortran_cpu"), single)
+        # The axis guard's two bounds: 0 (replicated) up to the array's rank.
+        self.assertIn("    if (axis >= 0 .and. axis <= max_axis) return", dist)
+        # The single-process variant's counts are `perf_parallelism`'s (a profile's ranks
+        # reach the literal; no gated profile pairs ranks > 1 with that variant).
+        three = render_runner(_distributed_ir(), DIST_SID, "harness_fortran_cpu", target={
+            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 1, "ranks": 3}})
+        self.assertIn("walltime, 3, 1, 0)", three)
         # A scalar has no partition to import; the single-process perf line keeps its literal.
         self.assertNotIn("sb_s_axis", dist)
         self.assertIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", single)

@@ -23241,10 +23241,21 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
             repo_root = Path(t)
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo_root, profile_with(parallel={"backend": "mpi"}))
+            # The node's bound state: `u` is its one bound array, `t` a scalar.
+            ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+            (repo_root / ir_ref).mkdir(parents=True)
+            (repo_root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "component", "spec_id": "dep_base"},
+                "io_contract": {"raw_requirements": {"required_evidence": [
+                    {"artifact": "state_snapshots", "schema": {"variables": [
+                        {"name": "u", "shape_expr": "[8]"},
+                        {"name": "t", "shape_expr": "scalar"}]}}]}}}), encoding="utf-8")
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
+            (pipeline_dir / "lineage.json").write_text(
+                json.dumps({"node_key": node_key, "ir_ref": ir_ref}), encoding="utf-8")
             (src_dir.parent / "codegen_bundle.json").write_text(json.dumps(
                 {"target_lowering_plan": self._DIST if plan is None else plan}),
                 encoding="utf-8")
@@ -23266,6 +23277,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         for where, text in (
                 ("model", self._MODEL.replace("contains", "  use mpi_f08\ncontains")),
                 ("model", self._MODEL.replace("contains", "  use :: mpi\ncontains")),
+                ("model", self._MODEL.replace("contains",
+                                              "  use, non_intrinsic :: mpi\ncontains")),
                 ("model", self._MODEL.replace("contains", "  include 'mpif.h'\ncontains")),
                 ("checks", self._CHECKS.replace("sb_u_axis = 1",
                                                 "sb_u_axis = 1\n    call mpi_barrier(c, e)")),
@@ -23311,6 +23324,10 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 v = self._run(model=model, checks=checks)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("neither the model nor the checks source calls the harness's", v[0])
+        # The action of a one-line logical `if` is a call too.
+        self.assertEqual(self._run(model=model, checks=self._CHECKS.replace(
+            "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n",
+            "    if (n > 0) call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n")), [])
         # Either one suffices, in either source.
         self.assertEqual(self._run(model=model), [])
         self.assertEqual(self._run(checks=self._CHECKS.replace(
@@ -23318,17 +23335,28 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
 
     def test_a_checks_module_that_sets_no_partition_axis_is_refused(self) -> None:
         for assignment in ("sb_u_axis = 0", "sb_u_axis = 0_int32", "sb_u_axis = (0)",
-                           "if (sb_u_axis == 1) x = 1", "u_axis = 1", "x%sb_u_axis = 1"):
+                           "if (sb_u_axis == 1) x = 1", "u_axis = 1", "x%sb_u_axis = 1",
+                           # the axis of a name that is not a bound array distributes nothing,
+                           # nor does a scalar's
+                           "sb_tmp_axis = 1", "sb_t_axis = 1"):
             with self.subTest(assignment=assignment):
                 v = self._run(checks=self._CHECKS.replace("sb_u_axis = 1", assignment))
                 self.assertEqual(len(v), 1, v)
-                self.assertIn("never sets a bound array's partition axis", v[0])
+                self.assertIn("never sets the partition axis", v[0])
                 self.assertIn("dep_base_checks.f90", v[0])
         for assignment in ("sb_u_axis = 2", "sb_u_axis = k", "sb_v_axis = 0; sb_u_axis = 1",
                            "sb_u_axis=1"):
             with self.subTest(assignment=assignment):
                 self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1",
                                                                        assignment)), [])
+        # The model module setting it does not count: the checks module owns the binding.
+        v = self._run(model=self._MODEL.replace("contains", "  integer :: sb_u_axis = 1\ncontains"),
+                      checks=self._CHECKS.replace("sb_u_axis = 1", "x = 0"))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("never sets the partition axis", v[0])
+        # The bound array's name is compared as Fortran compares identifiers.
+        self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1", "SB_U_AXIS = 1")),
+                         [])
         # A declaration's initializer is a setting too.
         self.assertEqual(self._run(checks=self._CHECKS.replace(
             "sb_u_axis = 1", "x = 0").replace("contains", "  integer :: sb_u_axis = 1\ncontains")),
