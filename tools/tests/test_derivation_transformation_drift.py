@@ -737,7 +737,10 @@ PINNED_VERDICT: dict[str, str] = {
     # record is no corroborant, and `aggregate_verdict.json` gains `cross_target` for a verdict
     # with one. The tuple gains the comparand selection (`resolve_comparands`, its verdict set)
     # and the aggregate's reader of the cross-target records.
-    "verdict-6": "5a4378f470df845c8284baf66b53e22e24bff817b6c4cc950dadcc1f957c2314",
+    # Re-pinned in round 1 before shipping (the version is new on this branch): a revoked
+    # comparand run is read off `verification_status`, and the evaluator's docstring states
+    # what a disagreement actually stops.
+    "verdict-6": "a5799b3f9936d48ae6e0c898bdfbda5450b74b5a5fa05fa0f0f2589935274f7f",
 }
 
 

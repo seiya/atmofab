@@ -415,9 +415,11 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     earns with every cross-target record left out — the reduction of the per-test statuses the
     run's own evidence gives — and is what makes a run eligible as another target's comparand
     (`orchestration_runtime.resolve_comparands`): a variant that fails its own tests is no
-    reference, while one that passes them and disagrees with another variant fails
-    ``self_verdict`` here and stays a reference there, so a disagreement stops the
-    certification of both.
+    reference, while a run that fails only a cross-target record keeps ``own_verdict`` and
+    stays eligible for as long as its Build stays certified. The failure routing then
+    revokes its Generate (the ordinary `physics_fail` route), which takes it out of the other
+    targets' comparands: a disagreement fails the variant validated LATER and leaves one
+    certified earlier standing (`docs/RUNBOOK.md` §3-0, cross-target predicates).
 
     The judge leaf no longer authors this — it authors ``semantic_review.json`` only.
     """
