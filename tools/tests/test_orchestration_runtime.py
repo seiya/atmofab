@@ -25965,6 +25965,13 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 env = {k: v for k, v in os.environ.items() if k not in redirected}
                 env["HOME"] = str(fake_home)
                 env["PYTHONPATH"] = str(repo_root)
+                # The fake `$HOME` must not also hide the interpreter's per-user site-packages,
+                # which is where CI installs `requirements.txt` (`pip install --user`): since
+                # issue #324 the validate key reads `tools.primary_evidence`, which imports
+                # numpy, and the classes below certify validate phases. This row asks what the
+                # run WRITES into the home, not where its imports resolve from.
+                import site
+                env["PYTHONUSERBASE"] = site.getuserbase()
                 proc = subprocess.run(
                     [sys.executable, "-m", "unittest",
                      f"tools.tests.test_orchestration_runtime.{target}"],
