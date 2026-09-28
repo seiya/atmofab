@@ -240,7 +240,11 @@ when a rule does not obviously apply:
   with `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider`** — consecutive same-byte-length
   rewrites within one second reuse a stale `.pyc`, and the mutant that reports `killed` is the
   PREVIOUS one. Two reviewers hit it independently on PR #100, one of them reporting three live
-  mutants as killed; the skill's own script is unaffected because each hunk gets its own worktree
+  mutants as killed; the skill's own script is unaffected because each hunk gets its own worktree.
+  **The trigger is any script that rewrites a Python file and runs a test reading it within the
+  same second, not only a mutation sweep**: a drift re-pin replaces a 64-hex digest with another
+  of the same length, and issue #316 PR-4's re-pin helper then saw the suite compare against the
+  digest it had just replaced, twice, until the `.pyc` was deleted
 - **A fixture that writes OUTSIDE its own `TemporaryDirectory` makes its own self-test
   satisfiable by a leftover.** Issue #168: a traversal-rejection row used `"../outside/ir"`, which
   resolves to a SIBLING of the tempdir — a fixed path in the shared temp root. The litter is the
@@ -480,6 +484,24 @@ when a rule does not obviously apply:
 
 4. **Leave the list of surfaces you touched** in the commit message or the pull request. That is where
    reviewers attack from.
+
+## A billed run while the loop is open
+
+A billed acceptance run launched before review keeps reading the checkout: the conductor starts
+the validator, the renderers and every leaf's template from disk at each substep, so a fix
+committed mid-run reaches the rest of that run and not the part already done. **Rule: before
+committing a fix, ask whether it changes something the live run has still to read for a node it
+has not finished — a gate, a renderer, a template or fragment a leaf is handed, an instruction
+that run's leaves would follow.** If it does, stop the run (`TaskStop`, then check `ps` for its
+leaf and launcher children), commit, and relaunch: `--with-deps` reuses every node already
+certified, because an in-place re-pin moves no derivation key. If it does not (a test, a
+comment, a doc no leaf is handed), leave the run going. Either way **record, per certified node,
+the orchestration id and the branch HEAD it was launched at**, and before publishing re-run the
+final HEAD's deterministic gates over the certified sources without billing, so the record says
+the certification still holds at the head. Issue #316 PR-4 stopped its run twice (round 1 moved
+the harness-use rule a leaf reads; round 2 found the leaf-facing definition of the partition
+metadata wrong for the very components about to be generated); `references/round-conduct.md`
+§"A billed run during the loop".
 
 ## Running a round
 

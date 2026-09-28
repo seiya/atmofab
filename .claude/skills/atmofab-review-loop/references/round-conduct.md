@@ -338,6 +338,32 @@ mention as OPEN. Two practical notes:
   worth the reproduction; the harness's accounting and the agent's report are different
   artifacts.
 
+## A billed run during the loop (issue #316 PR-4, PR #322, 2026-09-28)
+
+The adoption run (`advdiff1d_linear validate --with-deps` on `fortran_cpu_mpi`) was launched
+right after the implementation commit, so it could surface design defects while round 1 ran.
+Three launches were needed:
+
+- Run 1 certified the harness. It was stopped when round 1's fixes changed the harness-use
+  prohibition in the Fortran fragment and the checks contract, both of which the next nodes'
+  leaves would read. It was a physics node's Compile that was running when it stopped.
+- Run 2, at round 1's head, certified the three components. It was stopped when round 2 found
+  that the leaf-facing definition of `sb_<var>_lo/hi` ("ghost cells excluded") was wrong for the
+  corpus's ghost-inclusive shapes. Following it literally fails the snapshot shape gate at
+  Validate. The three components had already passed by the time it stopped: two of them had
+  declined MPI, and the third's arrays carry no boundary ghosts, so the wrong wording reached
+  none of them.
+- Run 3, at round 2's head, reused all four dependencies (the only version changes were in-place
+  re-pins, so no key moved) and certified the problem node.
+
+What made the mixed record publishable:
+- a table of orchestration id × launch HEAD per node, placed in the issue amendment and the PR;
+- a no-billing re-run of the final HEAD's floor and checks-source gate over the four certified
+  physics sources.
+
+The cost avoided was a fourth full run after round 3, whose fixes narrowed a gate the certified
+sources still passed.
+
 ## Over-refusal: the five countermeasures and where each came from
 
 - **For a change that adds checking machinery, include "construct legitimate work that this check
