@@ -438,13 +438,14 @@ procedures:
   name: harness_fortran_cpu_mpi__comm_rank
   result:
     name: r
-    spec: &id001
+    spec:
       type: integer
 - kind: function
   name: harness_fortran_cpu_mpi__comm_size
   result:
     name: n
-    spec: *id001
+    spec:
+      type: integer
 - kind: subroutine
   name: harness_fortran_cpu_mpi__partition
   args:
@@ -632,7 +633,7 @@ procedures:
       kind: dp
   result:
     name: s
-    spec: &id002
+    spec:
       type: real
       kind: dp
 - kind: function
@@ -645,7 +646,9 @@ procedures:
       kind: dp
   result:
     name: s
-    spec: *id002
+    spec:
+      type: real
+      kind: dp
 - kind: function
   name: harness_fortran_cpu_mpi__reduce_min
   args:
@@ -656,7 +659,9 @@ procedures:
       kind: dp
   result:
     name: s
-    spec: *id002
+    spec:
+      type: real
+      kind: dp
 - kind: function
   name: harness_fortran_cpu_mpi__reduce_sum_int
   args:
@@ -666,7 +671,8 @@ procedures:
       type: integer
   result:
     name: s
-    spec: *id001
+    spec:
+      type: integer
 ```
 
 ## 6. Prohibitions
