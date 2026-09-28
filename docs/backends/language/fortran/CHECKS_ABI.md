@@ -147,9 +147,10 @@ language-specific here.
 ## 4. Prohibitions in Fortran
 
 - **No `use harness_*`** in EITHER `<spec_id>_checks.f90` or `<spec_id>_model.f90`, in any
-  spelling (`use harness_...`, `use :: harness_...`, `use, non_intrinsic :: harness_...`).
-  The rendered runner is the sole `use harness_fortran_cpu_model` site. (The harness's
-  `<spec_id>_model.o` is linked via the closure, but the physics sources must not name it.)
+  spelling (`use harness_...`, `use :: harness_...`, `use, non_intrinsic :: harness_...`),
+  except §1-c's `use <harness>_model, only: <distributed-state operations>` on a harness that
+  offers them. The rendered runner is the sole site that uses the harness's plumbing. (The
+  harness's `<spec_id>_model.o` is linked via the closure.)
 - **No file I/O in the checks module** — no `open` / `write(unit=...)` to a file.
 
 ## 5. Fortran legality and gate guards

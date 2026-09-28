@@ -207,3 +207,38 @@ class PromptFragmentTests(unittest.TestCase):
         self.assertEqual(set(prompts.fragments("generate_verify")), {"checklist_g6_floor_scope"})
         with self.assertRaises(ValueError):
             prompts.fragments("compile_generate")
+
+
+class HarnessUseStatementTests(unittest.TestCase):
+    """Issue #316 round 1: the prohibition on a physics source naming the harness was stated
+    absolutely to both the producer (the Fortran fragment's rule (a)) and the reviewer (the
+    checks contract's §4 and its Fortran binding's §4) while the MPI rules required a harness
+    `use`. Each statement now carries the exception, and this holds them to it: a reversal to
+    the absolute form reddens it."""
+
+    def test_the_producer_is_told_the_exception_where_it_is_told_the_rule(self) -> None:
+        from tools import orchestration_runtime as ort
+        key = "pure generate.generate"
+        composed = ort._compose_fragments(
+            ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
+            {"pure_language": "fortran", "pure_parallel": "mpi"})
+        rule_a = composed[composed.index("(a) NEITHER your checks NOR your model source"):]
+        rule_a = rule_a[:rule_a.index("(b) ")]
+        self.assertIn("with ONE exception", rule_a)
+        self.assertIn("parallel rules in rule (7) name harness operations", rule_a)
+        # ...and rule (7), which it points at, precedes it and names the operations.
+        self.assertLess(composed.index("For a `cpu` target whose `parallel.backend` is `mpi`"),
+                        composed.index("(a) NEITHER your checks NOR your model source"))
+
+    def test_the_reviewer_is_told_the_exception_in_both_prohibitions(self) -> None:
+        from pathlib import Path
+        from tools.workflow_conductor import _checks_contract_abi_sections
+        root = Path(__file__).resolve().parents[2]
+        for rel, needle in (
+                ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
+                 "except to\n  the operations the harness offers a physics source"),
+                ("docs/backends/language/fortran/CHECKS_ABI.md",
+                 "except §1-c's `use <harness>_model, only: <distributed-state operations>`")):
+            with self.subTest(document=rel):
+                sections = _checks_contract_abi_sections((root / rel).read_text(encoding="utf-8"))
+                self.assertIn(needle, sections)

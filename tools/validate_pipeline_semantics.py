@@ -2254,8 +2254,8 @@ def _validate_checks_source_files(
     ``module <spec_id>_checks``; it publishes every ABI name AND every bound state variable
     (``bound_state`` — the IR's snapshot variables, which the host-rendered runner imports as
     ``sb_<var> => <var>`` since Z6, issue #255); NEITHER the checks NOR
-    the model source ``use``s the harness (the physics sources never depend on it — the
-    host-rendered runner is the sole harness caller); the checks module does no file I/O
+    the model source ``use``s the harness (the host-rendered runner is the sole caller of its
+    plumbing — the one exception is below); the checks module does no file I/O
     (``open(``); and it writes no forbidden judge-artifact filename. A violation routes
     back to Generate.generate to re-author the checks source.
 
