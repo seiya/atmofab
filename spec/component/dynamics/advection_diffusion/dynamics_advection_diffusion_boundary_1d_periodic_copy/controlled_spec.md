@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advection_diffusion_boundary_1d_periodic_copy`
-- `spec_version`: `0.2.0`
+- `spec_version`: `0.2.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`

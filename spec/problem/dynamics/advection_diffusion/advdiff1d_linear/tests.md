@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.2.0`
+- `test_profile_version`: `0.3.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.4.0`
+- `spec_ref.spec_version`: `0.4.1`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
@@ -141,6 +141,12 @@ Here `wrapToPi` is the operation that normalizes the phase difference to $[-\pi,
 
 The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using $G^{n_{step}}$, must not be used as the evaluation expression of these 2 metrics.
 
+`cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For the state variable `u` at $t_{end}$ of a case,
+$$
+\mathrm{cross\_target\_state\_agreement}=\frac{\max_i |u_i-u^{ref}_i|}{\max(\max_i|u_i|,\ \max_i|u^{ref}_i|,\ 1)}
+$$
+Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is evaluated by the host from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+
 ### 5-5. Default thresholds
 - $\text{cfl\_combined\_max} \le 1.0$
 - $\text{mass\_drift\_rel} \le 1.0e{-12}$
@@ -149,6 +155,7 @@ The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using 
 - $\text{mode\_gain\_error} \le 5.0e{-3}$
 - $\text{mode\_phase\_error\_rad} \le 5.0e{-3}$
 - $\text{symmetry\_l2\_rel} \le 1.0e{-12}$
+- $\text{cross\_target\_state\_agreement} \le 1.0e{-12}$
 
 ## 6. Test definitions
 ### 6-1. `l1_refinement_against_analytic`
@@ -171,6 +178,7 @@ The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using 
     - `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$, and requires $\ge 0.50$ for both `nx64_to_nx128` and `nx128_to_nx256`.
     - `mode_gain_error` uses the 1-step amplification-rate evaluation expression defined in 5-4, and requires $\le 5.0e{-3}$.
     - `mode_phase_error_rad` uses the 1-step phase-error evaluation expression defined in 5-4, and requires $\le 5.0e{-3}$.
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
 
 ### 6-2. `l2_mass_conservation_long_run`
 - `level`: `L2`
@@ -183,6 +191,7 @@ The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using 
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 3.0e{-12}$.
   - The symmetry judgment is not applied. The non-application basis is "because this test aims at the long-time conservation evaluation of a single initial condition".
   - The theoretical-comparison judgment is applied. It requires $\text{l2\_rel\_error\_to\_analytic\_tend} \le 2.3e{-1}$.
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
 
 ### 6-3. `l3_translation_equivariance`
 - `level`: `L3`
@@ -196,6 +205,7 @@ The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using 
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-12}$.
   - The symmetry judgment is applied. The evaluation expression is `symmetry_l2_rel`, and the threshold is $\le 1.0e{-12}$.
   - The theoretical-comparison judgment is applied. It requires $\text{l2\_rel\_error\_to\_analytic\_tend} \le 1.1e{-1}$.
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
 
 ### 6-4. `l0_cfl_guard_xfail`
 - `level`: `L0`
@@ -210,6 +220,7 @@ The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using 
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is `informational_only`.
   - The symmetry judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the cannot-continue-execution judgment is prioritized over the theoretical-agreement judgment".
+  - The cross-target judgment is not applied. The non-application basis is "because the state an unstable case leaves at $t_{end}$ is not a result two variants must agree on".
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: pass when all applicable checks pass.

@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advdiff_flux_1d_upwind_center2`
-- `spec_version`: `0.3.0`
+- `spec_version`: `0.3.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`

@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.4.0`
+- `spec_version`: `0.4.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`

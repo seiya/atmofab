@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
-- `spec_version`: `0.3.0`
+- `spec_version`: `0.3.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
