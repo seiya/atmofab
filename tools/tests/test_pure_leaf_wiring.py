@@ -1406,6 +1406,9 @@ class PureRenderTests(unittest.TestCase):
         # language's into the physics producer's and reviewer's templates.
         ("tools/prompt_templates/backends/parallel/openmp/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/parallel/openmp/generate_verify.txt", None, None),
+        # Issue #316 (R4-c PR-4): the MPI model's, composed the same way.
+        ("tools/prompt_templates/backends/parallel/mpi/generate_generate.txt", None, None),
+        ("tools/prompt_templates/backends/parallel/mpi/generate_verify.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify_harness.txt",
          None, None),
         # Round 5 found the tuple short of its own docstring twice over.
@@ -3291,13 +3294,23 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         "pure generate.verify": "on a `component`/`problem` node whose target is cpu+openmp+",
     }
 
+    #: The opening words of the MPI floor paragraph in each template (issue #316, R4-c PR-4).
+    _MPI_FLOOR = {
+        "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
+        "pure generate.verify": "on a `component`/`problem` node whose target is cpu+mpi+",
+    }
+
     @staticmethod
-    def _openmp_section(key: str) -> str:
+    def _section(key: str, parallel: str) -> str:
         raw = ort._load_launch_prompt_templates()[key]
         stem = ort._PROMPT_TEMPLATE_FILES[key].removeprefix("pure_").removesuffix(".txt")
         return ort.backend_registry.capability_module(
-            "parallel", "openmp", "prompt_fragments").fragments(stem)[
+            "parallel", parallel, "prompt_fragments").fragments(stem)[
                 ort._PARALLEL_FRAGMENT_RE.findall(raw)[0]]
+
+    @classmethod
+    def _openmp_section(cls, key: str) -> str:
+        return cls._section(key, "openmp")
 
     def _compose(self, key: str, language: str, parallel: object) -> str:
         return ort._compose_fragments(
@@ -3321,12 +3334,12 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
 
     def test_the_openmp_floor_reaches_a_fortran_openmp_leaf_and_no_other_fortran_leaf(
             self) -> None:
-        """The OpenMP paragraph reaches a `fortran` + `openmp` leaf, and a `fortran` leaf of a
-        model with no fragments (`none`, `mpi`) gets the same prompt without it. NOT asserted:
-        another language with `openmp` — `cuda_cpp` + `openmp` composes the paragraph, whose
-        sentences are conditioned on a `fortran` language; no target profile names that pair.
-        The `mpi` half is expected to turn red when `mpi` declares its own fragments (R4-c
-        PR-4): replace it then with that model's paragraph."""
+        """The OpenMP paragraph reaches a `fortran` + `openmp` leaf, a `fortran` leaf of a
+        model with no fragments (`none`) gets the same prompt without it, and a `fortran` +
+        `mpi` leaf gets the same prompt with the MPI paragraph in its place (R4-c PR-4). NOT
+        asserted: another language with `openmp` — `cuda_cpp` + `openmp` composes the
+        paragraph, whose sentences are conditioned on a `fortran` language; no target profile
+        names that pair."""
         for key in self._KEYS:
             with self.subTest(template=key):
                 composed = composed_pure_template(key)
@@ -3337,14 +3350,19 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
                 # A model that declares no fragments says nothing: the marker composes away,
                 # and the OpenMP paragraph — which the language fragment used to carry for
                 # every Fortran target — is not stated for a model it does not govern.
-                for parallel in ("none", "mpi"):
+                for parallel, section in (("none", ""),
+                                          ("mpi", self._section(key, "mpi"))):
                     other = self._compose(key, "fortran", parallel)
                     self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(other), parallel)
                     self.assertNotIn(self._OPENMP_FLOOR[key], other, parallel)
                     self.assertNotIn("!$omp", other, parallel)
-                    # ...and the rest of the prompt is the OpenMP one with the paragraph out.
-                    self.assertEqual(other, composed.replace(self._openmp_section(key), ""),
+                    # ...and the rest of the prompt is the OpenMP one with the paragraph
+                    # replaced by this model's (by nothing, for a model with no fragments).
+                    self.assertEqual(other, composed.replace(self._openmp_section(key), section),
                                      parallel)
+                mpi = self._compose(key, "fortran", "mpi")
+                self.assertIn(self._MPI_FLOOR[key], mpi)
+                self.assertNotIn(self._MPI_FLOOR[key], composed)
 
     def test_composition_refuses_every_way_it_can_fail(self) -> None:
         template = "a {{parallel:target_lowering_floor}} b"

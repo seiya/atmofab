@@ -20652,6 +20652,123 @@ class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
         self.assertEqual(published, {"case_setup"})
 
 
+class DistributedChecksSourceGateTests(unittest.TestCase):
+    """`_validate_checks_source_files` on a harness that runs the program as several ranks
+    (issue #316, R4-c PR-4): the checks module publishes each bound ARRAY's partition metadata,
+    and a physics source may `use` the harness for its distributed-state operations and for
+    nothing else. The single-process harness keeps both rules as they were."""
+
+    _MPI = "harness_fortran_cpu_mpi"
+    _META = ("sb_u_axis", "sb_u_lo", "sb_u_hi", "sb_u_glo")
+    _CHECKS = _CHECKS_OK.replace(
+        "  public :: u\n",
+        "  public :: u, s\n  public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n"
+        "  integer :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n  real(real64) :: s\n")
+
+    def _run(self, checks: str, *, harness: str | None = _MPI, model: str = _MODEL_OK,
+             bound_state: object = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            src = tmp / "src"
+            src.mkdir()
+            (src / "bx_model.f90").write_text(model)
+            (src / "bx_checks.f90").write_text(checks)
+            violations: list[str] = []
+            vps._validate_checks_source_files(
+                NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp, exec_dir=tmp,
+                              pipeline_dir=tmp), "fortran", src, [src / "bx_model.f90"],
+                violations,
+                bound_state={"u": "[8]", "s": "scalar"} if bound_state is None else bound_state,
+                harness_spec_id=harness)
+            return violations
+
+    def test_the_metadata_of_every_bound_array_is_required_published(self) -> None:
+        self.assertEqual(self._run(self._CHECKS), [])
+        for hidden in self._META:
+            with self.subTest(hidden=hidden):
+                v = self._run(self._CHECKS.replace(
+                    "  public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n",
+                    "  public :: " + ", ".join(m for m in self._META if m != hidden) + "\n"))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"['{hidden}']", v[0])
+        # A scalar needs none, and an unparseable shape asks none (the render refuses it).
+        self.assertEqual(self._run(self._CHECKS.replace("public :: u, s", "public :: u, s, q"),
+                                   bound_state={"u": "[8]", "s": "scalar", "q": "[,]"}), [])
+
+    def test_a_single_process_harness_asks_for_no_metadata(self) -> None:
+        for harness in ("harness_fortran_cpu", None, ""):
+            with self.subTest(harness=harness):
+                self.assertEqual(self._run(_CHECKS_OK.replace("  public :: u\n",
+                                                               "  public :: u, s\n"),
+                                           harness=harness), [])
+
+    def test_a_physics_source_may_use_the_harness_for_its_distributed_operations_only(
+            self) -> None:
+        use = "  use harness_fortran_cpu_mpi_model, only: "
+        ok = (f"{use}harness_fortran_cpu_mpi__partition, harness_fortran_cpu_mpi__reduce_sum\n",
+              f"{use}part => harness_fortran_cpu_mpi__partition\n",
+              "  use :: harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__comm_rank\n",
+              f"{use}HARNESS_FORTRAN_CPU_MPI__EXCHANGE_HALO_R2\n")
+        refused = (
+            ("  use harness_fortran_cpu_mpi_model\n", "has no `only:` list"),
+            (f"{use}harness_fortran_cpu_mpi__write_snapshot\n", "__write_snapshot`"),
+            (f"{use}harness_fortran_cpu_mpi__gather_r1\n", "__gather_r1`"),
+            (f"{use}harness_fortran_cpu_mpi__init\n", "__init`"),
+            (f"{use}w => harness_fortran_cpu_mpi__write_perf\n", "__write_perf`"),
+            (f"{use}harness_fortran_cpu_mpi__h_named\n", "__h_named`"),
+            ("  use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n",
+             "module harness_fortran_cpu_model is not"))
+        for where in ("checks", "model"):
+            for line in ok:
+                with self.subTest(where=where, line=line):
+                    if where == "checks":
+                        v = self._run(self._CHECKS.replace("  private\n", line + "  private\n"))
+                    else:
+                        v = self._run(self._CHECKS, model=_MODEL_OK.replace(
+                            "! allow(C003)", line + "! allow(C003)"))
+                    self.assertEqual(v, [])
+                    # ...and none of it on a single-process harness.
+                    self.assertTrue(any("must not `use` the harness module" in x for x in (
+                        self._run(_CHECKS_OK.replace("  private\n", line + "  private\n"),
+                                  harness="harness_fortran_cpu"))))
+            for line, needle in refused:
+                with self.subTest(where=where, line=line):
+                    if where == "checks":
+                        v = self._run(self._CHECKS.replace("  private\n", line + "  private\n"))
+                    else:
+                        v = self._run(self._CHECKS, model=_MODEL_OK.replace(
+                            "! allow(C003)", line + "! allow(C003)"))
+                    self.assertEqual(len(v), 1, v)
+                    self.assertIn(needle, v[0])
+                    self.assertIn(f"bx_{where}.f90", v[0])
+                    self.assertIn("harness_fortran_cpu_mpi__partition", v[0])
+
+    def test_the_generation_gate_asks_it_for_the_pipeline_targets_harness(self) -> None:
+        """Through the caller: the harness is the TARGET's (issue #284), read off the pipeline's
+        profile — a pipeline for a distributed target asks with that harness."""
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+        for harness in (self._MPI, "harness_fortran_cpu"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                install_target_profile(root, profile_with(
+                    harness={"infrastructure_id": harness}))
+                pipe = root / pipe_ref("component__bx__0.1.0", "p1")
+                src = pipe / "source" / "src_1" / "src"
+                src.mkdir(parents=True)
+                (src / "bx_model.f90").write_text(_MODEL_OK)
+                (src / "bx_checks.f90").write_text(_CHECKS_OK)
+                execution = NodeExecution(node_key="component/bx@0.1.0", node_dir=pipe,
+                                          exec_dir=pipe, pipeline_dir=pipe)
+                with unittest.mock.patch.object(vps, "_execution_m3c_language",
+                                                return_value="fortran"), \
+                        unittest.mock.patch.object(
+                            vps, "_validate_checks_source_files",
+                            autospec=True) as spy:
+                    vps._validate_generate_outputs_for_generation(root, execution, "src_1", [])
+                self.assertEqual(spy.call_count, 1)
+                self.assertEqual(spy.call_args.kwargs["harness_spec_id"], harness)
+
+
 class ChecksSourceGateTests(unittest.TestCase):
     """R1/M3c-β `_validate_checks_source_files`: the leaf-authored fixed-ABI checks module."""
 
@@ -23098,6 +23215,130 @@ def _doc_prose(rel: str, text: str) -> str:
     if rel.endswith((".yaml", ".yml")):
         text = re.sub(r"(?m)^[ \t]*#[ \t]?", "", text)
     return re.sub(r"\s+", " ", text)
+
+
+class MpiPresenceFloorGateTests(unittest.TestCase):
+    """The MPI floor (issue #316, R4-c PR-4), reached through `_validate_parallel_presence_floor`
+    on a pipeline whose TARGET's parallel backend is `mpi`: a whole-node judgment over the model
+    and the checks module (`tools/backends/parallel/mpi/directives.py`). The OpenMP rows above
+    pin that the per-file directive floor is unchanged."""
+
+    _H = "harness_fortran_cpu_mpi"
+    _DIST = {"precision": {}, "state_residency": "distributed",
+             "parallelization": {"model": "mpi"}, "decomposition": {"axis": 1}}
+    _MODEL = ("module dep_base_model\n  use harness_fortran_cpu_mpi_model, only: "
+              "harness_fortran_cpu_mpi__exchange_halo_r1\ncontains\n"
+              "  subroutine dep_base__step(u)\n    real(8), intent(inout) :: u(:)\n"
+              "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, .true.)\n"
+              "  end subroutine\nend module\n")
+    _CHECKS = ("module dep_base_checks\ncontains\n  subroutine case_setup(c, ok)\n"
+               "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n"
+               "    sb_u_axis = 1\n  end subroutine\nend module\n")
+
+    def _run(self, model: str | None = None, checks: str | None = None, *,
+             plan: object = None, node_key: str = "component/dep_base@0.1.0") -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            repo_root = Path(t)
+            from tools.tests.target_fixtures import install_target_profile, profile_with
+            install_target_profile(repo_root, profile_with(parallel={"backend": "mpi"}))
+            pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
+                            / _TARGET_ID / "p1")
+            src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+            src_dir.mkdir(parents=True)
+            (src_dir.parent / "codegen_bundle.json").write_text(json.dumps(
+                {"target_lowering_plan": self._DIST if plan is None else plan}),
+                encoding="utf-8")
+            model_path = src_dir / "dep_base_model.f90"
+            model_path.write_text(self._MODEL if model is None else model, encoding="utf-8")
+            (src_dir / "dep_base_checks.f90").write_text(
+                self._CHECKS if checks is None else checks, encoding="utf-8")
+            execution = vps._stub_execution(pipeline_dir, node_key)
+            v: list[str] = []
+            vps._validate_parallel_presence_floor(repo_root, execution, src_dir, [model_path], v)
+            return v
+
+    def test_a_distributed_node_through_the_harness_passes(self) -> None:
+        self.assertEqual(self._run(), [])
+
+    def test_a_direct_use_of_the_library_is_refused_whatever_the_plan(self) -> None:
+        declined = {"precision": {}, "state_residency": "host",
+                    "parallelization": {"model": "none"}}
+        for where, text in (
+                ("model", self._MODEL.replace("contains", "  use mpi_f08\ncontains")),
+                ("model", self._MODEL.replace("contains", "  use :: mpi\ncontains")),
+                ("model", self._MODEL.replace("contains", "  include 'mpif.h'\ncontains")),
+                ("checks", self._CHECKS.replace("sb_u_axis = 1",
+                                                "sb_u_axis = 1\n    call mpi_barrier(c, e)")),
+                ("checks", self._CHECKS.replace("sb_u_axis = 1",
+                                                "sb_u_axis = 1\n    t = MPI_Wtime()"))):
+            for plan in (None, declined):
+                with self.subTest(where=where, text=text[-60:], plan=plan):
+                    v = self._run(**{where: text}, plan=plan)
+                    self.assertEqual(len(v), 1, v)
+                    self.assertIn("reaches the message-passing runtime only through the "
+                                  "target's harness", v[0])
+                    self.assertIn(f"dep_base_{where}.f90", v[0])
+
+    def test_names_that_only_look_like_the_library_pass(self) -> None:
+        for text in (self._CHECKS.replace("sb_u_axis = 1", "sb_u_axis = 1\n    use mpi_utils"),
+                     self._CHECKS.replace("sb_u_axis = 1", "sb_u_axis = 1\n    x = s%mpi_n(1)"),
+                     self._CHECKS.replace("sb_u_axis = 1",
+                                          "sb_u_axis = 1\n    ! call mpi_send(x)"),
+                     self._CHECKS.replace("sb_u_axis = 1",
+                                          "sb_u_axis = 1\n    m = 'call mpi_send('")):
+            with self.subTest(text=text[-40:]):
+                self.assertEqual(self._run(checks=text), [])
+
+    def test_a_non_distributed_residency_is_refused_unless_the_plan_declines(self) -> None:
+        v = self._run(plan={**self._DIST, "state_residency": "host"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("declares state_residency 'host'", v[0])
+        self.assertIn('"state_residency": "distributed"', v[0])
+        for model in ("none", "serial", "openmp"):
+            with self.subTest(model=model):
+                self.assertEqual(self._run(plan={"precision": {}, "state_residency": "host",
+                                                 "parallelization": {"model": model}}), [])
+
+    def test_no_partition_or_halo_exchange_by_its_harness_name_is_refused(self) -> None:
+        model = self._MODEL.replace(
+            "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, .true.)\n", "")
+        for checks in (self._CHECKS.replace(
+                "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n", ""),
+                self._CHECKS.replace("call harness_fortran_cpu_mpi__partition", "call part"),
+                self._CHECKS.replace("call harness_fortran_cpu_mpi__partition",
+                                     "! call harness_fortran_cpu_mpi__partition")):
+            with self.subTest(checks=checks[40:110]):
+                v = self._run(model=model, checks=checks)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("neither the model nor the checks source calls the harness's", v[0])
+        # Either one suffices, in either source.
+        self.assertEqual(self._run(model=model), [])
+        self.assertEqual(self._run(checks=self._CHECKS.replace(
+            "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n", "")), [])
+
+    def test_a_checks_module_that_sets_no_partition_axis_is_refused(self) -> None:
+        for assignment in ("sb_u_axis = 0", "sb_u_axis = 0_int32", "sb_u_axis = (0)",
+                           "if (sb_u_axis == 1) x = 1", "u_axis = 1", "x%sb_u_axis = 1"):
+            with self.subTest(assignment=assignment):
+                v = self._run(checks=self._CHECKS.replace("sb_u_axis = 1", assignment))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("never sets a bound array's partition axis", v[0])
+                self.assertIn("dep_base_checks.f90", v[0])
+        for assignment in ("sb_u_axis = 2", "sb_u_axis = k", "sb_v_axis = 0; sb_u_axis = 1",
+                           "sb_u_axis=1"):
+            with self.subTest(assignment=assignment):
+                self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1",
+                                                                       assignment)), [])
+        # A declaration's initializer is a setting too.
+        self.assertEqual(self._run(checks=self._CHECKS.replace(
+            "sb_u_axis = 1", "x = 0").replace("contains", "  integer :: sb_u_axis = 1\ncontains")),
+            [])
+
+    def test_the_floor_is_not_asked_of_an_infrastructure_node(self) -> None:
+        self.assertEqual(self._run(
+            model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
+            plan={"precision": {}, "state_residency": "host"},
+            node_key="infrastructure/harness_fortran_cpu_mpi@0.1.0"), [])
 
 
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):

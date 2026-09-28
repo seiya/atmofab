@@ -111,6 +111,23 @@ Publication is checked under the same scan as the ABI names: under a bare `priva
 published unless a `private ::` names it. A rejected case (`case_setup` returning
 `ok = .false.`) still leaves every bound array allocated to its declared shape.
 
+### 1-c. The distributed binding in Fortran
+
+On a target whose harness provides `distributed_state@1` (issue #316) every rank holds its own
+copy of the module's storage, and the runner gathers each partitioned array onto rank 0 before
+it serializes it. Beside every bound ARRAY `<name>` the module publishes (`public ::`, imported
+under the same names) four default-integer variables, which `case_setup` sets on every rank for
+every case, a rejected one included: `sb_<name>_axis`, the axis `<name>` is partitioned along
+(`0` = replicated: every rank holds the whole array, and rank 0's copy is written);
+`sb_<name>_lo` / `sb_<name>_hi`, the positions along it, from `1`, of the cells this rank owns,
+ghost cells excluded (`hi < lo` when it owns none, the array still allocated); and
+`sb_<name>_glo`, the global index of position `lo`. A scalar is replicated. The harness's gather
+stops the run unless the ranks' owned ranges tile the global extent. `case_run` reports the
+cells THIS rank updated; `checks_compute` / `metric_compute` run on every rank and rank 0's
+result is written, so a whole-field value is a harness reduction. A physics source `use`s the
+harness only with an `only:` list of its distributed-state operations
+(`docs/backends/parallel/mpi/GENERATE_RULES.md`).
+
 ## 2. The semantics, spelled in Fortran
 
 The neutral §2 is procedure semantics; what it leaves to the language is the spelling of its

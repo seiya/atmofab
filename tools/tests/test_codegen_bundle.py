@@ -3186,6 +3186,37 @@ class PureStateBindingLayerTests(unittest.TestCase):
         self.assertIn("checks_getter", cb._m3c_state_binding_mismatch(
             [self._binding("q", capture="checks_getter")], ["q"], "bx", language="fortran"))
 
+    def test_a_distributed_harness_requires_the_bound_arrays_metadata_published(self) -> None:
+        """Issue #316 (R4-c PR-4): over a harness that runs the program as several ranks, the
+        runner also imports each bound ARRAY's partition metadata, so the acceptance layer holds
+        the checks module to publishing it — resolved from the harness the caller names, and
+        asked only for an array (the IR's `shape_expr`)."""
+        vars_ = [{"name": "q", "shape_expr": "[8]"}, {"name": "s", "shape_expr": "scalar"}]
+        meta = ("sb_q_axis", "sb_q_lo", "sb_q_hi", "sb_q_glo")
+        with_s = self._CHECKS.replace("  public :: q\n", "  public :: q, s\n")
+        published = with_s.replace("  public :: q, s\n",
+                                   "  public :: q, s\n  public :: " + ", ".join(meta) + "\n")
+        bindings = [self._binding("q"), self._binding("s")]
+
+        def run(checks: str, harness: str) -> object:
+            return cb.pure_bundle_contract_violation(
+                self._bundle(bindings, checks=checks), node_key=self._NK, spec_id="bx",
+                shape="m3c", language="fortran", runner_basename="bx_runner.f90",
+                ir_snapshot_variables=vars_,
+                harness_provided={"sync_single_case@1", "state_registration@1"},
+                harness_label=harness, build_graph=lambda d: None,
+                ir_published_operations=None)
+
+        mpi = "infrastructure/harness_fortran_cpu_mpi@0.1.0"
+        self.assertIsNone(run(published, mpi))
+        r = run(with_s, mpi)
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("naming them): " + ", ".join(meta) + ".", r[1])
+        # The single-process harness, an unnamed one and an unparseable label ask none of it.
+        for harness in ("infrastructure/harness_fortran_cpu@0.7.0", None, "harness_fortran_cpu_mpi"):
+            with self.subTest(harness=harness):
+                self.assertIsNone(run(with_s, harness))
+
     def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
         # The ABI layer: a binding whose storage the module does not `public ::` is a `use`
         # the runner cannot resolve. Same parser and same "published" as the ABI procedures.

@@ -707,7 +707,16 @@ PINNED: dict[str, str] = {
     # `pure-50@3c117410`'s ground: a later version whose tuple returns to these bytes collides here
     # (`test_no_empty_version_bump`). Without it, reverting R4-c PR-2's move under a new version
     # passed (measured in that PR's review, round 3).
-    "pure-52@b37ce9a6": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",}
+    "pure-52@b37ce9a6": "ad84c159f4559465873d335593e9145237b88e7c0e6db78dc03d1010ba3f14c7",
+    # pure-53 (issue #316, R4-c PR-4): the `mpi` parallel backend declares `prompt_fragments`,
+    # so a `fortran` + `mpi` producer is told the MPI floor (the harness is the only way to the
+    # runtime, the partition variables, the halo exchange, the reductions) and its reviewer the
+    # floor's scope — where both were composed to nothing until now; and the neutral producer
+    # template no longer tells every producer that the harness manifest backs no residency but
+    # `host` (false for the `fortran_cpu_mpi` manifest). The Fortran runner a distributed
+    # harness renders (its ABI comment is part of what the producer reads) is new with it.
+    "pure-53": "a575d3288511ee5e51dfffbfaec7d62474ccc75cf7370deb26d4abc9f6f48534",
+}
 
 
 def _contract_tuple() -> dict[str, object]:

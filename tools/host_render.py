@@ -234,3 +234,21 @@ def checks_public_names(language: Any) -> tuple[str, ...]:
     See `docs/workflow/CHECKS_MODULE_CONTRACT.md`.
     """
     return tuple(_module(language).CHECKS_PUBLIC_NAMES)
+
+
+def physics_harness_uses(language: Any, harness_spec_id: str) -> dict[str, frozenset[str]]:
+    """`{module: names}` a physics source of `language` may `use` from the harness
+    `harness_spec_id` — empty unless that harness runs the program as several ranks, whose
+    distributed-state operations a physics source reaches the runtime through (issue #316). The
+    backend that renders the runner over the harness is the one that knows which of its
+    operations are the runner's own."""
+    return dict(_module(language).physics_harness_uses(harness_spec_id))
+
+
+def distributed_state_names(language: Any, harness_spec_id: str,
+                            arrays: list[str]) -> list[str]:
+    """The partition metadata the checks module of `language` publishes for its bound ARRAYS
+    `arrays` when the runner over `harness_spec_id` gathers them (issue #316); empty for a
+    harness that runs the program as one process. The runner imports every one of them, so the
+    checks-source gate requires them published as it requires the bound state."""
+    return list(_module(language).distributed_state_names(harness_spec_id, arrays))

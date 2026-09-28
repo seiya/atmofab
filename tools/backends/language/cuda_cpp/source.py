@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from tools.backends.language.cuda_cpp import checks_abi
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
@@ -624,14 +624,19 @@ def _model_declaration_violations(checks_path: Path, text: str,
 
 
 def checks_harness_isolation_violations(
-    checks_path: Path, text: str, model_files: list[Path]
+    checks_path: Path, text: str, model_files: list[Path],
+    *, allowed_harness_uses: Any = None,
 ) -> list[str]:
     """The isolation half of the checks-source gate: neither physics source includes a harness
     header or names the harness (`harness_<x>_model`, `harness_<x>__<op>`) — the host-rendered
     runner is the only caller of the harness — and no leaf-authored source of the node (every
     `.cu` under the checks source's directory but the host-rendered runner) does file I/O, runs a
     command, or registers code to run after `main` (`_LEAF_IO_RE`). `text` is the checks
-    source's raw content; every other source is read here."""
+    source's raw content; every other source is read here. `allowed_harness_uses` is accepted
+    for the neutral caller's sake and must be empty: no harness of this language publishes an
+    operation for a physics source (the Fortran reader's docstring says what it admits)."""
+    if allowed_harness_uses:
+        raise ValueError("no harness of this language admits a physics-source use")
     violations: list[str] = []
     for path in [checks_path, *model_files]:
         source = text if path == checks_path else path.read_text(encoding="utf-8",

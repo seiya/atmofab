@@ -492,7 +492,18 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "679d5cab4299f216581eaa1598a113dea558122c9f2783ecbc769c9cc33fefac",
+    "render-6": "9c7798174e251d0cbb993f85e7b15ab3a7d40656d94e0b401cb49cb7cadc2775",
+    # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
+    # Fortran renderer gained the variant a harness that runs the program as several ranks
+    # renders (the only such harness is new, so no certified runner is one), its perf line reads
+    # `host_execution.perf_parallelism` (`1, <threads>, 0` for a cpu target, as the literal
+    # was), and both renderers answer the two new seam questions (`physics_harness_uses`,
+    # `distributed_state_names`) that no render calls. Measured against origin/main 916561f4:
+    # every Fortran and CUDA C++ runner render over the 159 `workspace/ir/*/*/spec.ir.yaml` for
+    # both checked-in single-process targets — 318 digests, identical.
+    # ...and the digest `render-6` SHIPPED with (origin/main 916561f4), kept so a later version
+    # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "render-6@916561f4": "679d5cab4299f216581eaa1598a113dea558122c9f2783ecbc769c9cc33fefac",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -631,11 +642,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "fedfe66b22fa9804fb518c733129e3fc9ffb467a4a28481af6f37c318c05eb62",
+    "execute-8": "690e8ac0e1e086c77fc93456a1282c164c6005b5f3e70c8a92003293cd3dfbe1",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
     "execute-8@b37ce9a6": "f144238e30606cab3371c69c987cfd6463472b0c4330ae6ec85878bebbc4a417",
+    # Re-pinned by R4-c PR-4 (issue #316): one member moved, the `parallel/mpi` package's
+    # `__init__.py` (hashed as its `execution_env` and `launcher` package), which now also
+    # re-exports `directives` and `prompts`. The launch reads nothing from either. (Measured by
+    # diffing `execute_tuple()` against origin/main 916561f4's: those two rows and no other.)
+    # The digest `execute-8` shipped with at 916561f4 is kept below.
+    "execute-8@916561f4": "fedfe66b22fa9804fb518c733129e3fc9ffb467a4a28481af6f37c318c05eb62",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

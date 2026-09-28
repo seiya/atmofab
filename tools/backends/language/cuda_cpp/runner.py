@@ -1126,3 +1126,17 @@ def state_binding_storage_reason(variable: str) -> str:
     """Why a binding's `storage_symbol` must equal its variable: the runner's reference to it."""
     return (f"the runner reads the namespace-scope variable of THAT name "
             f"(`<spec_id>_checks::{variable}`)")
+
+
+def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
+    """None: the one harness this renderer targets runs the program as one process and
+    publishes no operation for a physics source (`host_render.physics_harness_uses`)."""
+    del harness_spec_id
+    return {}
+
+
+def distributed_state_names(harness_spec_id: str, arrays: list[str]) -> list[str]:
+    """None: no harness of this renderer gathers state across ranks
+    (`host_render.distributed_state_names`)."""
+    del harness_spec_id, arrays
+    return []
