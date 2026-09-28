@@ -219,8 +219,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "inlined after the runner-output contract (`runner_output_document()`). Without it "
         "a LANGUAGE's templates cannot be composed for a node of this value, and its launch is "
         "refused rather than sent another language's rules; a PARALLEL value that does not "
-        "declare it composes its markers to nothing — its rules, where it has any, are stated "
-        "elsewhere (the `cuda` floor is in the `cuda_cpp` language fragment).",
+        "declare it composes its markers to nothing. A parallel model's rules belong in its "
+        "own fragments; the `cuda` floor alone was left in the `cuda_cpp` language fragment "
+        "(issue #316).",
     ),
     "source_reading": (
         ("language",),
