@@ -42,8 +42,14 @@ whether its source spells a counted loop, and a whole-array source is held to it
 The floor is a PRESENCE floor. A kernel that computes the whole global range on every rank and
 reports a partition — a `__partition` call, a non-zero axis, owned ranges that tile — passes
 every check above, and its run gives the right answer, which the one-process quality check
-confirms. It is certified as distributed without distributing. No deterministic quantity tells
-it apart (`perf.json#cells_updated` is the kernel's own report), so it is `Generate.verify`
+confirms. It is certified as distributed without distributing. No deterministic check tells it
+apart: `perf.json#cells_updated` does come out larger (each rank reports the whole range; a
+round-2 measurement read 128 against 32 for the distributed flux component at four ranks), but it
+is the kernel's own report and nothing compares it. Its sibling reports a partition only in a
+branch no case reaches — every case computed replicated, "too small to distribute", with
+`sb_<var>_axis` set non-zero in the unreached branch, which the floor counts. The producer IS told
+to replicate a case whose grid cannot give every rank the `ng` cells the halo exchange needs, so
+the reviewer is told the same threshold and holds the kernel to it. Both are `Generate.verify`
 G6's judgment, told in the `mpi` reviewer fragment: whether each rank computes only the cells
 it owns, whether the partition metadata describes them, whether the halo exchange precedes every
 stencil read with the spec's periodicity, and whether every global quantity a check or a metric
