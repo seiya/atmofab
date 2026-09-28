@@ -19700,6 +19700,32 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 agg["dependency_set"],
                 [f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}"])
 
+    def test_author_derived_records_the_cross_target_comparison(self) -> None:
+        """R4-d (issue #324), at the HANDLER: a verdict carrying a cross-target record gives
+        `aggregate_verdict.json` a `cross_target` entry (`own_verdict` + the comparand runs);
+        a verdict with none leaves the aggregate as it was before R4-d."""
+        import tempfile
+        from unittest import mock
+        comp = {"target_id": "cpp_gpu", "pipeline_ref": "p", "run_id": "run_20260928_001",
+                "evidence": "sha256:" + "a" * 64}
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            rn = repo / refs.run_node_dir()
+            for primary, expected in (
+                    ([{"kind": "pass", "comparands": [comp]}],
+                     {"own_verdict": "pass", "comparands": [comp]}),
+                    ([{"kind": "pass", "comparands": []}], None)):
+                self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass",
+                                                 "basis": {"primary": primary}}])
+                doc = json.loads((rn / "verdict.json").read_text())
+                (rn / "verdict.json").write_text(json.dumps({**doc, "own_verdict": "pass"}))
+                with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                                autospec=True, return_value=[]):
+                    c._author_derived_validate_artifacts(refs)
+                agg = json.loads((rn / "aggregate_verdict.json").read_text())
+                self.assertEqual(agg.get("cross_target"), expected)
+
     def test_author_derived_all_xfail_self_verdict(self) -> None:
         import tempfile
         from unittest import mock
