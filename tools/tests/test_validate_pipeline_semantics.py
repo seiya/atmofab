@@ -12030,6 +12030,102 @@ end program shallow_water2d_runner
                 else:
                     self.assertEqual(v, [])
 
+    _CROSS = {"test_id": "t1", "quantity": "cross_target_state_agreement",
+              "target_cases": ["c1"],
+              "expr": "maxabs(final.h - comparand.final.h) / "
+                      "max(maxabs(final.h), maxabs(comparand.final.h), 1.0)",
+              "op": "le", "value": 1.0e-12, "per_case": True}
+
+    def _compile_with_tests_md_body(self, repo_root: Path, body: str, cross: list[dict]):
+        io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
+        io["primary_predicates"] = [self._primary_predicate(), *cross]
+        tests_md = repo_root / MOCK_TESTS_REF
+        tests_md.parent.mkdir(parents=True, exist_ok=True)
+        tests_md.write_text(body, encoding="utf-8")
+        return self._compile_with_io_contract(repo_root, io, plant_tests_md=False)
+
+    def test_compile_gate_pins_the_cross_target_transcription_set(self) -> None:
+        """Issue #324 (R4-d PR-2): a cross-target predicate covers no condition, so the
+        coverage gate cannot see one omitted. `_validate_test_predicates` pins the set: a test
+        whose tests.md definition applies the cross-target judgment carries a cross-target
+        predicate, and no other test does — both directions, through the real stage."""
+        applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n"
+                   "  - The cross-target judgment is applied. The evaluation expression is "
+                   "`cross_target_state_agreement` over `h`, and the threshold is 1e-12.\n")
+        not_applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n"
+                       "  - The cross-target judgment is not applied. The non-application "
+                       "basis is \"none\".\n")
+        rows = [
+            (applied, [], ("tests.md applies the cross-target judgment to test 't1'",)),
+            (applied, [self._CROSS], ()),
+            (not_applied, [self._CROSS], ("test_id 't1', whose tests.md definition does not",)),
+            (not_applied, [], ()),
+            # wrapped across two lines, bullet form
+            ("- `test_id`: `t1`\n  - `judgment`: equal. The cross-target\n  judgment is "
+             "applied: over `h` is `<= 1e-12`.\n", [],
+             ("tests.md applies the cross-target judgment to test 't1'",)),
+            # a `## ` section after the last test ends its definition: the sentence there is
+            # about the suite, not t1
+            ("### 1-1. `t1`\n- ok\n\n## 7. Pass/fail aggregation rules\n"
+             "- The cross-target judgment is applied to every pass test.\n", [], ()),
+            # the sentence under ANOTHER test does not ask t1 for one
+            ("### 1-1. `t1`\n- ok\n### 1-2. `t2`\n- The cross-target judgment is applied.\n",
+             [self._CROSS], ("test_id 't1', whose tests.md definition does not",
+                             "tests.md applies the cross-target judgment to test 't2'")),
+        ]
+        for body, cross, expect in rows:
+            with self.subTest(body=body[:60], cross=bool(cross)), \
+                    tempfile.TemporaryDirectory() as tmp:
+                got = self._compile_with_tests_md_body(Path(tmp), body, cross)
+                hits = sorted(v for v in got if "cross-target" in v)
+                self.assertEqual(len(hits), len(expect), got)
+                for want in expect:
+                    self.assertTrue(any(want in h for h in hits), (want, hits))
+
+    def test_the_documents_state_the_phrase_the_gate_keys_on(self) -> None:
+        """The words the gate keys on are the constant, in the leaf-read contract (so a
+        producer knows what it must transcribe) and in the tests.md format a spec author
+        follows."""
+        repo = Path(__file__).resolve().parents[2]
+        phrase = vps.CROSS_TARGET_JUDGMENT_PHRASE
+        for rel in ("docs/workflow/phases/phase_01_compile.md", "docs/TESTS.md"):
+            text = " ".join((repo / rel).read_text(encoding="utf-8").split())
+            with self.subTest(doc=rel):
+                self.assertIn(f'"{phrase}', text.replace("# ", ""))
+        self.assertIn("CROSS_TARGET_JUDGMENT_PHRASE",
+                      (repo / "docs/TESTS.md").read_text(encoding="utf-8"))
+
+    def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
+        """Every pass test of the 15 physics tests.md applies the judgment and no xfail test
+        does (the reader against the real prose, both forms); a harness applies none."""
+        import glob
+        repo = Path(__file__).resolve().parents[2]
+        files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
+        judged_total = 0
+        for f in files:
+            path = Path(f)
+            ids = vps._parse_test_ids_from_tests_md(path)
+            judged = vps._parse_cross_target_judged_test_ids(path)
+            text = path.read_text(encoding="utf-8")
+            if "/infrastructure/" in f:
+                self.assertEqual(judged, set(), f)
+                continue
+            passes, current = set(), None
+            for raw in text.splitlines():
+                m = (vps.TEST_ID_HEADING_PATTERN.match(raw.strip())
+                     or vps.TEST_ID_BULLET_PATTERN.match(raw.strip()))
+                if m:
+                    current = m.group(1)
+                elif raw.startswith("## "):
+                    current = None
+                elif current and "`expected_outcome`: `pass`" in raw:
+                    passes.add(current)
+            self.assertEqual(set(ids) >= passes and len(passes) > 0, True, f)
+            self.assertEqual(judged, passes, f)
+            judged_total += len(judged)
+        self.assertEqual(len(files), 18)
+        self.assertGreater(judged_total, 40)
+
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))

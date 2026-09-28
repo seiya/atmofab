@@ -411,7 +411,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # cross-target transcription (a primary predicate only, no condition, outside COVERAGE), its
     # worked translation and V3 (v) — a compile leaf reading it authors cross-target predicates
     # from a tests.md cross-target judgment, so the key moves.
-    "compile-docs-7": "a987acf9f35bd2e44fbdce96d3e93fa2850c47141b7243179872ec5e5fa63e2b",
+    # Re-pinned in round 1 (the version is new on this branch): the header and V3 (v) state the
+    # compile gate's transcription-set check.
+    "compile-docs-7": "06e5c86945ccc28e85377b587955435af6c938537810af9006692879588614ca",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
