@@ -18,6 +18,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 from tools import structured_signatures
 from tools.backends.language.fortran import signatures as fortran_signatures
 from tools.backends.language.fortran.lines import normalize_fortran_line
@@ -84,6 +86,33 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         self.assertEqual(
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
         )
+
+    def test_round_trip_mpi_harness_controlled_spec_section51(self) -> None:
+        """Issue #316 (R4-c PR-3): the process-parallel harness's §5.1 is the only real surface
+        with an `allocatable, intent(out)` REAL array argument (`__gather_r1..r4`'s `g`) and with
+        procedures that take no argument. It round-trips, renders that argument allocatable, and
+        begins with the single-process harness's block under its own names."""
+        md = (REPO_ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi"
+              / "controlled_spec.md").read_text(encoding="utf-8")
+        m = _FENCED_BLOCK_RE.search(md.split("### 5.1", 1)[1])
+        self.assertIsNotNone(m)
+        published, err = load_structured_signatures(m.group(1))
+        self.assertIsNone(err, err)
+        rendered = render_signatures_to_fortran(published)
+        struct = self._assert_round_trip(rendered)
+        self.assertEqual(len(struct["procedures"]), 28)
+        self.assertEqual(len(struct["types"]), 5)
+        for rank in (1, 2, 3, 4):
+            dims = ",".join([":"] * rank)
+            self.assertIn(f"real(dp), allocatable, intent(out) :: g({dims})", rendered)
+        self.assertIn("subroutine harness_fortran_cpu_mpi__init()", rendered)
+        self.assertIn("function harness_fortran_cpu_mpi__comm_size() result(n)", rendered)
+        single = _real_section51_struct()
+        renamed = yaml.safe_load(yaml.safe_dump(single).replace(
+            "harness_fortran_cpu__", "harness_fortran_cpu_mpi__"))
+        self.assertEqual(published["types"], renamed["types"])
+        self.assertEqual(published["module_parameters"], renamed["module_parameters"])
+        self.assertEqual(published["procedures"][:13], renamed["procedures"])
 
     def test_round_trip_backend_runner_hardcoded_copy(self) -> None:
         # The third copy of the signatures (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and
