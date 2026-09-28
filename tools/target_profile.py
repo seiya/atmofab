@@ -605,13 +605,13 @@ def _process_model_violations(profile: TargetProfile, harness_nk: str) -> list[s
     distributed = any(capability_name(t) == "distributed_state"
                       for t in (harness_provided_capabilities(harness_nk) or ()))
     if launches and not distributed:
-        return [f"parallel.backend: {profile.parallel_backend} starts the program as several "
-                f"processes under its launcher, and harness {harness_nk} provides no "
-                f"distributed_state capability to drive them; name a harness that does"]
+        return [(f"parallel.backend: {profile.parallel_backend} starts the program as several "
+                 f"processes under its launcher, and harness {harness_nk} provides no "
+                 f"distributed_state capability to drive them; name a harness that does")]
     if distributed and not launches:
-        return [f"harness: {harness_nk} drives the program as several processes "
-                f"(distributed_state), and parallel backend {profile.parallel_backend} declares "
-                f"no launcher to start them; use a parallel backend that does"]
+        return [(f"harness: {harness_nk} drives the program as several processes "
+                 f"(distributed_state), and parallel backend {profile.parallel_backend} declares "
+                 f"no launcher to start them; use a parallel backend that does")]
     return []
 
 

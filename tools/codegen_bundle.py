@@ -2085,7 +2085,7 @@ def _distributed_state_names(language: str, harness_node_key: str | None,
         try:
             if runner_ir.rank_of_shape(shape, name) >= 1:
                 arrays.append(name)
-        except Exception:  # noqa: BLE001 - the renderer's own refusal
+        except Exception:  # noqa: BLE001, S112 - the renderer's own refusal
             continue
     try:
         return distributed_state_names(language, harness_sid, arrays)

@@ -11,7 +11,13 @@ from __future__ import annotations
 import unittest
 
 from tools.backends import registry
-from tools.backends.parallel.mpi import directives, execution, launcher, prompts, wrapper
+from tools.backends.parallel.mpi import (
+    directives,
+    execution,
+    launcher,
+    prompts,
+    wrapper,
+)
 
 
 class RecordTests(unittest.TestCase):
@@ -232,6 +238,7 @@ class HarnessUseStatementTests(unittest.TestCase):
 
     def test_the_reviewer_is_told_the_exception_in_both_prohibitions(self) -> None:
         from pathlib import Path
+
         from tools.workflow_conductor import _checks_contract_abi_sections
         root = Path(__file__).resolve().parents[2]
         for rel, needle in (
