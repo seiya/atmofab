@@ -62,7 +62,7 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 18,
+      "fortran": 23,
       "fortran-module-file": 2,
       "fortran-suffix": 1,
       "linter-cppcheck": 3,
