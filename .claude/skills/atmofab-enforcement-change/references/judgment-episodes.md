@@ -488,3 +488,37 @@ under a value the old code could not have produced.
 **The rule** (SKILL.md §4): a signature change makes every wholesale mock of the function a
 blindfold; autospec them, assert the new argument under a non-default value, and bind every
 real caller to the new signature.
+
+## Rule 1-b: two relocations that read as a move and a re-pin (issue #316 PR-2 / PR #319, 2026-09-28)
+
+The change moved the OpenMP presence-floor paragraph, verbatim, out of
+`tools/prompt_templates/backends/language/fortran/{generate_generate,generate_verify}.txt` into
+`tools/prompt_templates/backends/parallel/openmp/`, composed by a new `{{parallel:<name>}}`
+marker. The composed prompts of both checked-in targets were byte-identical to `origin/main`, so
+the suite, the hunk sweep (19 of 19 killed) and a rendered-prompt comparison were all clean.
+
+**The move.** `tools/tests/test_linter_fortitude.py`'s
+`test_no_leaf_read_site_carries_a_copyable_allow_directive` read the Fortran fragment whole
+because that file was one of its hand-listed `_SITES`; the new file was in no list. Round 1's
+regression axis planted `` `! allow(C003)` `` after the paragraph at both revisions: red on
+`origin/main` (in the Fortran file), green at the branch (in the OpenMP file). The same row's
+docstring promised a scan of `_LEAF_READ_FILES`, which nothing read — so the scan had been
+narrower than stated since before the branch. The first fix derived the files from
+`tools/prompt_templates/backends/`; round 2's blank-slate reviewer then narrowed that derivation
+three ways (root to `backends/parallel`, dropping the `_LEAF_READ_FILES` half, keeping parallel
+fragments only) and all three survived, because the only guard asked for "some parallel
+fragment". What closed it: every `*.txt` under `tools/prompt_templates/`, and a coverage row
+enumerating the same set by `os.walk` (a different enumerator from the derivation's `rglob`).
+
+**The re-pin.** `pure-52` and `execute-8` were re-pinned in place — correctly, on the pure-50
+precedent, since what a leaf reads and what Validate produces did not change. But each
+overwrote the digest `origin/main` had shipped, and the "no empty bump" check works by finding
+two versions with one digest. Round 3's disclosure reviewer reverted the whole move under a new
+`pure-53` pinned to the shipped digest: 2 passed on the branch, red on `origin/main`
+(`{'ad84c159…': ['pure-52','pure-53']}`). The precedent had already paid for this once
+(`pure-50@3c117410`, whose comment records the same loss measured) and the re-pin did not
+follow it, because nothing prompts the author to read a history entry when re-pinning.
+
+Both were found only by running the defect at both revisions; every instrument that compares
+HEAD against itself was green on them.
+

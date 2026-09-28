@@ -98,6 +98,22 @@ a fail-open that way, on the strength of **one** compiler probe).
   nothing looks removed. Nothing in a review loop finds this except comparing the two revisions,
   which is why it is `atmofab-review-loop`'s disclosure axis that caught it and not the sweep, the
   census, or a blank-slate reviewer, all of which compare HEAD against itself
+- **Two more forms of the same loss, both from issue #316 PR-2 (PR #319), and neither looks like
+  a move of a FACT.** (a) **Text moved to a new FILE leaves every check that names files by
+  path.** The OpenMP floor paragraph moved verbatim from a Fortran prompt fragment into a new
+  `parallel/openmp/` one, and the whole-file allow-directive scan read a hand-listed tuple of
+  paths: a copyable directive planted in the paragraph was red on `origin/main` and green on the
+  branch. **Rule: before moving text between files, list the checks that read the SOURCE file
+  (`os.walk` for its path across `tools/tests/`), and derive their file set from a directory
+  rather than adding the new path** — the derivation then needs its own coverage row, or a
+  narrowed derivation is silent (round 2 found three narrowing mutants surviving the first fix).
+  (b) **Re-pinning a SHIPPED version in place deletes the revert check.** A drift pin's old
+  digest is what the "no empty bump" check collides a revert against; overwriting it made
+  "revert the change under a new version" pass. **Rule: when a digest that has shipped (it is on
+  `origin/main`) is re-pinned in place, keep the shipped one as a `<version>@<main sha>` entry**,
+  as `pure-50@3c117410` does. The tell for both: the fix commit's diff changes a value or adds a
+  file, and every check stays green — only running the defect at both revisions shows it.
+  Episode: `references/judgment-episodes.md` §Rule 1-b (issue #316 PR-2)
 
 **1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
 decide "does it happen" by execution; it says **nothing about how far it happens**. The procedure
