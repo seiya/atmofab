@@ -48,6 +48,102 @@ HARNESS_SPEC = (
 CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
 
 
+#: The fifteen distributed-state operations of `harness_fortran_cpu_mpi@0.1.0` §3.3, as the Fortran
+#: backend renders its §5.1 block. Written out so that a change to any of them — a name, an
+#: argument's order, type, rank or intent, a result — is a visible edit here (issue #316, R4-c
+#: PR-3 round 2: eight such mutants of §5.1 survived the suite when only a count was pinned). The
+#: host-rendered runner of PR-4 carries its own copy for `assert_harness_pin`.
+_MPI_HARNESS_DISTRIBUTED_OPERATIONS = """\
+subroutine harness_fortran_cpu_mpi__init()
+end subroutine harness_fortran_cpu_mpi__init
+
+subroutine harness_fortran_cpu_mpi__finalize()
+end subroutine harness_fortran_cpu_mpi__finalize
+
+function harness_fortran_cpu_mpi__comm_rank() result(r)
+  integer :: r
+end function harness_fortran_cpu_mpi__comm_rank
+
+function harness_fortran_cpu_mpi__comm_size() result(n)
+  integer :: n
+end function harness_fortran_cpu_mpi__comm_size
+
+subroutine harness_fortran_cpu_mpi__partition(n_global, glo, ghi)
+  integer, intent(in) :: n_global
+  integer, intent(out) :: glo
+  integer, intent(out) :: ghi
+end subroutine harness_fortran_cpu_mpi__partition
+
+subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, ng, periodic)
+  real(dp), intent(inout) :: a(:)
+  integer, intent(in) :: ng
+  logical, intent(in) :: periodic
+end subroutine harness_fortran_cpu_mpi__exchange_halo_r1
+
+subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, ng, periodic)
+  real(dp), intent(inout) :: a(:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: ng
+  logical, intent(in) :: periodic
+end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
+
+subroutine harness_fortran_cpu_mpi__gather_r1(a, lo, hi, glo, g)
+  real(dp), intent(in) :: a(:)
+  integer, intent(in) :: lo
+  integer, intent(in) :: hi
+  integer, intent(in) :: glo
+  real(dp), allocatable, intent(out) :: g(:)
+end subroutine harness_fortran_cpu_mpi__gather_r1
+
+subroutine harness_fortran_cpu_mpi__gather_r2(a, axis, lo, hi, glo, g)
+  real(dp), intent(in) :: a(:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: lo
+  integer, intent(in) :: hi
+  integer, intent(in) :: glo
+  real(dp), allocatable, intent(out) :: g(:,:)
+end subroutine harness_fortran_cpu_mpi__gather_r2
+
+subroutine harness_fortran_cpu_mpi__gather_r3(a, axis, lo, hi, glo, g)
+  real(dp), intent(in) :: a(:,:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: lo
+  integer, intent(in) :: hi
+  integer, intent(in) :: glo
+  real(dp), allocatable, intent(out) :: g(:,:,:)
+end subroutine harness_fortran_cpu_mpi__gather_r3
+
+subroutine harness_fortran_cpu_mpi__gather_r4(a, axis, lo, hi, glo, g)
+  real(dp), intent(in) :: a(:,:,:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: lo
+  integer, intent(in) :: hi
+  integer, intent(in) :: glo
+  real(dp), allocatable, intent(out) :: g(:,:,:,:)
+end subroutine harness_fortran_cpu_mpi__gather_r4
+
+function harness_fortran_cpu_mpi__reduce_sum(x) result(s)
+  real(dp), intent(in) :: x
+  real(dp) :: s
+end function harness_fortran_cpu_mpi__reduce_sum
+
+function harness_fortran_cpu_mpi__reduce_max(x) result(s)
+  real(dp), intent(in) :: x
+  real(dp) :: s
+end function harness_fortran_cpu_mpi__reduce_max
+
+function harness_fortran_cpu_mpi__reduce_min(x) result(s)
+  real(dp), intent(in) :: x
+  real(dp) :: s
+end function harness_fortran_cpu_mpi__reduce_min
+
+function harness_fortran_cpu_mpi__reduce_sum_int(i) result(s)
+  integer, intent(in) :: i
+  integer :: s
+end function harness_fortran_cpu_mpi__reduce_sum_int
+"""
+
+
 def _real_section51_struct() -> dict:
     md = HARNESS_SPEC.read_text(encoding="utf-8")
     section = md.split("### 5.1", 1)[1]
@@ -105,8 +201,9 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         for rank in (1, 2, 3, 4):
             dims = ",".join([":"] * rank)
             self.assertIn(f"real(dp), allocatable, intent(out) :: g({dims})", rendered)
-        self.assertIn("subroutine harness_fortran_cpu_mpi__init()", rendered)
-        self.assertIn("function harness_fortran_cpu_mpi__comm_size() result(n)", rendered)
+        self.assertEqual(
+            render_signatures_to_fortran({"procedures": published["procedures"][13:]}),
+            _MPI_HARNESS_DISTRIBUTED_OPERATIONS)
         single = _real_section51_struct()
         renamed = yaml.safe_load(yaml.safe_dump(single).replace(
             "harness_fortran_cpu__", "harness_fortran_cpu_mpi__"))
