@@ -7,8 +7,10 @@ the compile gate call. Nothing outside this package imports it by name.
 It takes a compiled IR plus the target/harness
 spec ids and returns the text of ``<spec_id>_runner.f90`` — the deterministic
 "glue" main program that drives the physics node's ``<spec_id>_checks`` callbacks
-and emits the standard runner outputs *through the certified
-``harness_fortran_cpu`` plumbing*. Because the harness's v3 interface owns the
+and emits the standard runner outputs *through the certified harness's
+plumbing* (``harness_fortran_cpu``, or ``harness_fortran_cpu_mpi``, over which the
+runner is the distributed variant — issue #316: it starts and ends the runtime, gathers
+the partitioned state onto rank 0 and writes on rank 0 only). Because the harness's v3 interface owns the
 JSON envelope assembly and the verdict fold (§3 / §5.1 of the harness
 controlled_spec), this renderer holds **no serialization knowledge**: it builds
 the harness record types and calls the writers — it never formats a JSON token,
@@ -21,7 +23,7 @@ Split of authorship on an M3c node:
 - ``<spec_id>_runner.f90`` — this renderer                        (host)
 - ``src/Makefile``          — ``workflow_conductor._write_makefile`` (host)
 
-The rendered runner ``use``s two modules: ``harness_fortran_cpu_model`` (the
+The rendered runner ``use``s two modules: ``<harness_spec_id>_model`` (the
 certified plumbing) and ``<spec_id>_checks`` (the leaf's fixed-ABI callbacks AND
 its bound state storage, see ``docs/workflow/CHECKS_MODULE_CONTRACT.md``). Snapshot
 capture is the runner's, not the module's (Z6, issue #255): every snapshot variable
@@ -170,7 +172,7 @@ PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
 )
 
 #: The per-variable module variables a checks module publishes beside each bound ARRAY on a
-#: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §Distributed binding): the
+#: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c): the
 #: axis the array is partitioned along (0 = replicated, rank 0's copy is the global value), the
 #: indices, in the array's own bounds, of the cells this rank contributes to the global array
 #: along it, and the global index of the first of them. Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
@@ -417,9 +419,11 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
                   *, target: dict[str, Any]) -> str:
     """Render ``<spec_id>_runner.f90`` from the IR and the target. Deterministic and pure.
 
-    ``harness_spec_id`` is the certified plumbing module's spec_id
-    (``harness_fortran_cpu``). ``target`` is the run's target profile document, read for the
-    perf record's hardware class and thread count only. See module docstring for the
+    ``harness_spec_id`` is the certified plumbing module's spec_id (a key of
+    ``_HARNESS_PINS``); it selects the variant — the distributed one over a harness that runs the
+    program as several ranks. ``target`` is the run's target profile document, read for the perf
+    record's hardware class, threads per rank and device count
+    (``host_execution.perf_parallelism``). See module docstring for the
     render-error matrix. The returned text is the complete Fortran source (trailing newline
     included).
     """
@@ -457,10 +461,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     evidence = _test_evidence(ir)
     target_class = _target_class(target)
     threads = _threads(target)
-    # The perf record's rank and device counts: the target's, except that a distributed
-    # harness's runner passes the size of the run it observes (`__comm_size`), never the
-    # configured count the post-execute gate compares it with (`host_execution.perf_parallelism`).
-    ranks, _, devices = perf_parallelism(target)
+    # The perf record's device count is the target's (`host_execution.perf_parallelism`). Its
+    # rank count is never the configured one, which the post-execute gate compares it with: the
+    # single-process variant runs one process and writes 1, and the distributed variant passes
+    # the size of the run it observes (`__comm_size`). (Round 3 of the PR's review: writing the
+    # profile's count here made that comparison hold by construction.)
+    _, _, devices = perf_parallelism(target)
     distributed = _is_distributed_harness(harness_spec_id)
 
     # ranks the schema declares, so we import only the emitters we call (an unused `use only`
@@ -763,7 +769,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("")
         a(f"  call {H('finalize')}()")
     else:
-        a(f"    steps_total, cells_total, walltime, {ranks}, {threads}, {devices})")
+        a(f"    steps_total, cells_total, walltime, 1, {threads}, {devices})")
     a("")
     a("contains")
     a("")

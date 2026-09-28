@@ -92,6 +92,13 @@ def render_tuple() -> dict[str, str]:
         # pins none are the language's `bundle_facts` since issue #289 (R4-b PR-2).
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
+        # The distributed runner's ABI comment prints the harness operations' stanzas as the
+        # §5.1 stanza splitter reads them (issue #316, R4-c PR-4), so the splitter and the
+        # logical-line reader under it shape rendered bytes too.
+        "tools/backends/language/fortran/signatures.py":
+            _file_digest("tools/backends/language/fortran/signatures.py"),
+        "tools/backends/language/fortran/lines.py":
+            _file_digest("tools/backends/language/fortran/lines.py"),
         "Conductor._write_runner": _source_digest(wc.Conductor._write_runner),
         # The control file's text is the build system's renderer composing the language's
         # rules since issue #289 (R4-b PR-3); the two conductor writers below only call them.
@@ -492,12 +499,14 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "38530d63f7ad32ab7d4cb1093fb42c027ac56394aadf3226c8aae4d3be52e94c",
+    "render-6": "e7875ad9dbf23153f9a1de63bf4e0ad786d2aa63a1c958f1ee0138a09e65c14d",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
-    # `host_execution.perf_parallelism` (`1, <threads>, 0` for a cpu target, as the literal
-    # was), and both renderers answer the two new seam questions (`physics_harness_uses`,
+    # the threads and devices from `host_execution.perf_parallelism` (`1, <threads>, 0` for a
+    # cpu target, as the literal was; the rank count stays a literal 1), the tuple gained the
+    # §5.1 stanza splitter the distributed runner's ABI comment is printed through
+    # (`fortran/signatures.py`, `fortran/lines.py`; round 3 of that PR's review), and both renderers answer the two new seam questions (`physics_harness_uses`,
     # `distributed_state_names`) that no render calls. Measured against origin/main 916561f4:
     # every Fortran and CUDA C++ runner render over the 159 `workspace/ir/*/*/spec.ir.yaml` for
     # both checked-in single-process targets — 318 digests, identical.
