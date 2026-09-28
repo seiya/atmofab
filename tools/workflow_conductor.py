@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar, NamedTuple
 
 import yaml
@@ -405,6 +405,30 @@ def _execute_failure_excerpt(text: str) -> str:
 _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
+def _verdict_cross_target(verdict_doc: Any) -> dict[str, Any] | None:
+    """`{own_verdict, comparands}` of a `verdict.json` that carries a cross-target primary
+    record (issue #324) — the comparand runs listed once per target, in first-seen order — or
+    None when it carries none."""
+    from tools.verdict_evaluator import is_cross_target_record
+    per_test = verdict_doc.get("per_test") if isinstance(verdict_doc, dict) else None
+    seen: dict[str, dict[str, Any]] = {}
+    any_cross = False
+    for item in (per_test if isinstance(per_test, list) else []):
+        basis = item.get("basis") if isinstance(item, dict) else None
+        records = basis.get("primary") if isinstance(basis, dict) else None
+        for rec in (records if isinstance(records, list) else []):
+            if not isinstance(rec, dict) or not is_cross_target_record(rec):
+                continue
+            any_cross = True
+            for comp in (rec.get("comparands") if isinstance(rec.get("comparands"), list)
+                         else []):
+                if isinstance(comp, dict) and str(comp.get("target_id")) not in seen:
+                    seen[str(comp.get("target_id"))] = comp
+    if not any_cross:
+        return None
+    return {"own_verdict": verdict_doc.get("own_verdict"), "comparands": list(seen.values())}
+
+
 def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     """The `[execute fail: verdict]` block for a `self_verdict=fail` run.
 
@@ -455,6 +479,16 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
                     continue
                 parts = [f"primary quantity={rec.get('quantity')!r}",
                          f"expr={rec.get('expr')!r}", f"op={rec.get('op')!r}"]
+                if ev.get("comparand") is not None:
+                    # a cross-target record (issue #324): which other target's variant, and
+                    # the run of it this verdict read
+                    parts.append(f"comparand={ev['comparand']!r}")
+                    for comp in (rec.get("comparands") if isinstance(rec.get("comparands"), list)
+                                 else []):
+                        if isinstance(comp, dict) and comp.get("target_id") == ev["comparand"]:
+                            parts.append(f"comparand_run="
+                                         f"{comp.get('pipeline_ref')}/runs/{comp.get('run_id')}")
+                            break
                 if ev.get("case") is not None:
                     parts.append(f"case={ev['case']!r}")
                 if ev.get("reason"):
@@ -3585,6 +3619,13 @@ class Conductor:
     #: it resolves itself, so what is staged is what the key says even when a member is
     #: re-certified between the key and the copy (a parallel closure does that).
     _phase_closure_bindings: dict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False)
+    #: The comparands each node's Validate attempt in flight bound (issue #324): the
+    #: `primary_evidence.ComparandEvidence` of every `comparand[]` entry of its validate key,
+    #: resolved at phase start by `_phase_derivation` and checked there against the key. Set
+    #: exactly when the key carries a `comparand` member; `_author_execute_verdict` evaluates
+    #: the cross-target predicates against these and refuses to evaluate them without.
+    _phase_comparand_bindings: dict[str, list[Any]] = field(
         default_factory=dict, init=False, repr=False)
     #: The artifact directories THIS conductor process created with an exclusive `mkdir`
     #: (`_mint_seq_dir`): an id is this process's to write under exactly when its directory
@@ -11443,8 +11484,32 @@ class Conductor:
         verdict; classify_failure's execute branch then routes it to the escalate diagnostician
         (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
         rather than crashing execute."""
-        from tools.primary_evidence import evaluate_primary_predicates
+        from tools.primary_evidence import (
+            comparand_evidence_sha256,
+            cross_target_predicates,
+            evaluate_primary_predicates,
+        )
         from tools.verdict_evaluator import evaluate_verdict, PredicateError
+
+        # The comparands the validate key bound (issue #324). Checked OUTSIDE the evaluation
+        # below, so a failure here is the conductor's (a transport fail_closed), not a
+        # structural verdict the leaf's repair would be charged with: a cross-target
+        # predicate with no binding would read as `no_comparand` and pass vacuously, and a
+        # comparand whose captures moved since the key was taken is not what the key names.
+        comparands: list[Any] = []
+        if cross_target_predicates(ir if isinstance(ir, dict) else {}):
+            bound = self._phase_comparand_bindings.get(refs.node_key)
+            if bound is None:
+                raise RuntimeError(
+                    f"comparand_unbound: {refs.node_key} has cross-target predicates but this "
+                    "Validate attempt bound no comparand set (phase_derivation did not run)")
+            for comp in bound:
+                if comparand_evidence_sha256(comp.run_dir) != comp.evidence:
+                    raise RuntimeError(
+                        f"comparand_evidence_moved:{comp.target_id}: the captures of "
+                        f"{comp.pipeline_ref}/runs/{comp.run_id} changed after the validate "
+                        "key bound them")
+            comparands = list(bound)
 
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         predicates = io_contract.get("test_predicates") if isinstance(io_contract, dict) else None
@@ -11452,7 +11517,8 @@ class Conductor:
             if not isinstance(predicates, list) or not predicates:
                 raise PredicateError(
                     "io_contract.test_predicates missing/empty (Compile must author it)")
-            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
+            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir(),
+                                                  comparands=comparands)
             doc = evaluate_verdict(predicates, run_diag,
                                    run_id=refs.run_id, node_key=refs.node_key,
                                    primary=primary)
@@ -11473,6 +11539,14 @@ class Conductor:
                 "per_test": [],
                 "predicate_error": f"{type(exc).__name__}: {exc}"[:400],
             }
+        # The IR this verdict was evaluated over (issue #324): the output hash the validate key
+        # bound. Another target's `resolve_comparands` reads it, because the binary alone does
+        # not say which IR's cases and predicates a run was judged on.
+        record = self._phase_derivations.get((refs.node_key, "validate"))
+        inputs = record.get("derivation_inputs") if isinstance(record, dict) else None
+        ir_hash = inputs.get("ir") if isinstance(inputs, dict) else None
+        if isinstance(ir_hash, str) and ir_hash:
+            doc["ir_hash"] = ir_hash
         self._write_run_node_meta(refs, "verdict.json", doc)
         return doc
 
@@ -11817,7 +11891,33 @@ class Conductor:
             self._phase_closure_bindings[(refs.node_key, phase)] = self._bind_closure_sources(
                 refs, phase, derivation["derivation_inputs"].get("closure") or [],
                 resolver=resolver)
+        if phase == "validate":
+            self._phase_comparand_bindings.pop(refs.node_key, None)
+            inputs = derivation.get("derivation_inputs")
+            if isinstance(inputs, dict) and "comparand" in inputs:
+                self._phase_comparand_bindings[refs.node_key] = self._bind_comparands(
+                    refs, inputs)
         return derivation
+
+    def _bind_comparands(self, refs: NodeRefs, inputs: Mapping[str, Any]) -> list[Any]:
+        """The comparand runs a validate key's `comparand[]` member names (issue #324),
+        re-resolved by `resolve_comparands` — which builds its own resolver per other target,
+        so this is a second resolution — and refused unless it names the same targets with the
+        same evidence hashes in the same order: the verdict must read the bytes the key bound.
+        Raises `DerivationInputsUnresolvable`."""
+        from tools.orchestration_runtime import resolve_comparands
+        bound = resolve_comparands(
+            self.repo_root, node_key=refs.node_key, ir_hash=str(inputs.get("ir")),
+            target=self.target, spec_refs={refs.node_key: refs.spec_path})
+        keyed = [(str(c.get("target_id")), str(c.get("evidence")))
+                 for c in (inputs.get("comparand") or []) if isinstance(c, dict)]
+        if [(c.target_id, c.evidence) for c in bound] != keyed:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: validate derivation of {refs.node_key} bound "
+                f"comparands {keyed} but they resolve to "
+                f"{[(c.target_id, c.evidence) for c in bound]} (another target's run landed "
+                "between the key and the binding; run it again)")
+        return bound
 
     def _bind_closure_sources(self, refs: NodeRefs, phase: str,
                               closure: Sequence[dict[str, Any]], *,
@@ -12357,6 +12457,12 @@ class Conductor:
         if blocked:
             agg_doc["blocked_reason"] = blocked_reason
             agg_doc["blocking_direct_deps"] = blocking_direct_deps
+        # The cross-target comparison (issue #324), for the operator: which other targets'
+        # variants this verdict was compared with, and the verdict the run earns on its own
+        # evidence. Written only when the verdict carries a cross-target record.
+        cross = _verdict_cross_target(verdict)
+        if cross is not None:
+            agg_doc["cross_target"] = cross
         self._write_run_node_meta(refs, "aggregate_verdict.json", agg_doc)
 
         failure_class = verdict.get("failure_class")

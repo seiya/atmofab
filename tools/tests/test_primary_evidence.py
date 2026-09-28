@@ -13,8 +13,9 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
 * `evaluate_verdict` with `primary=` is pinned in both directions: the two fixtures the plan
   names — (a) a diagnostics that passes every secondary condition while the captured state
   fails the corroborant, and (c) one decoy case among two — fail the test with
-  `corroboration=disagree`, and an IR with no primary predicate produces the byte-identical
-  document `evaluate_verdict` produced before this module existed.
+  `corroboration=disagree`, and an IR with no primary predicate produces the same document
+  with `primary=None` as with `primary=[]` (since issue #324 both carry `own_verdict`, which
+  the document before this module did not).
 
 The captures are SYNTHETIC (a seeded numpy array written in the runner's JSON shape). The
 recorded-run fixture the plan names (a `shallow_water2d` n032 case with its `initial/`
@@ -195,7 +196,7 @@ class GrammarAllowlistTest(unittest.TestCase):
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
             "floor": (1, 1)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 2)
+        self.assertEqual(pe.GRAMMAR_VERSION, 3)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
@@ -1278,6 +1279,357 @@ class CliTest(unittest.TestCase):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "missing.yaml"),
                                       "--run", str(run.root)]), 2)
             self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root / "nope")]), 2)
+
+
+# ------------------------------------------------------------------ cross-target (issue #324)
+
+CROSS = {"test_id": "t_mass", "quantity": "cross_target_state_agreement",
+         "target_cases": ["a", "b"],
+         "expr": "maxabs(final.h - comparand.final.h) / max(maxabs(comparand.final.h), 1e-14)",
+         "op": "le", "value": 1.0e-12, "per_case": True}
+
+
+def _comparand(run: _RunDir, target_id: str) -> pe.ComparandEvidence:
+    return pe.ComparandEvidence(target_id=target_id, pipeline_ref=f"p/{target_id}",
+                                run_id="run_20260928_001", run_dir=run.root,
+                                evidence=pe.comparand_evidence_sha256(run.root))
+
+
+class CrossTargetGrammarTest(unittest.TestCase):
+    """Grammar 3's `comparand.` root: the two admitted forms, and every neighbouring spelling
+    refused at parse — one row per form, so a dropped branch names itself."""
+
+    def test_admitted_forms_are_comparand_refs(self) -> None:
+        for point in ("initial", "final"):
+            refs = pe.expr_names(pe.parse_expr(f"sum(comparand.{point}.h) + final.s"))
+            self.assertIn(pe.NameRef("comparand", "h", point=point), refs)
+            self.assertIn(pe.NameRef("capture", "s", point="final"), refs)
+
+    def test_refused_forms(self) -> None:
+        for text in ("comparand", "comparand.h", "comparand.final", "comparand.final.h.x",
+                     "comparand.inputs.grid.nx", "comparand.x", "comparand.at('a').final.h",
+                     "at('a').comparand.final.h", "at('a').comparand", "comparand()",
+                     "sum(comparand)"):
+            with self.subTest(text=text), self.assertRaises(pe.PrimaryEvidenceError):
+                pe.parse_expr(text)
+
+    def test_comparand_is_reserved_for_binds_and_coordinates(self) -> None:
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        run.write_state("a", _field(), _field())
+        env = pe.load_case_env(run.root, _case("a"), pe.snapshot_schema(_ir(None)))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "shadows a grammar name"):
+            pe.evaluate_binds({"comparand": "final.s"}, env, {})
+        coords = [{"name": "comparand", "axis": 0, "count": 8, "length": 1.0,
+                   "placement": "cell_center"}]
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "not a grammar name"):
+            pe.coordinate_arrays(pe.snapshot_schema(_ir(None, coordinates=coords)), {})
+
+    def test_predicate_reads_comparand_sees_expr_and_every_bind(self) -> None:
+        self.assertTrue(pe.is_cross_target_predicate(CROSS))
+        self.assertFalse(pe.is_cross_target_predicate(HMIN))
+        in_bind = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}, "expr": "min(final.h) + R"}
+        self.assertTrue(pe.is_cross_target_predicate(in_bind))
+        # a bind the expression never reaches is still evaluated, so it still needs a comparand
+        unreached = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}}
+        self.assertTrue(pe.is_cross_target_predicate(unreached))
+        self.assertFalse(pe.is_cross_target_predicate({**HMIN, "expr": "comparand.nope"}))
+        self.assertFalse(pe.is_cross_target_predicate("x"))
+        ir = _ir([MASS, CROSS, HMIN, in_bind])
+        self.assertEqual(pe.cross_target_predicates(ir), [CROSS, in_bind])
+        self.assertEqual(pe.cross_target_predicates(_ir([MASS, HMIN])), [])
+
+
+class ComparandEvidenceHashTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.run = _RunDir()
+        self.addCleanup(self.run.cleanup)
+        self.run.write_state("a", _field(1), _field(2))
+
+    def test_hash_is_over_the_captures_only(self) -> None:
+        h0 = pe.comparand_evidence_sha256(self.run.root)
+        self.assertTrue(h0.startswith("sha256:"))
+        self.assertEqual(pe.comparand_evidence_sha256(self.run.root), h0)
+        # the host-authored schema file is not a capture
+        (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
+        self.assertEqual(pe.comparand_evidence_sha256(self.run.root), h0)
+        # a byte of a final capture, of an initial capture, and a file's NAME each move it
+        final = self.run.sdir / "a.json"
+        final.write_text(final.read_text() + " ")
+        h1 = pe.comparand_evidence_sha256(self.run.root)
+        self.assertNotEqual(h1, h0)
+        init = self.run.sdir / "initial" / "a.json"
+        init.write_text(init.read_text() + " ")
+        h2 = pe.comparand_evidence_sha256(self.run.root)
+        self.assertNotEqual(h2, h1)
+        final.rename(self.run.sdir / "b.json")
+        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root), h2)
+
+    def test_file_boundaries_are_framed(self) -> None:
+        """Two captures `a.json` = `1` and `b.json` = `2` concatenate, unframed, to the same
+        bytes as ONE capture `a.json` = `1b.json2`; the hash keeps the file sets apart."""
+        other = _RunDir()
+        self.addCleanup(other.cleanup)
+        for run in (self.run, other):
+            for path in run.sdir.rglob("*.json"):
+                path.unlink()
+        (self.run.sdir / "a.json").write_text("1")
+        (self.run.sdir / "b.json").write_text("2")
+        (other.sdir / "a.json").write_text("1b.json2")
+        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root),
+                            pe.comparand_evidence_sha256(other.root))
+
+    def test_no_capture_raises(self) -> None:
+        for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
+            path.unlink()
+        (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
+            pe.comparand_evidence_sha256(self.run.root)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
+            pe.comparand_evidence_sha256(self.run.root / "missing")
+
+
+class CrossTargetEvaluationTest(unittest.TestCase):
+    """`evaluate_primary_predicates(comparands=...)`: 2 comparands × 2 cases, a disagreement
+    with one of them, a comparand capture that is absent, no comparand at all."""
+
+    def setUp(self) -> None:
+        self.h = {c: _field(i) for i, c in enumerate("ab")}
+        self.runs: dict[str, _RunDir] = {}
+        for name in ("own", "gpu", "mpi"):
+            run = _RunDir()
+            self.addCleanup(run.cleanup)
+            for cid in "ab":
+                run.write_state(cid, self.h[cid], self.h[cid])
+            self.runs[name] = run
+
+    def _eval(self, preds: list[dict], comparands: list[str]) -> list[dict]:
+        return pe.evaluate_primary_predicates(
+            _ir(preds), self.runs["own"].root,
+            comparands=[_comparand(self.runs[t], t) for t in comparands])
+
+    def test_two_comparands_by_two_cases(self) -> None:
+        [mass, cross] = self._eval([MASS, CROSS], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "pass")
+        self.assertTrue(cross["satisfied"])
+        self.assertEqual([(e["comparand"], e["case"]) for e in cross["evaluated"]],
+                         [("gpu", "a"), ("gpu", "b"), ("mpi", "a"), ("mpi", "b")])
+        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu", "mpi"])
+        self.assertEqual(set(cross["comparands"][0]),
+                         {"target_id", "pipeline_ref", "run_id", "evidence"})
+        self.assertEqual(cross["grammar_version"], 3)
+        # an ordinary predicate is evaluated once, untagged, and lists no comparand
+        self.assertEqual(mass["comparands"], [])
+        self.assertEqual([e["case"] for e in mass["evaluated"]], ["a", "b"])
+        self.assertNotIn("comparand", mass["evaluated"][0])
+
+    def test_one_comparand_disagreeing_fails_physics_and_the_other_is_still_evaluated(self):
+        self.runs["gpu"].write_state("a", self.h["a"], self.h["a"] * (1 + 1e-9))
+        [cross] = self._eval([CROSS], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "physics")
+        self.assertFalse(cross["satisfied"])
+        self.assertEqual([(e["comparand"], e["case"], e["satisfied"]) for e in cross["evaluated"]],
+                         [("gpu", "a", False), ("mpi", "a", True), ("mpi", "b", True)])
+        self.assertGreater(cross["evaluated"][0]["value"], 1e-12)
+
+    def test_absent_comparand_capture_is_structural_and_dominates(self) -> None:
+        (self.runs["mpi"].sdir / "b.json").unlink()
+        self.runs["gpu"].write_state("a", self.h["a"], self.h["a"] * 2)
+        for order in (["gpu", "mpi"], ["mpi", "gpu"]):
+            with self.subTest(order=order):
+                [cross] = self._eval([CROSS], order)
+                self.assertEqual(cross["kind"], "structural")
+                bad = [e for e in cross["evaluated"] if e.get("reason")]
+                self.assertEqual([(e["comparand"], e["case"]) for e in bad], [("mpi", "b")])
+                self.assertIn("b.json", bad[0]["error"])
+
+    def test_a_comparand_of_another_shape_is_a_disagreement_not_a_gap(self) -> None:
+        """Round 2: a variant that sized its state differently passes its own gates (a
+        symbolic extent is bound to nothing), and pairing it with this run's state used to be
+        a STRUCTURAL record — this run's evidence gap, repaired at this run's Generate."""
+        wide = np.vstack([self.h["a"], self.h["a"][:2]])
+        self.runs["gpu"].write_state("a", wide, wide)
+        [cross] = self._eval([CROSS], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "physics")
+        bad = cross["evaluated"][0]
+        self.assertEqual((bad["comparand"], bad["reason"]), ("gpu", "comparand_shape_mismatch"))
+        self.assertIn("[10, 4]", bad["error"])
+        self.assertEqual([e["comparand"] for e in cross["evaluated"][1:]], ["mpi", "mpi"])
+        # a structural error on another comparand still dominates, in either order
+        (self.runs["mpi"].sdir / "b.json").unlink()
+        for order in (["gpu", "mpi"], ["mpi", "gpu"]):
+            with self.subTest(order=order):
+                self.assertEqual(self._eval([CROSS], order)[0]["kind"], "structural")
+
+    def test_absent_comparand_variable_names_the_comparand(self) -> None:
+        self.runs["gpu"].write("a", initial={"h": self.h["a"].tolist(), "s": 1.0, "t": 0.0},
+                               final={"s": 1.0, "t": 0.2})
+        [cross] = self._eval([CROSS], ["gpu"])
+        self.assertEqual(cross["kind"], "structural")
+        self.assertIn("of the comparand", cross["evaluated"][0]["error"])
+
+    def test_no_comparand(self) -> None:
+        [mass, cross] = self._eval([MASS, CROSS], [])
+        self.assertEqual(cross["kind"], "no_comparand")
+        self.assertTrue(cross["satisfied"])
+        self.assertEqual((cross["evaluated"], cross["comparands"]), ([], []))
+        self.assertEqual(mass["kind"], "pass")
+
+    def test_a_comparand_read_needs_a_bound_comparand(self) -> None:
+        env = pe.load_case_env(self.runs["own"].root, _case("a"), pe.snapshot_schema(_ir(None)))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no comparand is bound"):
+            pe.evaluate(pe.parse_expr("sum(comparand.final.h)"), env)
+
+    def test_reading_only_the_comparand_is_refused(self) -> None:
+        only = {**CROSS, "expr": "maxabs(comparand.final.h)"}
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "reads no captured state"):
+            self._eval([only], ["gpu"])
+
+
+class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
+    def _v(self, preds) -> list[str]:
+        ir = _ir(preds)
+        cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+        return pe.validate_primary_predicate_schema(
+            preds, case_ids=set(cases), test_ids=["t_mass", "t_sym"],
+            schema=pe.snapshot_schema(ir), cases=cases,
+            test_target_cases={p["test_id"]: p["target_cases"]
+                               for p in ir["io_contract"]["test_predicates"]})
+
+    def test_gate(self) -> None:
+        self.assertEqual(self._v([MASS, CROSS]), [])
+        self.assertEqual(self._v([{**CROSS, "expr": "maxabs(final.h - comparand.initial.t)"}]),
+                         [])
+        rows = [
+            ({**CROSS, "expr": "maxabs(comparand.final.h)"}, "reads no captured state"),
+            ({**CROSS, "expr": "maxabs(final.h - comparand.final.zz)"},
+             "comparand.final.zz is not a snapshot schema variable"),
+            ({**CROSS, "expr": "maxabs(final.h - comparand.inputs.grid.nx)"},
+             "cross-target reference is exactly"),
+            ({**CROSS, "expr": "maxabs(final.h - at('b').comparand.final.h)"},
+             "does not combine with at"),
+            ({**CROSS, "bind": {"comparand": "final.s"}}, "shadows a grammar name"),
+        ]
+        for pred, fragment in rows:
+            with self.subTest(fragment=fragment):
+                v = self._v([pred])
+                self.assertTrue(any(fragment in x for x in v), v)
+
+    def test_a_cross_target_predicate_is_no_corroborant(self) -> None:
+        tp = _ir(None)["io_contract"]["test_predicates"][:1]   # t_mass, quantity mass_drift_rel
+        own = {**MASS}
+        cross = {**CROSS, "quantity": "mass_drift_rel"}
+        self.assertEqual(pe.coverage_violations(tp, [own]), [])
+        v = pe.coverage_violations(tp, [cross])
+        self.assertEqual(len(v), 1)
+        self.assertIn("has no host-evaluated corroborant", v[0])
+        self.assertEqual(pe.coverage_violations(tp, [cross, own]), [])
+
+
+class CrossTargetVerdictTest(unittest.TestCase):
+    """`evaluate_verdict` over cross-target records: `own_verdict` leaves them out,
+    `self_verdict` does not, and they are no corroborant."""
+
+    def setUp(self) -> None:
+        self.h = _field()
+        self.runs: dict[str, _RunDir] = {}
+        for name in ("own", "gpu", "mpi"):
+            run = _RunDir()
+            self.addCleanup(run.cleanup)
+            for cid in "ab":
+                run.write_state(cid, self.h, self.h)
+            self.runs[name] = run
+
+    def _verdict(self, preds: list[dict], comparands: list[str], diag: dict | None = None):
+        ir = _ir(preds)
+        primary = pe.evaluate_primary_predicates(
+            ir, self.runs["own"].root,
+            comparands=[_comparand(self.runs[t], t) for t in comparands])
+        return evaluate_verdict(ir["io_contract"]["test_predicates"], diag or _diag_all_pass(),
+                                run_id="r", node_key="n", primary=primary)
+
+    def test_agreement_passes_both_verdicts(self) -> None:
+        doc = self._verdict([MASS, SYM, CROSS], ["gpu", "mpi"])
+        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
+                         ("pass", "pass", "pass"))
+        self.assertEqual(list(doc)[:4], ["node_key", "run_id", "self_verdict", "own_verdict"])
+        t_mass = doc["per_test"][0]
+        self.assertEqual([r["quantity"] for r in t_mass["basis"]["primary"]],
+                         ["mass_drift_rel", "cross_target_state_agreement"])
+        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
+
+    def test_one_disagreeing_comparand_fails_self_but_not_own(self) -> None:
+        self.runs["gpu"].write_state("b", self.h, self.h * (1 + 1e-6))
+        doc = self._verdict([MASS, SYM, CROSS], ["gpu", "mpi"])
+        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
+                         ("fail", "pass", "physics_fail"))
+        t_mass = doc["per_test"][0]
+        self.assertEqual(t_mass["status"], "fail")
+        # the secondary evidence and its own corroborant still agree: the disagreement is
+        # between targets, not between this run's checks and its state
+        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
+
+    def test_structural_cross_record(self) -> None:
+        (self.runs["gpu"].sdir / "a.json").unlink()
+        doc = self._verdict([MASS, SYM, CROSS], ["gpu"])
+        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
+                         ("fail", "pass", "structural_violation"))
+        # the comparand's gap is not this run's: its own evidence still corroborates
+        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "agree")
+
+    def test_no_comparand_passes(self) -> None:
+        doc = self._verdict([MASS, SYM, CROSS], [])
+        self.assertEqual((doc["self_verdict"], doc["own_verdict"]), ("pass", "pass"))
+
+    def test_own_failure_is_own_verdict(self) -> None:
+        self.runs["own"].write_state("a", self.h, self.h * 0.5)   # loses mass in case a
+        doc = self._verdict([MASS, SYM, CROSS], [])
+        self.assertEqual((doc["self_verdict"], doc["own_verdict"]), ("fail", "fail"))
+
+    def test_the_coverage_recheck_does_not_count_a_cross_record(self) -> None:
+        # t_mass's condition holds per case; its only same-quantity OWN record reads case a,
+        # and a cross record of the same quantity reads both
+        own_a = {**MASS, "per_case": None, "case": "a"}
+        own_a.pop("per_case")
+        cross = {**CROSS, "quantity": "mass_drift_rel"}
+        with self.assertRaisesRegex(PredicateError, "reads every case"):
+            self._verdict([own_a, cross, SYM], ["gpu"])
+
+    def test_no_primary_still_writes_own_verdict(self) -> None:
+        ir = _ir(None)
+        doc = evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass())
+        self.assertEqual(doc["own_verdict"], doc["self_verdict"])
+        self.assertEqual(evaluate_verdict([], {})["own_verdict"], "fail")
+
+
+class CrossTargetCliTest(unittest.TestCase):
+    def test_comparand_flag(self) -> None:
+        import yaml
+        runs = {}
+        for name in ("own", "gpu"):
+            runs[name] = _RunDir()
+            self.addCleanup(runs[name].cleanup)
+            for cid in "ab":
+                runs[name].write_state(cid, _field(), _field())
+        ir_path = runs["own"].root / "spec.ir.yaml"
+        ir_path.write_text(yaml.safe_dump(_ir([MASS, CROSS])))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
+                          "--comparand", f"gpu={runs['gpu'].root}"])
+        self.assertEqual(rc, 0)
+        cross = json.loads(out.getvalue())[1]
+        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
+        self.assertEqual(cross["comparands"][0]["evidence"],
+                         pe.comparand_evidence_sha256(runs["gpu"].root))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root)]), 0)
+            self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
+                                      "--comparand", "gpu"]), 2)
+        runs["gpu"].write_state("a", _field(), _field() * 2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
+                                      "--comparand", f"gpu={runs['gpu'].root}"]), 1)
 
 
 if __name__ == "__main__":
