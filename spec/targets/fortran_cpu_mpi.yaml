@@ -5,6 +5,11 @@
 # `execution.ranks` is the number of processes the parallel backend's launcher starts for the
 # Validate run; the quality check re-runs the same cases as one process. A launcher target runs at
 # the local site only (docs/backends/parallel/mpi/LAUNCHER.md §4).
+#
+# Until issue #316 PR-4 only the harness itself runs for this target: a component or problem
+# node passes the launch gate and then stops fail-closed at the start of Generate
+# (`generate_runner_render_failed`), because the host does not yet render a runner over this
+# harness. `--resume` does not get past it.
 target_profile_version: 1
 target_id: fortran_cpu_mpi
 hardware:
