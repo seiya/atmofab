@@ -1455,9 +1455,11 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         self.assertEqual((bad["comparand"], bad["reason"]), ("gpu", "comparand_shape_mismatch"))
         self.assertIn("[10, 4]", bad["error"])
         self.assertEqual([e["comparand"] for e in cross["evaluated"][1:]], ["mpi", "mpi"])
-        # a structural error on another comparand still dominates
+        # a structural error on another comparand still dominates, in either order
         (self.runs["mpi"].sdir / "b.json").unlink()
-        self.assertEqual(self._eval([CROSS], ["gpu", "mpi"])[0]["kind"], "structural")
+        for order in (["gpu", "mpi"], ["mpi", "gpu"]):
+            with self.subTest(order=order):
+                self.assertEqual(self._eval([CROSS], order)[0]["kind"], "structural")
 
     def test_absent_comparand_variable_names_the_comparand(self) -> None:
         self.runs["gpu"].write("a", initial={"h": self.h["a"].tolist(), "s": 1.0, "t": 0.0},

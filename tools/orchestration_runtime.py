@@ -2531,15 +2531,17 @@ def resolve_comparands(
         does not say which IR's cases and predicates a run was judged on — Codex, round 2),
       - has an `own_verdict` in `COMPARAND_OWN_VERDICTS` (a verdict written before R4-d has
         neither field and is never a comparand), and
-      - if its `self_verdict` passed too, was passed by the judge (`semantic_review.json`
-        decided `pass`): the judge runs on every run whose verdict passes, so one without a
-        passing review was rejected or never finished. A run that failed ONLY a cross-target
-        record never reaches the judge and stays eligible (plan decision 6: a disagreement
-        between two variants that each pass their own tests stops both);
+      - if its `self_verdict` passed too, finished Validate: the judge passed it
+        (`semantic_review.json` decided `pass`) and so did the post-judge gate
+        (`post_judge_meta.json#status` is `pass`). The judge and the gate run on every run
+        whose verdict passes, so one without both was rejected or never finished. A run that
+        failed ONLY a cross-target record never reaches either and stays eligible (plan
+        decision 6: a disagreement between two variants that each pass their own tests stops
+        both);
     whose `trial_meta.json#source_binary_id` is the selected binary; and whose
-    `validate_meta.json`, when present, is `pass` (the one writer, post_judge, runs after the
-    judge; a revocation rewrites the status to `revoked`). A B with no such run contributes
-    nothing.
+    `validate_meta.json`, when present, is not revoked (`verification_status: revoked`, which
+    `_revoke_stage_meta` writes; post_judge writes `pass` before its gate runs, so the meta
+    says nothing else about the run). A B with no such run contributes nothing.
 
     Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
     whether B's own Validate is certified is never asked — B's verdict depends on this run's
@@ -2598,12 +2600,13 @@ def resolve_comparands(
                 continue
             if verdict.get("self_verdict") in COMPARAND_OWN_VERDICTS:
                 review = _read_json_or_none(node_dir / "semantic_review.json")
-                if not (isinstance(review, dict) and review.get("decision") == "pass"):
+                gate = _read_json_or_none(node_dir / "post_judge_meta.json")
+                if not (isinstance(review, dict) and review.get("decision") == "pass"
+                        and isinstance(gate, dict) and gate.get("status") == "pass"):
                     continue
             meta = _read_json_or_none(node_dir / "validate_meta.json")
-            if (node_dir / "validate_meta.json").exists() and not (
-                    isinstance(meta, dict)
-                    and str(meta.get("verification_status", "")).strip().lower() == "pass"):
+            if isinstance(meta, dict) and str(
+                    meta.get("verification_status", "")).strip().lower() == "revoked":
                 continue
             if best is None or rkey > best[0]:
                 best = (rkey, run.name, node_dir)

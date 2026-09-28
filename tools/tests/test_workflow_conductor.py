@@ -16411,7 +16411,9 @@ class DeterministicBuildTest(unittest.TestCase):
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
                              ("fail", "pass", "physics_fail"))
-            self.assertIn("comparand='cpp_gpu'", wc._verdict_failure_report(doc))
+            report = wc._verdict_failure_report(doc)
+            self.assertIn("comparand='cpp_gpu'", report)
+            self.assertIn("comparand_run=p/gpu/runs/run_20260928_001", report)
 
             # an IR with no cross-target predicate needs no binding at all
             c._phase_comparand_bindings.clear()

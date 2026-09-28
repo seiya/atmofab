@@ -480,8 +480,15 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
                 parts = [f"primary quantity={rec.get('quantity')!r}",
                          f"expr={rec.get('expr')!r}", f"op={rec.get('op')!r}"]
                 if ev.get("comparand") is not None:
-                    # a cross-target record (issue #324): which other target's variant
+                    # a cross-target record (issue #324): which other target's variant, and
+                    # the run of it this verdict read
                     parts.append(f"comparand={ev['comparand']!r}")
+                    for comp in (rec.get("comparands") if isinstance(rec.get("comparands"), list)
+                                 else []):
+                        if isinstance(comp, dict) and comp.get("target_id") == ev["comparand"]:
+                            parts.append(f"comparand_run="
+                                         f"{comp.get('pipeline_ref')}/runs/{comp.get('run_id')}")
+                            break
                 if ev.get("case") is not None:
                     parts.append(f"case={ev['case']!r}")
                 if ev.get("reason"):

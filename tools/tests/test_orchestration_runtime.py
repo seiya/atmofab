@@ -28257,12 +28257,15 @@ class ResolveComparandsTests(unittest.TestCase):
         return refs
 
     _PASS_REVIEW: ClassVar[dict[str, str]] = {"decision": "pass"}
+    _PASS_GATE: ClassVar[dict[str, str]] = {"status": "pass"}
 
     def _run(self, refs: dict[str, str], run_id: str, *, verdict: dict | None,
              binary_id: str | None = None, capture: str = '{"u": [1.0, 2.0]}',
-             review: dict | None = _PASS_REVIEW, meta: dict | None = None) -> Path:
+             review: dict | None = _PASS_REVIEW, gate: dict | None = _PASS_GATE,
+             meta: dict | None = None) -> Path:
         """A run of `refs`' binary; its verdict is stamped with this IR's hash unless it names
-        one (or is `None`), and a passing review is written unless `review` says otherwise."""
+        one (or is `None`), and a passing review and post-judge gate record are written unless
+        `review` / `gate` say otherwise."""
         if verdict is not None and "ir_hash" not in verdict:
             verdict = {"ir_hash": self._ir_hash(), **verdict}
         node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
@@ -28275,6 +28278,8 @@ class ResolveComparandsTests(unittest.TestCase):
             (node / "verdict.json").write_text(json.dumps(verdict))
         if review is not None:
             (node / "semantic_review.json").write_text(json.dumps(review))
+        if gate is not None:
+            (node / "post_judge_meta.json").write_text(json.dumps(gate))
         if meta is not None:
             (node / "validate_meta.json").write_text(json.dumps(meta))
         return node
@@ -28329,7 +28334,11 @@ class ResolveComparandsTests(unittest.TestCase):
             ("judge failed", {"verdict": good, "review": {"decision": "fail"}}),
             ("judge never decided", {"verdict": good, "review": None}),
             ("judge unreadable", {"verdict": good, "review": None}),
-            ("post_judge not pass", {"verdict": good, "meta": {"verification_status": "fail"}}),
+            # post_judge writes validate_meta `pass` BEFORE its gate runs, so only its own
+            # record says whether the gate passed (round 3)
+            ("post_judge gate failed", {"verdict": good, "gate": {"status": "fail"},
+                                        "meta": {"verification_status": "pass"}}),
+            ("post_judge gate never ran", {"verdict": good, "gate": None}),
             ("revoked", {"verdict": good, "meta": {"verification_status": "pass"}}),
         ]
         for label, kw in rows:
@@ -28360,9 +28369,14 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
     def test_the_certified_fixture_run_itself_is_eligible(self) -> None:
-        """`certify_node` writes a passing verdict and a passing review, so its run is a
-        comparand — and the run target's OWN runs never are."""
-        self._seed_b()
+        """`certify_node` writes a passing verdict, review and gate record, so its run is a
+        comparand once it carries the R4-d fields — and the run target's OWN runs never are,
+        even when they are eligible in every other respect (round 3: A's run used to be
+        excluded by its missing fields, which made the self-exclusion unobserved)."""
+        a = self._certify(_TP)
+        b = self._certify(self.b, orch="orch_b")
+        self._stamp_fixture_verdict(a)
+        self._stamp_fixture_verdict(b)
         self.assertEqual([(c.target_id, c.run_id) for c in self._resolve()],
                          [(self.b.target_id, "run_20260101_001")])
 

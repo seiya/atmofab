@@ -742,8 +742,9 @@ PINNED_VERDICT: dict[str, str] = {
     # what a disagreement actually stops. Round 2: a comparand run must have been judged over
     # this IR (`verdict.json#ir_hash`, which the execute author now writes), passed by the
     # judge when its verdict passed, and `pass` in its validate_meta when it has one; a
-    # comparand of another state shape is a `physics` disagreement.
-    "verdict-6": "7f5f9d047eb98dceb7959b7f9c832a57bb86b1f73895f0250a874fe9060d2275",
+    # comparand of another state shape is a `physics` disagreement. Round 3: a passed verdict
+    # needs a passing post-judge gate record (validate_meta is written `pass` before the gate).
+    "verdict-6": "9808cac8401a744a1739d0fa2ba05a66a54ece50530ef1328c6388ee3d0858a2",
 }
 
 
