@@ -48,7 +48,7 @@ This suite verifies the published `operation` `dynamics_shallow_water_time_updat
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with `U^n`, `L_flux`, and `S_b` held fixed, the update evaluated for two distinct `z_b` fields yields the identical `U^{n+1}` (`z_b` is inert at L0). The cross-target judgment is applied: `cross_target_state_agreement` over each of the two captured `U^{n+1}` is `<= 1e-12`.
+  - `judgment`: with `U^n`, `L_flux`, and `S_b` held fixed, the update evaluated for two distinct `z_b` fields yields the identical `U^{n+1}` (`z_b` is inert at L0). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`, and over the variable holding the second evaluation's `U^{n+1}` too when the test captures the two evaluations in one case.
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
