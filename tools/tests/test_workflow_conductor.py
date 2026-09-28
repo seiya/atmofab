@@ -16416,7 +16416,17 @@ class DeterministicBuildTest(unittest.TestCase):
             # an IR with no cross-target predicate needs no binding at all
             c._phase_comparand_bindings.clear()
             ir["io_contract"]["primary_predicates"].pop()
-            self.assertEqual(c._author_execute_verdict(refs, ir, good)["self_verdict"], "pass")
+            doc = c._author_execute_verdict(refs, ir, good)
+            self.assertEqual(doc["self_verdict"], "pass")
+            # the IR the verdict was judged over is the one the validate key bound (round 2,
+            # Codex): another target's resolve_comparands matches on it
+            self.assertNotIn("ir_hash", doc)
+            c._phase_derivations[(refs.node_key, "validate")] = {
+                "derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
+                "derivation_inputs": {"ir": "sha256:" + "1" * 64}}
+            c._author_execute_verdict(refs, ir, good)
+            on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
+            self.assertEqual(on_disk["ir_hash"], "sha256:" + "1" * 64)
 
     def test_author_execute_verdict_missing_predicates_is_structural(self) -> None:
         import tempfile

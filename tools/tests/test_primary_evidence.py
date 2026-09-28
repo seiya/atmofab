@@ -13,8 +13,9 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
 * `evaluate_verdict` with `primary=` is pinned in both directions: the two fixtures the plan
   names — (a) a diagnostics that passes every secondary condition while the captured state
   fails the corroborant, and (c) one decoy case among two — fail the test with
-  `corroboration=disagree`, and an IR with no primary predicate produces the byte-identical
-  document `evaluate_verdict` produced before this module existed.
+  `corroboration=disagree`, and an IR with no primary predicate produces the same document
+  with `primary=None` as with `primary=[]` (since issue #324 both carry `own_verdict`, which
+  the document before this module did not).
 
 The captures are SYNTHETIC (a seeded numpy array written in the runner's JSON shape). The
 recorded-run fixture the plan names (a `shallow_water2d` n032 case with its `initial/`
@@ -1441,6 +1442,22 @@ class CrossTargetEvaluationTest(unittest.TestCase):
                 bad = [e for e in cross["evaluated"] if e.get("reason")]
                 self.assertEqual([(e["comparand"], e["case"]) for e in bad], [("mpi", "b")])
                 self.assertIn("b.json", bad[0]["error"])
+
+    def test_a_comparand_of_another_shape_is_a_disagreement_not_a_gap(self) -> None:
+        """Round 2: a variant that sized its state differently passes its own gates (a
+        symbolic extent is bound to nothing), and pairing it with this run's state used to be
+        a STRUCTURAL record — this run's evidence gap, repaired at this run's Generate."""
+        wide = np.vstack([self.h["a"], self.h["a"][:2]])
+        self.runs["gpu"].write_state("a", wide, wide)
+        [cross] = self._eval([CROSS], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "physics")
+        bad = cross["evaluated"][0]
+        self.assertEqual((bad["comparand"], bad["reason"]), ("gpu", "comparand_shape_mismatch"))
+        self.assertIn("[10, 4]", bad["error"])
+        self.assertEqual([e["comparand"] for e in cross["evaluated"][1:]], ["mpi", "mpi"])
+        # a structural error on another comparand still dominates
+        (self.runs["mpi"].sdir / "b.json").unlink()
+        self.assertEqual(self._eval([CROSS], ["gpu", "mpi"])[0]["kind"], "structural")
 
     def test_absent_comparand_variable_names_the_comparand(self) -> None:
         self.runs["gpu"].write("a", initial={"h": self.h["a"].tolist(), "s": 1.0, "t": 0.0},

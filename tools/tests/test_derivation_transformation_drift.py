@@ -739,8 +739,11 @@ PINNED_VERDICT: dict[str, str] = {
     # and the aggregate's reader of the cross-target records.
     # Re-pinned in round 1 before shipping (the version is new on this branch): a revoked
     # comparand run is read off `verification_status`, and the evaluator's docstring states
-    # what a disagreement actually stops.
-    "verdict-6": "a5799b3f9936d48ae6e0c898bdfbda5450b74b5a5fa05fa0f0f2589935274f7f",
+    # what a disagreement actually stops. Round 2: a comparand run must have been judged over
+    # this IR (`verdict.json#ir_hash`, which the execute author now writes), passed by the
+    # judge when its verdict passed, and `pass` in its validate_meta when it has one; a
+    # comparand of another state shape is a `physics` disagreement.
+    "verdict-6": "7f5f9d047eb98dceb7959b7f9c832a57bb86b1f73895f0250a874fe9060d2275",
 }
 
 

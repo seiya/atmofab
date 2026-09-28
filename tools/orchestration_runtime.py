@@ -2525,13 +2525,21 @@ def resolve_comparands(
     target-free, so a B built from the current IR shares it — the check keeps a B built from
     another IR out when this run's IR is not the standing one). Its comparand is the LATEST
     run (`_freshness_key_from_id`) under the selected pipeline's `runs/` whose node directory
-    holds a `verdict.json` (the execute gate passed), whose `trial_meta.json#source_binary_id`
-    is the selected binary, whose `verdict.json#own_verdict` (a verdict written before
-    `own_verdict` existed has no cross-target record, so its `self_verdict` is the same value)
-    is in `COMPARAND_OWN_VERDICTS`, whose `semantic_review.json`, when present, decided `pass`,
-    and whose `validate_meta.json`, when present, is not revoked
-    (`verification_status: revoked`). A B with no such run
-    contributes nothing.
+    holds a `verdict.json` (the execute gate passed) that
+      - was evaluated over THIS IR (`verdict.json#ir_hash == ir_hash`: a Build can stay
+        certified across an IR re-derivation that reproduced its sources, so the binary alone
+        does not say which IR's cases and predicates a run was judged on — Codex, round 2),
+      - has an `own_verdict` in `COMPARAND_OWN_VERDICTS` (a verdict written before R4-d has
+        neither field and is never a comparand), and
+      - if its `self_verdict` passed too, was passed by the judge (`semantic_review.json`
+        decided `pass`): the judge runs on every run whose verdict passes, so one without a
+        passing review was rejected or never finished. A run that failed ONLY a cross-target
+        record never reaches the judge and stays eligible (plan decision 6: a disagreement
+        between two variants that each pass their own tests stops both);
+    whose `trial_meta.json#source_binary_id` is the selected binary; and whose
+    `validate_meta.json`, when present, is `pass` (the one writer, post_judge, runs after the
+    judge; a revocation rewrites the status to `revoked`). A B with no such run contributes
+    nothing.
 
     Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
     whether B's own Validate is certified is never asked — B's verdict depends on this run's
@@ -2584,19 +2592,18 @@ def resolve_comparands(
                 continue
             if trial.get("source_binary_id") != build.binary_id:
                 continue
-            own = verdict.get("own_verdict", verdict.get("self_verdict"))
-            if own not in COMPARAND_OWN_VERDICTS:
+            if verdict.get("ir_hash") != ir_hash:
                 continue
-            review = _read_json_or_none(node_dir / "semantic_review.json")
-            if (node_dir / "semantic_review.json").exists() and not (
-                    isinstance(review, dict) and review.get("decision") == "pass"):
+            if verdict.get("own_verdict") not in COMPARAND_OWN_VERDICTS:
                 continue
-            # A revocation (`_revoke_stage_meta`, the one writer) rewrites the meta's status;
-            # any other status — a run failed by a cross-target disagreement included — keeps
-            # the run a reference.
+            if verdict.get("self_verdict") in COMPARAND_OWN_VERDICTS:
+                review = _read_json_or_none(node_dir / "semantic_review.json")
+                if not (isinstance(review, dict) and review.get("decision") == "pass"):
+                    continue
             meta = _read_json_or_none(node_dir / "validate_meta.json")
-            if isinstance(meta, dict) and str(
-                    meta.get("verification_status", "")).strip().lower() == "revoked":
+            if (node_dir / "validate_meta.json").exists() and not (
+                    isinstance(meta, dict)
+                    and str(meta.get("verification_status", "")).strip().lower() == "pass"):
                 continue
             if best is None or rkey > best[0]:
                 best = (rkey, run.name, node_dir)

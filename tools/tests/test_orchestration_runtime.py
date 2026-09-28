@@ -28256,9 +28256,15 @@ class ResolveComparandsTests(unittest.TestCase):
             (sdir / "a.json").write_text('{"u": [1.0, 2.0]}')
         return refs
 
+    _PASS_REVIEW: ClassVar[dict[str, str]] = {"decision": "pass"}
+
     def _run(self, refs: dict[str, str], run_id: str, *, verdict: dict | None,
              binary_id: str | None = None, capture: str = '{"u": [1.0, 2.0]}',
-             review: dict | None = None, meta: dict | None = None) -> Path:
+             review: dict | None = _PASS_REVIEW, meta: dict | None = None) -> Path:
+        """A run of `refs`' binary; its verdict is stamped with this IR's hash unless it names
+        one (or is `None`), and a passing review is written unless `review` says otherwise."""
+        if verdict is not None and "ir_hash" not in verdict:
+            verdict = {"ir_hash": self._ir_hash(), **verdict}
         node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
         (node / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
         (node / "raw" / "state_snapshots" / "a.json").write_text(capture)
@@ -28284,8 +28290,19 @@ class ResolveComparandsTests(unittest.TestCase):
                                       target=_TP, **kw)
 
     def _seed_b(self) -> dict[str, str]:
+        """A and B certified; B's fixture run then carries what an R4-d verdict carries
+        (`own_verdict`, `ir_hash`), which `certify_node`'s stub verdict does not."""
         self._certify(_TP)
-        return self._certify(self.b, orch="orch_b")
+        b = self._certify(self.b, orch="orch_b")
+        self._stamp_fixture_verdict(b)
+        return b
+
+    def _stamp_fixture_verdict(self, refs: dict[str, str]) -> None:
+        path = (self.repo / refs["pipeline_ref"] / "runs" / "run_20260101_001" / refs["safe"]
+                / "verdict.json")
+        doc = json.loads(path.read_text())
+        path.write_text(json.dumps({**doc, "own_verdict": doc["self_verdict"],
+                                    "ir_hash": self._ir_hash()}))
 
     def test_the_latest_eligible_run_of_the_other_target_is_selected(self) -> None:
         from tools.primary_evidence import comparand_evidence_sha256
@@ -28305,9 +28322,14 @@ class ResolveComparandsTests(unittest.TestCase):
             ("no verdict", {"verdict": None}),
             ("another binary", {"verdict": good, "binary_id": "bin_20260101_999"}),
             ("own fail", {"verdict": {"self_verdict": "fail", "own_verdict": "fail"}}),
-            ("old verdict, self fail", {"verdict": {"self_verdict": "fail"}}),
+            ("a verdict from before own_verdict", {"verdict": {"self_verdict": "pass"}}),
+            ("evaluated over another IR",
+             {"verdict": {**good, "ir_hash": "sha256:" + "0" * 64}}),
+            ("no IR recorded", {"verdict": {**good, "ir_hash": None}}),
             ("judge failed", {"verdict": good, "review": {"decision": "fail"}}),
+            ("judge never decided", {"verdict": good, "review": None}),
             ("judge unreadable", {"verdict": good, "review": None}),
+            ("post_judge not pass", {"verdict": good, "meta": {"verification_status": "fail"}}),
             ("revoked", {"verdict": good, "meta": {"verification_status": "pass"}}),
         ]
         for label, kw in rows:
@@ -28324,9 +28346,17 @@ class ResolveComparandsTests(unittest.TestCase):
                                            reason="test", trigger_agent_run_id="t")
                 self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
-    def test_a_verdict_without_own_verdict_falls_back_to_self_verdict(self) -> None:
+    def test_an_xfail_run_the_judge_passed_is_eligible(self) -> None:
         b = self._seed_b()
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail", "own_verdict": "xfail"})
+        self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_a_run_that_failed_only_a_cross_target_record_needs_no_review(self) -> None:
+        """The judge never runs on a failing verdict, so a run whose own evidence passed and
+        whose cross-target record failed stays a reference without one (plan decision 6)."""
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", review=None,
+                  verdict={"self_verdict": "fail", "own_verdict": "pass"})
         self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
     def test_the_certified_fixture_run_itself_is_eligible(self) -> None:

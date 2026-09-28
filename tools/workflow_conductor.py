@@ -11532,6 +11532,14 @@ class Conductor:
                 "per_test": [],
                 "predicate_error": f"{type(exc).__name__}: {exc}"[:400],
             }
+        # The IR this verdict was evaluated over (issue #324): the output hash the validate key
+        # bound. Another target's `resolve_comparands` reads it, because the binary alone does
+        # not say which IR's cases and predicates a run was judged on.
+        record = self._phase_derivations.get((refs.node_key, "validate"))
+        inputs = record.get("derivation_inputs") if isinstance(record, dict) else None
+        ir_hash = inputs.get("ir") if isinstance(inputs, dict) else None
+        if isinstance(ir_hash, str) and ir_hash:
+            doc["ir_hash"] = ir_hash
         self._write_run_node_meta(refs, "verdict.json", doc)
         return doc
 

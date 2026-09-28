@@ -880,6 +880,22 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
     raise PrimaryEvidenceError(f"{type(node).__name__} is not admitted")  # unreachable past parse
 
 
+def _shape_disagreement(env: CaseEnv, cenv: CaseEnv) -> str | None:
+    """A description of the first captured variable whose shape differs between this run's
+    case and the comparand's (the same case of the same IR), or None. A comparand variant
+    that sized its state differently passes its own gates (a symbolic extent is not pinned to
+    the case's inputs) and differs from this one in the state itself."""
+    for point in CAPTURE_POINTS:
+        mine = env.initial if point == "initial" else env.final
+        theirs = cenv.initial if point == "initial" else cenv.final
+        for var in sorted(set(mine or {}) & set(theirs or {})):
+            a, b = np.shape(mine[var]), np.shape(theirs[var])  # type: ignore[index]
+            if a != b:
+                return (f"{point}.{var}: shape {list(a)} here, {list(b)} in the comparand "
+                        f"(case {env.case_id!r})")
+    return None
+
+
 def _capture_value(env: CaseEnv, point: str, var: str, *, who: str = "this run") -> Any:
     table = env.initial if point == "initial" else env.final
     if table is None:
@@ -1007,7 +1023,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     per target case, each ``evaluated[]`` element naming its ``comparand`` target id; the
     record's ``comparands`` lists the comparand runs (`ComparandEvidence.detail`). A mismatch
     against one comparand stops that comparand's cases and the rest are still evaluated; a
-    structural error on any comparand makes the record ``structural``. With no comparand at
+    captured variable whose SHAPE differs between the two runs is such a mismatch
+    (``reason: comparand_shape_mismatch``, ``physics``), and any other evaluation error on any
+    comparand makes the record ``structural``. With no comparand at
     all the record is ``kind: no_comparand``, satisfied, with nothing evaluated — the first
     variant of a node has no reference, and the record says so rather than looking like a
     comparison that held. Every other predicate's record carries ``comparands: []``."""
@@ -1081,6 +1099,18 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                     at_envs = {t: env_for(t) for t in targets}
                     cenv = (env_for(cid, comp.run_dir, f"comparand:{comp.target_id}")
                             if comp is not None else None)
+                    mismatch = _shape_disagreement(env, cenv) if cenv is not None else None
+                    if mismatch is not None:
+                        # The two variants disagree on the state itself, not on this run's
+                        # evidence: a comparison that failed (`physics`), routed like a value
+                        # disagreement, never a structural gap charged to this run (round 2).
+                        record["evaluated"].append({**tag, "case": cid, "satisfied": False,
+                                                    "reason": "comparand_shape_mismatch",
+                                                    "error": mismatch})
+                        record["satisfied"] = False
+                        if record["kind"] != "structural":
+                            record["kind"] = "physics"
+                        break
                     binds = evaluate_binds(pred.get("bind"), env, at_envs, cenv)
                     value = _scalar(evaluate(tree, env, at_envs=at_envs, binds=binds,
                                              comparand_env=cenv), f"{loc}.expr")
