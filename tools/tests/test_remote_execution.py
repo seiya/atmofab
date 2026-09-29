@@ -1191,6 +1191,86 @@ class SchedulerTests(unittest.TestCase):
                          ("timeout", "make", "zz-cc", *trace))
 
 
+class SiteSetupTests(unittest.TestCase):
+    """A site's `setup` lines: the environment every check and command of a job runs in, set
+    inside the job — under a scheduler, on the node the job runs on — and asked of the launch
+    probe before the programs the job script asks for."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+        self.tools = self.h.root / "site-tools"
+        self.tools.mkdir()
+        _script(self.tools / "zz-cc", "exit 0\n")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _setup(self, *lines: str, **kw) -> None:
+        self.h.site = dataclasses.replace(self.h.site, setup=lines, **kw)
+        self.h.job = rx.job_dir(self.h.site, "orch_1", "arid-1")
+
+    def _run_request(self, **kw) -> rx.JobRequest:
+        return self.h.request(self.h.command("run", (f"{self.h.job}/bin/runner",)), **kw)
+
+    def test_what_setup_exports_reaches_every_check_and_command(self) -> None:
+        self._setup(f"export PATH={self.tools}:$PATH", "KNOB=from-setup; export KNOB")
+        result = self.h.run(self._run_request(required_programs=("zz-cc",)))
+        self.assertTrue(result.results[0]["ok"])
+        recorded = json.loads((result.collected / "run" / "argv.json").read_text())
+        self.assertEqual(recorded["env"], "from-setup")
+
+    def test_a_failing_setup_line_is_the_hosts_failure_and_nothing_after_it_runs(self) -> None:
+        planted = self.h.root / "after-the-failure"
+        self._setup("true", "false  # a module that is not there", f"touch {planted}")
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    r"ssh exited 7.*setup\[1\] exited non-zero: false"):
+            self.h.run(self._run_request())
+        self.assertFalse(planted.exists())
+        self.assertEqual(self.h.log_entries("run"), [])
+
+    def test_setup_output_is_not_read_and_an_unset_variable_does_not_end_it(self) -> None:
+        """A setup line's stdout goes to stderr: a line on the status channel would be read
+        (here, a second status for the command, which is refused). `set -u` is lifted for the
+        lines, since an environment-module function reads variables it has not set."""
+        self._setup(f"echo '{rx.STATUS_MARKER} run 0 1 2'", 'echo "${ZZ_NEVER_SET_X}"')
+        result = self.h.run(self._run_request())
+        self.assertTrue(result.results[0]["ok"])
+
+    def test_under_a_scheduler_the_lines_run_inside_the_job(self) -> None:
+        line = '[ -n "${SLURM_JOB_ID-}" ]'
+        self._setup(line)
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 7"):
+            self.h.run(self._run_request())
+        # A refused job leaves its directory at the site, and its local one.
+        shutil.rmtree(self.h.local / "tmp")
+        shutil.rmtree(self.h.job)
+        self._setup(line, scheduler="slurm")
+        self.assertTrue(self.h.run(self._run_request()).results[0]["ok"])
+
+    def _probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
+        with self.h.env(**knobs):
+            return rx.probe_site(self.h.site, exes)
+
+    def test_the_probe_asks_for_the_jobs_programs_after_the_setup(self) -> None:
+        self.assertEqual(self._probe("zz-cc").missing, ("zz-cc",))
+        self._setup(f"export PATH={self.tools}:$PATH", "echo chatty")
+        self.assertEqual(self._probe("zz-cc"), rx.SiteProbe(missing=()))
+
+    def test_the_probe_asks_for_the_schedulers_program_before_the_setup(self) -> None:
+        """The job's prefix runs on the login before the job script, so `setup` does not reach
+        it: a scheduler program only a setup line puts on PATH is missing."""
+        bare = _bare_path(self.h.root, without="")
+        self._setup(f"export PATH={self.h.shims}:{self.tools}:$PATH", scheduler="slurm")
+        got = self._probe("srun", "zz-cc", SHIM_SSH_PATH=str(bare))
+        self.assertEqual(got.missing, ("srun",))
+
+    def test_the_probe_names_a_failing_setup_once(self) -> None:
+        self._setup("false", "true", "exit_code_2() { return 2; }; exit_code_2")
+        self.assertEqual(self._probe("sh"),
+                         rx.SiteProbe(missing=(), problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+
+
 class SiteSmokeTests(unittest.TestCase):
     """`tools/site_smoke.py` over the ssh shim: the probe, then one job running the shell
     command at the site."""

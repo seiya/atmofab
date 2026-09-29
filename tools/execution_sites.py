@@ -23,7 +23,10 @@ same reason (`_SHELL_ACTIVE_CHARS`), read from the server rather than copied. A
 `scheduler_directives` word reaches the remote shell only as one `shlex.quote`d argv word of the
 prefix the scheduler's backend spells (`remote_execution._run_job`), so it is refused only for a
 character that is not printable ASCII: a real directive's `|`, `[` or `'` is the scheduler's
-syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2).
+syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2). A `setup` line is
+shell text by design — it sets the environment the site's commands run in (an `export`, a
+module load) — so it is refused only for what is not printable ASCII, which includes a line
+break: each entry is one line (`remote_execution.render_job_script` runs it).
 
 The driver (`tools/run_workflow.py`) calls `load_sites` once per run, refuses with
 `site_violations`, and hands the resolved `Site` to the conductor, whose `Build` and
@@ -76,7 +79,7 @@ SITES_CONFIG_RULES: frozenset[str] = frozenset({
 
 _TOP_KEYS = frozenset({"sites_version", "sites", "targets"})
 _REMOTE_REQUIRED = frozenset({"host", "workdir", "executes", "scheduler"})
-_REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec"})
+_REMOTE_OPTIONAL = frozenset({"scheduler_directives", "queue_timeout_sec", "setup"})
 #: The fields that only mean something to a batch scheduler; a `none` site may not carry them.
 _SCHEDULER_ONLY = ("scheduler_directives", "queue_timeout_sec")
 _LOCAL_KEYS = frozenset({"executes"})
@@ -157,6 +160,9 @@ class Site:
     scheduler: str = DIRECT_SCHEDULER
     scheduler_directives: tuple[str, ...] = ()
     queue_timeout_sec: int | None = None
+    #: Shell lines run, in order, before anything else of a job at this site and before the
+    #: launch probe's program checks: the environment the site's commands run in.
+    setup: tuple[str, ...] = ()
 
     @property
     def is_local(self) -> bool:
@@ -296,9 +302,20 @@ def _remote_site(site_id: str, body: dict, where: str) -> Site:
                                    f"must be an integer >= 1, got {raw!r}",
                                    where=f"{where}.queue_timeout_sec")
         queue_timeout = raw
+    setup: tuple[str, ...] = ()
+    if "setup" in body:
+        raw = body["setup"]
+        if not isinstance(raw, list):
+            raise SitesConfigError("sites_config_invalid_field",
+                                   f"must be a list of shell lines, got {raw!r}",
+                                   where=f"{where}.setup")
+        setup = tuple(
+            _remote_safe(_string(line, f"{where}.setup[{i}]"), f"{where}.setup[{i}]",
+                         spaces=True, quoted=True)
+            for i, line in enumerate(raw))
     return Site(site_id=site_id, executes=executes, host=host, workdir=workdir,
                 scheduler=scheduler, scheduler_directives=directives,
-                queue_timeout_sec=queue_timeout)
+                queue_timeout_sec=queue_timeout, setup=setup)
 
 
 def _parse(doc: Any, repo_root: Path) -> tuple[dict[str, Site], dict[str, str]]:
