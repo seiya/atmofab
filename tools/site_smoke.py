@@ -18,8 +18,8 @@ target's Validate does.
 The probe's answers include the site's machine and C library. When either would refuse a binary
 built here (`site_machine_mismatch`, `site_libc_mismatch`), a note says so and the job is sent
 with the site's own values, because a shell command is not a shipped binary — except a site
-that names no C library: the job then carries this host's, and the job script's refusal is the
-answer (a binary shipped from here would not run there).
+whose C library answer is none or not in `parse_libc`'s shape: the job then carries this host's,
+and the job script's refusal is the answer (a binary shipped from here is refused there).
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         shortfall = rx.libc_shortfall(libc, probe.libc)
         if shortfall is not None:
             print(f"note: {shortfall}")
-            if probe.libc is not None:
+            if rx.parse_libc(probe.libc) is not None:
                 libc = probe.libc
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

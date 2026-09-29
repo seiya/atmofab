@@ -1278,7 +1278,7 @@ class LibcRuleTests(unittest.TestCase):
         answers = ("glibc 2.35", "glibc 2.36", "glibc 2.34", "glibc 3.0", "glibc 10.1",
                    "glibc 2.35.1", "glibc 2.35.", "glibc 2.35.1.2", "glibc 2.35.x", "glibc 2.35.1x", "glibc 02.035", "glibc 1.99",
                    "", "glibc", "glibc 2", "glibc 2.", "glibc .35", "glibc 2..35", "glibc 2.x",
-                   "glibc 2.35x", "glibc 3.1x", "glibc 2.35.1 x", "glibc 2.35. junk",
+                   "glibc 2.35x", "glibc 3", "glibc 3.1x", "glibc 2.35.1 x", "glibc 2.35. junk",
                    "glibc 2.35-1", "glibc  2.35", " glibc 2.35", "glibc 2.35 ", "glibc 2.35\t",
                    "musl 2.35", "glibcx 2.35", "2.35", "glibc 999999999.0",
                    "glibc 1000000000.0", "glibc 2.1000000000", "glibc 99999999999999999999.0",
@@ -1357,6 +1357,19 @@ class SiteSmokeTests(unittest.TestCase):
         self.assertIn(f"libc={family} 0.1", out)
         self.assertIn("note: the site's C library is", out)
         self.assertIn("RESULT: PASS", out)
+
+    def test_a_site_answer_out_of_shape_is_refused_by_the_script_not_blamed_on_the_host(
+            self) -> None:
+        bad = self.h.root / "bad_libc"
+        bad.mkdir()
+        (bad / "getconf").write_text("#!/bin/sh\necho 'glibc 2.39-foo'\n")
+        (bad / "getconf").chmod(0o755)
+        code, out, err = self.smoke(SHIM_SSH_PATH=f"{bad}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(code, 1)
+        self.assertIn("libc=glibc 2.39-foo", out)
+        self.assertNotIn("this host does not name its C library", err)
+        self.assertIn(f"the site C library (glibc 2.39-foo) is not {rx.host_libc()} or newer",
+                      err)
 
     def test_a_host_that_names_no_libc_is_a_failed_job_not_a_traceback(self) -> None:
         with mock.patch.object(rx, "host_libc", return_value=None):

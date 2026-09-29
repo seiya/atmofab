@@ -300,12 +300,14 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
         return {"status": "fail", "reason": "site_libc_mismatch", "site": site.site_id,
                 "host_libc": host_libc, "site_libc": probe.libc,
                 "detail": (f"site {site.site_id}: {shortfall}; " + (
-                    f"map target {target_profile.target_id} in sites.yaml to a site whose C "
-                    f"library is {host_libc} or newer, or run the workflow from a host whose C "
-                    f"library is not newer than the site's"
-                    if remote_execution.parse_libc(host_libc) is not None else
                     "no site can pass this until the workflow runs from a host that names its "
-                    "C library (a glibc host)")),
+                    "C library (a glibc host)"
+                    if remote_execution.parse_libc(host_libc) is None else
+                    f"map target {target_profile.target_id} in sites.yaml to a site whose C "
+                    f"library is {host_libc} or newer"
+                    + ("" if remote_execution.parse_libc(probe.libc) is None else
+                       ", or run the workflow from a host whose C library is not newer than "
+                       "the site's"))),
                 "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     if probe.missing:
         return {"status": "fail", "reason": "missing_required_site_tools",

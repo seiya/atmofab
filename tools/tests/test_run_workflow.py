@@ -10412,7 +10412,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(event["host_libc"], "glibc 99.0")
         self.assertEqual(event["site_libc"], os.confstr("CS_GNU_LIBC_VERSION"))
         for part in ("glibc 99.0", os.confstr("CS_GNU_LIBC_VERSION"), "sites.yaml", "t_a",
-                     "or newer"):
+                     "or newer", "run the workflow from a host"):
             self.assertIn(part, event["detail"])
         self.assertEqual(event["docs_ref"], "docs/ORCHESTRATION.md#execution-sites")
         self.assertEqual(calls, [])
@@ -10433,6 +10433,9 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
         self.assertIsNone(events[-1]["site_libc"])
+        # No host is older than no answer, so the remedy is the re-mapping alone.
+        self.assertIn("sites.yaml", events[-1]["detail"])
+        self.assertNotIn("run the workflow from a host", events[-1]["detail"])
         self.assertEqual(calls, [])
 
     def test_a_host_that_names_no_libc_is_refused_at_launch(self) -> None:
