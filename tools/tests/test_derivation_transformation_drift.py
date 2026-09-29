@@ -436,6 +436,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-8 (issue #327): the grammar block states grammar 4's `atan2` — a compile
     # leaf can transcribe a discrete mode's phase, so the key moves.
     "compile-docs-8": "d8e3d56132520d638b0a71ff7facf98012381d26f5efe3bba5e9f2febddfdb10",
+    # compile-docs-9 (issue #340): the schema block, section 1-1 and V3 state the rule for a
+    # quantity tests.md defines over the inputs and the time alone — the entry transcribes the
+    # tests.md §5 primary-evidence statement, and where none exists Compile fails; a compile
+    # leaf reading it refuses instead of inventing a corroborant, so the key moves.
+    "compile-docs-9": "d3b0ccfd1ece067a0602f9f056c310eb0f2d50e64903a4c39bd90c5285beff63",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
