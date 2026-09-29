@@ -423,12 +423,14 @@ def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str]) -> li
     """The script lines that run a site's `setup`, each line in the script's own shell so that
     what it exports reaches every later line, with its stdout sent to stderr — the script's
     stdout carries the marker lines, and a setup line's output is not one. `on_failure(i)` is
-    the shell text run when line `i` (0-based) exits non-zero."""
-    lines: list[str] = []
-    for i, line in enumerate(setup):
-        # The line on a line of its own, so a trailing comment in it cannot swallow the `}`.
-        lines += ["{", line, f"}} >&2 || {on_failure(i)}"]
-    return lines
+    the shell text run when line `i` (0-based) exits non-zero.
+
+    Each line runs as `command eval <line>`: a special built-in's error — `.` of a file that
+    is not there, an option this `sh` does not take — ends a non-interactive shell outright,
+    before its `||`, and `command` makes it an ordinary failure the `||` sees (dash, bash as
+    `sh` and busybox `sh` alike). A line that runs `exit` still ends the shell."""
+    return [f"command eval {shlex.quote(line)} >&2 || {on_failure(i)}"
+            for i, line in enumerate(setup)]
 
 
 def render_job_script(request: JobRequest) -> str:
@@ -467,14 +469,15 @@ def render_job_script(request: JobRequest) -> str:
              "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }"]
     if request.site.setup:
         # `set -u` is lifted around the lines: an environment-module shell function reads
-        # variables it has not set. After them the script's own options are set again, and
-        # `-e` is cleared: a line (or a file it sources) that leaves `-e` set would end the
-        # script at a command's non-zero exit, before its status line, and a kernel's own
-        # failure would be refused as the transport's.
+        # variables it has not set. After them the script's own options are set again: `-e`
+        # cleared, since a line (or a file it sources) that leaves it set would end the script
+        # at a command's non-zero exit, before its status line, and a kernel's own failure
+        # would be refused as the transport's; `-x` cleared, since its trace would be written
+        # into each command's recorded stderr.
         lines += ["set +u", *_setup_lines(
             request.site.setup,
             lambda i: f"fail 7 {q(f'setup[{i}] exited non-zero: {request.site.setup[i]}')}"),
-            "set +e -u"]
+            "set +e +x -u"]
     if request.machine is not None:
         lines.append(f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
                      + q(f"the machine is not {request.machine}, which the shipped binary was "
@@ -703,8 +706,9 @@ def _read_output(path: Path, remote: str) -> str:
 PROBE_MARKER = "atmofab-probe"
 
 
-#: What `probe_site` checks beyond the programs, each a POSIX test and the problem it names when
-#: the test fails; the job script refuses the same two conditions, later.
+#: What `probe_site` checks beyond the programs, each with the problem it names when it fails;
+#: the job script refuses each of them again, later (`setup` at a `none` site only is a probe
+#: problem; the others are the POSIX tests `probe_site` spells).
 _PROBE_CHECKS: tuple[tuple[str, str], ...] = (
     ("workdir", "the workdir cannot be made or is not writable"),
     ("workdir_exec", "a program in the workdir cannot be executed (a noexec mount)"),
@@ -768,7 +772,10 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
         # One problem line however many setup lines fail; the job script names the line. A
         # batch site's lines still run, for the programs asked after them, and a failure there
         # is not reported: the job asks again on the node it runs on.
+        # `-e` is cleared after them for the reason the job script clears it: a check below
+        # that fails would otherwise end the probe before its end line.
         *(["setup_failed=", *_setup_lines(tuple(site.setup), lambda i: "setup_failed=1"),
+           "set +e",
            *([f'[ -z "$setup_failed" ] || echo {PROBE_MARKER} problem setup']
              if site.scheduler == DIRECT_SCHEDULER else [])]
           if site.setup else []),

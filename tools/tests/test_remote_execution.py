@@ -1242,14 +1242,16 @@ class SiteSetupTests(unittest.TestCase):
         a command's non-zero exit before its status line: the kernel's own failure is its
         result, not a transport refusal. `-u` is set again after the lines; no line of the
         script after them reads an unset variable, so that half is pinned on the text."""
-        self._setup("set -e", "set +u")
+        self._setup("set -e", "set -x", "set +u")
         failing = self.h.command("run", (f"{self.h.job}/bin/runner",), env={"RUNNER_RC": "3"})
         result = self.h.run(self.h.request(failing))
         self.assertEqual(result.results[0]["return_code"], 3)
         self.assertFalse(result.results[0]["ok"])
+        # `-x` would have traced the command's own lines into its recorded stderr.
+        self.assertEqual(result.results[0]["stderr"], "runner stderr\n")
         lines = rx.render_job_script(self.h.request()).splitlines()
-        end = max(i for i, line in enumerate(lines) if line.startswith("} >&2 || fail 7"))
-        self.assertEqual(lines[end + 1], "set +e -u")
+        end = max(i for i, line in enumerate(lines) if "|| fail 7" in line)
+        self.assertEqual(lines[end + 1], "set +e +x -u")
 
     def test_under_a_scheduler_the_lines_run_inside_the_job(self) -> None:
         line = '[ -n "${SLURM_JOB_ID-}" ]'
@@ -1283,6 +1285,27 @@ class SiteSetupTests(unittest.TestCase):
         self._setup("false", "true", "exit_code_2() { return 2; }; exit_code_2")
         self.assertEqual(self._probe("sh"),
                          rx.SiteProbe(missing=(), problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+
+    def test_a_line_whose_error_would_end_the_shell_is_a_failing_line(self) -> None:
+        """`.` of a missing file is a special built-in's error, which ends a non-interactive
+        `sh` before its `||`: the job must still say which line failed, a `none` site's probe
+        must name the setup problem rather than a probe that did not end, and a batch site's
+        probe must not refuse it (the file may be on the compute node only)."""
+        missing = f". {self.h.root}/compute-node-only.sh"
+        self._setup("true", missing)
+        with self.assertRaisesRegex(rx.RemoteExecutionError, r"(?s)ssh exited 7.*setup\[1\]"):
+            self.h.run(self._run_request())
+        self.assertEqual(self._probe("sh").problems, (dict(rx._PROBE_CHECKS)["setup"],))
+        self._setup(missing, scheduler="slurm")
+        self.assertEqual(self._probe("sh"), rx.SiteProbe(missing=()))
+
+    def test_a_line_that_leaves_e_set_does_not_end_the_probe(self) -> None:
+        """A check after the lines that fails (here, a workdir where nothing runs: the site has
+        no `chmod`) must be named, not end the probe before its end line."""
+        self._setup("set -e")
+        bare = _bare_path(self.h.root, without="chmod")
+        got = self._probe("sh", SHIM_SSH_PATH=str(bare))
+        self.assertEqual(got.problems, (dict(rx._PROBE_CHECKS)["workdir_exec"],))
 
     def test_a_batch_sites_probe_runs_the_lines_and_does_not_report_a_failing_one(self) -> None:
         """The login the probe reaches is not the node a batch job runs on: a line that holds

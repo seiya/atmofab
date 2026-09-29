@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"site {site.site_id}: host={site.host} workdir={site.workdir} "
           f"scheduler={site.scheduler} directives={list(site.scheduler_directives)} "
-          f"queue_timeout_sec={site.queue_timeout_sec}")
+          f"queue_timeout_sec={site.queue_timeout_sec} setup={list(site.setup)}")
 
     if not args.no_probe:
         exes = (*rx.REMOTE_EXECUTABLES, *rx.scheduler_executables(site.scheduler))
