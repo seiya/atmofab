@@ -162,7 +162,7 @@ io_contract:
       expr: "abs(M1 - M0) / max(abs(M0), 1e-14)"   # must evaluate to a finite SCALAR; the normaliser is the one tests.md defines (a spec whose signed initial mass is zero normalises by sum(abs(initial.u)) * dx instead)
       op: "le"                             # eq | ne | le | ge | lt | gt (no `includes`, no `na_allowed`: the host always has the state)
       value: 1.0e-10                       # a FINITE number, OR {per_case: {<case_id>: v}} with per_case: true
-  # primary predicate grammar (closed; `tools/primary_evidence.py` GRAMMAR_VERSION 3 — gated at --stage compile
+  # primary predicate grammar (closed; `tools/primary_evidence.py` GRAMMAR_VERSION 4 — gated at --stage compile
   # by parse + name resolution; what the gate cannot see — the captured arrays' extents, a division by zero —
   # is an evaluation error at Validate.execute, recorded on that predicate, never a crash):
   #   operators   + - * / ** and unary -; numeric constants; `pi`, `e`; a tree at most 64 levels deep
@@ -183,6 +183,7 @@ io_contract:
   #               evaluated once per bound comparand in every case it reads (with none bound it holds vacuously)
   #   functions   sum, mean, min, max (one argument reduces; two to eight are elementwise), abs, sqrt, exp, log,
   #               log2, sin, cos, norm2 (sqrt of the sum of squares), maxabs, ceil, floor,
+  #               atan2(y, x) (elementwise, in [-pi, pi]; grammar 4 — a discrete mode's phase),
   #               roll(a, s0[, s1, ...]) (one INTEGER shift per axis, rank ≤ 4; a non-integer shift is an evaluation error)
   #               — positional arguments only; the names are exactly the keys of `FUNCTIONS` in that module
   #   refused     a subscript or slice, a comparison, `and` / `or` / `not`, a conditional, a lambda, a

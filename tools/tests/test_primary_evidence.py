@@ -194,9 +194,9 @@ class GrammarAllowlistTest(unittest.TestCase):
             "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
             "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
-            "floor": (1, 1)})
+            "floor": (1, 1), "atan2": (2, 2)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 3)
+        self.assertEqual(pe.GRAMMAR_VERSION, 4)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
@@ -524,6 +524,56 @@ class EvaluationTest(unittest.TestCase):
         [rec] = self._eval([self._one("sum(abs(roll(final.h, 2.0, 0) - at('a').final.h))",
                                       op="le", value=0.0)])
         self.assertTrue(rec["satisfied"], rec)
+
+    def test_atan2_is_the_quadrant_correct_elementwise_arctangent(self) -> None:
+        """Grammar 4 (issue #327): `atan2(y, x)` keeps the quadrant `atan(y / x)` loses, pairs
+        its operands under the ordinary shape rule, and a mismatched pair is structural."""
+        env = pe.CaseEnv(case_id="c", initial=None, final={"u": np.array([-1.0, 1.0])},
+                         inputs={}, coordinates={})
+        for src, want in (("atan2(1, -1)", 3 * np.pi / 4), ("atan2(-1, -1)", -3 * np.pi / 4),
+                          ("atan2(0, -1)", np.pi), ("atan2(1, 0)", np.pi / 2)):
+            with self.subTest(src=src):
+                self.assertAlmostEqual(float(pe.evaluate(pe.parse_expr(src), env)), want)
+        got = pe.evaluate(pe.parse_expr("atan2(final.u, -1)"), env)
+        np.testing.assert_allclose(got, [-3 * np.pi / 4, 3 * np.pi / 4])
+        env.final["v"] = np.array([1.0, 2.0, 3.0])
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"atan2\(\).*do not pair"):
+            pe.evaluate(pe.parse_expr("sum(atan2(final.u, final.v))"), env)
+
+    def test_atan2_corroborates_a_discrete_mode_against_g_to_the_n(self) -> None:
+        """The use grammar 4 exists for (issue #327): the discrete Fourier mode of a linear
+        periodic update evolves by exactly G**n, whose phase needs `atan2`. The expression
+        holds at round-off on the specified update and fails on a 1e-4 coefficient error."""
+        nx, n, c, d = 64, 40, 0.39, 0.25
+        x = (np.arange(nx) + 0.5) / nx
+        u0 = np.sin(2 * np.pi * x)
+
+        def run(dfac: float) -> np.ndarray:
+            u = u0.copy()
+            for _ in range(n):
+                um, up = np.roll(u, 1), np.roll(u, -1)
+                u = u - c * (u - um) + d * dfac * (up - 2 * u + um)
+            return u
+
+        bind = {
+            "th": "2 * pi / inputs.nx", "re": "1 - (inputs.c + 2 * inputs.d) * (1 - cos(th))",
+            "im": "-inputs.c * sin(th)", "gm": "sqrt(re**2 + im**2) ** inputs.n",
+            "ph": "inputs.n * atan2(im, re)",
+            "a0": "sum(initial.u * cos(2 * pi * x))", "b0": "-sum(initial.u * sin(2 * pi * x))",
+            "a1": "sum(final.u * cos(2 * pi * x))", "b1": "-sum(final.u * sin(2 * pi * x))",
+            "pa": "gm * (cos(ph) * a0 - sin(ph) * b0)", "pb": "gm * (sin(ph) * a0 + cos(ph) * b0)",
+        }
+        expr = "sqrt((a1 - pa)**2 + (b1 - pb)**2) / sqrt(a0**2 + b0**2)"
+        inputs = {"nx": float(nx), "n": float(n), "c": c, "d": d}
+
+        def value(u1: np.ndarray) -> float:
+            env = pe.CaseEnv(case_id="c", initial={"u": u0}, final={"u": u1}, inputs=inputs,
+                             coordinates={"x": x})
+            binds = pe.evaluate_binds(bind, env, {})
+            return float(pe.evaluate(pe.parse_expr(expr), env, binds=binds))
+
+        self.assertLess(value(run(1.0)), 1e-12)
+        self.assertGreater(value(run(1.0001)), 1e-6)
 
     def test_at_outside_target_cases_is_structural(self) -> None:
         pred = {**self._one("sum(at('a').final.h)"), "target_cases": ["b"]}
@@ -1448,7 +1498,7 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu", "mpi"])
         self.assertEqual(set(cross["comparands"][0]),
                          {"target_id", "pipeline_ref", "run_id", "evidence"})
-        self.assertEqual(cross["grammar_version"], 3)
+        self.assertEqual(cross["grammar_version"], pe.GRAMMAR_VERSION)
         # an ordinary predicate is evaluated once, untagged, and lists no comparand
         self.assertEqual(mass["comparands"], [])
         self.assertEqual([e["case"] for e in mass["evaluated"]], ["a", "b"])

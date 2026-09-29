@@ -416,6 +416,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # reads the other named variables is not "a different variable" (a clarification; the
     # adoption run's IRs were compiled under the round-1 text and are unchanged by it).
     "compile-docs-7": "64673aef2dd4db32ff77d2445c584f59617fdec8b3ec0de85e0091a7f875240e",
+    # compile-docs-8 (issue #327): the grammar block states grammar 4's `atan2` — a compile
+    # leaf can transcribe a discrete mode's phase, so the key moves.
+    "compile-docs-8": "d8e3d56132520d638b0a71ff7facf98012381d26f5efe3bba5e9f2febddfdb10",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -754,6 +757,9 @@ PINNED_VERDICT: dict[str, str] = {
     # comparand of another state shape is a `physics` disagreement. Round 3: a passed verdict
     # needs a passing post-judge gate record (validate_meta is written `pass` before the gate).
     "verdict-6": "9808cac8401a744a1739d0fa2ba05a66a54ece50530ef1328c6388ee3d0858a2",
+    # verdict-7 (issue #327): grammar 4 — `atan2(y, x)` joins the function table, and every
+    # record carries `grammar_version: 4`.
+    "verdict-7": "9847c038a082ccae4a3ca3d6f539377a75fbf4e9f937aae0128ea1a7ad478e45",
 }
 
 
