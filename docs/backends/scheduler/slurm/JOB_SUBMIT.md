@@ -80,8 +80,8 @@ that runs long a refusal rather than the command's own timeout.
   that allows batch submission only cannot run this backend; the job is then refused when it
   runs, with `srun`'s own message.
 - The site's `workdir` at the same path on the machines Slurm runs the job on (a shared
-  filesystem). The launch probe asks the login only; the job script checks its programs, its
-  machine and its C library again, on the machine it runs on, before its first command.
+  filesystem). The launch probe asks the login only; the job script checks its programs again,
+  on the machine it runs on, before its first command.
 
 ## 3. What it does not do
 
@@ -104,4 +104,5 @@ that runs long a refusal rather than the command's own timeout.
   and a target whose parallel backend declares it runs at the `local` site only
   (`docs/backends/parallel/mpi/LAUNCHER.md` §4): with `--ntasks=N` this script would run `N`
   times, and a launcher inside one task would start its ranks within that task's allocation.
-  Placing a launcher at a batch site is outside issue #316.
+  Placing a launcher at a batch site is outside issue #316. A `Build` job (issue #333) is the
+  same one task: the build system's own parallelism runs inside it.

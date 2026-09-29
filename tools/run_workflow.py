@@ -192,12 +192,7 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     for a run that reaches `Build` — the binary is built at the site that runs it, issue #333);
     and for a remote site that the run will build at (every run that reaches `Build`),
     `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
-    did not come back), `site_machine_mismatch` (the shipped binary is built here, so the site
-    must be this machine type — asked first of the probe's answers, since the remedy for any
-    other is wasted on the wrong site), `site_libc_mismatch` (asked second, for the same reason:
-    the binary was linked against this host's C library, and a C library runs what an older one
-    of its family built, not the reverse — `remote_execution.libc_shortfall`, issue #330),
-    `missing_required_site_tools` (the programs `host_prerequisites.required_site_executables`
+    did not come back), `missing_required_site_tools` (the programs `host_prerequisites.required_site_executables`
     names for the run's phase) and `site_unusable`
     (`remote_execution.SiteProbe.problems`); for the local site, when the run reaches `Validate`,
     `missing_required_site_tools` for a program the binary runs under that this host lacks
@@ -206,15 +201,11 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     may run on. `sites_config`, when
     given, is the configuration `main` already loaded: a closure member is gated against it, with
     the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
-    import platform as _platform
-
-    from tools import remote_execution
     from tools.execution_sites import SitesConfigError, load_sites, site_violations
     from tools.host_prerequisites import execution_executables, required_site_executables
     from tools.remote_execution import (
         TRANSPORT_EXECUTABLES,
         RemoteExecutionError,
-        libc_shortfall,
         probe_site,
     )
     from tools.target_profile import NON_BUILDING_PHASES, NON_EXECUTING_PHASES
@@ -292,31 +283,6 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            f"that a non-interactive ssh to it succeeds without a prompt and that "
                            f"its login shell is a POSIX-family shell (see docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
-    # The machine first: a site of another machine type is the wrong site, and fixing its
-    # programs or its workdir first would be work thrown away.
-    if probe.machine != _platform.machine():
-        return {"status": "fail", "reason": "site_machine_mismatch", "site": site.site_id,
-                "detail": (f"site {site.site_id} is a {probe.machine} machine and this host, "
-                           f"which builds the binary it would run, is a "
-                           f"{_platform.machine()} one; map target "
-                           f"{target_profile.target_id} to a site of this machine type in "
-                           f"sites.yaml"),
-                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
-    host_libc = remote_execution.host_libc()
-    shortfall = libc_shortfall(host_libc, probe.libc)
-    if shortfall is not None:
-        return {"status": "fail", "reason": "site_libc_mismatch", "site": site.site_id,
-                "host_libc": host_libc, "site_libc": probe.libc,
-                "detail": (f"site {site.site_id}: {shortfall}; " + (
-                    "no site can pass this until the workflow runs from a host that names its "
-                    "C library (a glibc host)"
-                    if remote_execution.parse_libc(host_libc) is None else
-                    f"map target {target_profile.target_id} in sites.yaml to a site whose C "
-                    f"library is {host_libc} or newer"
-                    + ("" if remote_execution.parse_libc(probe.libc) is None else
-                       ", or run the workflow from a host whose C library is not newer than "
-                       "the site's"))),
-                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     if probe.missing:
         return {"status": "fail", "reason": "missing_required_site_tools",
                 "site": site.site_id, "missing": list(probe.missing), "required": list(required),
@@ -3066,8 +3032,8 @@ def _run_main(
     # read once here and handed down; a missing file is the local site for every target. The
     # site half of the "can this run execute" gate is refused as the registry half is
     # (`target_profile_invalid`), and a remote site is asked, in one ssh call, for the programs
-    # the jobs need, its machine and its C library, so an unreachable or unequipped site is
-    # refused before anything is billed.
+    # the jobs need and whether its workdir holds and runs them, so an unreachable or unequipped
+    # site is refused before anything is billed.
     sites_rejection = _sites_rejection(repo_root, target_profile, until_phase)
     if isinstance(sites_rejection, dict):
         _emit_unlogged_event(sites_rejection, args.stdout_format)
