@@ -205,8 +205,12 @@ A site is reached with the operator's own ssh configuration, which this reposito
 describe: a non-interactive `ssh <host> true` must succeed without a prompt, the login shell
 must be a POSIX-family shell (every call is an `sh` command line, which a csh-family shell
 refuses as `site_unreachable`), and the login's startup files must print nothing to stdout.
-The site's machine type and C library are not asked: the binary is built at the site that runs
-it (issue #333), so what it links against is what the site had when it built it. A shared
+The site's C library is not asked, and its machine type is not asked at launch: the binary is
+built at the site that runs it (issue #333), so what it links against is what the site had when
+it built it. The job script does ask the machine that runs a binary for the architecture that
+built it (`binary_meta.json#environment.platform.machine`): at a batch site the same directives
+can select a node of another architecture for the run than for the build, which is refused
+before the binary runs (a transport `fail_closed`) rather than recorded as its exit status. A shared
 library the build linked and the machine running the job does not resolve — another node of a
 batch site, or a site changed since the build — still makes the job refuse its first command
 (exit 127) mid-run — and under a launch prefix (a device trace's

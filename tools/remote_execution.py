@@ -58,8 +58,9 @@ Every way the evidence could be incomplete or not this job's is a refusal
   command ran it (the quality check's control file) would be recorded as unchanged;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a `timeout` that does not
-  take `-k`, a program — a command's or one of `required_programs` — it cannot find or that is
-  not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
+  take `-k`, a machine other than the one the shipped binary was built on when the request names
+  it, a program — a command's or one of `required_programs` — it cannot find or that is not an
+  executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
   and a job directory that cannot be removed after collection are refused, with the stage and
   the remote path in the message. A refused job's directory, when one was made, is left at the
   site.
@@ -235,9 +236,13 @@ class JobRequest:
     relative to the job directory, created before the first command. `platform_probe` is an argv
     whose first output line identifies the site's device, when the hardware class has one;
     `attribution` is recorded in each log entry exactly as the server records it: its
-    `orchestration_id` and `agent_run_id`, and nothing else. A shipped binary is one the site
-    built (issue #333): the request says nothing about the machine or the C library it was
-    built for.
+    `orchestration_id` and `agent_run_id`, and nothing else. `machine`, when given, is the
+    `uname -m` of the machine that built the shipped binary, which the machine running the job
+    must answer before anything runs: the binary is built at the site that runs it (issue #333),
+    but a batch site's directives may select a node of another architecture for the run than
+    for the build, and `timeout`'s `execvp` would hand a binary its loader cannot execute to
+    `sh`, whose syntax error (exit 2) would read as the kernel's exit status. Nothing is asked
+    of the C library: the build ran against the site's own.
 
     `required_programs` are programs a command runs beyond its own argv[0] — the compiler a
     build system invokes (issue #333). The script checks each one before any command, by the
@@ -256,6 +261,7 @@ class JobRequest:
     dirs: tuple[str, ...] = ()
     platform_probe: tuple[str, ...] | None = None
     attribution: Mapping[str, str] = field(default_factory=dict)
+    machine: str | None = None
     required_programs: tuple[str, ...] = ()
     toolchain_probe: tuple[str, ...] | None = None
 
@@ -345,6 +351,8 @@ def _validate(request: JobRequest) -> None:
     _under(request.job_dir, site.workdir.rstrip("/"), "job_dir")
     if request.job_dir == site.workdir.rstrip("/"):
         raise ValueError("job_dir is the site's workdir itself")
+    if request.machine is not None and not _ELEMENT.fullmatch(request.machine):
+        raise ValueError(f"machine {request.machine!r} is not a plain name")
     if not request.commands:
         raise ValueError("a job runs at least one command")
     for rel in request.ship:
@@ -409,7 +417,8 @@ def render_job_script(request: JobRequest) -> str:
     Each command writes `<tag>.stdout` / `<tag>.stderr` under the control directory, runs only
     when every earlier command exited 0, and is followed by its status line on the script's
     stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory
-    cannot be made, a program in `REMOTE_EXECUTABLES` is missing, or one of
+    cannot be made, the machine is not `request.machine` (when the request names one), a
+    program in `REMOTE_EXECUTABLES` is missing, or one of
     `request.required_programs` cannot be found or, named by a path, is not executable, and
     before a command whose program cannot be found or is not executable, by the same rule: the
     local server raises for a program it cannot start rather than reporting an exit status, so
@@ -434,6 +443,10 @@ def render_job_script(request: JobRequest) -> str:
     # there rather than gluing onto the first platform line.
     lines = ["#!/bin/sh", "set -u", "echo",
              "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }"]
+    if request.machine is not None:
+        lines.append(f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
+                     + q(f"the machine is not {request.machine}, which the shipped binary was "
+                         f"built on"))
     for prog in REMOTE_EXECUTABLES:
         lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || fail 3 {q(f'{prog} is missing')}")
     # Not every `timeout` takes `-k` (older busybox builds refuse it, exit 1), and a refusal

@@ -81,7 +81,8 @@ that runs long a refusal rather than the command's own timeout.
   runs, with `srun`'s own message.
 - The site's `workdir` at the same path on the machines Slurm runs the job on (a shared
   filesystem). The launch probe asks the login only; the job script checks its programs again,
-  on the machine it runs on, before its first command.
+  on the machine it runs on, before its first command, and for a `Validate` job that machine's
+  architecture against the one the binary was built on.
 
 ## 3. What it does not do
 

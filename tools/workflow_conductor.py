@@ -11262,6 +11262,19 @@ class Conductor:
                 f"re-validate it there: run this node as the target with "
                 f"--rederive build,validate (a --with-deps run forces the target only, so a "
                 f"dependency member is rebuilt by a run naming it)")
+        # The machine that built it, which the job script asks the machine running the job for
+        # (`JobRequest.machine`): at a batch site the same site and host can put the run on a
+        # node of another architecture than the build's. A remote record naming none is
+        # refused as a record naming no site is.
+        built_platform = built_env.get("platform") if isinstance(built_env, dict) else None
+        built_machine = built_platform.get("machine") if isinstance(built_platform, dict) else None
+        if site is not None and not site.is_local and not (
+                isinstance(built_machine, str) and built_machine):
+            raise RuntimeError(
+                f"binary {refs.source_binary_id} records no machine it was built on "
+                f"(binary_meta.json#environment.platform.machine), so nothing says which "
+                f"machine at site {site.site_id} can run it — rebuild it: run this node as the "
+                f"target with --rederive build,validate")
 
         # Attribution only: the server records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
@@ -11380,6 +11393,7 @@ class Conductor:
                 dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build"),
                 platform_probe=launch.platform_probe,
                 attribution=attribution,
+                machine=built_machine,
             ), local_tmp=run_tmp.parent / "site")
             # The collected job directory holds each command's working directory; they become
             # the local run and quality-check directories every later step reads.

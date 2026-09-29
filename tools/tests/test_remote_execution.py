@@ -794,6 +794,17 @@ class RefusalTests(unittest.TestCase):
         self._refused("ssh exited 4.*is not an executable file",
                       self.h.request(ship={"bin/runner": plain}))
 
+    def test_a_machine_other_than_the_binarys_is_the_hosts_failure(self) -> None:
+        """PR-3 round 1: the machine the shipped binary was built on, when the request names
+        it, is asked before anything runs; a request naming none asks nothing."""
+        ctx = self._refused("ssh exited 5.*the machine is not zz_arch, which the shipped "
+                            "binary was built on", self.h.request(machine="zz_arch"))
+        self.assertFalse((Path(self.h.job) / "ctl" / "run.stdout").exists(), ctx.exception)
+        h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+        result = h.run(h.request(machine=os.uname().machine))
+        self.assertTrue(all(r and r["ok"] for r in result.results), result.results)
+        self.assertNotIn("uname -m)\" =", rx.render_job_script(h.request()))
+
     def test_a_site_without_timeout_is_the_hosts_failure(self) -> None:
         bare = _bare_path(self.h.root, without="timeout")
         self._refused("(?s)ssh exited 3.*timeout is missing", SHIM_SSH_PATH=str(bare))
@@ -891,6 +902,11 @@ class RequestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, pattern):
             self.h.run(request)
         self.assertEqual(self.h.calls(), [])
+
+    def test_a_machine_that_is_not_a_plain_name_is_refused_before_transport(self) -> None:
+        for machine in ("", "x86 64", "$(id)", "-x"):
+            with self.subTest(machine=machine):
+                self._invalid("is not a plain name", self.h.request(machine=machine))
 
     def test_a_malformed_build_shape_is_refused_before_transport(self) -> None:
         """Issue #333's three fields: a program looked up from the login directory, not the

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import stat
 import subprocess
 import sys
@@ -118,15 +119,22 @@ class _Node:
         self.built_at(self.site.site_id)
         self.node_dir = self.repo / self.refs.run_node_dir()
 
-    def built_at(self, site_id: str | None, host: str | None = "same") -> None:
+    def built_at(self, site_id: str | None, host: str | None = "same",
+                 machine: str | None = "same") -> None:
         """Record where the binary was built (`binary_meta.json#environment.build_site`, issue
         #333) — by default the site it runs at and that site's host, which `Validate.execute`
-        requires; None writes a record with no `environment`, as a build-1 record has none."""
+        requires; None writes a record with no `environment`, as a build-1 record has none.
+        `machine` is the building machine's `uname -m`, by default the shim site's (this
+        host's); None leaves it out."""
+        if machine == "same":
+            machine = platform.machine()
         if host == "same":
             host = self.site.host if site_id == self.site.site_id else None
         meta: dict = {"binary_id": self.refs.binary_id}
         if site_id is not None:
-            meta["environment"] = {"platform": {"site": site_id},
+            meta["environment"] = {"platform": {"site": site_id,
+                                                **({} if machine is None else
+                                                   {"machine": machine})},
                                    "build_site": {"site": site_id, "host": host},
                                    "compiler_version": None}
         (self.repo / self.refs.binary_dir() / "binary_meta.json").write_text(
@@ -241,7 +249,6 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         env = trial["environment"]
         self.assertEqual(env["platform"]["site"], "box")
         # The site's own answers.
-        import platform
         self.assertEqual((env["platform"]["machine"], env["platform"]["node"]),
                          (platform.machine(), "site-node-zz"))
         self.assertNotEqual(platform.node(), "site-node-zz")
@@ -313,6 +320,27 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         n.built_at("box")
         self.assertEqual(n.execute()["returncode"], 0)
         self.assertTrue(n.calls())
+
+    def test_the_job_asks_for_the_machine_the_binary_was_built_on(self) -> None:
+        """PR-3 round 1: a batch site's same site and host can run the job on a node of another
+        architecture than the build's; the job script refuses it before anything runs (a
+        transport failure, not the kernel's exit 2 from `sh` reading the binary). A remote
+        record that names no building machine is refused before anything is contacted."""
+        n = self.n
+        n.built_at("box", machine="zz_arch")
+        result = n.substep()
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("deterministic_validate_error", result.stderr)
+        self.assertIn("the machine is not zz_arch", result.stderr)
+        self.assertFalse((n.node_dir / "trial_meta.json").exists())
+        for machine in (None, ""):
+            with self.subTest(machine=machine):
+                n.log.write_text("")
+                n.built_at("box", machine=machine)
+                result = n.substep()
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn("records no machine it was built on", result.stderr)
+                self.assertEqual(n.calls(), [])
 
     def test_the_site_must_execute_the_class_before_anything_is_contacted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
