@@ -1088,6 +1088,13 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.h.log_entries("run"), [])
         self.assertEqual(self.h.log_entries("qc"), [])
 
+    def test_the_compute_nodes_machine_is_asked_under_the_prefix(self) -> None:
+        """The same for the machine: the probe asked the login, the script asks the node."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "ssh exited 5.*the site machine is not zz_arch"):
+            self.h.run(self.h.request(machine="zz_arch"))
+        self.assertEqual(self.h.log_entries("run"), [])
+
     def test_the_compute_nodes_libc_is_asked_under_the_prefix(self) -> None:
         """The launch probe asks the login; under a scheduler the job script's own check is what
         asks the node the binary runs on (issue #330), so it must survive the prefix."""
@@ -1328,8 +1335,10 @@ class SiteSmokeTests(unittest.TestCase):
 
         from tools import site_smoke
         out, err = io.StringIO(), io.StringIO()
+        # `site_smoke` keeps its local directory when a job fails; keep it in this test's tree.
         with self.h.env(**knobs), contextlib.redirect_stdout(out), \
-                contextlib.redirect_stderr(err):
+                contextlib.redirect_stderr(err), \
+                mock.patch.object(tempfile, "tempdir", str(self.h.root)):
             code = site_smoke.main(["box", "--sites", str(self.sites), "--cmd", "echo OK",
                                     *extra])
         return code, out.getvalue(), err.getvalue()
@@ -1441,9 +1450,11 @@ class ProbeSiteTests(unittest.TestCase):
 
     def test_an_answer_not_in_the_probes_shape_is_refused(self) -> None:
         cases = {
-            "no machine line": "printf 'hello\\n'",
+            # Each carries one libc line, so only the machine count can refuse it.
+            "no machine line": f"echo '{rx.PROBE_MARKER} libc glibc 2.35'",
             "two machine lines": (f"echo '{rx.PROBE_MARKER} machine a'; "
-                                  f"echo '{rx.PROBE_MARKER} machine b'"),
+                                  f"echo '{rx.PROBE_MARKER} machine b'; "
+                                  f"echo '{rx.PROBE_MARKER} libc glibc 2.35'"),
             "an unknown kind": f"echo '{rx.PROBE_MARKER} weather sunny'",
             "a program not asked about": (f"echo '{rx.PROBE_MARKER} missing zz'; "
                                           f"echo '{rx.PROBE_MARKER} machine x'; "
