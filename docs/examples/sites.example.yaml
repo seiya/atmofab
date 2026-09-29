@@ -37,5 +37,6 @@ targets:                            # target id -> site id; a target not listed 
 # A binary is built at the site its target maps to and runs only there (issue #333). A site is
 # not part of any derivation key, so re-mapping a target re-runs neither a Build nor a Validate
 # already certified for it, and Validate refuses to run the old binary at the new site: add
-# `--rederive build` to rebuild and re-validate it there (for the target node only; a
+# `--rederive build,validate` to rebuild and re-validate it there — both: a rebuild that
+# reproduces the binary's bytes moves no validate key (for the target node only; a
 # --with-deps member is re-run by its own invocation).

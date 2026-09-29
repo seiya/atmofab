@@ -11234,23 +11234,34 @@ class Conductor:
         # A binary runs at the site that built it (issue #333). The build key does not hold the
         # site, so a target mapped to another site since its Build reuses that Build; its binary
         # was built for the machine and the runtime of the site it was built at, and running it
-        # elsewhere is the class of failure issue #330 met (a C library the site lacks). A record
-        # that names no build site is refused too: nothing then says where the binary can run.
-        # Before anything is shipped or run; a host-side failure, not the kernel's and no leaf's.
+        # elsewhere is the class of failure issue #330 met (a C library the site lacks). The site
+        # is its id AND its ssh destination: a site whose `host` was changed in `sites.yaml` is
+        # another machine under the same name (null at `local`). A record that names no build
+        # site is refused too: nothing then says where the binary can run. Before anything is
+        # shipped or run; a host-side failure, not the kernel's and no leaf's.
         built_meta = _read_json(self.repo_root / refs.binary_dir(refs.source_binary_id)
                                 / "binary_meta.json") or {}
         built_env = built_meta.get("environment") if isinstance(built_meta, dict) else None
         built_site = built_env.get("build_site") if isinstance(built_env, dict) else None
-        built_at = built_site.get("site") if isinstance(built_site, dict) else None
-        if built_at != launch.site:
+        built_at = (built_site.get("site"), built_site.get("host")) \
+            if isinstance(built_site, dict) else None
+        runs_at = (launch.site, None if site is None or site.is_local else site.host)
+        if built_at != runs_at:
+            def _named(where: tuple[Any, Any] | None) -> str:
+                if where is None or not isinstance(where[0], str):
+                    return "(none recorded)"
+                return where[0] if where[1] is None else f"{where[0]} (host {where[1]})"
+
+            # `--rederive build` alone is not enough: a rebuild at the new site that reproduces
+            # the binary's bytes leaves the validate key where it was, and the Validate
+            # certified at the old site would be adopted again.
             raise RuntimeError(
-                f"binary {refs.source_binary_id} was built at site "
-                f"{built_at if isinstance(built_at, str) else '(none recorded)'} and target "
-                f"{target.target_id} now runs at site {launch.site}; a binary runs at the site "
-                f"that built it — map the target back in sites.yaml, or rebuild it at "
-                f"{launch.site}: run this node as the target with --rederive build (a "
-                f"--with-deps run forces the target only, so a dependency member is rebuilt by a "
-                f"run naming it)")
+                f"binary {refs.source_binary_id} was built at site {_named(built_at)} and "
+                f"target {target.target_id} now runs at site {_named(runs_at)}; a binary runs "
+                f"at the site that built it — map the target back in sites.yaml, or rebuild and "
+                f"re-validate it there: run this node as the target with "
+                f"--rederive build,validate (a --with-deps run forces the target only, so a "
+                f"dependency member is rebuilt by a run naming it)")
 
         # Attribution only: the server records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).

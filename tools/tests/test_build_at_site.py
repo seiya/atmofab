@@ -201,6 +201,9 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
             [f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin", "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_cwd"], f"{n.job}/src")
         self.assertEqual(entry["timeout_sec"], build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC)
+        # The site's diagnostics are kept whole, as the local build keeps them.
+        self.assertEqual(entry["capture_limit"], wc._FULL_CAPTURE_LIMIT)
+        self.assertEqual(n.meta()["environment"]["build_site"]["host"], "box")
         self.assertEqual(n.meta()["command_id"], entry["command_id"])
 
     def test_the_whole_source_and_the_staged_sources_are_shipped_and_not_the_audit_logs(
