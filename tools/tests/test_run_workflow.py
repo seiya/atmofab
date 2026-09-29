@@ -10452,7 +10452,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
         (bare / compiler).symlink_to(shutil.which("true"))
-        assert shutil.which("getconf", path=str(bare)) is None
+        self.assertIsNone(shutil.which("getconf", path=str(bare)))
         with mock.patch.object(platform, "machine", return_value="zz_arch"):
             code, events, _calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 0, events)
