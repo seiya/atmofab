@@ -419,18 +419,30 @@ def _program_check(prog: str, indent: str) -> list[str]:
     ]
 
 
-def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str]) -> list[str]:
+#: The shell variable that holds the index of the setup line running, empty outside them.
+_SETUP_LINE_VAR = "atmofab_setup_line"
+
+
+def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str],
+                 on_exit: str) -> list[str]:
     """The script lines that run a site's `setup`, each line in the script's own shell so that
     what it exports reaches every later line, with its stdout sent to stderr — the script's
     stdout carries the marker lines, and a setup line's output is not one. `on_failure(i)` is
-    the shell text run when line `i` (0-based) exits non-zero.
+    the shell text run when line `i` (0-based) exits non-zero; `on_exit` is run, by an EXIT
+    trap, when a line ENDS the shell instead, with `$atmofab_setup_line` holding its index.
 
-    Each line runs as `command eval <line>`: a special built-in's error — `.` of a file that
-    is not there, an option this `sh` does not take — ends a non-interactive shell outright,
-    before its `||`, and `command` makes it an ordinary failure the `||` sees (dash, bash as
-    `sh` and busybox `sh` alike). A line that runs `exit` still ends the shell."""
-    return [f"command eval {shlex.quote(line)} >&2 || {on_failure(i)}"
-            for i, line in enumerate(setup)]
+    Each line runs as `command eval <line>`, which turns a special built-in's error — `.` of a
+    file that is not there, an option this `sh` does not take — into an ordinary failure the
+    `||` sees in dash and busybox `sh`. bash as `sh` still ends the shell for some of them
+    (`set -o <unknown>`, `${X?}` of an unset variable; measured on bash 5.1), and any shell
+    ends at a line's `exit`: the trap is what names those. It is removed after the lines."""
+    q = shlex.quote
+    v = _SETUP_LINE_VAR
+    trap = '[ -z "$' + v + '" ] || { ' + on_exit + '; }'
+    lines = [f"trap {q(trap)} EXIT"]
+    for i, line in enumerate(setup):
+        lines += [f"{v}={i}", f"command eval {q(line)} >&2 || {{ {v}=; {on_failure(i)}; }}"]
+    return lines + [f"{v}=", "trap - EXIT"]
 
 
 def render_job_script(request: JobRequest) -> str:
@@ -476,7 +488,8 @@ def render_job_script(request: JobRequest) -> str:
         # into each command's recorded stderr.
         lines += ["set +u", *_setup_lines(
             request.site.setup,
-            lambda i: f"fail 7 {q(f'setup[{i}] exited non-zero: {request.site.setup[i]}')}"),
+            lambda i: f"fail 7 {q(f'setup[{i}] exited non-zero: {request.site.setup[i]}')}",
+            f'echo "job script: setup[${_SETUP_LINE_VAR}] ended the shell" >&2; exit 7'),
             "set +e +x -u"]
     if request.machine is not None:
         lines.append(f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
@@ -771,10 +784,16 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
         *(line for exe, line in zip(executables, ask) if exe in prefix),
         # One problem line however many setup lines fail; the job script names the line. A
         # batch site's lines still run, for the programs asked after them, and a failure there
-        # is not reported: the job asks again on the node it runs on.
+        # is not reported: the job asks again on the node it runs on. A line that ENDS the
+        # shell ends the probe's questions with it; the trap still prints the end line (and,
+        # at a `none` site, the problem), so the probe is not read as one that did not run.
         # `-e` is cleared after them for the reason the job script clears it: a check below
         # that fails would otherwise end the probe before its end line.
-        *(["setup_failed=", *_setup_lines(tuple(site.setup), lambda i: "setup_failed=1"),
+        *(["setup_failed=",
+           *_setup_lines(tuple(site.setup), lambda i: "setup_failed=1",
+                         (f"echo {PROBE_MARKER} problem setup; "
+                          if site.scheduler == DIRECT_SCHEDULER else "")
+                         + f"echo {PROBE_MARKER} end; exit 0"),
            "set +e",
            *([f'[ -z "$setup_failed" ] || echo {PROBE_MARKER} problem setup']
              if site.scheduler == DIRECT_SCHEDULER else [])]

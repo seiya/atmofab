@@ -1250,7 +1250,8 @@ class SiteSetupTests(unittest.TestCase):
         # `-x` would have traced the command's own lines into its recorded stderr.
         self.assertEqual(result.results[0]["stderr"], "runner stderr\n")
         lines = rx.render_job_script(self.h.request()).splitlines()
-        end = max(i for i, line in enumerate(lines) if "|| fail 7" in line)
+        end = lines.index("trap - EXIT")
+        self.assertLess(max(i for i, line in enumerate(lines) if "|| {" in line), end)
         self.assertEqual(lines[end + 1], "set +e +x -u")
 
     def test_under_a_scheduler_the_lines_run_inside_the_job(self) -> None:
@@ -1298,6 +1299,31 @@ class SiteSetupTests(unittest.TestCase):
         self.assertEqual(self._probe("sh").problems, (dict(rx._PROBE_CHECKS)["setup"],))
         self._setup(missing, scheduler="slurm")
         self.assertEqual(self._probe("sh"), rx.SiteProbe(missing=()))
+
+    def test_a_line_that_ends_the_shell_is_named_where_bash_is_sh(self) -> None:
+        """bash as `sh` ends the shell for some errors `command` does not turn into a failure
+        (`${X?}` of an unset variable), and any shell ends at a line's `exit`: the job still
+        exits 7 naming the line, a `none` site's probe names the setup problem, and a batch
+        site's probe reports none — and none of them reads as a probe that did not end."""
+        bash_sh = str(_bare_path(self.h.root, without="", sh="bash"))
+        for line in (": ${ZZ_NEVER_SET_Q?}", "exit 0"):
+            with self.subTest(line=line):
+                self._setup("true", line, scheduler="none")
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            r"(?s)ssh exited 7.*setup\[1\] ended the shell"):
+                    self.h.run(self._run_request(), SHIM_SSH_PATH=bash_sh)
+                shutil.rmtree(self.h.local / "tmp")
+                shutil.rmtree(self.h.job)
+                self.assertEqual(self._probe("sh", SHIM_SSH_PATH=bash_sh),
+                                 rx.SiteProbe(missing=(),
+                                              problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+                self._setup("true", line, scheduler="slurm")
+                self.assertEqual(self._probe("sh", SHIM_SSH_PATH=bash_sh), rx.SiteProbe(missing=()))
+
+    def test_a_setup_variable_the_login_exports_is_not_read_as_a_failure(self) -> None:
+        self._setup("true")
+        self.assertEqual(self._probe("sh", setup_failed="1", atmofab_setup_line="0"),
+                         rx.SiteProbe(missing=()))
 
     def test_a_line_that_leaves_e_set_does_not_end_the_probe(self) -> None:
         """A check after the lines that fails (here, a workdir where nothing runs: the site's

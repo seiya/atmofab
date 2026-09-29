@@ -620,7 +620,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "62c2ded9aef0a9922fabb4ad562d34bebad9803d3d0b770091629c701e867866",
+    "build-2": "df6a89f5d73fccd79faf1909db6a184ba70d985df2f725ca8ec422a92395b580",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -736,7 +736,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "f66775abe04c3090f5bc58fbfad61cf0e1362fd6d8606805954e8d632ee69541",
+    "execute-8": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
