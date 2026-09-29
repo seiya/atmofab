@@ -821,6 +821,22 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(self.h.request().libc, rx.host_libc())
         self.assertIsNotNone(rx.host_libc())
 
+    def test_the_script_asks_the_machine_then_the_libc_then_the_programs(self) -> None:
+        """At a batch site the script's checks run on the compute node, which the launch probe
+        did not see: the "wrong site" answers come first, machine before C library, and both
+        before a missing program, whose remedy would be work on the wrong site."""
+        with self.subTest("machine before libc"):
+            h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+            with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                        "ssh exited 5.*the site machine is not zz_arch"):
+                h.run(h.request(machine="zz_arch", libc="glibc 99.0"))
+        with self.subTest("libc before a missing program"):
+            h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+            bare = _bare_path(h.root, without="timeout")
+            with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                        "ssh exited 5.*the site C library"):
+                h.run(h.request(libc="glibc 99.0"), SHIM_SSH_PATH=str(bare))
+
     def test_a_site_libc_equal_or_newer_runs_the_job(self) -> None:
         family, major, minor = rx.parse_libc(rx.host_libc())
         for libc in (f"{family} {major}.{minor}", f"{family} {major}.0", f"{family} 1.99",
