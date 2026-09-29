@@ -127,7 +127,7 @@ class NoDriftFromWhatActuallyRunsTests(unittest.TestCase):
         for build_system in ("make",):
             self.assertEqual(
                 server.build_system_executable(build_system),
-                server._build_command(build_system, None, 1, [])[0],
+                server.build_command(build_system, None, 1, [])[0],
             )
 
     def test_the_compiler_executable_is_the_registered_adapters_own_exe(self) -> None:

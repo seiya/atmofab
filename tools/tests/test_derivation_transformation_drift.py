@@ -203,6 +203,13 @@ def build_tuple() -> dict[str, str]:
     return {
         "build_runtime_server.tool_compile_project": _source_digest(server.tool_compile_project),
         "build_runtime_server._run_command": _source_digest(server._run_command),
+        # The argv table and the two defaults `tool_compile_project` builds with (issue #333
+        # PR-1 moved the defaults out of its body, which is what this tuple digested; round 1
+        # found the move had taken them out of the pin).
+        "build_runtime_server.build_command": _source_digest(server.build_command),
+        "build_runtime_server.default_build_jobs": _source_digest(server.default_build_jobs),
+        "build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC":
+            str(server.COMPILE_PROJECT_TIMEOUT_SEC),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         "Conductor._stage_dependency_sources":
             _source_digest(wc.Conductor._stage_dependency_sources),
@@ -570,7 +577,16 @@ PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #316, R4-c PR-1), behaviour-preserving: a comment in `_build_inproc`
     # (what `binary_meta.json#compiler` records under a compiler wrapper). The build's command
     # and its toolchain identity for every existing target are unchanged.
-    "build-1": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
+    # Re-pinned (issue #333, PR-1), behaviour-preserving: `tool_compile_project` reads its two
+    # defaults from `COMPILE_PROJECT_TIMEOUT_SEC` and `default_build_jobs()` (the same 1800 s and
+    # half the CPUs), and calls the argv table by its public name `build_command`, so a build at
+    # a remote site can be handed the same values. (Measured by diffing `build_tuple()` against
+    # origin/main 0f768622's: that row and no other.) And within PR-1's review (round 1): the
+    # tuple gained `build_command` and the two defaults, which the move had taken out of the
+    # digested body; their values are 0f768622's. The digest `build-1` shipped with at
+    # 0f768622 is kept below.
+    "build-1": "ae9423b40b3419e3e29535674b0b267508ed968655d5331a52d03581013f3f85",
+    "build-1@0f768622": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -671,7 +687,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "50d67b32185aa2e8adf91109a008dd3d2420783093de7b52ff2f6a597203ebd0",
+    "execute-8": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -690,6 +706,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # are not re-derived. (Measured by diffing `execute_tuple()` against origin/main
     # be296e1b's: that row and no other.) The digest `execute-8` shipped with at be296e1b:
     "execute-8@be296e1b": "690e8ac0e1e086c77fc93456a1282c164c6005b5f3e70c8a92003293cd3dfbe1",
+    # Re-pinned by issue #333 PR-1: one member moved, `tools/remote_execution.py`, which gained
+    # three request fields no caller passes yet — `CommandSpec.record_argv` (the entry's
+    # `command` in local paths), `JobRequest.required_programs` (checked before any command) and
+    # `JobRequest.toolchain_probe` (one more fact line, read into `JobResult.toolchain_version`).
+    # With each at its default the job script and the recorded entries are byte-identical, so a
+    # Validate.execute job produces the same record. (Measured by diffing `execute_tuple()`
+    # against origin/main 0f768622's: that row and no other.) The digest `execute-8` shipped
+    # with at 0f768622:
+    "execute-8@0f768622": "50d67b32185aa2e8adf91109a008dd3d2420783093de7b52ff2f6a597203ebd0",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

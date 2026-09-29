@@ -20,6 +20,12 @@ directory, an environment override set and a timeout, and the files to ship. It 
 what the commands are: the conductor composes them, and a build system's test target, its
 variable names and the runner's argv reach this module only as values. The one piece of the
 conductor's layout it asks for is the directories to create before the first command runs.
+Three more values serve a command that is a BUILD (issue #333): the argv to record in local
+paths (`CommandSpec.record_argv`), for an argv naming job directories no shipped file stands
+for; the programs a command runs beyond its argv[0] (`JobRequest.required_programs`, checked
+before any command, as an argv[0] is); and an argv whose answer is the toolchain's version
+(`JobRequest.toolchain_probe`), reduced at the site to one line by the rule the server reads
+this host's version by and returned as `JobResult.toolchain_version`.
 
 Every way the evidence could be incomplete or not this job's is a refusal
 (`RemoteExecutionError`), never a default:
@@ -45,15 +51,16 @@ Every way the evidence could be incomplete or not this job's is a refusal
   could consume a later command's status line before the host reads it and print one of its
   own. It would have to know this module's line grammar, which no leaf is shown. The platform
   facts travel the same way (`PLATFORM_MARKER`), printed once each before the first command
-  starts;
+  starts, and so does the toolchain version when the request carries a probe (`TOOLCHAIN_KEY`:
+  exactly one line then, none otherwise);
 - a shipped file that does not come back byte-identical to its local source is refused: the
   entries name each shipped file by its local source, so one a command rewrote before a later
   command ran it (the quality check's control file) would be recorded as unchanged;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a `timeout` that does not
   take `-k`, a site machine other than the one the shipped files were built on, a site C library
-  not of the family of the one they were linked against or older than it, a program it cannot
-  find or that is not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
+  not of the family of the one they were linked against or older than it, a program — a
+  command's or one of `required_programs` — it cannot find or that is not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
   and a job directory that cannot be removed after collection are refused, with the stage and
   the remote path in the message. A refused job's directory, when one was made, is left at the
   site.
@@ -154,6 +161,9 @@ STATUS_MARKER = "atmofab-status"
 #: `PLATFORM_KEYS`, plus `gpu` when the request carries a probe; an empty value is "unknown".
 PLATFORM_MARKER = "atmofab-platform"
 PLATFORM_KEYS = ("machine", "node", "cpu")
+#: The platform line's key for the toolchain version, printed only when the request carries a
+#: `toolchain_probe`; it is read into `JobResult.toolchain_version`, not into `platform`.
+TOOLCHAIN_KEY = "toolchain"
 #: A scheduler's job only: `<marker> <epoch>`, printed by the login shell before the job is asked
 #: for, and `<marker> <job_id> <epoch>`, printed by the job when it starts.
 SUBMIT_MARKER = "atmofab-submitted"
@@ -246,8 +256,16 @@ class CommandSpec:
     to be the node's own `source/<source_id>/src`, holding its build control file. The remote
     `cwd` is the entry's `site.remote_cwd`. `env` is an override set, checked with
     the server's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
-    no default: the local server's are 3600 for `run_program` and 1800 for
-    `run_quality_checks`, and the same bound is kept only by passing them."""
+    no default: the local server's are 3600 for `run_program`, 1800 for `run_quality_checks`
+    and 1800 for `compile_project`, and the same bound is kept only by passing them.
+
+    `record_argv`, when given, is what the entry records as `command`: the argv the local
+    server would have run, in LOCAL paths (issue #333). Without it the entry's `command` is
+    `argv` with each shipped file's remote path written back to its local source, which is
+    enough for a command whose only job paths are shipped files; a build's argv also names
+    directories the job creates (its output directories under the job directory), for which
+    no shipped file stands, so its caller states the local argv. `site.remote_command` is
+    `argv` either way."""
 
     tag: str
     tool_name: str
@@ -258,6 +276,7 @@ class CommandSpec:
     timeout_sec: int
     command_log_path: Path
     capture_limit: int
+    record_argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -274,7 +293,17 @@ class JobRequest:
     syntax error as the command's own exit status. `libc` is, for the same reason, the C library
     the shipped binary was linked against — by default this host's (`host_libc`) — and the site's
     must be its family and no older (`libc_shortfall`); a request whose `libc` does not parse is
-    refused before any transport call."""
+    refused before any transport call.
+
+    `required_programs` are programs a command runs beyond its own argv[0] — the compiler a
+    build system invokes (issue #333). The script checks each one before any command, by the
+    rule it checks an argv[0] by, and fails with no status when one is missing: a build system
+    that cannot find its compiler exits with its own failure status and writes "not found" to its
+    stderr, which would otherwise be recorded as the command having run and failed — a
+    content failure of the source it built — rather than as the site lacking a program.
+    `toolchain_probe` is an argv whose answer names the toolchain's version (the compiler's
+    own version query); the script runs it once before the first command and prints the version
+    line it selects as a fact (`JobResult.toolchain_version`)."""
 
     site: Site
     job_dir: str
@@ -285,6 +314,8 @@ class JobRequest:
     attribution: Mapping[str, str] = field(default_factory=dict)
     machine: str = field(default_factory=platform.machine)
     libc: str | None = field(default_factory=host_libc)
+    required_programs: tuple[str, ...] = ()
+    toolchain_probe: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -294,12 +325,15 @@ class JobResult:
     `platform` carries no `site` key — the caller adds the site id where it records one.
     `site_record` is `{site, host, scheduler, job_id, remote_dir, queue_wait_ms}`. `collected` is
     the local copy of the job directory itself, so a command whose cwd was `<job_dir>/run` left
-    its output under `collected/run/`."""
+    its output under `collected/run/`. `toolchain_version` is the line the request's
+    `toolchain_probe` selected (see `render_job_script`), or None when the request carries no
+    probe or the probe answered nothing."""
 
     results: tuple[dict[str, Any] | None, ...]
     platform: dict[str, str | None]
     site_record: dict[str, Any]
     collected: Path
+    toolchain_version: str | None = None
 
 
 def job_dir(site: Site, orchestration_id: str, agent_run_id: str) -> str:
@@ -350,6 +384,16 @@ def scheduler_executables(scheduler: str) -> tuple[str, ...]:
     return tuple(str(e) for e in module.REMOTE_EXECUTABLES) if module is not None else ()
 
 
+def _program(name: object, what: str) -> None:
+    """A program the job script looks up: a name `command -v` resolves on the site's PATH, or
+    an absolute path. A relative path is refused, because the script checks the program from
+    the login directory, not from the command's `cwd`."""
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{what} {name!r} is not a program name")
+    if "/" in name and not name.startswith("/"):
+        raise ValueError(f"{what} {name!r} is a relative path")
+
+
 def _validate(request: JobRequest) -> None:
     """Refuse a malformed request before any transport call: a host defect, not the site's."""
     site = request.site
@@ -371,15 +415,28 @@ def _validate(request: JobRequest) -> None:
     tags = [c.tag for c in request.commands]
     if len(set(tags)) != len(tags):
         raise ValueError(f"command tags repeat: {tags}")
+    if not isinstance(request.required_programs, tuple) \
+            or not all(isinstance(prog, str) for prog in request.required_programs):
+        raise ValueError("required_programs must be a tuple of program names")
+    for prog in request.required_programs:
+        _program(prog, "required program")
+    if request.toolchain_probe is not None:
+        if not isinstance(request.toolchain_probe, tuple) or not request.toolchain_probe:
+            raise ValueError("toolchain_probe must be a non-empty argv tuple")
+        if not all(isinstance(a, str) for a in request.toolchain_probe):
+            raise ValueError("toolchain_probe must be an argv of strings")
+        _program(request.toolchain_probe[0], "toolchain probe program")
     server = _server()
     for c in request.commands:
         if not _TAG.fullmatch(c.tag):
             raise ValueError(f"command tag {c.tag!r} is not a lowercase token")
         if not c.argv:
             raise ValueError(f"command {c.tag!r} has an empty argv")
-        if "/" in c.argv[0] and not c.argv[0].startswith("/"):
-            # The script checks the program from the login directory, not from `cwd`.
-            raise ValueError(f"command {c.tag!r} program {c.argv[0]!r} is a relative path")
+        _program(c.argv[0], f"command {c.tag!r} program")
+        if c.record_argv is not None and not (
+                isinstance(c.record_argv, tuple) and c.record_argv
+                and all(isinstance(a, str) for a in c.record_argv)):
+            raise ValueError(f"command {c.tag!r} record_argv must be a non-empty argv tuple")
         if isinstance(c.timeout_sec, bool) or not isinstance(c.timeout_sec, int) \
                 or c.timeout_sec < 1:
             raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
@@ -395,6 +452,18 @@ def _validate(request: JobRequest) -> None:
                 raise ValueError(f"command {c.tag!r} env name {key!r} is not a variable name")
 
 
+def _program_check(prog: str, indent: str) -> list[str]:
+    """The script lines that fail with 4 unless `prog` resolves to an executable file. bash and
+    zsh answer `command -v` with 1 for a path that is not executable, dash answers it with the
+    path; the `case` catches the second."""
+    q = shlex.quote
+    return [
+        f"{indent}p=$(command -v {q(prog)}) || fail 4 {q(f'{prog} is missing or not executable')}",
+        (f'{indent}case "$p" in /*) [ -f "$p" ] && [ -x "$p" ] || fail 4 '
+         f"{q(f'{prog} is not an executable file')};; esac"),
+    ]
+
+
 def render_job_script(request: JobRequest) -> str:
     """The POSIX `sh` script that runs `request.commands` at the site.
 
@@ -402,11 +471,24 @@ def render_job_script(request: JobRequest) -> str:
     when every earlier command exited 0, and is followed by its status line on the script's
     stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory
     cannot be made, a program in `REMOTE_EXECUTABLES` is missing, the machine is not
-    `request.machine` or the C library is not `request.libc`'s family or is older, and before
-    a command whose program cannot be found or, named by a path, is not executable: the local
-    server raises for a program it cannot start rather than reporting an exit status, so these
-    are the host's failures here too. Each such exit names what failed on stderr. Every value is
-    quoted with `shlex.quote`."""
+    `request.machine` or the C library is not `request.libc`'s family or is older, or one of
+    `request.required_programs` cannot be found or, named by a path, is not executable, and
+    before a command whose program cannot be found or is not executable, by the same rule: the
+    local server raises for a program it cannot start rather than reporting an exit status, so
+    these are the host's failures here too. Each such exit names what failed on stderr. Every
+    value is quoted with `shlex.quote`.
+
+    With a `request.toolchain_probe`, one more fact line (`toolchain`) is printed before the
+    first command: the probe's stdout, or its stderr when its stdout is empty, reduced to the
+    first line carrying a dotted version number, else the first non-blank line — the rule of
+    the server's `_syntax_compiler_version`, which reads this host's compiler version for the
+    build key, so the two versions a build records are read alike. Like that function it reads
+    the answer whatever the probe's exit status, and answers nothing for a probe that could not
+    start or did not finish (`timeout`'s 124, 126, 127 and 137, read from the run whose answer is
+    used); the value is stripped by the reader. Two differences remain: a probe program that
+    exits one of those four codes ITSELF answers nothing here, where the server reads its text
+    (the script cannot tell it from `timeout`'s own), and the probe's bound is
+    `PROBE_TIMEOUT_SEC`, where the server's is 30 seconds."""
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
@@ -440,6 +522,8 @@ def render_job_script(request: JobRequest) -> str:
     # Not every `timeout` takes `-k` (older busybox builds refuse it, exit 1), and a refusal
     # there would be recorded as the command's own failure.
     lines.append("timeout -k 1 5 sh -c : >/dev/null 2>&1 || fail 3 'timeout does not take -k'")
+    for prog in request.required_programs:
+        lines += _program_check(prog, "")
     for rel in request.dirs:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
@@ -460,6 +544,18 @@ def render_job_script(request: JobRequest) -> str:
         lines.append(f"g=$(timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.platform_probe)}"
                      f" < /dev/null 2>/dev/null) || g=")
         facts.append(("gpu", "printf '%s\\n' \"$g\" | sed -n 1p"))
+    if request.toolchain_probe:
+        probe = f"timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.toolchain_probe)} < /dev/null"
+        lines += [
+            # A `.` after the answer, removed again, so that an answer of blank lines is not
+            # emptied by the substitution and is read as the server reads it: an answer.
+            f"tv=$({probe} 2>/dev/null; trc=$?; printf .; exit $trc); trc=$?; tv=${{tv%.}}",
+            f'[ -n "$tv" ] || {{ tv=$({probe} 2>&1 >/dev/null); trc=$?; }}',
+            'case "$trc" in 124|126|127|137) tv= ;; esac',
+        ]
+        facts.append((TOOLCHAIN_KEY,
+                      ("{ printf '%s\\n' \"$tv\" | grep -m1 -E '[0-9]+\\.[0-9]+' || "
+                       "printf '%s\\n' \"$tv\" | sed '/^[[:space:]]*$/d' | sed -n 1p; }")))
     for key, fact in facts:
         lines.append(f"printf '%s %s %s\\n' {PLATFORM_MARKER} {key} \"$({fact} 2>/dev/null)\"")
     # A command's stdin is `/dev/null`, as the ssh call's own is; not pinned, because the second
@@ -472,12 +568,7 @@ def render_job_script(request: JobRequest) -> str:
         base = f"{ctl}/{c.tag}"
         lines += [
             'if [ "$rc" = 0 ]; then',
-            # bash and zsh answer `command -v` with 1 for a path that is not executable, dash
-            # answers it with the path; the case below catches the second.
-            (f"  p=$(command -v {q(c.argv[0])}) || fail 4 "
-             f"{q(f'{c.argv[0]} is missing or not executable')}"),
-            (f'  case "$p" in /*) [ -f "$p" ] && [ -x "$p" ] || fail 4 '
-             f"{q(f'{c.argv[0]} is not an executable file')};; esac"),
+            *_program_check(c.argv[0], "  "),
             "  t0=$(date +%s) || fail 6 'date failed'",
             f"  ( {run} ) > {q(base + '.stdout')} 2> {q(base + '.stderr')} < /dev/null",
             "  rc=$?",
@@ -619,6 +710,16 @@ def _platform(facts: dict[str, list[str]], probed: bool, remote: str) -> dict[st
     cpu_model = (cpu.split(":", 1)[1].strip() or None) if cpu and ":" in cpu else None
     return {"machine": value["machine"], "node": value["node"], "cpu_model": cpu_model,
             "gpu": value.get("gpu")}
+
+
+def _toolchain(facts: dict[str, list[str]], probed: bool, remote: str) -> str | None:
+    """The toolchain fact, removed from `facts`: exactly one line when the request carries a
+    probe, none otherwise; an empty answer is None."""
+    got = facts.pop(TOOLCHAIN_KEY, [])
+    if len(got) != (1 if probed else 0):
+        raise RemoteExecutionError(
+            f"{len(got)} {TOOLCHAIN_KEY} lines, not {1 if probed else 0} ({remote})")
+    return (got[0].strip() or None) if got else None
 
 
 def _iso(epoch: int) -> str:
@@ -811,7 +912,9 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     submission = _submission(site.scheduler)
     if submission is not None:
         queue_timeout = site.queue_timeout_sec or QUEUE_TIMEOUT_DEFAULT_SEC
-        wall_clock = bound + (PROBE_TIMEOUT_SEC if request.platform_probe else 0)
+        # The toolchain probe may run twice (its stderr is read when its stdout is empty).
+        wall_clock = (bound + (PROBE_TIMEOUT_SEC if request.platform_probe else 0)
+                      + (2 * PROBE_TIMEOUT_SEC if request.toolchain_probe else 0))
         prefix = submission.foreground_argv(
             directives=tuple(site.scheduler_directives),
             job_name=f"atmofab-{remote.rsplit('/', 1)[1]}",
@@ -830,6 +933,7 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     status_lines, facts, scheduler_lines = _job_lines(job_stdout, remote)
     job_id, queue_wait_ms = _scheduled(scheduler_lines, submission is not None, remote)
     statuses = _statuses(status_lines, request.commands, remote)
+    toolchain_version = _toolchain(facts, request.toolchain_probe is not None, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
     # Every shipped file must come back as it was sent. The entries name each one by its local
     # source, and the gate reads that source: a command that rewrote a file a LATER command runs
@@ -879,7 +983,8 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             continue
         rc, t0, t1 = status
         timed_out = rc in _TIMEOUT_CODES and t1 - t0 >= c.timeout_sec
-        argv = [local_of.get(a, a) for a in c.argv]
+        argv = (list(c.record_argv) if c.record_argv is not None
+                else [local_of.get(a, a) for a in c.argv])
         command_id = uuid.uuid4().hex
         result: dict[str, Any] = {
             "ok": rc == 0,
@@ -925,4 +1030,5 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
         platform=platform_record,
         site_record={"site": site.site_id, "host": host, "scheduler": site.scheduler,
                      "job_id": job_id, "remote_dir": remote, "queue_wait_ms": queue_wait_ms},
-        collected=collected)
+        collected=collected,
+        toolchain_version=toolchain_version)

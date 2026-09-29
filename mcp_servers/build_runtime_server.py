@@ -854,12 +854,30 @@ def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]
     }
 
 
-def _build_command(
+#: The bound `compile_project` applies when its caller names none. Module-level for a build at a
+#: remote site (issue #333), where no server applies it: the remote executor
+#: (`tools/remote_execution.py`) runs a command with the timeout its caller passes, as
+#: `RUN_PROGRAM_TIMEOUT_SEC` is passed for a run.
+COMPILE_PROJECT_TIMEOUT_SEC = 1800
+
+
+def default_build_jobs() -> int:
+    """The parallelism `compile_project` builds with when its caller names none: half this
+    host's CPUs, at least 1. Module-level so that a build at a remote site (issue #333) can be
+    handed the same number, which is then an upper bound on the build system's parallelism
+    carried from this host to the site, not a measurement of the site."""
+    return max(1, (os.cpu_count() or 1) // 2)
+
+
+def build_command(
     build_system: str,
     target: str | None,
     jobs: int,
     extra_args: list[str],
 ) -> list[str]:
+    """The argv `compile_project` runs for `build_system`. Public so that a build at a remote
+    site (issue #333), which no server runs, can be handed the argv this table gives, and run
+    what a build here would. Raises `ValueError` for a build system the server does not run."""
     if build_system == "make":
         cmd = ["make", f"-j{jobs}"]
         if target:
@@ -908,12 +926,12 @@ def _build_command(
 def build_system_executable(build_system: str) -> str:
     """The host executable `build_system` builds through.
 
-    argv[0] of the same `_build_command` a build runs, so the launch-time host probe
+    argv[0] of the same `build_command` a build runs, so the launch-time host probe
     (`tools/host_prerequisites.py`) cannot look for a different program than `compile_project`
-    later launches. An unsupported build system raises `_build_command`'s own ValueError rather
+    later launches. An unsupported build system raises `build_command`'s own ValueError rather
     than a second refusal written here.
     """
-    return _build_command(build_system, None, 1, [])[0]
+    return build_command(build_system, None, 1, [])[0]
 
 
 def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
@@ -944,8 +962,9 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     # The served schema declares these minimums; an MCP argument schema is advisory, so
     # enforce them here. `make -j-5` waits forever, which spends the caller's whole
     # timeout on nothing.
-    jobs = _bounded_int(args.get("jobs"), max(1, (os.cpu_count() or 1) // 2), 1, "jobs")
-    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    jobs = _bounded_int(args.get("jobs"), default_build_jobs(), 1, "jobs")
+    timeout_sec = _bounded_int(args.get("timeout_sec"), COMPILE_PROJECT_TIMEOUT_SEC, 1,
+                               "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
@@ -981,7 +1000,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
             "for a compiled language, use make/cmake/meson/ninja. make is the default."
         )
 
-    command = _build_command(build_system, target, jobs, extra_args)
+    command = build_command(build_system, target, jobs, extra_args)
     result = _run_command(
         command=command,
         cwd=project_dir,
