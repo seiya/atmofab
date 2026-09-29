@@ -609,6 +609,23 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                 self.assertIn("reach the make recipe's shell", str(ctx.exception))
                 run_command.assert_not_called()
 
+    def test_compile_project_defaults_are_the_module_values_a_remote_build_is_handed(self) -> None:
+        """Issue #333: a build at a remote site is handed `COMPILE_PROJECT_TIMEOUT_SEC` and
+        `default_build_jobs()` because no server runs there, so the server must build with
+        those same values. Driven under non-default values, so a literal copy of today's
+        defaults in `tool_compile_project` is red."""
+        with mock.patch.object(self.mod, "COMPILE_PROJECT_TIMEOUT_SEC", 123), \
+                mock.patch.object(self.mod, "default_build_jobs", return_value=7), \
+                self._spy_run_command() as run_command:
+            self.mod.tool_compile_project(self._args("compile_project", {}))
+        kwargs = run_command.call_args.kwargs
+        self.assertEqual(kwargs["timeout_sec"], 123)
+        self.assertEqual(kwargs["command"], self.mod.build_command("make", None, 7, []))
+        with mock.patch.object(self.mod.os, "cpu_count", return_value=9):
+            self.assertEqual(self.mod.default_build_jobs(), 4)
+        with mock.patch.object(self.mod.os, "cpu_count", return_value=None):
+            self.assertEqual(self.mod.default_build_jobs(), 1)
+
     def test_the_conductor_env_payload_is_accepted(self) -> None:
         # The six make variables `Validate.execute` declares. If this payload ever
         # grows a value the rule refuses, it fails here rather than mid-phase.
