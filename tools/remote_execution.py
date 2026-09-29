@@ -174,9 +174,11 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
-#: `<family> <major>.<minor>[.<rest>]`, the shape `getconf GNU_LIBC_VERSION` and
-#: `os.confstr("CS_GNU_LIBC_VERSION")` answer in (`glibc 2.35`).
-_LIBC = re.compile(r"(\S+) ([0-9]+)\.([0-9]+)(?:\.\S*)?", re.ASCII)
+#: `<family> <major>.<minor>[.<digits and dots>]`, the shape `getconf GNU_LIBC_VERSION` and
+#: `os.confstr("CS_GNU_LIBC_VERSION")` answer in (`glibc 2.35`), read exactly: no surrounding
+#: space, and each number at most nine digits, which a POSIX shell's `[ -ge ]` compares without
+#: overflow. The job script reads the site's answer by the same rule (`render_job_script`).
+_LIBC = re.compile(r"(\S+) ([0-9]{1,9})\.([0-9]{1,9})(?:\.[0-9.]*)?", re.ASCII)
 
 
 def host_libc() -> str | None:
@@ -195,7 +197,7 @@ def host_libc() -> str | None:
 def parse_libc(text: str | None) -> tuple[str, int, int] | None:
     """`(family, major, minor)` of a C library answer, or None for one not in `_LIBC`'s shape.
     What follows the minor number is not read: glibc versions its symbols by `major.minor`."""
-    match = _LIBC.fullmatch(text.strip()) if isinstance(text, str) else None
+    match = _LIBC.fullmatch(text) if isinstance(text, str) else None
     return (match[1], int(match[2]), int(match[3])) if match else None
 
 
@@ -415,9 +417,10 @@ def render_job_script(request: JobRequest) -> str:
              + q(f"the site machine is not {request.machine}, which the shipped files were "
                  f"built on")]
     # The C library next, for the same reason (issue #330): a binary linked against a newer one
-    # fails in the dynamic loader, whose 127 a launch prefix reports as its own status. An
-    # answer that is empty (no `getconf`, not glibc), of another family, not two dotted numbers
-    # or older is refused; `[ -ge ]` on a non-number fails, and so falls to `fail` too.
+    # fails in the dynamic loader, whose 127 a launch prefix reports as its own status. The
+    # answer is read by `_LIBC`'s rule — the family and one space, then only digits and dots,
+    # leading `<major>.<minor>`, each of one to nine digits — and one that is empty (no
+    # `getconf`, not glibc), not in that shape, of another family or older is refused.
     family, major, minor = parse_libc(request.libc) or ("", 0, 0)
     libc_fail = ('fail 5 "the site C library ($v) is not "'
                  + q(f"{family} {major}.{minor} or newer, which the shipped files were built "
@@ -426,7 +429,8 @@ def render_job_script(request: JobRequest) -> str:
         "v=$(getconf GNU_LIBC_VERSION 2>/dev/null) || v=",
         f'case "$v" in {q(family + " ")}[0-9]*.[0-9]*) ;; *) {libc_fail};; esac',
         f'r=${{v#{q(family + " ")}}}; M=${{r%%.*}}; m=${{r#*.}}; m=${{m%%.*}}',
-        f'case "$M:$m" in *[!0-9:]*|:*|*:) {libc_fail};; esac',
+        f'case "$r" in *[!0-9.]*) {libc_fail};; esac',
+        f'case "$M:$m" in :*|*:|??????????*:*|*:??????????*) {libc_fail};; esac',
         (f'{{ [ "$M" -gt {major} ] || {{ [ "$M" -eq {major} ] && [ "$m" -ge {minor} ]; }}; }} '
          f'2>/dev/null || {libc_fail}'),
     ]
@@ -724,7 +728,8 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
             machines.append(value.strip())
         elif kind == "libc":
             # Empty is an answer — the site names no C library — and the driver refuses it.
-            libcs.append(value.strip() or None)
+            # Unstripped, so the driver reads the answer the job script will read.
+            libcs.append(value if value.strip() else None)
         elif kind == "problem" and value in names:
             problems.append(names[value])
         else:

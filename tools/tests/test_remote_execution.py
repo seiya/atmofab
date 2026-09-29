@@ -1236,7 +1236,7 @@ class LibcRuleTests(unittest.TestCase):
     def test_the_rule(self) -> None:
         need = "glibc 2.35"
         for site, ok in (("glibc 2.35", True), ("glibc 2.36", True), ("glibc 3.0", True),
-                         ("glibc 2.35.1", True), (" glibc 2.40 ", True),
+                         ("glibc 2.35.1", True), (" glibc 2.40 ", False),
                          ("glibc 2.34", False), ("glibc 1.99", False), ("glibc 2.3", False),
                          ("musl 2.35", False), ("glibcx 2.35", False), (None, False),
                          ("", False), ("glibc", False), ("glibc 2", False),
@@ -1253,6 +1253,41 @@ class LibcRuleTests(unittest.TestCase):
         why = rx.libc_shortfall(need, "glibc 2.34")
         self.assertIn("glibc 2.34", why)
         self.assertIn("glibc 2.35", why)
+
+    def test_the_job_script_decides_every_answer_as_libc_shortfall_does(self) -> None:
+        """The launch refusal decides with `libc_shortfall`, the job script with POSIX `sh`; one
+        rule, so an answer the driver admits is not refused after billing, nor the reverse. The
+        script's libc block is run under `dash` and `bash` with `getconf` answering each member,
+        and each verdict is compared with `libc_shortfall`'s. The family straddles the rule: it
+        must contain answers both sides accept and answers both refuse, asserted below."""
+        host = "glibc 2.35"
+        with tempfile.TemporaryDirectory() as tmp:
+            script = rx.render_job_script(_Harness(tmp).request(libc=host))
+        lines = script.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("v=$(getconf"))
+        end = next(i for i, line in enumerate(lines) if i > start and "-ge" in line)
+        block = "\n".join([lines[3], 'getconf() { printf "%s\\n" "$ANS"; }',
+                           *lines[start:end + 1], "echo PASS"])
+        answers = ("glibc 2.35", "glibc 2.36", "glibc 2.34", "glibc 3.0", "glibc 10.1",
+                   "glibc 2.35.1", "glibc 2.35.", "glibc 2.35.1.2", "glibc 2.35.x", "glibc 2.35.1x", "glibc 02.035", "glibc 1.99",
+                   "", "glibc", "glibc 2", "glibc 2.", "glibc .35", "glibc 2..35", "glibc 2.x",
+                   "glibc 2.35x", "glibc 3.1x", "glibc 2.35.1 x", "glibc 2.35. junk",
+                   "glibc 2.35-1", "glibc  2.35", " glibc 2.35", "glibc 2.35 ", "glibc 2.35\t",
+                   "musl 2.35", "glibcx 2.35", "2.35", "glibc 999999999.0",
+                   "glibc 1000000000.0", "glibc 2.1000000000", "glibc 99999999999999999999.0",
+                   "glibc ２.35")
+        verdicts = set()
+        for sh in ("dash", "bash"):
+            self.assertIsNotNone(shutil.which(sh), f"this row needs {sh}")
+            for answer in answers:
+                with self.subTest(sh=sh, answer=answer):
+                    proc = subprocess.run([sh, "-c", block], env={**os.environ, "ANS": answer},
+                                          capture_output=True, text=True, timeout=30)
+                    script_ok = proc.returncode == 0 and proc.stdout.strip() == "PASS"
+                    python_ok = rx.libc_shortfall(host, answer) is None
+                    self.assertEqual(script_ok, python_ok, proc.stderr)
+                    verdicts.add(python_ok)
+        self.assertEqual(verdicts, {True, False}, "the family must straddle the rule")
 
     def test_parse(self) -> None:
         self.assertEqual(rx.parse_libc("glibc 2.35"), ("glibc", 2, 35))
@@ -1385,6 +1420,18 @@ class ProbeSiteTests(unittest.TestCase):
         got = self.probe("sh", SHIM_SSH_PATH=str(bare))
         self.assertIsNone(got.libc)
         self.assertEqual(got.missing, ())
+
+    def test_the_libc_answer_reaches_the_driver_unstripped(self) -> None:
+        """The driver must read the answer the job script will read: an answer with a trailing
+        space is refused by the script, so it must not be admitted at launch as its strip."""
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc glibc 2.35 \n")):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.libc, "glibc 2.35 ")
+        self.assertIsNotNone(rx.libc_shortfall("glibc 2.35", got.libc))
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc  \n")):
+            self.assertIsNone(rx.probe_site(self.h.site, ("sh",)).libc)
 
     def test_a_site_that_does_not_answer_is_a_remote_execution_error(self) -> None:
         with self.assertRaises(rx.RemoteExecutionError) as ctx:
