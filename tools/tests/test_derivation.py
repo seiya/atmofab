@@ -123,7 +123,7 @@ class DerivationKeyTests(unittest.TestCase):
         inputs = {"x": "sha256:" + "1" * 64}
         base = d.derivation_key("build", inputs)
         self.assertNotEqual(base, d.derivation_key("validate", inputs))
-        with mock.patch.object(d, "BUILD_VERSION", "build-2"):
+        with mock.patch.object(d, "BUILD_VERSION", d.BUILD_VERSION + "-next"):
             self.assertNotEqual(base, d.derivation_key("build", inputs))
         with mock.patch.object(d, "DERIVATION_KEY_VERSION", d.DERIVATION_KEY_VERSION + 1):
             self.assertNotEqual(base, d.derivation_key("build", inputs))

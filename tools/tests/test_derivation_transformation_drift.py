@@ -211,6 +211,14 @@ def build_tuple() -> dict[str, str]:
         "build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC":
             str(server.COMPILE_PROJECT_TIMEOUT_SEC),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
+        # Where it builds (issue #333): the remote executor a build at a site runs through, the
+        # launch seam its site refusal and the local platform record come from, the site
+        # record, and the version argv the job's toolchain probe runs.
+        "tools/remote_execution.py": _file_digest("tools/remote_execution.py"),
+        "tools/host_execution.py": _file_digest("tools/host_execution.py"),
+        "workflow_conductor._local_site_record": _source_digest(wc._local_site_record),
+        "orchestration_runtime.toolchain_version_argv":
+            _source_digest(ort.toolchain_version_argv),
         "Conductor._stage_dependency_sources":
             _source_digest(wc.Conductor._stage_dependency_sources),
         "Conductor._copy_bound_file": _source_digest(wc.Conductor._copy_bound_file),
@@ -291,6 +299,8 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(server.tool_run_quality_checks),
         "build_runtime_server._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
+        # The local site's record (issue #333: shared with the build's).
+        "workflow_conductor._local_site_record": _source_digest(wc._local_site_record),
         # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam.
         "tools/host_execution.py": _file_digest("tools/host_execution.py"),
         # And every launch capability a registry record resolves to: the declaration, the
@@ -587,6 +597,13 @@ PINNED_BUILD: dict[str, str] = {
     # 0f768622 is kept below.
     "build-1": "ae9423b40b3419e3e29535674b0b267508ed968655d5331a52d03581013f3f85",
     "build-1@0f768622": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
+    # build-2 (issue #333 PR-2): the binary is built at the execution site the target maps to —
+    # in-process here, or as one job at a remote site whose collected binary is the node's —
+    # and `binary_meta.json` records `environment` (`platform`, `build_site`, and the compiler
+    # version as the building machine answered). A bump: every certified build-1 record lacks
+    # `environment`, which `Validate.execute` now requires. The tuple gained the remote
+    # executor, the launch seam, the site record and the version argv.
+    "build-2": "f46f9fd10664a132eaa930294e18cb1e064dda74946659b3b8cb1758ead8de53",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -687,7 +704,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",
+    "execute-8": "cd455e8c5b71c499edfa1b1db9664018addbf8334235b62b051222e1402b9d8d",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -715,6 +732,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # against origin/main 0f768622's: that row and no other.) The digest `execute-8` shipped
     # with at 0f768622:
     "execute-8@0f768622": "50d67b32185aa2e8adf91109a008dd3d2420783093de7b52ff2f6a597203ebd0",
+    # Re-pinned by issue #333 PR-2: `Validate.execute` refuses a binary whose
+    # `binary_meta.json#environment.build_site.site` is not the site it would run at (a
+    # refusal before anything runs, `deterministic_validate_error`); the local site's record
+    # comes from `_local_site_record`, which joins the tuple, with the same value; and
+    # `tools/remote_execution.py` / `tools/host_execution.py` carry docstring edits. A run that
+    # passes the check produces the record it produced before. The digest `execute-8` shipped
+    # with at 032ee643:
+    "execute-8@032ee643": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -9475,11 +9475,13 @@ class LlmConfigStartupTests(unittest.TestCase):
         return rc, ran, events
 
     def test_a_closure_that_stops_before_validate_gates_its_members_site(self) -> None:
-        """Issue #293: a dependency of a `--with-deps` run that stops at `Build` is driven to
-        `Validate`, so the site half is asked of each member with the MEMBER's phase — before
-        its first billed phase, as a `--jobs` child's own `_run_main` asks it. Two routes: the
-        `gpu` class, which declares `execution` since this issue and so passes the registry
-        half, at a site that does not execute it; and a remote site that does not answer."""
+        """Issue #293: a dependency of a `--with-deps` run that stops before `Validate` is
+        driven to `Validate`, so the site half is asked of each member with the MEMBER's phase —
+        before its first billed phase, as a `--jobs` child's own `_run_main` asks it. Two
+        routes: the `gpu` class, which declares `execution` since this issue and so passes the
+        registry half, at a site that does not execute it (a run stopping at `Generate`, which
+        the site half does not ask of the target itself — since issue #333 one stopping at
+        `Build` is asked it at the top); and a remote site that does not answer."""
         from tools.tests.test_remote_execution import _SSH_SHIM
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp) / "repo"
@@ -9489,9 +9491,9 @@ class LlmConfigStartupTests(unittest.TestCase):
             _seed_target_profile_into(repo_root, target_id="t_cpu")
             _seed_target_profile_into(repo_root, target_id="t_gpu",
                                       hardware={"class": "gpu", "architecture": "sm_90"})
-            # 1. gpu with no sites.yaml: the target stops at Build and passes the top gate; the
-            #    first dependency member is refused before it runs.
-            rc, ran, events = self._closure_until(repo_root, "build", "t_gpu")
+            # 1. gpu with no sites.yaml: the target stops at Generate and passes the top gate;
+            #    the first dependency member is refused before it runs.
+            rc, ran, events = self._closure_until(repo_root, "generate", "t_gpu")
             self.assertEqual(rc, 2)
             self.assertEqual(ran, [])
             self.assertEqual(events[-1]["reason"], "target_profile_invalid")
@@ -9510,7 +9512,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 f"    scheduler: none\ntargets:\n  t_cpu: box\n", encoding="utf-8")
             env = {"PATH": f"{shims}{os.pathsep}{os.environ['PATH']}", "SHIM_LOG": str(log),
                    "SHIM_SSH_FAIL": "atmofab-probe"}
-            rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+            rc, ran, events = self._closure_until(repo_root, "generate", "t_cpu", **env)
             self.assertEqual(rc, 2)
             self.assertEqual(ran, [])
             self.assertEqual(events[-1]["reason"], "site_unreachable")
@@ -9527,7 +9529,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 return real_rejection(*a, **k)
 
             with mock.patch.object(run_workflow, "_sites_rejection", spy_rejection):
-                rc, ran, events = self._closure_until(repo_root, "build", "t_cpu", **env)
+                rc, ran, events = self._closure_until(repo_root, "generate", "t_cpu", **env)
             self.assertIsNone(handed[0], "main loads the file itself")
             self.assertTrue(handed[1:])
             self.assertTrue(all(h is not None and h is handed[1] for h in handed[1:]))
@@ -9770,7 +9772,14 @@ class TargetProfileLaunchTests(unittest.TestCase):
                           events[-1]["detail"])
             self.assertIn("there is no sites.yaml", events[-1]["detail"])
             self.assertEqual(calls, [], "refused before any orchestration state is touched")
+            # Since issue #333 the binary is built at the site that runs it: a Build run is
+            # refused by the same site half, and a run that stops at Generate is not asked.
             code, events, _calls = self._main(repo_root, "--target", "t_g", until="build")
+            self.assertEqual(code, 2, events)
+            self.assertEqual(events[-1]["reason"], "target_profile_invalid")
+            self.assertIn("hardware.class: gpu is not executed at the site target t_g runs at",
+                          events[-1]["detail"])
+            code, events, _calls = self._main(repo_root, "--target", "t_g", until="generate")
             self.assertEqual(code, 0, events)
             self.assertEqual(events[-1]["target_id"], "t_g")
             # A local site that lists the class opens the run.
@@ -9979,6 +9988,10 @@ class TargetProfileLaunchTests(unittest.TestCase):
             harness.mkdir(parents=True, exist_ok=True)
             (harness / "controlled_spec.md").write_text("spec\n", encoding="utf-8")
             (harness / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+            # A site that executes the class: since issue #333 a Build run is built there.
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu, gpu]\n",
+                encoding="utf-8")
             code, asked = self._probed_targets(
                 ["spec/infrastructure/harness_a", "build", "--repo-root", str(repo_root),
                  "--no-run-conductor", "--target", "t_g"])
@@ -10189,11 +10202,23 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual((kw["site"].site_id, kw["site"].host), ("box", "box"))
 
-    def test_a_run_that_stops_before_validate_contacts_no_site(self) -> None:
+    def test_a_run_that_stops_before_build_contacts_no_site(self) -> None:
         self._remote()
-        code, events, _calls = self._main(until="build", SHIM_SSH_FAIL="atmofab-probe")
-        self.assertEqual(code, 0, events)
-        self.assertEqual(self._probes(), [])
+        for until in ("compile", "generate"):
+            with self.subTest(until=until):
+                code, events, _calls = self._main(until=until, SHIM_SSH_FAIL="atmofab-probe")
+                self.assertEqual(code, 0, events)
+                self.assertEqual(self._probes(), [])
+
+    def test_a_run_that_stops_at_build_asks_the_site_that_builds(self) -> None:
+        """Issue #333: the binary is built at the site the target maps to, so a run that stops
+        at Build is probed like one reaching Validate — and asked for the build compiler, not
+        for what the binary runs under."""
+        self._remote()
+        code, events, calls = self._main(until="build", SHIM_SSH_FAIL="atmofab-probe")
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["reason"], "site_unreachable")
+        self.assertEqual(calls, [])
 
     def test_a_site_that_does_not_answer_is_refused_before_anything_runs(self) -> None:
         self._remote()
@@ -10218,9 +10243,11 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         from tools.host_prerequisites import resolve_launch_axis_selection
         with _real_target_resolution():
             profile = run_workflow.resolve_run_target(self.repo_root, "t_a")
-        required = list(required_site_executables(resolve_launch_axis_selection(profile),
-                                                  scheduler="none"))
-        self.assertEqual(len(required), 2, "the job script's tool and the build system")
+        selection = resolve_launch_axis_selection(profile)
+        required = list(required_site_executables(selection, scheduler="none"))
+        self.assertEqual(len(required), 3,
+                         "the job script's tool, the build system and the build compiler")
+        self.assertEqual(required[-1], selection["build_compiler"])
         code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
@@ -10360,7 +10387,11 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         with self._env(SHIM_SSH_PATH=str(bare)):
             refused = run_workflow._sites_rejection(self.repo_root, cuda, "validate")
         self.assertEqual(refused["reason"], "missing_required_site_tools")
-        self.assertEqual(refused["missing"], tracer)
+        # And, since issue #333, the build compiler, which `bare` lacks too: a `none` site
+        # builds on the login it reaches.
+        from tools.host_prerequisites import resolve_launch_axis_selection
+        self.assertEqual(refused["missing"],
+                         [resolve_launch_axis_selection(cuda)["build_compiler"], *tracer])
 
     def test_a_site_whose_workdir_cannot_be_made_is_refused_at_launch(self) -> None:
         blocker = Path(self._tmp.name) / "blocker"

@@ -15119,6 +15119,18 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
                                           bundle_facts=_FORTRAN_BUNDLE_FACTS))
 
 
+def _record_build_site(repo: Path, refs: wc.NodeRefs, site: str = "local") -> None:
+    """Record, in the node's `binary_meta.json`, that its binary was built at `site` — what a
+    Build writes since issue #333 (`environment.build_site`), and what `Validate.execute`
+    requires before it runs the binary there. Merged into a record the test already wrote."""
+    path = repo / refs.binary_dir(refs.source_binary_id) / "binary_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    meta["environment"] = {"platform": {"site": site},
+                           "build_site": {"site": site}, "compiler_version": None}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta), encoding="utf-8")
+
+
 class DeterministicBuildTest(unittest.TestCase):
     """WS-A/C: build runs in-process (no leaf) yet reuses the same bookkeeping."""
 
@@ -15519,6 +15531,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
                  mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_run_quality_checks):
                 try:
+                    _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant; env is captured above
@@ -15653,6 +15666,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
                 try:
+                    _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant here
@@ -15701,6 +15715,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
                 try:
+                    _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant here
@@ -15776,6 +15791,7 @@ class DeterministicBuildTest(unittest.TestCase):
                  mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
                  mock.patch.object(subprocess, "run",
                                    return_value=subprocess.CompletedProcess([], 0, "", "")):
+                _record_build_site(c.repo_root, refs)
                 out = c._execute_inproc(refs, "child-1")
             self.assertEqual(out["returncode"], 0)
             trial = json.loads((repo / refs.run_node_dir() / "trial_meta.json").read_text("utf-8"))
@@ -15893,6 +15909,7 @@ class DeterministicBuildTest(unittest.TestCase):
         with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
              mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
              mock.patch.object(subprocess, "run", side_effect=fake_subprocess_run):
+            _record_build_site(c.repo_root, refs)
             result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
         return result, calls, node_dir, shape, repo, refs
 
@@ -16057,6 +16074,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
             with mock.patch.object(build_runtime_server, "tool_run_program") as run_program:
+                _record_build_site(c.repo_root, refs)
                 result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
             run_program.assert_not_called()
             self.assertNotEqual(result.returncode, 0)
@@ -16094,6 +16112,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "boom"}):
+                _record_build_site(c.repo_root, refs)
                 out = c._execute_inproc(refs, "child-1")
             # runtime error returns rc 0 (content failure) AND leaves no verdict.json ->
             # classify_failure sees no failure_class -> the Generate/C2 runner-failure path.
@@ -16943,6 +16962,7 @@ class DeterministicBuildTest(unittest.TestCase):
              mock.patch.object(build_runtime_server, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", fake_subprocess_run):
+            _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")
 
         meta_path = repo / refs.run_node_dir() / "trial_meta.json"
@@ -17248,6 +17268,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
+                _record_build_site(c.repo_root, refs)
                 c._execute_inproc(refs, "child-1")
             self.assertFalse((node_dir / "trial_meta.json").exists())
 
@@ -17276,6 +17297,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             with mock.patch.object(build_runtime_server, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
+                _record_build_site(c.repo_root, refs)
                 out = c._execute_inproc(refs, "child-1")
             self.assertEqual(out["returncode"], 0)
             self.assertFalse((repo / refs.run_node_dir() / "trial_meta.json").exists())
@@ -21644,6 +21666,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
              mock.patch.object(build_runtime_server, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", self._shim(repo)):
+            _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")
 
         meta_path = repo / refs.run_node_dir() / "trial_meta.json"

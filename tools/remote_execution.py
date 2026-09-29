@@ -88,10 +88,11 @@ the number beyond `ok`. No log entry is written until every status and every out
 been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
 behind it.
 
-`Validate.execute` calls `execute_job` for a target the operator's `sites.yaml` maps to a remote
-site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` before a node that
-will reach `Validate` runs — once at launch, and again before each dependency member of a
-`--with-deps` run — so a site that cannot be reached, lacks a program the job needs, cannot hold
+`Build` and `Validate.execute` call `execute_job` for a target the operator's `sites.yaml` maps
+to a remote site (`workflow_conductor._build_inproc`, issue #333, and `_execute_inproc`), and the
+driver calls `probe_site` before a node that will reach `Build` runs — once at launch, and again
+before each dependency member of a `--with-deps` run — so a site that cannot be reached, lacks a
+program the job needs, cannot hold
 or run it, is another machine, or has a C library that cannot run what this host links is refused
 before that node is billed (`tools/run_workflow.py` `_sites_rejection`).
 

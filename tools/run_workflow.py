@@ -189,15 +189,17 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     """The loaded site configuration, or the startup refusal event that stops the run (issue
     #293). Refusals, most reachable first: `sites_config_invalid` (the file does not load);
     `target_profile_invalid` (the site the target maps to does not execute its hardware class,
-    for a run that reaches `Validate`); and for a remote site that the run will execute at,
+    for a run that reaches `Build` — the binary is built at the site that runs it, issue #333);
+    and for a remote site that the run will build at (every run that reaches `Build`),
     `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
     did not come back), `site_machine_mismatch` (the shipped binary is built here, so the site
     must be this machine type — asked first of the probe's answers, since the remedy for any
     other is wasted on the wrong site), `site_libc_mismatch` (asked second, for the same reason:
     the binary was linked against this host's C library, and a C library runs what an older one
     of its family built, not the reverse — `remote_execution.libc_shortfall`, issue #330),
-    `missing_required_site_tools` and `site_unusable`
-    (`remote_execution.SiteProbe.problems`); for the local site, when it executes the run,
+    `missing_required_site_tools` (the programs `host_prerequisites.required_site_executables`
+    names for the run's phase) and `site_unusable`
+    (`remote_execution.SiteProbe.problems`); for the local site, when the run reaches `Validate`,
     `missing_required_site_tools` for a program the binary runs under that this host lacks
     (`host_prerequisites.execution_executables`, issue #307; a launcher, issue #316), and
     `site_unfit_for_ranks` when the profile's `execution.ranks` exceeds the CPUs this process
@@ -215,7 +217,7 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
         libc_shortfall,
         probe_site,
     )
-    from tools.target_profile import NON_EXECUTING_PHASES
+    from tools.target_profile import NON_BUILDING_PHASES, NON_EXECUTING_PHASES
 
     try:
         if sites_config is None:
@@ -235,7 +237,12 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            "§Execution sites)"),
                 "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     site = sites_config.site_for(target_profile.target_id)
-    if str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
+    phase = str(until_phase or "").strip().lower()
+    if phase in NON_BUILDING_PHASES:
+        return sites_config
+    reaches_validate = phase not in NON_EXECUTING_PHASES
+    if site.is_local and not reaches_validate:
+        # This host builds; what it builds with is the host probe's question, asked already.
         return sites_config
     if site.is_local:
         # This host executes the run: `site_violations` above refused a local site that does
@@ -275,7 +282,8 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                 "missing": missing_transport, "required": list(TRANSPORT_EXECUTABLES),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
     required = required_site_executables(_host_probe_selection(target_profile),
-                                         scheduler=site.scheduler)
+                                         scheduler=site.scheduler,
+                                         reaches_validate=reaches_validate)
     try:
         probe = probe_site(site, required)
     except RemoteExecutionError as exc:
@@ -3053,12 +3061,12 @@ def _run_main(
         )
         return 2
 
-    # Where `Validate.execute` runs (issue #293): the operator's `sites.yaml`, read once here and
-    # handed down; a missing file is the local site for every target. The site half of the
-    # "can this run execute" gate is refused as the registry half is (`target_profile_invalid`),
-    # and a remote site is asked, in one ssh call, for the programs the job needs, its machine
-    # and its C library, so an unreachable or unequipped site is refused before anything is
-    # billed.
+    # Where `Build` and `Validate.execute` run (issues #293, #333): the operator's `sites.yaml`,
+    # read once here and handed down; a missing file is the local site for every target. The
+    # site half of the "can this run execute" gate is refused as the registry half is
+    # (`target_profile_invalid`), and a remote site is asked, in one ssh call, for the programs
+    # the jobs need, its machine and its C library, so an unreachable or unequipped site is
+    # refused before anything is billed.
     sites_rejection = _sites_rejection(repo_root, target_profile, until_phase)
     if isinstance(sites_rejection, dict):
         _emit_unlogged_event(sites_rejection, args.stdout_format)

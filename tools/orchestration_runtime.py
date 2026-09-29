@@ -2331,6 +2331,24 @@ def pipeline_closure_nodes(
     return [harness_nk, *closure]
 
 
+def toolchain_version_argv(target: TargetProfile) -> tuple[str, ...]:
+    """The argv whose answer is the version of the compiler `target`'s build runs: the profile's
+    pin, else the language backend's `DEFAULT_COMPILER`, asked for `--version` — through the
+    parallel backend's compiler wrapper when it declares one, which runs the compiler it is
+    configured with. `_target_toolchain_identity` probes it on this host for the build key, and
+    a build at a remote site (issue #333) hands the same argv to the job as its
+    `toolchain_probe`, so the two versions a build records are asked alike."""
+    tc = target.toolchain
+    compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
+        "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
+    argv: tuple[str, ...] = (compiler, "--version")
+    if backend_registry.provides("parallel", target.parallel_backend, "compiler_wrapper"):
+        wrapper = backend_registry.capability_module(
+            "parallel", target.parallel_backend, "compiler_wrapper")
+        argv = tuple(str(a) for a in wrapper.wrap(argv))
+    return argv
+
+
 def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     """The build toolchain identity of a target, for the build key and for `binary_meta.json`:
     the target id, the profile's `language` / `standard` / `build_system` / parallel `backend`,
@@ -2367,7 +2385,7 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
         "build_system": tc["build_system"],
         "backend": target.parallel_backend,
         "compiler": compiler,
-        "compiler_version": server._syntax_compiler_version((compiler, "--version")),
+        "compiler_version": server._syntax_compiler_version(toolchain_version_argv(target)),
     }
     # Asked of the backend's PACKAGE only: a language whose control-file rules the neutral core
     # still carries (`core_provides`) has no module to ask, and reads no architecture; nor does
@@ -2384,12 +2402,11 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
         wrapper = backend_registry.capability_module(
             "parallel", target.parallel_backend, "compiler_wrapper")
         identity["compiler_wrapper"] = str(wrapper.COMPILER_WRAPPER)
-        # The version of the compiler the WRAPPER runs, asked through it: a wrapper configured
-        # with a compiler other than the one `compiler` resolves to on PATH would otherwise key
-        # the build by the wrong compiler, and an in-place upgrade of the wrapped one would move
-        # neither this line's old value nor `parallel_runtime`.
-        identity["compiler_version"] = server._syntax_compiler_version(
-            tuple(str(a) for a in wrapper.wrap((compiler, "--version"))))
+        # `compiler_version` above is the version of the compiler the WRAPPER runs, asked
+        # through it (`toolchain_version_argv`): a wrapper configured with a compiler other than
+        # the one `compiler` resolves to on PATH would otherwise key the build by the wrong
+        # compiler, and an in-place upgrade of the wrapped one would move neither that value nor
+        # `parallel_runtime`.
         identity["parallel_runtime"] = probe_first_line(tuple(str(a) for a in wrapper.SHOW_ARGV))
     return identity
 

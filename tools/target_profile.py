@@ -62,6 +62,12 @@ TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*")
 #: an unstated or misspelled one included, is — the set names what is EXEMPT, so a spelling
 #: nobody listed lands on the refusing side.
 NON_EXECUTING_PHASES = frozenset({"compile", "generate", "build"})
+#: The phases a run can stop at WITHOUT BUILDING the binary, compared the same way: a subset of
+#: `NON_EXECUTING_PHASES`. A binary is built at the execution site that runs it (issue #333), so
+#: a run that reaches `Build` asks the site half of the launch gate — whether the site the target
+#: maps to executes its class, and, for a remote site, the launch probe — and one ending at a
+#: phase named here is asked neither. Named as what is EXEMPT, like the set above.
+NON_BUILDING_PHASES = frozenset({"compile", "generate"})
 
 #: The closed document shape: for each object, `(required keys, optional keys)`. The top level is
 #: keyed by `""`. `tools/tests/test_target_profile.py` pins this table against the schema.

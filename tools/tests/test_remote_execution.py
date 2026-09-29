@@ -1232,11 +1232,32 @@ class SchedulerTests(unittest.TestCase):
         from tools.host_prerequisites import required_site_executables
         self.assertEqual(rx.scheduler_executables("slurm"), ("srun",))
         self.assertEqual(rx.scheduler_executables("none"), ())
-        selection = {"build_system": "make", "parallel": "openmp"}
+        selection = {"build_system": "make", "parallel": "openmp", "build_compiler": "zz-fc"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
                          ("timeout", "make", "srun"))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
-                         ("timeout", "make"))
+                         ("timeout", "make", "zz-fc"))
+
+    def test_the_build_compiler_is_asked_where_the_job_builds(self) -> None:
+        """Issue #333: the Build phase runs at the site, so a site that runs the job on the
+        login the probe reaches is asked for the build compiler, whatever phase the run stops
+        at; a batch site's login is not — the build job asks the compute node
+        (`required_programs`), as the trace programs are asked (issue #307). What the binary
+        runs under is asked only of a run that reaches Validate."""
+        from tools.backends import registry
+        from tools.host_prerequisites import required_site_executables
+        trace = registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES
+        selection = {"build_system": "make", "parallel": "cuda", "build_compiler": "zz-cc"}
+        for reaches_validate in (True, False):
+            with self.subTest(reaches_validate=reaches_validate):
+                self.assertEqual(
+                    required_site_executables(selection, scheduler="none",
+                                              reaches_validate=reaches_validate),
+                    ("timeout", "make", "zz-cc", *(trace if reaches_validate else ())))
+                self.assertEqual(
+                    required_site_executables(selection, scheduler="slurm",
+                                              reaches_validate=reaches_validate),
+                    ("timeout", "make", "srun"))
 
     def test_the_launch_probe_asks_for_what_the_binary_runs_under(self) -> None:
         """A parallel backend that declares `device_trace` (issue #307) adds its trace's
@@ -1249,11 +1270,11 @@ class SchedulerTests(unittest.TestCase):
         from tools.host_prerequisites import required_site_executables
         trace = registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES
         self.assertTrue(trace)
-        selection = {"build_system": "make", "parallel": "cuda"}
+        selection = {"build_system": "make", "parallel": "cuda", "build_compiler": "zz-cc"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
                          ("timeout", "make", "srun"))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
-                         ("timeout", "make", *trace))
+                         ("timeout", "make", "zz-cc", *trace))
 
 
 class LibcRuleTests(unittest.TestCase):

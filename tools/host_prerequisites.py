@@ -29,10 +29,12 @@ built with, so at launch there is something to read even though no IR exists yet
 target, and a `--with-deps` closure inherits it, so the target's selection stands for every
 member. One LIMIT, stated rather than implied:
 
-- A profile that pins `toolchain.compiler` has its BUILD compiler unprobed. Its mandatory syntax
-  stage is still covered, since that stage is the language backend's
+- A profile that pins `toolchain.compiler` has its BUILD compiler unprobed on this host. Its
+  mandatory syntax stage is still covered, since that stage is the language backend's
   `MANDATORY_SYNTAX_COMPILER` whatever the profile says, and a skipped mandatory stage is a
-  `Generate.gate` fail_closed rather than a silent pass.
+  `Generate.gate` fail_closed rather than a silent pass. At a remote execution site, where the
+  build runs since issue #333, the build compiler is asked by name (`build_compiler`, in
+  `required_site_executables` and the build job's own check).
 
 A parallel backend that declares `compiler_wrapper` (issue #316) adds its wrapper: the build
 control file's compiler variable and the syntax stage's `argv[0]` are that program, so it is
@@ -137,7 +139,26 @@ def resolve_launch_axis_selection(target) -> dict[str, str]:
         # What the machine that executes the binary needs beyond it is the parallel backend's
         # (`execution_executables`, issue #307); the host's build tools do not read it.
         "parallel": target.parallel_backend,
+        # The program the build control file names as its compiler — the parallel backend's
+        # wrapper, else the profile's pin, else the language's default — resolved by the
+        # conductor's own `build_compiler`, the function that writes it into the control file.
+        # Asked of an execution site that builds the binary (`required_site_executables`,
+        # issue #333); this host's probe does not read it (the limit in the module docstring).
+        "build_compiler": _build_compiler(target),
     }
+
+
+def _build_compiler(target) -> str:
+    """`workflow_conductor.build_compiler` of `target`'s toolchain, in the shape the conductor's
+    `_read_toolchain` hands it. Imported here: the conductor is not needed by the rest of this
+    module."""
+    from tools.workflow_conductor import build_compiler
+
+    tc = target.toolchain
+    return build_compiler({"language": str(tc["language"]), "standard": str(tc["standard"]),
+                           "build_system": str(tc["build_system"]),
+                           "compiler": str(tc.get("compiler") or ""),
+                           "backend": target.parallel_backend})
 
 
 def required_host_executables(
@@ -321,14 +342,18 @@ def execution_executables(selection: dict[str, str]) -> tuple[str, ...]:
     return _for_backend(selection["parallel"])
 
 
-def required_site_executables(selection: dict[str, str], *, scheduler: str) -> tuple[str, ...]:
-    """The programs a remote execution site's non-interactive LOGIN must resolve for a job of the
-    resolved selection (issue #293): what the job script itself needs beyond the POSIX utilities
-    (`remote_execution.REMOTE_EXECUTABLES`), the build system, whose test target the quality
-    check runs there, what the binary runs under (`execution_executables`, issue #307) — only
-    for a site that runs the job on the login it reaches (`execution_sites.DIRECT_SCHEDULER`) —
-    and what the site's `scheduler` runs the job under (`remote_execution.scheduler_executables`).
-    Read out of the tables that run them, like `required_host_executables`.
+def required_site_executables(selection: dict[str, str], *, scheduler: str,
+                              reaches_validate: bool = True) -> tuple[str, ...]:
+    """The programs a remote execution site's non-interactive LOGIN must resolve for the jobs of
+    the resolved selection (issue #293): what the job script itself needs beyond the POSIX
+    utilities (`remote_execution.REMOTE_EXECUTABLES`), the build system, which builds the binary
+    there and whose test target the quality check runs, and what the site's `scheduler` runs the
+    job under (`remote_execution.scheduler_executables`); and, only for a site that runs the job
+    on the login it reaches (`execution_sites.DIRECT_SCHEDULER`), the build compiler (the
+    selection's `build_compiler`, issue #333: the Build phase runs at the site) and — for a run
+    that reaches `Validate` (`reaches_validate`) — what the binary runs under
+    (`execution_executables`, issue #307). Read out of the tables that run them, like
+    `required_host_executables`.
 
     A batch scheduler runs the job on another node, and what the binary runs under need not be
     installed on the login this probe reaches: at the `cpp_gpu` site the device trace's program
@@ -336,7 +361,12 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str) -> t
     #307), so asking the login refused every run there. For such a site it is asked where the
     binary runs, by the job script, which checks each command's program before running it
     (`remote_execution.render_job_script`, exit 4, a transport `fail_closed` that `--resume`
-    retries). The build system is still asked of the login, as it was before issue #307."""
+    retries). The build system is still asked of the login, as it was before issue #307. The
+    build compiler is the same case as what the binary runs under (issue #333): at the
+    `cpp_gpu` site it is on neither the login's nor the compute nodes' non-interactive PATH by
+    default (measured 2026-09-29), and where an operator puts it on the compute nodes', a login
+    without it must not refuse the run; the build job checks it where it builds
+    (`JobRequest.required_programs`, exit 4)."""
     from tools.execution_sites import DIRECT_SCHEDULER
     from tools.remote_execution import REMOTE_EXECUTABLES, scheduler_executables
 
@@ -346,7 +376,9 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str) -> t
     runs_on_login = scheduler == DIRECT_SCHEDULER
     found: list[str] = []
     for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system),
-                       *(execution_executables(selection) if runs_on_login else ()),
+                       *((selection["build_compiler"],) if runs_on_login else ()),
+                       *(execution_executables(selection)
+                         if runs_on_login and reaches_validate else ()),
                        *scheduler_executables(scheduler)):
         if executable not in found:
             found.append(executable)

@@ -3540,6 +3540,18 @@ def build_compiler(tc: dict[str, str]) -> str:
     return compiler_wrapper(tc["backend"]) or tc["compiler"] or default_compiler(tc["language"])
 
 
+def _local_site_record() -> dict[str, Any]:
+    """The execution-site record of a command run in-process on this host: the local site, no
+    host, no scheduler, no job — the shape `remote_execution.JobResult.site_record` has at a
+    remote site. `trial_meta.json#environment.execution_site` and
+    `binary_meta.json#environment.build_site` (issue #333) both record it."""
+    from tools.execution_sites import DIRECT_SCHEDULER
+    from tools.host_execution import LOCAL_SITE
+
+    return {"site": LOCAL_SITE, "host": None, "scheduler": DIRECT_SCHEDULER, "job_id": None,
+            "remote_dir": None, "queue_wait_ms": 0}
+
+
 def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     """The `(makefile_host_authored, runner_host_authored)` stamp the two Z1/Z2 pure paths use.
 
@@ -9596,12 +9608,25 @@ class Conductor:
                 src / Path(binding["interface_header_ref"]).name)
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
-        """Deterministic Build: in-process compile_project + binary_meta + post_build gate."""
+        """Deterministic Build: compile_project + binary_meta + post_build gate.
+
+        WHERE it builds is the execution site's (issue #333): a binary is built at the site that
+        runs it. At the local site `compile_project` runs in-process, as before; at a remote
+        one the node's `src/` and the staged dependency sources are shipped, the same argv runs
+        as one job (`tools/remote_execution.py`), the binary is collected into this node's
+        `bin/`, and the job's output names the local paths it stands for.
+        `binary_meta.json#environment` records where it was built, and `Validate.execute`
+        refuses to run a binary at a site other than that one (`_execute_inproc`)."""
         import sys as _sys
         mcp_dir = str(self.repo_root / "mcp_servers")
         if mcp_dir not in _sys.path:
             _sys.path.insert(0, mcp_dir)
-        from build_runtime_server import tool_compile_project
+        from build_runtime_server import (
+            COMPILE_PROJECT_TIMEOUT_SEC,
+            build_command,
+            default_build_jobs,
+            tool_compile_project,
+        )
 
         tc = self._read_toolchain(refs)
         language = tc["language"]
@@ -9612,6 +9637,14 @@ class Conductor:
         bin_dir = self.repo_root / refs.binary_dir() / "bin"
         obj_dir = self.repo_root / "workspace" / "tmp" / child_arid / "build"
         exe = self._resolve_exe_name(refs)
+        site = self.site
+        if site is not None and not site.is_local:
+            from tools.host_execution import launch_shape
+
+            # The backstop of the driver's site gate, before anything is staged or shipped: a
+            # site that does not execute the class, or a launcher target at a remote site, is
+            # refused (`LaunchUnavailable`, a `deterministic_build_error`).
+            launch_shape(self.target, site)
         # DEPENDENCY BUILD (Model B, docs/design): for a make∧fortran node with dependencies,
         # stage each closure `<dep>_model.f90` into obj_dir ($(OBJDIR)) BEFORE compile, so the
         # conductor-authored dependency Makefile (_write_makefile non-leaf branch) compiles +
@@ -9627,27 +9660,117 @@ class Conductor:
         # the copy is re-hashed against them; a failing build records them too: the binding
         # describes what was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
-        from tools.orchestration_runtime import _target_toolchain_identity
+        from tools.host_execution import LOCAL_SITE, local_platform_record
+        from tools.orchestration_runtime import (
+            AUDIT_LOG_BASENAMES,
+            _target_toolchain_identity,
+            toolchain_version_argv,
+        )
         toolchain_identity = _target_toolchain_identity(self.target)
 
-        result = tool_compile_project({
-            "project_dir": str(src_dir),
-            # `repo_root` is accepted and unused by the server since issue #171 PR-2 (it
-            # anchored the retired capability gate's evidence); passed because the served
-            # schema still declares it and it is the one place the call records which
-            # checkout it belongs to.
-            "repo_root": str(self.repo_root),
-            "language": language,
-            "build_system": build_system,
-            # OBJDIR/BINDIR out-of-source overrides + BIN imposed to the canonical
-            # <spec_id>_runner (command-line override wins over any Makefile BIN
-            # assignment). Validate.execute imposes the same BIN via the make_test env;
-            # see phase_03_build.md.
-            "extra_args": [f"OBJDIR={obj_dir}", f"BINDIR={bin_dir}", f"BIN={exe}"],
-            "capture_limit": _FULL_CAPTURE_LIMIT,
-            "orchestration_id": self.orchestration_id,
-            "agent_run_id": child_arid,
-        })
+        def build_args(obj_path: str, bin_path: str) -> list[str]:
+            """OBJDIR/BINDIR out-of-source overrides + BIN imposed to the canonical
+            <spec_id>_runner (command-line override wins over any Makefile BIN assignment),
+            from one set of paths — the local ones or the job directory's — so the two sites
+            cannot build differently. Validate.execute imposes the same BIN via the make_test
+            env; see phase_03_build.md."""
+            return [f"OBJDIR={obj_path}", f"BINDIR={bin_path}", f"BIN={exe}"]
+
+        attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
+        if site is None or site.is_local:
+            result = tool_compile_project({
+                "project_dir": str(src_dir),
+                # `repo_root` is accepted and unused by the server since issue #171 PR-2 (it
+                # anchored the retired capability gate's evidence); passed because the served
+                # schema still declares it and it is the one place the call records which
+                # checkout it belongs to.
+                "repo_root": str(self.repo_root),
+                "language": language,
+                "build_system": build_system,
+                "extra_args": build_args(str(obj_dir), str(bin_dir)),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                **attribution,
+            })
+            site_id = LOCAL_SITE
+            # A build probes no device: the machine that builds a class's binary need not run
+            # one (`gpu` is null here and at a remote site alike).
+            platform_record = local_platform_record()
+            site_record = _local_site_record()
+            # The same host and the same probe as the key's.
+            built_compiler_version = toolchain_identity["compiler_version"]
+        else:
+            # The same argv at a remote site: the node's whole `src/` (minus the audit logs,
+            # which the build appends to and nothing reads there) and the staged dependency
+            # sources shipped to a fresh job directory, one command, the binary collected. The
+            # command's `command_log.jsonl` entry is written here by the server's own writer at
+            # the placement the local path uses, with the LOCAL argv as `command`. A transport
+            # failure raises `RemoteExecutionError` — `deterministic_build_error`, transport
+            # fail_closed, `--resume` retries it — as does the site lacking the build compiler
+            # (checked before the command runs, `required_programs`), which make would
+            # otherwise report as a failure of the source.
+            from build_runtime_server import _validate_build_argv_overrides
+
+            from tools.remote_execution import (
+                CommandSpec,
+                JobRequest,
+                execute_job,
+                job_dir,
+            )
+
+            site_id = site.site_id
+            jdir = job_dir(site, self.orchestration_id, child_arid)
+            ship: dict[str, Path] = {}
+            for root, prefix in ((src_dir, "src"), (obj_dir, "build")):
+                for path in sorted(root.rglob("*")):
+                    if path.is_file() and not (prefix == "src"
+                                               and path.name in AUDIT_LOG_BASENAMES):
+                        ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
+            remote_args = build_args(f"{jdir}/build", f"{jdir}/bin")
+            _validate_build_argv_overrides(None, remote_args, "compile_project",
+                                           build_system=build_system)
+            jobs = default_build_jobs()
+            job = execute_job(JobRequest(
+                site=site, job_dir=jdir, ship=ship,
+                commands=(CommandSpec(
+                    tag="build", tool_name="compile_project",
+                    argv=tuple(build_command(build_system, None, jobs, remote_args)),
+                    record_argv=tuple(build_command(
+                        build_system, None, jobs, build_args(str(obj_dir), str(bin_dir)))),
+                    cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
+                    timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
+                    command_log_path=src_dir / "command_log.jsonl",
+                    capture_limit=_FULL_CAPTURE_LIMIT),),
+                dirs=("bin", "build"),
+                attribution=attribution,
+                required_programs=(build_compiler(tc),),
+                toolchain_probe=toolchain_version_argv(self.target),
+            ), local_tmp=obj_dir.parent / "site")
+            (result,) = job.results
+            # What the job's output names by its job-directory path is written back to the
+            # local path it stands for — the compiler's diagnostics, which the failure's
+            # `failure_source_refs` are read from against the local `src/`, among it.
+            local_of = sorted(((f"{jdir}/src", str(src_dir)), (f"{jdir}/bin", str(bin_dir)),
+                               (f"{jdir}/build", str(obj_dir))),
+                              key=lambda pair: len(pair[0]), reverse=True)
+
+            def localized(text: str) -> str:
+                for remote_path, local_path in local_of:
+                    text = text.replace(remote_path, local_path)
+                return text
+
+            result = {**result, "stdout": localized(result.get("stdout") or ""),
+                      "stderr": localized(result.get("stderr") or "")}
+            # This node's `bin/` holds only what this build collected: a file an earlier
+            # attempt left there must not stand in for a binary the site did not produce.
+            if bin_dir.exists():
+                shutil.rmtree(bin_dir)
+            bin_dir.mkdir(parents=True)
+            built = job.collected / "bin" / exe
+            if built.is_file():
+                shutil.copy2(built, bin_dir / exe)
+            platform_record = job.platform
+            site_record = job.site_record
+            built_compiler_version = job.toolchain_version
         ok = bool(result.get("ok"))
         # return_code is None on a subprocess timeout; treat that as a build failure.
         rc = result.get("return_code") or 1
@@ -9712,6 +9835,15 @@ class Conductor:
             "target_id": toolchain_identity["target_id"],
             "compiler": toolchain_identity["compiler"],
             "compiler_version": toolchain_identity["compiler_version"],
+            # WHERE it was built (issue #333), in `trial_meta.json#environment`'s vocabulary:
+            # the machine and the site (`platform`, `build_site`) and the version of the
+            # compiler as that machine answered (`compiler_version`; the top-level
+            # `compiler_version` above is the key's, probed on the host that runs
+            # `Generate.gate` — the two are one string at the local site). `Validate.execute`
+            # runs the binary only at `build_site.site`.
+            "environment": {"platform": {**platform_record, "site": site_id},
+                            "build_site": site_record,
+                            "compiler_version": built_compiler_version},
             "binary_artifact_ref": f"binary/{refs.binary_id}/bin/{exe}",
             "command_id": result.get("command_id"),
             "command_log_ref": command_log_ref,
@@ -11053,7 +11185,6 @@ class Conductor:
         # WHERE it runs is the execution site's (issue #293): `self.site`, which the driver
         # resolved from the operator's `sites.yaml`. The seam refuses a site that does not
         # execute the target's class, as the backstop of the launch gate's site half.
-        from tools.execution_sites import DIRECT_SCHEDULER
         from tools.host_execution import launch_shape, local_platform_record
 
         target = self.target
@@ -11098,6 +11229,25 @@ class Conductor:
             _prev = node_dir / _stale
             if _prev.exists():
                 _prev.unlink()
+
+        # A binary runs at the site that built it (issue #333). The build key does not hold the
+        # site, so a target mapped to another site since its Build reuses that Build; its binary
+        # was built for the machine and the runtime of the site it was built at, and running it
+        # elsewhere is the class of failure issue #330 met (a C library the site lacks). A record
+        # that names no build site is refused too: nothing then says where the binary can run.
+        # Before anything is shipped or run; a host-side failure, not the kernel's and no leaf's.
+        built_meta = _read_json(self.repo_root / refs.binary_dir(refs.source_binary_id)
+                                / "binary_meta.json") or {}
+        built_env = built_meta.get("environment") if isinstance(built_meta, dict) else None
+        built_site = built_env.get("build_site") if isinstance(built_env, dict) else None
+        built_at = built_site.get("site") if isinstance(built_site, dict) else None
+        if built_at != launch.site:
+            raise RuntimeError(
+                f"binary {refs.source_binary_id} was built at site "
+                f"{built_at if isinstance(built_at, str) else '(none recorded)'} and target "
+                f"{target.target_id} now runs at site {launch.site}; a binary runs at the site "
+                f"that built it — map the target back in sites.yaml, or rebuild it at "
+                f"{launch.site} with --rederive build")
 
         # Attribution only: the server records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
@@ -11170,9 +11320,7 @@ class Conductor:
             }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
             platform_record = local_platform_record(launch.platform_probe,
                                                     runtime_probe=launch.runtime_probe)
-            site_record: dict[str, Any] = {
-                "site": launch.site, "host": None, "scheduler": DIRECT_SCHEDULER,
-                "job_id": None, "remote_dir": None, "queue_wait_ms": 0}
+            site_record: dict[str, Any] = _local_site_record()
         else:
             # The same two commands at a remote site (`tools/remote_execution.py`): one job,
             # the binary, the IR and the build control file shipped to a fresh job directory,
