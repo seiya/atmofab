@@ -220,7 +220,7 @@ class _Harness:
 
 #: What the job script and the shipped runner execute at the site.
 _SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "rm", "date", "env", "timeout", "ls",
-               "python3", "getconf")
+               "python3", "getconf", "chmod")
 
 
 def _bare_path(root: Path, *, without: str, sh: str = "sh") -> Path:
@@ -837,11 +837,14 @@ class RefusalTests(unittest.TestCase):
 
     def test_a_site_libc_answer_not_in_the_shape_is_the_hosts_failure(self) -> None:
         """The script reads the answer the way `parse_libc` does: two dotted numbers after the
-        family, and nothing glued to the minor number."""
+        family, and nothing glued to the minor number. Each shape is refused by a different
+        clause: no family at all (only the `case` on the family sees it), a newer major with a
+        minor that is not a number (only the digit check sees it: `-gt` answers first)."""
         family, major, minor = rx.parse_libc(rx.host_libc())
         for answer in (f"{family} {major + 1}", f"{family} {major + 1}.x", f"{family} x.{minor}",
                        f"{family} {major}.{minor}x", f"{family}  {major}.{minor}",
-                       f"{family}x {major}.{minor}", ""):
+                       f"{family}x {major}.{minor}", f"{major}.{minor}",
+                       f"{family} {major + 1}.{minor}x", ""):
             with self.subTest(answer=answer):
                 self.assertIsNotNone(rx.libc_shortfall(rx.host_libc(), answer or None))
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
@@ -1230,6 +1233,68 @@ class LibcRuleTests(unittest.TestCase):
             with self.subTest(value=value), mock.patch.object(rx.os, "confstr",
                                                               return_value=value):
                 self.assertIsNone(rx.host_libc())
+
+
+class SiteSmokeTests(unittest.TestCase):
+    """`tools/site_smoke.py` over the ssh shim: a C library that would refuse a binary built
+    here is a note and the shell command still runs, with the site's value; a site that names
+    none gets this host's, and the job script's refusal is the answer (issue #330)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+        self.sites = self.h.root / "sites.yaml"
+        self.sites.write_text(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                              f"    workdir: {self.h.workdir}\n    executes: [cpu]\n"
+                              f"    scheduler: none\n")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def smoke(self, *extra: str, **knobs: str) -> tuple[int, str, str]:
+        import contextlib
+        import io
+
+        from tools import site_smoke
+        out, err = io.StringIO(), io.StringIO()
+        with self.h.env(**knobs), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = site_smoke.main(["box", "--sites", str(self.sites), "--cmd", "echo OK",
+                                    *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_site_older_than_this_host_is_a_note_and_the_command_runs(self) -> None:
+        """The site's `getconf` answers an older C library than this host's; the job carries
+        the site's value, so its script does not refuse the shell command."""
+        family, _major, _minor = rx.parse_libc(rx.host_libc())
+        old = self.h.root / "old_libc"
+        old.mkdir()
+        (old / "getconf").write_text(f"#!/bin/sh\necho '{family} 0.1'\n")
+        (old / "getconf").chmod(0o755)
+        code, out, err = self.smoke(SHIM_SSH_PATH=f"{old}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"libc={family} 0.1", out)
+        self.assertIn("note: the site's C library is", out)
+        self.assertIn("RESULT: PASS", out)
+
+    def test_a_host_that_names_no_libc_is_a_failed_job_not_a_traceback(self) -> None:
+        with mock.patch.object(rx, "host_libc", return_value=None):
+            code, _out, err = self.smoke("--no-probe")
+        self.assertEqual(code, 1)
+        self.assertIn("job FAILED: this host does not name its C library", err)
+
+    def test_a_site_that_names_no_libc_is_refused_by_the_job_script(self) -> None:
+        bare = _bare_path(self.h.root, without="getconf")
+        code, out, err = self.smoke(SHIM_SSH_PATH=str(bare))
+        self.assertEqual(code, 1)
+        self.assertIn("libc=None", out)
+        self.assertIn("note: the site's C library did not answer", out)
+        self.assertIn(f"the site C library () is not {rx.host_libc()} or newer", err)
+
+    def test_an_equal_libc_has_no_note(self) -> None:
+        code, out, err = self.smoke()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note:", out)
 
 
 class ScriptTests(unittest.TestCase):
