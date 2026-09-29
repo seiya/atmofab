@@ -10444,6 +10444,9 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
         self.assertIsNone(events[-1]["host_libc"])
         self.assertIn("this host does not name its C library", events[-1]["detail"])
+        # No site can pass, so the remedy is the host, not a re-mapping.
+        self.assertIn("a glibc host", events[-1]["detail"])
+        self.assertNotIn("sites.yaml", events[-1]["detail"])
         self.assertEqual(calls, [])
 
     def test_the_libc_is_asked_after_the_machine_and_before_the_programs(self) -> None:

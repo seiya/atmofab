@@ -211,11 +211,12 @@ def libc_shortfall(required: str | None, site: str | None) -> str | None:
     `_validate` and `site_smoke` all decide with this one function."""
     need, have = parse_libc(required), parse_libc(site)
     if need is None:
-        return (f"this host does not name its C library in the shape `glibc 2.35` "
-                f"({required!r}), so no site can be shown to run what it builds")
+        return ("this host does not name its C library in the shape "
+                f"`<family> <major>.<minor>` ({required!r}), so no site can be shown to run what "
+                "it builds")
     if have is None:
-        return (f"the site's C library did not answer in the shape `glibc 2.35` ({site!r}); the "
-                f"shipped files were built against {required}")
+        return ("the site's C library did not answer in the shape `<family> <major>.<minor>` "
+                f"({site!r}); the shipped files were built against {required}")
     if have[0] != need[0] or have[1:] < need[1:]:
         return (f"the site's C library is {site}, and the shipped files were built against "
                 f"{required}, which needs {need[0]} {need[1]}.{need[2]} or newer")

@@ -220,8 +220,11 @@ runs the same probe and then one job with a shell command (`--cmd`, default `ech
 through the executor `Validate.execute` uses — the site's scheduler, collection and removal
 included — and prints the probe's answers (the site's machine and C library among them), the job
 id, the platform record and the command's output. A machine or C library that would refuse a
-binary built here is printed as a `note:`, and the shell command is still sent. `--ship FILE`
-sends a local file into the job directory (`$JOB` in `--cmd`), and `--gpu` adds the `gpu`
+binary built here is printed as a `note:`, and the shell command is still sent with the site's
+values — except at a site that names no C library, where the job carries this host's and its
+script refuses the job before the command runs. `--no-probe` has nothing to note from, so the job
+always carries this host's machine and C library, and a site that cannot run a binary built
+here refuses it the same way. `--ship FILE` sends a local file into the job directory (`$JOB` in `--cmd`), and `--gpu` adds the `gpu`
 class's device probe; shipping a small program built here is how to see that the site's
 runtime accepts what this host builds, beyond the C library version the probe asks. It writes nothing under
 `workspace/`.

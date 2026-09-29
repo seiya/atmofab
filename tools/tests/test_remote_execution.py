@@ -1289,7 +1289,8 @@ class LibcRuleTests(unittest.TestCase):
             for answer in answers:
                 with self.subTest(sh=sh, answer=answer):
                     proc = subprocess.run([sh, "-c", block], env={**os.environ, "ANS": answer},
-                                          capture_output=True, text=True, timeout=30)
+                                          capture_output=True, text=True, timeout=30,
+                                          check=False)
                     script_ok = proc.returncode == 0 and proc.stdout.strip() == "PASS"
                     python_ok = rx.libc_shortfall(host, answer) is None
                     self.assertEqual(script_ok, python_ok, proc.stderr)

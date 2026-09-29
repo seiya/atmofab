@@ -671,7 +671,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "a2b0570ca6b092bac614d92d6019f68f10b1abd1039b4be7fe24f2728c97ca71",
+    "execute-8": "50d67b32185aa2e8adf91109a008dd3d2420783093de7b52ff2f6a597203ebd0",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
