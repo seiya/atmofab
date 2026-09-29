@@ -80,8 +80,8 @@ that runs long a refusal rather than the command's own timeout.
   that allows batch submission only cannot run this backend; the job is then refused when it
   runs, with `srun`'s own message.
 - The site's `workdir` at the same path on the machines Slurm runs the job on (a shared
-  filesystem). The launch probe asks the login only; the job script checks its programs and its
-  machine again, on the machine it runs on, before its first command.
+  filesystem). The launch probe asks the login only; the job script checks its programs, its
+  machine and its C library again, on the machine it runs on, before its first command.
 
 ## 3. What it does not do
 
