@@ -585,7 +585,7 @@ PINNED_BUILD: dict[str, str] = {
     # tuple gained `build_command` and the two defaults, which the move had taken out of the
     # digested body; their values are 0f768622's. The digest `build-1` shipped with at
     # 0f768622 is kept below.
-    "build-1": "6acbe4a1a98c0a8b8aab39e8c989452dbb01cf761c4d682a730b06b4be684b50",
+    "build-1": "ae9423b40b3419e3e29535674b0b267508ed968655d5331a52d03581013f3f85",
     "build-1@0f768622": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
 }
 PINNED_EXECUTE: dict[str, str] = {
@@ -687,7 +687,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "70e1a3e2b2e0ae9ec5222170575a132da05ff3dfb98502b77de196fc6b0319cd",
+    "execute-8": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.

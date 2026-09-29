@@ -1003,8 +1003,10 @@ class RequestValidationTests(unittest.TestCase):
         ):
             with self.subTest(kw=kw):
                 self._invalid(pattern, self.h.request(run, **kw))
-        self._invalid("record_argv must be a non-empty argv", self.h.request(
-            dataclasses.replace(run, record_argv=())))
+        for bad in ((), "make", ["make"]):
+            with self.subTest(record_argv=bad):
+                self._invalid("record_argv must be a non-empty argv tuple", self.h.request(
+                    dataclasses.replace(run, record_argv=bad)))
 
     def test_an_env_the_server_refuses_is_refused_here(self) -> None:
         for env, pattern in (({"LD_PRELOAD": "/x.so"}, "redirect execution"),
@@ -1722,6 +1724,14 @@ class BuildShapeTests(unittest.TestCase):
         for rc in (124, 126, 127, 137):
             with self.subTest(rc=rc):
                 self.assertIsNone(self._version(f"echo 'late 1.2'; exit {rc}\n"))
+
+    def test_the_status_of_the_run_whose_answer_is_read_decides(self) -> None:
+        """The stderr fallback runs the probe a second time; that run's timeout, not the first
+        run's clean exit, decides whether its answer is one."""
+        marker = self.h.root / "second-run"
+        body = (f"if [ -e {marker} ]; then echo 'partial 1.2' >&2; exit 124; fi\n"
+                f": > {marker}; exit 0\n")
+        self.assertIsNone(self._version(body))
 
     def test_a_probe_that_hangs_is_bounded_and_answers_nothing(self) -> None:
         with mock.patch.object(rx, "PROBE_TIMEOUT_SEC", 1):

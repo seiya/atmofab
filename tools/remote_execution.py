@@ -434,8 +434,9 @@ def _validate(request: JobRequest) -> None:
             raise ValueError(f"command {c.tag!r} has an empty argv")
         _program(c.argv[0], f"command {c.tag!r} program")
         if c.record_argv is not None and not (
-                c.record_argv and all(isinstance(a, str) for a in c.record_argv)):
-            raise ValueError(f"command {c.tag!r} record_argv must be a non-empty argv")
+                isinstance(c.record_argv, tuple) and c.record_argv
+                and all(isinstance(a, str) for a in c.record_argv)):
+            raise ValueError(f"command {c.tag!r} record_argv must be a non-empty argv tuple")
         if isinstance(c.timeout_sec, bool) or not isinstance(c.timeout_sec, int) \
                 or c.timeout_sec < 1:
             raise ValueError(f"command {c.tag!r} timeout_sec must be an integer >= 1")
@@ -483,8 +484,11 @@ def render_job_script(request: JobRequest) -> str:
     the server's `_syntax_compiler_version`, which reads this host's compiler version for the
     build key, so the two versions a build records are read alike. Like that function it reads
     the answer whatever the probe's exit status, and answers nothing for a probe that could not
-    start or did not finish (`timeout`'s 124, 126, 127 and 137); the value is stripped by the
-    reader."""
+    start or did not finish (`timeout`'s 124, 126, 127 and 137, read from the run whose answer is
+    used); the value is stripped by the reader. Two differences remain: a probe program that
+    exits one of those four codes ITSELF answers nothing here, where the server reads its text
+    (the script cannot tell it from `timeout`'s own), and the probe's bound is
+    `PROBE_TIMEOUT_SEC`, where the server's is 30 seconds."""
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
@@ -546,7 +550,7 @@ def render_job_script(request: JobRequest) -> str:
             # A `.` after the answer, removed again, so that an answer of blank lines is not
             # emptied by the substitution and is read as the server reads it: an answer.
             f"tv=$({probe} 2>/dev/null; trc=$?; printf .; exit $trc); trc=$?; tv=${{tv%.}}",
-            f'[ -n "$tv" ] || tv=$({probe} 2>&1 >/dev/null)',
+            f'[ -n "$tv" ] || {{ tv=$({probe} 2>&1 >/dev/null); trc=$?; }}',
             'case "$trc" in 124|126|127|137) tv= ;; esac',
         ]
         facts.append((TOOLCHAIN_KEY,

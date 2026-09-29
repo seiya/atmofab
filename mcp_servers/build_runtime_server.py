@@ -875,9 +875,9 @@ def build_command(
     jobs: int,
     extra_args: list[str],
 ) -> list[str]:
-    """The argv `compile_project` runs for `build_system`: the one table both the server and
-    the remote executor's caller read, so a build at a site runs what one here would (issue
-    #333). Raises `ValueError` for a build system the server does not run."""
+    """The argv `compile_project` runs for `build_system`. Public so that a build at a remote
+    site (issue #333), which no server runs, can be handed the argv this table gives, and run
+    what a build here would. Raises `ValueError` for a build system the server does not run."""
     if build_system == "make":
         cmd = ["make", f"-j{jobs}"]
         if target:
