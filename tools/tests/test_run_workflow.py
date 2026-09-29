@@ -10237,7 +10237,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self._remote()
         bare = Path(self._tmp.name) / "bare"
         bare.mkdir()
-        for tool in ("sh", "uname", "getconf"):
+        for tool in ("sh", "uname"):
             (bare / tool).symlink_to(shutil.which(tool))
         from tools.host_prerequisites import required_site_executables
         from tools.host_prerequisites import resolve_launch_axis_selection
@@ -10300,7 +10300,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self._remote(scheduler="slurm")
         bare = Path(self._tmp.name) / "bare"
         bare.mkdir()
-        for tool in ("sh", "uname", "getconf", "timeout", "make", "mkdir", "chmod", "rm"):
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
         code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 2)
@@ -10370,7 +10370,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(cuda.target_id, "t_a")
         bare = Path(self._tmp.name) / "bare_trace"
         bare.mkdir()
-        for tool in ("sh", "uname", "getconf", "timeout", "make", "mkdir", "chmod", "rm"):
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
         (bare / "srun").symlink_to(shutil.which("true"))
         for tool in tracer:
@@ -10408,7 +10408,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         compiler = resolve_launch_axis_selection(cuda)["build_compiler"]
         bare = Path(self._tmp.name) / "bare_build"
         bare.mkdir()
-        for tool in ("sh", "uname", "getconf", "timeout", "make", "mkdir", "chmod", "rm"):
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
         (bare / compiler).symlink_to(shutil.which("true"))
         self._remote(scheduler="none")
@@ -10436,99 +10436,26 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
                          ["the workdir cannot be made or is not writable"])
         self.assertEqual(calls, [])
 
-    def test_a_site_of_another_machine_type_is_refused(self) -> None:
-        """Before its other problems: the site also lacks the job's programs here, and the
-        remedy for those would be work on the wrong site."""
-        self._remote()
+    def test_a_site_of_another_machine_type_or_c_library_is_accepted(self) -> None:
+        """Issue #333: the binary is built at the site that runs it, so neither the site's
+        machine type nor its C library is asked at launch any more. A host that reports
+        another machine, and a site that names no C library (no `getconf`), start the run."""
         import platform
-        bare = Path(self._tmp.name) / "bare_mm"
+
+        from tools.host_prerequisites import resolve_launch_axis_selection
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        compiler = resolve_launch_axis_selection(fixture)["build_compiler"]
+        self._remote()
+        bare = Path(self._tmp.name) / "bare_any"
         bare.mkdir()
-        for tool in ("sh", "uname"):
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
+        (bare / compiler).symlink_to(shutil.which("true"))
+        self.assertIsNone(shutil.which("getconf", path=str(bare)))
         with mock.patch.object(platform, "machine", return_value="zz_arch"):
-            code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
-        self.assertEqual(code, 2)
-        self.assertEqual(events[-1]["reason"], "site_machine_mismatch")
-        self.assertIn("zz_arch", events[-1]["detail"])
-        self.assertEqual(calls, [])
-
-    def _bare(self, name: str, tools: tuple[str, ...]) -> Path:
-        bare = Path(self._tmp.name) / name
-        bare.mkdir()
-        for tool in tools:
-            (bare / tool).symlink_to(shutil.which(tool))
-        return bare
-
-    def test_a_site_whose_libc_is_older_is_refused_at_launch(self) -> None:
-        """Issue #330: the binary is linked here, and a C library runs what an older one of its
-        family built, not the reverse. The driver asks `remote_execution.host_libc`, so this
-        row stands for a host newer than the site by patching that one point."""
-        from tools import remote_execution as rx
-        self._remote()
-        with mock.patch.object(rx, "host_libc", return_value="glibc 99.0"):
-            code, events, calls = self._main()
-        self.assertEqual(code, 2)
-        event = events[-1]
-        self.assertEqual(event["reason"], "site_libc_mismatch")
-        self.assertEqual(event["site"], "box")
-        self.assertEqual(event["host_libc"], "glibc 99.0")
-        self.assertEqual(event["site_libc"], os.confstr("CS_GNU_LIBC_VERSION"))
-        for part in ("glibc 99.0", os.confstr("CS_GNU_LIBC_VERSION"), "sites.yaml", "t_a",
-                     "or newer", "run the workflow from a host"):
-            self.assertIn(part, event["detail"])
-        self.assertEqual(event["docs_ref"], "docs/ORCHESTRATION.md#execution-sites")
-        self.assertEqual(calls, [])
-        # Of another family, the same refusal.
-        self._remote()
-        with mock.patch.object(rx, "host_libc", return_value="zzlibc 1.0"):
-            _code, events, _calls = self._main()
-        self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
-        # Equal is accepted: the unpatched host is the shim's site.
-        code, events, _calls = self._main()
+            code, events, _calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 0, events)
-
-    def test_a_site_that_names_no_libc_is_refused_at_launch(self) -> None:
-        self._remote()
-        bare = self._bare("bare_nolibc", ("sh", "uname", "timeout", "make", "mkdir", "chmod",
-                                          "rm"))
-        code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
-        self.assertEqual(code, 2)
-        self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
-        self.assertIsNone(events[-1]["site_libc"])
-        # No host is older than no answer, so the remedy is the re-mapping alone.
-        self.assertIn("sites.yaml", events[-1]["detail"])
-        self.assertNotIn("run the workflow from a host", events[-1]["detail"])
-        self.assertEqual(calls, [])
-
-    def test_a_host_that_names_no_libc_is_refused_at_launch(self) -> None:
-        from tools import remote_execution as rx
-        self._remote()
-        with mock.patch.object(rx, "host_libc", return_value=None):
-            code, events, calls = self._main()
-        self.assertEqual(code, 2)
-        self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
-        self.assertIsNone(events[-1]["host_libc"])
-        self.assertIn("this host does not name its C library", events[-1]["detail"])
-        # No site can pass, so the remedy is the host, not a re-mapping.
-        self.assertIn("a glibc host", events[-1]["detail"])
-        self.assertNotIn("sites.yaml", events[-1]["detail"])
-        self.assertEqual(calls, [])
-
-    def test_the_libc_is_asked_after_the_machine_and_before_the_programs(self) -> None:
-        import platform
-
-        from tools import remote_execution as rx
-        self._remote()
-        # An older C library and missing programs: the C library is named.
-        bare = self._bare("bare_order", ("sh", "uname", "getconf"))
-        with mock.patch.object(rx, "host_libc", return_value="glibc 99.0"):
-            _code, events, _calls = self._main(SHIM_SSH_PATH=str(bare))
-        self.assertEqual(events[-1]["reason"], "site_libc_mismatch")
-        # Another machine and an older C library: the machine is named.
-        with mock.patch.object(rx, "host_libc", return_value="glibc 99.0"), \
-                mock.patch.object(platform, "machine", return_value="zz_arch"):
-            _code, events, _calls = self._main()
-        self.assertEqual(events[-1]["reason"], "site_machine_mismatch")
 
     def test_a_host_without_the_transport_is_refused(self) -> None:
         self._remote()

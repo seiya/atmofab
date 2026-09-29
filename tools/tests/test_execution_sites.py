@@ -494,8 +494,9 @@ class SiteViolationTests(unittest.TestCase):
                                                 until_phase=until), [])
 
     def test_a_launcher_target_runs_at_local_only(self) -> None:
-        """Issue #316: a binary built here is bound to this host's runtime of its parallel model,
-        so a target whose backend declares `launcher` is refused at a remote site — direct or
+        """Issue #316: a remote site does not place a launcher's ranks (a batch site runs the job
+        as one task; a direct site is issue #337), so a target whose backend declares `launcher`
+        is refused at a remote site — direct or
         batch, and although the site executes its class — for a run that reaches Build (issue
         #333: the binary would be built at that site, and the build seam refuses a launcher
         target there as the execute seam does). A run that stops at Generate is not asked, and
@@ -511,8 +512,8 @@ class SiteViolationTests(unittest.TestCase):
             for until in ("Build", "Validate", None):
                 with self.subTest(site=name, until_phase=until):
                     self.assertEqual(es.site_violations(cfg, mpi, until_phase=until), [(
-                        "parallel.backend: mpi runs its binary under a launcher, and a binary "
-                        "built here is bound to this host's mpi runtime; target t_cpu maps to "
+                        "parallel.backend: mpi runs its binary under a launcher, whose ranks a "
+                        "remote site does not place yet; target t_cpu maps to "
                         "site box, and a launcher target runs at local only "
                         "(docs/backends/parallel/mpi/LAUNCHER.md §Sites)")])
             with self.subTest(site=name, until_phase="Generate"):

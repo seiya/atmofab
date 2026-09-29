@@ -83,17 +83,19 @@ make test                                                           # the qualit
 A target whose parallel backend declares `launcher` runs at the `local` site only. A run that
 reaches `Build` for such a target mapped to a remote site is refused at launch
 (`target_profile_invalid`, from `execution_sites.site_violations`), and `host_execution.
-launch_shape` refuses it as the backstop. The two reasons:
+launch_shape` refuses it as the backstop. The reason:
 
-- `Build` runs on this host and the binary is shipped to the site. An MPI binary links against
-  this host's runtime installation, which the site need not have; a site with another
-  installation cannot load it.
 - A batch site runs the whole job script as one task (`docs/backends/scheduler/slurm/
   JOB_SUBMIT.md`). Running `N` tasks would run the script `N` times, and a launcher inside it
   would start ranks within one task's allocation.
+- A site with no scheduler would run the launcher in the job script as this host does, and is
+  not yet asked what the local site is: whether its CPUs fit the ranks (`site_unfit_for_ranks`
+  reads this process's affinity mask), and which runtime it has. Issue #337 is that work.
 
-Running an `mpi` target at a remote site needs a remote `Build` (linking with the site's
-wrapper) and a launcher placement for a batch scheduler. Both are outside issue #316.
+Issue #316 gave a second reason, and issue #333 removed it. `Build` used to run on this host,
+and the binary, linked against this host's runtime installation, was shipped to the site. Since
+issue #333 the binary is built at the site that runs it (with the site's wrapper), and runs only
+there.
 
 ## 5. Out of scope
 

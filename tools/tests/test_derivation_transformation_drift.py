@@ -536,7 +536,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "083e2926353e02d3ddad1a8a0452c719fb7467ccbf154ffc307b29c575660d29",
+    "render-6": "0320a2b26a52f2deccb1ed00c1e3a2e1af4eb89c0942c282f3cbc447665249fb",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -555,6 +555,13 @@ PINNED_RENDER: dict[str, str] = {
     # runner or a control file renders is unchanged. The digest `render-6` shipped with at
     # 032ee643:
     "render-6@032ee643": "e7875ad9dbf23153f9a1de63bf4e0ad786d2aa63a1c958f1ee0138a09e65c14d",
+    # Re-pinned by issue #333 PR-3: one member moved, `tools/host_execution.py`, whose module
+    # docstring and `launch_shape`'s launcher-at-a-remote-site refusal message now give the
+    # reason that remains (a remote site does not place a launcher's ranks yet) instead of the
+    # binary being built here. What a runner or a control file renders is unchanged. (Measured
+    # by diffing `render_tuple()` against origin/main a88dcc14's: that row and no other.) The
+    # digest `render-6` shipped with at a88dcc14:
+    "render-6@a88dcc14": "083e2926353e02d3ddad1a8a0452c719fb7467ccbf154ffc307b29c575660d29",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -608,7 +615,15 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "247f04e220377a25f137a4cc70edea100ad2cef1e96abad186a0a12add31eaab",
+    "build-2": "4bc9c88fe47769f34d62c2fff119fd35e5b9c1f7c55127681f828723c29bced5",
+    # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
+    # checks the site's C library in the job script (a binary is built at the site that runs
+    # it), checks the machine only against a `JobRequest.machine` the caller names (a build
+    # names none), and its launch probe ends with a line saying it ran to its end;
+    # `tools/host_execution.py` changes a docstring and a refusal message. A build job that runs
+    # records what it recorded before. (Measured by diffing `build_tuple()` against origin/main
+    # a88dcc14's: those two rows and no other.) The digest `build-2` shipped with at a88dcc14:
+    "build-2@a88dcc14": "247f04e220377a25f137a4cc70edea100ad2cef1e96abad186a0a12add31eaab",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -709,7 +724,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "4d8a339b7aaae1c7bd9891cdd7a887e9affc7e6be8e92e2671b72b83b8379087",
+    "execute-8": "8fd899fce01c2f63d3733071d406a485db3b75254b986ac2f60905f709275f2f",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -746,6 +761,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # passes the check produces the record it produced before. The digest `execute-8` shipped
     # with at 032ee643:
     "execute-8@032ee643": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",
+    # Re-pinned by issue #333 PR-3: three members moved. `tools/remote_execution.py` and
+    # `tools/host_execution.py`, as in `build-2`'s re-pin: the job script's C library check is
+    # retired with issue #330's launch refusals, its machine check compares against the machine
+    # the binary was built on (`JobRequest.machine`) instead of this host's, the launch probe
+    # (the driver's, before any job) ends with an end line, and a docstring and a refusal
+    # message change. And `Conductor._execute_inproc`, which passes that machine from
+    # `binary_meta.json#environment.platform.machine` and refuses a remote run whose record
+    # names none. Only refusals change: a job that runs produces a byte-identical record.
+    # (Measured by diffing `execute_tuple()` against origin/main a88dcc14's: those three rows
+    # and no other.) The digest `execute-8` shipped with at a88dcc14:
+    "execute-8@a88dcc14": "4d8a339b7aaae1c7bd9891cdd7a887e9affc7e6be8e92e2671b72b83b8379087",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smoke-test an execution site from `./sites.yaml` without running the workflow (issue #293).
 
-Runs one trivial command at the site through the same executor `Validate.execute` uses
+Runs one trivial command at the site through the same executor `Build` and `Validate.execute` use
 (`tools/remote_execution.py`): the launch probe, then one job — ssh, the site's scheduler prefix
 (`srun` for `slurm`), the job script, collection by scp, and removal of the remote job directory.
 Nothing under `workspace/` is touched; the command log and the collected job directory go to a
@@ -13,20 +13,14 @@ temporary directory.
 
 `--ship FILE` copies FILE into the job directory (mode kept); `$JOB` in `--cmd` is that
 directory at the site. `--gpu` adds the `gpu` hardware class's device probe, as a `gpu`
-target's Validate does.
-
-The probe's answers include the site's machine and C library. When either would refuse a binary
-built here (`site_machine_mismatch`, `site_libc_mismatch`), a note says so and the job is sent
-with the site's own values, because a shell command is not a shipped binary — except a site
-whose C library answer is none or not in `parse_libc`'s shape: the job then carries this host's,
-and the job script's refusal is the answer (a binary shipped from here is refused there).
+target's Validate does. A file shipped with `--ship` runs at the site as it is; the workflow
+itself ships no binary it did not build there (issue #333).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import platform
 import sys
 import tempfile
 import uuid
@@ -74,8 +68,6 @@ def main(argv: list[str] | None = None) -> int:
           f"scheduler={site.scheduler} directives={list(site.scheduler_directives)} "
           f"queue_timeout_sec={site.queue_timeout_sec}")
 
-    machine = platform.machine()
-    libc = rx.host_libc()
     if not args.no_probe:
         exes = (*rx.REMOTE_EXECUTABLES, *rx.scheduler_executables(site.scheduler))
         print(f"probe: asking for {list(exes)} ...")
@@ -84,19 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         except rx.RemoteExecutionError as exc:
             print(f"probe FAILED: {exc}", file=sys.stderr)
             return 1
-        print(f"probe: machine={probe.machine} libc={probe.libc} missing={list(probe.missing)} "
-              f"problems={list(probe.problems)}")
+        print(f"probe: missing={list(probe.missing)} problems={list(probe.problems)}")
         if probe.missing or probe.problems:
             return 1
-        if probe.machine != machine:
-            # A shipped binary would be refused; a shell command is not, so test on.
-            print(f"note: site machine {probe.machine} != this host's {machine}")
-            machine = probe.machine
-        shortfall = rx.libc_shortfall(libc, probe.libc)
-        if shortfall is not None:
-            print(f"note: {shortfall}")
-            if rx.parse_libc(probe.libc) is not None:
-                libc = probe.libc
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     orch_id, run_id = f"smoke_{stamp}", f"smoke_{uuid.uuid4().hex[:8]}"
@@ -114,8 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     ship = {Path(f).name: Path(f).resolve() for f in args.ship}
     request = rx.JobRequest(site=site, job_dir=job_dir, ship=ship, commands=(command,),
                             platform_probe=platform_probe,
-                            attribution={"orchestration_id": orch_id, "agent_run_id": run_id},
-                            machine=machine, libc=libc)
+                            attribution={"orchestration_id": orch_id, "agent_run_id": run_id})
     print(f"job: {job_dir}")
     try:
         result = rx.execute_job(request, local_tmp=local_tmp / "job")

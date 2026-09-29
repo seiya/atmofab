@@ -396,8 +396,9 @@ def site_violations(config: SitesConfig, profile: Any, *,
     the site `profile`'s target maps to must list the profile's hardware class in its
     `executes`, and must be
     `local` when the profile's parallel backend runs its binary under a launcher (issue #316:
-    the binary is built here and linked against this host's runtime of the model, which the
-    site need not have, and a batch site runs the whole job as one task). Empty otherwise."""
+    a batch site runs the whole job as one task, so a launcher inside it starts its ranks within
+    one task's allocation, and a direct site is not asked whether its CPUs fit the ranks — issue
+    #337). Empty otherwise."""
     if str(until_phase or "").strip().lower() in NON_BUILDING_PHASES:
         return []
     site = config.site_for(profile.target_id)
@@ -405,8 +406,8 @@ def site_violations(config: SitesConfig, profile: Any, *,
     target_id = profile.target_id
     backend = profile.parallel_backend
     if not site.is_local and declares_launcher(backend):
-        return [(f"parallel.backend: {backend} runs its binary under a launcher, and a binary "
-                 f"built here is bound to this host's {backend} runtime; target {target_id} "
+        return [(f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a "
+                 f"remote site does not place yet; target {target_id} "
                  f"maps to site {site.site_id}, and a launcher target runs at {LOCAL_SITE} only "
                  f"(docs/backends/parallel/{backend}/LAUNCHER.md §Sites)")]
     if hardware_class in site.executes:

@@ -31,9 +31,10 @@ A parallel backend that declares `launcher` (issue #316) starts the binary's ran
 `argv_prefix(ranks)`, with the profile's `execution.ranks`, is the OUTER part of
 `LaunchShape.argv_prefix` (a device trace's prefix, when a backend declares both, goes between
 it and the binary), and its `RUNTIME_PROBE` is `LaunchShape.runtime_probe`, whose first line is
-recorded as `platform.parallel_runtime`. A binary built here is bound to this host's runtime of
-the model, so such a target runs at the local site only: the launch gate refuses another site
-(`execution_sites.site_violations`) and `launch_shape` refuses it as the backstop.
+recorded as `platform.parallel_runtime`. A remote site does not place a launcher's ranks yet (a
+batch site runs the job as one task; a direct site is issue #337), so such a target runs at the
+local site only: the launch gate refuses another site (`execution_sites.site_violations`) and
+`launch_shape` refuses it as the backstop.
 """
 
 from __future__ import annotations
@@ -231,8 +232,8 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
     backend = profile.parallel_backend
     if declares_launcher(backend) and site_id != LOCAL_SITE:
         raise LaunchUnavailable(
-            f"parallel.backend: {backend} runs its binary under a launcher, and a binary built "
-            f"here is bound to this host's {backend} runtime; site {site_id} is not {LOCAL_SITE}")
+            f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a remote "
+            f"site does not place yet; site {site_id} is not {LOCAL_SITE}")
     if profile.ranks != 1 and not declares_launcher(backend):
         raise LaunchUnavailable(
             f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel backend "

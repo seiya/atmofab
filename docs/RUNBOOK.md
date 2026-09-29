@@ -194,28 +194,35 @@ the run stops at; a run with no member left to run that stops before `Build` con
 | reason | what it means |
 |---|---|
 | `sites_config_invalid` | the file does not load; the event's `rule` names why |
-| `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes`, or the target's parallel backend runs its binary under a `launcher` and the site is not `local` (issue #316: the binary links against this host's runtime of the model; `docs/backends/parallel/mpi/LAUNCHER.md` §4) |
+| `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes`, or the target's parallel backend runs its binary under a `launcher` and the site is not `local` (issue #316: a remote site does not place a launcher's ranks yet — issue #337; `docs/backends/parallel/mpi/LAUNCHER.md` §4) |
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
-| `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back |
+| `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back, or came back without the line that ends the probe |
 | `missing_required_site_tools` | the site's non-interactive login cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, and, at a site whose `scheduler` is `none` only, the build compiler (the program the build control file names; issue #333) and — for a run that reaches `Validate` — what the target's parallel backend runs the binary under (the device trace's program, in the `cpp_gpu` tool table above); and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only. At a site with a batch scheduler the build and the binary run on another node, so neither the build compiler nor what the binary runs under is asked of the login (issue #307 PR-4: the `cpp_gpu` site's login node has no trace program, its compute nodes do); the job script asks for each where it runs, and a missing one fails the job (`job script: <program> is missing or not executable`, a transport `fail_closed`, retried by `--resume`). At the local site (`"site": "local"`) it is the parallel backend's programs alone, looked up on this host's `PATH` (`host_prerequisites.execution_executables`) |
 | `site_unfit_for_ranks` | the local site only: the target's `execution.ranks` is more than the CPUs this process may run on (its affinity mask, not the machine's CPU count). The event carries both numbers. Lower the profile's `execution.ranks`, or run where the process may use more CPUs (issue #316) |
-| `site_machine_mismatch` | the site's `uname -m` is not this host's; the binary a job runs is built here. Asked before the rows below, whose remedies would be work on the wrong site |
-| `site_libc_mismatch` | the site's C library (`getconf GNU_LIBC_VERSION`) is not the family of this host's, or is older, or one of the two names none (issue #330). The binary a job runs is linked here against this host's C library, which an older one cannot run in general: it fails in the site's loader. The event carries `host_libc` and `site_libc`. Map the target to a site whose C library is this host's or newer, or run the workflow from a host whose C library is no newer than the site's. Asked after the machine and before the rows below |
 | `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), or its login prints to stdout (scp fails on that) |
 
 A site is reached with the operator's own ssh configuration, which this repository does not
 describe: a non-interactive `ssh <host> true` must succeed without a prompt, the login shell
 must be a POSIX-family shell (every call is an `sh` command line, which a csh-family shell
 refuses as `site_unreachable`), and the login's startup files must print nothing to stdout.
-The probe sees the site's C library version (`site_libc_mismatch`), and the job script asks it
-again before its first command. It does not see the rest of the runtime the shipped binary
-links against: a shared library the site's non-interactive login does not resolve makes the job
-refuse its first command (exit 127) mid-run — and under a launch prefix (a device trace's
+The site's C library is not asked, and its machine type is not asked at launch: the binary is
+built at the site that runs it (issue #333), so what it links against is what the site had when
+it built it. The job script does ask the machine that runs a binary for the architecture that
+built it (`binary_meta.json#environment.platform.machine`): at a batch site the same directives
+can select a node of another architecture for the run than for the build, which is refused
+before the binary runs (a transport `fail_closed`: `job script: the machine is not <arch>`) rather
+than recorded as its exit status. `--resume` repeats it while the directives select that node;
+restore the directives, or rebuild on the node they now select with `--rederive build,validate`.
+A remote record naming no building machine (the site's `uname -m` answered nothing at Build) is
+refused before the site is contacted: make `uname -m` answer there, then rebuild the same way. A shared
+library the build linked and the machine running the job does not resolve — another node of a
+batch site, or a site changed since the build — still makes the job refuse its first command
+(exit 127) mid-run — and under a launch prefix (a device trace's
 program) that 127 is replaced by the prefix's own exit status and recorded as the command's
-result (measured on issue #330's run under a device trace: `return_code` 1). Nor does it see
-the machines a site's scheduler runs a job on: the probe asks the login, and a job's directory
-must be visible at the same path from those machines, where the job script checks the machine,
-the C library and the programs again before its first command. A site is in no derivation key: re-mapping a target to another site
+result (measured on issue #330's run under a device trace: `return_code` 1). The probe does not
+see the machines a site's scheduler runs a job on either: it asks the login, and a job's
+directory must be visible at the same path from those machines, where the job script checks the
+programs again before its first command. A site is in no derivation key: re-mapping a target to another site
 re-runs neither its certified Build nor its Validate, and `Validate.execute` refuses to run a
 binary at a site other than the one `binary_meta.json#environment.build_site` names (issue #333,
 a `deterministic_validate_error`; a site whose `host` changed counts as another site); pass
@@ -225,17 +232,10 @@ the old site (§"Updating a shared dependency spec (derivation-key re-certificat
 
 To try a site before a run, `python3 tools/site_smoke.py <site_id>` (or `--target <target_id>`)
 runs the same probe and then one job with a shell command (`--cmd`, default `echo OK; hostname`)
-through the executor `Validate.execute` uses — the site's scheduler, collection and removal
-included — and prints the probe's answers (the site's machine and C library among them), the job
-id, the platform record and the command's output. A machine or C library that would refuse a
-binary built here is printed as a `note:`, and the shell command is still sent with the site's
-values — except at a site whose C library answer is empty or not in the shape
-`<family> <major>.<minor>`, where the job carries this host's and its script refuses the job
-before the command runs. `--no-probe` has nothing to note from, so the job
-always carries this host's machine and C library, and a site that cannot run a binary built
-here refuses it the same way. `--ship FILE` sends a local file into the job directory (`$JOB` in `--cmd`), and `--gpu` adds the `gpu`
-class's device probe; shipping a small program built here is how to see that the site's
-runtime accepts what this host builds, beyond the C library version the probe asks. It writes nothing under
+through the executor `Build` and `Validate.execute` use — the site's scheduler, collection and
+removal included — and prints the probe's answers, the job id, the platform record and the
+command's output. `--ship FILE` sends a local file into the job directory (`$JOB` in `--cmd`),
+where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writes nothing under
 `workspace/`.
 
 ### Refused at `preflight`, still before the first leaf

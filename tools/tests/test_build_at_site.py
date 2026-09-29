@@ -240,7 +240,7 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         bare = n.root / "bare"
         bare.mkdir()
         for tool in ("sh", "uname", "hostname", "grep", "sed", "mkdir", "rm", "date", "env",
-                     "timeout", "make", "cat", "chmod", "getconf"):
+                     "timeout", "make", "cat", "chmod"):
             found = wc.shutil.which(tool)
             if found:
                 (bare / tool).symlink_to(found)
