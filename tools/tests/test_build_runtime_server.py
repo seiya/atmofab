@@ -882,7 +882,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
     def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
         """The assignment SHAPE rule belongs to make, and only to make.
 
-        `_build_command` serves eleven build systems and the rule was applied to all of
+        `build_command` serves eleven build systems and the rule was applied to all of
         them, so `cargo build --release` and `mvn -DskipTests` were refused as "not a make
         variable assignment". Nothing runs through a shell here — this server never passes
         `shell=True` — so a switch is not dangerous for a build tool that does not read one
@@ -972,7 +972,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
             self.mod._validate_build_argv_overrides(7, [], "compile_project")
 
     def test_a_switch_spelled_as_the_target_is_refused_too(self) -> None:
-        # `_build_command` places the target POSITIONALLY on the same line the
+        # `build_command` places the target POSITIONALLY on the same line the
         # `extra_args` rule guards (`make -jN <target>`), so refusing a switch in one
         # half and accepting it in the other guards nothing. Until Z4 the orchestrated
         # arm refused every target and the standalone arm checked neither half.
@@ -1021,7 +1021,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
         self.assertIn("not a variable assignment", str(ctx.exception))
 
     def test_a_real_build_goal_is_still_accepted(self) -> None:
-        # Across the build systems `_build_command` serves, not just make: a gradle task
+        # Across the build systems `build_command` serves, not just make: a gradle task
         # path, an npm script name and a meson typed target all carry `:`, and a make
         # pattern goal carries `%`. A first version of this rule spelled an allowlist of
         # name characters and refused all four — an allowlist over a grammar this server
@@ -1695,12 +1695,12 @@ class RequestDispatchTests(unittest.TestCase):
 
 
 class BuildCommandTests(unittest.TestCase):
-    """`_recommended_build_system` and `_build_command` — the SUCCESS paths.
+    """`_recommended_build_system` and `build_command` — the SUCCESS paths.
 
     The refusal side of this server is covered thickly; these two were referenced once each from
     the whole test corpus (measured at 9f2e16d). An earlier version of this sentence added "and
     never on a path that produces an argv", which round 1 falsified:
-    `test_host_prerequisites.py:102` does take `_build_command(build_system, None, 1, [])[0]`.
+    `test_host_prerequisites.py:102` does take `build_command(build_system, None, 1, [])[0]`.
     What is true is narrower and is what these rows are for — each of those two references
     observes ONE thing (an executable name; one marker detection succeeding), so the argv SHAPES,
     the marker table as an enumeration, the two defaults and the knot between the two functions
@@ -1720,7 +1720,7 @@ class BuildCommandTests(unittest.TestCase):
 
     @classmethod
     def _accepted_build_systems(cls) -> set[str]:
-        """Every build system `_build_command` ACCEPTS, found by calling it.
+        """Every build system `build_command` ACCEPTS, found by calling it.
 
         THE QUESTION CHANGED HERE, and the reason is three rounds of the same failure. Asking
         "what does the dispatch look like" needs a reader, and every reader was defeated by the
@@ -1731,7 +1731,7 @@ class BuildCommandTests(unittest.TestCase):
         the next spelling, which `.claude/skills/atmofab-review-loop` names as the sign that the
         pin is in the wrong place rather than the wrong shape.
 
-        So the question is now one a LOOKUP can answer: `_build_command` raises `ValueError` for
+        So the question is now one a LOOKUP can answer: `build_command` raises `ValueError` for
         anything it does not implement, so "is this build system implemented" is a call, not a
         parse. The candidate set is every string constant in the module (an adapter's name has to
         be written down somewhere for the dispatch to match it, wherever that is — inside the
@@ -1754,7 +1754,7 @@ class BuildCommandTests(unittest.TestCase):
             reader's problem rather than an acceptance. Either way the candidate is not an
             implemented build system."""
             try:
-                cls.mod._build_command(candidate, None, 1, [])
+                cls.mod.build_command(candidate, None, 1, [])
             except Exception:  # noqa: BLE001
                 return False
             return True
@@ -1906,16 +1906,16 @@ class BuildCommandTests(unittest.TestCase):
         self.assertEqual(other["reason"], "fallback default")
 
     #: Build systems whose EXECUTABLE is not their id. The one piece of knowledge this row holds,
-    #: and it is held here because `_build_command` is the only other place it exists — comparing
+    #: and it is held here because `build_command` is the only other place it exists — comparing
     #: argv[0] against `build_system_executable` instead proves nothing, since that function IS
-    #: `_build_command(bs, None, 1, [])[0]`. Round 1 measured the consequence: renaming `mvn`,
+    #: `build_command(bs, None, 1, [])[0]`. Round 1 measured the consequence: renaming `mvn`,
     #: `cargo`, `poetry` and `go build`'s argv all survived, because the assertion compared the
     #: implementation with itself.
     _EXECUTABLE_RENAMES: typing.ClassVar[dict[str, str]] = {"maven": "mvn"}
 
     def test_every_build_system_the_recommender_can_return_builds_an_argv(self) -> None:
         """The knot between the two functions, which nothing tied: a marker table entry naming a
-        build system `_build_command` does not implement is a `compile` that raises after the
+        build system `build_command` does not implement is a `compile` that raises after the
         recommendation succeeded. The argv[0] check is against the EXPECTED executable, so a
         renamed program is caught rather than compared with itself."""
         markers = self._marker_table()
@@ -1923,7 +1923,7 @@ class BuildCommandTests(unittest.TestCase):
                          "this sweep is reading fewer entries than the table has")
         for _marker, build_system in markers:
             with self.subTest(build_system=build_system):
-                argv = self.mod._build_command(build_system, None, 4, [])
+                argv = self.mod.build_command(build_system, None, 4, [])
                 self.assertTrue(argv, f"{build_system} produced an empty argv")
                 self.assertEqual(
                     argv[0], self._EXECUTABLE_RENAMES.get(build_system, build_system),
@@ -1954,28 +1954,28 @@ class BuildCommandTests(unittest.TestCase):
     def test_every_build_system_runs_the_argv_this_repository_expects(self) -> None:
         """The whole argv, not just its first word.
 
-        Set identity against the dispatch, in both directions: every build system `_build_command`
+        Set identity against the dispatch, in both directions: every build system `build_command`
         implements has a row here, and every row is a build system it implements. The first
         version compared `argv[0]` with `build_system_executable`, which IS
-        `_build_command(bs, None, 1, [])[0]` — the implementation compared with itself, and four
+        `build_command(bs, None, 1, [])[0]` — the implementation compared with itself, and four
         renames survived it.
         """
         implemented = set(self._BASE_ARGV)
         for build_system, expected in sorted(self._BASE_ARGV.items()):
             with self.subTest(build_system=build_system):
-                self.assertEqual(self.mod._build_command(build_system, None, 4, []), expected)
+                self.assertEqual(self.mod.build_command(build_system, None, 4, []), expected)
         # The other direction: a build system the dispatch gained and this table did not.
         self.assertEqual(
             self._accepted_build_systems(), implemented,
-            "the build systems _build_command ACCEPTS and the argv this table records are "
+            "the build systems build_command ACCEPTS and the argv this table records are "
             "different sets; a new adapter needs a row saying what it runs")
 
     def test_the_make_argv_is_the_documented_shape(self) -> None:
         """`make` is the default this repository actually runs, so its argv is pinned exactly —
         the jobs flag glued to `-j`, the target after it, extra arguments last."""
-        self.assertEqual(self.mod._build_command("make", None, 4, []), ["make", "-j4"])
-        self.assertEqual(self.mod._build_command("make", "all", 2, []), ["make", "-j2", "all"])
-        self.assertEqual(self.mod._build_command("make", "all", 2, ["V=1"]),
+        self.assertEqual(self.mod.build_command("make", None, 4, []), ["make", "-j4"])
+        self.assertEqual(self.mod.build_command("make", "all", 2, []), ["make", "-j2", "all"])
+        self.assertEqual(self.mod.build_command("make", "all", 2, ["V=1"]),
                          ["make", "-j2", "all", "V=1"])
 
     def test_extra_arguments_reach_every_build_system_and_stay_last(self) -> None:
@@ -1985,23 +1985,23 @@ class BuildCommandTests(unittest.TestCase):
         for build_system in ("make", "meson", "ninja", "cargo", "go", "maven", "gradle",
                              "npm", "pnpm", "poetry"):
             with self.subTest(build_system=build_system):
-                argv = self.mod._build_command(build_system, None, 1, ["--flag", "x"])
+                argv = self.mod.build_command(build_system, None, 1, ["--flag", "x"])
                 self.assertEqual(argv[-2:], ["--flag", "x"])
-        cmake = self.mod._build_command("cmake", "tgt", 3, ["--flag"])
+        cmake = self.mod.build_command("cmake", "tgt", 3, ["--flag"])
         self.assertEqual(cmake, ["cmake", "--build", ".", "-j", "3", "--target", "tgt",
                                  "--", "--flag"])
 
     def test_a_build_system_with_no_adapter_is_refused_by_name(self) -> None:
         with self.assertRaises(ValueError) as caught:
-            self.mod._build_command("scons", None, 1, [])
+            self.mod.build_command("scons", None, 1, [])
         self.assertIn("scons", str(caught.exception))
 
     def test_the_default_target_is_the_tools_own_and_not_a_missing_argument(self) -> None:
         """`gradle` and `npm` substitute `build` for an absent target rather than omitting it, so
         the argv is well-formed either way. Recorded because the two shapes are indistinguishable
         from the caller's side."""
-        self.assertEqual(self.mod._build_command("gradle", None, 1, []), ["gradle", "build"])
-        self.assertEqual(self.mod._build_command("npm", None, 1, []), ["npm", "run", "build"])
+        self.assertEqual(self.mod.build_command("gradle", None, 1, []), ["gradle", "build"])
+        self.assertEqual(self.mod.build_command("npm", None, 1, []), ["npm", "run", "build"])
 
 
 class McpCallClientTests(unittest.TestCase):

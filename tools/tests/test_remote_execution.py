@@ -988,6 +988,21 @@ class RequestValidationTests(unittest.TestCase):
             with self.subTest(libc=libc):
                 self._invalid("does not name its C library", self.h.request(libc=libc))
 
+    def test_a_malformed_build_shape_is_refused_before_transport(self) -> None:
+        """Issue #333's three fields: a program looked up from the login directory, not the
+        command's; an empty probe; an empty recorded argv."""
+        run = self.h.command("run", ("true",))
+        for kw, pattern in (
+                ({"required_programs": ("bin/cc",)}, "required program 'bin/cc' is a relative"),
+                ({"required_programs": ("",)}, "is not a program name"),
+                ({"toolchain_probe": ()}, "toolchain_probe is an empty argv"),
+                ({"toolchain_probe": ("./cc", "--version")}, "toolchain probe program"),
+        ):
+            with self.subTest(kw=kw):
+                self._invalid(pattern, self.h.request(run, **kw))
+        self._invalid("record_argv must be a non-empty argv", self.h.request(
+            dataclasses.replace(run, record_argv=())))
+
     def test_an_env_the_server_refuses_is_refused_here(self) -> None:
         for env, pattern in (({"LD_PRELOAD": "/x.so"}, "redirect execution"),
                              ({"KNOB": "a;b"}, "reach the make recipe"),
@@ -1587,6 +1602,160 @@ class ProbeSiteTests(unittest.TestCase):
                     rx.probe_site(self.h.site, (bad,))
         self.assertEqual(self.h.calls(), [])
 
+
+def _script(path: Path, body: str) -> Path:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+class BuildShapeTests(unittest.TestCase):
+    """What a build at a site needs of the executor (issue #333): the recorded argv in local
+    paths, the programs a command runs beyond its argv[0], and the toolchain's version read
+    at the site by the rule the server reads this host's by."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _build(self, **kw) -> rx.CommandSpec:
+        c = self.h.command("build", ("sh", "-c", f"echo built > {self.h.job}/bin/out"),
+                           cwd="src", tool="compile_project")
+        return dataclasses.replace(c, **kw)
+
+    def test_record_argv_is_the_entrys_command_and_the_site_argv_its_remote_command(self) -> None:
+        local = ("make", "-j2", f"OBJDIR={self.h.local}/obj", "BIN=out")
+        build = self._build(record_argv=local)
+        result = self.h.run(self.h.request(build, dirs=("bin",)))
+        (res,) = result.results
+        (entry,) = self.h.log_entries("build")
+        self.assertEqual(res["command"], list(local))
+        self.assertEqual(entry["command"], list(local))
+        self.assertEqual(entry["executed_command"], shlex.join(local))
+        self.assertEqual(entry["site"]["remote_command"], list(build.argv))
+        self.assertEqual(entry["tool_name"], "compile_project")
+        self.assertEqual((result.collected / "bin" / "out").read_text(), "built\n")
+
+    def test_without_record_argv_the_entry_writes_shipped_paths_back_as_before(self) -> None:
+        self.h.run(self.h.request())
+        (entry,) = self.h.log_entries("run")
+        self.assertEqual(entry["command"][0], str(self.h.runner))
+
+    def test_a_required_program_the_site_cannot_find_is_the_hosts_failure(self) -> None:
+        """A build system whose compiler is missing exits with its own failure status, which
+        would read as the source's content failure; the script refuses before the command."""
+        request = self.h.request(self._build(), dirs=("bin",),
+                                 required_programs=("no-such-compiler-zz",))
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "ssh exited 4.*no-such-compiler-zz is missing or not "
+                                    "executable"):
+            self.h.run(request)
+        self.assertEqual(self.h.log_entries("build"), [])
+        self.assertFalse((Path(self.h.job) / rx.CONTROL_DIR / "build.stdout").exists(),
+                         "the command did not run")
+
+    def test_a_required_program_that_is_not_an_executable_file_is_the_hosts_failure(self) -> None:
+        plain = self.h.root / "plain-compiler"
+        plain.write_text("#!/bin/sh\n")
+        plain.chmod(0o644)
+        request = self.h.request(self._build(), dirs=("bin",), required_programs=(str(plain),))
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 4"):
+            self.h.run(request)
+        self.assertFalse((Path(self.h.job) / rx.CONTROL_DIR / "build.stdout").exists())
+
+    def test_a_required_program_the_site_has_lets_the_command_run(self) -> None:
+        cc = _script(self.h.root / "fake-cc", "exit 0\n")
+        result = self.h.run(self.h.request(self._build(), dirs=("bin",),
+                                           required_programs=("sh", str(cc))))
+        self.assertTrue(result.results[0]["ok"])
+
+    def _version(self, body: str) -> str | None:
+        probe = _script(self.h.root / f"probe{len(list(self.h.root.glob('probe*')))}", body)
+        result = self.h.run(self.h.request(self._build(), dirs=("bin",),
+                                           toolchain_probe=(str(probe), "--version")))
+        shutil.rmtree(self.h.local / "tmp")
+        return result.toolchain_version
+
+    def test_the_toolchain_version_is_read_by_the_servers_rule(self) -> None:
+        """The same answer `_syntax_compiler_version` gives for the same program, over the
+        shapes that rule distinguishes: a versioned line after a name line, no versioned line,
+        the answer on stderr only, a non-zero exit (read anyway), leading blank lines, and no
+        answer at all."""
+        server = rx._server()
+        cases = {
+            "a name line first": (("echo 'Driver Name'; echo '  Built on x'; "
+                                   "echo 'release 12.4, V12.4.131'; echo 'tail 9.9'\n"),
+                                  "release 12.4, V12.4.131"),
+            "no dotted version": "echo 'toolchain unknown'; echo second\n",
+            "stderr only": "echo 'tool 3.2.1' >&2\n",
+            "non-zero exit": "echo 'tool 7.1'; exit 3\n",
+            "leading blank lines": "echo; echo '   '; echo '  first line'\n",
+            "no answer": "exit 0\n",
+        }
+        for name, case in cases.items():
+            body, expected = case if isinstance(case, tuple) else (case, None)
+            with self.subTest(name):
+                got = self._version(body)
+                local = _script(self.h.root / "local-probe", body)
+                server._syntax_compiler_version.cache_clear()
+                self.assertEqual(got, server._syntax_compiler_version((str(local), "--version")))
+                if expected is not None:
+                    self.assertEqual(got, expected)
+        self.assertIsNone(self._version("exit 0\n"))
+
+    def test_a_probe_that_cannot_start_or_finish_answers_nothing(self) -> None:
+        """`timeout`'s own codes are not the program's answer: its message on 127 would
+        otherwise be recorded as the version."""
+        result = self.h.run(self.h.request(self._build(), dirs=("bin",),
+                                           toolchain_probe=("no-such-compiler-zz", "--version")))
+        self.assertIsNone(result.toolchain_version)
+        shutil.rmtree(self.h.local / "tmp")
+        self.assertIsNone(self._version("echo 'late 1.2'; exit 124\n"))
+
+    def test_no_probe_prints_no_toolchain_line(self) -> None:
+        result = self.h.run(self.h.request())
+        self.assertIsNone(result.toolchain_version)
+        self.assertNotIn(rx.TOOLCHAIN_KEY, rx.render_job_script(self.h.request()))
+
+    def test_a_toolchain_line_that_is_not_one_is_refused(self) -> None:
+        probe = _script(self.h.root / "probe", "echo 'tool 1.2'\n")
+        line = rf"^({rx.PLATFORM_MARKER} {rx.TOOLCHAIN_KEY} .*)$"
+        for sub, pattern in (([line, r"\1\n\1"], "2 toolchain lines, not 1"),
+                             ([line, ""], "0 toolchain lines, not 1")):
+            with self.subTest(pattern):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                build = dataclasses.replace(self._build(), cwd=f"{h.job}/src")
+                with self.assertRaisesRegex(rx.RemoteExecutionError, pattern):
+                    h.run(h.request(build, dirs=("bin",),
+                                    toolchain_probe=(str(probe), "--version")),
+                          SHIM_SSH_SUB=json.dumps(sub))
+                self.assertEqual(h.log_entries("build"), [])
+        # And one that arrives for a request that carries no probe.
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "1 toolchain lines, not 0"):
+            self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
+                [rf"^({rx.PLATFORM_MARKER} node .*)$",
+                 rf"\1\n{rx.PLATFORM_MARKER} {rx.TOOLCHAIN_KEY} forged 1.0"]))
+
+    def test_the_toolchain_probe_is_inside_a_scheduled_jobs_time_after_its_job_line(self) -> None:
+        """Run under the prefix, the probe asks the node the build runs on; it may run twice (its
+        stderr is read when its stdout is empty), so the time limit covers two probes, and it
+        runs after the job line, which would otherwise count its time as queue wait."""
+        h = SchedulerTests._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)),
+                                  queue_timeout_sec=None)
+        probe = _script(h.root / "probe", "echo 'tool 4.5'\n")
+        build = dataclasses.replace(self._build(), cwd=f"{h.job}/src")
+        request = h.request(build, dirs=("bin",), toolchain_probe=(str(probe), "--version"))
+        result = h.run(request)
+        self.assertEqual(result.toolchain_version, "tool 4.5")
+        (srun,) = [c for c in h.calls() if c[0] == "srun"]
+        wall = build.timeout_sec + rx.KILL_AFTER_SEC + rx.TRANSPORT_GRACE_SEC \
+            + 2 * rx.PROBE_TIMEOUT_SEC
+        self.assertIn(f"--time={-(-wall // 60)}", srun)
+        script = rx.render_job_script(request)
+        self.assertLess(script.index(f"{rx.JOB_MARKER} "), script.index(str(probe)))
 
 if __name__ == "__main__":
     unittest.main()
