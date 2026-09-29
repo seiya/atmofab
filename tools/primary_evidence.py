@@ -126,8 +126,9 @@ from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolv
 
 #: The version of the expression grammar: the allowed `ast` nodes, the function table, the
 #: name roots and the broadcasting rule. Bumped when any of them changes; recorded on every
-#: evaluated predicate so a verdict says which grammar valued it.
-GRAMMAR_VERSION = 3
+#: evaluated predicate so a verdict says which grammar valued it. Grammar 4 (issue #327) adds
+#: `atan2`: a discrete mode's phase, which a corroborant of `G**n_step` needs.
+GRAMMAR_VERSION = 4
 
 #: `quantity` names: lowercase identifiers with dots, the same shape as a metric address.
 #: ONE definition, in the evaluator that reads it on the secondary side too.
@@ -143,12 +144,13 @@ COORDINATE_PLACEMENTS: frozenset[str] = frozenset({"cell_center"})
 
 #: name -> (min_args, max_args). `min` / `max` reduce with ONE argument and are elementwise
 #: with two or more. `roll` takes the array and one integer shift per axis, leading axes
-#: first. This table is the whole function vocabulary.
+#: first. `atan2(y, x)` is elementwise, in `[-pi, pi]`. This table is the whole function
+#: vocabulary.
 FUNCTIONS: dict[str, tuple[int, int]] = {
     "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
     "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
     "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
-    "floor": (1, 1),
+    "floor": (1, 1), "atan2": (2, 2),
 }
 CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 #: Name roots an attribute chain may start from. `at` is a call, not a root.
@@ -800,6 +802,9 @@ def _call(name: str, args: list[Any]) -> Any:
             return np.ceil(args[0])
         if name == "floor":
             return np.floor(args[0])
+        if name == "atan2":
+            _shape_compatible(args[0], args[1], "atan2()")
+            return np.arctan2(args[0], args[1])
         if name == "roll":
             arr = np.asarray(args[0])
             shifts = args[1:]
