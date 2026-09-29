@@ -703,6 +703,18 @@ that could not converge in principle).
   fix what is already right: split the branches by what the observation can actually tell
   apart. Issue #316 shipped the second, and then the first inside the fix for it;
   `references/failure-routing.md` §"A refusal that quotes another program"
+- **A remedy that names `--rederive <phase>` is a claim about the keys DOWNSTREAM of that
+  phase, and a re-derived phase that reproduces its output moves none of them.** A downstream
+  key holds the upstream's OUTPUT HASH, so a rebuild whose bytes come out identical leaves the
+  downstream certified output eligible, and it is adopted again — the step the remedy was meant
+  to re-run silently does not run. Issue #333 PR-2 told the operator to follow a re-mapped
+  execution site with `--rederive build`, "which re-derives Validate"; a reviewer rebuilt a real
+  source tree at two paths and got identical binaries, and the old site's Validate was paired
+  with the new site's binary (the branch's own acceptance run had shown the skip and nobody read
+  it as the defect). **Rule: name EVERY phase the remedy must re-run (`--rederive
+  build,validate`), and run the remedy on a byte-identical reproduction before writing it.**
+  The same holds for any prose saying "X re-derives Y": it is true only when X's output changes.
+  `references/failure-routing.md` §"A remedy that re-derives one phase"
 
 ### 4. Tests pin properties
 

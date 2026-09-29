@@ -244,3 +244,30 @@ with the reason at its start. Before that, round 2's own finding was the other h
 rule: every launch failure had been reported with the pairing remedy, which does not converge
 when the pairing is correct.
 
+## A remedy that re-derives one phase (2026-09-29, issue #333 PR-2)
+
+The branch made a binary run only at the execution site that built it, and kept the site out of
+every derivation key (#293's decision: a site is a record). After re-mapping a target, the
+certified Build and Validate stay eligible, so `Validate.execute` refuses the old binary at the
+new site and the refusal needs a remedy. The first version said `--rederive build`, and three
+documents said four times that it re-derives Validate (docs/ORCHESTRATION.md: "since the Build's
+output hash is a validate input"; docs/RUNBOOK.md twice; docs/examples/sites.example.yaml —
+counted at 3189ec22). The reason given is true and does not imply the claim: the validate key holds
+`_certified_output_hash(binary_meta.json)`, which covers the binary's bytes only, and a Fortran
+build of the same source with the same compiler under a different `OBJDIR` / `BINDIR` / cwd came
+out byte-identical (measured by the round-2 reviewer, `cmp` on two builds of
+harness_fortran_cpu's `src/`). The rebuilt Build therefore produced the same validate key, and
+`_phase_certified(validate)` returned the old run — the old site's evidence, paired with a
+binary whose record says it was built at the new site. The PR's own acceptance run had shown
+exactly this (`validate skipped (certified_by=run_…)` after a Build at the new site) and was
+read as "the key did not move, fine" instead of as the remedy failing. Round 1 had also rewritten
+the same message for a different question (whether `--rederive` reaches a `--with-deps` member)
+and kept `build` alone, so the defect sat inside a previous round's fix. The fix: every
+statement of the remedy names both phases, `--rederive build,validate`, and the where-built
+refusal says why `build` alone is not enough.
+
+What to run before writing such a remedy: certify the chain with a fixture
+(`tools/tests/orchestration_fixtures.certify_node`), add the re-derived output with the SAME
+bytes, and ask `_phase_certified` for every downstream phase — the phases still certified are
+the ones the remedy has to name.
+
