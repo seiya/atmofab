@@ -30,7 +30,7 @@ Output artifacts (produced by the writers, called on rank 0 only (§1), into the
   - `l0_boolean_literal_pass`: `bool_match` (scalar, `1.0` iff a `true` and a `false` boolean emitted the exact literals `true`/`false`).
   - `l0_array_emit_pass`: `a1` (rank-1, `[2]`), `a2` (rank-2, `[2,2]`), `a3` (rank-3, `[2,2,2]`), `a4` (rank-4, `[2,2,2,2]`) — the inputs to `__emit_array_r1..r4` — and `max_abs_deviation` (scalar — max component deviation of the re-parsed arrays).
   - `l0_case_fanout_pass`: `case_index` (scalar — this case's ordinal in the run).
-  - `l0_perf_derived_pass`: `throughput_residual` (scalar — `|throughput_cells_per_sec - cells_updated/walltime_sec|`).
+  - `l0_perf_derived_pass`: `throughput_residual` (scalar — the RELATIVE residual `|throughput_cells_per_sec - cells_updated/walltime_sec| / throughput_cells_per_sec` that `tests.md` judges).
   - `l0_metric_leaf_pass`: `metric_count` (scalar — the number of `h_metric` records this case supplied to `__write_diagnostics`, `2.0`).
   - `l0_missing_cases_xfail`: `guard_fired` (scalar, `1.0` when `__parse_cases` on a length-0 token array returned `ok = false`). A guard case still emits its snapshot, shape-valid.
   - `l0_partition_tile_pass`: `owned_index` (rank-1, `[14]` — the gathered global index of every cell of a 14-cell partition), `small_index` (rank-1, `[2]` — the same over a 2-cell partition, which leaves every rank above rank 1 empty), `owner` (rank-1, `[14]` — the gathered rank that owns each cell of the 14-cell partition), `nranks` (scalar — `__comm_size()`).
