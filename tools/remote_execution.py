@@ -51,8 +51,9 @@ Every way the evidence could be incomplete or not this job's is a refusal
   command ran it (the quality check's control file) would be recorded as unchanged;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
   script that fails outside its commands (a directory it cannot make, a `timeout` that does not
-  take `-k`, a site machine other than the one the shipped files were built on, a program it
-  cannot find or that is not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
+  take `-k`, a site machine other than the one the shipped files were built on, a site C library
+  not of the family of the one they were linked against or older than it, a program it cannot
+  find or that is not an executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
   and a job directory that cannot be removed after collection are refused, with the stage and
   the remote path in the message. A refused job's directory, when one was made, is left at the
   site.
@@ -64,7 +65,11 @@ is missing, the dynamic loader when a shared library the program links is missin
 first two and never meets the third, because the host that runs it is the host that built the
 program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
 is a program that exits 126 or 127 on its own, which the local path records as its result; the
-runner and the quality-check command the conductor runs exit neither.
+runner and the quality-check command the conductor runs exit neither. Under a launch prefix (a
+device trace's program) the loader's 127 does not arrive: the prefix reports it as its own exit
+status (1 on issue #330's run, measured), so the command is recorded as having run and failed —
+which is why the site's C library, the one shared library whose fitness is known before the
+job, is asked at launch and again by the job script.
 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
@@ -80,8 +85,8 @@ behind it.
 site (`workflow_conductor._execute_inproc`), and the driver calls `probe_site` before a node that
 will reach `Validate` runs — once at launch, and again before each dependency member of a
 `--with-deps` run — so a site that cannot be reached, lacks a program the job needs, cannot hold
-or run it, or is another machine is refused before that node is billed (`tools/run_workflow.py`
-`_sites_rejection`).
+or run it, is another machine, or has a C library that cannot run what this host links is refused
+before that node is billed (`tools/run_workflow.py` `_sites_rejection`).
 
 A site's `scheduler` changes one thing: the argv PREFIX the job script runs under in the same ssh
 call. A `none` site runs it under none. A batch scheduler's backend spells one through
@@ -101,6 +106,7 @@ directive set.
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import shlex
@@ -168,6 +174,51 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
+#: `<family> <major>.<minor>[.<rest>]`, the shape `getconf GNU_LIBC_VERSION` and
+#: `os.confstr("CS_GNU_LIBC_VERSION")` answer in (`glibc 2.35`).
+_LIBC = re.compile(r"(\S+) ([0-9]+)\.([0-9]+)(?:\.\S*)?", re.ASCII)
+
+
+def host_libc() -> str | None:
+    """This host's C library as `os.confstr("CS_GNU_LIBC_VERSION")` names it (`glibc 2.35`), or
+    None when it names none — a host that is not glibc, which a run at a remote site refuses:
+    the shipped binary is linked here, and nothing then says which site can run it (issue
+    #330). Not `platform.libc_ver()`, which answers what the Python executable requires."""
+    try:
+        value = os.confstr("CS_GNU_LIBC_VERSION")
+    except (ValueError, OSError):
+        return None
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def parse_libc(text: str | None) -> tuple[str, int, int] | None:
+    """`(family, major, minor)` of a C library answer, or None for one not in `_LIBC`'s shape.
+    What follows the minor number is not read: glibc versions its symbols by `major.minor`."""
+    match = _LIBC.fullmatch(text.strip()) if isinstance(text, str) else None
+    return (match[1], int(match[2]), int(match[3])) if match else None
+
+
+def libc_shortfall(required: str | None, site: str | None) -> str | None:
+    """None when a site whose C library answers `site` runs what was linked against `required`,
+    and otherwise why not. The rule is glibc's own compatibility: a C library runs what an older
+    one of its family built, and not in general the reverse — a newer one's symbol versions are
+    not in it (issue #330: a runner needing `GLIBC_2.35` at a `glibc 2.34` site). So the site
+    must be the same family and `major.minor` at least `required`'s; anything else, an answer
+    that does not parse on either side included, is a shortfall. The driver's launch refusal,
+    `_validate` and `site_smoke` all decide with this one function."""
+    need, have = parse_libc(required), parse_libc(site)
+    if need is None:
+        return (f"this host does not name its C library in the shape `glibc 2.35` "
+                f"({required!r}), so no site can be shown to run what it builds")
+    if have is None:
+        return (f"the site's C library did not answer in the shape `glibc 2.35` ({site!r}); the "
+                f"shipped files were built against {required}")
+    if have[0] != need[0] or have[1:] < need[1:]:
+        return (f"the site's C library is {site}, and the shipped files were built against "
+                f"{required}, which needs {need[0]} {need[1]}.{need[2]} or newer")
+    return None
+
+
 def _server():
     """The build-runtime server module, reached the way `tools/execution_sites.py` reaches it,
     for the log writer and the validation this executor must share with the local path."""
@@ -216,7 +267,10 @@ class JobRequest:
     site's `uname -m` must answer before anything runs — by default this host's own, because the
     shipped binary was built here: a binary the site's loader cannot execute is not a result of
     the kernel, and `timeout`'s `execvp` would otherwise hand it to `sh` and report the shell's
-    syntax error as the command's own exit status."""
+    syntax error as the command's own exit status. `libc` is, for the same reason, the C library
+    the shipped binary was linked against — by default this host's (`host_libc`) — and the site's
+    must be its family and no older (`libc_shortfall`); a request whose `libc` does not parse is
+    refused before any transport call."""
 
     site: Site
     job_dir: str
@@ -226,6 +280,7 @@ class JobRequest:
     platform_probe: tuple[str, ...] | None = None
     attribution: Mapping[str, str] = field(default_factory=dict)
     machine: str = field(default_factory=platform.machine)
+    libc: str | None = field(default_factory=host_libc)
 
 
 @dataclass(frozen=True)
@@ -300,6 +355,9 @@ def _validate(request: JobRequest) -> None:
     _under(request.job_dir, site.workdir.rstrip("/"), "job_dir")
     if request.job_dir == site.workdir.rstrip("/"):
         raise ValueError("job_dir is the site's workdir itself")
+    if parse_libc(request.libc) is None:
+        raise ValueError(f"this host does not name its C library ({request.libc!r}), so the job "
+                         f"script cannot check the site's")
     if not request.commands:
         raise ValueError("a job runs at least one command")
     for rel in request.ship:
@@ -339,7 +397,8 @@ def render_job_script(request: JobRequest) -> str:
     Each command writes `<tag>.stdout` / `<tag>.stderr` under the control directory, runs only
     when every earlier command exited 0, and is followed by its status line on the script's
     stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory
-    cannot be made, a program in `REMOTE_EXECUTABLES` is missing or the machine is not `request.machine`, and before
+    cannot be made, a program in `REMOTE_EXECUTABLES` is missing, the machine is not
+    `request.machine` or the C library is not `request.libc`'s family or is older, and before
     a command whose program cannot be found or, named by a path, is not executable: the local
     server raises for a program it cannot start rather than reporting an exit status, so these
     are the host's failures here too. Each such exit names what failed on stderr. Every value is
@@ -354,6 +413,22 @@ def render_job_script(request: JobRequest) -> str:
              f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
              + q(f"the site machine is not {request.machine}, which the shipped files were "
                  f"built on")]
+    # The C library next, for the same reason (issue #330): a binary linked against a newer one
+    # fails in the dynamic loader, whose 127 a launch prefix reports as its own status. An
+    # answer that is empty (no `getconf`, not glibc), of another family, not two dotted numbers
+    # or older is refused; `[ -ge ]` on a non-number fails, and so falls to `fail` too.
+    family, major, minor = parse_libc(request.libc) or ("", 0, 0)
+    libc_fail = ('fail 5 "the site C library ($v) is not "'
+                 + q(f"{family} {major}.{minor} or newer, which the shipped files were built "
+                     "against"))
+    lines += [
+        "v=$(getconf GNU_LIBC_VERSION 2>/dev/null) || v=",
+        f'case "$v" in {q(family + " ")}[0-9]*.[0-9]*) ;; *) {libc_fail};; esac',
+        f'r=${{v#{q(family + " ")}}}; M=${{r%%.*}}; m=${{r#*.}}; m=${{m%%.*}}',
+        f'case "$M:$m" in *[!0-9:]*|:*|*:) {libc_fail};; esac',
+        (f'{{ [ "$M" -gt {major} ] || {{ [ "$M" -eq {major} ] && [ "$m" -ge {minor} ]; }}; }} '
+         f'2>/dev/null || {libc_fail}'),
+    ]
     for prog in REMOTE_EXECUTABLES:
         lines.append(f"command -v {q(prog)} >/dev/null 2>&1 || fail 3 {q(f'{prog} is missing')}")
     # Not every `timeout` takes `-k` (older busybox builds refuse it, exit 1), and a refusal
@@ -577,20 +652,24 @@ STARTUP_OUTPUT_PROBLEM = ("its login's startup files print to stdout, on which s
 @dataclass(frozen=True)
 class SiteProbe:
     """What `probe_site` found: the programs of those asked for that the site's login shell
-    cannot resolve, the site's `uname -m`, and the problems `_PROBE_CHECKS` names that it has."""
+    cannot resolve, the site's `uname -m`, its C library as `getconf GNU_LIBC_VERSION` names it
+    (None when that answers nothing: no `getconf`, or not glibc), and the problems
+    `_PROBE_CHECKS` names that it has."""
 
     missing: tuple[str, ...]
     machine: str
+    libc: str | None
     problems: tuple[str, ...] = ()
 
 
 def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve, what
     machine it is, whether its `workdir` can be made and written (it is created if absent, as
-    the first job would create it) and whether its `timeout` takes `-k` — the launch-time
-    detector of what a job refuses again before its first command. Raises `RemoteExecutionError`
-    when the site cannot be reached or does not answer in the probe's shape, and `ValueError`
-    for a site that is not remote or a program name that is not a plain element."""
+    the first job would create it), which C library it has, and whether its `timeout` takes `-k`
+    — the launch-time detector of what a job refuses again before its first command. Raises
+    `RemoteExecutionError` when the site cannot be reached or does not answer in the probe's
+    shape, and `ValueError` for a site that is not remote or a program name that is not a plain
+    element."""
     if site.is_local or not site.host:
         raise ValueError(f"site {site.site_id!r} is not a remote site")
     for exe in executables:
@@ -619,12 +698,14 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
           if name == "workdir_exec" else f"{tests[name]} || echo {PROBE_MARKER} problem {name}"
           for name, _ in _PROBE_CHECKS),
         f'echo "{PROBE_MARKER} machine $(uname -m)"',
+        f'echo "{PROBE_MARKER} libc $(getconf GNU_LIBC_VERSION 2>/dev/null)"',
     ])
     remote = f"{site.host} ({site.site_id})"
     out = _ssh(str(site.host), f"sh -c {q(script)}", stage="probe the site",
                timeout=TRANSPORT_GRACE_SEC, remote=remote)
     missing: list[str] = []
     machines: list[str] = []
+    libcs: list[str | None] = []
     problems: list[str] = []
     names = dict(_PROBE_CHECKS)
     printed = False
@@ -640,6 +721,9 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
             missing.append(value)
         elif kind == "machine" and value.strip():
             machines.append(value.strip())
+        elif kind == "libc":
+            # Empty is an answer — the site names no C library — and the driver refuses it.
+            libcs.append(value.strip() or None)
         elif kind == "problem" and value in names:
             problems.append(names[value])
         else:
@@ -647,9 +731,13 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     if len(machines) != 1:
         raise RemoteExecutionError(
             f"the probe printed {len(machines)} machine lines, not one ({remote})")
+    if len(libcs) != 1:
+        raise RemoteExecutionError(
+            f"the probe printed {len(libcs)} libc lines, not one ({remote})")
     if printed:
         problems.append(STARTUP_OUTPUT_PROBLEM)
-    return SiteProbe(missing=tuple(missing), machine=machines[0], problems=tuple(problems))
+    return SiteProbe(missing=tuple(missing), machine=machines[0], libc=libcs[0],
+                     problems=tuple(problems))
 
 
 def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
