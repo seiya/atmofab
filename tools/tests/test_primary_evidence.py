@@ -531,7 +531,8 @@ class EvaluationTest(unittest.TestCase):
         env = pe.CaseEnv(case_id="c", initial=None, final={"u": np.array([-1.0, 1.0])},
                          inputs={}, coordinates={})
         for src, want in (("atan2(1, -1)", 3 * np.pi / 4), ("atan2(-1, -1)", -3 * np.pi / 4),
-                          ("atan2(0, -1)", np.pi), ("atan2(1, 0)", np.pi / 2)):
+                          ("atan2(0, -1)", np.pi), ("atan2(1, 0)", np.pi / 2),
+                          ("atan2(-0.0, -1)", -np.pi)):   # the sign of zero picks the branch
             with self.subTest(src=src):
                 self.assertAlmostEqual(float(pe.evaluate(pe.parse_expr(src), env)), want)
         got = pe.evaluate(pe.parse_expr("atan2(final.u, -1)"), env)
@@ -650,6 +651,8 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("B", bind={"B": "A * 2", "A": "sum(final.h)"}),
                          "'A' is not a bind")
         self._structural(self._one("pi + final.s", bind={"pi": "1"}), "shadows a grammar name")
+        # a function name too (round 1 of #327: neither side's FUNCTIONS clause was pinned)
+        self._structural(self._one("final.s", bind={"atan2": "1"}), "shadows a grammar name")
         self._structural(self._one("final.s", bind=[1]), "bind must be a mapping")
 
     def test_capture_file_defects_are_structural(self) -> None:
@@ -999,6 +1002,7 @@ class SchemaGateTest(unittest.TestCase):
             ([{**HMIN, "bind": [1]}], "bind must be a mapping"),
             ([{**HMIN, "bind": {"1x": "1"}}], "not an identifier"),
             ([{**HMIN, "bind": {"pi": "1"}}], "shadows a grammar name"),
+            ([{**HMIN, "bind": {"atan2": "1"}}], "shadows a grammar name"),
             ([{**HMIN, "bind": {"A": "final.h["}}], "bind.A: expr does not parse"),
             ([{**HMIN, "expr": "final.h["}], ".expr: expr does not parse"),
             ([{**HMIN, "expr": "final.zeta"}], "not a snapshot schema variable"),
