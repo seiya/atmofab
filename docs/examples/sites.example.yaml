@@ -1,4 +1,4 @@
-# Execution sites: where Validate.execute runs each target's binary (docs/ORCHESTRATION.md
+# Execution sites: where each target's binary is built and run (docs/ORCHESTRATION.md
 # §Execution sites). Copy to ./sites.yaml and edit; that file is machine-local and gitignored.
 # Without ./sites.yaml every target runs at the `local` site. The driver reads it once per run,
 # and probes a remote site before anything is billed — for a `--with-deps` run, before each

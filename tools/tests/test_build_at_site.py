@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest import mock
 
 import tools.workflow_conductor as wc
+from tools.backends import registry
 from tools.execution_sites import Site
 from tools.host_execution import LOCAL_SITE
 from tools.orchestration_runtime import (
@@ -52,6 +53,7 @@ _FAKE_COMPILER = textwrap.dedent(f'''\
     if [ "$1" = --version ]; then echo "{_SITE_VERSION}"; exit 0; fi
     src=$1; out=
     while [ $# -gt 0 ]; do [ "$1" = -o ] && {{ out=$2; shift; }}; shift; done
+    echo "compiling $PWD/$src"
     if grep -q FAIL "$src"; then echo "$PWD/$src:3:1: Error: no such thing" >&2; exit 1; fi
     printf '#!/bin/sh\\necho built at the site\\n' > "$out" && chmod +x "$out"
 ''')
@@ -258,10 +260,14 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertIsNotNone(meta["failure_category"])
         self.assertEqual(meta["failure_source_refs"],
                          [f"{n.conductor._rel(n.src)}/kernel.f90"])
-        # The diagnostics name the node's local source, not the job directory's copy.
+        # The diagnostics name the node's local source, not the job directory's copy — on both
+        # streams.
         log = (n.repo / n.refs.binary_dir() / "compile.stderr.log").read_text()
         self.assertIn(f"{n.src}/kernel.f90:3:1: Error", log)
         self.assertNotIn(n.job, log)
+        out = (n.repo / n.refs.binary_dir() / "compile.stdout.log").read_text()
+        self.assertIn(f"compiling {n.src}/kernel.f90", out)
+        self.assertNotIn(n.job, out)
         self.assertIn(f"{n.src}/kernel.f90", meta["failure_excerpt"])
         self.assertNotIn(n.job, meta["failure_excerpt"])
         # Still recorded as built (and failed) at the site.
@@ -316,10 +322,23 @@ class ToolchainVersionArgvTests(unittest.TestCase):
                 target = load_target_profile(repo, target_id)
                 asked: list[tuple[str, ...]] = []
                 with mock.patch.object(server, "_syntax_compiler_version",
-                                       side_effect=lambda argv: asked.append(argv) or "v"):
+                                       side_effect=lambda argv, asked=asked:
+                                       asked.append(argv) or "v"):
                     identity = _target_toolchain_identity(target)
                 self.assertEqual(asked, [toolchain_version_argv(target)])
                 self.assertEqual(identity["compiler_version"], "v")
+                # And that argv asks the program the build runs: through the parallel backend's
+                # wrapper when it declares one, which runs the configured compiler.
+                compiler = str(target.toolchain.get("compiler") or "") or str(
+                    registry.capability_module("language", target.toolchain["language"],
+                                               "bundle_facts").DEFAULT_COMPILER)
+                expected: tuple[str, ...] = (compiler, "--version")
+                if registry.provides("parallel", target.parallel_backend, "compiler_wrapper"):
+                    wrapper = registry.capability_module("parallel", target.parallel_backend,
+                                                         "compiler_wrapper")
+                    expected = tuple(str(a) for a in wrapper.wrap(expected))
+                    self.assertNotEqual(expected, (compiler, "--version"))
+                self.assertEqual(toolchain_version_argv(target), expected)
 
 
 class BuildAtTheLocalSiteTests(unittest.TestCase):

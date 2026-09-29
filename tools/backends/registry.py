@@ -290,9 +290,10 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "evidence (`Validate.execute`), and a package implementation names the argv that "
         "identifies the class's device at the site (`PLATFORM_PROBE`, recorded as "
         "`platform.gpu`). Asked only of a run that reaches `Validate` "
-        "(`target_profile.target_profile_violations`): building for a class needs no machine "
-        "of that class, running on it does — and whether a MACHINE of the class is reachable is "
-        "the execution site's half (`tools/execution_sites.site_violations`, issue #293).",
+        "(`target_profile.target_profile_violations`): building for a class launches no binary, "
+        "running on it does — and whether a MACHINE of the class is reachable is the execution "
+        "site's half (`tools/execution_sites.site_violations`, issue #293), asked from `Build`, "
+        "since the binary is built where it runs (issue #333).",
     ),
     "perf_facts": (
         ("hardware",),

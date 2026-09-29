@@ -536,7 +536,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "e7875ad9dbf23153f9a1de63bf4e0ad786d2aa63a1c958f1ee0138a09e65c14d",
+    "render-6": "083e2926353e02d3ddad1a8a0452c719fb7467ccbf154ffc307b29c575660d29",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -550,6 +550,11 @@ PINNED_RENDER: dict[str, str] = {
     # ...and the digest `render-6` SHIPPED with (origin/main 916561f4), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "render-6@916561f4": "679d5cab4299f216581eaa1598a113dea558122c9f2783ecbc769c9cc33fefac",
+    # Re-pinned by issue #333 PR-2 (round 1): one member moved, `tools/host_execution.py`, whose
+    # `LaunchUnavailable` docstring now says the seam is also asked by a remote Build. What a
+    # runner or a control file renders is unchanged. The digest `render-6` shipped with at
+    # 032ee643:
+    "render-6@032ee643": "e7875ad9dbf23153f9a1de63bf4e0ad786d2aa63a1c958f1ee0138a09e65c14d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -603,7 +608,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "f46f9fd10664a132eaa930294e18cb1e064dda74946659b3b8cb1758ead8de53",
+    "build-2": "ad609ea49e88af485af68d848ffb4d7c118139dba3f82d8e8d650f7b08f85fcc",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -704,7 +709,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "cd455e8c5b71c499edfa1b1db9664018addbf8334235b62b051222e1402b9d8d",
+    "execute-8": "df9f7e9733b69fb7f9575291db8ed4ddf33847cf6ea8ab039e797df162d48738",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -736,7 +741,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # `binary_meta.json#environment.build_site.site` is not the site it would run at (a
     # refusal before anything runs, `deterministic_validate_error`); the local site's record
     # comes from `_local_site_record`, which joins the tuple, with the same value; and
-    # `tools/remote_execution.py` / `tools/host_execution.py` carry docstring edits. A run that
+    # `tools/remote_execution.py` and (round 1) `tools/host_execution.py` carry docstring edits.
+    # A run that
     # passes the check produces the record it produced before. The digest `execute-8` shipped
     # with at 032ee643:
     "execute-8@032ee643": "780bf2835256f9bf79dff009cf7bf5d0aaab058506146a3e354c059cbdc499dd",

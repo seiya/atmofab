@@ -557,8 +557,9 @@ def _build_invocation_record(
         # and the resume is not refused here.
         record["target"] = target_profile.record(repo_root)
     if sites_config is not None and target_profile is not None:
-        # Where `Validate.execute` runs (issue #293): the site configuration the driver read, by
-        # path and by the hash of its parsed content (both null when there is no `sites.yaml`),
+        # Where `Build` and `Validate.execute` run (issues #293, #333): the site configuration
+        # the driver read, by path and by the hash of its parsed content (both null when there is
+        # no `sites.yaml`),
         # and the site it resolved for this target. PROVENANCE, not a key: a resume re-reads the
         # file and is not refused when it changed, and the evidence of each run names the site it
         # was produced at (`trial_meta.json#environment.execution_site`).

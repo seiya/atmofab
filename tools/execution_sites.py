@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Execution sites: WHERE `Validate.execute` runs a binary, read from the operator's `./sites.yaml`
-(issue #293).
+"""Execution sites: WHERE a target's binary is built and `Validate.execute` runs it, read from
+the operator's `./sites.yaml` (issue #293; the build since issue #333).
 
 A target profile says what a run builds FOR; it does not say which machine runs the result, and
 it must not: the profile's sha256 enters the validate key, and a site is a record of where the
@@ -26,8 +26,8 @@ character that is not printable ASCII: a real directive's `|`, `[` or `'` is the
 syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2).
 
 The driver (`tools/run_workflow.py`) calls `load_sites` once per run, refuses with
-`site_violations`, and hands the resolved `Site` to the conductor, whose `Validate.execute` runs at
-it (`docs/ORCHESTRATION.md` §Execution sites).
+`site_violations`, and hands the resolved `Site` to the conductor, whose `Build` and
+`Validate.execute` run at it (`docs/ORCHESTRATION.md` §Execution sites).
 """
 
 from __future__ import annotations

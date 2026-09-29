@@ -9823,11 +9823,12 @@ class Conductor:
             # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
             "source_ir_id": refs.ir_id,
             "build_system": build_system,
-            # The target the binary was built for, and the compiler it was compiled with (the
-            # target profile's pin, else the host default; under a parallel backend's compiler
+            # The target the binary was built for, and the compiler the build control file names
+            # (the target profile's pin, else the host default; under a parallel backend's compiler
             # wrapper, the compiler the wrapper runs — the wrapper and the runtime it links are
             # the build key's `compiler_wrapper` / `parallel_runtime`, issue #316) with the
-            # first versioned line of its `--version`:
+            # first versioned line of its `--version` AS THIS HOST ANSWERS IT (the building
+            # machine's answer is `environment.compiler_version`, below):
             # the toolchain identity the build derivation key hashes (issues #250, #284),
             # recorded on the binary it built. `compile_project` itself answers neither — make
             # picks the compiler — so this is resolved the way the key resolves it, from the
@@ -11247,7 +11248,9 @@ class Conductor:
                 f"{built_at if isinstance(built_at, str) else '(none recorded)'} and target "
                 f"{target.target_id} now runs at site {launch.site}; a binary runs at the site "
                 f"that built it — map the target back in sites.yaml, or rebuild it at "
-                f"{launch.site} with --rederive build")
+                f"{launch.site}: run this node as the target with --rederive build (a "
+                f"--with-deps run forces the target only, so a dependency member is rebuilt by a "
+                f"run naming it)")
 
         # Attribution only: the server records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).

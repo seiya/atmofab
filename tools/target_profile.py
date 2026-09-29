@@ -57,8 +57,9 @@ PIPELINES_ROOT = "workspace/pipelines"
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*")
 
 #: The phases a run can stop at WITHOUT executing the binary, compared case-insensitively. A
-#: run ending at one of them is not asked the execution half of the launch gate, because building
-#: for a class needs no machine of that class (issue #289, R4-b PR-1); every other `until_phase`,
+#: run ending at one of them is not asked the registry's execution half of the launch gate,
+#: because building for a class launches no binary (issue #289, R4-b PR-1; whether a MACHINE of
+#: the class is reachable is asked from `Build`, `NON_BUILDING_PHASES`); every other `until_phase`,
 #: an unstated or misspelled one included, is — the set names what is EXEMPT, so a spelling
 #: nobody listed lands on the refusing side.
 NON_EXECUTING_PHASES = frozenset({"compile", "generate", "build"})
@@ -500,12 +501,13 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     `execution_env`: the two questions `tools/host_execution.launch_shape` asks when
     `Validate.execute` launches the binary, asked here first so a run that would be refused
     there is refused before anything is billed. A run that stops earlier is not asked, because
-    building for a class needs no machine of that class. That admits the run, not its
+    building for a class launches no binary. That admits the run, not its
     dependencies: a closure member is driven to Validate (`run_workflow`'s `dep_until_phase`) and
     asked there, and a node whose dependencies are not certified through Validate stops at the
     dependency-readiness gate. Every implemented class declares `execution` since issue #293, so
     whether a MACHINE of the class is reachable is the other half of the question, asked by the
-    driver with the same phase: `execution_sites.site_violations`."""
+    driver from an earlier phase — every run that reaches `Build`, since the binary is built at
+    the site that runs it (issue #333): `execution_sites.site_violations`."""
     from tools.backends import registry as backend_registry
 
     out: list[str] = []

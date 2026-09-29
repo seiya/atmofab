@@ -63,8 +63,9 @@ class LaunchUnavailable(RuntimeError):
 
     The launch gate (`target_profile.target_profile_violations` for the registry half,
     `execution_sites.site_violations` for the site half) refuses the same run before anything
-    runs, for any run that reaches `Validate`, so reaching this raise means the gate and this
-    seam disagreed — a host defect, not something a leaf could repair.
+    runs — the site half for any run that reaches `Build`, whose remote build asks this seam too
+    (issue #333), the registry half for one that reaches `Validate` — so reaching this raise
+    means the gate and this seam disagreed — a host defect, not something a leaf could repair.
     """
 
 
