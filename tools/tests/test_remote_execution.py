@@ -846,6 +846,19 @@ class RefusalTests(unittest.TestCase):
                 result = h.run(h.request(libc=libc))
                 self.assertTrue(all(r and r["ok"] for r in result.results), result.results)
 
+    def test_a_three_part_site_answer_runs_the_job(self) -> None:
+        """`glibc 2.35.1`: what follows the minor number is not read, as `parse_libc` does not
+        read it."""
+        family, major, minor = rx.parse_libc(rx.host_libc())
+        fake = self.h.root / "three_part"
+        fake.mkdir()
+        (fake / "getconf").write_text(f"#!/bin/sh\necho '{family} {major}.{minor}.1'\n")
+        (fake / "getconf").chmod(0o755)
+        self.assertIsNone(rx.libc_shortfall(rx.host_libc(), f"{family} {major}.{minor}.1"))
+        result = self.h.run(self.h.request(),
+                            SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
+        self.assertTrue(all(r and r["ok"] for r in result.results), result.results)
+
     def test_a_site_without_getconf_is_the_hosts_failure(self) -> None:
         """A site that names no C library is not shown to run what this host linked."""
         bare = _bare_path(self.h.root, without="getconf")
@@ -1074,6 +1087,13 @@ class SchedulerTests(unittest.TestCase):
             self.h.run(self.h.request(), **knobs)
         self.assertEqual(self.h.log_entries("run"), [])
         self.assertEqual(self.h.log_entries("qc"), [])
+
+    def test_the_compute_nodes_libc_is_asked_under_the_prefix(self) -> None:
+        """The launch probe asks the login; under a scheduler the job script's own check is what
+        asks the node the binary runs on (issue #330), so it must survive the prefix."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 5.*the site C library"):
+            self.h.run(self.h.request(libc="glibc 99.0"))
+        self.assertEqual(self.h.log_entries("run"), [])
 
     def test_the_job_runs_under_srun_and_records_its_id(self) -> None:
         result = self.h.run(self.h.request())
