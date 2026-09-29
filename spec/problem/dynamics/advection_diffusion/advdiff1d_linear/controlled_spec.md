@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.4.2`
+- `spec_version`: `0.4.3`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -54,8 +54,9 @@ u^{n+1}_i=u^n_i-C\left(u^n_i-u^n_{i-1}\right)+D\left(u^n_{i+1}-2u^n_i+u^n_{i-1}\
 $$
 with the periodic images $u^n_{-1}=u^n_{nx-1}$ and $u^n_{nx}=u^n_0$, and with $C$ and $D$ as defined below. `tests.md` 5-4 derives its amplification rate $G_{num}$ from this update.
 
-The discretization holds the following invariant.
+The discretization holds the following invariants.
 - **Mass conservation.** $\sum_i L_i\,\Delta x=-\left(F_{nx-1/2}-F_{-1/2}\right)=0$: under the periodic ghost cells of step 1 the two seam faces are the same expression applied to the same values, so $\sum_i u_i$ is conserved up to round-off.
+- **Max-norm boundedness.** With $C\ge 0$, $D\ge 0$ and $C+2D\le 1$, the discrete update above writes $u^{n+1}_i=(1-C-2D)\,u^n_i+(C+D)\,u^n_{i-1}+D\,u^n_{i+1}$, a convex combination of three values of $u^n$, so $\max_i|u^n_i|$ does not increase with $n$ (up to round-off). The primary evidence of the CFL judgment in `tests.md` 5-4 rests on this bound.
 
 The stability index is defined as
 $$
@@ -84,7 +85,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is LeVeque (2002).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.4.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.4.1`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $u_{next}=F(u_{now}, params)$, and `ceil` and the periodic-index wrap are made explicit as non-differentiable operations.
