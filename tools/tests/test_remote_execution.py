@@ -1300,10 +1300,13 @@ class SiteSetupTests(unittest.TestCase):
         self.assertEqual(self._probe("sh"), rx.SiteProbe(missing=()))
 
     def test_a_line_that_leaves_e_set_does_not_end_the_probe(self) -> None:
-        """A check after the lines that fails (here, a workdir where nothing runs: the site has
-        no `chmod`) must be named, not end the probe before its end line."""
+        """A check after the lines that fails (here, a workdir where nothing runs: the site's
+        `chmod` succeeds and changes nothing, so the program made there cannot be executed —
+        the last command of its list, which `-e` would end the probe at) must be named, not end
+        the probe before its end line."""
         self._setup("set -e")
         bare = _bare_path(self.h.root, without="chmod")
+        _script(bare / "chmod", "exit 0\n")
         got = self._probe("sh", SHIM_SSH_PATH=str(bare))
         self.assertEqual(got.problems, (dict(rx._PROBE_CHECKS)["workdir_exec"],))
 
