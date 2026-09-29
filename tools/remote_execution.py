@@ -301,9 +301,9 @@ class JobRequest:
     that cannot find its compiler exits with its own failure status and writes "not found" to its
     stderr, which would otherwise be recorded as the command having run and failed — a
     content failure of the source it built — rather than as the site lacking a program.
-    `toolchain_probe` is an argv whose answer names the toolchain's version (`<compiler>
-    --version`); the script runs it once before the first command and prints the version line
-    it selects as a fact (`JobResult.toolchain_version`)."""
+    `toolchain_probe` is an argv whose answer names the toolchain's version (the compiler's
+    own version query); the script runs it once before the first command and prints the version
+    line it selects as a fact (`JobResult.toolchain_version`)."""
 
     site: Site
     job_dir: str
@@ -415,11 +415,16 @@ def _validate(request: JobRequest) -> None:
     tags = [c.tag for c in request.commands]
     if len(set(tags)) != len(tags):
         raise ValueError(f"command tags repeat: {tags}")
+    if not isinstance(request.required_programs, tuple) \
+            or not all(isinstance(prog, str) for prog in request.required_programs):
+        raise ValueError("required_programs must be a tuple of program names")
     for prog in request.required_programs:
         _program(prog, "required program")
     if request.toolchain_probe is not None:
-        if not request.toolchain_probe:
-            raise ValueError("toolchain_probe is an empty argv")
+        if not isinstance(request.toolchain_probe, tuple) or not request.toolchain_probe:
+            raise ValueError("toolchain_probe must be a non-empty argv tuple")
+        if not all(isinstance(a, str) for a in request.toolchain_probe):
+            raise ValueError("toolchain_probe must be an argv of strings")
         _program(request.toolchain_probe[0], "toolchain probe program")
     server = _server()
     for c in request.commands:
@@ -538,7 +543,9 @@ def render_job_script(request: JobRequest) -> str:
     if request.toolchain_probe:
         probe = f"timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.toolchain_probe)} < /dev/null"
         lines += [
-            f"tv=$({probe} 2>/dev/null); trc=$?",
+            # A `.` after the answer, removed again, so that an answer of blank lines is not
+            # emptied by the substitution and is read as the server reads it: an answer.
+            f"tv=$({probe} 2>/dev/null; trc=$?; printf .; exit $trc); trc=$?; tv=${{tv%.}}",
             f'[ -n "$tv" ] || tv=$({probe} 2>&1 >/dev/null)',
             'case "$trc" in 124|126|127|137) tv= ;; esac',
         ]

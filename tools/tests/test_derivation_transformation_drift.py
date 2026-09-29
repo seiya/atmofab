@@ -203,6 +203,13 @@ def build_tuple() -> dict[str, str]:
     return {
         "build_runtime_server.tool_compile_project": _source_digest(server.tool_compile_project),
         "build_runtime_server._run_command": _source_digest(server._run_command),
+        # The argv table and the two defaults `tool_compile_project` builds with (issue #333
+        # PR-1 moved the defaults out of its body, which is what this tuple digested; round 1
+        # found the move had taken them out of the pin).
+        "build_runtime_server.build_command": _source_digest(server.build_command),
+        "build_runtime_server.default_build_jobs": _source_digest(server.default_build_jobs),
+        "build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC":
+            str(server.COMPILE_PROJECT_TIMEOUT_SEC),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         "Conductor._stage_dependency_sources":
             _source_digest(wc.Conductor._stage_dependency_sources),
@@ -574,9 +581,11 @@ PINNED_BUILD: dict[str, str] = {
     # defaults from `COMPILE_PROJECT_TIMEOUT_SEC` and `default_build_jobs()` (the same 1800 s and
     # half the CPUs), and calls the argv table by its public name `build_command`, so a build at
     # a remote site can be handed the same values. (Measured by diffing `build_tuple()` against
-    # origin/main 0f768622's: that row and no other.) The digest `build-1` shipped with at
+    # origin/main 0f768622's: that row and no other.) And within PR-1's review (round 1): the
+    # tuple gained `build_command` and the two defaults, which the move had taken out of the
+    # digested body; their values are 0f768622's. The digest `build-1` shipped with at
     # 0f768622 is kept below.
-    "build-1": "5b476f792bc5f0d6064fbe0109a372e54511c4240472f37f8a8d0464a1015016",
+    "build-1": "6acbe4a1a98c0a8b8aab39e8c989452dbb01cf761c4d682a730b06b4be684b50",
     "build-1@0f768622": "d279606d469db72dddc11a02b957405774124a4b71cf7cf44f130ea8240fb417",
 }
 PINNED_EXECUTE: dict[str, str] = {
@@ -678,7 +687,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "e3da333cde02e5ca4a5e2bc51e81d5209267fbb45e16f775aa9d9d14edf78bb2",
+    "execute-8": "70e1a3e2b2e0ae9ec5222170575a132da05ff3dfb98502b77de196fc6b0319cd",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.

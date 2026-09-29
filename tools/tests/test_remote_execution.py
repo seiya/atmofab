@@ -995,7 +995,10 @@ class RequestValidationTests(unittest.TestCase):
         for kw, pattern in (
                 ({"required_programs": ("bin/cc",)}, "required program 'bin/cc' is a relative"),
                 ({"required_programs": ("",)}, "is not a program name"),
-                ({"toolchain_probe": ()}, "toolchain_probe is an empty argv"),
+                ({"toolchain_probe": ()}, "toolchain_probe must be a non-empty argv tuple"),
+                ({"toolchain_probe": ["cc", "--version"]}, "must be a non-empty argv tuple"),
+                ({"toolchain_probe": ("cc", Path("x"))}, "must be an argv of strings"),
+                ({"required_programs": "gfortran"}, "must be a tuple of program names"),
                 ({"toolchain_probe": ("./cc", "--version")}, "toolchain probe program"),
         ):
             with self.subTest(kw=kw):
@@ -1686,9 +1689,12 @@ class BuildShapeTests(unittest.TestCase):
         answer at all."""
         server = rx._server()
         cases = {
-            "a name line first": (("echo 'Driver Name'; echo '  Built on x'; "
+            # Digits before the versioned line, undotted, as a real driver's copyright line
+            # carries them: a rule reading "a digit" instead of "a dotted version" picks it.
+            "a name line first": (("echo 'Driver Name'; echo 'Copyright (c) 2005-2024 X'; "
                                    "echo 'release 12.4, V12.4.131'; echo 'tail 9.9'\n"),
                                   "release 12.4, V12.4.131"),
+            "blank stdout, a version on stderr": "echo; echo; echo 'cc 1.2' >&2\n",
             "no dotted version": "echo 'toolchain unknown'; echo second\n",
             "stderr only": "echo 'tool 3.2.1' >&2\n",
             "non-zero exit": "echo 'tool 7.1'; exit 3\n",
@@ -1713,7 +1719,13 @@ class BuildShapeTests(unittest.TestCase):
                                            toolchain_probe=("no-such-compiler-zz", "--version")))
         self.assertIsNone(result.toolchain_version)
         shutil.rmtree(self.h.local / "tmp")
-        self.assertIsNone(self._version("echo 'late 1.2'; exit 124\n"))
+        for rc in (124, 126, 127, 137):
+            with self.subTest(rc=rc):
+                self.assertIsNone(self._version(f"echo 'late 1.2'; exit {rc}\n"))
+
+    def test_a_probe_that_hangs_is_bounded_and_answers_nothing(self) -> None:
+        with mock.patch.object(rx, "PROBE_TIMEOUT_SEC", 1):
+            self.assertIsNone(self._version("echo 'tool 1.2' >&2; exec tail -f /dev/null\n"))
 
     def test_no_probe_prints_no_toolchain_line(self) -> None:
         result = self.h.run(self.h.request())

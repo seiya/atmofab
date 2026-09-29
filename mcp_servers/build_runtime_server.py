@@ -854,17 +854,18 @@ def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]
     }
 
 
-#: The bound `compile_project` applies when its caller names none. The remote executor
-#: (`tools/remote_execution.py`) has no server to apply it at a site, so the conductor passes it
-#: there, as it passes `RUN_PROGRAM_TIMEOUT_SEC` (issue #333).
+#: The bound `compile_project` applies when its caller names none. Module-level for a build at a
+#: remote site (issue #333), where no server applies it: the remote executor
+#: (`tools/remote_execution.py`) runs a command with the timeout its caller passes, as
+#: `RUN_PROGRAM_TIMEOUT_SEC` is passed for a run.
 COMPILE_PROJECT_TIMEOUT_SEC = 1800
 
 
 def default_build_jobs() -> int:
     """The parallelism `compile_project` builds with when its caller names none: half this
-    host's CPUs, at least 1. A build at a remote site is handed the same number (issue #333):
-    it is an upper bound on the build system's parallelism carried from this host to the site,
-    not a measurement of the site."""
+    host's CPUs, at least 1. Module-level so that a build at a remote site (issue #333) can be
+    handed the same number, which is then an upper bound on the build system's parallelism
+    carried from this host to the site, not a measurement of the site."""
     return max(1, (os.cpu_count() or 1) // 2)
 
 
