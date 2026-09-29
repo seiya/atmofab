@@ -1237,6 +1237,20 @@ class SiteSetupTests(unittest.TestCase):
         result = self.h.run(self._run_request())
         self.assertTrue(result.results[0]["ok"])
 
+    def test_options_a_line_leaves_set_are_the_scripts_own_again(self) -> None:
+        """A line that leaves `-e` set (a sourced file that sets it) must not end the script at
+        a command's non-zero exit before its status line: the kernel's own failure is its
+        result, not a transport refusal. `-u` is set again after the lines; no line of the
+        script after them reads an unset variable, so that half is pinned on the text."""
+        self._setup("set -e", "set +u")
+        failing = self.h.command("run", (f"{self.h.job}/bin/runner",), env={"RUNNER_RC": "3"})
+        result = self.h.run(self.h.request(failing))
+        self.assertEqual(result.results[0]["return_code"], 3)
+        self.assertFalse(result.results[0]["ok"])
+        lines = rx.render_job_script(self.h.request()).splitlines()
+        end = max(i for i, line in enumerate(lines) if line.startswith("} >&2 || fail 7"))
+        self.assertEqual(lines[end + 1], "set +e -u")
+
     def test_under_a_scheduler_the_lines_run_inside_the_job(self) -> None:
         line = '[ -n "${SLURM_JOB_ID-}" ]'
         self._setup(line)
@@ -1269,6 +1283,14 @@ class SiteSetupTests(unittest.TestCase):
         self._setup("false", "true", "exit_code_2() { return 2; }; exit_code_2")
         self.assertEqual(self._probe("sh"),
                          rx.SiteProbe(missing=(), problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+
+    def test_a_batch_sites_probe_runs_the_lines_and_does_not_report_a_failing_one(self) -> None:
+        """The login the probe reaches is not the node a batch job runs on: a line that holds
+        only in the job (here, one that needs the job's id) fails on the login, and the job
+        asks again where it runs. The lines still run first, for the programs asked after."""
+        self._setup('[ -n "${SLURM_JOB_ID-}" ]', f"export PATH={self.tools}:$PATH",
+                    scheduler="slurm")
+        self.assertEqual(self._probe("zz-cc"), rx.SiteProbe(missing=()))
 
 
 class SiteSmokeTests(unittest.TestCase):

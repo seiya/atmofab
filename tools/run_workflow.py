@@ -287,7 +287,8 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
         return {"status": "fail", "reason": "missing_required_site_tools",
                 "site": site.site_id, "missing": list(probe.missing), "required": list(required),
                 "detail": (f"site {site.site_id} lacks {', '.join(probe.missing)} on a "
-                           f"non-interactive login's PATH, after its setup lines (see "
+                           f"non-interactive login's PATH — a scheduler's program before "
+                           f"the site's setup lines, any other after them (see "
                            f"docs/RUNBOOK.md#0-1)"),
                 "docs_ref": "docs/RUNBOOK.md#0-1"}
     if probe.problems:

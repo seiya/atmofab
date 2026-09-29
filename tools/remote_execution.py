@@ -101,7 +101,8 @@ A site's `setup` lines (`execution_sites.Site.setup`) are the environment its co
 the job script runs them first, in its own shell, so every check and command after them sees
 what they set, and `probe_site` runs them before it asks for the job's programs. Under a batch
 scheduler they run inside the job, on the node it runs on; the scheduler's prefix runs before
-them, so the probe asks for the scheduler's program before them.
+them, so the probe asks for the scheduler's program before them, and a line that fails on the
+login is not a problem the probe reports there. A change to the lines moves no key.
 
 A site's `scheduler` changes one thing: the argv PREFIX the job script runs under in the same ssh
 call. A `none` site runs it under none. A batch scheduler's backend spells one through
@@ -134,7 +135,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tools.backends import registry
-from tools.execution_sites import Site
+from tools.execution_sites import DIRECT_SCHEDULER, Site
 
 #: The local programs the transport runs, in the order it runs them.
 TRANSPORT_EXECUTABLES: tuple[str, ...] = ("ssh", "scp")
@@ -466,11 +467,14 @@ def render_job_script(request: JobRequest) -> str:
              "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }"]
     if request.site.setup:
         # `set -u` is lifted around the lines: an environment-module shell function reads
-        # variables it has not set.
+        # variables it has not set. After them the script's own options are set again, and
+        # `-e` is cleared: a line (or a file it sources) that leaves `-e` set would end the
+        # script at a command's non-zero exit, before its status line, and a kernel's own
+        # failure would be refused as the transport's.
         lines += ["set +u", *_setup_lines(
             request.site.setup,
             lambda i: f"fail 7 {q(f'setup[{i}] exited non-zero: {request.site.setup[i]}')}"),
-            "set -u"]
+            "set +e -u"]
     if request.machine is not None:
         lines.append(f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
                      + q(f"the machine is not {request.machine}, which the shipped binary was "
@@ -728,7 +732,9 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve —
     a program the site's scheduler runs the job under before its `setup`, as the job's prefix
     runs before it, and every other program after it, as the job script asks for them — whether
-    each `setup` line exits 0,
+    each `setup` line exits 0 (at a `none` site only: a batch scheduler runs the job on another
+    node, where a line — a module only the compute nodes have — may succeed that fails on the
+    login this probe reaches, and the job script refuses a failing one where it runs),
     whether its `workdir` can be made and written (it is created if absent, as the first job
     would create it), and whether its `timeout` takes `-k`
     — the launch-time detector of what a job refuses again before its first command. Raises
@@ -759,9 +765,12 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     script = "\n".join([
         "echo",
         *(line for exe, line in zip(executables, ask) if exe in prefix),
-        # One problem line however many setup lines fail; the job script names the line.
+        # One problem line however many setup lines fail; the job script names the line. A
+        # batch site's lines still run, for the programs asked after them, and a failure there
+        # is not reported: the job asks again on the node it runs on.
         *(["setup_failed=", *_setup_lines(tuple(site.setup), lambda i: "setup_failed=1"),
-           f'[ -z "$setup_failed" ] || echo {PROBE_MARKER} problem setup']
+           *([f'[ -z "$setup_failed" ] || echo {PROBE_MARKER} problem setup']
+             if site.scheduler == DIRECT_SCHEDULER else [])]
           if site.setup else []),
         *(line for exe, line in zip(executables, ask) if exe not in prefix),
         # Whether a program runs beneath the workdir is asked only of a workdir that is there:

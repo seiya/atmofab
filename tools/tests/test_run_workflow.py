@@ -10254,7 +10254,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["missing"], required)
         self.assertEqual(events[-1]["required"], required)
         # The remedy names the site's setup lines, which can put a program on that PATH.
-        self.assertIn("after its setup lines", events[-1]["detail"])
+        self.assertIn("any other after them", events[-1]["detail"])
         self.assertEqual(calls, [])
 
     def test_the_local_site_is_asked_for_what_the_binary_runs_under(self) -> None:

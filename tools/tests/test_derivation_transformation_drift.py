@@ -536,7 +536,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "0320a2b26a52f2deccb1ed00c1e3a2e1af4eb89c0942c282f3cbc447665249fb",
+    "render-6": "2145df4b464609a05f165638f600a3f29b784157b2f52c927f80c08e916a1da0",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -562,6 +562,11 @@ PINNED_RENDER: dict[str, str] = {
     # by diffing `render_tuple()` against origin/main a88dcc14's: that row and no other.) The
     # digest `render-6` shipped with at a88dcc14:
     "render-6@a88dcc14": "083e2926353e02d3ddad1a8a0452c719fb7467ccbf154ffc307b29c575660d29",
+    # Re-pinned by a site's `setup` lines: `tools/host_execution.py`'s `LaunchShape` docstring
+    # says the job script sets the overrides after those lines. A docstring only. (Measured by
+    # diffing `render_tuple()` against origin/main f317c42f's: that row and no other.) The
+    # digest `render-6` shipped with at f317c42f:
+    "render-6@f317c42f": "0320a2b26a52f2deccb1ed00c1e3a2e1af4eb89c0942c282f3cbc447665249fb",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -615,7 +620,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "eb82596f626d6fd6ff4c670f71a386afd82b8d75b6cbc42432f2e94e92798c94",
+    "build-2": "1db90507752294c2e0b5bd7ad2ba63cc3fd02c618c704035a84bb98fcd0398f6",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -625,11 +630,11 @@ PINNED_BUILD: dict[str, str] = {
     # a88dcc14's: those two rows and no other.) The digest `build-2` shipped with at a88dcc14:
     "build-2@a88dcc14": "247f04e220377a25f137a4cc70edea100ad2cef1e96abad186a0a12add31eaab",
     # Re-pinned by a site's `setup` lines: `tools/remote_execution.py` runs them first in the
-    # job script and in the launch probe. A site without `setup` renders a byte-identical job
-    # script, so a build job there records what it recorded before; one with it runs its build
-    # in the environment the operator named, whose compiler version the job reads as before.
-    # (Measured by diffing `build_tuple()` against origin/main f317c42f's: that row and no
-    # other.) The digest `build-2` shipped with at f317c42f:
+    # job script and in the launch probe, and `tools/host_execution.py` changes a docstring. A
+    # site without `setup` renders a byte-identical job script, so a build job there records
+    # what it recorded before; one with it runs its build in the environment the operator
+    # named, whose compiler version the job reads as before. (Measured by diffing
+    # `build_tuple()` against origin/main f317c42f's: those two rows and no other.) The digest `build-2` shipped with at f317c42f:
     "build-2@f317c42f": "4bc9c88fe47769f34d62c2fff119fd35e5b9c1f7c55127681f828723c29bced5",
 }
 PINNED_EXECUTE: dict[str, str] = {
@@ -731,7 +736,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "05f5fdc75b649cbbdc57bd072225db1f7c4bd1314814154bcf6321ab9faf9b5c",
+    "execute-8": "33cdd885518d90dc6ab17e59e6299849eb9e769e171b7fba05302e595bfa493b",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -780,9 +785,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # and no other.) The digest `execute-8` shipped with at a88dcc14:
     "execute-8@a88dcc14": "4d8a339b7aaae1c7bd9891cdd7a887e9affc7e6be8e92e2671b72b83b8379087",
     # Re-pinned by a site's `setup` lines, as in `build-2`'s re-pin: `tools/remote_execution.py`
-    # runs them first in the job script and in the launch probe, and a site without `setup`
-    # renders a byte-identical job script. (Measured by diffing `execute_tuple()` against
-    # origin/main f317c42f's: that row and no other.) The digest `execute-8` shipped with at
+    # runs them first in the job script and in the launch probe, a site without `setup`
+    # renders a byte-identical job script, and `tools/host_execution.py` changes a docstring.
+    # (Measured by diffing `execute_tuple()` against origin/main f317c42f's: those two rows and
+    # no other.) The digest `execute-8` shipped with at
     # f317c42f:
     "execute-8@f317c42f": "8fd899fce01c2f63d3733071d406a485db3b75254b986ac2f60905f709275f2f",
 }

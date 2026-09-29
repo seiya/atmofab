@@ -45,4 +45,5 @@ targets:                            # target id -> site id; a target not listed 
 # already certified for it, and Validate refuses to run the old binary at the new site: add
 # `--rederive build,validate` to rebuild and re-validate it there — both: a rebuild that
 # reproduces the binary's bytes moves no validate key (for the target node only; a
-# --with-deps member is re-run by its own invocation).
+# --with-deps member is re-run by its own invocation). The same holds for a change to a site's
+# `setup` lines (another compiler module, say): pass `--rederive build,validate` to use it.
