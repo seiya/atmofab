@@ -10393,6 +10393,37 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(refused["missing"],
                          [resolve_launch_axis_selection(cuda)["build_compiler"], *tracer])
 
+    def test_a_build_only_run_is_not_asked_for_what_the_binary_runs_under(self) -> None:
+        """Issue #333: a run that stops at Build builds at the site and runs nothing there, so a
+        `none` site is asked for the build compiler and not for the trace program a traced
+        binary runs under — which the same site is refused for by a run reaching Validate."""
+        from tools.backends import registry
+        from tools.execution_sites import SitesConfig
+        from tools.host_prerequisites import resolve_launch_axis_selection
+        from tools.tests.target_fixtures import profile_with
+        tracer = list(registry.capability_module("parallel", "cuda", "device_trace").EXECUTABLES)
+        with _real_target_resolution():
+            fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
+        cuda = profile_with(fixture, parallel={"backend": "cuda"})
+        compiler = resolve_launch_axis_selection(cuda)["build_compiler"]
+        bare = Path(self._tmp.name) / "bare_build"
+        bare.mkdir()
+        for tool in ("sh", "uname", "getconf", "timeout", "make", "mkdir", "chmod", "rm"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        (bare / compiler).symlink_to(shutil.which("true"))
+        self._remote(scheduler="none")
+        with self._env(SHIM_SSH_PATH=str(bare)):
+            self.assertIsInstance(
+                run_workflow._sites_rejection(self.repo_root, cuda, "build"), SitesConfig)
+            refused = run_workflow._sites_rejection(self.repo_root, cuda, "validate")
+        self.assertEqual(refused["missing"], tracer)
+        # And the compiler is asked of a Build run: without it, refused.
+        (bare / compiler).unlink()
+        with self._env(SHIM_SSH_PATH=str(bare)):
+            refused = run_workflow._sites_rejection(self.repo_root, cuda, "build")
+        self.assertEqual(refused["reason"], "missing_required_site_tools")
+        self.assertEqual(refused["missing"], [compiler])
+
     def test_a_site_whose_workdir_cannot_be_made_is_refused_at_launch(self) -> None:
         blocker = Path(self._tmp.name) / "blocker"
         blocker.write_text("a file")

@@ -299,6 +299,29 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(seen["required"], (n.compiler,))
 
 
+class ToolchainVersionArgvTests(unittest.TestCase):
+
+    def test_the_key_probes_the_argv_the_build_job_is_handed(self) -> None:
+        """The build key's `compiler_version` is asked with `toolchain_version_argv` — the argv
+        the remote build job's toolchain probe runs — for every checked-in profile, the one
+        whose parallel backend puts a compiler wrapper in the compiler's place included."""
+        from tools.orchestration_runtime import _build_runtime_server_module
+        from tools.target_profile import list_target_ids, load_target_profile
+        repo = Path(__file__).resolve().parents[2]
+        server = _build_runtime_server_module()
+        ids = sorted(list_target_ids(repo))
+        self.assertIn("fortran_cpu_mpi", ids)
+        for target_id in ids:
+            with self.subTest(target=target_id):
+                target = load_target_profile(repo, target_id)
+                asked: list[tuple[str, ...]] = []
+                with mock.patch.object(server, "_syntax_compiler_version",
+                                       side_effect=lambda argv: asked.append(argv) or "v"):
+                    identity = _target_toolchain_identity(target)
+                self.assertEqual(asked, [toolchain_version_argv(target)])
+                self.assertEqual(identity["compiler_version"], "v")
+
+
 class BuildAtTheLocalSiteTests(unittest.TestCase):
 
     def test_the_local_build_records_the_local_site_and_the_keys_version(self) -> None:
