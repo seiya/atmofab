@@ -436,11 +436,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-8 (issue #327): the grammar block states grammar 4's `atan2` — a compile
     # leaf can transcribe a discrete mode's phase, so the key moves.
     "compile-docs-8": "d8e3d56132520d638b0a71ff7facf98012381d26f5efe3bba5e9f2febddfdb10",
-    # compile-docs-9 (issue #340): the schema block, section 1-1 and V3 state the rule for a
-    # quantity tests.md defines over the inputs and the time alone — the entry transcribes the
+    # compile-docs-9 (issue #340): the schema block, section 1-1 and V3 (ii) state the rule for
+    # a judged quantity no state variable the spec declares enters — the entry transcribes the
     # tests.md §5 primary-evidence statement, and where none exists Compile fails; a compile
     # leaf reading it refuses instead of inventing a corroborant, so the key moves.
-    "compile-docs-9": "cde0b9391e4eecb5f918a7e23e895b74694b278f5c2c14c88471582e783d0db5",
+    # Re-pinned in place in rounds 1 and 2 of its review (the version is new on this branch):
+    # an input guard's xfail_condition and a quantity a declared state variable enters are
+    # outside the class, a snapshot variable echoing an input-fixed value is not a way out of
+    # it, the xfail sentence says what the observed time step does and does not show, and the
+    # worked row states the form without the 0.4.2 invented corroborant.
+    "compile-docs-9": "de94c61858186c7333dcb61c63f8c8474a59aa5c7bc8e6fa67618fafb16ffaec",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
