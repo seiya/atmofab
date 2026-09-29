@@ -242,6 +242,7 @@ out-of-source build directory `Build` writes objects to, and the run and quality
 trees `Validate.execute` points the runner at (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md`
 names the overrides that route them there). At a remote execution site (issue #293) it also holds
 `site/`: `stage/`, the files shipped to the job, and `collected/`, the job directory copied back,
-whose run and quality-check trees are then moved to where the local path writes them. `record-launch` and `init_orchestration` create
+whose run and quality-check trees are then moved to where the local path writes them — and, for
+a `Build` there (issue #333), whose binary is copied into the node's `binary/<binary_id>/bin/`. `record-launch` and `init_orchestration` create
 the directory; `_cleanup_agent_tmp_root` removes it when the agent reaches a terminal status.
 

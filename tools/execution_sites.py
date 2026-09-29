@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Execution sites: WHERE `Validate.execute` runs a binary, read from the operator's `./sites.yaml`
-(issue #293).
+"""Execution sites: WHERE a target's binary is built and `Validate.execute` runs it, read from
+the operator's `./sites.yaml` (issue #293; the build since issue #333).
 
 A target profile says what a run builds FOR; it does not say which machine runs the result, and
 it must not: the profile's sha256 enters the validate key, and a site is a record of where the
@@ -26,8 +26,8 @@ character that is not printable ASCII: a real directive's `|`, `[` or `'` is the
 syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2).
 
 The driver (`tools/run_workflow.py`) calls `load_sites` once per run, refuses with
-`site_violations`, and hands the resolved `Site` to the conductor, whose `Validate.execute` runs at
-it (`docs/ORCHESTRATION.md` §Execution sites).
+`site_violations`, and hands the resolved `Site` to the conductor, whose `Build` and
+`Validate.execute` run at it (`docs/ORCHESTRATION.md` §Execution sites).
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ import yaml
 from tools.backends import registry
 from tools.derivation import canonical_json_bytes, sha256_hex
 from tools.host_execution import LOCAL_SITE, declares_launcher
-from tools.target_profile import NON_EXECUTING_PHASES, TOKEN_PATTERN, list_target_ids
+from tools.target_profile import NON_BUILDING_PHASES, TOKEN_PATTERN, list_target_ids
 
 SITES_VERSION = 1
 #: The file the driver reads, resolved against the repository root.
@@ -390,13 +390,15 @@ def load_sites(repo_root: Path, *, path: str | Path | None = None) -> SitesConfi
 
 def site_violations(config: SitesConfig, profile: Any, *,
                     until_phase: str | None = None) -> list[str]:
-    """The machine half of the "can this run execute" gate: for a run that reaches `Validate`
-    (every `until_phase` not in `NON_EXECUTING_PHASES`, None included), the site `profile`'s
-    target maps to must list the profile's hardware class in its `executes`, and must be
+    """The machine half of the "can this run execute" gate: for a run that reaches `Build`
+    (every `until_phase` not in `NON_BUILDING_PHASES`, None included — the binary is built at
+    the site that runs it, issue #333, and a site that cannot run it is no place to build it),
+    the site `profile`'s target maps to must list the profile's hardware class in its
+    `executes`, and must be
     `local` when the profile's parallel backend runs its binary under a launcher (issue #316:
     the binary is built here and linked against this host's runtime of the model, which the
     site need not have, and a batch site runs the whole job as one task). Empty otherwise."""
-    if str(until_phase or "").strip().lower() in NON_EXECUTING_PHASES:
+    if str(until_phase or "").strip().lower() in NON_BUILDING_PHASES:
         return []
     site = config.site_for(profile.target_id)
     hardware_class = profile.hardware_class

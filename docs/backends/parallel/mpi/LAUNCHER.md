@@ -81,7 +81,7 @@ make test                                                           # the qualit
 ## 4. Sites
 
 A target whose parallel backend declares `launcher` runs at the `local` site only. A run that
-reaches `Validate` for such a target mapped to a remote site is refused at launch
+reaches `Build` for such a target mapped to a remote site is refused at launch
 (`target_profile_invalid`, from `execution_sites.site_violations`), and `host_execution.
 launch_shape` refuses it as the backstop. The two reasons:
 

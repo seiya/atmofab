@@ -459,9 +459,11 @@ class RefusalTests(unittest.TestCase):
 class SiteViolationTests(unittest.TestCase):
     """The machine half of the "can this run execute" gate (`test_target_profile.py`'s
     `test_the_execution_half_is_asked_of_a_run_that_reaches_validate_only` is the registry
-    half, and this mirrors its phase cases)."""
+    half; since issue #333 this one is asked from Build, that one from Validate)."""
 
-    def test_asked_of_a_run_that_reaches_validate_only(self) -> None:
+    def test_asked_of_a_run_that_reaches_build(self) -> None:
+        """Issue #333: the binary is built at the site that runs it, so a run that reaches
+        Build is asked, as one reaching Validate is; Compile and Generate are not."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _Repo(tmp)
             cfg = repo.load(_BASE.replace("[cpu]", "[gpu]") + "targets:\n  t_gpu: box\n")
@@ -469,10 +471,10 @@ class SiteViolationTests(unittest.TestCase):
             (repo.root / es.DEFAULT_SITES_PATH).unlink()
             no_file = es.load_sites(repo.root)
         gpu = _profile("t_gpu", "gpu")
-        for until in ("Compile", "Generate", "Build", "build", " BUILD "):
+        for until in ("Compile", "Generate", "generate", " GENERATE "):
             with self.subTest(until_phase=until):
                 self.assertEqual(es.site_violations(local_only, gpu, until_phase=until), [])
-        for until in ("Validate", "validate", None, "", "Buld"):
+        for until in ("Build", "build", " BUILD ", "Validate", "validate", None, "", "Buld"):
             with self.subTest(until_phase=until):
                 violations = es.site_violations(local_only, gpu, until_phase=until)
                 self.assertEqual(len(violations), 1, violations)
@@ -494,8 +496,10 @@ class SiteViolationTests(unittest.TestCase):
     def test_a_launcher_target_runs_at_local_only(self) -> None:
         """Issue #316: a binary built here is bound to this host's runtime of its parallel model,
         so a target whose backend declares `launcher` is refused at a remote site — direct or
-        batch, and although the site executes its class — for a run that reaches Validate. A
-        Build-only run is not asked, and the local site runs it."""
+        batch, and although the site executes its class — for a run that reaches Build (issue
+        #333: the binary would be built at that site, and the build seam refuses a launcher
+        target there as the execute seam does). A run that stops at Generate is not asked, and
+        the local site runs it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _Repo(tmp)
             direct = repo.load(_BASE + "targets:\n  t_cpu: box\n")
@@ -504,15 +508,15 @@ class SiteViolationTests(unittest.TestCase):
             unmapped = repo.load(_BASE)
         mpi = _profile("t_cpu", "cpu", parallel_backend="mpi")
         for name, cfg in (("direct", direct), ("batch", batch)):
-            for until in ("Validate", None):
+            for until in ("Build", "Validate", None):
                 with self.subTest(site=name, until_phase=until):
                     self.assertEqual(es.site_violations(cfg, mpi, until_phase=until), [(
                         "parallel.backend: mpi runs its binary under a launcher, and a binary "
                         "built here is bound to this host's mpi runtime; target t_cpu maps to "
                         "site box, and a launcher target runs at local only "
                         "(docs/backends/parallel/mpi/LAUNCHER.md §Sites)")])
-            with self.subTest(site=name, until_phase="Build"):
-                self.assertEqual(es.site_violations(cfg, mpi, until_phase="Build"), [])
+            with self.subTest(site=name, until_phase="Generate"):
+                self.assertEqual(es.site_violations(cfg, mpi, until_phase="Generate"), [])
         self.assertEqual(es.site_violations(unmapped, mpi, until_phase="Validate"), [])
         # The same site runs a target without a launcher.
         self.assertEqual(es.site_violations(direct, _profile("t_cpu", "cpu"),

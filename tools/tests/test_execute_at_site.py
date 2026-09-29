@@ -115,7 +115,22 @@ class _Node:
         self.binary = bin_dir / "spec_x_runner"
         self.binary.write_text(_RUNNER, encoding="utf-8")
         self.binary.chmod(0o755)
+        self.built_at(self.site.site_id)
         self.node_dir = self.repo / self.refs.run_node_dir()
+
+    def built_at(self, site_id: str | None, host: str | None = "same") -> None:
+        """Record where the binary was built (`binary_meta.json#environment.build_site`, issue
+        #333) — by default the site it runs at and that site's host, which `Validate.execute`
+        requires; None writes a record with no `environment`, as a build-1 record has none."""
+        if host == "same":
+            host = self.site.host if site_id == self.site.site_id else None
+        meta: dict = {"binary_id": self.refs.binary_id}
+        if site_id is not None:
+            meta["environment"] = {"platform": {"site": site_id},
+                                   "build_site": {"site": site_id, "host": host},
+                                   "compiler_version": None}
+        (self.repo / self.refs.binary_dir() / "binary_meta.json").write_text(
+            json.dumps(meta), encoding="utf-8")
 
     def env(self, **knobs: str):
         env = {"PATH": f"{self.shims}{os.pathsep}{os.environ['PATH']}",
@@ -270,6 +285,35 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertIn("stale job directory", result.stderr)
         self.assertTrue((stale / "old").exists())
 
+    def test_a_binary_built_at_another_site_is_not_run_here(self) -> None:
+        """Issue #333: a binary runs at the site that built it. A target mapped elsewhere since
+        its Build reuses that Build (the site is in no key), and its binary is refused before
+        anything is shipped — as is a record that names no build site (a build-1 record)."""
+        n = self.n
+        # The site id and its ssh destination: a site whose `host` changed in `sites.yaml` is
+        # another machine under the same id (round 2, Codex).
+        for (built_at, host), named in (
+                (("elsewhere", "elsewhere"), "elsewhere (host elsewhere)"),
+                ((LOCAL_SITE, None), LOCAL_SITE),
+                (("box", "another-host"), "box (host another-host)"),
+                ((None, None), "(none recorded)")):
+            with self.subTest(built_at=built_at, host=host):
+                n.built_at(built_at, host)
+                result = n.substep()
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn("deterministic_validate_error", result.stderr)
+                self.assertIn(f"was built at site {named} and target {TARGET_ID} now runs at "
+                              f"site box (host box)", result.stderr)
+                # Both phases: a rebuild that reproduces the bytes leaves the validate key
+                # where it was, and `build` alone would adopt the old site's Validate.
+                self.assertIn("--rederive build,validate", result.stderr)
+                self.assertEqual(n.calls(), [])
+                self.assertFalse((n.node_dir / "trial_meta.json").exists())
+        # The site it was built at runs it.
+        n.built_at("box")
+        self.assertEqual(n.execute()["returncode"], 0)
+        self.assertTrue(n.calls())
+
     def test_the_site_must_execute_the_class_before_anything_is_contacted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
@@ -422,6 +466,19 @@ class ExecuteAtTheLocalSiteTests(unittest.TestCase):
             self.assertNotIn("site", run_log[0])
             self.assertEqual(run_log[0]["cwd"],
                              str(n.repo / "workspace" / "tmp" / "arid-1" / "run"))
+
+    def test_a_binary_a_remote_site_built_is_not_run_here(self) -> None:
+        """The where-built check (issue #333) at the local site: a target mapped back to
+        `local` after a Build at a remote site does not run that binary on this host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
+            n.built_at("box")
+            with mock.patch.object(build_runtime_server, "tool_run_program",
+                                   side_effect=AssertionError("nothing runs")):
+                result = n.substep()
+            self.assertEqual(result.returncode, 1, result)
+            self.assertIn(f"was built at site box and target {TARGET_ID} now runs at site "
+                          f"{LOCAL_SITE}", result.stderr)
 
 
 if __name__ == "__main__":

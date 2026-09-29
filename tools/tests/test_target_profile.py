@@ -121,12 +121,17 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertEqual(tp.target_profile_violations(
             REPO_ROOT, profile, node_key=harness, until_phase="validate"), [])
         no_file = SitesConfig(sites={LOCAL_SITE: Site(LOCAL_SITE, LOCAL_DEFAULT_EXECUTES)})
-        violations = site_violations(no_file, profile, until_phase="validate")
-        self.assertEqual(len(violations), 1, violations)
-        self.assertTrue(violations[0].startswith("hardware.class: gpu is not executed"),
-                        violations)
-        for phase in sorted(tp.NON_EXECUTING_PHASES):
+        # Since issue #333 the binary is built at the site that runs it, so the site half is
+        # asked of a run that reaches Build as well: with no `sites.yaml`, a run of this target
+        # stops at Generate.
+        for phase in ("build", "validate"):
+            violations = site_violations(no_file, profile, until_phase=phase)
+            self.assertEqual(len(violations), 1, (phase, violations))
+            self.assertTrue(violations[0].startswith("hardware.class: gpu is not executed"),
+                            violations)
+        for phase in sorted(tp.NON_BUILDING_PHASES):
             self.assertEqual(site_violations(no_file, profile, until_phase=phase), [], phase)
+        self.assertLess(tp.NON_BUILDING_PHASES, tp.NON_EXECUTING_PHASES)
         # A physics node of this language passes too since R4-b PR-6 (the language renders its
         # runner); until then it was refused at every phase for want of `runner_render`.
         for phase in sorted(tp.NON_EXECUTING_PHASES):
