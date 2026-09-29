@@ -193,7 +193,10 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     `missing_required_host_tools` (this host lacks the transport), `site_unreachable` (the probe
     did not come back), `site_machine_mismatch` (the shipped binary is built here, so the site
     must be this machine type — asked first of the probe's answers, since the remedy for any
-    other is wasted on the wrong site), `missing_required_site_tools` and `site_unusable`
+    other is wasted on the wrong site), `site_libc_mismatch` (asked second, for the same reason:
+    the binary was linked against this host's C library, and a C library runs what an older one
+    of its family built, not the reverse — `remote_execution.libc_shortfall`, issue #330),
+    `missing_required_site_tools` and `site_unusable`
     (`remote_execution.SiteProbe.problems`); for the local site, when it executes the run,
     `missing_required_site_tools` for a program the binary runs under that this host lacks
     (`host_prerequisites.execution_executables`, issue #307; a launcher, issue #316), and
@@ -203,11 +206,13 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
     the MEMBER's phase — a dependency of a run that stops at `Build` is driven to `Validate`."""
     import platform as _platform
 
+    from tools import remote_execution
     from tools.execution_sites import SitesConfigError, load_sites, site_violations
     from tools.host_prerequisites import execution_executables, required_site_executables
     from tools.remote_execution import (
         TRANSPORT_EXECUTABLES,
         RemoteExecutionError,
+        libc_shortfall,
         probe_site,
     )
     from tools.target_profile import NON_EXECUTING_PHASES
@@ -288,6 +293,16 @@ def _sites_rejection(repo_root: Path, target_profile: TargetProfile, until_phase
                            f"{_platform.machine()} one; map target "
                            f"{target_profile.target_id} to a site of this machine type in "
                            f"sites.yaml"),
+                "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
+    host_libc = remote_execution.host_libc()
+    shortfall = libc_shortfall(host_libc, probe.libc)
+    if shortfall is not None:
+        return {"status": "fail", "reason": "site_libc_mismatch", "site": site.site_id,
+                "host_libc": host_libc, "site_libc": probe.libc,
+                "detail": (f"site {site.site_id}: {shortfall}; map target "
+                           f"{target_profile.target_id} in sites.yaml to a site whose C library "
+                           f"is {host_libc or 'the one this host builds against'} or newer, or "
+                           f"build from a host whose C library is not newer than the site's"),
                 "docs_ref": "docs/ORCHESTRATION.md#execution-sites"}
     if probe.missing:
         return {"status": "fail", "reason": "missing_required_site_tools",
