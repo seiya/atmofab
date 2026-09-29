@@ -440,7 +440,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # quantity tests.md defines over the inputs and the time alone — the entry transcribes the
     # tests.md §5 primary-evidence statement, and where none exists Compile fails; a compile
     # leaf reading it refuses instead of inventing a corroborant, so the key moves.
-    "compile-docs-9": "9dc2bc68bd468ffe95d6a22f2dc38550c4fd744f237a299fe94c3dbc3f2e4516",
+    "compile-docs-9": "cde0b9391e4eecb5f918a7e23e895b74694b278f5c2c14c88471582e783d0db5",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

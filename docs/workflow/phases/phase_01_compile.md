@@ -228,9 +228,10 @@ io_contract:
   #   analytic agreement    bind: {c0: "sqrt(inputs.constants.g * inputs.initial.H_0)", h_ref: "inputs.initial.H_0 + inputs.initial.eta0 * sin(2 * pi * (x - c0 * inputs.time.t_end) / inputs.grid.L_x)"}  (c0 is written before h_ref, which reads it; the reference is evaluated at the DECLARED end time, and every input path is spelled as this node's cases declare it — tests.md §5 is the formula's source, a shift or a second axis included)
   #                         expr: "norm2(final.h - h_ref) / norm2(h_ref)"          op: le  value: {per_case: {...}}
   #   convergence order     case: "<the finer case>"  bind: {xc: "at('<coarse>').x", hc: "<h_ref written over xc and at('<coarse>').inputs...>", e_c: "norm2(at('<coarse>').final.h - hc) / norm2(hc)", e_f: "<the same over final.h, x, inputs...>"}  expr: "log2(e_c / e_f)"  op: ge  value: 0.8
-  #   input-determined guard  bind: {dx: "inputs.grid.L / inputs.grid.nx", ns: "ceil(<the step count tests.md fixes from the inputs>)", dto: "(final.t - initial.t) / ns", r: "maxabs(final.u) / maxabs(initial.u)"}
-  #                         expr: "max(inputs.constants.a * dto / dx + 2 * inputs.constants.nu * dto / dx ** 2, r)"  op: le  value: 1.0
-  #                         (the tests.md §5 primary-evidence statement of a CFL number transcribed term for term: the state term `r` is the max-norm bound that statement names, never one the leaf adds)
+  #   input-determined quantity  bind/expr: the tests.md §5 primary-evidence statement written term for term — its input term over
+  #                         `inputs.<path>` and the time step `(final.t - initial.t) / <the step count the statement fixes>`, and ONLY
+  #                         the state term the statement names; op and value are the judgment's (`gt` on an xfail guard). With no
+  #                         statement there is nothing to write here: that is a `Compile fail` (the schema block above)
   #   translation pair      case: "<shifted>"  expr: "norm2(final.h - roll(at('<base>').final.h, inputs.initial.shift_x_fraction * inputs.grid.nx, 0)) / norm2(final.h)"
   #   cross-target agreement  quantity: "cross_target_state_agreement"  per_case: true  (one entry per variable the judgment names, over its test's target cases)
   #                         expr: "maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)"  op: le  value: 1.0e-12
