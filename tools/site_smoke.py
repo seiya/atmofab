@@ -14,6 +14,12 @@ temporary directory.
 `--ship FILE` copies FILE into the job directory (mode kept); `$JOB` in `--cmd` is that
 directory at the site. `--gpu` adds the `gpu` hardware class's device probe, as a `gpu`
 target's Validate does.
+
+The probe's answers include the site's machine and C library. When either would refuse a binary
+built here (`site_machine_mismatch`, `site_libc_mismatch`), a note says so and the job is sent
+with the site's own values, because a shell command is not a shipped binary — except a site
+whose C library answer is none or not in `parse_libc`'s shape: the job then carries this host's,
+and the job script's refusal is the answer (a binary shipped from here is refused there).
 """
 
 from __future__ import annotations
@@ -69,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
           f"queue_timeout_sec={site.queue_timeout_sec}")
 
     machine = platform.machine()
+    libc = rx.host_libc()
     if not args.no_probe:
         exes = (*rx.REMOTE_EXECUTABLES, *rx.scheduler_executables(site.scheduler))
         print(f"probe: asking for {list(exes)} ...")
@@ -77,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         except rx.RemoteExecutionError as exc:
             print(f"probe FAILED: {exc}", file=sys.stderr)
             return 1
-        print(f"probe: machine={probe.machine} missing={list(probe.missing)} "
+        print(f"probe: machine={probe.machine} libc={probe.libc} missing={list(probe.missing)} "
               f"problems={list(probe.problems)}")
         if probe.missing or probe.problems:
             return 1
@@ -85,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
             # A shipped binary would be refused; a shell command is not, so test on.
             print(f"note: site machine {probe.machine} != this host's {machine}")
             machine = probe.machine
+        shortfall = rx.libc_shortfall(libc, probe.libc)
+        if shortfall is not None:
+            print(f"note: {shortfall}")
+            if rx.parse_libc(probe.libc) is not None:
+                libc = probe.libc
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     orch_id, run_id = f"smoke_{stamp}", f"smoke_{uuid.uuid4().hex[:8]}"
@@ -103,11 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     request = rx.JobRequest(site=site, job_dir=job_dir, ship=ship, commands=(command,),
                             platform_probe=platform_probe,
                             attribution={"orchestration_id": orch_id, "agent_run_id": run_id},
-                            machine=machine)
+                            machine=machine, libc=libc)
     print(f"job: {job_dir}")
     try:
         result = rx.execute_job(request, local_tmp=local_tmp / "job")
-    except rx.RemoteExecutionError as exc:
+    except (rx.RemoteExecutionError, ValueError) as exc:
         print(f"job FAILED: {exc}", file=sys.stderr)
         print(f"local files: {local_tmp}", file=sys.stderr)
         return 1

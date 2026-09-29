@@ -34,6 +34,7 @@ import dataclasses
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -219,7 +220,7 @@ class _Harness:
 
 #: What the job script and the shipped runner execute at the site.
 _SITE_TOOLS = ("sh", "uname", "hostname", "grep", "sed", "mkdir", "rm", "date", "env", "timeout", "ls",
-               "python3")
+               "python3", "getconf", "chmod")
 
 
 def _bare_path(root: Path, *, without: str, sh: str = "sh") -> Path:
@@ -802,6 +803,88 @@ class RefusalTests(unittest.TestCase):
         # The default is this host's own machine, which the shim's "site" is.
         self.assertEqual(self.h.request().machine, os.uname().machine)
 
+    def test_a_site_libc_older_than_the_build_hosts_is_the_hosts_failure(self) -> None:
+        """Issue #330: a binary linked against a newer C library fails in the site's loader,
+        whose 127 a launch prefix reports as its own status — the kernel's result, on the
+        record. Older, or of another family, is refused before any command runs."""
+        for libc in ("glibc 99.0", "glibc 2.999", "zzlibc 1.0"):
+            with self.subTest(libc=libc):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                with self.assertRaisesRegex(
+                        rx.RemoteExecutionError,
+                        rf"ssh exited 5.*the site C library \({re.escape(rx.host_libc())}\) is "
+                        rf"not {re.escape(libc)} or newer"):
+                    h.run(h.request(libc=libc))
+                self.assertFalse((Path(h.job) / "ctl" / "run.stdout").exists())
+                self.assertEqual(h.log_entries("run"), [])
+        # The default is this host's own C library, which the shim's "site" has.
+        self.assertEqual(self.h.request().libc, rx.host_libc())
+        self.assertIsNotNone(rx.host_libc())
+
+    def test_the_script_asks_the_machine_then_the_libc_then_the_programs(self) -> None:
+        """At a batch site the script's checks run on the compute node, which the launch probe
+        did not see: the "wrong site" answers come first, machine before C library, and both
+        before a missing program, whose remedy would be work on the wrong site."""
+        with self.subTest("machine before libc"):
+            h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+            with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                        "ssh exited 5.*the site machine is not zz_arch"):
+                h.run(h.request(machine="zz_arch", libc="glibc 99.0"))
+        with self.subTest("libc before a missing program"):
+            h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+            bare = _bare_path(h.root, without="timeout")
+            with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                        "ssh exited 5.*the site C library"):
+                h.run(h.request(libc="glibc 99.0"), SHIM_SSH_PATH=str(bare))
+
+    def test_a_site_libc_equal_or_newer_runs_the_job(self) -> None:
+        family, major, minor = rx.parse_libc(rx.host_libc())
+        for libc in (f"{family} {major}.{minor}", f"{family} {major}.0", f"{family} 1.99",
+                     f"{family} {major}.{minor}.7"):
+            with self.subTest(libc=libc):
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                result = h.run(h.request(libc=libc))
+                self.assertTrue(all(r and r["ok"] for r in result.results), result.results)
+
+    def test_a_three_part_site_answer_runs_the_job(self) -> None:
+        """`glibc 2.35.1`: what follows the minor number is not read, as `parse_libc` does not
+        read it."""
+        family, major, minor = rx.parse_libc(rx.host_libc())
+        fake = self.h.root / "three_part"
+        fake.mkdir()
+        (fake / "getconf").write_text(f"#!/bin/sh\necho '{family} {major}.{minor}.1'\n")
+        (fake / "getconf").chmod(0o755)
+        self.assertIsNone(rx.libc_shortfall(rx.host_libc(), f"{family} {major}.{minor}.1"))
+        result = self.h.run(self.h.request(),
+                            SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
+        self.assertTrue(all(r and r["ok"] for r in result.results), result.results)
+
+    def test_a_site_without_getconf_is_the_hosts_failure(self) -> None:
+        """A site that names no C library is not shown to run what this host linked."""
+        bare = _bare_path(self.h.root, without="getconf")
+        self._refused(r"(?s)ssh exited 5.*the site C library \(\) is not", SHIM_SSH_PATH=str(bare))
+
+    def test_a_site_libc_answer_not_in_the_shape_is_the_hosts_failure(self) -> None:
+        """The script reads the answer the way `parse_libc` does: two dotted numbers after the
+        family, and nothing glued to the minor number. Each shape is refused by a different
+        clause: no family at all (only the `case` on the family sees it), a newer major with a
+        minor that is not a number (only the digit check sees it: `-gt` answers first)."""
+        family, major, minor = rx.parse_libc(rx.host_libc())
+        for answer in (f"{family} {major + 1}", f"{family} {major + 1}.x", f"{family} x.{minor}",
+                       f"{family} {major}.{minor}x", f"{family}  {major}.{minor}",
+                       f"{family}x {major}.{minor}", f"{major}.{minor}",
+                       f"{family} {major + 1}.{minor}x", ""):
+            with self.subTest(answer=answer):
+                self.assertIsNotNone(rx.libc_shortfall(rx.host_libc(), answer or None))
+                h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+                fake = h.root / "fake_getconf"
+                fake.mkdir()
+                (fake / "getconf").write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(answer)}\n")
+                (fake / "getconf").chmod(0o755)
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            "ssh exited 5.*the site C library"):
+                    h.run(h.request(), SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
+
     def test_a_site_without_timeout_is_the_hosts_failure(self) -> None:
         bare = _bare_path(self.h.root, without="timeout")
         self._refused("(?s)ssh exited 3.*timeout is missing", SHIM_SSH_PATH=str(bare))
@@ -899,6 +982,11 @@ class RequestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, pattern):
             self.h.run(request)
         self.assertEqual(self.h.calls(), [])
+
+    def test_a_host_that_names_no_libc_is_refused_before_transport(self) -> None:
+        for libc in (None, "", "glibc", "glibc 2", "glibc two.35"):
+            with self.subTest(libc=libc):
+                self._invalid("does not name its C library", self.h.request(libc=libc))
 
     def test_an_env_the_server_refuses_is_refused_here(self) -> None:
         for env, pattern in (({"LD_PRELOAD": "/x.so"}, "redirect execution"),
@@ -999,6 +1087,20 @@ class SchedulerTests(unittest.TestCase):
             self.h.run(self.h.request(), **knobs)
         self.assertEqual(self.h.log_entries("run"), [])
         self.assertEqual(self.h.log_entries("qc"), [])
+
+    def test_the_compute_nodes_machine_is_asked_under_the_prefix(self) -> None:
+        """The same for the machine: the probe asked the login, the script asks the node."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "ssh exited 5.*the site machine is not zz_arch"):
+            self.h.run(self.h.request(machine="zz_arch"))
+        self.assertEqual(self.h.log_entries("run"), [])
+
+    def test_the_compute_nodes_libc_is_asked_under_the_prefix(self) -> None:
+        """The launch probe asks the login; under a scheduler the job script's own check is what
+        asks the node the binary runs on (issue #330), so it must survive the prefix."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 5.*the site C library"):
+            self.h.run(self.h.request(libc="glibc 99.0"))
+        self.assertEqual(self.h.log_entries("run"), [])
 
     def test_the_job_runs_under_srun_and_records_its_id(self) -> None:
         result = self.h.run(self.h.request())
@@ -1134,6 +1236,161 @@ class SchedulerTests(unittest.TestCase):
                          ("timeout", "make", *trace))
 
 
+class LibcRuleTests(unittest.TestCase):
+    """`libc_shortfall` (issue #330): the one decision the driver, `_validate` and `site_smoke`
+    share. Same family and `major.minor` no older passes; everything else is a shortfall."""
+
+    def test_the_rule(self) -> None:
+        need = "glibc 2.35"
+        for site, ok in (("glibc 2.35", True), ("glibc 2.36", True), ("glibc 3.0", True),
+                         ("glibc 2.35.1", True), (" glibc 2.40 ", False),
+                         ("glibc 2.34", False), ("glibc 1.99", False), ("glibc 2.3", False),
+                         ("musl 2.35", False), ("glibcx 2.35", False), (None, False),
+                         ("", False), ("glibc", False), ("glibc 2", False),
+                         ("glibc  2.35", False), ("glibc 2.35x", False), ("glibc 2.x", False),
+                         ("glibc ２.35", False)):
+            with self.subTest(site=site):
+                self.assertIs(rx.libc_shortfall(need, site) is None, ok)
+        # The host side: one that names no C library is a shortfall against any site.
+        for required in (None, "", "glibc", "glibc two"):
+            with self.subTest(required=required):
+                self.assertIn("this host does not name its C library",
+                              rx.libc_shortfall(required, "glibc 2.35"))
+        # The message names both answers.
+        why = rx.libc_shortfall(need, "glibc 2.34")
+        self.assertIn("glibc 2.34", why)
+        self.assertIn("glibc 2.35", why)
+
+    def test_the_job_script_decides_every_answer_as_libc_shortfall_does(self) -> None:
+        """The launch refusal decides with `libc_shortfall`, the job script with POSIX `sh`; one
+        rule, so an answer the driver admits is not refused after billing, nor the reverse. The
+        script's libc block is run under `dash` and `bash` with `getconf` answering each member,
+        and each verdict is compared with `libc_shortfall`'s. The family straddles the rule: it
+        must contain answers both sides accept and answers both refuse, asserted below."""
+        host = "glibc 2.35"
+        with tempfile.TemporaryDirectory() as tmp:
+            script = rx.render_job_script(_Harness(tmp).request(libc=host))
+        lines = script.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("v=$(getconf"))
+        end = next(i for i, line in enumerate(lines) if i > start and "-ge" in line)
+        block = "\n".join([lines[3], 'getconf() { printf "%s\\n" "$ANS"; }',
+                           *lines[start:end + 1], "echo PASS"])
+        answers = ("glibc 2.35", "glibc 2.36", "glibc 2.34", "glibc 3.0", "glibc 10.1",
+                   "glibc 2.35.1", "glibc 2.35.", "glibc 2.35.1.2", "glibc 2.35.x", "glibc 2.35.1x", "glibc 02.035", "glibc 1.99",
+                   "", "glibc", "glibc 2", "glibc 2.", "glibc .35", "glibc 2..35", "glibc 2.x",
+                   "glibc 2.35x", "glibc 3", "glibc 3.1x", "glibc 2.35.1 x", "glibc 2.35. junk",
+                   "glibc 2.35-1", "glibc  2.35", " glibc 2.35", "glibc 2.35 ", "glibc 2.35\t",
+                   "musl 2.35", "glibcx 2.35", "2.35", "glibc 999999999.0",
+                   "glibc 1000000000.0", "glibc 2.1000000000", "glibc 99999999999999999999.0",
+                   "glibc ２.35")
+        verdicts = set()
+        for sh in ("dash", "bash"):
+            self.assertIsNotNone(shutil.which(sh), f"this row needs {sh}")
+            for answer in answers:
+                with self.subTest(sh=sh, answer=answer):
+                    proc = subprocess.run([sh, "-c", block], env={**os.environ, "ANS": answer},
+                                          capture_output=True, text=True, timeout=30,
+                                          check=False)
+                    script_ok = proc.returncode == 0 and proc.stdout.strip() == "PASS"
+                    python_ok = rx.libc_shortfall(host, answer) is None
+                    self.assertEqual(script_ok, python_ok, proc.stderr)
+                    verdicts.add(python_ok)
+        self.assertEqual(verdicts, {True, False}, "the family must straddle the rule")
+
+    def test_parse(self) -> None:
+        self.assertEqual(rx.parse_libc("glibc 2.35"), ("glibc", 2, 35))
+        self.assertEqual(rx.parse_libc("glibc 2.35.1"), ("glibc", 2, 35))
+        self.assertIsNone(rx.parse_libc(None))
+
+    def test_the_host_answer(self) -> None:
+        self.assertEqual(rx.host_libc(), os.confstr("CS_GNU_LIBC_VERSION"))
+        for effect in (ValueError("no such name"), OSError("x")):
+            with self.subTest(effect=effect), mock.patch.object(rx.os, "confstr",
+                                                                side_effect=effect):
+                self.assertIsNone(rx.host_libc())
+        for value in (None, "", "  "):
+            with self.subTest(value=value), mock.patch.object(rx.os, "confstr",
+                                                              return_value=value):
+                self.assertIsNone(rx.host_libc())
+
+
+class SiteSmokeTests(unittest.TestCase):
+    """`tools/site_smoke.py` over the ssh shim: a C library that would refuse a binary built
+    here is a note and the shell command still runs, with the site's value; a site that names
+    none gets this host's, and the job script's refusal is the answer (issue #330)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+        self.sites = self.h.root / "sites.yaml"
+        self.sites.write_text(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                              f"    workdir: {self.h.workdir}\n    executes: [cpu]\n"
+                              f"    scheduler: none\n")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def smoke(self, *extra: str, **knobs: str) -> tuple[int, str, str]:
+        import contextlib
+        import io
+
+        from tools import site_smoke
+        out, err = io.StringIO(), io.StringIO()
+        # `site_smoke` keeps its local directory when a job fails; keep it in this test's tree.
+        with self.h.env(**knobs), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err), \
+                mock.patch.object(tempfile, "tempdir", str(self.h.root)):
+            code = site_smoke.main(["box", "--sites", str(self.sites), "--cmd", "echo OK",
+                                    *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_site_older_than_this_host_is_a_note_and_the_command_runs(self) -> None:
+        """The site's `getconf` answers an older C library than this host's; the job carries
+        the site's value, so its script does not refuse the shell command."""
+        family, _major, _minor = rx.parse_libc(rx.host_libc())
+        old = self.h.root / "old_libc"
+        old.mkdir()
+        (old / "getconf").write_text(f"#!/bin/sh\necho '{family} 0.1'\n")
+        (old / "getconf").chmod(0o755)
+        code, out, err = self.smoke(SHIM_SSH_PATH=f"{old}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"libc={family} 0.1", out)
+        self.assertIn("note: the site's C library is", out)
+        self.assertIn("RESULT: PASS", out)
+
+    def test_a_site_answer_out_of_shape_is_refused_by_the_script_not_blamed_on_the_host(
+            self) -> None:
+        bad = self.h.root / "bad_libc"
+        bad.mkdir()
+        (bad / "getconf").write_text("#!/bin/sh\necho 'glibc 2.39-foo'\n")
+        (bad / "getconf").chmod(0o755)
+        code, out, err = self.smoke(SHIM_SSH_PATH=f"{bad}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(code, 1)
+        self.assertIn("libc=glibc 2.39-foo", out)
+        self.assertNotIn("this host does not name its C library", err)
+        self.assertIn(f"the site C library (glibc 2.39-foo) is not {rx.host_libc()} or newer",
+                      err)
+
+    def test_a_host_that_names_no_libc_is_a_failed_job_not_a_traceback(self) -> None:
+        with mock.patch.object(rx, "host_libc", return_value=None):
+            code, _out, err = self.smoke("--no-probe")
+        self.assertEqual(code, 1)
+        self.assertIn("job FAILED: this host does not name its C library", err)
+
+    def test_a_site_that_names_no_libc_is_refused_by_the_job_script(self) -> None:
+        bare = _bare_path(self.h.root, without="getconf")
+        code, out, err = self.smoke(SHIM_SSH_PATH=str(bare))
+        self.assertEqual(code, 1)
+        self.assertIn("libc=None", out)
+        self.assertIn("note: the site's C library did not answer", out)
+        self.assertIn(f"the site C library () is not {rx.host_libc()} or newer", err)
+
+    def test_an_equal_libc_has_no_note(self) -> None:
+        code, out, err = self.smoke()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note:", out)
+
+
 class ScriptTests(unittest.TestCase):
 
     def test_the_script_is_posix_sh_that_parses(self) -> None:
@@ -1163,12 +1420,13 @@ class ProbeSiteTests(unittest.TestCase):
         with self.h.env(**knobs):
             return rx.probe_site(self.h.site, exes)
 
-    def test_one_call_answers_the_missing_programs_and_the_machine(self) -> None:
+    def test_one_call_answers_the_missing_programs_the_machine_and_the_libc(self) -> None:
         import platform
 
         got = self.probe("sh", "zz-no-such-tool", "timeout", "zz-other")
         self.assertEqual(got, rx.SiteProbe(missing=("zz-no-such-tool", "zz-other"),
-                                           machine=platform.machine()))
+                                           machine=platform.machine(),
+                                           libc=os.confstr("CS_GNU_LIBC_VERSION")))
         calls = self.h.calls()
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][:5], ["ssh", *rx.SSH_OPTIONS])
@@ -1179,6 +1437,25 @@ class ProbeSiteTests(unittest.TestCase):
         self.assertEqual(self.probe("timeout", "sh", SHIM_SSH_PATH=str(bare)).missing,
                          ("timeout",))
 
+    def test_a_site_without_getconf_answers_no_libc(self) -> None:
+        """No `getconf` is an answer, not a malformed probe: the driver refuses it by name."""
+        bare = _bare_path(self.h.root, without="getconf")
+        got = self.probe("sh", SHIM_SSH_PATH=str(bare))
+        self.assertIsNone(got.libc)
+        self.assertEqual(got.missing, ())
+
+    def test_the_libc_answer_reaches_the_driver_unstripped(self) -> None:
+        """The driver must read the answer the job script will read: an answer with a trailing
+        space is refused by the script, so it must not be admitted at launch as its strip."""
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc glibc 2.35 \n")):
+            got = rx.probe_site(self.h.site, ("sh",))
+        self.assertEqual(got.libc, "glibc 2.35 ")
+        self.assertIsNotNone(rx.libc_shortfall("glibc 2.35", got.libc))
+        with mock.patch.object(rx, "_ssh", return_value=(
+                f"{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc  \n")):
+            self.assertIsNone(rx.probe_site(self.h.site, ("sh",)).libc)
+
     def test_a_site_that_does_not_answer_is_a_remote_execution_error(self) -> None:
         with self.assertRaises(rx.RemoteExecutionError) as ctx:
             self.probe("sh", SHIM_SSH_FAIL=rx.PROBE_MARKER)
@@ -1187,12 +1464,19 @@ class ProbeSiteTests(unittest.TestCase):
 
     def test_an_answer_not_in_the_probes_shape_is_refused(self) -> None:
         cases = {
-            "no machine line": "printf 'hello\\n'",
+            # Each carries one libc line, so only the machine count can refuse it.
+            "no machine line": f"echo '{rx.PROBE_MARKER} libc glibc 2.35'",
             "two machine lines": (f"echo '{rx.PROBE_MARKER} machine a'; "
-                                  f"echo '{rx.PROBE_MARKER} machine b'"),
+                                  f"echo '{rx.PROBE_MARKER} machine b'; "
+                                  f"echo '{rx.PROBE_MARKER} libc glibc 2.35'"),
             "an unknown kind": f"echo '{rx.PROBE_MARKER} weather sunny'",
             "a program not asked about": (f"echo '{rx.PROBE_MARKER} missing zz'; "
-                                          f"echo '{rx.PROBE_MARKER} machine x'"),
+                                          f"echo '{rx.PROBE_MARKER} machine x'; "
+                                          f"echo '{rx.PROBE_MARKER} libc glibc 2.35'"),
+            "no libc line": f"echo '{rx.PROBE_MARKER} machine x'",
+            "two libc lines": (f"echo '{rx.PROBE_MARKER} machine x'; "
+                               f"echo '{rx.PROBE_MARKER} libc glibc 2.35'; "
+                               f"echo '{rx.PROBE_MARKER} libc'"),
         }
         for what, script in cases.items():
             with self.subTest(what), mock.patch.object(
@@ -1214,7 +1498,8 @@ class ProbeSiteTests(unittest.TestCase):
         (fake / "timeout").chmod(0o755)
         with self.h.env(SHIM_SSH_PATH=f"{fake}{os.pathsep}{os.environ['PATH']}"):
             got = rx.probe_site(site, ("sh",))
-        self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(), problems=(
+        self.assertEqual(got, rx.SiteProbe(missing=(), machine=platform.machine(),
+                                           libc=rx.host_libc(), problems=(
             "the workdir cannot be made or is not writable",
             "its timeout does not take -k")))
         # A workdir that does not exist yet is made, as the first job would make it.
@@ -1272,13 +1557,13 @@ class ProbeSiteTests(unittest.TestCase):
 
     def test_startup_output_is_not_read_as_a_probe_line_and_is_named(self) -> None:
         with mock.patch.object(rx, "_ssh", return_value=(
-                f"Welcome\n{rx.PROBE_MARKER} machine x86_64\nbye\n")):
+                f"Welcome\n{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc \nbye\n")):
             self.assertEqual(rx.probe_site(self.h.site, ("sh",)),
-                             rx.SiteProbe(missing=(), machine="x86_64",
+                             rx.SiteProbe(missing=(), machine="x86_64", libc=None,
                                           problems=(rx.STARTUP_OUTPUT_PROBLEM,)))
         # Empty lines are not output: the probe prints one itself.
         with mock.patch.object(rx, "_ssh", return_value=(
-                f"\n\n{rx.PROBE_MARKER} machine x86_64\n")):
+                f"\n\n{rx.PROBE_MARKER} machine x86_64\n{rx.PROBE_MARKER} libc glibc 2.1\n")):
             self.assertEqual(rx.probe_site(self.h.site, ("sh",)).problems, ())
 
     def test_a_login_that_prints_is_named_through_the_transport(self) -> None:

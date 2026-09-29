@@ -671,7 +671,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "690e8ac0e1e086c77fc93456a1282c164c6005b5f3e70c8a92003293cd3dfbe1",
+    "execute-8": "50d67b32185aa2e8adf91109a008dd3d2420783093de7b52ff2f6a597203ebd0",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -682,6 +682,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # diffing `execute_tuple()` against origin/main 916561f4's: those two rows and no other.)
     # The digest `execute-8` shipped with at 916561f4 is kept below.
     "execute-8@916561f4": "fedfe66b22fa9804fb518c733129e3fc9ffb467a4a28481af6f37c318c05eb62",
+    # Re-pinned by issue #330: one member moved, `tools/remote_execution.py`, which refuses a
+    # site whose C library is not this host's family or is older — in the job script before any
+    # command, and in `probe_site`'s answer the driver refuses at launch. Only refusals are
+    # added: a job that runs produces a byte-identical record, and a site is outside every key,
+    # so the `cpp_gpu` components certified at a glibc 2.34 site on 2026-09-29 stay valid and
+    # are not re-derived. (Measured by diffing `execute_tuple()` against origin/main
+    # be296e1b's: that row and no other.) The digest `execute-8` shipped with at be296e1b:
+    "execute-8@be296e1b": "690e8ac0e1e086c77fc93456a1282c164c6005b5f3e70c8a92003293cd3dfbe1",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

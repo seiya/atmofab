@@ -154,7 +154,10 @@ A run that stops before `Validate` is asked nothing. The version range measured 
   `nsys profile` exit 1 (measured on 2026.3.2; run bare, the same binary gives 126 / 127, which
   the remote executor refuses as a host failure, `remote_execution.LAUNCH_CODES`). So under the trace such a binary routes as the
   runner's failure. Build's binary is executable at its own site (the launch probe's machine
-  check, scp keeping the mode), and no run has reached this.
+  and C library checks, scp keeping the mode). One run reached this before the C library check
+  existed: a runner needing a newer glibc than the site's made `nsys profile` exit 1 and was
+  recorded as the runner's failure (issue #330); a shared library the site's login does not
+  resolve still can (`TODO.md`).
 - The profiler's start-up and its report writing share the run's time bound
   (`RUN_PROGRAM_TIMEOUT_SEC`) with the binary: a run near that bound times out under the trace
   first. Not measured; today's runs take seconds.
