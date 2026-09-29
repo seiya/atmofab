@@ -1014,7 +1014,12 @@ class PureRenderTests(unittest.TestCase):
         #     repair). The axis, the other two bullets, the tie-breaks and the pointer are
         #     byte-identical; property 8 holds because the compile verify template's scope is
         #     V1-V4 and V8 in the same change.
-        "compile": "7d8a8ec178993d542d587ed8fcec8753c3a822795f5b08f60a03c3210f5c892a",
+        #   - issue #340: the `major` bullet gains one case — `tests.md` defines a judged
+        #     quantity no captured state variable enters and its §5 states no primary-evidence
+        #     statement. Its subject is `tests.md` (an input; RUNBOOK §3-1 destination (i)), so
+        #     no re-run of `Compile.generate` reaches it; the axis, the other bullets, the
+        #     tie-breaks and the pointer are byte-identical.
+        "compile": "1b4c53ea1afc9012cc9fe912f2586052bebbc0116974668e2feb2b008a54a793",
         "generate": "0fec2f0d12ce88b01130bee0b72a8127db85c66f5f37768754fe560ca753a17d",
     }
 
