@@ -3051,8 +3051,9 @@ def _run_main(
     # Where `Validate.execute` runs (issue #293): the operator's `sites.yaml`, read once here and
     # handed down; a missing file is the local site for every target. The site half of the
     # "can this run execute" gate is refused as the registry half is (`target_profile_invalid`),
-    # and a remote site is asked, in one ssh call, for the programs the job needs and its
-    # machine, so an unreachable or unequipped site is refused before anything is billed.
+    # and a remote site is asked, in one ssh call, for the programs the job needs, its machine
+    # and its C library, so an unreachable or unequipped site is refused before anything is
+    # billed.
     sites_rejection = _sites_rejection(repo_root, target_profile, until_phase)
     if isinstance(sites_rejection, dict):
         _emit_unlogged_event(sites_rejection, args.stdout_format)

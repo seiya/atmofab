@@ -183,7 +183,8 @@ def host_libc() -> str | None:
     """This host's C library as `os.confstr("CS_GNU_LIBC_VERSION")` names it (`glibc 2.35`), or
     None when it names none — a host that is not glibc, which a run at a remote site refuses:
     the shipped binary is linked here, and nothing then says which site can run it (issue
-    #330). Not `platform.libc_ver()`, which answers what the Python executable requires."""
+    #330). Not `platform.libc_ver()`: it asks the same `confstr`, but where that fails it scans
+    the Python executable and answers what that file requires, not what this host has."""
     try:
         value = os.confstr("CS_GNU_LIBC_VERSION")
     except (ValueError, OSError):

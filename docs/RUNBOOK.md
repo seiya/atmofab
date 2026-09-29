@@ -209,9 +209,10 @@ again before its first command. It does not see the rest of the runtime the ship
 links against: a shared library the site's non-interactive login does not resolve makes the job
 refuse its first command (exit 127) mid-run — and under a launch prefix (a device trace's
 program) that 127 is replaced by the prefix's own exit status and recorded as the command's
-result (measured on issue #330's run under a device trace: `return_code` 1). Nor does it see the machines a site's scheduler runs a job on: the
-probe asks the login, and a job's directory must be visible at the same path from those
-machines, whose programs the job script checks again before its first command. A site is in no derivation key: re-mapping a target to another site
+result (measured on issue #330's run under a device trace: `return_code` 1). Nor does it see
+the machines a site's scheduler runs a job on: the probe asks the login, and a job's directory
+must be visible at the same path from those machines, where the job script checks the machine,
+the C library and the programs again before its first command. A site is in no derivation key: re-mapping a target to another site
 does not re-run its certified Validate (pass `--rederive validate`; §"Updating a shared dependency spec (derivation-key re-certification)" below).
 
 To try a site before a run, `python3 tools/site_smoke.py <site_id>` (or `--target <target_id>`)
