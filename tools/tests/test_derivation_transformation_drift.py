@@ -608,7 +608,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "ad609ea49e88af485af68d848ffb4d7c118139dba3f82d8e8d650f7b08f85fcc",
+    "build-2": "247f04e220377a25f137a4cc70edea100ad2cef1e96abad186a0a12add31eaab",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

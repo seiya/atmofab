@@ -9841,7 +9841,7 @@ class Conductor:
             # compiler as that machine answered (`compiler_version`; the top-level
             # `compiler_version` above is the key's, probed on the host that runs
             # `Generate.gate` — the two are one string at the local site). `Validate.execute`
-            # runs the binary only at `build_site.site`.
+            # runs the binary only at the site `build_site` names (its `site` and `host`).
             "environment": {"platform": {**platform_record, "site": site_id},
                             "build_site": site_record,
                             "compiler_version": built_compiler_version},
