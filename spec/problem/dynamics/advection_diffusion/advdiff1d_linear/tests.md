@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.4.1`
+- `spec_ref.spec_version`: `0.4.2`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
@@ -73,8 +73,7 @@ The sweep and fixed values per `family` are defined below.
 - `conserved.mass.abs_initial`
 - `metrics.mass_drift_rel`
 - `errors.analytic.l2_rel_tend`
-- `errors.mode_gain`
-- `errors.mode_phase_rad`
+- `errors.mode_scheme_fidelity`
 - `errors.symmetry_l2_rel`
 - `convergence.nx64_to_nx128.l2_order`
 - `convergence.nx128_to_nx256.l2_order`
@@ -116,30 +115,23 @@ Here $u_{ref}$ is the numerical solution of the `reference` case of the pair, $u
 
 `convergence_order` is a cross-case reduction over `errors.analytic.l2_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it. It is emitted as a per-case field of the finer case of each pair: `advdiff1d_ref_nx128_shift000_dts100` carries `convergence.nx64_to_nx128.l2_order`, and `advdiff1d_ref_nx256_shift000_dts100` carries `convergence.nx128_to_nx256.l2_order`. The cases preceding the one that completes a reduction omit that field.
 
-`mode_gain_error` is emitted as the field `errors.mode_gain`, and `mode_phase_error_rad` as the field `errors.mode_phase_rad`. The $G_{num}, G_{ref}$ used in `mode_gain_error` and `mode_phase_error_rad` are defined as the 1-step amplification rate determined from each case's `dt` and `nx`.
+`mode_scheme_fidelity` is emitted as the field `errors.mode_scheme_fidelity`. It measures whether the kernel advances each discrete Fourier mode by the amplification rate of the discrete update of `controlled_spec.md` §5. That update is linear and periodic, so it advances the mode $m$ by exactly $G_{num}(m)$ per step, and by $G_{num}(m)^{n_{step}}$ over the case, up to round-off.
 
-Let the discrete mode number be $m \in \{1,2\}$, $\theta_m=2\pi m/nx$, and $k_m=2\pi m/L$.
-The dimensionless numbers are $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$.
+Let the discrete mode number be $m \in \{1,2\}$, $\theta_m=2\pi m/nx$, and $k_m=2\pi m/L$. The cell centres are $x_i=(i+1/2)\,dx$ for $i=0,\dots,nx-1$.
+The dimensionless numbers are $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$, with the `dt` and `n_step` that 3 decides for the case.
 Then the 1-step amplification rate is defined by the following.
 $$
 G_{num}(m)=1-C\left(1-e^{-i\theta_m}\right)+D\left(e^{i\theta_m}-2+e^{-i\theta_m}\right)
 $$
+The discrete Fourier coefficient of the state is defined by the following.
 $$
-G_{ref}(m)=\exp\left(\left(-\nu k_m^2-iak_m\right)dt\right)
+\hat u_m(t)=\sum_i u_i(t)\,e^{-ik_m x_i}
 $$
-
-`mode_gain_error` is defined by the following.
+`mode_scheme_fidelity` is defined by the following.
 $$
-\max_{m\in\{1,2\}}\frac{\left||G_{num}(m)|-|G_{ref}(m)|\right|}{|G_{ref}(m)|}
+\max_{m\in\{1,2\}}\frac{\left|\hat u_m(t_{end})-G_{num}(m)^{n_{step}}\,\hat u_m(0)\right|}{\left|\hat u_m(0)\right|}
 $$
-
-`mode_phase_error_rad` is defined by the following.
-$$
-\max_{m\in\{1,2\}} \left| \mathrm{wrapToPi}\left(arg(G_{num}(m)) - arg(G_{ref}(m))\right) \right|
-$$
-Here `wrapToPi` is the operation that normalizes the phase difference to $[-\pi,\pi]$.
-
-The Fourier-coefficient ratio of `u(t_{end})`, or a cumulative comparison using $G^{n_{step}}$, must not be used as the evaluation expression of these 2 metrics.
+Here $\hat u_m(0)$ is the coefficient of the initial state and $\hat u_m(t_{end})$ that of the state at $t_{end}$. $G_{num}(m)^{n_{step}}$ is the complex power: its modulus is $|G_{num}(m)|^{n_{step}}$ and its argument is $n_{step}\arg G_{num}(m)$.
 
 `cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For the state variable `u` at $t_{end}$ of a case,
 $$
@@ -152,8 +144,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
 - $\text{mass\_drift\_rel} \le 1.0e{-12}$
 - `l2_rel_error_to_analytic_tend` is $\le 2.0e{-1}$ for $\text{nx}=64$, $\le 1.1e{-1}$ for $\text{nx}=128$, and $\le 6.0e{-2}$ for $\text{nx}=256$.
 - $\text{convergence\_order} \ge 0.50$
-- $\text{mode\_gain\_error} \le 5.0e{-3}$
-- $\text{mode\_phase\_error\_rad} \le 5.0e{-3}$
+- $\text{mode\_scheme\_fidelity} \le 1.0e{-10}$
 - $\text{symmetry\_l2\_rel} \le 1.0e{-12}$
 - $\text{cross\_target\_state\_agreement} \le 1.0e{-12}$
 
@@ -176,8 +167,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
       - `advdiff1d_ref_nx128_shift000_dts100` is $\le 1.1e{-1}$
       - `advdiff1d_ref_nx256_shift000_dts100` is $\le 6.0e{-2}$
     - `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$, and requires $\ge 0.50$ for both `nx64_to_nx128` and `nx128_to_nx256`.
-    - `mode_gain_error` uses the 1-step amplification-rate evaluation expression defined in 5-4, and requires $\le 5.0e{-3}$.
-    - `mode_phase_error_rad` uses the 1-step phase-error evaluation expression defined in 5-4, and requires $\le 5.0e{-3}$.
+    - `mode_scheme_fidelity` uses the discrete-mode evaluation expression defined in 5-4, and requires $\le 1.0e{-10}$.
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
 
 ### 6-2. `l2_mass_conservation_long_run`
