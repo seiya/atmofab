@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.4.0`
+- `test_profile_version`: `0.4.1`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.4.2`
+- `spec_ref.spec_version`: `0.4.3`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
@@ -87,6 +87,12 @@ The sweep and fixed values per `family` are defined below.
 Every judged metric name below is bound to the `diagnostics.json` field of 5-2 that carries its value. A metric that is a derived quantity is emitted by the runner under its own field address, already reduced to a scalar; the definition below fixes how that value is computed. No correspondence other than the ones fixed here is permitted.
 
 `cfl_combined_max` is emitted as the field `cfl.combined_max`. Its value is $\max_n (C+2D)$ over the integration steps of the case, where $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$.
+
+The value of `cfl_combined_max` is fixed by the case inputs, the constants and the $dt$ of 3 alone; no captured state variable enters it, so its definition is not its primary evidence (`docs/TESTS.md` requirement 9). The primary evidence of the CFL judgment, evaluated by the host, is
+$$
+\max\left(C+2D,\ \frac{\max_i|u_i(t_{end})|}{\max_i|u_i(0)|}\right)
+$$
+with $C=a\,dt/dx$, $D=\nu\,dt/dx^2$, $dx=L/nx$, and the observed time step $dt=(t_{final}-t_{initial})/n_{step}$. Here $t_{initial}$ and $t_{final}$ are the times the kernel reports at the initial and the final state capture, $n_{step}$ is the step count the procedure of 3 fixes from the case inputs, and $a$ and $\nu$ are the constants of `controlled_spec.md` §6. The second term is the only state term; it rests on the max-norm bound of `controlled_spec.md` §5, under which it does not exceed 1 (up to round-off) whenever $C+2D\le 1$. In a `pass` test both terms are therefore at most 1, and a state whose maximum grew exceeds the threshold. In 6-4 the guard leaves no state fact: the guard case has $C+2D>1$, but the discrete modes that $C+2D>1$ makes unstable lie around $m=nx/2$, where the rate is largest, $|G_{num}(nx/2)|=|1-2C-4D|>1$ ($G_{num}$ as defined for `mode_scheme_fidelity` below, taken at any $m$). They are seeded at round-off only and grow by at most $|G_{num}(nx/2)|^{n_{step}}$ (of order $10^3$ for the guard case of 4-1) within the case, so the second term stays below 1 and the evidence is decided by the first term. Each test applies its CFL threshold to this evidence as it applies it to `cfl_combined_max`: in 6-1 to 6-3 the evidence is at most $1.0$, and in 6-4, whose `xfail_condition` is `cfl.combined_max > 1.0`, the evidence is greater than $1.0$.
 
 The relative mass-drift value is defined by the following.
 $$
