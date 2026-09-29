@@ -210,7 +210,11 @@ built at the site that runs it (issue #333), so what it links against is what th
 it built it. The job script does ask the machine that runs a binary for the architecture that
 built it (`binary_meta.json#environment.platform.machine`): at a batch site the same directives
 can select a node of another architecture for the run than for the build, which is refused
-before the binary runs (a transport `fail_closed`) rather than recorded as its exit status. A shared
+before the binary runs (a transport `fail_closed`: `job script: the machine is not <arch>`) rather
+than recorded as its exit status. `--resume` repeats it while the directives select that node;
+restore the directives, or rebuild on the node they now select with `--rederive build,validate`.
+A remote record naming no building machine (the site's `uname -m` answered nothing at Build) is
+refused before the site is contacted: make `uname -m` answer there, then rebuild the same way. A shared
 library the build linked and the machine running the job does not resolve — another node of a
 batch site, or a site changed since the build — still makes the job refuse its first command
 (exit 127) mid-run — and under a launch prefix (a device trace's

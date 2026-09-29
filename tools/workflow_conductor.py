@@ -11273,7 +11273,8 @@ class Conductor:
             raise RuntimeError(
                 f"binary {refs.source_binary_id} records no machine it was built on "
                 f"(binary_meta.json#environment.platform.machine), so nothing says which "
-                f"machine at site {site.site_id} can run it — rebuild it: run this node as the "
+                f"machine at site {site.site_id} can run it (the site's `uname -m` answered "
+                f"nothing at Build) — make it answer there, then rebuild: run this node as the "
                 f"target with --rederive build,validate")
 
         # Attribution only: the server records both ids in `command_log.jsonl` and

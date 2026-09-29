@@ -77,7 +77,8 @@ device trace's program) the loader's 127 does not arrive: the prefix reports it 
 status (1 on issue #330's run, measured), so the command is recorded as having run and failed.
 What keeps the loader's case rare is where the binary comes from: the conductor builds it at the
 site that runs it and runs it nowhere else (issue #333), so a shared library the build linked is
-one the site had. A library the site's login has and its compute nodes lack is the case left.
+one the site had. A library the building machine had and the machine running the job lacks —
+another node of a batch site, or a site changed since the build — is the case left.
 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport

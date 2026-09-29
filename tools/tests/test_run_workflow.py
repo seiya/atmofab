@@ -10438,7 +10438,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
 
     def test_a_site_of_another_machine_type_or_c_library_is_accepted(self) -> None:
         """Issue #333: the binary is built at the site that runs it, so neither the site's
-        machine type nor its C library is this host's business any more. A host that reports
+        machine type nor its C library is asked at launch any more. A host that reports
         another machine, and a site that names no C library (no `getconf`), start the run."""
         import platform
 
