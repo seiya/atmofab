@@ -57,8 +57,8 @@ Every way the evidence could be incomplete or not this job's is a refusal
   entries name each shipped file by its local source, so one a command rewrote before a later
   command ran it (the quality check's control file) would be recorded as unchanged;
 - a transport failure (ssh or scp exits non-zero, or the job outlives its local bound), a job
-  script that fails outside its commands (a directory it cannot make, a `timeout` that does not
-  take `-k`, a machine other than the one the shipped binary was built on when the request names
+  script that fails outside its commands (a line of the site's `setup` that exits non-zero, a
+  directory it cannot make, a `timeout` that does not take `-k`, a machine other than the one the shipped binary was built on when the request names
   it, a program — a command's or one of `required_programs` — it cannot find or that is not an
   executable file), a command that exits 126 or 127 (`LAUNCH_CODES`),
   and a job directory that cannot be removed after collection are refused, with the stage and
@@ -68,7 +68,7 @@ Every way the evidence could be incomplete or not this job's is a refusal
 126 and 127 are refused because at a site they are the codes of a program that did not START:
 `timeout` exits them when it cannot execute the program, a shell when the program's interpreter
 is missing, the dynamic loader when a shared library the program links is missing at the site
-(a non-interactive ssh login loads no module environment). The local server raises for the
+(a non-interactive ssh login loads no module environment unless the site's `setup` does). The local server raises for the
 first two and never meets the third, because the host that runs it is the host that built the
 program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
 is a program that exits 126 or 127 on its own, which the local path records as its result; the
@@ -96,6 +96,13 @@ driver calls `probe_site` before a node that will reach `Build` runs — once at
 before each dependency member of a `--with-deps` run — so a site that cannot be reached, lacks a
 program the job needs, or cannot hold or run it is refused before that node is billed
 (`tools/run_workflow.py` `_sites_rejection`).
+
+A site's `setup` lines (`execution_sites.Site.setup`) are the environment its commands run in:
+the job script runs them first, in its own shell, so every check and command after them sees
+what they set, and `probe_site` runs them before it asks for the job's programs. Under a batch
+scheduler they run inside the job, on the node it runs on; the scheduler's prefix runs before
+them, so the probe asks for the scheduler's program before them, and a line that fails on the
+login is not a problem the probe reports there. A change to the lines moves no key.
 
 A site's `scheduler` changes one thing: the argv PREFIX the job script runs under in the same ssh
 call. A `none` site runs it under none. A batch scheduler's backend spells one through
@@ -125,10 +132,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tools.backends import registry
-from tools.execution_sites import Site
+from tools.execution_sites import DIRECT_SCHEDULER, Site
 
 #: The local programs the transport runs, in the order it runs them.
 TRANSPORT_EXECUTABLES: tuple[str, ...] = ("ssh", "scp")
@@ -412,13 +419,41 @@ def _program_check(prog: str, indent: str) -> list[str]:
     ]
 
 
+#: The shell variable that holds the index of the setup line running, empty outside them.
+_SETUP_LINE_VAR = "atmofab_setup_line"
+
+
+def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str],
+                 on_exit: str) -> list[str]:
+    """The script lines that run a site's `setup`, each line in the script's own shell so that
+    what it exports reaches every later line, with its stdout sent to stderr — the script's
+    stdout carries the marker lines, and a setup line's output is not one. `on_failure(i)` is
+    the shell text run when line `i` (0-based) exits non-zero; `on_exit` is run, by an EXIT
+    trap, when a line ENDS the shell instead, with `$atmofab_setup_line` holding its index.
+
+    Each line runs as `command eval <line>`, which turns a special built-in's error — `.` of a
+    file that is not there, an option this `sh` does not take — into an ordinary failure the
+    `||` sees in dash and busybox `sh`. bash as `sh` still ends the shell for some of them
+    (`set -o <unknown>`, `${X?}` of an unset variable; measured on bash 5.1), and any shell
+    ends at a line's `exit`: the trap is what names those. It is removed after the lines."""
+    q = shlex.quote
+    v = _SETUP_LINE_VAR
+    trap = '[ -z "$' + v + '" ] || { ' + on_exit + '; }'
+    lines = [f"trap {q(trap)} EXIT"]
+    for i, line in enumerate(setup):
+        lines += [f"{v}={i}", f"command eval {q(line)} >&2 || {{ {v}=; {on_failure(i)}; }}"]
+    return lines + [f"{v}=", "trap - EXIT"]
+
+
 def render_job_script(request: JobRequest) -> str:
     """The POSIX `sh` script that runs `request.commands` at the site.
 
     Each command writes `<tag>.stdout` / `<tag>.stderr` under the control directory, runs only
     when every earlier command exited 0, and is followed by its status line on the script's
     stdout (`STATUS_MARKER`). The script exits non-zero, before any command, when a directory
-    cannot be made, the machine is not `request.machine` (when the request names one), a
+    cannot be made, a line of the site's `setup` exits non-zero (7; the lines run first, so
+    every check and command below sees the environment they set), the machine is not
+    `request.machine` (when the request names one), a
     program in `REMOTE_EXECUTABLES` is missing, or one of
     `request.required_programs` cannot be found or, named by a path, is not executable, and
     before a command whose program cannot be found or is not executable, by the same rule: the
@@ -444,6 +479,18 @@ def render_job_script(request: JobRequest) -> str:
     # there rather than gluing onto the first platform line.
     lines = ["#!/bin/sh", "set -u", "echo",
              "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }"]
+    if request.site.setup:
+        # `set -u` is lifted around the lines: an environment-module shell function reads
+        # variables it has not set. After them the script's own options are set again: `-e`
+        # cleared, since a line (or a file it sources) that leaves it set would end the script
+        # at a command's non-zero exit, before its status line, and a kernel's own failure
+        # would be refused as the transport's; `-x` cleared, since its trace would be written
+        # into each command's recorded stderr.
+        lines += ["set +u", *_setup_lines(
+            request.site.setup,
+            lambda i: f"fail 7 {q(f'setup[{i}] exited non-zero: {request.site.setup[i]}')}",
+            f'echo "job script: setup[${_SETUP_LINE_VAR}] ended the shell" >&2; exit 7'),
+            "set +e +x -u"]
     if request.machine is not None:
         lines.append(f'[ "$(uname -m)" = {q(request.machine)} ] || fail 5 '
                      + q(f"the machine is not {request.machine}, which the shipped binary was "
@@ -672,12 +719,14 @@ def _read_output(path: Path, remote: str) -> str:
 PROBE_MARKER = "atmofab-probe"
 
 
-#: What `probe_site` checks beyond the programs, each a POSIX test and the problem it names when
-#: the test fails; the job script refuses the same two conditions, later.
+#: What `probe_site` checks beyond the programs, each with the problem it names when it fails;
+#: the job script refuses each of them again, later (`setup` at a `none` site only is a probe
+#: problem; the others are the POSIX tests `probe_site` spells).
 _PROBE_CHECKS: tuple[tuple[str, str], ...] = (
     ("workdir", "the workdir cannot be made or is not writable"),
     ("workdir_exec", "a program in the workdir cannot be executed (a noexec mount)"),
     ("timeout_kill", "its timeout does not take -k"),
+    ("setup", "a line of its setup exits non-zero"),
 )
 
 
@@ -697,7 +746,12 @@ class SiteProbe:
 
 
 def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
-    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve,
+    """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve —
+    a program the site's scheduler runs the job under before its `setup`, as the job's prefix
+    runs before it, and every other program after it, as the job script asks for them — whether
+    each `setup` line exits 0 (at a `none` site only: a batch scheduler runs the job on another
+    node, where a line — a module only the compute nodes have — may succeed that fails on the
+    login this probe reaches, and the job script refuses a failing one where it runs),
     whether its `workdir` can be made and written (it is created if absent, as the first job
     would create it), and whether its `timeout` takes `-k`
     — the launch-time detector of what a job refuses again before its first command. Raises
@@ -720,17 +774,36 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
                          f"\"{exe}\"; }} >/dev/null 2>&1; r=$?; rm -f \"{exe}\"; [ \"$r\" = 0 ]"),
         "timeout_kill": "timeout -k 1 5 sh -c : >/dev/null 2>&1",
     }
+    ask = [f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
+           for exe in executables]
+    prefix = set(scheduler_executables(site.scheduler))
     # The first line printed is empty, as the job script's is, so that a login banner printed
     # without a newline ends there rather than gluing onto the first probe line.
     script = "\n".join([
         "echo",
-        *(f"command -v {q(exe)} >/dev/null 2>&1 || echo {PROBE_MARKER} missing {q(exe)}"
-          for exe in executables),
+        *(line for exe, line in zip(executables, ask) if exe in prefix),
+        # One problem line however many setup lines fail; the job script names the line. A
+        # batch site's lines still run, for the programs asked after them, and a failure there
+        # is not reported: the job asks again on the node it runs on. A line that ENDS the
+        # shell ends the probe's questions with it; the trap still prints the end line (and,
+        # at a `none` site, the problem), so the probe is not read as one that did not run.
+        # `-e` is cleared after them for the reason the job script clears it: a check below
+        # that fails would otherwise end the probe before its end line.
+        *(["setup_failed=",
+           *_setup_lines(tuple(site.setup), lambda i: "setup_failed=1",
+                         (f"echo {PROBE_MARKER} problem setup; "
+                          if site.scheduler == DIRECT_SCHEDULER else "")
+                         + f"echo {PROBE_MARKER} end; exit 0"),
+           "set +e",
+           *([f'[ -z "$setup_failed" ] || echo {PROBE_MARKER} problem setup']
+             if site.scheduler == DIRECT_SCHEDULER else [])]
+          if site.setup else []),
+        *(line for exe, line in zip(executables, ask) if exe not in prefix),
         # Whether a program runs beneath the workdir is asked only of a workdir that is there:
         # one that cannot be made is its own problem, and the second would restate it.
         *(f"{tests['workdir']} && {{ {tests[name]} || echo {PROBE_MARKER} problem {name}; }}"
           if name == "workdir_exec" else f"{tests[name]} || echo {PROBE_MARKER} problem {name}"
-          for name, _ in _PROBE_CHECKS),
+          for name, _ in _PROBE_CHECKS if name != "setup"),
         # The last line says the script ran to its end: every other probe line reports a
         # problem, so a login that ran none of it would otherwise read as a site with none.
         f"echo {PROBE_MARKER} end",

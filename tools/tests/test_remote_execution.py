@@ -1191,6 +1191,160 @@ class SchedulerTests(unittest.TestCase):
                          ("timeout", "make", "zz-cc", *trace))
 
 
+class SiteSetupTests(unittest.TestCase):
+    """A site's `setup` lines: the environment every check and command of a job runs in, set
+    inside the job — under a scheduler, on the node the job runs on — and asked of the launch
+    probe before the programs the job script asks for."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = _Harness(self._tmp.name)
+        self.tools = self.h.root / "site-tools"
+        self.tools.mkdir()
+        _script(self.tools / "zz-cc", "exit 0\n")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _setup(self, *lines: str, **kw) -> None:
+        self.h.site = dataclasses.replace(self.h.site, setup=lines, **kw)
+        self.h.job = rx.job_dir(self.h.site, "orch_1", "arid-1")
+
+    def _run_request(self, **kw) -> rx.JobRequest:
+        return self.h.request(self.h.command("run", (f"{self.h.job}/bin/runner",)), **kw)
+
+    def test_what_setup_exports_reaches_every_check_and_command(self) -> None:
+        self._setup(f"export PATH={self.tools}:$PATH", "KNOB=from-setup; export KNOB")
+        result = self.h.run(self._run_request(required_programs=("zz-cc",)))
+        self.assertTrue(result.results[0]["ok"])
+        recorded = json.loads((result.collected / "run" / "argv.json").read_text())
+        self.assertEqual(recorded["env"], "from-setup")
+
+    def test_a_failing_setup_line_is_the_hosts_failure_and_nothing_after_it_runs(self) -> None:
+        planted = self.h.root / "after-the-failure"
+        self._setup("true", "false  # a module that is not there", f"touch {planted}")
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    r"ssh exited 7.*setup\[1\] exited non-zero: false"):
+            self.h.run(self._run_request())
+        self.assertFalse(planted.exists())
+        self.assertEqual(self.h.log_entries("run"), [])
+
+    def test_setup_output_is_not_read_and_an_unset_variable_does_not_end_it(self) -> None:
+        """A setup line's stdout goes to stderr: a line on the status channel would be read
+        (here, a second status for the command, which is refused). `set -u` is lifted for the
+        lines, since an environment-module function reads variables it has not set."""
+        self._setup(f"echo '{rx.STATUS_MARKER} run 0 1 2'", 'echo "${ZZ_NEVER_SET_X}"')
+        result = self.h.run(self._run_request())
+        self.assertTrue(result.results[0]["ok"])
+
+    def test_options_a_line_leaves_set_are_the_scripts_own_again(self) -> None:
+        """A line that leaves `-e` set (a sourced file that sets it) must not end the script at
+        a command's non-zero exit before its status line: the kernel's own failure is its
+        result, not a transport refusal. `-u` is set again after the lines; no line of the
+        script after them reads an unset variable, so that half is pinned on the text."""
+        self._setup("set -e", "set -x", "set +u")
+        failing = self.h.command("run", (f"{self.h.job}/bin/runner",), env={"RUNNER_RC": "3"})
+        result = self.h.run(self.h.request(failing))
+        self.assertEqual(result.results[0]["return_code"], 3)
+        self.assertFalse(result.results[0]["ok"])
+        # `-x` would have traced the command's own lines into its recorded stderr.
+        self.assertEqual(result.results[0]["stderr"], "runner stderr\n")
+        lines = rx.render_job_script(self.h.request()).splitlines()
+        end = lines.index("trap - EXIT")
+        self.assertLess(max(i for i, line in enumerate(lines) if "|| {" in line), end)
+        self.assertEqual(lines[end + 1], "set +e +x -u")
+
+    def test_under_a_scheduler_the_lines_run_inside_the_job(self) -> None:
+        line = '[ -n "${SLURM_JOB_ID-}" ]'
+        self._setup(line)
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 7"):
+            self.h.run(self._run_request())
+        # A refused job leaves its directory at the site, and its local one.
+        shutil.rmtree(self.h.local / "tmp")
+        shutil.rmtree(self.h.job)
+        self._setup(line, scheduler="slurm")
+        self.assertTrue(self.h.run(self._run_request()).results[0]["ok"])
+
+    def _probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
+        with self.h.env(**knobs):
+            return rx.probe_site(self.h.site, exes)
+
+    def test_the_probe_asks_for_the_jobs_programs_after_the_setup(self) -> None:
+        self.assertEqual(self._probe("zz-cc").missing, ("zz-cc",))
+        self._setup(f"export PATH={self.tools}:$PATH", "echo chatty")
+        self.assertEqual(self._probe("zz-cc"), rx.SiteProbe(missing=()))
+
+    def test_the_probe_asks_for_the_schedulers_program_before_the_setup(self) -> None:
+        """The job's prefix runs on the login before the job script, so `setup` does not reach
+        it: a scheduler program only a setup line puts on PATH is missing."""
+        bare = _bare_path(self.h.root, without="")
+        self._setup(f"export PATH={self.h.shims}:{self.tools}:$PATH", scheduler="slurm")
+        got = self._probe("srun", "zz-cc", SHIM_SSH_PATH=str(bare))
+        self.assertEqual(got.missing, ("srun",))
+
+    def test_the_probe_names_a_failing_setup_once(self) -> None:
+        self._setup("false", "true", "exit_code_2() { return 2; }; exit_code_2")
+        self.assertEqual(self._probe("sh"),
+                         rx.SiteProbe(missing=(), problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+
+    def test_a_line_whose_error_would_end_the_shell_is_a_failing_line(self) -> None:
+        """`.` of a missing file is a special built-in's error, which ends a non-interactive
+        `sh` before its `||`: the job must still say which line failed, a `none` site's probe
+        must name the setup problem rather than a probe that did not end, and a batch site's
+        probe must not refuse it (the file may be on the compute node only)."""
+        missing = f". {self.h.root}/compute-node-only.sh"
+        self._setup("true", missing)
+        with self.assertRaisesRegex(rx.RemoteExecutionError, r"(?s)ssh exited 7.*setup\[1\]"):
+            self.h.run(self._run_request())
+        self.assertEqual(self._probe("sh").problems, (dict(rx._PROBE_CHECKS)["setup"],))
+        self._setup(missing, scheduler="slurm")
+        self.assertEqual(self._probe("sh"), rx.SiteProbe(missing=()))
+
+    def test_a_line_that_ends_the_shell_is_named_where_bash_is_sh(self) -> None:
+        """bash as `sh` ends the shell for some errors `command` does not turn into a failure
+        (`${X?}` of an unset variable), and any shell ends at a line's `exit`: the job still
+        exits 7 naming the line, a `none` site's probe names the setup problem, and a batch
+        site's probe reports none — and none of them reads as a probe that did not end."""
+        bash_sh = str(_bare_path(self.h.root, without="", sh="bash"))
+        for line in (": ${ZZ_NEVER_SET_Q?}", "exit 0"):
+            with self.subTest(line=line):
+                self._setup("true", line, scheduler="none")
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            r"(?s)ssh exited 7.*setup\[1\] ended the shell"):
+                    self.h.run(self._run_request(), SHIM_SSH_PATH=bash_sh)
+                shutil.rmtree(self.h.local / "tmp")
+                shutil.rmtree(self.h.job)
+                self.assertEqual(self._probe("sh", SHIM_SSH_PATH=bash_sh),
+                                 rx.SiteProbe(missing=(),
+                                              problems=(dict(rx._PROBE_CHECKS)["setup"],)))
+                self._setup("true", line, scheduler="slurm")
+                self.assertEqual(self._probe("sh", SHIM_SSH_PATH=bash_sh), rx.SiteProbe(missing=()))
+
+    def test_a_setup_variable_the_login_exports_is_not_read_as_a_failure(self) -> None:
+        self._setup("true")
+        self.assertEqual(self._probe("sh", setup_failed="1", atmofab_setup_line="0"),
+                         rx.SiteProbe(missing=()))
+
+    def test_a_line_that_leaves_e_set_does_not_end_the_probe(self) -> None:
+        """A check after the lines that fails (here, a workdir where nothing runs: the site's
+        `chmod` succeeds and changes nothing, so the program made there cannot be executed —
+        the last command of its list, which `-e` would end the probe at) must be named, not end
+        the probe before its end line."""
+        self._setup("set -e")
+        bare = _bare_path(self.h.root, without="chmod")
+        _script(bare / "chmod", "exit 0\n")
+        got = self._probe("sh", SHIM_SSH_PATH=str(bare))
+        self.assertEqual(got.problems, (dict(rx._PROBE_CHECKS)["workdir_exec"],))
+
+    def test_a_batch_sites_probe_runs_the_lines_and_does_not_report_a_failing_one(self) -> None:
+        """The login the probe reaches is not the node a batch job runs on: a line that holds
+        only in the job (here, one that needs the job's id) fails on the login, and the job
+        asks again where it runs. The lines still run first, for the programs asked after."""
+        self._setup('[ -n "${SLURM_JOB_ID-}" ]', f"export PATH={self.tools}:$PATH",
+                    scheduler="slurm")
+        self.assertEqual(self._probe("zz-cc"), rx.SiteProbe(missing=()))
+
+
 class SiteSmokeTests(unittest.TestCase):
     """`tools/site_smoke.py` over the ssh shim: the probe, then one job running the shell
     command at the site."""

@@ -84,7 +84,7 @@ class LaunchShape:
     """How one binary is launched: `argv_prefix` goes in front of the binary's own argv, `env`
     is a set of OVERRIDES — at `local` handed to `run_program`, which merges them over the host
     process's own environment, and at a remote site set by the job script over the site's
-    non-interactive login environment (`tools/remote_execution.py`), so a variable this does not
+    non-interactive login environment after the site's `setup` lines (`tools/remote_execution.py`), so a variable this does not
     set is inherited from wherever the binary runs — and `site` names where it runs. `platform_probe` is the argv that identifies the class's device where it
     runs, None for a class that names none. `trace` is the summary half of a device trace when
     the parallel backend declares `device_trace` (its profiling half is `argv_prefix`), None

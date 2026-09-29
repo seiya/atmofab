@@ -208,6 +208,21 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(site.scheduler_directives, ("--partition=a b", "--time=1"))
         self.assertEqual(site.queue_timeout_sec, 60)
 
+    def test_a_remote_site_carries_its_setup_lines_as_written(self) -> None:
+        """A setup line is shell text, so every printable character loads — the shell-active
+        set included — at a site of either kind; a site without the key has none."""
+        chars = "".join(sorted(c for c in es._shell_active_chars() if c.isprintable()))
+        lines = ["module load cuda/12.4", "export PATH=/opt/cuda/bin:$PATH  # nvcc",
+                 f"true {chars}"]
+        for scheduler in ("none", "zz_batch"):
+            with self.subTest(scheduler=scheduler), _with_batch_scheduler(), \
+                    tempfile.TemporaryDirectory() as tmp:
+                cfg = _Repo(tmp).load(_BASE.replace("scheduler: none", f"scheduler: {scheduler}")
+                                      + f"    setup: {json.dumps(lines)}\n")
+                self.assertEqual(cfg.sites["box"].setup, tuple(lines))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_Repo(tmp).load(_BASE).sites["box"].setup, ())
+
 
 #: One document per rule: `rule -> (document text, expected `where`)`. The set of keys is
 #: compared with `SITES_CONFIG_RULES`, so a rule the loader declares and no case reaches fails.
@@ -327,12 +342,30 @@ class RefusalTests(unittest.TestCase):
                     "sites.box.scheduler_directives[0]": (
                         _BASE.replace("scheduler: none", "scheduler: zz_batch")
                         + f'    scheduler_directives: ["--a{escaped}"]\n'),
+                    "sites.box.setup[1]": _BASE + f'    setup: ["true", "a{escaped}b"]\n',
                 }
                 for where, text in cases.items():
                     with self.subTest(char=escaped, where=where):
                         exc = self._refuse(text)
                         self.assertEqual(exc.rule, "sites_config_shell_active_value", str(exc))
                         self.assertEqual(exc.where, where)
+
+    def test_a_setup_entry_is_one_line(self) -> None:
+        """Each entry is one line of the script; a line break — a YAML block scalar's, or an
+        escaped one — is refused, not run as a second line the file does not show as one."""
+        for text in ('    setup: ["a\\nb"]\n', "    setup:\n      - |\n        a\n        b\n",
+                     '    setup: ["a\\rb"]\n'):
+            with self.subTest(text=text):
+                exc = self._refuse(_BASE + text)
+                self.assertEqual(exc.rule, "sites_config_shell_active_value", str(exc))
+                self.assertEqual(exc.where, "sites.box.setup[0]")
+
+    def test_the_local_site_takes_no_setup(self) -> None:
+        """This host runs its commands through the build-runtime server in the operator's own
+        environment; a setup line there would have nothing to run it."""
+        exc = self._refuse(_BASE + "  local:\n    setup: ['true']\n")
+        self.assertEqual(exc.rule, "sites_config_unknown_key")
+        self.assertEqual(exc.where, "sites.local.setup")
 
     def test_a_workdir_must_be_absolute_below_root_without_dotdot(self) -> None:
         for workdir in ("scratch/jobs", "/", "//", "/./", "/scratch/../jobs", "/scratch/..",
@@ -360,6 +393,8 @@ class RefusalTests(unittest.TestCase):
                 "sites.box.queue_timeout_sec": batch + "    queue_timeout_sec: true\n",
                 "sites.box.scheduler_directives": batch + "    scheduler_directives: '--a'\n",
                 "sites.box.scheduler_directives[0]": batch + "    scheduler_directives: ['']\n",
+                "sites.box.setup": _BASE + "    setup: 'module load x'\n",
+                "sites.box.setup[0]": _BASE + "    setup: ['  ']\n",
                 "sites.Box": _BASE.replace("  box:", "  Box:"),
                 "sites": "sites_version: 1\nsites: [a]\n",
                 "targets": _BASE + "targets: [a]\n",
