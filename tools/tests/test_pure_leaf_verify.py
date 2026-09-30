@@ -703,9 +703,9 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(vmeta["result"], "pass")
         self.assertIsNone(vmeta["failure_category"])
 
-    _LONG_SUMMARIES = ["`quoted` escape is missing " + "q" * 2500,
+    _LONG_SUMMARIES = ("`quoted` escape is missing " + "q" * 2500,
                        "the block count does not use ceil " + "c" * 2500,
-                       "rank 0 writes the halo twice " + "h" * 2500]
+                       "rank 0 writes the halo twice " + "h" * 2500)
 
     def _producer_repair_request_after_a_minor_verdict(self, *, resumable: bool) -> dict:
         """Drive a `minor` verdict with `_LONG_SUMMARIES` through the real routing and read the
