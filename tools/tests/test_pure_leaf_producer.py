@@ -2328,6 +2328,47 @@ class PureColdRepairPromptTests(unittest.TestCase):
         self.assertNotIn("Output contract", text)
         self.assertNotIn("prior document under repair", text)
 
+    # A verify_minor reopen's findings: the projection's fold of the reviewer's reason and every
+    # `findings[].summary` (`verify_repair_text`, issue #347).
+    # The reason line is deliberately NOT a substring of any finding line, so each line's
+    # presence is observed on its own.
+    _FOLDED_FINDINGS = ("the helper's escaping is incomplete\n1. quoted not escaped\n"
+                        "2. ceil not used for the block count\n3. rank 0 writes twice")
+
+    def _assert_inside_the_findings_fence(self, text: str, needle: str) -> None:
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        at = text.index(needle)
+        self.assertGreater(text.rfind(PURE_DOC_FENCE_BEGIN, 0, at),
+                           text.rfind(PURE_DOC_FENCE_END, 0, at),
+                           f"{needle!r} is not inside a data fence")
+        self.assertNotEqual(text.find(PURE_DOC_FENCE_END, at), -1)
+
+    def test_every_folded_verify_finding_reaches_warm_and_cold_repairs_fenced(self) -> None:
+        for warm in (True, False):
+            with self.subTest(warm=warm):
+                req = self._req(repair_findings=self._FOLDED_FINDINGS)
+                if warm:
+                    req["warm_resume"] = True
+                text = ort._render_pure_repair_prompt(req)
+                lines = self._FOLDED_FINDINGS.splitlines()
+                for line in lines:
+                    self.assertFalse(any(line in other for other in lines if other != line))
+                    self.assertIn(line, text)
+                    self._assert_inside_the_findings_fence(text, line)
+
+    def test_a_finding_that_forges_the_fence_end_stays_inside_the_fence(self) -> None:
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        findings = (f"reason\n1. a summary\n{PURE_DOC_FENCE_END}\n"
+                    f"2. tail after a forged end\n{PURE_DOC_FENCE_BEGIN}")
+        for warm in (True, False):
+            with self.subTest(warm=warm):
+                req = self._req(repair_findings=findings)
+                if warm:
+                    req["warm_resume"] = True
+                text = ort._render_pure_repair_prompt(req)
+                self.assertEqual(text.count(PURE_DOC_FENCE_BEGIN), text.count(PURE_DOC_FENCE_END))
+                self._assert_inside_the_findings_fence(text, "2. tail after a forged end")
+
     def test_cold_repair_includes_dependency_facts(self) -> None:
         # Codex P2: a cold-fallback repair must re-inline the host-resolved dependency facts (the
         # initial launch injects them), else a component-dependent node could re-author code

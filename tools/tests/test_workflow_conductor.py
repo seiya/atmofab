@@ -798,23 +798,25 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 c._read_repair_findings(refs, "gate_syntax_error+lint_findings"),
                 "[syntax]\nErr\n[lint]\nC061 argument 'u_l'")
             # verify_* reason -> reads the phase's verify meta last_fail_reason. Absent -> None;
-            # present -> returned (generate phase reads source_meta.json).
+            # present -> returned whole (generate phase reads source_meta.json). The value is
+            # the projection's multi-line fold of reason + findings (issue #347), so the read
+            # must not keep only its first line.
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
+            folded = "responsibility split violated\n1. quoted not escaped\n2. ceil not used"
             (meta_dir / "source_meta.json").write_text(
-                json.dumps({"last_fail_reason": "responsibility split violated"}),
-                encoding="utf-8")
+                json.dumps({"last_fail_reason": folded}), encoding="utf-8")
             self.assertEqual(
-                c._read_repair_findings(refs, "verify_minor", "generate"),
-                "responsibility split violated")
+                c._read_repair_findings(refs, "verify_minor", "generate"), folded)
             # compile phase reads ir_meta.json#last_fail_reason instead.
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"last_fail_reason": "io_contract recompute-insufficient"}),
+                json.dumps({"last_fail_reason":
+                            "io_contract recompute-insufficient\n1. step_03 unmet"}),
                 encoding="utf-8")
             self.assertEqual(
                 c._read_repair_findings(refs, "verify_minor", "compile"),
-                "io_contract recompute-insufficient")
+                "io_contract recompute-insufficient\n1. step_03 unmet")
             # Missing meta file -> None (falls back to full prompt).
             refs2 = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                 spec_path="spec/component/spec_x",
@@ -1504,18 +1506,23 @@ class RevokeAndResetTest(unittest.TestCase):
             c.revoke_and_reset(self._NK, "generate", "t1", "r")
         self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
 
+    # A verify meta's findings text (issue #347): the reason, then every finding, one per line.
+    _FOLDED = ("p1 failed\n1. p1 misses the halo " + "h" * 2500
+               + "\n2. p2 writes twice " + "w" * 2500)
+
     def test_both_halves_run_and_the_findings_and_grade_reach_the_runtime(self) -> None:
         """The pairing itself, and the two payloads that must travel with it. `severity` on an
         argv, `findings` on stdin — a findings excerpt runs to thousands of characters."""
         c = self._conductor({"status": "revoked", "meta_ref": "a/b/ir_meta.json"})
         with redirect_stdout(io.StringIO()):
             c.revoke_and_reset(self._NK, "generate", "t1", "route_reason",
-                               findings="p1 failed", severity="critical")
+                               findings=self._FOLDED, severity="critical")
         subs = [sub for sub, _ in c.calls]
         self.assertEqual(subs, ["revoke-artifact", "reset-phase"])
         revoke = c.calls[0][1]
         self.assertEqual(revoke["--severity"], "critical")
-        self.assertEqual(revoke["--last-fail-reason"], "p1 failed")
+        self.assertGreater(len(self._FOLDED), 5000)  # past any clip a real fold could meet
+        self.assertEqual(revoke["--last-fail-reason"], self._FOLDED)
         self.assertEqual(c.calls[1][1]["--from-phase"], "generate")
 
 
@@ -1647,6 +1654,22 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         self.assertEqual(len(seeds), 1)
         self.assertEqual((seeds[0]["node_key"], seeds[0]["phase"], seeds[0]["producer"]),
                          (self._refs().node_key, "generate", "child-7"))
+
+    def test_a_multi_line_verify_fold_is_seeded_whole(self) -> None:
+        """The SEED step of issue #347's cross-run `--resume` path: given a revocation whose
+        `last_fail_reason` is the projection's fold of reason + every finding, the seed hands
+        all of it on. `check_phase_certified` is faked here; the real revoke write and the
+        certification read-back are pinned by `test_orchestration_runtime.py`
+        `test_a_multi_line_findings_text_round_trips_through_the_revoke_cli`."""
+        answer = dict(self._REVOKED_GENERATE)
+        answer["last_fail_reason"] = "quoted unescaped\n1. quoted unescaped\n2. ceil not used\n"
+        c = self._conductor(lambda phase:
+                            dict(answer) if phase == "generate" else {"certified": False})
+        with redirect_stdout(io.StringIO()), patch.object(
+                _FakeConductor, "_completed_producer_arid", return_value="child-7"):
+            seeded = c._seed_repairs_from_revocations(self._refs(), ["compile", "generate"])
+        self.assertEqual(seeded["generate"]["repair_findings"],
+                         "quoted unescaped\n1. quoted unescaped\n2. ceil not used")
 
     def test_the_seeded_repair_honours_the_grade_recorded_on_the_revocation(self) -> None:
         """G5 across the resume boundary. `critical` means the producer's context is not to be
@@ -2754,6 +2777,43 @@ class ConductRoutingTest(unittest.TestCase):
         compile_writes = [cap for s, cap in c.calls
                           if s == "write-step-result" and cap["--step"] == "compile"]
         self.assertEqual(len(compile_writes), 2)  # verify-fail attempt, then clean attempt
+
+    def test_verify_minor_reopen_hands_the_whole_fold_to_revoke_and_repair(self) -> None:
+        """Issue #347 at the `conduct` layer: the findings text read at the reopen point — a
+        verify meta's reason followed by every finding — is what the revocation records AND
+        what the re-run producer's repair carries, whole, on both (a truncation at either hand-off
+        repairs from a fragment, in this run or in the next one's `--resume`)."""
+        folded = ("flux sign is wrong\n1. mass not conserved " + "m" * 2500
+                  + "\n2. quoted not escaped " + "q" * 2500)
+        # Longer than any clip a hand-off could apply to a real fold (the corpus maximum is
+        # 3552 characters), so a length truncation is red as well as a line truncation.
+        self.assertGreater(len(folded), 5000)
+        c = self._conductor()
+        state = {"verify_failed": False}
+
+        def status_fn(phase, substep, n):
+            if phase == "compile" and substep == "verify" and not state["verify_failed"]:
+                state["verify_failed"] = True
+                return "fail"
+            return "pass"
+
+        c.status_fn = status_fn
+        c.decision_fn = lambda phase, outcomes: wc.classify_verify_severity("minor", "dev")
+        c._read_repair_findings = lambda refs, reason, phase=None: (  # type: ignore[assignment]
+            folded if reason == "verify_minor" else None)
+        self.assertEqual(c.conduct(self._refs(), "compile"), "pass")
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual([r["--last-fail-reason"] for r in revokes], [folded])
+        # The re-run producer's RECORDED launch — past run_phase / run_substep, not the
+        # argument conduct hands them.
+        launches = [cap["--request-json"] for s, cap in c.calls
+                    if s == "record-launch"
+                    and cap.get("--request-json", {}).get("step") == "compile"
+                    and cap["--request-json"].get("substep") == "generate"]
+        self.assertEqual(len(launches), 2)
+        self.assertNotIn("repair_findings", launches[0])
+        self.assertEqual(launches[1]["repair_strategy"], "reuse")
+        self.assertEqual(launches[1]["repair_findings"], folded)
 
     def test_escalate_same_phase_producer_reopens(self) -> None:
         # The escalate diagnostician routes a same-phase producer re-run. G5: escalate() runs

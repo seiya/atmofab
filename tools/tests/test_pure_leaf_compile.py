@@ -907,7 +907,10 @@ class PureCompileReviewerTests(_Fixture):
         self.assertEqual(vmeta["result"], "pass")
 
     def test_a_fail_verdict_reaches_the_severity_gate_with_its_reason(self) -> None:
-        c = self.conductor(_envelope(_verdict("fail", "minor", "step_03 has no update target")))
+        verdict = _verdict("fail", "minor", "step_03 has no update target")
+        verdict["findings"] = [{"summary": "an item is unmet"},
+                               {"summary": "V3 misses the snapshot of h"}]
+        c = self.conductor(_envelope(verdict))
         outcome = c.run_substep(self.refs, "compile", "verify")
         self.assertEqual(outcome.status, "fail")
         meta = json.loads((self.repo / self.refs.ir_ref
@@ -920,7 +923,10 @@ class PureCompileReviewerTests(_Fixture):
         # would publish as certified. The generate-side twin pins this; this row did not.
         self.assertEqual(meta["verification_status"], "fail")
         self.assertEqual(meta["issue_severity"], "minor")
-        self.assertEqual(meta["last_fail_reason"], "step_03 has no update target")
+        # The reason, then every finding's summary (`verify_repair_text`, issue #347).
+        self.assertEqual(meta["last_fail_reason"],
+                         "step_03 has no update target\n1. an item is unmet"
+                         "\n2. V3 misses the snapshot of h")
         decision = c.classify_failure(self.refs, "compile", [None, None, outcome])
         # `minor` is the verify-severity gate's warm same-phase repair. `target_phase` is None
         # there BY DESIGN — the caller reopens the phase it is already in — and the reason is what
@@ -930,7 +936,8 @@ class PureCompileReviewerTests(_Fixture):
         self.assertEqual(decision.reason, "verify_minor")
         self.assertEqual(
             c._read_repair_findings(self.refs, decision.reason, "compile"),
-            "step_03 has no update target")
+            "step_03 has no update target\n1. an item is unmet"
+            "\n2. V3 misses the snapshot of h")
 
     def test_a_schema_exhausted_verdict_writes_no_projection_and_restarts(self) -> None:
         """Proof-of-work: no valid verdict, no stage meta. The producer's `"pending"` therefore

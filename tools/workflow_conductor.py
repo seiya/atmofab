@@ -7018,11 +7018,15 @@ class Conductor:
                               attempts: int) -> None:
         """Project a schema-valid `compile.verify` verdict onto `ir_meta.json` host-side, AFTER
         the reviewer's child window closes. The twin of `_write_verify_source_meta`; `attempt_count`
-        is the REVIEWER's attempt count, exactly as it is there. Never called on a schema-exhausted
-        attempt (proof-of-work: no valid verdict => no meta)."""
+        is the REVIEWER's attempt count, exactly as it is there. `last_fail_reason` is the
+        verdict's reason followed by every `findings[].summary` (`verify_repair_text`; null on
+        pass), exactly as it is there. Never called on a schema-exhausted attempt (proof-of-work:
+        no valid verdict => no meta)."""
+        from tools.pure_leaf import verify_repair_text
+
         self._write_ir_meta(
             refs, verification_status=verdict["verification_status"],
-            last_fail_reason=verdict["last_fail_reason"],
+            last_fail_reason=verify_repair_text(verdict),
             issue_severity=verdict["issue_severity"], attempts=attempts)
 
     def _write_pure_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
@@ -8270,9 +8274,12 @@ class Conductor:
         """Project a schema-valid verify verdict onto the canonical `source_meta.json` host-side,
         AFTER the reviewer's child window closes. The projection uses ONLY the existing stage-meta
         keys (meta_contracts) plus the legacy `issue_severity` the verify-severity gate keys on —
-        no new schema. `last_fail_reason` carries the verdict's reason (null on pass), which
-        `_read_repair_findings` threads into the producer repair on a `fail` route. Never called on
-        a schema-exhausted attempt (proof-of-work: no valid verdict => no meta)."""
+        no new schema. `last_fail_reason` carries the verdict's reason followed by every
+        `findings[].summary` (`verify_repair_text`; null on pass), which `_read_repair_findings`
+        threads into the producer repair on a `fail` route. Never called on a schema-exhausted
+        attempt (proof-of-work: no valid verdict => no meta)."""
+        from tools.pure_leaf import verify_repair_text
+
         src_dir = self.repo_root / refs.source_dir()
         src_dir.mkdir(parents=True, exist_ok=True)
         meta = {
@@ -8281,7 +8288,7 @@ class Conductor:
             "attempt_count": attempts,
             "verification_status": verdict["verification_status"],
             "issue_severity": verdict["issue_severity"],
-            "last_fail_reason": verdict["last_fail_reason"],
+            "last_fail_reason": verify_repair_text(verdict),
             "debug_mode": self.workflow_mode == "dev",
             "context_isolated": True,
         }
@@ -12346,8 +12353,8 @@ class Conductor:
         }
         # The failing gate's findings excerpt, threaded to the (warm) repair leaf so it can fix
         # the exact reported lines instead of re-discovering them. Only carried for the reasons
-        # _read_repair_findings recognizes (the deterministic gates + a structural
-        # validate.execute failure); empty otherwise.
+        # _read_repair_findings recognizes (the deterministic gates, a verify reviewer's folded
+        # reason + findings, a structural validate.execute failure); empty otherwise.
         if findings and findings.strip():
             payload["repair_findings"] = findings.strip()
         return payload
@@ -12384,7 +12391,8 @@ class Conductor:
             # directory (the rotation to a fresh ir_id happens later, inside run_phase).
             meta_path = self.repo_root / refs.ir_ref / "compile_generate_meta.json"
         elif r.startswith("verify_"):
-            # The verify substep records its finding in the phase's meta `last_fail_reason`.
+            # The verify substep records its reason followed by every finding's summary in the
+            # phase's meta `last_fail_reason` (folded at projection by `verify_repair_text`).
             field = "last_fail_reason"
             meta_path = (self.repo_root / refs.ir_ref / "ir_meta.json" if phase == "compile"
                          else self.repo_root / refs.source_dir() / "source_meta.json")

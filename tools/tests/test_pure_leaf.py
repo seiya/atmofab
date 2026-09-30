@@ -427,6 +427,47 @@ class VerifyVerdictTest(unittest.TestCase):
                          ["verdict must be a JSON object"])
 
 
+class VerifyRepairTextTest(unittest.TestCase):
+    """`verify_repair_text` is what the host projects as the meta's `last_fail_reason`, and so
+    the whole of what a producer repair learns from a verify verdict (issue #347). A reviewer
+    whose one-line reason names one defect while `findings[]` names five must hand the repair
+    all five."""
+
+    @staticmethod
+    def _fail(reason: str, *summaries: str) -> dict:
+        v = _verdict(verification_status="fail", issue_severity="minor",
+                     last_fail_reason=reason, findings=[{"summary": s} for s in summaries])
+        assert pl.verify_verdict_violations(v) == [], v  # only schema-valid verdicts are folded
+        return v
+
+    def test_pass_is_null(self):
+        self.assertIsNone(pl.verify_repair_text(_verdict()))
+
+    def test_one_finding_follows_the_reason(self):
+        self.assertEqual(pl.verify_repair_text(self._fail("flux sign", "mass not conserved")),
+                         "flux sign\n1. mass not conserved")
+
+    def test_every_finding_in_order_and_numbered(self):
+        self.assertEqual(
+            pl.verify_repair_text(self._fail("three defects", "first", "second", "third")),
+            "three defects\n1. first\n2. second\n3. third")
+
+    def test_outer_whitespace_is_stripped_and_inner_newlines_kept(self):
+        self.assertEqual(
+            pl.verify_repair_text(self._fail("  reason  \n", "  line a\nline b  ", "\tc\n")),
+            "reason\n1. line a\nline b\n2. c")
+
+    def test_a_summary_repeating_the_reason_is_kept(self):
+        # No deduplication: the reviewer copying its only finding into the reason costs a line.
+        self.assertEqual(pl.verify_repair_text(self._fail("quoted unescaped", "quoted unescaped")),
+                         "quoted unescaped\n1. quoted unescaped")
+
+    def test_nothing_is_clipped(self):
+        long = "x" * 5000
+        text = pl.verify_repair_text(self._fail("r", long, long))
+        self.assertEqual(text, f"r\n1. {long}\n2. {long}")
+
+
 class VerdictVocabParityTest(unittest.TestCase):
     """Guard the verdict enums against drift from the conductor's severity router — the two
     must agree or the model could author a severity the router mishandles (or vice versa)."""
