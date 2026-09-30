@@ -3719,8 +3719,8 @@ comparison pins the rendered form, so several ABI-identical spellings of an ordi
 refused: the `dimension` attribute instead of an explicit shape on the entity, `real(kind=dp)`
 instead of `real(dp)`, an explicit lower bound (`flux_adv(1:nx - 1)`), two declarations separated by
 `;` on one line, and an extra accessibility attribute on the pinned parameter declaration itself
-(which the PRESENCE check reads as absent — presence is attribute-sensitive, uniqueness is not, and
-the six §5.1 blocks now state that difference). None is a fail-open and none wedges a node: each
+(which the PRESENCE check read as absent — presence was attribute-sensitive, uniqueness is not;
+reversed by issue #363, below). None is a fail-open and none wedges a node: each
 refusal QUOTES THE EXACT TEXT to write, so it converges on the warm retry, and the prompt template
 already steers a leaf to the accepted form for the first three. They are recorded rather than fixed
 because each fix is a widening of the source-text comparison — the surface that has produced four
@@ -3728,6 +3728,12 @@ defects on this branch — and buying one saved attempt with a new grammar is th
 losing here. The one that WAS worth fixing is the procedure prefix, because its message misrouted
 (it blamed argument drift for a source whose arguments were correct) and because the construct
 occurs in the corpus today; the message now names the prefix and the prompt template states the rule.
+Issue #363 (2026-10) reversed the accessibility entry: once harness §3 left export free, the
+separate-statement spelling was the only one accepted of two the spec allows, 4 of 4
+attribute-form model sources on disk were refused and 2 lost an attempt, and the renderer's
+harness pin read the same view. The widening is one filter in `source_atoms` (drop `public` /
+`private` from the attribute list, split on top-level commas), not a new grammar, and the twelve
+component §5.1 blocks now say an accessibility attribute is immaterial.
 
 **RESOLVED 2026-09-05 (was: OPEN, carried deliberately rather than fixed): a published operation declared
 but never defined.** The paragraph below is left as written, per this document's convention. What closed

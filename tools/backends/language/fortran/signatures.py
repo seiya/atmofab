@@ -375,8 +375,9 @@ def source_atoms(text: str) -> frozenset[str]:
     """Every comparison atom of a whole Fortran text, as a SET — the same per-entity atoms
     ``stanza_atoms`` produces, taken over every logical line rather than one stanza's lines, with
     one difference: a declaration's access-spec attribute (``public`` / ``private``) is dropped
-    (``_without_access_spec``). Harness §3 leaves the accessibility of the §5.1 module parameters
-    outside the contract (issue #363), so ``integer, parameter, public :: dp = real64`` and
+    (``_without_access_spec``). The harness spec's §3 leaves the accessibility of the §5.1 module
+    parameters outside the contract and each component §5.1 block calls the attribute immaterial
+    (issue #363), so ``integer, parameter, public :: dp = real64`` and
     ``integer, parameter :: dp = real64`` are the same declaration here. ``stanza_atoms`` keeps the
     attribute, because a procedure stanza and a type component are compared with it.
 
@@ -1186,8 +1187,8 @@ def generated_source_violations(
     # a `case_id_len = 32` drift would otherwise be invisible (the symbolic decls still match). Use
     # per-entity atoms so a combined `integer, parameter :: dp = real64, case_id_len = 64` matches.
     #
-    # Accessibility is outside the pin: harness §3 leaves the export of these names free, and
-    # `source_atoms` drops a `public` / `private` attribute before the comparison, so the
+    # Accessibility is outside the pin: the harness spec's §3 leaves the export of these names
+    # free, and each component §5.1 block calls the attribute immaterial. `source_atoms` drops a `public` / `private` attribute before the comparison, so the
     # attribute form `integer, parameter, public :: dp = real64` is PRESENT (issue #363). It is
     # still a BINDING for the uniqueness count below — the declared-names helper reads a
     # declaration carrying `parameter` as a constant whatever else its attribute list holds; its
