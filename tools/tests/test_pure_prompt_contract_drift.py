@@ -737,8 +737,9 @@ PINNED: dict[str, str] = {
     # pure-55 (issue #358): the compile producer's rule (7) no longer licenses a `tests.md`
     # meaning of `profile_selection` under `profiles: []` — no case of such a node declares the
     # field (the phase contract's schema block states it once). A compile leaf reading it
-    # authors no `profile_selection` on a harness where a pure-54 leaf did (five shapes measured
-    # across the certified harness IRs), which is why the key moves.
+    # authors no `profile_selection` on a harness where a pure-54 leaf did (seven shapes of the key
+    # across the 27 harness IRs with `verification_status: pass` in the primary checkout's
+    # `workspace/ir/`, counted at 88a7953b), which is why the key moves.
     "pure-55": "1c57e6105f642be2b56efc0bff1ea4b2d1b631425cc343bbd02c464c14bd8ca4",
 }
 
