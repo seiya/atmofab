@@ -16046,7 +16046,46 @@ class DeterministicBuildTest(unittest.TestCase):
                                       execution={"threads_per_rank": 3})
                 self._assert_execute_records_the_launch(target, launch_shape(target))
 
-    def _assert_execute_records_the_launch(self, target, shape) -> None:
+    def test_execute_inproc_records_the_test_profile_every_case_declares(self) -> None:
+        """`trial_meta.json#test_profile_id` / `test_profile_version` (issue #346): every
+        `tests.md` §8 asks for them in this record, which only the host writes. The value
+        every case declares; `null` when a case lacks it or two cases disagree — per key, so
+        a disagreement on the version leaves the agreed id recorded."""
+        from tools.host_execution import launch_shape
+        from tools.tests.target_fixtures import profile_with
+        target = profile_with(parallel={"backend": "none"}, execution={"threads_per_rank": 3})
+
+        def case(cid, **inputs):
+            body = "".join(f"\n        {k}: {v}" for k, v in inputs.items())
+            return f"    - case_id: {cid}\n      inputs:{body or ' {}'}\n"
+
+        rows = {
+            "agree": (case("c_alpha", test_profile_id="tp_x", test_profile_version="'1.2'")
+                      + case("c_beta", test_profile_id="tp_x", test_profile_version="'1.2'"),
+                      ("tp_x", "1.2")),
+            "version_disagrees": (
+                case("c_alpha", test_profile_id="tp_x", test_profile_version="'1.2'")
+                + case("c_beta", test_profile_id="tp_x", test_profile_version="'1.3'"),
+                ("tp_x", None)),
+            "one_case_lacks_both": (
+                case("c_alpha", test_profile_id="tp_x", test_profile_version="'1.2'")
+                + case("c_beta"),
+                (None, None)),
+            "one_case_null_id": (
+                case("c_alpha", test_profile_id="tp_x", test_profile_version="'1.2'")
+                + case("c_beta", test_profile_id="null", test_profile_version="'1.2'"),
+                (None, "1.2")),
+        }
+        for name, (cases, expected) in rows.items():
+            with self.subTest(row=name):
+                trial = self._assert_execute_records_the_launch(
+                    target, launch_shape(target),
+                    ir_text="case:\n  test_case_set:\n" + cases)
+                self.assertEqual(
+                    (trial["test_profile_id"], trial["test_profile_version"]), expected)
+
+    def _assert_execute_records_the_launch(self, target, shape,
+                                           ir_text: str | None = None) -> dict:
         import platform as _platform
         import sys
         import tempfile
@@ -16066,7 +16105,8 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+                ir_text or "case:\n  test_case_set:\n    - case_id: c_alpha\n",
+                encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
             run_calls: list[dict] = []
 
@@ -16133,6 +16173,11 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(env["execution_site"], {
                 "site": "local", "host": None, "scheduler": "none", "job_id": None,
                 "remote_dir": None, "queue_wait_ms": 0})
+            if ir_text is None:
+                # A case with no `inputs` declares no test profile (issue #346).
+                self.assertEqual(
+                    (trial["test_profile_id"], trial["test_profile_version"]), (None, None))
+            return trial
 
     # --- the device trace (issue #307) ----------------------------------------------------
 

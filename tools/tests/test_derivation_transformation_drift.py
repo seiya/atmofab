@@ -771,7 +771,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
+    # Re-pinned by issue #346: `Conductor._execute_inproc` writes `trial_meta.json#
+    # test_profile_id` / `test_profile_version`, the value every case of the IR declares (null
+    # when a case lacks it or two disagree) — the record every `tests.md` §8 asks for. A re-pin,
+    # not a bump, on the ground `execute-8@a88dcc14` and `execute-8@032ee643` state: nothing
+    # reads the two fields (no gate, no verdict predicate, no later phase), so an execute-8
+    # record without them certifies exactly what one with them does, and re-deriving every
+    # certified Validate for a record nobody reads buys nothing. (Measured by diffing
+    # `execute_tuple()` against origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
+    "execute-8": "84ced2c4099214360d2928ad6e34c6f9dcd929e1a7ade8a9bcaa6dcbffa87b9f",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -826,6 +834,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # no other.) The digest `execute-8` shipped with at
     # f317c42f:
     "execute-8@f317c42f": "8fd899fce01c2f63d3733071d406a485db3b75254b986ac2f60905f709275f2f",
+    # The digest `execute-8` shipped with at 7b67f5f3 (before issue #346's re-pin above):
+    "execute-8@7b67f5f3": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
