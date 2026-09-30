@@ -19404,6 +19404,66 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     tmp = Path(t)
                     self.assertEqual(self._run(self._seed(tmp, source=source), tmp), [], label)
 
+    def test_an_accessibility_attribute_on_the_pinned_declaration_is_not_a_drift(self) -> None:
+        """Issue #363: harness §3 leaves the export of the §5.1 module parameters free, and Fortran
+        has two spellings of an export — a separate `public ::` statement, and the attribute on the
+        declaration. The presence check used to accept only the first: 4 of 4 attribute-form model
+        sources on disk failed this gate and 2 lost a Generate attempt to it.
+
+        The accepted family varies the attribute's POSITION and VALUE and the declaration's shape
+        (combined, continued). The refused family is what the relaxation must not open: a value
+        drift written in the attribute form, a bare accessibility statement standing in for the
+        declaration, a second binding beside an attribute-form one (the attribute form is still a
+        BINDING for the uniqueness count), and an import beside it."""
+        import tempfile
+        pinned = "  integer, parameter :: dp = real64\n"
+        for label, decl in (
+            ("public after parameter", "  integer, parameter, public :: dp = real64\n"),
+            ("public before parameter", "  integer, public, parameter :: dp = real64\n"),
+            ("private after parameter", "  integer, parameter, private :: dp = real64\n"),
+            ("upper case attribute", "  integer, parameter, PUBLIC :: dp = real64\n"),
+            ("combined with a second parameter",
+             "  integer, parameter, public :: dp = real64, nvar = 3\n"),
+            ("continuation inside the declaration",
+             "  integer, parameter, public :: &\n      dp = real64\n"),
+        ):
+            with self.subTest(accepted=label):
+                source = self._GOOD_SOURCE.replace(pinned, decl, 1)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    self.assertEqual(self._run(self._seed(tmp, source=source), tmp), [], label)
+
+        attr_form = "  integer, parameter, public :: dp = real64\n"
+        for label, source, expected, absent in (
+            ("value drift in the attribute form",
+             self._GOOD_SOURCE.replace(pinned, "  integer, parameter, public :: dp = real32\n", 1),
+             "is missing the §5.1 module parameter", " times"),
+            ("a bare accessibility statement and no declaration",
+             self._GOOD_SOURCE.replace(pinned, "  public :: dp\n", 1),
+             "is missing the §5.1 module parameter", " times"),
+            ("a second binding beside the attribute form",
+             self._GOOD_SOURCE.replace(pinned, attr_form, 1).replace(
+                 "contains\n",
+                 "contains\n"
+                 "  subroutine shadow_note(x)\n"
+                 "    integer, parameter :: dp = real32\n"
+                 "    real(dp), intent(out) :: x\n"
+                 "    x = 0.0_dp\n"
+                 "  end subroutine shadow_note\n", 1),
+             "binds the §5.1 module parameter `dp` 2 times", None),
+            ("an import beside the attribute form",
+             self._GOOD_SOURCE.replace(
+                 pinned, "  use other_mod, only: dp\n" + attr_form, 1),
+             "imports the §5.1 module parameter `dp`", None),
+        ):
+            with self.subTest(refused=label):
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                self.assertTrue(any(expected in v for v in violations), (label, violations))
+                if absent is not None:
+                    self.assertFalse(any(absent in v for v in violations), (label, violations))
+
     def test_a_missing_declaration_is_reported_once_not_twice(self) -> None:
         """A missing declaration stops that parameter's checks; it does not also report uniqueness.
 

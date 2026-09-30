@@ -577,7 +577,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "a48164785fdd1f989803bc70dd122bbde3ad77efd9ba97abf4d8f40f20db4127",
+    "render-6": "2bcc28eabe5c8b08a8b03a391f8a70d1569fdeece377fd1dace659d6bc7b1054",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -613,6 +613,21 @@ PINNED_RENDER: dict[str, str] = {
     # what a runner or a control file renders is unchanged. The digest `render-6` shipped with at
     # 9fcd49b3:
     "render-6@9fcd49b3": "2145df4b464609a05f165638f600a3f29b784157b2f52c927f80c08e916a1da0",
+    # Re-pinned by issue #363: one member moved, `tools/backends/language/fortran/signatures.py`,
+    # whose `source_atoms` drops an access-spec attribute (`public` / `private`) from a
+    # declaration, so the §5.1 gate's presence check and the renderer's harness pin both accept
+    # the attribute-form export harness §3 leaves free. A relaxation of both: no source either
+    # accepted before is refused now, so no certified output is invalidated — a re-pin, not a
+    # bump. What a runner renders is unchanged. (Measured against origin/main e1e78155: the
+    # `render_tuple()` diff is that row and no other; every Fortran and CUDA C++ runner render
+    # over the 214 `workspace/ir/*/*/spec.ir.yaml` for the three checked-in targets — 642
+    # digests, identical — rendered through `host_render.render_runner(<toolchain.language>,
+    # ir, <meta.spec_id>, <harness.infrastructure_id>, target=<profile doc>)`. Rendering does
+    # not run the harness pin, so the relaxation was measured separately: `--stage
+    # post_generate` over the 241 source bundles carrying a `gate_meta.json` changed the exit
+    # code of the 4 attribute-form sources, FAIL to PASS, and of no other.) The digest
+    # `render-6` shipped with at e1e78155:
+    "render-6@e1e78155": "a48164785fdd1f989803bc70dd122bbde3ad77efd9ba97abf4d8f40f20db4127",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
