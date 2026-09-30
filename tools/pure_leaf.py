@@ -484,7 +484,8 @@ def extract_json_document(result_text: Any) -> tuple[Any, "str | None"]:
 # the two into the meta's one `last_fail_reason` string with `verify_repair_text` — the text the
 # producer's repair reads (via `last_fail_reason`, on the warm, cold and `--resume` paths alike),
 # so a finding the reviewer left out of its one-line reason still reaches the repair (issue
-# #347). The verdict document itself survives only in the reviewer's `leaf.stdout.log`.
+# #347). The verdict document itself survives only in the reviewer's dialog logs
+# (`agents/<arid>/dialogs/leaf.stdout.*`).
 # Vocabularies match the conductor's routing (`classify_verify_severity`): status is
 # `pass`/`fail`, severity is `none`/`minor`/`major`/`critical`.
 VERDICT_STATUSES: tuple[str, ...] = ("pass", "fail")
