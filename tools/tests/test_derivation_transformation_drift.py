@@ -577,7 +577,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "368ce4f64ae146fc487da43aa60d78d1ca3dda4fca67dc04d759d1cd1de62139",
+    "render-6": "a48164785fdd1f989803bc70dd122bbde3ad77efd9ba97abf4d8f40f20db4127",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads

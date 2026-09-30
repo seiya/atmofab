@@ -1220,10 +1220,11 @@ def generated_source_violations(
                     f"come from this module's own `parameter` declaration of `{name}`, which is "
                     "what this gate value-pins; an imported binding carries a value the pin "
                     "cannot see, so declare it in this module and drop the name from the `use`. "
-                    "A helper module that lives in this file is read as part of it: there, use "
-                    "the intrinsic kind under its own name (`real64`) rather than importing the "
-                    "parameter back from the model module or declaring it a second time — a "
-                    "second binding of the name anywhere in this file is refused too")
+                    "A helper module that lives in this file is read as part of it: there, "
+                    "write the value under a name of its own (an intrinsic kind such as "
+                    "`real64`, a literal length) rather than importing "
+                    f"`{name}` back from the model module or declaring `{name}` a second time — "
+                    f"a second binding of `{name}` anywhere in this file is refused too")
                 break
 
     # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
