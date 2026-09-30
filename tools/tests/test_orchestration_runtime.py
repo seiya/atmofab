@@ -28542,6 +28542,31 @@ class ResolveComparandsTests(unittest.TestCase):
             self.assertEqual((sel.ok, sel.reason), (False, "derivation_key_mismatch:source"))
             self.assertEqual(self._resolve(), [])
 
+    def test_a_comparand_mismatch_after_the_probe_leaf_is_diagnosed_off_the_stamp(self) -> None:
+        """The diagnosis diffs each stamp against inputs carrying ITS OWN probed leaves: an input
+        that sorts after `toolchain.compiler_version` (a toolchain leaf; the transformation,
+        which is read only when no input differs) is named, where a diff against the unprobed
+        inputs would name the probe leaf first (round 1: the `source` row above cannot tell)."""
+        from tools.derivation import derivation_key
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+        with self._probe_answers(None), \
+                mock.patch.object(tools_derivation, "BUILD_VERSION", "build-test-bump"):
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+        self.assertEqual((sel.ok, sel.reason), (False, "derivation_key_mismatch:transformation"))
+        path = self.repo / b["binary_meta"]
+        doc = json.loads(path.read_text())
+        self.assertLess("compiler_version", "standard")   # the probe leaf sorts first
+        doc["derivation_inputs"]["toolchain"]["standard"] = "moved"
+        doc["derivation_key"] = derivation_key("build", doc["derivation_inputs"])
+        path.write_text(json.dumps(doc))
+        with self._probe_answers(None):
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+        self.assertEqual((sel.ok, sel.reason),
+                         (False, "derivation_key_mismatch:toolchain.standard"))
+
     def test_a_declared_target_that_does_not_load_is_unresolvable(self) -> None:
         self._seed_b()
         (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
