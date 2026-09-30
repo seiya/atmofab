@@ -12354,7 +12354,8 @@ class Conductor:
         # The failing gate's findings excerpt, threaded to the (warm) repair leaf so it can fix
         # the exact reported lines instead of re-discovering them. Only carried for the reasons
         # _read_repair_findings recognizes (the deterministic gates, a verify reviewer's folded
-        # reason + findings, a structural validate.execute failure); empty otherwise.
+        # reason + findings, a structural validate.execute failure) — the same selection after an
+        # escalation, keyed on the host reason that escalated; empty otherwise.
         if findings and findings.strip():
             payload["repair_findings"] = findings.strip()
         return payload
@@ -12362,7 +12363,8 @@ class Conductor:
     def _read_repair_findings(self, refs: NodeRefs, reason: str | None,
                               phase: str | None = None) -> str | None:
         """The failing artifact's finding text to inject into the (warm/slim) repair, selected
-        by the route reason:
+        by the route reason the HOST classified — after an escalation, the reason that
+        escalated, not the diagnostician's directive (issue #353):
           `gate_*`           -> source/gate_meta.json#failure_excerpt (unioned checker findings)
           `compile_static_*` -> ir/compile_static_meta.json#failure_excerpt
           `verify_*`         -> the phase's verify meta #last_fail_reason
@@ -13876,6 +13878,9 @@ class Conductor:
                 continue
 
             decision = outcome.decision or RouteDecision("escalate", reason="no_decision")
+            # The HOST's classification of this failure. The findings a repair carries are
+            # selected by it, never by the diagnostician's free-text directive reason (issue #353).
+            findings_reason = decision.reason
             if decision.action == "escalate":
                 # escalate() runs resolve_severity_directive, so a retry/reopen directive that
                 # NAMES a target arrives here with a concrete repair_strategy derived from its
@@ -13890,7 +13895,8 @@ class Conductor:
                 # `resolve_severity_directive` returned a leaf-spelled strategy untouched, and
                 # `target = decision.target_phase or phase` two lines down then fired the reopen
                 # on it — with the severity forcing skipped, so a `critical` kept the artifacts
-                # it graded untrustworthy.
+                # it graded untrustworthy. The directive decides the ROUTE only: every findings
+                # read below still keys on `findings_reason`, the host reason that escalated.
                 decision = self.escalate(refs, phase, outcome)
             if decision.action == "fail_closed":
                 reason = decision.reason or ""
@@ -13941,7 +13947,7 @@ class Conductor:
                 trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
                 if trigger and self._revoke_and_reset_or_terminalize(
                         refs, target, trigger, decision.reason or f"{phase}->{target}",
-                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        findings=self._read_repair_findings(refs, findings_reason, phase),
                         severity=decision.severity,
                         repair_strategy=decision.repair_strategy,
                         fallback_code="dev_phase_rollback",
@@ -13967,7 +13973,7 @@ class Conductor:
                 if trigger and self._revoke_and_reset_or_terminalize(
                         refs, target, trigger,
                         decision.reason or f"{target}_retry_budget_exhausted",
-                        findings=self._read_repair_findings(refs, decision.reason, phase),
+                        findings=self._read_repair_findings(refs, findings_reason, phase),
                         severity=decision.severity,
                         repair_strategy=decision.repair_strategy,
                         fallback_code="retry_budget_exhausted",
@@ -14001,9 +14007,11 @@ class Conductor:
                     return "fail"
                 # Read the findings excerpt BEFORE the revocation/rotation while refs still names
                 # the failed artifact (its {gate,compile_static}_meta.json failure_excerpt, or the
-                # verify meta last_fail_reason). None for a diagnostician reason -> the repair
-                # falls back to the full prompt (a cold restart re-derives anyway).
-                findings = self._read_repair_findings(refs, decision.reason, phase)
+                # verify meta last_fail_reason), selected by the host's route reason — the reason
+                # that escalated when the diagnostician routed, never its directive's free text.
+                # None for a host reason with no findings source -> the repair falls back to the
+                # full prompt (a cold restart re-derives anyway).
+                findings = self._read_repair_findings(refs, findings_reason, phase)
                 if self._revoke_and_reset_or_terminalize(
                         refs, phase, trigger, decision.reason or "same_phase_reopen",
                         findings=findings, severity=decision.severity,
@@ -14032,10 +14040,11 @@ class Conductor:
             # while refs still names the failed artifact (a validate.execute structural failure
             # keeps its excerpt in the failed run's trial_meta.json, and the re-run rotates the
             # run id). The excerpt is also what the revocation records as `last_fail_reason`, so
-            # a LATER run — which reads no `pending_repair` — recovers the same finding.
-            # Every other cross-phase reason yields None -> the repair falls back to the full
-            # prompt, exactly as before.
-            findings = self._read_repair_findings(refs, decision.reason, phase)
+            # a LATER run — which reads no `pending_repair` — recovers the same finding. It is
+            # selected by the host's route reason, which is the escalated reason when the
+            # diagnostician routed. Every other cross-phase reason yields None -> the repair falls
+            # back to the full prompt, exactly as before.
+            findings = self._read_repair_findings(refs, findings_reason, phase)
             if self._revoke_and_reset_or_terminalize(
                     refs, target, trigger, decision.reason or f"{phase}_reopen",
                     findings=findings, severity=decision.severity,
