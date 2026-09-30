@@ -774,12 +774,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # Re-pinned by issue #346: `Conductor._execute_inproc` writes `trial_meta.json#
     # test_profile_id` / `test_profile_version`, the value every case of the IR declares (null
     # when a case lacks it or two disagree) — the record every `tests.md` §8 asks for. A re-pin,
-    # not a bump, on the ground `execute-8@a88dcc14` and `execute-8@032ee643` state: nothing
-    # reads the two fields (no gate, no verdict predicate, no later phase), so an execute-8
-    # record without them certifies exactly what one with them does, and re-deriving every
-    # certified Validate for a record nobody reads buys nothing. (Measured by diffing
-    # `execute_tuple()` against origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
-    "execute-8": "84ced2c4099214360d2928ad6e34c6f9dcd929e1a7ade8a9bcaa6dcbffa87b9f",
+    # not a bump: the record's bytes DO change (unlike the refusal-only re-pins above), but no
+    # gate and no verdict predicate reads the two fields (`Validate.judge` is shown the record
+    # whole), and the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-54, which is in
+    # the validate transformation tuple (`tools/derivation.py`), so every validate key moves
+    # and every certified Validate re-derives — with the new record — whatever this version
+    # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
+    # origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
+    "execute-8": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.

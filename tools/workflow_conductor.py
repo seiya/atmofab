@@ -11524,8 +11524,9 @@ class Conductor:
 
         # The test profile the cases were authored under (issue #346): every `tests.md` §8 asks
         # for it in this record, which only the host writes. The value every case declares, and
-        # `null` when a case lacks it or two cases disagree. A record only — nothing reads it
-        # and nothing fails on it, so a leaf gains nothing from its value.
+        # `null` when a case lacks it or two cases disagree. A record: no gate and no verdict
+        # predicate reads it and nothing fails on it (the judge is shown trial_meta.json whole,
+        # as it is shown every other record field), so a leaf gains nothing from its value.
         case_set = ir.get("case", {}).get("test_case_set") if isinstance(ir.get("case"), dict) else None
         case_inputs = [c["inputs"] if isinstance(c, dict) and isinstance(c.get("inputs"), dict) else {}
                        for c in (case_set if isinstance(case_set, list) else [])]
