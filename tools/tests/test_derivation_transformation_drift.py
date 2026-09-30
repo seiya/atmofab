@@ -338,6 +338,9 @@ def verdict_tuple() -> dict[str, str]:
         "orchestration_runtime.COMPARAND_OWN_VERDICTS":
             hashlib.sha256(json.dumps(sorted(ort.COMPARAND_OWN_VERDICTS)).encode()).hexdigest(),
         "workflow_conductor._verdict_cross_target": _source_digest(wc._verdict_cross_target),
+        # Issue #345 PR-2: the binding the verdict author reads — the comparand runs evaluated
+        # and the `comparands_absent` record — comes from this second resolution, not the key's.
+        "Conductor._bind_comparands": _source_digest(wc.Conductor._bind_comparands),
     }
 
 
@@ -899,7 +902,10 @@ PINNED_VERDICT: dict[str, str] = {
     # `aggregate_verdict.json#cross_target` gains `absent`, copied from it.
     # Re-pinned in round 1 before shipping (the version is new on this branch): the
     # `ComparandResolution` docstring names an upstream refusal (`derivation_key_mismatch:ir`).
-    "verdict-8": "113f0c121a7b7e65c0de7da32d09709ccfc8773759de6903604c9abe8897d7e8",
+    # Re-pinned again in round 1: the tuple gains `Conductor._bind_comparands`, which supplies
+    # the verdict author's binding and was in no tuple (a mutant emptying its `absent` changed
+    # `verdict.json` and left this file green).
+    "verdict-8": "b812249c337c5d9363733bbdda86b12ca64b62b0306d98e68a9994f25534626b",
 }
 
 
