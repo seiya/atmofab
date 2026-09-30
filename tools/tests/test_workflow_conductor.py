@@ -2912,6 +2912,58 @@ class ConductRoutingTest(unittest.TestCase):
             self.assertEqual(launches[1]["repair_strategy"], "reuse")
             self.assertEqual(launches[1]["repair_findings"], self._FOLD_353)
 
+    _DECLARED_355 = ("Compile fail: the spec names no boundary condition for the east edge, "
+                     "and the IR schema has no default to take")
+
+    def test_a_declared_compile_fail_stops_both_modes_without_a_repair(self) -> None:
+        """The twin of `test_escalated_same_phase_reopen_selects_findings_by_the_host_reason`,
+        on the same scaffold with generate -> compile and two producer launches -> one. The
+        pure `compile.generate` producer DECLARES the phase uncompletable, through the host's
+        own writers, and the REAL `classify_failure` routes it: `fail_closed` in both modes,
+        with no diagnostician, no revocation, and no second launch carrying the declaration
+        back as `repair_findings` (issue #355 — in prod that is what the verify-severity gate
+        led to, against the launch contract's "not retried"). The facts stay on disk."""
+        for mode in ("dev", "prod"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                c = _FakeConductor(repo_root=Path(tmp), orchestration_id="orch_x",
+                                   orchestration_agent_run_id="ORCH",
+                                   llm_config=_cfg("claude"), env={})
+                c.calls = []
+                c.workflow_mode = mode
+                refs = self._refs()
+                state = {"fails": 0}
+
+                def status_fn(phase, substep, n, c=c, refs=refs, state=state):
+                    if (phase, substep) == ("compile", "generate") and state["fails"] < 1:
+                        state["fails"] += 1
+                        c._write_declared_compile_fail(refs, self._DECLARED_355, attempts=1)
+                        c._write_compile_generate_meta(
+                            refs, result="fail", failure_category=wc.COMPILE_DECLARED_FAIL,
+                            failure_excerpt=self._DECLARED_355, attempts=1, per_attempt=[{}])
+                        return "fail"
+                    return "pass"
+
+                def no_escalation(refs_, phase, outcome):
+                    raise AssertionError(f"escalated a declared compile fail in {mode}")
+
+                c.status_fn = status_fn
+                c.escalate = no_escalation  # type: ignore[assignment]
+                self.assertEqual(c.conduct(refs, "compile"), "fail_closed")
+                ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+                self.assertEqual((ss["--status"], ss["--reason-code"], ss["--reason-detail"]),
+                                 ("fail_closed", "conductor_phase_fail_closed",
+                                  wc.COMPILE_DECLARED_FAIL))
+                self.assertEqual([s for s, _ in c.calls
+                                  if s in ("revoke-artifact", "reopen-phase")], [])
+                self.assertEqual(len(self._producer_launches(c, "compile")), 1)
+                self.assertEqual([cap["--request-json"] for s, cap in c.calls
+                                  if s == "record-launch"
+                                  and "repair_findings" in cap.get("--request-json", {})], [])
+                meta = json.loads((Path(tmp) / refs.ir_ref / "ir_meta.json")
+                                  .read_text(encoding="utf-8"))
+                self.assertEqual((meta["last_fail_reason"], meta["issue_severity"]),
+                                 (self._DECLARED_355, "major"))
+
     def test_escalated_cross_phase_reopen_selects_findings_by_the_host_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c, refs = self._escalating_conductor(

@@ -451,7 +451,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # 3: "a captured state variable" is defined by exclusion (an echo of an input-fixed value),
     # V3 (ii) says the statement's expression is the judgment's quantity for (i), and §1-1's
     # `last_fail_reason` names `docs/TESTS.md` requirement 9.
-    "compile-docs-9": "bf6397869f7ffe89c4129f2cc62ad99038c231fc70616b777deb85aeffdb5000",
+    # Re-pinned for issue #355: §1-1's "How a `Compile fail` is declared" names the terminus,
+    # `fail_closed` in both workflow modes under `compile_declared_fail`, in place of "the
+    # same terminus the agentic declaration reaches". What a valid IR is, and when a leaf
+    # declares, did not move, so the key does not.
+    "compile-docs-9": "f9fd1e6ce7b5ae1c578c7d0a5d965d16c485852897dc9e4cd77647f862d5b2e2",
+    # ...and the digest `compile-docs-9` SHIPPED with (origin/main a09eed1a), kept so a later
+    # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "compile-docs-9@a09eed1a": "bf6397869f7ffe89c4129f2cc62ad99038c231fc70616b777deb85aeffdb5000",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
