@@ -2924,6 +2924,7 @@ class ConductRoutingTest(unittest.TestCase):
             revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
             self.assertEqual([r["--step"] for r in revokes], ["compile"])
             self.assertEqual(revokes[0]["--last-fail-reason"], self._FOLD_353)
+            self.assertEqual(revokes[0]["--reason"], "the IR under-specifies the halo")
             launches = self._producer_launches(c, "compile")
             self.assertEqual(len(launches), 2)
             self.assertNotIn("repair_findings", launches[0])
@@ -2945,6 +2946,7 @@ class ConductRoutingTest(unittest.TestCase):
             self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE + 1)
             # The last revocation is the budget-exhausted branch's own.
             self.assertEqual(revokes[-1]["--last-fail-reason"], self._FOLD_353)
+            self.assertEqual(revokes[-1]["--reason"], "quoted helper lacks JSON escaping")
 
     def test_escalated_cross_phase_budget_exhaustion_reads_the_failed_phase_meta(self) -> None:
         # The budget branch revokes the TARGET (compile) but the findings belong to the phase
@@ -2965,6 +2967,7 @@ class ConductRoutingTest(unittest.TestCase):
             self.assertEqual([r["--step"] for r in revokes],
                              ["compile"] * (wc.MAX_ATTEMPTS_PER_PHASE + 1))
             self.assertEqual(revokes[-1]["--last-fail-reason"], self._FOLD_353)
+            self.assertEqual(revokes[-1]["--reason"], "the IR under-specifies the halo")
 
     def test_escalated_dev_rollback_revokes_with_the_host_reason_findings(self) -> None:
         excerpt = "[syntax]\n" + "s" * 2600 + "\n[lint]\n" + "l" * 2600
@@ -2979,6 +2982,12 @@ class ConductRoutingTest(unittest.TestCase):
             revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
             self.assertEqual([r["--step"] for r in revokes], ["compile"])
             self.assertEqual(revokes[0]["--last-fail-reason"], excerpt)
+            # The directive's reason keeps its other uses: the revocation and the terminal
+            # status record it, not the host reason that selected the findings.
+            self.assertEqual(revokes[0]["--reason"], "free text")
+            ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+            self.assertEqual((ss["--reason-code"], ss["--reason-detail"]),
+                             ("dev_phase_rollback", "free text"))
 
     def test_directive_free_text_never_selects_the_findings(self) -> None:
         # The host reason has no findings source; the diagnostician spells its reason like one
