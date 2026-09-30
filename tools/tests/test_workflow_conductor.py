@@ -1507,7 +1507,8 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
 
     # A verify meta's findings text (issue #347): the reason, then every finding, one per line.
-    _FOLDED = "p1 failed\n1. p1 misses the halo\n2. p2 writes twice"
+    _FOLDED = ("p1 failed\n1. p1 misses the halo " + "h" * 2500
+               + "\n2. p2 writes twice " + "w" * 2500)
 
     def test_both_halves_run_and_the_findings_and_grade_reach_the_runtime(self) -> None:
         """The pairing itself, and the two payloads that must travel with it. `severity` on an
@@ -1520,6 +1521,7 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertEqual(subs, ["revoke-artifact", "reset-phase"])
         revoke = c.calls[0][1]
         self.assertEqual(revoke["--severity"], "critical")
+        self.assertGreater(len(self._FOLDED), 5000)  # past any clip a real fold could meet
         self.assertEqual(revoke["--last-fail-reason"], self._FOLDED)
         self.assertEqual(c.calls[1][1]["--from-phase"], "generate")
 
@@ -2781,7 +2783,11 @@ class ConductRoutingTest(unittest.TestCase):
         verify meta's reason followed by every finding — is what the revocation records AND
         what the re-run producer's repair carries, whole, on both (a truncation at either hand-off
         repairs from a fragment, in this run or in the next one's `--resume`)."""
-        folded = "flux sign is wrong\n1. mass not conserved\n2. quoted not escaped"
+        folded = ("flux sign is wrong\n1. mass not conserved " + "m" * 2500
+                  + "\n2. quoted not escaped " + "q" * 2500)
+        # Longer than any clip a hand-off could apply to a real fold (the corpus maximum is
+        # 3552 characters), so a length truncation is red as well as a line truncation.
+        self.assertGreater(len(folded), 5000)
         c = self._conductor()
         state = {"verify_failed": False}
 
@@ -2795,19 +2801,19 @@ class ConductRoutingTest(unittest.TestCase):
         c.decision_fn = lambda phase, outcomes: wc.classify_verify_severity("minor", "dev")
         c._read_repair_findings = lambda refs, reason, phase=None: (  # type: ignore[assignment]
             folded if reason == "verify_minor" else None)
-        repairs: list = []
-        real_run_phase = c.run_phase
-
-        def run_phase(refs, phase, repair=None, **kw):  # type: ignore[no-untyped-def]
-            repairs.append((phase, repair))
-            return real_run_phase(refs, phase, repair=repair, **kw)
-
-        c.run_phase = run_phase  # type: ignore[assignment]
         self.assertEqual(c.conduct(self._refs(), "compile"), "pass")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
         self.assertEqual([r["--last-fail-reason"] for r in revokes], [folded])
-        reopened = [r for phase, r in repairs if phase == "compile" and r]
-        self.assertEqual([r["repair_findings"] for r in reopened], [folded])
+        # The re-run producer's RECORDED launch — past run_phase / run_substep, not the
+        # argument conduct hands them.
+        launches = [cap["--request-json"] for s, cap in c.calls
+                    if s == "record-launch"
+                    and cap.get("--request-json", {}).get("step") == "compile"
+                    and cap["--request-json"].get("substep") == "generate"]
+        self.assertEqual(len(launches), 2)
+        self.assertNotIn("repair_findings", launches[0])
+        self.assertEqual(launches[1]["repair_strategy"], "reuse")
+        self.assertEqual(launches[1]["repair_findings"], folded)
 
     def test_escalate_same_phase_producer_reopens(self) -> None:
         # The escalate diagnostician routes a same-phase producer re-run. G5: escalate() runs
