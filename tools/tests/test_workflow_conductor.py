@@ -2846,6 +2846,141 @@ class ConductRoutingTest(unittest.TestCase):
                           if s == "write-step-result" and cap["--step"] == "compile"]
         self.assertEqual(len(compile_writes), 2)
 
+    # -- issue #353: after an escalation, the findings are selected by the HOST reason --------
+
+    _FOLD_353 = ("responsibility split violated\n1. quoted helper lacks JSON escaping "
+                 + "q" * 2500 + "\n2. runner omits cases " + "r" * 2500)
+
+    def _escalating_conductor(self, tmp: str, mode: str, fail_phase: str, fail_substep: str,
+                              host: wc.RouteDecision, directive: wc.RouteDecision,
+                              metas: dict[str, dict], *, fail_times: int = 1,
+                              ) -> tuple[_FakeConductor, wc.NodeRefs]:
+        """A conductor over a real repository in `tmp` whose `fail_phase.fail_substep` fails
+        `fail_times` times, each time writing `metas` into the source directory the FAILED
+        attempt names (the re-run rotates the id, so a meta written up front would sit in a
+        directory no attempt reads). `_read_repair_findings` is the real one: what is asserted
+        is which meta the escalated route reads, not which reason it was handed."""
+        self.assertGreater(len(self._FOLD_353), 5000)
+        c = _FakeConductor(repo_root=Path(tmp), orchestration_id="orch_x",
+                           orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        c.workflow_mode = mode
+        refs = self._refs()
+        state = {"fails": 0}
+
+        def status_fn(phase, substep, n):
+            if (phase, substep) == (fail_phase, fail_substep) and state["fails"] < fail_times:
+                state["fails"] += 1
+                d = Path(tmp) / refs.source_dir()
+                d.mkdir(parents=True, exist_ok=True)
+                for name, meta in metas.items():
+                    (d / name).write_text(json.dumps(meta), encoding="utf-8")
+                return "fail"
+            return "pass"
+
+        c.status_fn = status_fn
+        c.decision_fn = lambda phase, outcomes: host
+        c.escalate = lambda refs_, phase, outcome: directive  # type: ignore[assignment]
+        return c, refs
+
+    @staticmethod
+    def _producer_launches(c: _FakeConductor, phase: str) -> list[dict]:
+        return [cap["--request-json"] for s, cap in c.calls
+                if s == "record-launch"
+                and cap.get("--request-json", {}).get("step") == phase
+                and cap["--request-json"].get("substep") == "generate"]
+
+    def test_escalated_same_phase_reopen_selects_findings_by_the_host_reason(self) -> None:
+        # prod verify major escalates; the diagnostician's reason is free text no prefix
+        # matches. The repair and the revocation still carry the verify fold, whole.
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._escalating_conductor(
+                tmp, "prod", "generate", "verify",
+                wc.classify_verify_severity("major", "prod"),
+                wc.RouteDecision("retry", target_phase="generate", repair_strategy="reuse",
+                                 severity="major", reason="quoted helper lacks JSON escaping"),
+                {"source_meta.json": {"last_fail_reason": self._FOLD_353}})
+            self.assertEqual(c.conduct(refs, "generate"), "pass")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes], ["generate"])
+            self.assertEqual(revokes[0]["--last-fail-reason"], self._FOLD_353)
+            # The directive's reason keeps its other uses: it is what the revocation records.
+            self.assertEqual(revokes[0]["--reason"], "quoted helper lacks JSON escaping")
+            launches = self._producer_launches(c, "generate")
+            self.assertEqual(len(launches), 2)
+            self.assertNotIn("repair_findings", launches[0])
+            self.assertEqual(launches[1]["repair_strategy"], "reuse")
+            self.assertEqual(launches[1]["repair_findings"], self._FOLD_353)
+
+    def test_escalated_cross_phase_reopen_selects_findings_by_the_host_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._escalating_conductor(
+                tmp, "prod", "generate", "verify",
+                wc.classify_verify_severity("major", "prod"),
+                wc.RouteDecision("reopen", target_phase="compile", repair_strategy="reuse",
+                                 severity="major", reason="the IR under-specifies the halo"),
+                {"source_meta.json": {"last_fail_reason": self._FOLD_353}})
+            self.assertEqual(c.conduct(refs, "generate"), "pass")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes], ["compile"])
+            self.assertEqual(revokes[0]["--last-fail-reason"], self._FOLD_353)
+            launches = self._producer_launches(c, "compile")
+            self.assertEqual(len(launches), 2)
+            self.assertNotIn("repair_findings", launches[0])
+            self.assertEqual(launches[1]["repair_findings"], self._FOLD_353)
+
+    def test_escalated_budget_exhaustion_revokes_with_the_host_reason_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._escalating_conductor(
+                tmp, "prod", "generate", "verify",
+                wc.classify_verify_severity("major", "prod"),
+                wc.RouteDecision("retry", target_phase="generate", repair_strategy="reuse",
+                                 severity="major", reason="quoted helper lacks JSON escaping"),
+                {"source_meta.json": {"last_fail_reason": self._FOLD_353}},
+                fail_times=wc.MAX_ATTEMPTS_PER_PHASE + 1)
+            self.assertEqual(c.conduct(refs, "generate"), "fail_closed")
+            ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+            self.assertEqual(ss["--reason-code"], "retry_budget_exhausted")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE + 1)
+            # The last revocation is the budget-exhausted branch's own.
+            self.assertEqual(revokes[-1]["--last-fail-reason"], self._FOLD_353)
+
+    def test_escalated_dev_rollback_revokes_with_the_host_reason_findings(self) -> None:
+        excerpt = "[syntax]\n" + "s" * 2600 + "\n[lint]\n" + "l" * 2600
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._escalating_conductor(
+                tmp, "dev", "generate", "gate",
+                wc.RouteDecision("escalate", reason="gate_unknown_category:foo"),
+                wc.RouteDecision("reopen", target_phase="compile", repair_strategy="reuse",
+                                 severity="major", reason="free text"),
+                {"gate_meta.json": {"failure_excerpt": excerpt}})
+            self.assertEqual(c.conduct(refs, "generate"), "fail_closed")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes], ["compile"])
+            self.assertEqual(revokes[0]["--last-fail-reason"], excerpt)
+
+    def test_directive_free_text_never_selects_the_findings(self) -> None:
+        # The host reason has no findings source; the diagnostician spells its reason like one
+        # that has. The meta it would name is on disk, and nothing may read it.
+        for directive_reason in ("verify_minor", "gate_x"):
+            with self.subTest(directive_reason=directive_reason), \
+                    tempfile.TemporaryDirectory() as tmp:
+                c, refs = self._escalating_conductor(
+                    tmp, "prod", "generate", "verify",
+                    wc.RouteDecision("escalate", reason="generate_fail_unclassified"),
+                    wc.RouteDecision("retry", target_phase="generate", repair_strategy="reuse",
+                                     severity="major", reason=directive_reason),
+                    {"source_meta.json": {"last_fail_reason": self._FOLD_353},
+                     "gate_meta.json": {"failure_excerpt": "[lint]\nC061"}})
+                self.assertEqual(c.conduct(refs, "generate"), "pass")
+                revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+                self.assertEqual(len(revokes), 1)
+                self.assertNotIn("--last-fail-reason", revokes[0])
+                launches = self._producer_launches(c, "generate")
+                self.assertEqual(len(launches), 2)
+                self.assertNotIn("repair_findings", launches[1])
+
     def test_escalate_ambiguous_null_target_terminalizes(self) -> None:
         # An ambiguous diagnostician directive (target_phase=None — the schema permits null) must
         # NOT be normalized into a same-phase producer restart; it terminalizes as malformed.
