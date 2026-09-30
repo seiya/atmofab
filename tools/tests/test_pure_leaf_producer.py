@@ -994,6 +994,18 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(meta["per_attempt"][0]["model"], "claude-opus-4-8")
         self.assertEqual(meta["per_attempt"][0]["model_provenance"], "result_envelope")
 
+    def test_a_claude_attempt_with_no_envelope_model_claims_no_provenance(self) -> None:
+        """Issue #348 round 1: a claude attempt whose envelope names no model records
+        (null, null) — `result_envelope` would claim a source that supplied nothing. Measured:
+        making the provenance unconditional left every other row green."""
+        envelope = json.dumps({"result": json.dumps(_valid_bundle()), "is_error": False,
+                               "usage": {"output_tokens": 10}, "session_id": "s"})
+        c, refs, oc = self._run([envelope])
+        self.assertEqual(oc.status, "pass")
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual((meta["per_attempt"][0]["model"],
+                          meta["per_attempt"][0]["model_provenance"]), (None, None))
+
     def test_a_codex_attempt_records_the_host_pinned_model(self) -> None:
         """Issue #348: a codex attempt's `per_attempt[].model` was read off the JSONL stream,
         whose observed success events carry no model, so every codex row recorded `null` while
