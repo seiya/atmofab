@@ -1651,8 +1651,11 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
                          (self._refs().node_key, "generate", "child-7"))
 
     def test_a_multi_line_verify_fold_is_seeded_whole(self) -> None:
-        """The cross-run `--resume` half of issue #347: a revoked verify meta carries the
-        projection's fold of reason + every finding, and the seed hands all of it on."""
+        """The SEED step of issue #347's cross-run `--resume` path: given a revocation whose
+        `last_fail_reason` is the projection's fold of reason + every finding, the seed hands
+        all of it on. `check_phase_certified` is faked here; the real revoke write and the
+        certification read-back are pinned by `test_orchestration_runtime.py`
+        `test_a_multi_line_findings_text_round_trips_through_the_revoke_cli`."""
         answer = dict(self._REVOKED_GENERATE)
         answer["last_fail_reason"] = "quoted unescaped\n1. quoted unescaped\n2. ceil not used\n"
         c = self._conductor(lambda phase:

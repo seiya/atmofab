@@ -9632,6 +9632,36 @@ class PhaseCertificationTests(unittest.TestCase):
             self.assertEqual(rc, 0, err.getvalue())
             self.assertNotIn("did not reach the artifact", err.getvalue())
 
+    def test_a_multi_line_findings_text_round_trips_through_the_revoke_cli(self) -> None:
+        """The `--resume` half of issue #347 on the REAL write and read: a verify meta's
+        `last_fail_reason` is the reviewer's reason followed by every finding
+        (`verify_repair_text`), the conductor revokes with it over stdin, and the resumed run
+        seeds its repair from what `check-phase-certified` reads back. Every line, whole,
+        longer than any clip a reader could apply — or the next run repairs from a fragment."""
+        folded = "escape handling is incomplete\n" + "\n".join(
+            f"{i}. finding {i} " + "x" * 2500 for i in (1, 2, 3))
+        self.assertGreater(len(folded), 6000)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            self._certified(repo, through="generate")
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()), \
+                    mock.patch("sys.stdin", io.StringIO(folded)):
+                rc = main(["revoke-artifact", "--repo-root", str(repo),
+                           "--orchestration-id", "o1", "--node-key", self._NK,
+                           "--step", "generate", "--reason", "verify_minor",
+                           "--trigger-agent-run-id", "t", "--last-fail-reason-from-stdin"])
+            self.assertEqual(rc, 0, err.getvalue())
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["check-phase-certified", "--repo-root", str(repo),
+                      "--orchestration-id", "o1", "--node-key", self._NK, "--step", "generate",
+                      "--no-record"])
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["reason"], "revoked")
+            self.assertEqual(payload["last_fail_reason"], folded)
+
     def test_revoke_artifact_is_a_noop_when_the_pipeline_has_no_lineage(self) -> None:
         """The contract stated in this function's own docstring and in
         `docs/CLI_REFERENCE_RARE.md`: `noop`, not an error. `_read_json` RAISES on a missing
