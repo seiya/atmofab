@@ -2330,7 +2330,9 @@ class PureColdRepairPromptTests(unittest.TestCase):
 
     # A verify_minor reopen's findings: the projection's fold of the reviewer's reason and every
     # `findings[].summary` (`verify_repair_text`, issue #347).
-    _FOLDED_FINDINGS = ("quoted not escaped\n1. quoted not escaped\n"
+    # The reason line is deliberately NOT a substring of any finding line, so each line's
+    # presence is observed on its own.
+    _FOLDED_FINDINGS = ("the helper's escaping is incomplete\n1. quoted not escaped\n"
                         "2. ceil not used for the block count\n3. rank 0 writes twice")
 
     def _assert_inside_the_findings_fence(self, text: str, needle: str) -> None:
@@ -2348,7 +2350,9 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 if warm:
                     req["warm_resume"] = True
                 text = ort._render_pure_repair_prompt(req)
-                for line in self._FOLDED_FINDINGS.splitlines():
+                lines = self._FOLDED_FINDINGS.splitlines()
+                for line in lines:
+                    self.assertFalse(any(line in other for other in lines if other != line))
                     self.assertIn(line, text)
                     self._assert_inside_the_findings_fence(text, line)
 

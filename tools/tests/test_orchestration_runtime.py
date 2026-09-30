@@ -9635,8 +9635,10 @@ class PhaseCertificationTests(unittest.TestCase):
     def test_a_multi_line_findings_text_round_trips_through_the_revoke_cli(self) -> None:
         """The `--resume` half of issue #347 on the REAL write and read: a verify meta's
         `last_fail_reason` is the reviewer's reason followed by every finding
-        (`verify_repair_text`), the conductor revokes with it over stdin, and the resumed run
-        seeds its repair from what `check-phase-certified` reads back. Every line, whole,
+        (`verify_repair_text`), the conductor revokes with it over stdin (that hand-off is
+        `RevokeAndResetTest` in test_workflow_conductor.py; this row drives the CLI with the
+        stdin it receives), and the resumed run seeds its repair from what
+        `check-phase-certified` reads back. Every line, whole,
         longer than any clip a reader could apply — or the next run repairs from a fragment."""
         folded = "escape handling is incomplete\n" + "\n".join(
             f"{i}. finding {i} " + "x" * 2500 for i in (1, 2, 3))

@@ -703,20 +703,19 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(vmeta["result"], "pass")
         self.assertIsNone(vmeta["failure_category"])
 
-    def test_every_finding_of_a_minor_verdict_reaches_the_producer_repair_request(self) -> None:
-        """Issue #347's defect, end to end on the host: the reviewer's one-line reason named one
-        defect and `findings[]` named more, and the warm repair's `repair_findings` carried only
-        the reason (orch_20260929T204405Z_c269a003, launch 608eef82). Every summary must now be
-        in the launch request the producer's repair turn RECORDS — driven through `run_substep`,
-        so the producer loop's own seed of `repair_findings` is on the path, not only
-        `build_launch_request`. The fold is longer than every clip a reader of it could apply
-        (the diagnostician's 6000 budget is the largest in the tree), asserted below."""
-        summaries = ["`quoted` escape is missing " + "q" * 2500,
-                     "the block count does not use ceil " + "c" * 2500,
-                     "rank 0 writes the halo twice " + "h" * 2500]
+    _LONG_SUMMARIES = ["`quoted` escape is missing " + "q" * 2500,
+                       "the block count does not use ceil " + "c" * 2500,
+                       "rank 0 writes the halo twice " + "h" * 2500]
+
+    def _producer_repair_request_after_a_minor_verdict(self, *, resumable: bool) -> dict:
+        """Drive a `minor` verdict with `_LONG_SUMMARIES` through the real routing and read the
+        launch request the producer's repair turn RECORDS — via `run_substep`, so the producer
+        loop's own seed of `repair_findings` is on the path, not only `build_launch_request`.
+        `resumable=False` is the #209 cold first turn (a provider without warm resume, a GC'd
+        transcript)."""
         c, refs, oc = self._run([_envelope(_verdict(
             "fail", severity="minor", reason="escape handling is incomplete",
-            findings=[{"summary": s} for s in summaries]))])
+            findings=[{"summary": s} for s in self._LONG_SUMMARIES]))])
         self.assertEqual(oc.status, "fail")
         passed = wc.SubstepOutcome("a", "pass", [])
         decision = c.classify_failure(refs, "generate", [passed, passed, oc])
@@ -726,18 +725,42 @@ class PureVerifySubstepTests(unittest.TestCase):
         # The producer repair turn, on the same fake: one valid bundle answers it.
         c.envelopes = [_envelope(_valid_bundle())]
         c.calls = []
+        if not resumable:
+            c._claude_session_resumable = (  # type: ignore[method-assign]
+                lambda arid, **kw: False)
         produced = c.run_substep(refs, "generate", "generate", repair=repair)
         self.assertEqual(produced.status, "pass")
         launches = [captured["--request-json"] for sub, captured in c.calls
                     if sub == "record-launch"]
         self.assertEqual(len(launches), 1)
-        req = launches[0]
+        return launches[0]
+
+    def _expected_fold(self) -> str:
+        expected = ("escape handling is incomplete\n"
+                    + "\n".join(f"{i}. {s}"
+                                 for i, s in enumerate(self._LONG_SUMMARIES, start=1)))
+        # Longer than every clip a reader of it could apply (the diagnostician's 6000 budget
+        # is the largest in the tree).
+        self.assertGreater(len(expected), 6000)
+        return expected
+
+    def test_every_finding_of_a_minor_verdict_reaches_the_producer_repair_request(self) -> None:
+        """Issue #347's defect, end to end on the host: the reviewer's one-line reason named one
+        defect and `findings[]` named more, and the warm repair's `repair_findings` carried only
+        the reason (orch_20260929T204405Z_c269a003, launch 608eef82). Every summary must now be
+        in the warm repair turn's recorded request."""
+        req = self._producer_repair_request_after_a_minor_verdict(resumable=True)
         self.assertEqual(req["repair_strategy"], "reuse")
         self.assertTrue(req.get("warm_resume"))
-        expected = ("escape handling is incomplete\n"
-                    + "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1)))
-        self.assertGreater(len(expected), 6000)
-        self.assertEqual(req["repair_findings"], expected)
+        self.assertEqual(req["repair_findings"], self._expected_fold())
+
+    def test_every_finding_reaches_a_cold_first_repair_turn_too(self) -> None:
+        """The cold half of the same path: with no session to resume, the reopen's first turn
+        is a cold repair (issue #209) and must carry the same whole fold."""
+        req = self._producer_repair_request_after_a_minor_verdict(resumable=False)
+        self.assertEqual(req["repair_strategy"], "reuse")
+        self.assertNotIn("warm_resume", req)
+        self.assertEqual(req["repair_findings"], self._expected_fold())
 
     def test_bounded_repair_recovers_on_second_turn(self) -> None:
         bad = {"verification_status": "pass"}  # schema violation (missing keys)
