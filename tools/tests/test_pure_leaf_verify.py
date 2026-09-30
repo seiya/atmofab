@@ -707,9 +707,13 @@ class PureVerifySubstepTests(unittest.TestCase):
         """Issue #347's defect, end to end on the host: the reviewer's one-line reason named one
         defect and `findings[]` named more, and the warm repair's `repair_findings` carried only
         the reason (orch_20260929T204405Z_c269a003, launch 608eef82). Every summary must now be
-        in the launch request the producer repair is built from."""
-        summaries = ["`quoted` escape is missing", "the block count does not use ceil",
-                     "rank 0 writes the halo twice"]
+        in the launch request the producer's repair turn RECORDS — driven through `run_substep`,
+        so the producer loop's own seed of `repair_findings` is on the path, not only
+        `build_launch_request`. The fold is longer than every clip a reader of it could apply
+        (the diagnostician's 6000 budget is the largest in the tree), asserted below."""
+        summaries = ["`quoted` escape is missing " + "q" * 2500,
+                     "the block count does not use ceil " + "c" * 2500,
+                     "rank 0 writes the halo twice " + "h" * 2500]
         c, refs, oc = self._run([_envelope(_verdict(
             "fail", severity="minor", reason="escape handling is incomplete",
             findings=[{"summary": s} for s in summaries]))])
@@ -719,14 +723,21 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual((decision.reason, decision.repair_strategy), ("verify_minor", "reuse"))
         findings = c._read_repair_findings(refs, decision.reason, "generate")
         repair = c._repair_payload(decision, "producer-1", findings=findings)
-        req = wc.build_launch_request(
-            refs, step="generate", substep="generate", orchestration_id="o",
-            orchestration_agent_run_id="orch", child_agent_run_id="producer-2",
-            agent_model="opus", workflow_mode="dev", repair=repair, warm_resume=True)
+        # The producer repair turn, on the same fake: one valid bundle answers it.
+        c.envelopes = [_envelope(_valid_bundle())]
+        c.calls = []
+        produced = c.run_substep(refs, "generate", "generate", repair=repair)
+        self.assertEqual(produced.status, "pass")
+        launches = [captured["--request-json"] for sub, captured in c.calls
+                    if sub == "record-launch"]
+        self.assertEqual(len(launches), 1)
+        req = launches[0]
+        self.assertEqual(req["repair_strategy"], "reuse")
         self.assertTrue(req.get("warm_resume"))
-        self.assertEqual(req["repair_findings"],
-                         "escape handling is incomplete\n"
-                         + "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1)))
+        expected = ("escape handling is incomplete\n"
+                    + "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1)))
+        self.assertGreater(len(expected), 6000)
+        self.assertEqual(req["repair_findings"], expected)
 
     def test_bounded_repair_recovers_on_second_turn(self) -> None:
         bad = {"verification_status": "pass"}  # schema violation (missing keys)
