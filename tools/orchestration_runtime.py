@@ -1485,8 +1485,10 @@ class DerivationResolver:
         # cache hit, and never a decision); an output produced AFTER the revocation — the
         # re-derivation it asked for — is selected as usual. For a comparand resolver the
         # candidates matched under their OWN stamped toolchain leaves, so a revocation shadows
-        # older eligible Builds across compiler versions too, not only those of one key — the
-        # conservative side, since a revocation is a decision the derivation must run again.
+        # older eligible Builds across compiler versions too, not only those of one key. That
+        # drops the other target from the comparands (this run's cross-target record then has
+        # none to read) rather than comparing against a variant older than one the operator
+        # decided must be re-derived; the revocation is resolved by that re-derivation.
         revoked_orders = [order for order, detail in refused if detail.get("revoked")]
         if revoked_orders:
             newest_revoked = max(revoked_orders)
