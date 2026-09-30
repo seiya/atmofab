@@ -28542,6 +28542,26 @@ class ResolveComparandsTests(unittest.TestCase):
             self.assertEqual((sel.ok, sel.reason), (False, "derivation_key_mismatch:source"))
             self.assertEqual(self._resolve(), [])
 
+    def test_a_revoked_newer_build_shadows_an_older_one_under_another_compiler(self) -> None:
+        """Matched per stamp, B's Builds under two compiler versions are candidates of one
+        selection, so revoking the newer one shadows the older one too: the revocation is a
+        decision B's derivation must run again, not a fall-through to an earlier variant."""
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+            self._run(b, "run_20260102_001",
+                      verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        with self._probe_answers("v2"):
+            b2 = certify_node(self.repo, "orch_b", self.NODE, through="build", target=self.b,
+                              binary_id="bin_20260101_002", ir_text=self.CROSS_IR)
+        with self._probe_answers(None):
+            self.assertEqual(len(self._resolve()), 0)   # the newer Build has no run yet
+            ort._revoke_stage_meta(self.repo, self.repo / b2["binary_meta"], reason="test",
+                                   trigger_agent_run_id="t")
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+            self.assertEqual((sel.ok, sel.revoked), (False, True))
+            self.assertEqual(self._resolve(), [])
+
     def test_a_comparand_mismatch_after_the_probe_leaf_is_diagnosed_off_the_stamp(self) -> None:
         """The diagnosis diffs each stamp against inputs carrying ITS OWN probed leaves: an input
         that sorts after `toolchain.compiler_version` (a toolchain leaf; the transformation,
