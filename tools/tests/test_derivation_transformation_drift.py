@@ -463,12 +463,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # ...and the digest `compile-docs-9` SHIPPED with (origin/main a09eed1a), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-9@a09eed1a": "bf6397869f7ffe89c4129f2cc62ad99038c231fc70616b777deb85aeffdb5000",
-    # compile-docs-10 (issue #346): the schema block classifies the case inputs as runtime or
-    # provenance, §1-1 asks for a route per runtime input, V9 (case input routing: presence and
-    # route) joins the verify scope and the scope sentence names it, and V3 points at V9 for
-    # whether a case input reaches the code. A compile leaf reading it authors routes a
+    # compile-docs-10 (issue #346): the schema block classifies the case inputs (a runtime input
+    # is a value the node's algorithm takes; the provenance inputs and anything the algorithm
+    # does not take ask nothing of the code), §1-1 asks for a route per runtime input, V9 (case
+    # input routing: presence, the route forms, the per-case null-member exemption) joins the
+    # verify scope and the scope sentence names it, the `evidence_ref` comment and V3 point at
+    # V9, and the `minor` bullet and §On-failure behavior name V9. A compile leaf reading it authors routes a
     # compile-docs-9 leaf did not, so the key moves.
-    "compile-docs-10": "f3783afc15fa736d023d4398dd2c8883dedd3976767d15b4629dd88e9139c5fb",
+    "compile-docs-10": "5ce899fad8dc65e55cef4382c158877ce98bd8a0b8e3325e8db7a903f37ead81",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

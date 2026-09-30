@@ -727,8 +727,13 @@ PINNED: dict[str, str] = {
     # deterministically at Compile (`_validate_profile_selection`, when the sidecar's `profiles`
     # is non-empty) and the test-profile pair is recorded by the host (issue #346 PR-2).
     # The compile producer gains rule (8) (author a route per runtime input) and the compile
-    # reviewer's backstop count becomes three.
-    "pure-54": "2245d3016d95612c33cbc467d42945d14a4eeb60715043a66431c21dd67ab26c",
+    # reviewer's backstop count becomes three. G3/H3 count a runtime input whose value differs
+    # across cases as a case-dependent difference; a null member (`boundary: {kind: none}`) asks
+    # the code for nothing unless the IR gives that aspect content for the case; G2/H2 carry
+    # V9's list of route forms, since this reviewer is not shown phase_01. A runtime input is a
+    # value the node's algorithm takes, whether or not a predicate also reads it (review round 2
+    # replaced a JUDGMENT key class that over-refused the harness round-trip sentinels).
+    "pure-54": "15e2349f51e26a89aed53d21b4f768588117b72e3425d53d6d54fa40d2ca8fd7",
 }
 
 
