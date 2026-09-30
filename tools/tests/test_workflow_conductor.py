@@ -1856,32 +1856,37 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         evidence)` list; a key with no member clears any earlier binding of the node, and a
         drift between the key and the binding is an unresolvable input."""
         from tools.orchestration_runtime import DerivationInputsUnresolvable
-        from tools.primary_evidence import ComparandEvidence
+        from tools.primary_evidence import ComparandEvidence, ComparandResolution
         c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                                env={})
         refs = self._refs()
         comp = ComparandEvidence("cpp_gpu", "p", "run_20260928_001", Path("/nonexistent"),
                                  "sha256:" + "a" * 64)
+        absent = [{"target_id": "fortran_cpu_mpi", "reason": "no_eligible_run"}]
         record = {"derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
                   "derivation_inputs": {"ir": "sha256:" + "1" * 64, "comparand": [
                       {"target_id": "cpp_gpu", "evidence": "sha256:" + "a" * 64}]}}
         with mock.patch.object(wc, "phase_derivation", return_value=record), \
-                mock.patch("tools.orchestration_runtime.resolve_comparands",
-                           autospec=True, return_value=[comp]) as resolve:
+                mock.patch("tools.orchestration_runtime.resolve_comparands", autospec=True,
+                           return_value=ComparandResolution([comp], absent)) as resolve:
             c._phase_derivation(refs, "validate")
-            self.assertEqual(c._phase_comparand_bindings[refs.node_key], [comp])
+            # the whole resolution is bound, `absent` included (issue #345)
+            self.assertEqual(c._phase_comparand_bindings[refs.node_key],
+                             ComparandResolution([comp], absent))
             resolve.assert_called_once_with(
                 _SHARED_REPO_ROOT, node_key=refs.node_key, ir_hash="sha256:" + "1" * 64,
                 target=c.target, spec_refs={refs.node_key: refs.spec_path})
-            resolve.return_value = [comp._replace(evidence="sha256:" + "b" * 64)]
+            resolve.return_value = ComparandResolution(
+                [comp._replace(evidence="sha256:" + "b" * 64)], [])
             with self.assertRaisesRegex(DerivationInputsUnresolvable, "bound comparands"):
                 c._phase_derivation(refs, "validate")
             self.assertNotIn(refs.node_key, c._phase_comparand_bindings)
-            resolve.return_value = []
+            resolve.return_value = ComparandResolution(
+                [], [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}])
             with self.assertRaisesRegex(DerivationInputsUnresolvable, "bound comparands"):
                 c._phase_derivation(refs, "validate")
-        c._phase_comparand_bindings[refs.node_key] = [comp]
+        c._phase_comparand_bindings[refs.node_key] = ComparandResolution([comp], [])
         no_member = {**record, "derivation_inputs": {"ir": "sha256:" + "1" * 64}}
         with mock.patch.object(wc, "phase_derivation", return_value=no_member):
             c._phase_derivation(refs, "validate")
@@ -16357,7 +16362,11 @@ class DeterministicBuildTest(unittest.TestCase):
         comparand's target."""
         import tempfile
 
-        from tools.primary_evidence import ComparandEvidence, comparand_evidence_sha256
+        from tools.primary_evidence import (
+            ComparandEvidence,
+            ComparandResolution,
+            comparand_evidence_sha256,
+        )
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
@@ -16402,31 +16411,41 @@ class DeterministicBuildTest(unittest.TestCase):
 
             comp = ComparandEvidence("cpp_gpu", "p/gpu", "run_20260928_001", other,
                                      comparand_evidence_sha256(other))
-            c._phase_comparand_bindings[refs.node_key] = [comp]
+            c._phase_comparand_bindings[refs.node_key] = ComparandResolution([comp], [])
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual((doc["self_verdict"], doc["own_verdict"]), ("pass", "pass"))
             cross = doc["per_test"][0]["basis"]["primary"][1]
             self.assertEqual([e["comparand"] for e in cross["evaluated"]], ["cpp_gpu"])
+            self.assertEqual(doc["comparands_absent"], [])
             self.assertEqual(wc._verdict_cross_target(doc),
-                             {"own_verdict": "pass", "comparands": [comp.detail()]})
+                             {"own_verdict": "pass", "comparands": [comp.detail()],
+                              "absent": []})
             self.assertIsNone(wc._verdict_cross_target({"per_test": []}))
 
-            # an empty binding (the first variant) is a no_comparand record, not a refusal
-            c._phase_comparand_bindings[refs.node_key] = []
+            # an empty binding (the first variant) is a no_comparand record, not a refusal,
+            # and the verdict records why each other target is not a comparand (issue #345)
+            absent = [{"target_id": "cpp_gpu", "reason": "binary_not_found"}]
+            c._phase_comparand_bindings[refs.node_key] = ComparandResolution([], absent)
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual(doc["per_test"][0]["basis"]["primary"][1]["kind"], "no_comparand")
-            self.assertEqual(wc._verdict_cross_target(doc),
+            on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
+            self.assertEqual(on_disk["comparands_absent"], absent)
+            self.assertEqual(wc._verdict_cross_target(on_disk),
+                             {"own_verdict": "pass", "comparands": [], "absent": absent})
+            # a verdict written before the field (verdict-7) yields no `absent` member
+            del on_disk["comparands_absent"]
+            self.assertEqual(wc._verdict_cross_target(on_disk),
                              {"own_verdict": "pass", "comparands": []})
 
             # the comparand's bytes move after the key hashed them
             _write(other, [2.0, 4.5])
-            c._phase_comparand_bindings[refs.node_key] = [comp]
+            c._phase_comparand_bindings[refs.node_key] = ComparandResolution([comp], [])
             with self.assertRaisesRegex(RuntimeError, "comparand_evidence_moved:cpp_gpu"):
                 c._author_execute_verdict(refs, ir, good)
 
             # the same disagreement, bound under its own hash: a verdict, not a refusal
-            c._phase_comparand_bindings[refs.node_key] = [
-                comp._replace(evidence=comparand_evidence_sha256(other))]
+            c._phase_comparand_bindings[refs.node_key] = ComparandResolution(
+                [comp._replace(evidence=comparand_evidence_sha256(other))], [])
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
                              ("fail", "pass", "physics_fail"))
@@ -16439,6 +16458,7 @@ class DeterministicBuildTest(unittest.TestCase):
             ir["io_contract"]["primary_predicates"].pop()
             doc = c._author_execute_verdict(refs, ir, good)
             self.assertEqual(doc["self_verdict"], "pass")
+            self.assertNotIn("comparands_absent", doc)
             # the IR the verdict was judged over is the one the validate key bound (round 2,
             # Codex): another target's resolve_comparands matches on it
             self.assertNotIn("ir_hash", doc)
@@ -19746,14 +19766,20 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             repo, refs = Path(td), self._refs()
             c = self._conductor(repo)
             rn = repo / refs.run_node_dir()
-            for primary, expected in (
-                    ([{"kind": "pass", "comparands": [comp]}],
+            absent = [{"target_id": "fortran_cpu_mpi", "reason": "no_eligible_run"}]
+            for primary, extra, expected in (
+                    ([{"kind": "pass", "comparands": [comp]}], {},
                      {"own_verdict": "pass", "comparands": [comp]}),
-                    ([{"kind": "pass", "comparands": []}], None)):
+                    # issue #345: the verdict's `comparands_absent` is copied, read off the file
+                    ([{"kind": "no_comparand", "comparands": []}],
+                     {"comparands_absent": absent},
+                     {"own_verdict": "pass", "comparands": [], "absent": absent}),
+                    ([{"kind": "pass", "comparands": []}], {}, None)):
                 self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass",
                                                  "basis": {"primary": primary}}])
                 doc = json.loads((rn / "verdict.json").read_text())
-                (rn / "verdict.json").write_text(json.dumps({**doc, "own_verdict": "pass"}))
+                (rn / "verdict.json").write_text(json.dumps(
+                    {**doc, "own_verdict": "pass", **extra}))
                 with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
                                 autospec=True, return_value=[]):
                     c._author_derived_validate_artifacts(refs)

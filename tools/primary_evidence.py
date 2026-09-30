@@ -433,6 +433,20 @@ class ComparandEvidence(NamedTuple):
                 "run_id": self.run_id, "evidence": self.evidence}
 
 
+class ComparandResolution(NamedTuple):
+    """The answer of `orchestration_runtime.resolve_comparands` for one node on one target
+    (issue #345): `comparands`, the other declared targets whose certified variant is bound,
+    and `absent`, one `{"target_id", "reason"}` per other declared target that contributed
+    nothing, in target-id order. Every other declared target is in exactly one of the two.
+    `reason` is the comparand resolver's Build refusal (`binary_not_found`,
+    `derivation_key_mismatch:<input>`, `revoked`, an upstream phase's reason, ...),
+    `compile_ir_mismatch` (its certified Compile is another IR) or `no_eligible_run`. Only
+    `comparands` is keyed: a target that turns into a comparand moves the key through
+    `comparand[]` already."""
+    comparands: list[ComparandEvidence]
+    absent: list[dict[str, str]]
+
+
 #: The host-authored file under `raw/state_snapshots/` that is not a capture: the snapshot
 #: schema the conductor writes from the IR. Excluded from the comparand evidence hash — it is
 #: not state the comparand's kernel produced.

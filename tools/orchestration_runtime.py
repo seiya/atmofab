@@ -2645,10 +2645,12 @@ COMPARAND_OWN_VERDICTS: frozenset[str] = frozenset({"pass", "xfail"})
 def resolve_comparands(
     repo_root: Path, *, node_key: str, ir_hash: str, target: TargetProfile,
     spec_refs: Mapping[str, str] | None = None,
-) -> list[Any]:
+) -> Any:
     """The comparands of `node_key`'s Validate on `target` (issue #324, R4-d): for every OTHER
     declared target B (`list_target_ids`, in target-id order), B's certified variant of the
-    same node over the same IR, as a `primary_evidence.ComparandEvidence` — or nothing for B.
+    same node over the same IR, as a `primary_evidence.ComparandEvidence` — or, when B has
+    none, B's entry in `absent` with the reason (issue #345). Returns a
+    `primary_evidence.ComparandResolution`.
 
     B contributes when `DerivationResolver(target=B, comparand=True).select(node_key, "build")`
     is certified — B's Build matched under the toolchain identity B was stamped with, so this
@@ -2676,6 +2678,10 @@ def resolve_comparands(
     `_revoke_stage_meta` writes; post_judge writes `pass` before its gate runs, so the meta
     says nothing else about the run). A B with no such run contributes nothing.
 
+    The reason recorded for a B that contributes nothing is the first clause above that
+    refused: the comparand resolver's Build `reason`, `compile_ir_mismatch`, or
+    `no_eligible_run`.
+
     Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
     whether B's own Validate is certified is never asked — B's verdict depends on this run's
     evidence, so asking would recurse. This is the one place a resolver for a target other
@@ -2686,6 +2692,7 @@ def resolve_comparands(
     eligible run holds no capture to hash."""
     from tools.primary_evidence import (
         ComparandEvidence,
+        ComparandResolution,
         PrimaryEvidenceError,
         comparand_evidence_sha256,
     )
@@ -2699,6 +2706,7 @@ def resolve_comparands(
             f"({exc.detail})") from exc
     safe = _node_key_to_safe(node_key)
     out: list[Any] = []
+    absent: list[dict[str, str]] = []
     for tid in target_ids:
         if tid == target.target_id:
             continue
@@ -2712,8 +2720,10 @@ def resolve_comparands(
                                       comparand=True)
         build = resolver.select(node_key, "build")
         if not (build.ok and build.pipeline_ref and build.binary_id):
+            absent.append({"target_id": tid, "reason": build.reason or "binary_not_found"})
             continue
         if resolver.select(node_key, "compile").output_hash != ir_hash:
+            absent.append({"target_id": tid, "reason": "compile_ir_mismatch"})
             continue
         runs = repo_root / build.pipeline_ref / "runs"
         best: tuple[tuple[str, int], str, Path] | None = None
@@ -2745,6 +2755,7 @@ def resolve_comparands(
             if best is None or rkey > best[0]:
                 best = (rkey, run.name, node_dir)
         if best is None:
+            absent.append({"target_id": tid, "reason": "no_eligible_run"})
             continue
         _rkey, run_id, node_dir = best
         try:
@@ -2756,7 +2767,7 @@ def resolve_comparands(
         out.append(ComparandEvidence(
             target_id=tid, pipeline_ref=str(build.pipeline_ref), run_id=run_id,
             run_dir=node_dir, evidence=evidence))
-    return out
+    return ComparandResolution(comparands=out, absent=absent)
 
 
 def _ir_cross_target_predicates(repo_root: Path, ir: str, node_key: str) -> list[Any]:
@@ -2930,12 +2941,14 @@ def phase_derivation_inputs(
         },
     }
     # The comparands a cross-target predicate reads (issue #324): present only when the IR
-    # has one, so every other node's key is what it was before R4-d.
+    # has one, so every other node's key is what it was before R4-d. The resolution's
+    # `absent` (issue #345) stays out of the key: a target that becomes a comparand moves the
+    # key through `comparand[]` already, and why one did not is a record, not an input.
     if _ir_cross_target_predicates(repo_root, ir, node_key):
         inputs["comparand"] = [
             {"target_id": c.target_id, "evidence": c.evidence}
             for c in resolve_comparands(repo_root, node_key=node_key, ir_hash=ir_hash,
-                                        target=target, spec_refs={node_key: spec})]
+                                        target=target, spec_refs={node_key: spec}).comparands]
     return inputs
 
 

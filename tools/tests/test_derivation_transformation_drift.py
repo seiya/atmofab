@@ -893,6 +893,11 @@ PINNED_VERDICT: dict[str, str] = {
     # `ResolveComparandsTests`, not by this pin.
     "verdict-7@1b5c30de": "9847c038a082ccae4a3ca3d6f539377a75fbf4e9f937aae0128ea1a7ad478e45",
     "verdict-7": "2ddc3713d10e2a9acfc4fe7cb30e42dc817aedd8d6ec08973c70369412c06acb",
+    # verdict-8 (issue #345 PR-2): `resolve_comparands` returns a `ComparandResolution` whose
+    # `absent` names every other declared target that is not a comparand and why;
+    # `verdict.json` gains `comparands_absent` for an IR with a cross-target predicate, and
+    # `aggregate_verdict.json#cross_target` gains `absent`, copied from it.
+    "verdict-8": "1847d75a8a9526b42cb035d581a017029a4365a382d2e0b9f4e3d024f833be24",
 }
 
 

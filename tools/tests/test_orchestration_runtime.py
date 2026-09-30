@@ -28343,6 +28343,9 @@ class ResolveComparandsTests(unittest.TestCase):
         return str(sel.output_hash)
 
     def _resolve(self, **kw: Any) -> list[Any]:
+        return self._resolution(**kw).comparands
+
+    def _resolution(self, **kw: Any) -> Any:
         return ort.resolve_comparands(self.repo, node_key=self.NODE,
                                       ir_hash=kw.pop("ir_hash", None) or self._ir_hash(),
                                       target=_TP, **kw)
@@ -28434,13 +28437,62 @@ class ResolveComparandsTests(unittest.TestCase):
                          [(self.b.target_id, "run_20260101_001")])
 
     def test_an_uncertified_build_or_another_ir_contributes_nothing(self) -> None:
+        """Each is recorded in `absent` with its reason (issue #345), and a target that is a
+        comparand is not."""
         self._certify(_TP)
         b = self._certify(self.b, orch="orch_b", through="generate")
-        self.assertEqual(self._resolve(), [])
+        res = self._resolution()
+        self.assertEqual((res.comparands, res.absent),
+                         ([], [{"target_id": self.b.target_id, "reason": "binary_not_found"}]))
         b = self._certify(self.b, orch="orch_b")
         self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
-        self.assertEqual(len(self._resolve()), 1)
-        self.assertEqual(self._resolve(ir_hash="sha256:" + "0" * 64), [])
+        res = self._resolution()
+        self.assertEqual((len(res.comparands), res.absent), (1, []))
+        res = self._resolution(ir_hash="sha256:" + "0" * 64)
+        self.assertEqual((res.comparands, res.absent),
+                         ([], [{"target_id": self.b.target_id,
+                                "reason": "compile_ir_mismatch"}]))
+
+    def test_a_certified_build_with_no_eligible_run_is_recorded_as_such(self) -> None:
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "fail", "own_verdict": "fail"})
+        # the fixture run is B's only other run: make it ineligible too
+        (self.repo / b["pipeline_ref"] / "runs" / "run_20260101_001" / b["safe"]
+         / "verdict.json").unlink()
+        res = self._resolution()
+        self.assertEqual((res.comparands, res.absent),
+                         ([], [{"target_id": self.b.target_id, "reason": "no_eligible_run"}]))
+
+    def test_a_build_mismatch_is_recorded_with_the_selection_reason(self) -> None:
+        """The recorded reason is the comparand resolver's own, so a moved input is named."""
+        with mock.patch.object(tools_derivation, "BUILD_VERSION", "build-test-a"):
+            self._seed_b()
+        with mock.patch.object(tools_derivation, "BUILD_VERSION", "build-test-b"):
+            res = self._resolution()
+        self.assertEqual((res.comparands, res.absent),
+                         ([], [{"target_id": self.b.target_id,
+                                "reason": "derivation_key_mismatch:transformation"}]))
+
+    def test_every_other_declared_target_is_in_exactly_one_list(self) -> None:
+        """Three declared targets: B a comparand, C with nothing built — C alone is absent,
+        the run's own target is in neither, and `absent` is in target-id order."""
+        from tools.tests.target_fixtures import install_target_profile, second_target
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        c = second_target(target_id="fortran_cpu_t0")
+        d = second_target(target_id="fortran_cpu_t9")
+        install_target_profile(self.repo, c)
+        install_target_profile(self.repo, d)
+        res = self._resolution()
+        self.assertEqual([x.target_id for x in res.comparands], [self.b.target_id])
+        self.assertEqual([x["target_id"] for x in res.absent],
+                         [c.target_id, d.target_id])
+        self.assertTrue(all(x["reason"] for x in res.absent))
+        self.assertEqual(
+            sorted([x.target_id for x in res.comparands] + [x["target_id"] for x in res.absent]
+                   + [_TP.target_id]),
+            sorted(p.name.removesuffix(".yaml")
+                   for p in (self.repo / "spec" / "targets").glob("*.yaml")))
 
     # Issue #345: a comparand's Build is matched under the toolchain identity it was stamped
     # with, never under this host's probe of the other target's compiler.
