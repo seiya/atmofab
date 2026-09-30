@@ -716,6 +716,18 @@ PINNED: dict[str, str] = {
     # `host` (false for the `fortran_cpu_mpi` manifest). The Fortran runner a distributed
     # harness renders (its ABI comment is part of what the producer reads) is new with it.
     "pure-53": "cd73094b849774ec8b44fc1614568c6db05cd5f1a50963251fc859b6c9cd45b9",
+    # pure-54 (issue #346): G2/H2 name the RUNTIME case inputs and ask that the code follow the
+    # route the IR gives each one (Compile V9), and the Generate severity rubric's `major`
+    # example becomes "a runtime case input the IR routes nowhere"; the PROVENANCE inputs
+    # (`profile_selection`, `test_profile_id`, `test_profile_version`) leave the code-side
+    # obligation. This REVERSES the pure-39 stance above (operator decision, 2026-09-30) on three
+    # grounds: the certified profile bundle that read the two keys proved possibility, not
+    # obligation; #346 measured the cost of the obligation — two providers, three reviews, two
+    # verdicts on one IR shape, two terminal CPU runs; and the pointer is pinned
+    # deterministically at Compile (`_validate_profile_selection`) and recorded by the host.
+    # The compile producer gains rule (8) (author a route per runtime input) and the compile
+    # reviewer's backstop count becomes three.
+    "pure-54": "25ba6d8c2b91331d8b1774d95fa8505cebd84c647b30184e77d6a91262e593dc",
 }
 
 

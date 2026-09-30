@@ -11,7 +11,7 @@ The evaluation result of `tests.md` is mapped to the relevant `node`'s `self_ver
 
 ## Requirements
 1. The canonical source format is `Markdown`.
-2. State `test_profile_id`, `test_profile_version`, `status`, and `spec_ref` at the top of the document as required.
+2. State `test_profile_id`, `test_profile_version`, `status`, and `spec_ref` at the top of the document as required. The two `test_profile_*` values are `provenance input`s (`docs/GLOSSARY.md`): a `tests.md` sentence asking that they be recorded in `trial_meta.json` is met by the host at `Validate.execute`, not by generated code.
 3. `spec_ref` requires `spec_kind`, `spec_id`, `spec_version`, and `controlled_spec_path`.
 4. Each `spec` defines at least 1 `L0` test.
 5. Define `L1` / `L2` / `L3` according to the verification purpose. They are not forbidden by `spec_kind`.

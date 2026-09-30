@@ -370,7 +370,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 1. **Spec update**: fix `controlled_spec.md` / `tests.md` / `deps.yaml`, and resolve ambiguity and omissions.
 2. **Compile**: take `controlled_spec.md` + `tests.md` + `deps.yaml` + `spec/registry/spec_catalog.yaml` as input and generate `spec.ir.yaml`.
    - The `Compile.generate` substep generates a single IR that integrates and holds the 4 sections `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node). The IR is target-free: the producer is shown no target profile and the `derivation key` contains none. (`Compile.static`'s harness render preconditions are asked once per DECLARED profile, a set the key does not hash — a profile added later does not re-check certified Compiles against it.)
-   - The `Compile.verify` substep self-checks the structural invariants (case coverage / algorithm completeness / io_contract consistency / dependency consistency / published surface; V1–V4 and V8).
+   - The `Compile.verify` substep self-checks the structural invariants (case coverage / algorithm completeness / io_contract consistency / dependency consistency / published surface / case input routing; V1–V4, V8 and V9).
    - Because it is an `LLM`-using phase, apply the "Handling of the `LLM`" of `SPEC.md`.
 3. **Fix the hierarchical execution order**: fix the execution order in ascending `dependency_graph.json` sidecar `topo_level`. The `Compile` of a parent `node` must not start until the immediate dependency `node` satisfies `direct dependency ir readiness`. `Generate` onward of a parent `node` must not start until the immediate dependency `node` satisfies `direct dependency execution readiness`. Independent `node` of the same `topo_level` are also executed sequentially one at a time.
 4. **Per-`node` workflow issuance**: the `orchestration agent` issues an individual `ir_id` and an individual `pipeline_id` per `node_key`.
@@ -578,7 +578,7 @@ python3 tools/run_workflow.py --resume build
 
 ## 4. Minimal operational checklist
 - The `Controlled Spec` has no undefined items.
-- `spec.ir.yaml` holds the 4 sections `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node), carries no `impl_defaults` section, and satisfies the V1–V4 and V8 invariants of `Compile.verify`.
+- `spec.ir.yaml` holds the 4 sections `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node), carries no `impl_defaults` section, and satisfies the V1–V4, V8 and V9 invariants of `Compile.verify`.
 - The `evidence_ref` of `spec.ir.yaml.io_contract.outputs` resolves to a `raw` entity.
 - `spec.ir.yaml.io_contract.test_evidence_requirements` holds all `test_id` of `tests.md` neither more nor less.
 - When `spec.ir.yaml.io_contract.raw_requirements.required_evidence` declares `artifact=state_snapshots` as required, `schema.variables[].name`, `schema.variables[].shape_expr`, `schema.time_variable`, and `schema.time_shape_expr` are defined.
