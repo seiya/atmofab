@@ -881,7 +881,12 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-6": "9808cac8401a744a1739d0fa2ba05a66a54ece50530ef1328c6388ee3d0858a2",
     # verdict-7 (issue #327): grammar 4 — `atan2(y, x)` joins the function table, and every
     # record carries `grammar_version: 4`.
-    "verdict-7": "9847c038a082ccae4a3ca3d6f539377a75fbf4e9f937aae0128ea1a7ad478e45",
+    # Re-pinned by issue #345 PR-1 (not bumped): `resolve_comparands` matches another target's
+    # Build under the toolchain identity it was stamped with (`comparand=True`) rather than
+    # this host's probe. Wherever that answers another comparand set, the validate key moves
+    # through its own `comparand[]` input, so no standing record with unchanged inputs yields
+    # another verdict; PR-2 bumps to verdict-8 for its new record field.
+    "verdict-7": "2ddc3713d10e2a9acfc4fe7cb30e42dc817aedd8d6ec08973c70369412c06acb",
 }
 
 

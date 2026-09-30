@@ -24647,6 +24647,47 @@ class DerivationInputsTests(unittest.TestCase):
                          {k: v for k, v in plain.items()
                           if k not in ("backend", "compiler_version")})
 
+    def test_every_leaf_that_moves_with_the_path_is_a_declared_host_probed_leaf(self) -> None:
+        """Issue #345: a comparand resolver reads `HOST_PROBED_TOOLCHAIN_LEAVES` off the other
+        target's stamp and everything else off the profile, so a leaf that moves with this
+        host's PATH and is NOT declared would drop a certified comparand again. Two scratch
+        PATHs answering differently move only declared leaves; `probe=False` omits exactly
+        `_host_probed_leaves` and runs no subprocess. Limit: a leaf probed from something other
+        than a PATH executable is out of reach of this row; the structural guard is that
+        `_target_toolchain_identity` fills its probed leaves only from `_HOST_PROBES`."""
+        import os
+        import subprocess as sp
+
+        from tools.backends import registry
+        from tools.tests.target_fixtures import profile_with
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
+        mpi = profile_with(parallel={"backend": "mpi"})
+        cached = ort._build_runtime_server_module()._syntax_compiler_version
+        ids = []
+        for answer in ("one", "two"):
+            cached.cache_clear()
+            self.addCleanup(cached.cache_clear)
+            with tempfile.TemporaryDirectory() as tmp:
+                program = Path(tmp) / wrapper.COMPILER_WRAPPER
+                program.write_text(
+                    "#!/bin/sh\n"
+                    f"if [ \"$1\" = --version ]; then echo 'GNU Fortran ({answer}) 99.1.0'; "
+                    "exit 0; fi\n"
+                    f"echo 'gfortran -L/opt/{answer}/lib'\n", encoding="utf-8")
+                program.chmod(0o755)
+                with mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ['PATH']}"}):
+                    ids.append(ort._target_toolchain_identity(mpi))
+        moved = {k for k in set(ids[0]) | set(ids[1]) if ids[0].get(k) != ids[1].get(k)}
+        self.assertEqual(moved, {"compiler_version", "parallel_runtime"})
+        self.assertLessEqual(moved, set(ort.HOST_PROBED_TOOLCHAIN_LEAVES))
+        with mock.patch.object(sp, "run", side_effect=AssertionError("probed")), \
+                mock.patch.object(sp, "Popen", side_effect=AssertionError("probed")):
+            unprobed = ort._target_toolchain_identity(mpi, probe=False)
+        self.assertEqual(set(unprobed), set(ids[0]) - set(ort._host_probed_leaves(mpi)))
+        self.assertEqual(ort._host_probed_leaves(mpi), ort.HOST_PROBED_TOOLCHAIN_LEAVES)
+        from tools.tests.target_fixtures import FORTRAN_CPU
+        self.assertEqual(ort._host_probed_leaves(FORTRAN_CPU), ("compiler_version",))
+
     def test_an_upstream_binds_by_the_recomputed_hash_never_the_stamped_one(self) -> None:
         """Round-3 mutant: `_meta_output_hash` returning a stamped `output_hash` when present
         survived. The stamped key is a RECORD; what a downstream key binds is recomputed from
@@ -28395,6 +28436,111 @@ class ResolveComparandsTests(unittest.TestCase):
         self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
         self.assertEqual(len(self._resolve()), 1)
         self.assertEqual(self._resolve(ir_hash="sha256:" + "0" * 64), [])
+
+    # Issue #345: a comparand's Build is matched under the toolchain identity it was stamped
+    # with, never under this host's probe of the other target's compiler.
+
+    @staticmethod
+    def _probe_answers(answer: str | None) -> Any:
+        """This host's compiler-version probe answering `answer` for every target — `None` is
+        what a launching shell without the other target's compiler on PATH answers."""
+        server = ort._build_runtime_server_module()
+        server._syntax_compiler_version.cache_clear()
+        return mock.patch.object(server, "_syntax_compiler_version",
+                                 side_effect=lambda argv: answer)
+
+    def test_the_other_targets_build_is_admitted_whatever_this_host_probes(self) -> None:
+        """The #345 reproduction: B was built and certified where its compiler answered, and
+        this run's shell cannot probe it. B stays a comparand."""
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+        with self._probe_answers(None):
+            self.assertEqual([(c.target_id, c.pipeline_ref) for c in self._resolve()],
+                             [(self.b.target_id, b["pipeline_ref"])])
+
+    def test_the_comparand_resolver_runs_no_probe(self) -> None:
+        with self._probe_answers("v1"):
+            self._seed_b()
+        server = ort._build_runtime_server_module()
+        with mock.patch.object(server, "_syntax_compiler_version",
+                               side_effect=AssertionError("probed a compiler")), \
+                mock.patch("tools.host_execution.probe_first_line",
+                           side_effect=AssertionError("probed a runtime")):
+            self.assertEqual(len(self._resolve()), 1)
+
+    def test_the_runs_own_target_still_keys_by_the_host_probe(self) -> None:
+        """The mirror: the run's OWN target's Build is keyed by this host's probe, so a moved
+        compiler still re-derives it."""
+        from tools.orchestration_runtime import _phase_certified
+        with self._probe_answers("v1"):
+            self._certify(_TP, through="build")
+            self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "build",
+                                             target=_TP)[0])
+        with self._probe_answers(None):
+            ok, detail = _phase_certified(self.repo, "orch_a", self.NODE, "build", target=_TP)
+        self.assertEqual((ok, detail["reason"]),
+                         (False, "derivation_key_mismatch:toolchain.compiler_version"))
+
+    def test_a_stamp_without_the_probed_leaf_is_not_matched(self) -> None:
+        """A stamp lacking a host-probed leaf matches nothing: substituting only what is present
+        would match it against a key computed without that leaf."""
+        from tools.derivation import derivation_key
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+        path = self.repo / b["binary_meta"]
+        doc = json.loads(path.read_text())
+        del doc["derivation_inputs"]["toolchain"]["compiler_version"]
+        doc["derivation_key"] = derivation_key("build", doc["derivation_inputs"])
+        path.write_text(json.dumps(doc))
+        with self._probe_answers(None):
+            self.assertEqual(self._resolve(), [])
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+        self.assertEqual((sel.ok, sel.reason),
+                         (False, "derivation_key_mismatch:toolchain.compiler_version"))
+
+    def test_two_certified_builds_of_the_other_target_select_the_latest(self) -> None:
+        """B built under two compiler versions: each matches under its own stamp, and the
+        latest is the one whose runs are read — a run of the older binary is not a comparand."""
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+        with self._probe_answers("v2"):
+            b2 = certify_node(self.repo, "orch_b", self.NODE, through="build", target=self.b,
+                              binary_id="bin_20260101_002", ir_text=self.CROSS_IR)
+        self.assertEqual(b2["pipeline_ref"], b["pipeline_ref"])
+        with self._probe_answers(None):
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+            self.assertEqual((sel.ok, sel.binary_id), (True, "bin_20260101_002"))
+            self.assertEqual(sel.derivation_inputs["toolchain"]["compiler_version"], "v2")
+            self.assertEqual(sel.derivation_key,
+                             json.loads((self.repo / b2["binary_meta"]).read_text())
+                             ["derivation_key"])
+            self.assertEqual(self._resolve(), [])   # only bin_001 has a run
+            self._run(b2, "run_20260102_001",
+                      verdict={"self_verdict": "pass", "own_verdict": "pass"})
+            self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_a_comparand_mismatch_is_diagnosed_off_the_moved_input(self) -> None:
+        """B's source moved after its Build: the comparand resolver names the source, never a
+        probe leaf this host did not run."""
+        with self._probe_answers("v1"):
+            b = self._seed_b()
+        model = self.repo / b["model_ref"]
+        model.write_text(model.read_text() + "! moved\n")
+        from tools.tests.orchestration_fixtures import stamp_derivation
+        meta = json.loads((self.repo / b["source_meta"]).read_text())
+        meta["artifact_hashes"][b["model_ref"]] = (
+            "sha256:" + hashlib.sha256(model.read_bytes()).hexdigest())
+        (self.repo / b["source_meta"]).write_text(json.dumps(meta))
+        with self._probe_answers("v1"):
+            stamp_derivation(self.repo, self.NODE, "generate", b["source_meta"],
+                             target=self.b, ir_ref=b["ir_ref"])
+        with self._probe_answers(None):
+            sel = ort.DerivationResolver(self.repo, target=self.b, comparand=True).select(
+                self.NODE, "build")
+            self.assertEqual((sel.ok, sel.reason), (False, "derivation_key_mismatch:source"))
+            self.assertEqual(self._resolve(), [])
 
     def test_a_declared_target_that_does_not_load_is_unresolvable(self) -> None:
         self._seed_b()
