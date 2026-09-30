@@ -1907,6 +1907,15 @@ class Section51StanzaLayerTests(unittest.TestCase):
         self.assertEqual(
             source_atoms("integer, dimension(lo,public,hi), private :: a"),
             frozenset({"integer,dimension(lo,public,hi)::a"}))
+        # Only the attribute list is touched: an access word on the ENTITY side (a name, a value
+        # naming a constant) is part of the declaration and stays, or a narrower constant whose
+        # name contains the word could be read as the pinned value.
+        self.assertEqual(
+            source_atoms("integer, parameter, public :: dp = publicreal64"),
+            frozenset({"integer,parameter::dp=publicreal64"}))
+        self.assertEqual(
+            source_atoms("integer, parameter, private :: private_len = 64"),
+            frozenset({"integer,parameter::private_len=64"}))
         # `stanza_atoms` keeps the attribute: a procedure stanza is compared with it.
         self.assertEqual(stanza_atoms(["integer, parameter, public :: dp = real64"]),
                          ("integer,parameter,public::dp=real64",))
