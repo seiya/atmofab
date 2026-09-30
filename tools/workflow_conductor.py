@@ -2882,6 +2882,11 @@ class ProcResult:
     # loops classify it as `pure_response_truncated` without asking the extractor to infer it
     # from a partial document — which it can only do heuristically.
     response_truncated: bool = False
+    # HTTP providers only: where `model` came from — `"http_response"` (the model name the
+    # provider's response reported) or `"configured_entry"` (the response named none, or the
+    # request failed, and `model` is the entry's configured name). Read into each pure attempt's
+    # `per_attempt[].model_provenance` (issue #348); the CLI providers derive theirs elsewhere.
+    model_provenance: str | None = None
 
 
 # The CLI envelope's PER-MODEL usage rows, mapped onto the canonical token-class names.
@@ -3988,6 +3993,16 @@ class Conductor:
             )
         return model
 
+    def _codex_model_provenance(self, entry: ResolvedLeafEntry) -> tuple[str, str]:
+        """The model a codex leaf is recorded as having run, and the provenance that says why.
+
+        One source for both records of a codex launch — its `agent_runs.jsonl` row
+        (`_agent_run_json`) and its pure loop's `per_attempt[]` row (`_spawn_pure_turn`) — so
+        the two cannot disagree (issue #348: the per-attempt row read the streamed JSONL model,
+        which the observed success events never carry, and recorded `null`). The slug is the
+        operator's configured one the host puts on the argv, not a provider-resolved version."""
+        return self._codex_pinned_model(entry), "codex_launch_pinned"
+
     def leaf_command(
         self,
         entry: ResolvedLeafEntry | None = None,
@@ -4236,7 +4251,8 @@ class Conductor:
         if response.transport_error is not None:
             self.emit("http_leaf_transport_error", agent_run_id=child_arid,
                       provider=entry.provider, error=response.transport_error[:400])
-            return ProcResult(1, "", response.transport_error[:4000], model=entry.model or None)
+            return ProcResult(1, "", response.transport_error[:4000], model=entry.model or None,
+                              model_provenance="configured_entry" if entry.model else None)
 
         histories[key] = [*messages, {"role": "assistant", "content": response.text}]
         self._http_history = histories
@@ -4247,6 +4263,8 @@ class Conductor:
         return ProcResult(
             0, response.text, "", usage=response.usage,
             model=response.model or entry.model or None,
+            model_provenance=("http_response" if response.model_reported
+                              else "configured_entry" if entry.model else None),
             response_truncated=response.truncated,
             persist_stdout=redact_secret(response.text, entry, child_env))
 
@@ -7328,6 +7346,10 @@ class Conductor:
         #: `pure_leaf.ResultEnvelope`, named `Any` because that module is imported lazily.
         envelope: Any
         model: str | None
+        #: Where `model` came from: `"result_envelope"` (claude), `"codex_launch_pinned"`
+        #: (codex, `_codex_model_provenance`), the HTTP transport's `ProcResult.model_provenance`,
+        #: or None when there is no model to record.
+        model_provenance: str | None
         usage: dict[str, Any] | None
         #: A monotonic reading used only for durations. There is no wall-clock twin: the
         #: pure path has no freshness gate, and the only reader the instant ever had on this
@@ -7395,6 +7417,16 @@ class Conductor:
                                    self._session_id_for_child(child_arid, entry) or _MISSING,
                                    None, None))
         model = None if envelope.model is _MISSING else envelope.model
+        # The recorded model and its provenance. Codex records the host-pinned slug, never the
+        # streamed value: the stream is the leaf's to write and its success events carry none
+        # (issue #348), and `_agent_run_json` records the same pair for the same launch.
+        model_provenance: str | None
+        if entry.provider == "codex_cli":
+            model, model_provenance = self._codex_model_provenance(entry)
+        elif entry.provider == "claude_cli":
+            model_provenance = "result_envelope" if model is not None else None
+        else:
+            model_provenance = proc.model_provenance if model is not None else None
         # Every backend's usage converges on the one recorded shape here, and a launch that
         # produced no numbers records WHY instead of leaving the field absent (issue #47).
         # The claude envelope is the one parsed just above — this loop owns it, unlike the
@@ -7410,7 +7442,8 @@ class Conductor:
             proc, entry,
             envelope=envelope if entry.provider == "claude_cli" else None,
             resumed=resumed)
-        return self._PureTurn(proc, token, envelope, model, usage, launched_monotonic)
+        return self._PureTurn(proc, token, envelope, model, model_provenance, usage,
+                              launched_monotonic)
 
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    repair: dict[str, str] | None,
@@ -7709,7 +7742,8 @@ class Conductor:
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
-                "agent_run_id": child_arid, "model": model, "usage": usage,
+                "agent_run_id": child_arid, "model": model,
+                "model_provenance": turn.model_provenance, "usage": usage,
                 # The exemplar THIS attempt was shown, or None (a repair turn renders none; a
                 # node with no certified sibling gets none). An advisory input, recorded per
                 # attempt and never part of the derivation key (issue #250).
@@ -8522,7 +8556,8 @@ class Conductor:
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
-                "agent_run_id": child_arid, "model": model, "usage": usage}
+                "agent_run_id": child_arid, "model": model,
+                "model_provenance": turn.model_provenance, "usage": usage}
             per_attempt.append(attempt_record)
 
             infra_error: tuple[str, str] | None = None
@@ -9399,8 +9434,8 @@ class Conductor:
             # and resumed turn.  That launch configuration is the provenance
             # source: unlike JSONL and hook audit files, the leaf cannot replace
             # it through its writable repository binds.
-            payload["agent_model"] = self._codex_pinned_model(entry)
-            payload["agent_model_provenance"] = "codex_launch_pinned"
+            payload["agent_model"], payload["agent_model_provenance"] = (
+                self._codex_model_provenance(entry))
         elif agent_model_override and str(agent_model_override).strip():
             # The model the leaf ran under comes from the CLI result envelope
             # (`--output-format json`), NOT the session transcript. Since issue #47 that is the

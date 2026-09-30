@@ -520,12 +520,12 @@ def _sum_pure_attempt_usage(
 ) -> tuple[dict[str, int], list[str]]:
     """Sum `per_attempt[].usage` token counts and collect the per-attempt models.
 
-    Each attempt is `{"agent_run_id", "model": str|None, "usage": dict|None}`
-    (conductor `_run_pure_producer_substep` / `_run_pure_reviewer_substep`). Missing
-    or malformed `usage` / `model` entries are skipped rather than raising —
-    diagnostics degrade, never break (see `_nonneg_int`). `models` preserves
-    attempt order (a repair loop may resolve a different model per turn; the alias
-    is recorded, never pinned).
+    Each attempt is `{"agent_run_id", "model": str|None, "model_provenance": str|None,
+    "usage": dict|None}` (conductor `_run_pure_producer_substep` /
+    `_run_pure_reviewer_substep`; this reader ignores `model_provenance`). Missing or
+    malformed `usage` / `model` entries are skipped rather than raising — diagnostics
+    degrade, never break (see `_nonneg_int`). `models` preserves attempt order (a repair
+    loop may resolve a different model per turn).
     """
     totals = {k: 0 for k in _PURE_ATTEMPT_USAGE_KEYS}
     models: list[str] = []

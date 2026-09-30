@@ -210,6 +210,30 @@ class HttpPureLeafWiringTests(_HttpServeMixin, unittest.TestCase):
         row = agent_run[-1]["--agent-run-json"]
         self.assertEqual(row["agent_backend"], "openai_compatible")
         self.assertEqual(row["agent_model"], "local-coder-resolved")
+        # Issue #348: the per-attempt row records the same model, and says it is the one the
+        # provider's response reported.
+        meta = json.loads((self.repo / self.refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["per_attempt"][0]["model"], "local-coder-resolved")
+        self.assertEqual(meta["per_attempt"][0]["model_provenance"], "http_response")
+
+    def test_a_response_naming_no_model_records_the_configured_one_as_such(self) -> None:
+        """Issue #348: when the provider's response names no model, the transport falls back to
+        the entry's configured name; the per-attempt row must say so rather than presenting a
+        configured alias as a resolved model."""
+        frames = [
+            {"choices": [{"delta": {"content": json.dumps(_valid_bundle())},
+                          "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 6}},
+        ]
+        raw = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        self._serve([{"raw": raw}])
+        c = self._conductor()
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "pass")
+        meta = json.loads((self.repo / self.refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["per_attempt"][0]["model"], "local-coder")
+        self.assertEqual(meta["per_attempt"][0]["model_provenance"], "configured_entry")
 
     def test_the_leafs_token_usage_reaches_the_agent_run_row(self) -> None:
         """The wiring nobody had pinned: the transport parsed usage correctly and nothing

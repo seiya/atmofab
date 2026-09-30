@@ -69,6 +69,11 @@ class HttpLeafResponse(NamedTuple):
     `truncated` means the provider itself said the answer was cut off at the output-token
     ceiling. It is authoritative — more so than inspecting the partial text — so the caller
     classifies it as `pure_response_truncated` without consulting the extractor.
+
+    `model_reported` says whether `model` is the name the provider's response reported (True)
+    or the entry's configured name the transport fell back to (False), so a caller can record
+    the model's provenance rather than present a configured alias as a resolved one (issue
+    #348).
     """
 
     text: str
@@ -77,6 +82,7 @@ class HttpLeafResponse(NamedTuple):
     truncated: bool
     transport_error: "str | None"
     raw_response: str
+    model_reported: bool = False
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -1039,8 +1045,10 @@ def run_pure_http_leaf(
     # per-attempt metadata) — nothing parses it — so removing a credential from it costs
     # nothing but a mangled model name in the case where the key is a substring of one, which
     # is the trade the answer channel could not make.
-    return HttpLeafResponse(text, _redact(model, secret) or entry.model,
-                            _normalized_usage(usage), truncated, None, raw)
+    reported = _redact(model, secret)
+    return HttpLeafResponse(text, reported or entry.model,
+                            _normalized_usage(usage), truncated, None, raw,
+                            model_reported=bool(reported))
 
 
 # The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT
