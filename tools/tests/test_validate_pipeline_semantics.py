@@ -19629,6 +19629,13 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                 self.assertTrue(
                     any("imports the §5.1 module parameter" in v for v in violations),
                     (label, violations))
+                # Issue #359: the refusal names its remedy, including the helper-module case that
+                # failed a real attempt (a second module in the model file importing `dp` back).
+                refusal = next(v for v in violations if "imports the §5.1 module parameter" in v)
+                self.assertIn("declare it in this module and drop the name from the `use`",
+                              refusal, label)
+                self.assertIn("A helper module that lives in this file is read as part of it",
+                              refusal, label)
 
     def test_the_no_backend_refusal_names_the_node_kind_it_was_given(self) -> None:
         """This gate has its own backend refusal, and its own kind word. The Compile-side family

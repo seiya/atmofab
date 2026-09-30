@@ -1219,7 +1219,10 @@ def generated_source_violations(
                     f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
                     f"come from this module's own `parameter` declaration of `{name}`, which is "
                     "what this gate value-pins; an imported binding carries a value the pin "
-                    "cannot see")
+                    "cannot see, so declare it in this module and drop the name from the `use`. "
+                    "A helper module that lives in this file is read as part of it: give such a "
+                    "module its own file, or bind the intrinsic kind there directly rather than "
+                    "importing the parameter back from the model module")
                 break
 
     # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
