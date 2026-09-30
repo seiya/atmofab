@@ -28685,10 +28685,21 @@ class ResolveComparandsTests(unittest.TestCase):
                 target=_TP)
 
         self.assertEqual(inputs()["comparand"], [])
+        self.assertEqual(set(inputs()), {"binary", "ir", "spec", "run_policy", "comparand"})
         self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "validate",
                                          target=_TP)[0])
         b = self._certify(self.b, orch="orch_b")
         node = self._run(b, "run_20260102_001",
+                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        [member] = inputs()["comparand"]
+        # why a declared target is not a comparand (issue #345) is a record, not a key input:
+        # with B declared and absent, the key holds the same members (round 1: a mutant keying
+        # `absent` survived every file)
+        (node / "verdict.json").unlink()
+        self.assertEqual([x["target_id"] for x in self._resolution().absent],
+                         [self.b.target_id])
+        self.assertEqual(set(inputs()), {"binary", "ir", "spec", "run_policy", "comparand"})
+        node = self._run(b, "run_20260102_002",
                          verdict={"self_verdict": "pass", "own_verdict": "pass"})
         [member] = inputs()["comparand"]
         self.assertEqual(member["target_id"], self.b.target_id)
