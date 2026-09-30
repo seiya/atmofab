@@ -28463,6 +28463,19 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual((res.comparands, res.absent),
                          ([], [{"target_id": self.b.target_id, "reason": "no_eligible_run"}]))
 
+    def test_a_variant_built_from_an_earlier_ir_is_recorded_with_its_upstream_reason(
+            self) -> None:
+        """This run's IR re-derived after B was built: Compile is target-free, so B's chain
+        selects the new IR and B's Generate refuses on it — the recorded reason is that
+        upstream refusal, `derivation_key_mismatch:ir`, not `compile_ir_mismatch` (which is
+        left for a run whose IR is not the standing one; round 1)."""
+        self._seed_b()
+        self._certify(_TP, orch="orch_a2", ir_text=self.CROSS_IR + "# re-derived\n")
+        res = self._resolution()
+        self.assertEqual((res.comparands, res.absent),
+                         ([], [{"target_id": self.b.target_id,
+                                "reason": "derivation_key_mismatch:ir"}]))
+
     def test_a_build_mismatch_is_recorded_with_the_selection_reason(self) -> None:
         """The recorded reason is the comparand resolver's own, so a moved input is named."""
         with mock.patch.object(tools_derivation, "BUILD_VERSION", "build-test-a"):

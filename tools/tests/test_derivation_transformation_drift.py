@@ -897,7 +897,9 @@ PINNED_VERDICT: dict[str, str] = {
     # `absent` names every other declared target that is not a comparand and why;
     # `verdict.json` gains `comparands_absent` for an IR with a cross-target predicate, and
     # `aggregate_verdict.json#cross_target` gains `absent`, copied from it.
-    "verdict-8": "1847d75a8a9526b42cb035d581a017029a4365a382d2e0b9f4e3d024f833be24",
+    # Re-pinned in round 1 before shipping (the version is new on this branch): the
+    # `ComparandResolution` docstring names an upstream refusal (`derivation_key_mismatch:ir`).
+    "verdict-8": "113f0c121a7b7e65c0de7da32d09709ccfc8773759de6903604c9abe8897d7e8",
 }
 
 

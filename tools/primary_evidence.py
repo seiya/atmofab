@@ -438,9 +438,11 @@ class ComparandResolution(NamedTuple):
     (issue #345): `comparands`, the other declared targets whose certified variant is bound,
     and `absent`, one `{"target_id", "reason"}` per other declared target that contributed
     nothing, in target-id order. Every other declared target is in exactly one of the two.
-    `reason` is the comparand resolver's Build refusal (`binary_not_found`,
-    `derivation_key_mismatch:<input>`, `revoked`, an upstream phase's reason, ...),
-    `compile_ir_mismatch` (its certified Compile is another IR) or `no_eligible_run`. Only
+    `reason` is the comparand resolver's Build refusal — the first refusal along B's chain up
+    to Build (`binary_not_found`, `derivation_key_mismatch:<input>` of the refusing phase —
+    `derivation_key_mismatch:ir` from B's Generate when this run's IR re-derived after B was
+    generated —, `revoked`, ...) — `compile_ir_mismatch` (the IR this run validates is not the
+    standing certified one) or `no_eligible_run`. Only
     `comparands` is keyed: a target that turns into a comparand moves the key through
     `comparand[]` already."""
     comparands: list[ComparandEvidence]
