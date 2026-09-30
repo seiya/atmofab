@@ -484,8 +484,8 @@ def extract_json_document(result_text: Any) -> tuple[Any, "str | None"]:
 # the two into the meta's one `last_fail_reason` string with `verify_repair_text` — the text the
 # producer's repair reads (via `last_fail_reason`, on the warm, cold and `--resume` paths alike),
 # so a finding the reviewer left out of its one-line reason still reaches the repair (issue
-# #347). The verdict document itself survives only in the reviewer's dialog logs
-# (`agents/<arid>/dialogs/leaf.stdout.*`).
+# #347). The verdict document itself is kept only in the reviewer's own transport record (its
+# dialog logs, and for an HTTP provider the saved response under `launches/`).
 # Vocabularies match the conductor's routing (`classify_verify_severity`): status is
 # `pass`/`fail`, severity is `none`/`minor`/`major`/`critical`.
 VERDICT_STATUSES: tuple[str, ...] = ("pass", "fail")
@@ -571,8 +571,10 @@ def verify_repair_text(verdict: dict[str, Any]) -> str | None:
     """The `last_fail_reason` the host projects from a schema-valid verify verdict.
 
     The ONE place the verdict's reason and its `findings[]` are folded into the meta's single
-    repair string; every reader of `last_fail_reason` (the same-phase repair, the revoke that
-    writes it back, the `--resume` seed, the diagnostician's inline meta) takes it unchanged.
+    repair string. The repair readers of `last_fail_reason` (the same-phase repair, the revoke
+    that writes it back, the `--resume` seed) take it unchanged; the escalate diagnostician
+    reads the whole meta through its per-artifact context budget, which clips like any other
+    inlined meta.
     `pass` gives `None`. `fail` gives the stripped reason, then one line per finding in the
     verdict's order, `1. <summary>`, `2. <summary>`, … with each summary stripped. Nothing is
     deduplicated (a summary that repeats the reason is kept) and nothing is capped: a clipped
