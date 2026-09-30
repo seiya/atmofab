@@ -454,8 +454,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned for issue #355: §1-1's "How a `Compile fail` is declared" names the terminus,
     # `fail_closed` in both workflow modes under `compile_declared_fail`, in place of "the
     # same terminus the agentic declaration reaches". What a valid IR is, and when a leaf
-    # declares, did not move, so the key does not.
-    "compile-docs-9": "f9fd1e6ce7b5ae1c578c7d0a5d965d16c485852897dc9e4cd77647f862d5b2e2",
+    # declares, did not move, so the key does not. Re-pinned again on the same branch (the
+    # value above was never shipped): §On-failure behavior stops calling a self-check
+    # invariant violation a `Compile fail` — the producer authors an IR that meets it, the
+    # reviewer reports it — and drops the agentic-era "repair_strategy defaults to `reuse`"
+    # (the conductor chooses). The rubric already graded those findings; a valid IR is unchanged.
+    "compile-docs-9": "b80537c8914db054f3e83e99fc3f53bfe7b0fb0fd360bda543b75310ed166dd4",
     # ...and the digest `compile-docs-9` SHIPPED with (origin/main a09eed1a), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-9@a09eed1a": "bf6397869f7ffe89c4129f2cc62ad99038c231fc70616b777deb85aeffdb5000",

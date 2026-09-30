@@ -491,8 +491,8 @@ These deterministic gates run in the conductor's `Compile.static` substep (`_com
 
 ## On-failure behavior
 - When the input (`controlled_spec.md` / `tests.md` / `deps.yaml`) is insufficient, it is a `Compile fail`, and guessed completion is forbidden.
-- When any self-check invariant `fail`, it is a `Compile fail`, and the violated invariant ID (V1–V4, V8) and details are recorded in `ir_meta.json.last_fail_reason`.
-- The repair_strategy defaults to `reuse`, and `restart` is chosen only when a structurally substantial reconstruction is needed.
+- A self-check invariant (V1–V4, V8) is `Compile.verify`'s check, not a ground to declare: `Compile.generate` authors an IR that meets it (an input that makes that impossible is the bullet above), and `Compile.verify` returns a `fail` naming the invariant ID in `last_fail_reason`, graded by §Severity of a finding.
+- The repair strategy of a retry is the conductor's choice, not the leaf's.
 
 ## Acceptance of retry from Validate
 When the `judge` of `Validate` produces a finding with `attribution=ir` and `confidence>=medium`, the `orchestration agent` re-submits a retry to `Compile` (the canonical source for the routing rules is the decision table of `docs/workflow/phases/phase_04_validate.md`). The acceptance contract on the `Compile` side:
