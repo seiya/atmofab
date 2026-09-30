@@ -733,7 +733,7 @@ PINNED: dict[str, str] = {
     # V9's list of route forms, since this reviewer is not shown phase_01. A runtime input is a
     # value the node's algorithm takes, whether or not a predicate also reads it (review round 2
     # replaced a JUDGMENT key class that over-refused the harness round-trip sentinels).
-    "pure-54": "15e2349f51e26a89aed53d21b4f768588117b72e3425d53d6d54fa40d2ca8fd7",
+    "pure-54": "f6e4a87d9d32c61de34f9bb5620364dff922cb7c3fb8743152a99099a36bf37f",
 }
 
 

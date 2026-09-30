@@ -21693,7 +21693,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Round 1 (judgment keys, null member): bumped 93100->94000;
         # measured 93188 at the commit that takes this bump. Round 2 (one criterion, "a value
         # the algorithm takes", replaces the judgment class): measured 93249, no bump. Round 3 (V9's route
-        # forms name derived rules and step descriptions): measured 93378, no bump.
+        # forms name derived rules and step descriptions): measured 93378, no bump. Round 4: 93449.
         "docs/workflow/phases/phase_01_compile.md": 94000,
     }
 
@@ -27573,7 +27573,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:56dd66592daac797":
+        "tools/prompt_templates/pure_compile_generate.txt:22dda31ebcb24fe4":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "

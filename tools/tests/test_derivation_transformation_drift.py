@@ -470,7 +470,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # verify scope and the scope sentence names it, the `evidence_ref` comment and V3 point at
     # V9, and the `minor` bullet and §On-failure behavior name V9. A compile leaf reading it authors routes a
     # compile-docs-9 leaf did not, so the key moves.
-    "compile-docs-10": "5ce899fad8dc65e55cef4382c158877ce98bd8a0b8e3325e8db7a903f37ead81",
+    "compile-docs-10": "582c39877703453db3fa865c2db288f4d40cf02ec4bc64958778396ed4ed1e60",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
