@@ -1295,8 +1295,9 @@ class DerivationResolver:
     (`_comparand_candidate_key`), because this host's probe of another target's compiler — which
     a run of this target need not have, and which is not the compiler that built a site-built
     variant — says nothing about the variant. `derivation_key` / `derivation_inputs` on such a
-    resolver's Build selection are the chosen candidate's stamped key and its substituted inputs;
-    `resolve_comparands` reads neither."""
+    resolver's CERTIFIED Build selection are the chosen candidate's stamped key and its substituted
+    inputs, and on a refused one the key computed without the probed leaves, which no stamp
+    carries; `resolve_comparands` reads neither."""
 
     def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None,
                  target: TargetProfile | None = None, comparand: bool = False) -> None:
@@ -2410,9 +2411,11 @@ def _probe_parallel_runtime(target: TargetProfile) -> Any:
 
 
 #: The leaves of `_target_toolchain_identity` read off THIS process's host (a subprocess run
-#: through PATH) rather than off the profile or the backend registry, each with its probe. The
-#: one table both the identity and `_host_probed_leaves` read, so the declared set cannot drift
-#: from what is probed (issue #345).
+#: through PATH) rather than off the profile or the backend registry, each with its probe (issue
+#: #345). `_target_toolchain_identity` probes through this table, and
+#: `DerivationInputsTests.test_every_leaf_that_moves_with_the_path_is_a_declared_host_probed_leaf`
+#: requires every member `_host_probed_leaves` names to be in the probed identity, so an entry added
+#: here without a place in the identity is red rather than a leaf every stamp lacks.
 _HOST_PROBES: dict[str, Callable[[TargetProfile], Any]] = {
     "compiler_version": _probe_compiler_version,
     "parallel_runtime": _probe_parallel_runtime,

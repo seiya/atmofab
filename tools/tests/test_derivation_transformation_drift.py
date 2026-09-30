@@ -887,8 +887,10 @@ PINNED_VERDICT: dict[str, str] = {
     # through its own `comparand[]` input, so no standing record with unchanged inputs yields
     # another verdict; PR-2 bumps to verdict-8 for its new record field. (Measured by diffing
     # `verdict_tuple()` against origin/main 1b5c30de's: that row and no other.) The shipped
-    # digest stays pinned below, so a later version returning to those bytes — the #345 drop
-    # restored — collides (`test_no_empty_bump_or_silent_revert`).
+    # digest stays pinned below, so a later version whose `resolve_comparands` source returns to
+    # those bytes collides (`test_no_empty_bump_or_silent_revert`). The comparand selection rule
+    # itself (`DerivationResolver`'s comparand mode) is outside the tuple and is held by
+    # `ResolveComparandsTests`, not by this pin.
     "verdict-7@1b5c30de": "9847c038a082ccae4a3ca3d6f539377a75fbf4e9f937aae0128ea1a7ad478e45",
     "verdict-7": "2ddc3713d10e2a9acfc4fe7cb30e42dc817aedd8d6ec08973c70369412c06acb",
 }

@@ -24685,8 +24685,13 @@ class DerivationInputsTests(unittest.TestCase):
             unprobed = ort._target_toolchain_identity(mpi, probe=False)
         self.assertEqual(set(unprobed), set(ids[0]) - set(ort._host_probed_leaves(mpi)))
         self.assertEqual(ort._host_probed_leaves(mpi), ort.HOST_PROBED_TOOLCHAIN_LEAVES)
+        # Every declared leaf lands in the probed identity: a `_HOST_PROBES` entry the identity
+        # does not write would be required of every stamp and match none.
+        self.assertLessEqual(set(ort._host_probed_leaves(mpi)), set(ids[0]))
         from tools.tests.target_fixtures import FORTRAN_CPU
         self.assertEqual(ort._host_probed_leaves(FORTRAN_CPU), ("compiler_version",))
+        self.assertLessEqual(set(ort._host_probed_leaves(FORTRAN_CPU)),
+                             set(ort._target_toolchain_identity(FORTRAN_CPU)))
 
     def test_an_upstream_binds_by_the_recomputed_hash_never_the_stamped_one(self) -> None:
         """Round-3 mutant: `_meta_output_hash` returning a stamped `output_hash` when present
@@ -28522,8 +28527,9 @@ class ResolveComparandsTests(unittest.TestCase):
             self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
     def test_a_comparand_mismatch_is_diagnosed_off_the_moved_input(self) -> None:
-        """B's source moved after its Build: the comparand resolver names the source, never a
-        probe leaf this host did not run."""
+        """B's source moved after its Build: the comparand resolver names the source. (That it
+        never names a probe leaf this host did not run is not observed here — `source` sorts
+        first either way; the row below observes it.)"""
         with self._probe_answers("v1"):
             b = self._seed_b()
         model = self.repo / b["model_ref"]
