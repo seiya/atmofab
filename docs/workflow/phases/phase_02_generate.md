@@ -90,7 +90,7 @@ The `post_generate` static gate is **not** run by `Generate.verify`. The conduct
 
 #### G3. implementation of case-dependent differences
 - The per-allowed-selection-value difference implementation in `case.test_case_set[].inputs` is not collapsed into a fixed constant or a single default value.
-- When an implementation that ignores case-dependent inputs such as `boundary`, `initial_profile`, `topography_profile`, `dt_rule`, `refinement`, or the `sweep` expansion result is detected, it is a `fail`. An input whose declared value differs across cases is a case-dependent difference whether or not G2 names it.
+- When an implementation that ignores case-dependent inputs such as `boundary`, `initial_profile`, `topography_profile`, `dt_rule`, `refinement`, or the `sweep` expansion result is detected, it is a `fail`. A runtime input (G2) whose declared value differs across cases is a case-dependent difference whether or not this list names it; a provenance or judgment key is not.
 
 #### G4. algorithm reflection
 - Based on `spec.ir.yaml.algorithm.steps`, `ordering`, `control_condition`, and `iteration_contract`, the `test case set` coverage, operation composition, dependency `operation`, and the data dependency of the output metrics are reflected in the generated code.
