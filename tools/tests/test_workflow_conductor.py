@@ -16436,6 +16436,14 @@ class DeterministicBuildTest(unittest.TestCase):
             del on_disk["comparands_absent"]
             self.assertEqual(wc._verdict_cross_target(on_disk),
                              {"own_verdict": "pass", "comparands": []})
+            # a structural verdict of the same IR carries the record too (round 1: a mutant
+            # writing it on the evaluated branch only survived)
+            import copy
+            broken = copy.deepcopy(ir)
+            del broken["io_contract"]["test_predicates"]
+            doc = c._author_execute_verdict(refs, broken, good)
+            self.assertEqual((doc["failure_class"], doc["comparands_absent"]),
+                             ("structural_violation", absent))
 
             # the comparand's bytes move after the key hashed them
             _write(other, [2.0, 4.5])
