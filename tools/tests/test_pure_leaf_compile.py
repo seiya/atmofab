@@ -953,6 +953,23 @@ class PureCompileReviewerTests(_Fixture):
             "step_03 has no update target\n1. an item is unmet"
             "\n2. V3 misses the snapshot of h")
 
+    def test_a_major_fail_verdict_reaches_the_severity_gate_in_both_modes(self) -> None:
+        """A `Compile.verify` `major` is the one compile route the verify-severity gate still
+        grades above `minor`: dev terminalizes, prod escalates. Until issue #355 the declared
+        compile fail took this gate too, and its row was the only one that drove a compile
+        `major` through `classify_failure`; the declaration now stops before the gate, so this
+        row keeps the gate's compile branch pinned."""
+        verdict = _verdict("fail", "major", "controlled_spec.md names no east boundary")
+        c = self.conductor(_envelope(verdict))
+        outcome = c.run_substep(self.refs, "compile", "verify")
+        self.assertEqual(outcome.status, "fail")
+        for mode, expected in (("dev", ("fail_closed", "dev_verify_major")),
+                               ("prod", ("escalate", "verify_severity_major"))):
+            with self.subTest(mode=mode):
+                c.workflow_mode = mode
+                decision = c.classify_failure(self.refs, "compile", [None, None, outcome])
+                self.assertEqual((decision.action, decision.reason), expected)
+
     def test_a_schema_exhausted_verdict_writes_no_projection_and_restarts(self) -> None:
         """Proof-of-work: no valid verdict, no stage meta. The producer's `"pending"` therefore
         survives, which is what tells a later reader the reviewer never answered."""
