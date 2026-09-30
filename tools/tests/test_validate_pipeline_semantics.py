@@ -19637,6 +19637,42 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                 self.assertIn("A helper module that lives in this file is read as part of it",
                               refusal, label)
 
+    def test_the_import_refusal_remedy_for_a_helper_module_is_followable(self) -> None:
+        """Issue #359: attempt 2 of `orch_20260930T120311Z_e6389af1` put a second module in the
+        model file that imported `dp` back from the model module; the gate reads the file as one
+        atom set, so that import is refused. The refusal's remedy names two shapes for the helper
+        module, and this drives all three: importing back is refused, the remedy's shape (the
+        intrinsic kind under its own name) passes, and declaring the name a second time is refused
+        by the double-binding check — which is why the remedy says so rather than "declare it"."""
+        helper = (
+            "module hx_selftest\n"
+            "{uses}"
+            "  implicit none\n"
+            "{decl}"
+            "contains\n"
+            "  subroutine hx_selftest_run(x)\n"
+            "    real({kind}), intent(in) :: x\n"
+            "  end subroutine hx_selftest_run\n"
+            "end module hx_selftest\n")
+        rows = (
+            ("imports back", "  use hx_model, only: dp\n", "", "dp",
+             "imports the §5.1 module parameter"),
+            ("intrinsic kind", "  use, intrinsic :: iso_fortran_env, only: real64\n", "",
+             "real64", None),
+            ("declares again", "  use, intrinsic :: iso_fortran_env, only: real64\n",
+             "  integer, parameter :: dp = real64\n", "dp", "binds the §5.1 module parameter"),
+        )
+        for label, uses, decl, kind, expected in rows:
+            with self.subTest(helper=label):
+                source = self._GOOD_SOURCE + helper.format(uses=uses, decl=decl, kind=kind)
+                with tempfile.TemporaryDirectory() as t:
+                    tmp = Path(t)
+                    violations = self._run(self._seed(tmp, source=source), tmp)
+                if expected is None:
+                    self.assertEqual(violations, [], label)
+                else:
+                    self.assertTrue(any(expected in v for v in violations), (label, violations))
+
     def test_the_no_backend_refusal_names_the_node_kind_it_was_given(self) -> None:
         """This gate has its own backend refusal, and its own kind word. The Compile-side family
         (`ComponentPublicApiGateTests::test_every_refusal_names_the_node_kind_it_was_given`) does not
